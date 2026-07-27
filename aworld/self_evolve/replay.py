@@ -15,10 +15,12 @@ import subprocess
 import sys
 import tempfile
 import time
+import uuid
 from collections.abc import Sequence
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field, fields as dataclass_fields, replace
+from enum import Enum
 from pathlib import Path
-from typing import Any, Callable, Mapping, Protocol
+from typing import Any, Callable, Mapping, Protocol, runtime_checkable
 from urllib.parse import urlsplit
 
 from aworld.core.context.amni.local import LocalIsolatedApplicationContext
@@ -35,6 +37,15 @@ from aworld.self_evolve.datasets import (
     EvalCase,
     SelfEvolveDataset,
     is_framework_meta_trace_pack,
+)
+from aworld.self_evolve.failure_events import (
+    FailureEventSource,
+    FailureOwner,
+    FailureScope,
+    FailureStage,
+    ReplayExecutionStatus,
+    ReplayFailureEvent,
+    causal_failure_events,
 )
 from aworld.self_evolve.replay_adaptation import (
     REPLAY_ARTIFACT_PLACEHOLDER,
@@ -59,6 +70,11 @@ from aworld.self_evolve.replay_capability import (
     verify_frozen_replay_capability,
 )
 from aworld.self_evolve.sanitization import sanitize_text
+from aworld.self_evolve.schema_diagnostics import (
+    SchemaFieldRepairConstraint,
+    SchemaFieldViolation,
+    schema_field_diagnostic_details,
+)
 from aworld.self_evolve.types import CandidateVariant, DatasetRecipe, SelfEvolveTargetRef, to_json_dict
 
 _EVIDENCE_RETRY_LIMIT = 1
@@ -67,12 +83,6 @@ _MAX_METADATA_EVIDENCE_CHARS = 16_384
 _REPLAY_SERVICE_PROTOCOL_TRACE_NAME = "protocol_trace.jsonl"
 _MAX_REPLAY_SERVICE_PROTOCOL_TRACE_BYTES = 64 * 1024
 _MAX_REPLAY_SERVICE_PROTOCOL_TRACE_EXCERPT_CHARS = 4_000
-_COMPARABLE_TASK_FAILURE_TYPES = {
-    "ReplayBoundaryViolation",
-    "TaskFailure",
-    "TimeoutExpired",
-}
-_COMPARABLE_TASK_FAILURE_REASONS = {"evidence_quality_failed"}
 _LOOPBACK_HTTP_ENDPOINT_PATTERN = re.compile(
     r"(?i)https?://(?:localhost|127(?:\.\d{1,3}){3}|\[::1\])"
     r"(?::\d{1,5})?(?![:\d])"
@@ -94,6 +104,17 @@ _REPLAY_PROVENANCE_METRIC_KEYS = (
     "service_startup_status",
     "service_cleanup_status",
 )
+
+_PER_MEMBER_REPETITION_SEMANTICS = "per_member_v3"
+_MIGRATED_DISTRIBUTED_REPETITION_SEMANTICS = "distributed_v2_migrated"
+_NON_AUTHORITATIVE_V3_REPETITION_SEMANTICS = "per_member_v3_non_authoritative"
+_MEMBER_REPLAY_SCHEMA_V3 = "aworld.self_evolve.member_replay.v3"
+_LEGACY_MEMBER_REPLAY_SCHEMAS = {
+    "aworld.self_evolve.member_replay.v1",
+    "aworld.self_evolve.member_replay.v2",
+}
+_REPLAY_LIFECYCLE_SCHEMA_V3 = "aworld.self_evolve.replay_lifecycle.v3"
+_REPLAY_LIFECYCLE_SCHEMA_V2 = "aworld.self_evolve.replay_lifecycle.v2"
 
 
 @dataclass(frozen=True)
@@ -121,22 +142,75 @@ class CandidateReplayRequest:
     workspace_seed_fingerprint: str | None = None
     task_input_fingerprint: str | None = None
     verified_candidate_package_fingerprint: str | None = None
+    repetition_semantics: str = _PER_MEMBER_REPETITION_SEMANTICS
 
 
 @dataclass(frozen=True)
 class ReplayVariantResult:
     variant_id: str
-    status: str
+    status: ReplayExecutionStatus | str
     trajectory: list[Mapping[str, Any]]
     metrics: Mapping[str, Any] = field(default_factory=dict)
     stdout_path: str | None = None
     stderr_path: str | None = None
-    failure: Mapping[str, Any] | None = None
+    failure: ReplayFailureEvent | Mapping[str, Any] | None = None
+    blocked_by: tuple[ReplayFailureEvent, ...] = ()
     repetition_results: tuple["ReplayVariantResult", ...] = ()
+
+    def __post_init__(self) -> None:
+        try:
+            status = ReplayExecutionStatus(self.status)
+        except ValueError as exc:
+            raise ValueError(f"unsupported replay execution status: {self.status!r}") from exc
+        failure = self.failure
+        if isinstance(failure, Mapping) and not isinstance(
+            failure, ReplayFailureEvent
+        ):
+            failure = ReplayFailureEvent.from_legacy_mapping(failure)
+        blocked_by = tuple(self.blocked_by)
+        if any(not isinstance(event, ReplayFailureEvent) for event in blocked_by):
+            raise ValueError("blocked_by must contain replay failure events")
+        if status in {
+            ReplayExecutionStatus.SUCCEEDED,
+            ReplayExecutionStatus.FAILED,
+        } and blocked_by:
+            raise ValueError("executed replay variant cannot have blocked_by")
+        if status is ReplayExecutionStatus.SUCCEEDED and failure is not None:
+            raise ValueError("succeeded replay variant cannot have a failure")
+        if status is ReplayExecutionStatus.FAILED and failure is None:
+            raise ValueError("failed replay variant requires a failure event")
+        if status is ReplayExecutionStatus.BLOCKED:
+            if failure is not None:
+                raise ValueError("blocked replay variant cannot have an execution failure")
+            if not blocked_by:
+                raise ValueError("blocked replay variant requires blocked_by")
+            if self.trajectory:
+                raise ValueError("blocked replay variant cannot contain a trajectory")
+        if status is ReplayExecutionStatus.NOT_RUN and (
+            failure is not None or blocked_by or self.trajectory
+        ):
+            raise ValueError("not_run replay variant cannot contain execution output")
+        if status in {
+            ReplayExecutionStatus.BLOCKED,
+            ReplayExecutionStatus.NOT_RUN,
+        } and (self.stdout_path or self.stderr_path or self.repetition_results):
+            raise ValueError(
+                "unexecuted replay variant cannot contain execution artifacts"
+            )
+        object.__setattr__(self, "status", status)
+        object.__setattr__(self, "failure", failure)
+        object.__setattr__(self, "blocked_by", blocked_by)
 
     @property
     def succeeded(self) -> bool:
-        return self.status == "succeeded"
+        return self.status is ReplayExecutionStatus.SUCCEEDED
+
+    @property
+    def executed(self) -> bool:
+        return self.status in {
+            ReplayExecutionStatus.SUCCEEDED,
+            ReplayExecutionStatus.FAILED,
+        }
 
 
 @dataclass(frozen=True)
@@ -144,12 +218,26 @@ class CandidateReplayResult:
     request: CandidateReplayRequest
     baseline: ReplayVariantResult
     candidate: ReplayVariantResult
-    member_results: tuple["CandidateReplayMemberResult", ...] = ()
+    # None is reserved for legacy root-level single-member artifacts. New
+    # backends always write an explicit tuple, including one-member datasets.
+    member_results: tuple["CandidateReplayMemberResult", ...] | None = None
+    artifact_failure_events: tuple[ReplayFailureEvent, ...] = ()
+
+    def __post_init__(self) -> None:
+        if any(
+            not isinstance(event, ReplayFailureEvent)
+            for event in self.artifact_failure_events
+        ):
+            raise ValueError(
+                "artifact_failure_events must contain replay failure events"
+            )
 
     @property
     def succeeded(self) -> bool:
-        if self.member_results:
-            return all(member.succeeded for member in self.member_results)
+        if self.member_results is not None:
+            return bool(self.member_results) and all(
+                member.succeeded for member in self.member_results
+            )
         return self.baseline.succeeded and self.candidate.succeeded
 
 
@@ -165,20 +253,296 @@ class CandidateReplayMemberResult:
         return self.baseline.succeeded and self.candidate.succeeded
 
 
+@dataclass(frozen=True)
+class NormalizedReplayMember:
+    case: EvalCase
+    request: CandidateReplayRequest
+    baseline: ReplayVariantResult
+    candidate: ReplayVariantResult
+
+    @property
+    def case_id(self) -> str:
+        return self.case.case_id
+
+    @property
+    def succeeded(self) -> bool:
+        return self.baseline.succeeded and self.candidate.succeeded
+
+
+@dataclass(frozen=True)
+class NormalizedReplayMembers:
+    members: tuple[NormalizedReplayMember, ...]
+    failure_events: tuple[ReplayFailureEvent, ...] = ()
+    missing_case_ids: tuple[str, ...] = ()
+    duplicate_case_ids: tuple[str, ...] = ()
+    unexpected_case_ids: tuple[str, ...] = ()
+    request_mismatch_case_ids: tuple[str, ...] = ()
+
+    @property
+    def valid(self) -> bool:
+        return not self.failure_events
+
+
+def _member_request_mismatch_fields(
+    *,
+    root_request: CandidateReplayRequest,
+    member_request: CandidateReplayRequest,
+    case: EvalCase,
+    member_count: int,
+) -> tuple[str, ...]:
+    mismatches: list[str] = []
+    derived_values = {
+        "task_id": case.case_id,
+        "task_input": _adapted_task_input(root_request, case),
+        "task_input_fingerprint": _adapted_task_input_fingerprint(
+            root_request,
+            case,
+        ),
+        "baseline_replay_dir": _member_baseline_replay_dir(
+            root_request.baseline_replay_dir,
+            case.case_id,
+        ),
+        "baseline_repetitions": _distributed_member_repetitions(
+            root_request.baseline_repetitions,
+            member_count=member_count,
+        ),
+        "candidate_repetitions": _distributed_member_repetitions(
+            root_request.candidate_repetitions,
+            member_count=member_count,
+        ),
+    }
+    for request_field in dataclass_fields(CandidateReplayRequest):
+        field_name = request_field.name
+        expected = derived_values.get(field_name, getattr(root_request, field_name))
+        if to_json_dict(getattr(member_request, field_name)) != to_json_dict(expected):
+            mismatches.append(field_name)
+    return tuple(sorted(set(mismatches)))
+
+
+def _normalization_failure(
+    *, code: str, summary: str, diagnostics: Mapping[str, Any]
+) -> ReplayFailureEvent:
+    return ReplayFailureEvent(
+        code=code,
+        owner=FailureOwner.FRAMEWORK,
+        stage=FailureStage.RESULT_NORMALIZATION,
+        scope=FailureScope.CANDIDATE,
+        repairable=False,
+        category="replay_result_contract",
+        summary=summary,
+        diagnostics=diagnostics,
+    )
+
+
+def normalize_replay_members(
+    *,
+    dataset: SelfEvolveDataset,
+    replay_result: CandidateReplayResult,
+) -> NormalizedReplayMembers:
+    """Normalize legacy/new results to dataset-ordered member records.
+
+    Structural backend violations become typed framework events and therefore
+    fail closed without silently changing cardinality.
+    """
+
+    replayable_cases = tuple(
+        case for case in dataset.cases if _is_replayable_user_task_case(case)
+    )
+    cases_by_id = {case.case_id: case for case in replayable_cases}
+    events: list[ReplayFailureEvent] = []
+    missing: list[str] = []
+    duplicates: list[str] = []
+    unexpected: list[str] = []
+    mismatches: list[str] = []
+    mismatch_fields: dict[str, tuple[str, ...]] = {}
+    root_request = getattr(replay_result, "request", None)
+    if isinstance(root_request, CandidateReplayRequest) and not (
+        _has_authoritative_per_member_repetitions(root_request)
+    ):
+        legacy_migration = (
+            root_request.repetition_semantics
+            == _MIGRATED_DISTRIBUTED_REPETITION_SEMANTICS
+        )
+        events.append(
+            _normalization_failure(
+                code=(
+                    "legacy_repetition_semantics_non_authoritative"
+                    if legacy_migration
+                    else "replay_artifact_non_authoritative"
+                ),
+                summary=(
+                    "legacy distributed replay was migrated for inspection but "
+                    "cannot authorize new replay or evaluation"
+                    if legacy_migration
+                    else "stored replay artifact failed the v3 authority contract"
+                ),
+                diagnostics={
+                    "repetition_semantics": (
+                        root_request.repetition_semantics
+                    ),
+                    "baseline_repetitions_per_member": (
+                        root_request.baseline_repetitions
+                    ),
+                    "candidate_repetitions_per_member": (
+                        root_request.candidate_repetitions
+                    ),
+                },
+            )
+        )
+    # Normalization intentionally accepts backend-compatible replay objects,
+    # including older/duck-typed implementations that predate the persisted
+    # artifact failure carrier.
+    events.extend(getattr(replay_result, "artifact_failure_events", ()))
+    raw_members = replay_result.member_results
+    if raw_members is None:
+        if len(replayable_cases) == 1:
+            only_case = replayable_cases[0]
+            raw_members = (
+                CandidateReplayMemberResult(
+                    case_id=only_case.case_id,
+                    request=replay_result.request,
+                    baseline=replay_result.baseline,
+                    candidate=replay_result.candidate,
+                ),
+            )
+        else:
+            raw_members = ()
+
+    occurrences_by_case_id: dict[str, list[CandidateReplayMemberResult]] = {
+        case.case_id: [] for case in replayable_cases
+    }
+    for member in raw_members:
+        if member.case_id not in cases_by_id:
+            unexpected.append(member.case_id)
+            continue
+        occurrences_by_case_id[member.case_id].append(member)
+    unexpected = sorted(set(unexpected))
+    normalized: list[NormalizedReplayMember] = []
+    for case in replayable_cases:
+        occurrences = occurrences_by_case_id[case.case_id]
+        if not occurrences:
+            missing.append(case.case_id)
+            continue
+        occurrence_mismatch_fields = tuple(
+            sorted(
+                {
+                    field_name
+                    for member in occurrences
+                    for field_name in _member_request_mismatch_fields(
+                        root_request=replay_result.request,
+                        member_request=member.request,
+                        case=case,
+                        member_count=len(replayable_cases),
+                    )
+                }
+            )
+        )
+        if len(occurrences) > 1:
+            duplicates.append(case.case_id)
+        if occurrence_mismatch_fields:
+            mismatches.append(case.case_id)
+            mismatch_fields[case.case_id] = occurrence_mismatch_fields
+        if len(occurrences) != 1 or occurrence_mismatch_fields:
+            continue
+        member = occurrences[0]
+        normalized.append(
+            NormalizedReplayMember(
+                case=case,
+                request=member.request,
+                baseline=member.baseline,
+                candidate=member.candidate,
+            )
+        )
+    anomaly_groups = (
+        (
+            "missing_replay_member",
+            missing,
+            "backend omitted dataset replay members",
+            {},
+        ),
+        (
+            "duplicate_replay_member",
+            duplicates,
+            "backend returned duplicate replay members",
+            {},
+        ),
+        (
+            "unexpected_replay_member",
+            unexpected,
+            "backend returned members outside the dataset",
+            {},
+        ),
+        (
+            "replay_request_member_mismatch",
+            mismatches,
+            "member request violated the root/member request contract",
+            {
+                "fields": tuple(
+                    sorted(
+                        {
+                            field_name
+                            for fields_for_case in mismatch_fields.values()
+                            for field_name in fields_for_case
+                        }
+                    )
+                ),
+                "member_fields": mismatch_fields,
+            },
+        ),
+    )
+    for code, case_ids, summary, extra_diagnostics in anomaly_groups:
+        if case_ids:
+            events.append(
+                _normalization_failure(
+                    code=code,
+                    summary=summary,
+                    diagnostics={
+                        "case_ids": tuple(case_ids),
+                        "count": len(case_ids),
+                        **extra_diagnostics,
+                    },
+                )
+            )
+    return NormalizedReplayMembers(
+        members=tuple(normalized),
+        failure_events=tuple(events),
+        missing_case_ids=tuple(missing),
+        duplicate_case_ids=tuple(duplicates),
+        unexpected_case_ids=tuple(unexpected),
+        request_mismatch_case_ids=tuple(mismatches),
+    )
+
+
+def iter_replay_members(
+    *, dataset: SelfEvolveDataset, replay_result: CandidateReplayResult
+) -> tuple[NormalizedReplayMember, ...]:
+    return normalize_replay_members(dataset=dataset, replay_result=replay_result).members
+
+
 def candidate_replay_is_comparable(
     *,
     dataset: SelfEvolveDataset,
     replay_result: CandidateReplayResult,
     require_adapted: bool = False,
+    normalized: NormalizedReplayMembers | None = None,
 ) -> bool:
+    normalized = normalized or normalize_replay_members(
+        dataset=dataset,
+        replay_result=replay_result,
+    )
+    if not normalized.valid:
+        return False
     if not _candidate_replay_provenance_is_comparable(
+        dataset,
         replay_result,
         require_adapted=require_adapted,
+        normalized=normalized,
     ):
         return False
     coverage = candidate_replay_pair_coverage(
         dataset=dataset,
         replay_result=replay_result,
+        normalized=normalized,
     )
     return (
         coverage["member_count"] > 0
@@ -187,9 +551,11 @@ def candidate_replay_is_comparable(
 
 
 def _candidate_replay_provenance_is_comparable(
+    dataset: SelfEvolveDataset,
     replay_result: CandidateReplayResult,
     *,
     require_adapted: bool,
+    normalized: NormalizedReplayMembers,
 ) -> bool:
     if replay_result.request.adaptation_fingerprint is None:
         return not require_adapted
@@ -198,19 +564,10 @@ def _candidate_replay_provenance_is_comparable(
         and not replay_result.request.replay_adaptation.ready
     ):
         return False
-    if replay_result.member_results:
-        pairs = tuple(
-            (member.request, member.baseline, member.candidate)
-            for member in replay_result.member_results
-        )
-    else:
-        pairs = (
-            (
-                replay_result.request,
-                replay_result.baseline,
-                replay_result.candidate,
-            ),
-        )
+    pairs = tuple(
+        (member.request, member.baseline, member.candidate)
+        for member in normalized.members
+    )
     for request, baseline, candidate in pairs:
         expected = {
             "adaptation_fingerprint": request.adaptation_fingerprint,
@@ -319,151 +676,218 @@ def candidate_replay_pair_coverage(
     *,
     dataset: SelfEvolveDataset,
     replay_result: CandidateReplayResult,
+    normalized: NormalizedReplayMembers | None = None,
 ) -> dict[str, int]:
-    replayable_cases = tuple(
-        case for case in dataset.cases if _is_replayable_user_task_case(case)
+    normalized = normalized or normalize_replay_members(
+        dataset=dataset,
+        replay_result=replay_result,
     )
-    cases_by_id = {case.case_id: case for case in replayable_cases}
-    pairs: list[tuple[EvalCase | None, ReplayVariantResult, ReplayVariantResult]]
-    if replay_result.member_results:
-        pairs = [
-            (
-                cases_by_id.get(member.case_id),
-                member.baseline,
-                member.candidate,
-            )
-            for member in replay_result.member_results
-        ]
-        missing_member_count = max(0, len(cases_by_id) - len(pairs))
-    else:
-        case = cases_by_id.get(replay_result.request.task_id)
-        if case is None and len(replayable_cases) == 1:
-            case = replayable_cases[0]
-        pairs = [(case, replay_result.baseline, replay_result.candidate)]
-        missing_member_count = 0
 
     strict_pair_count = 0
     task_failure_pair_count = 0
     infrastructure_failure_count = 0
     candidate_failure_count = 0
-    incomparable_pair_count = missing_member_count
-    for case, baseline, candidate in pairs:
-        if case is None or not candidate.succeeded:
-            incomparable_pair_count += 1
-            if not candidate.succeeded:
-                candidate_failure_count += 1
+    baseline_execution_failure_count = 0
+    candidate_execution_failure_count = 0
+    blocked_variant_count = 0
+    blocked_member_count = 0
+    not_run_variant_count = 0
+    owner_counts = {owner: 0 for owner in FailureOwner}
+    for member in normalized.members:
+        case = member.case
+        baseline = member.baseline
+        candidate = member.candidate
+        member_blocked = False
+        for variant in (baseline, candidate):
+            if variant.status is ReplayExecutionStatus.FAILED and variant.failure is not None:
+                owner_counts[variant.failure.owner] += 1
+            if variant.status is ReplayExecutionStatus.BLOCKED:
+                blocked_variant_count += 1
+                member_blocked = True
+            elif variant.status is ReplayExecutionStatus.NOT_RUN:
+                not_run_variant_count += 1
+        if member_blocked:
+            blocked_member_count += 1
+        if baseline.status is ReplayExecutionStatus.FAILED:
+            baseline_execution_failure_count += 1
+            if baseline.failure is not None and baseline.failure.owner in {
+                FailureOwner.INFRASTRUCTURE,
+                FailureOwner.FRAMEWORK,
+            }:
+                infrastructure_failure_count += 1
+        if candidate.status is ReplayExecutionStatus.FAILED:
+            candidate_execution_failure_count += 1
+            candidate_failure_count += 1
+        if not candidate.succeeded:
             continue
         if baseline.succeeded:
             strict_pair_count += 1
             continue
-        if (
-            _replay_failure_outcome(baseline.failure) == "task_failure"
-            or _is_task_rollout_capability_failure(baseline.failure)
+        if baseline.failure is not None and (
+            baseline.failure.owner is FailureOwner.TASK
+            or (
+                baseline.failure.owner is FailureOwner.CANDIDATE
+                and baseline.failure.stage is FailureStage.TASK_ROLLOUT
+            )
         ):
             trajectory, _ = _baseline_comparison_trajectory(case, baseline)
             if trajectory:
                 task_failure_pair_count += 1
                 continue
-        else:
-            infrastructure_failure_count += 1
-        incomparable_pair_count += 1
-
-    member_count = len(pairs) + missing_member_count
+    member_count = sum(
+        1 for case in dataset.cases if _is_replayable_user_task_case(case)
+    )
     comparable_pair_count = strict_pair_count + task_failure_pair_count
+    incomparable_pair_count = member_count - comparable_pair_count
     return {
         "member_count": member_count,
+        "returned_member_count": len(normalized.members),
         "strict_pair_count": strict_pair_count,
         "task_failure_pair_count": task_failure_pair_count,
         "comparable_pair_count": comparable_pair_count,
         "incomparable_pair_count": incomparable_pair_count,
         "infrastructure_failure_count": infrastructure_failure_count,
+        # Compatibility: only candidate variants whose execution actually
+        # started and failed are counted. Blocked candidates are excluded.
         "candidate_failure_count": candidate_failure_count,
+        "baseline_execution_failure_count": baseline_execution_failure_count,
+        "candidate_execution_failure_count": candidate_execution_failure_count,
+        "candidate_executed_count": sum(
+            1 for member in normalized.members if member.candidate.executed
+        ),
+        "blocked_variant_count": blocked_variant_count,
+        "blocked_member_count": blocked_member_count,
+        "not_run_variant_count": not_run_variant_count,
+        "missing_member_count": len(normalized.missing_case_ids),
+        "duplicate_member_count": len(normalized.duplicate_case_ids),
+        "unexpected_member_count": len(normalized.unexpected_case_ids),
+        "request_mismatch_count": len(normalized.request_mismatch_case_ids),
+        "normalization_failure_count": len(normalized.failure_events),
+        "candidate_owned_failure_count": owner_counts[FailureOwner.CANDIDATE],
+        "task_owned_failure_count": owner_counts[FailureOwner.TASK],
+        "infrastructure_owned_failure_count": owner_counts[FailureOwner.INFRASTRUCTURE],
+        "framework_owned_failure_count": owner_counts[FailureOwner.FRAMEWORK]
+        + len(normalized.failure_events),
     }
 
 
-def _replay_failure_outcome(failure: Mapping[str, Any] | None) -> str:
-    if not isinstance(failure, Mapping):
+def _replay_failure_outcome(failure: ReplayFailureEvent | None) -> str:
+    if failure is None:
         return "infrastructure_failure"
     if _is_task_rollout_capability_failure(failure):
         return "candidate_failure"
-    explicit_outcome = failure.get("outcome")
-    if explicit_outcome in {
-        "candidate_failure",
-        "infrastructure_failure",
-        "task_failure",
-    }:
-        return str(explicit_outcome)
-    failure_type = failure.get("type")
-    if failure_type in _COMPARABLE_TASK_FAILURE_TYPES:
+    if failure.owner is FailureOwner.CANDIDATE:
+        return "candidate_failure"
+    if failure.owner is FailureOwner.TASK:
         return "task_failure"
-    reason = failure.get("reason")
-    if reason in _COMPARABLE_TASK_FAILURE_REASONS:
-        return "task_failure"
-    nested = failure.get("failures")
-    if isinstance(nested, list) and nested:
-        outcomes = {
-            _replay_failure_outcome(item)
-            for item in nested
-            if isinstance(item, Mapping)
-        }
-        if outcomes == {"task_failure"}:
-            return "task_failure"
     return "infrastructure_failure"
 
 
 def _is_task_rollout_capability_failure(
-    failure: Mapping[str, Any] | None,
+    failure: ReplayFailureEvent | None,
 ) -> bool:
     return bool(
-        isinstance(failure, Mapping)
-        and failure.get("failure_class") == "candidate_replay_capability"
-        and failure.get("failure_stage") == "task_rollout"
+        isinstance(failure, ReplayFailureEvent)
+        and failure.owner is FailureOwner.CANDIDATE
+        and failure.stage is FailureStage.TASK_ROLLOUT
     )
 
 
 def _baseline_failure_blocks_candidate(
-    failure: Mapping[str, Any] | None,
+    failure: ReplayFailureEvent | Mapping[str, Any] | None,
 ) -> bool:
-    outcome = _replay_failure_outcome(failure)
-    return outcome == "infrastructure_failure" or (
-        outcome == "candidate_failure"
-        and not _is_task_rollout_capability_failure(failure)
+    if failure is None:
+        return True
+    event = (
+        failure
+        if isinstance(failure, ReplayFailureEvent)
+        else ReplayFailureEvent.from_legacy_mapping(failure)
+    )
+    return not (
+        event.owner is FailureOwner.TASK
+        or (
+            event.owner is FailureOwner.CANDIDATE
+            and event.stage is FailureStage.TASK_ROLLOUT
+        )
+        or (
+            event.owner is FailureOwner.FRAMEWORK
+            and event.scope is FailureScope.MEMBER
+            and event.stage is FailureStage.EVALUATION
+        )
     )
 
 
-def _baseline_preflight_skipped_candidate_result(
-    candidate_id: str,
-) -> ReplayVariantResult:
-    return ReplayVariantResult(
-        variant_id=candidate_id,
-        status="failed",
-        trajectory=[],
-        failure={
-            "reason": "baseline_preflight_failed",
-            "detail": (
-                "candidate replay skipped because baseline infrastructure replay failed"
-            ),
-        },
-    )
-
-
-def _baseline_preflight_aborted_result(
+def _blocked_variant_result(
+    variant_id: str,
     *,
-    blocked_by_case_id: str,
+    blocked_by: ReplayFailureEvent,
 ) -> ReplayVariantResult:
     return ReplayVariantResult(
-        variant_id="baseline",
-        status="failed",
+        variant_id=variant_id,
+        status=ReplayExecutionStatus.BLOCKED,
         trajectory=[],
-        failure={
-            "outcome": "infrastructure_failure",
-            "reason": "baseline_preflight_aborted",
-            "detail": (
-                "baseline replay skipped because shared replay infrastructure "
-                f"failed for {blocked_by_case_id}"
-            ),
-            "blocked_by_case_id": blocked_by_case_id,
-        },
+        blocked_by=(blocked_by,),
+    )
+
+
+def _execution_failure_event(
+    failure: Mapping[str, Any] | ReplayFailureEvent | None,
+    *,
+    default_stage: FailureStage,
+    service_preflight: bool = False,
+) -> ReplayFailureEvent:
+    if isinstance(failure, ReplayFailureEvent):
+        return failure
+    payload = dict(failure or {})
+    legacy = ReplayFailureEvent.from_legacy_mapping(payload)
+    owner = legacy.owner
+    raw_stage = str(payload.get("failure_stage") or "")
+    failure_type = str(payload.get("type") or "")
+    if service_preflight:
+        stage = FailureStage.CAPABILITY_PREFLIGHT
+    elif raw_stage == FailureStage.TASK_ROLLOUT.value:
+        stage = FailureStage.TASK_ROLLOUT
+    elif legacy.owner is FailureOwner.CANDIDATE and failure_type in {
+        "ReplayServiceProtocolError",
+        "ReplayCapabilityError",
+        "ReplayCapabilityPreflightError",
+    }:
+        stage = FailureStage.CAPABILITY_PREFLIGHT
+    elif raw_stage == FailureStage.EVALUATION.value:
+        stage = FailureStage.EVALUATION
+    else:
+        stage = default_stage
+    if owner is FailureOwner.CANDIDATE:
+        scope = (
+            FailureScope.MEMBER
+            if stage is FailureStage.TASK_ROLLOUT
+            else FailureScope.CANDIDATE
+        )
+    elif owner is FailureOwner.TASK:
+        scope = FailureScope.MEMBER
+    elif owner is FailureOwner.INFRASTRUCTURE:
+        scope = FailureScope.SHARED_RUN
+    elif stage is FailureStage.EVALUATION:
+        scope = FailureScope.MEMBER
+    else:
+        # Unknown current failures fail the candidate closed but cannot acquire
+        # run-wide stopping authority from prose alone.
+        scope = FailureScope.CANDIDATE
+    code = legacy.code
+    if code == "legacy_unclassified_failure":
+        code = "unclassified_replay_execution_failure"
+    return ReplayFailureEvent(
+        event_id=f"replay-event-{uuid.uuid4().hex}",
+        code=code,
+        owner=owner,
+        stage=stage,
+        scope=scope,
+        repairable=legacy.repairable,
+        category=legacy.category,
+        summary=legacy.summary,
+        diagnostics=legacy.diagnostics,
+        source=FailureEventSource.NATIVE,
+        _compatibility=payload,
     )
 
 
@@ -477,7 +901,18 @@ def _baseline_comparison_trajectory(
             "replay" if baseline.succeeded else "failed_replay"
         )
     if (
-        _is_task_rollout_capability_failure(baseline.failure)
+        (
+            isinstance(baseline.failure, ReplayFailureEvent)
+            and (
+                baseline.failure.owner is FailureOwner.TASK
+                or (
+                    baseline.failure.owner is FailureOwner.CANDIDATE
+                    and baseline.failure.stage is FailureStage.TASK_ROLLOUT
+                )
+            )
+            and _has_replay_execution_evidence(baseline)
+        )
+        or _is_task_rollout_capability_failure(baseline.failure)
         or (
             _replay_failure_outcome(baseline.failure) == "task_failure"
             and _has_replay_execution_evidence(baseline)
@@ -541,14 +976,113 @@ class CandidateReplayBackend(Protocol):
         """Replay baseline/candidate variants and return their trajectories."""
 
 
+class ReplayEvidenceDispositionKind(str, Enum):
+    """Whether replay evidence is executed now or reused from a source run."""
+
+    STORED_SOURCE_REUSE = "stored_source_reuse"
+
+
+@dataclass(frozen=True)
+class ReplayEvidenceReuseDisposition:
+    kind: ReplayEvidenceDispositionKind
+    source_run_id: str
+    source_replay_path: str
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "kind", ReplayEvidenceDispositionKind(self.kind))
+        for field_name in ("source_run_id", "source_replay_path"):
+            value = getattr(self, field_name)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"replay evidence reuse requires {field_name}")
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "kind": self.kind.value,
+            "source_run_id": self.source_run_id,
+            "source_replay_path": self.source_replay_path,
+        }
+
+
+@runtime_checkable
+class CandidateReplayEvidenceReuseBackend(Protocol):
+    """Backend that supplies immutable replay evidence without executing replay."""
+
+    def replay_evidence_reuse_disposition(
+        self,
+    ) -> ReplayEvidenceReuseDisposition:
+        """Describe the source evidence and its provenance."""
+
+    async def reuse_replay_evidence(
+        self,
+        *,
+        candidate: CandidateVariant,
+        dataset: SelfEvolveDataset,
+    ) -> CandidateReplayResult:
+        """Return stored evidence without starting a replay execution."""
+
+
 def load_candidate_replay_result(replay_dir: str | Path) -> CandidateReplayResult:
     """Load a previously materialized candidate replay result from disk."""
     root = Path(replay_dir).expanduser()
     request_payload = _load_json_object(root / "request.json")
     request = _candidate_replay_request_from_mapping(request_payload)
+    lifecycle_is_per_member_v3 = _stored_lifecycles_use_per_member_v3(root)
     member_manifest_path = root / "members" / "manifest.json"
     if member_manifest_path.exists():
         member_manifest = _load_json_object(member_manifest_path)
+        member_schema = str(member_manifest.get("schema_version") or "")
+        authoritative_v3_manifest = member_schema == _MEMBER_REPLAY_SCHEMA_V3
+        artifact_failures: list[ReplayFailureEvent] = []
+        migration_required = (
+            member_schema in _LEGACY_MEMBER_REPLAY_SCHEMAS
+            or lifecycle_is_per_member_v3 is False
+        )
+        if authoritative_v3_manifest:
+            if (
+                member_manifest.get("repetition_semantics")
+                != _PER_MEMBER_REPETITION_SEMANTICS
+                or not _has_authoritative_per_member_repetitions(request)
+            ):
+                artifact_failures.append(
+                    _replay_artifact_contract_failure(
+                        code="replay_v3_manifest_contract_invalid",
+                        summary=(
+                            "stored v3 member replay is missing per-member "
+                            "repetition semantics"
+                        ),
+                        diagnostics={
+                            "manifest_repetition_semantics": member_manifest.get(
+                                "repetition_semantics"
+                            ),
+                            "request_repetition_semantics": (
+                                request.repetition_semantics
+                            ),
+                        },
+                    )
+                )
+        elif member_schema not in _LEGACY_MEMBER_REPLAY_SCHEMAS:
+            artifact_failures.append(
+                _replay_artifact_contract_failure(
+                    code="replay_member_manifest_schema_invalid",
+                    summary="stored member replay manifest schema is unsupported",
+                    diagnostics={"schema_version": member_schema},
+                )
+            )
+        if authoritative_v3_manifest:
+            artifact_failures.extend(
+                _v3_lifecycle_contract_failures(
+                    root / "baseline",
+                    artifact_scope="root_baseline",
+                    expected_variant_id="baseline",
+                )
+            )
+            artifact_failures.extend(
+                _v3_lifecycle_contract_failures(
+                    root / _safe_path(request.candidate_id),
+                    artifact_scope="root_candidate",
+                    expected_variant_id=request.candidate_id,
+                )
+            )
         raw_members = member_manifest.get("members")
         if not isinstance(raw_members, list):
             raise ValueError("stored member replay manifest is missing members")
@@ -560,31 +1094,171 @@ def load_candidate_replay_result(replay_dir: str | Path) -> CandidateReplayResul
             relative_path = str(raw_member.get("path") or "")
             if not case_id or not relative_path:
                 raise ValueError("stored member replay entry is missing case_id or path")
-            if relative_path != _member_artifact_name(case_id):
-                raise ValueError("stored member replay path does not match case_id")
+            expected_relative_path = _member_artifact_name(case_id)
+            if relative_path != expected_relative_path:
+                artifact_failures.append(
+                    _replay_artifact_contract_failure(
+                        code="replay_member_manifest_path_mismatch",
+                        summary="stored member replay path does not match case_id",
+                        diagnostics={
+                            "case_id": case_id,
+                            "path": relative_path,
+                            "expected_path": expected_relative_path,
+                        },
+                    )
+                )
+                relative_path = expected_relative_path
             member_root = root / "members" / relative_path
             member_request = _candidate_replay_request_from_mapping(
                 _load_json_object(member_root / "request.json")
             )
+            if (
+                authoritative_v3_manifest
+                and not _has_authoritative_per_member_repetitions(member_request)
+            ):
+                artifact_failures.append(
+                    _replay_artifact_contract_failure(
+                        code="replay_v3_member_request_contract_invalid",
+                        summary=(
+                            "stored v3 member request is missing per-member "
+                            "repetition semantics"
+                        ),
+                        diagnostics={
+                            "case_id": case_id,
+                            "repetition_semantics": (
+                                member_request.repetition_semantics
+                            ),
+                        },
+                    )
+                )
+            baseline_dir = (
+                Path(member_request.baseline_replay_dir)
+                if member_request.baseline_replay_dir
+                else member_root / "baseline"
+            )
+            candidate_dir = member_root / _safe_path(request.candidate_id)
+            member_lifecycle_states = (
+                _stored_lifecycles_use_per_member_v3(baseline_dir),
+                _stored_lifecycles_use_per_member_v3(candidate_dir),
+            )
+            if any(state is False for state in member_lifecycle_states):
+                migration_required = True
+            baseline = _load_variant_result_from_dir(
+                baseline_dir,
+                base_variant_id="baseline",
+            )
+            candidate_result = _load_variant_result_from_dir(
+                candidate_dir,
+                base_variant_id=request.candidate_id,
+            )
+            if authoritative_v3_manifest:
+                baseline, failures = _validate_v3_member_variant_artifact(
+                    baseline_dir,
+                    result=baseline,
+                    requested_repetitions=member_request.baseline_repetitions,
+                    case_id=case_id,
+                    variant_role="baseline",
+                    expected_variant_id="baseline",
+                )
+                artifact_failures.extend(failures)
+                candidate_result, failures = _validate_v3_member_variant_artifact(
+                    candidate_dir,
+                    result=candidate_result,
+                    requested_repetitions=member_request.candidate_repetitions,
+                    case_id=case_id,
+                    variant_role="candidate",
+                    expected_variant_id=request.candidate_id,
+                )
+                artifact_failures.extend(failures)
+            manifest_statuses = (
+                ("baseline", raw_member.get("baseline_status"), baseline.status),
+                (
+                    "candidate",
+                    raw_member.get("candidate_status"),
+                    candidate_result.status,
+                ),
+            )
+            if authoritative_v3_manifest:
+                for variant_role, manifest_status, loaded_status in manifest_statuses:
+                    if manifest_status != loaded_status.value:
+                        artifact_failures.append(
+                            _replay_artifact_contract_failure(
+                                code="replay_v3_manifest_status_mismatch",
+                                summary=(
+                                    "stored v3 manifest status does not match "
+                                    "the member lifecycle"
+                                ),
+                                diagnostics={
+                                    "case_id": case_id,
+                                    "variant_role": variant_role,
+                                    "manifest_status": manifest_status,
+                                    "lifecycle_status": loaded_status.value,
+                                },
+                            )
+                        )
             member_results.append(
                 CandidateReplayMemberResult(
                     case_id=case_id,
                     request=member_request,
-                    baseline=_load_variant_result_from_dir(
-                        (
-                            Path(member_request.baseline_replay_dir)
-                            if member_request.baseline_replay_dir
-                            else member_root / "baseline"
-                        ),
-                        base_variant_id="baseline",
-                    ),
-                    candidate=_load_variant_result_from_dir(
-                        member_root / _safe_path(request.candidate_id),
-                        base_variant_id=request.candidate_id,
-                    ),
+                    baseline=baseline,
+                    candidate=candidate_result,
                 )
             )
         members = tuple(member_results)
+        if migration_required:
+            members = tuple(
+                replace(
+                    member,
+                    request=replace(
+                        member.request,
+                        repetition_semantics=(
+                            _MIGRATED_DISTRIBUTED_REPETITION_SEMANTICS
+                        ),
+                    ),
+                )
+                for member in members
+            )
+            # v1/v2 root counts were divided over members, and any v2
+            # lifecycle remains non-authoritative even beside a newer
+            # manifest.  Member requests are the faithful per-member view;
+            # retain a migration marker so inspection cannot become reuse.
+            baseline_counts = {
+                member.request.baseline_repetitions for member in members
+            }
+            candidate_counts = {
+                member.request.candidate_repetitions for member in members
+            }
+            if len(baseline_counts) != 1 or len(candidate_counts) != 1:
+                raise ValueError(
+                    "stored distributed member replay has inconsistent repetition counts"
+                )
+            request = replace(
+                request,
+                baseline_repetitions=next(iter(baseline_counts)),
+                candidate_repetitions=next(iter(candidate_counts)),
+                repetition_semantics=(
+                    _MIGRATED_DISTRIBUTED_REPETITION_SEMANTICS
+                ),
+            )
+        elif artifact_failures:
+            request = replace(
+                request,
+                repetition_semantics=(
+                    _NON_AUTHORITATIVE_V3_REPETITION_SEMANTICS
+                ),
+            )
+            members = tuple(
+                replace(
+                    member,
+                    request=replace(
+                        member.request,
+                        repetition_semantics=(
+                            _NON_AUTHORITATIVE_V3_REPETITION_SEMANTICS
+                        ),
+                    ),
+                )
+                for member in members
+            )
         baseline = _aggregate_member_variant_results(
             base_variant_id="baseline",
             members=members,
@@ -599,18 +1273,356 @@ def load_candidate_replay_result(replay_dir: str | Path) -> CandidateReplayResul
             artifact_dir=root / _safe_path(request.candidate_id),
             persist=False,
         )
+        if authoritative_v3_manifest:
+            artifact_failures.extend(
+                _validate_v3_root_aggregate_artifact(
+                    root / "baseline",
+                    expected=baseline,
+                    variant_role="baseline",
+                )
+            )
+            artifact_failures.extend(
+                _validate_v3_root_aggregate_artifact(
+                    root / _safe_path(request.candidate_id),
+                    expected=candidate,
+                    variant_role="candidate",
+                )
+            )
+        if (
+            artifact_failures
+            and not migration_required
+            and _has_authoritative_per_member_repetitions(request)
+        ):
+            request = replace(
+                request,
+                repetition_semantics=(
+                    _NON_AUTHORITATIVE_V3_REPETITION_SEMANTICS
+                ),
+            )
+            members = tuple(
+                replace(
+                    member,
+                    request=replace(
+                        member.request,
+                        repetition_semantics=(
+                            _NON_AUTHORITATIVE_V3_REPETITION_SEMANTICS
+                        ),
+                    ),
+                )
+                for member in members
+            )
         return CandidateReplayResult(
             request=request,
             baseline=baseline,
             candidate=candidate,
             member_results=members,
+            artifact_failure_events=tuple(artifact_failures),
         )
     baseline = _load_variant_result_from_dir(root / "baseline", base_variant_id="baseline")
     candidate = _load_variant_result_from_dir(
         root / _safe_path(request.candidate_id),
         base_variant_id=request.candidate_id,
     )
-    return CandidateReplayResult(request=request, baseline=baseline, candidate=candidate)
+    artifact_failures: tuple[ReplayFailureEvent, ...] = ()
+    if lifecycle_is_per_member_v3 is False:
+        request = replace(
+            request,
+            repetition_semantics=_MIGRATED_DISTRIBUTED_REPETITION_SEMANTICS,
+        )
+    elif _has_authoritative_per_member_repetitions(request):
+        artifact_failures = (
+            _replay_artifact_contract_failure(
+                code="replay_v3_member_manifest_missing",
+                summary=(
+                    "authoritative v3 replay requires an explicit member manifest"
+                ),
+                diagnostics={"replay_dir": str(root)},
+            ),
+        )
+        request = replace(
+            request,
+            repetition_semantics=_NON_AUTHORITATIVE_V3_REPETITION_SEMANTICS,
+        )
+    return CandidateReplayResult(
+        request=request,
+        baseline=baseline,
+        candidate=candidate,
+        artifact_failure_events=artifact_failures,
+    )
+
+
+def _stored_lifecycles_use_per_member_v3(root: Path) -> bool | None:
+    """Return v3 proof, explicit legacy evidence, or no lifecycle signal."""
+
+    lifecycle_paths = tuple(root.rglob("lifecycle.json"))
+    if not lifecycle_paths:
+        return None
+    for path in lifecycle_paths:
+        lifecycle = _load_json_object(path)
+        if (
+            lifecycle.get("schema_version") != _REPLAY_LIFECYCLE_SCHEMA_V3
+            or lifecycle.get("repetition_semantics")
+            != _PER_MEMBER_REPETITION_SEMANTICS
+        ):
+            return False
+    return True
+
+
+def _replay_artifact_contract_failure(
+    *,
+    code: str,
+    summary: str,
+    diagnostics: Mapping[str, Any],
+) -> ReplayFailureEvent:
+    return _normalization_failure(
+        code=code,
+        summary=summary,
+        diagnostics=diagnostics,
+    )
+
+
+def _v3_lifecycle_contract_failures(
+    variant_dir: Path,
+    *,
+    artifact_scope: str,
+    expected_variant_id: str,
+) -> tuple[ReplayFailureEvent, ...]:
+    lifecycle_path = variant_dir / "lifecycle.json"
+    diagnostics: dict[str, Any] = {
+        "artifact_scope": artifact_scope,
+        "artifact_dir": str(variant_dir),
+        "expected_variant_id": expected_variant_id,
+    }
+    if not lifecycle_path.is_file():
+        return (
+            _replay_artifact_contract_failure(
+                code="replay_v3_lifecycle_missing",
+                summary="authoritative v3 replay lifecycle is missing",
+                diagnostics=diagnostics,
+            ),
+        )
+    try:
+        lifecycle = _load_json_object(lifecycle_path)
+    except (ValueError, json.JSONDecodeError, OSError) as exc:
+        return (
+            _replay_artifact_contract_failure(
+                code="replay_v3_lifecycle_invalid",
+                summary="authoritative v3 replay lifecycle is unreadable",
+                diagnostics={**diagnostics, "error_type": type(exc).__name__},
+            ),
+        )
+    mismatches: dict[str, Any] = {}
+    if lifecycle.get("schema_version") != _REPLAY_LIFECYCLE_SCHEMA_V3:
+        mismatches["schema_version"] = lifecycle.get("schema_version")
+    if lifecycle.get("repetition_semantics") != _PER_MEMBER_REPETITION_SEMANTICS:
+        mismatches["repetition_semantics"] = lifecycle.get(
+            "repetition_semantics"
+        )
+    if lifecycle.get("variant_id") != expected_variant_id:
+        mismatches["variant_id"] = lifecycle.get("variant_id")
+    if not mismatches:
+        return ()
+    return (
+        _replay_artifact_contract_failure(
+            code="replay_v3_lifecycle_contract_invalid",
+            summary="stored replay lifecycle violates the v3 authority contract",
+            diagnostics={**diagnostics, "mismatches": mismatches},
+        ),
+    )
+
+
+def _validate_v3_member_variant_artifact(
+    variant_dir: Path,
+    *,
+    result: ReplayVariantResult,
+    requested_repetitions: int,
+    case_id: str,
+    variant_role: str,
+    expected_variant_id: str,
+) -> tuple[ReplayVariantResult, tuple[ReplayFailureEvent, ...]]:
+    failures: list[ReplayFailureEvent] = list(
+        _v3_lifecycle_contract_failures(
+            variant_dir,
+            artifact_scope=f"member_{variant_role}",
+            expected_variant_id=expected_variant_id,
+        )
+    )
+    repetition_dirs = tuple(_stored_repetition_dirs(variant_dir))
+    actual_child_names = tuple(path.name for path in repetition_dirs)
+    expected_child_names = (
+        tuple(str(index) for index in range(1, requested_repetitions + 1))
+        if result.executed and requested_repetitions > 1
+        else ()
+    )
+    duplicate_indexes = tuple(
+        sorted(
+            index
+            for index in {int(name) for name in actual_child_names}
+            if sum(int(name) == index for name in actual_child_names) > 1
+        )
+    )
+    if actual_child_names != expected_child_names or duplicate_indexes:
+        failures.append(
+            _replay_artifact_contract_failure(
+                code="replay_v3_repetition_children_invalid",
+                summary=(
+                    "stored v3 repetition children do not match the member request"
+                ),
+                diagnostics={
+                    "case_id": case_id,
+                    "variant_role": variant_role,
+                    "requested_repetitions": requested_repetitions,
+                    "expected_children": expected_child_names,
+                    "actual_children": actual_child_names,
+                    "duplicate_indexes": duplicate_indexes,
+                },
+            )
+        )
+    for index, child_dir in enumerate(repetition_dirs, start=1):
+        expected_child_variant_id = (
+            f"{expected_variant_id}-{index}"
+            if requested_repetitions > 1
+            else expected_variant_id
+        )
+        failures.extend(
+            _v3_lifecycle_contract_failures(
+                child_dir,
+                artifact_scope=f"member_{variant_role}_repetition",
+                expected_variant_id=expected_child_variant_id,
+            )
+        )
+
+    physical_results = (
+        result.repetition_results
+        if requested_repetitions > 1
+        else ((result,) if result.executed else ())
+    )
+    actual_counts = {
+        "repetition_count": len(physical_results),
+        "successful_repetition_count": sum(
+            item.status is ReplayExecutionStatus.SUCCEEDED
+            for item in physical_results
+        ),
+        "failed_repetition_count": sum(
+            item.status is ReplayExecutionStatus.FAILED
+            for item in physical_results
+        ),
+        "blocked_repetition_count": sum(
+            item.status is ReplayExecutionStatus.BLOCKED
+            for item in physical_results
+        ),
+        "not_run_repetition_count": sum(
+            item.status is ReplayExecutionStatus.NOT_RUN
+            for item in physical_results
+        ),
+    }
+    aggregate_mismatches = {
+        key: {"reported": result.metrics.get(key), "actual": actual}
+        for key, actual in actual_counts.items()
+        if (result.executed or key in result.metrics)
+        and result.metrics.get(key) != actual
+    }
+    expected_actual_count = requested_repetitions if result.executed else 0
+    if actual_counts["repetition_count"] != expected_actual_count:
+        aggregate_mismatches["requested_repetitions"] = {
+            "reported": requested_repetitions,
+            "actual": actual_counts["repetition_count"],
+        }
+    if aggregate_mismatches:
+        failures.append(
+            _replay_artifact_contract_failure(
+                code="replay_v3_repetition_count_mismatch",
+                summary=(
+                    "stored v3 aggregate counts do not match physical repetitions"
+                ),
+                diagnostics={
+                    "case_id": case_id,
+                    "variant_role": variant_role,
+                    "mismatches": aggregate_mismatches,
+                },
+            )
+        )
+    canonical_metrics = {**dict(result.metrics), **actual_counts}
+    return (
+        replace(result, metrics=canonical_metrics),
+        tuple(failures),
+    )
+
+
+def _validate_v3_root_aggregate_artifact(
+    variant_dir: Path,
+    *,
+    expected: ReplayVariantResult,
+    variant_role: str,
+) -> tuple[ReplayFailureEvent, ...]:
+    failures: list[ReplayFailureEvent] = []
+    try:
+        lifecycle = _load_json_object(variant_dir / "lifecycle.json")
+    except (FileNotFoundError, ValueError, json.JSONDecodeError, OSError):
+        # Exact lifecycle diagnostics are emitted separately.
+        return ()
+    lifecycle_status = lifecycle.get("status")
+    if lifecycle_status != expected.status.value:
+        failures.append(
+            _replay_artifact_contract_failure(
+                code="replay_v3_root_lifecycle_status_mismatch",
+                summary=(
+                    "stored v3 root lifecycle status does not match its members"
+                ),
+                diagnostics={
+                    "variant_role": variant_role,
+                    "lifecycle_status": lifecycle_status,
+                    "member_aggregate_status": expected.status.value,
+                },
+            )
+        )
+    aggregate_path = variant_dir / "aggregate_metrics.json"
+    try:
+        aggregate_metrics = _load_json_object(aggregate_path)
+    except (FileNotFoundError, ValueError, json.JSONDecodeError, OSError) as exc:
+        return (
+            *failures,
+            _replay_artifact_contract_failure(
+                code="replay_v3_root_aggregate_metrics_missing",
+                summary="stored v3 root aggregate metrics are missing or unreadable",
+                diagnostics={
+                    "variant_role": variant_role,
+                    "error_type": type(exc).__name__,
+                },
+            ),
+        )
+    generated_keys = (
+        "member_count",
+        "successful_member_count",
+        "failed_member_count",
+        "blocked_member_count",
+        "not_run_member_count",
+        "repetition_count",
+        "successful_repetition_count",
+        "failed_repetition_count",
+    )
+    mismatches = {
+        key: {
+            "reported": aggregate_metrics.get(key),
+            "actual": expected.metrics.get(key),
+        }
+        for key in generated_keys
+        if aggregate_metrics.get(key) != expected.metrics.get(key)
+    }
+    if mismatches:
+        failures.append(
+            _replay_artifact_contract_failure(
+                code="replay_v3_root_aggregate_metrics_mismatch",
+                summary=(
+                    "stored v3 root aggregate metrics do not match member results"
+                ),
+                diagnostics={
+                    "variant_role": variant_role,
+                    "mismatches": mismatches,
+                },
+            )
+        )
+    return tuple(failures)
 
 
 @dataclass(frozen=True)
@@ -832,6 +1844,22 @@ def _preserve_replay_service_protocol_trace(
     return True
 
 
+def _reset_replay_service_protocol_trace(source: Path) -> None:
+    """Separate framework preflight traffic from task-rollout exposure.
+
+    Protocol probes prove that a candidate runtime is valid, but they are not
+    evidence that the replayed task exercised that intervention. Clearing the
+    bounded trace after preflight lets later causal attribution distinguish the
+    two without retaining payloads or changing the runtime protocol.
+    """
+
+    if source.is_symlink():
+        raise ReplayServiceProtocolError(
+            "skill runtime protocol_trace.jsonl cannot be a symlink"
+        )
+    source.write_text("", encoding="utf-8")
+
+
 def _validate_replay_service_protocol_trace(trace_path: Path) -> None:
     """Validate the candidate-owned, protocol-neutral replay trace contract."""
 
@@ -884,14 +1912,53 @@ def _validate_replay_service_protocol_trace(trace_path: Path) -> None:
         if missing:
             raise ReplayServiceProtocolError(
                 "skill runtime protocol_trace.jsonl record is missing required "
-                f"summary fields: {', '.join(missing)}"
+                f"summary fields: {', '.join(missing)}",
+                code="protocol_trace_schema_field_validation_failed",
+                details=schema_field_diagnostic_details(
+                    tuple(
+                        SchemaFieldViolation.create(
+                            SchemaFieldRepairConstraint(
+                                schema_layer="protocol_trace",
+                                field_path=f"records[*].{field_name}",
+                                rule="required",
+                            ),
+                            None,
+                        )
+                        for field_name in missing
+                    )
+                ),
             )
-        if not isinstance(record.get("fields"), list) or not isinstance(
-            record.get("correlation"), Mapping
-        ):
+        type_violations: list[SchemaFieldViolation] = []
+        if not isinstance(record.get("fields"), list):
+            type_violations.append(
+                SchemaFieldViolation.create(
+                    SchemaFieldRepairConstraint(
+                        schema_layer="protocol_trace",
+                        field_path="records[*].fields",
+                        rule="type",
+                        expected=("array",),
+                    ),
+                    record.get("fields"),
+                )
+            )
+        if not isinstance(record.get("correlation"), Mapping):
+            type_violations.append(
+                SchemaFieldViolation.create(
+                    SchemaFieldRepairConstraint(
+                        schema_layer="protocol_trace",
+                        field_path="records[*].correlation",
+                        rule="type",
+                        expected=("object",),
+                    ),
+                    record.get("correlation"),
+                )
+            )
+        if type_violations:
             raise ReplayServiceProtocolError(
                 "skill runtime protocol_trace.jsonl fields must be a list and "
-                "correlation must be an object"
+                "correlation must be an object",
+                code="protocol_trace_schema_field_validation_failed",
+                details=schema_field_diagnostic_details(type_violations),
             )
         direction = str(record.get("direction") or "").strip().lower()
         if direction in {"in", "inbound", "received", "receive", "recv"}:
@@ -901,7 +1968,33 @@ def _validate_replay_service_protocol_trace(trace_path: Path) -> None:
         else:
             raise ReplayServiceProtocolError(
                 "skill runtime protocol_trace.jsonl direction must describe a "
-                "received or emitted interaction"
+                "received or emitted interaction",
+                code="protocol_trace_schema_field_validation_failed",
+                details=schema_field_diagnostic_details(
+                    (
+                        SchemaFieldViolation.create(
+                            SchemaFieldRepairConstraint(
+                                schema_layer="protocol_trace",
+                                field_path="records[*].direction",
+                                rule="enum",
+                                expected=(
+                                    "in",
+                                    "inbound",
+                                    "received",
+                                    "receive",
+                                    "recv",
+                                    "out",
+                                    "outbound",
+                                    "emitted",
+                                    "emit",
+                                    "send",
+                                    "sent",
+                                ),
+                            ),
+                            record.get("direction"),
+                        ),
+                    )
+                ),
             )
         record_count += 1
     if record_count == 0:
@@ -954,13 +2047,13 @@ def _attach_replay_service_protocol_diagnostics(
     *,
     artifact_dir: Path,
 ) -> ReplayExecutionResult:
-    if result.failure is None:
-        return result
     traces = _replay_service_protocol_diagnostics(artifact_dir)
     if not traces:
         return result
-    failure = dict(result.failure)
-    current_diagnostics = failure.get("diagnostics")
+    failure = dict(result.failure) if result.failure is not None else None
+    current_diagnostics = (
+        failure.get("diagnostics") if failure is not None else None
+    )
     diagnostics = (
         dict(current_diagnostics)
         if isinstance(current_diagnostics, Mapping)
@@ -975,8 +2068,9 @@ def _attach_replay_service_protocol_diagnostics(
     for trace in traces:
         if trace not in combined:
             combined.append(trace)
-    diagnostics["replay_service_protocol_traces"] = combined[:4]
-    failure["diagnostics"] = diagnostics
+    if failure is not None:
+        diagnostics["replay_service_protocol_traces"] = combined[:4]
+        failure["diagnostics"] = diagnostics
     return replace(
         result,
         failure=failure,
@@ -1167,6 +2261,11 @@ class AWorldCliCandidateReplayBackend:
         candidate: CandidateVariant,
         dataset: SelfEvolveDataset,
     ) -> CandidateReplayResult:
+        if not _has_authoritative_per_member_repetitions(request):
+            raise ValueError(
+                "candidate replay execution requires explicit per-member "
+                "repetition semantics"
+            )
         replay_dir = (
             Path(request.workspace_root)
             / ".aworld"
@@ -1193,124 +2292,144 @@ class AWorldCliCandidateReplayBackend:
             f"candidate_repetitions={request.candidate_repetitions}"
         )
 
-        if len(replay_cases) == 1 and len(dataset.cases) == 1:
-            member = await self._replay_member(
+        members_root = replay_dir / "members"
+        member_items: list[CandidateReplayMemberResult] = []
+        member_baseline_repetitions = _distributed_member_repetitions(
+            request.baseline_repetitions,
+            member_count=len(replay_cases),
+        )
+        member_candidate_repetitions = _distributed_member_repetitions(
+            request.candidate_repetitions,
+            member_count=len(replay_cases),
+        )
+        candidate_blocking_event: ReplayFailureEvent | None = None
+        prepared_members: list[tuple[EvalCase, CandidateReplayRequest, Path]] = []
+        for case in replay_cases:
+            adapted_task_input = _adapted_task_input(request, case)
+            member_request = replace(
                 request,
-                candidate=candidate,
-                replay_dir=replay_dir,
+                task_id=case.case_id,
+                task_input=adapted_task_input,
+                task_input_fingerprint=_adapted_task_input_fingerprint(request, case),
+                baseline_replay_dir=_member_baseline_replay_dir(
+                    request.baseline_replay_dir,
+                    case.case_id,
+                ),
+                baseline_repetitions=member_baseline_repetitions,
+                candidate_repetitions=member_candidate_repetitions,
             )
-            baseline = member.baseline
-            candidate_result = member.candidate
-            member_results: tuple[CandidateReplayMemberResult, ...] = ()
-        else:
-            members_root = replay_dir / "members"
-            member_items: list[CandidateReplayMemberResult] = []
-            prepared_members: list[
-                tuple[CandidateReplayRequest, Path, ReplayVariantResult]
-            ] = []
-            member_baseline_repetitions = _distributed_member_repetitions(
-                request.baseline_repetitions,
-                member_count=len(replay_cases),
-            )
-            member_candidate_repetitions = _distributed_member_repetitions(
-                request.candidate_repetitions,
-                member_count=len(replay_cases),
-            )
-            baseline_infrastructure_failure_case_id: str | None = None
-            for case in replay_cases:
-                adapted_task_input = _adapted_task_input(request, case)
-                member_request = replace(
-                    request,
-                    task_id=case.case_id,
-                    task_input=adapted_task_input,
-                    task_input_fingerprint=_adapted_task_input_fingerprint(
-                        request,
-                        case,
-                    ),
-                    baseline_replay_dir=_member_baseline_replay_dir(
-                        request.baseline_replay_dir,
-                        case.case_id,
-                    ),
-                    baseline_repetitions=member_baseline_repetitions,
-                    candidate_repetitions=member_candidate_repetitions,
-                )
-                member_dir = members_root / _member_artifact_name(case.case_id)
-                member_dir.mkdir(parents=True, exist_ok=True)
-                _write_json(member_dir / "request.json", member_request)
-                if baseline_infrastructure_failure_case_id is not None:
-                    baseline = _baseline_preflight_aborted_result(
-                        blocked_by_case_id=(
-                            baseline_infrastructure_failure_case_id
-                        ),
-                    )
-                else:
-                    baseline = await self._load_or_run_baseline(
-                        member_request,
-                        candidate=candidate,
-                        replay_dir=member_dir,
-                    )
-                    if (
-                        not baseline.succeeded
-                        and _replay_failure_outcome(baseline.failure)
-                        == "infrastructure_failure"
-                    ):
-                        baseline_infrastructure_failure_case_id = case.case_id
-                prepared_members.append((member_request, member_dir, baseline))
+            member_dir = members_root / _member_artifact_name(case.case_id)
+            member_dir.mkdir(parents=True, exist_ok=True)
+            _write_json(member_dir / "request.json", member_request)
+            prepared_members.append((case, member_request, member_dir))
 
-            baseline_preflight_failed = any(
-                not baseline.succeeded
-                and _replay_failure_outcome(baseline.failure)
-                == "infrastructure_failure"
-                for _, _, baseline in prepared_members
-            )
-            for member_request, member_dir, baseline in prepared_members:
-                if baseline_preflight_failed:
-                    candidate_result = _baseline_preflight_skipped_candidate_result(
-                        candidate.candidate_id
-                    )
-                else:
-                    candidate_result = await self._run_repetitions(
-                        member_request,
-                        base_variant_id=candidate.candidate_id,
-                        skill_root=member_request.overlay_skill_root,
-                        artifact_dir=member_dir / _safe_path(candidate.candidate_id),
-                        repetitions=member_request.candidate_repetitions,
-                    )
-                member_items.append(
-                    CandidateReplayMemberResult(
-                        case_id=member_request.task_id,
-                        request=member_request,
-                        baseline=baseline,
-                        candidate=candidate_result,
-                    )
+        baselines: list[ReplayVariantResult] = []
+        for _, member_request, member_dir in prepared_members:
+            if candidate_blocking_event is not None:
+                baseline = _blocked_variant_result(
+                    "baseline", blocked_by=candidate_blocking_event
                 )
-            member_results = tuple(member_items)
-            _write_json(
-                members_root / "manifest.json",
-                {
-                    "schema_version": "aworld.self_evolve.member_replay.v1",
-                    "members": [
-                        {
-                            "case_id": member.case_id,
-                            "path": _member_artifact_name(member.case_id),
-                            "succeeded": member.succeeded,
-                        }
-                        for member in member_results
-                    ],
-                },
+                _persist_variant_lifecycle(member_dir / "baseline", baseline)
+            else:
+                baseline = await self._load_or_run_baseline(
+                    member_request,
+                    candidate=candidate,
+                    replay_dir=member_dir,
+                )
+                if (
+                    baseline.status is ReplayExecutionStatus.FAILED
+                    and _baseline_failure_blocks_candidate(baseline.failure)
+                ):
+                    assert baseline.failure is not None
+                    if baseline.failure.scope in {
+                        FailureScope.CANDIDATE,
+                        FailureScope.SHARED_RUN,
+                    }:
+                        candidate_blocking_event = baseline.failure
+            baselines.append(baseline)
+
+        for (case, member_request, member_dir), baseline in zip(
+            prepared_members, baselines, strict=True
+        ):
+            blocking_event = candidate_blocking_event
+            if (
+                baseline.status is ReplayExecutionStatus.FAILED
+                and _baseline_failure_blocks_candidate(baseline.failure)
+            ):
+                assert baseline.failure is not None
+                blocking_event = baseline.failure
+            if blocking_event is not None:
+                candidate_result = _blocked_variant_result(
+                    candidate.candidate_id, blocked_by=blocking_event
+                )
+                _persist_variant_lifecycle(
+                    member_dir / _safe_path(candidate.candidate_id), candidate_result
+                )
+            else:
+                candidate_result = await self._run_repetitions(
+                    member_request,
+                    base_variant_id=candidate.candidate_id,
+                    skill_root=member_request.overlay_skill_root,
+                    artifact_dir=member_dir / _safe_path(candidate.candidate_id),
+                    repetitions=member_request.candidate_repetitions,
+                )
+                if (
+                    candidate_result.status is ReplayExecutionStatus.FAILED
+                    and candidate_result.failure is not None
+                    and candidate_result.failure.scope in {
+                        FailureScope.CANDIDATE,
+                        FailureScope.SHARED_RUN,
+                    }
+                    and candidate_result.failure.stage
+                    is not FailureStage.TASK_ROLLOUT
+                ):
+                    candidate_blocking_event = candidate_result.failure
+            member_items.append(
+                CandidateReplayMemberResult(
+                    case_id=case.case_id,
+                    request=member_request,
+                    baseline=baseline,
+                    candidate=candidate_result,
+                )
             )
-            baseline = _aggregate_member_variant_results(
-                base_variant_id="baseline",
-                members=member_results,
-                select=lambda member: member.baseline,
-                artifact_dir=replay_dir / "baseline",
-            )
-            candidate_result = _aggregate_member_variant_results(
-                base_variant_id=candidate.candidate_id,
-                members=member_results,
-                select=lambda member: member.candidate,
-                artifact_dir=replay_dir / _safe_path(candidate.candidate_id),
-            )
+        member_results = tuple(member_items)
+        _write_json(
+            members_root / "manifest.json",
+            {
+                "schema_version": _MEMBER_REPLAY_SCHEMA_V3,
+                "repetition_semantics": _PER_MEMBER_REPETITION_SEMANTICS,
+                "members": [
+                    {
+                        "case_id": member.case_id,
+                        "path": _member_artifact_name(member.case_id),
+                        "baseline_status": member.baseline.status,
+                        "candidate_status": member.candidate.status,
+                        "blocked_by": list(
+                            dict.fromkeys(
+                                event.event_id
+                                for event in (
+                                    *member.baseline.blocked_by,
+                                    *member.candidate.blocked_by,
+                                )
+                            )
+                        ),
+                    }
+                    for member in member_results
+                ],
+            },
+        )
+        baseline = _aggregate_member_variant_results(
+            base_variant_id="baseline",
+            members=member_results,
+            select=lambda member: member.baseline,
+            artifact_dir=replay_dir / "baseline",
+        )
+        candidate_result = _aggregate_member_variant_results(
+            base_variant_id=candidate.candidate_id,
+            members=member_results,
+            select=lambda member: member.candidate,
+            artifact_dir=replay_dir / _safe_path(candidate.candidate_id),
+        )
         logger.info(
             "self_evolve.replay.end "
             f"run_id={request.run_id} task_id={request.task_id} "
@@ -1322,39 +2441,6 @@ class AWorldCliCandidateReplayBackend:
             baseline=baseline,
             candidate=candidate_result,
             member_results=member_results,
-        )
-
-    async def _replay_member(
-        self,
-        request: CandidateReplayRequest,
-        *,
-        candidate: CandidateVariant,
-        replay_dir: Path,
-    ) -> CandidateReplayMemberResult:
-        baseline = await self._load_or_run_baseline(
-            request,
-            candidate=candidate,
-            replay_dir=replay_dir,
-        )
-        if not baseline.succeeded and _baseline_failure_blocks_candidate(
-            baseline.failure
-        ):
-            candidate_result = _baseline_preflight_skipped_candidate_result(
-                candidate.candidate_id
-            )
-        else:
-            candidate_result = await self._run_repetitions(
-                request,
-                base_variant_id=candidate.candidate_id,
-                skill_root=request.overlay_skill_root,
-                artifact_dir=replay_dir / _safe_path(candidate.candidate_id),
-                repetitions=request.candidate_repetitions,
-            )
-        return CandidateReplayMemberResult(
-            case_id=request.task_id,
-            request=request,
-            baseline=baseline,
-            candidate=candidate_result,
         )
 
     async def _load_or_run_baseline(
@@ -1785,6 +2871,9 @@ class AWorldCliCandidateReplayBackend:
         if status == "succeeded" and not execution_result.trajectory:
             status = "failed"
             failure = {
+                "code": "trajectory_capture_unavailable",
+                "outcome": "framework_failure",
+                "failure_stage": "evaluation",
                 "reason": "trajectory_capture_unavailable",
                 "detail": "replay executor succeeded but did not return trajectory evidence",
             }
@@ -1799,18 +2888,35 @@ class AWorldCliCandidateReplayBackend:
         stderr_path.write_text(execution_result.stderr, encoding="utf-8")
         _write_json(artifact_dir / "metrics.json", metrics)
         _write_json(artifact_dir / "trajectory.json", execution_result.trajectory)
-        if failure is not None:
-            _write_json(artifact_dir / "failure.json", failure)
-
-        return ReplayVariantResult(
+        if status not in {
+            ReplayExecutionStatus.SUCCEEDED.value,
+            ReplayExecutionStatus.FAILED.value,
+        }:
+            status = ReplayExecutionStatus.FAILED.value
+            failure = {
+                "type": "ReplayExecutionContractError",
+                "reason": "replay executor returned an unsupported execution status",
+            }
+        failure_event = (
+            _execution_failure_event(
+                failure,
+                default_stage=FailureStage.TASK_ROLLOUT,
+                service_preflight=service_failure is not None,
+            )
+            if status == ReplayExecutionStatus.FAILED.value
+            else None
+        )
+        result = ReplayVariantResult(
             variant_id=variant_id,
             status=status,
             trajectory=execution_result.trajectory,
             metrics=metrics,
             stdout_path=str(stdout_path),
             stderr_path=str(stderr_path),
-            failure=failure,
+            failure=failure_event,
         )
+        _persist_variant_lifecycle(artifact_dir, result)
+        return result
 
 
 def _stored_baseline_matches_request(request: CandidateReplayRequest) -> bool:
@@ -1836,6 +2942,11 @@ def _stored_baseline_matches_request(request: CandidateReplayRequest) -> bool:
         return False
     if stored.task_id != request.task_id:
         return False
+    if not (
+        _has_authoritative_per_member_repetitions(request)
+        and _has_authoritative_per_member_repetitions(stored)
+    ):
+        return False
     if (
         stored.target.target_type != request.target.target_type
         or stored.target.target_id != request.target.target_id
@@ -1854,6 +2965,16 @@ def _stored_baseline_matches_request(request: CandidateReplayRequest) -> bool:
             base_variant_id="baseline",
         )
     except (FileNotFoundError, ValueError, json.JSONDecodeError, OSError):
+        return False
+    baseline, artifact_failures = _validate_v3_member_variant_artifact(
+        Path(request.baseline_replay_dir),
+        result=baseline,
+        requested_repetitions=request.baseline_repetitions,
+        case_id=request.task_id,
+        variant_role="baseline",
+        expected_variant_id="baseline",
+    )
+    if artifact_failures:
         return False
     return (
         baseline.succeeded
@@ -2933,10 +4054,40 @@ async def _start_replay_services(
     artifact_dir: Path,
     required_nonempty_probe_operations: Sequence[str] = (),
     required_recorded_probe_operations: Sequence[str] = (),
+    integrity_capability: FrozenReplayCapability | None = None,
 ) -> _ReplayServiceSession:
     if not capability.ready or not capability.deterministic:
         raise ValueError("skill-owned replay capability is not ready")
-    verify_frozen_replay_capability(capability)
+    if integrity_capability is None:
+        verify_frozen_replay_capability(capability)
+    else:
+        verify_frozen_replay_capability(integrity_capability)
+        if (
+            capability.capability_id != integrity_capability.capability_id
+            or capability.capability_package_fingerprint
+            != integrity_capability.capability_package_fingerprint
+            or Path(capability.frozen_root).expanduser().resolve()
+            != Path(integrity_capability.frozen_root).expanduser().resolve()
+            or not capability.services
+            or any(
+                not any(
+                    replace(
+                        service,
+                        protocol_probes=original.protocol_probes,
+                    )
+                    == original
+                    and all(
+                        probe in original.protocol_probes
+                        for probe in service.protocol_probes
+                    )
+                    for original in integrity_capability.services
+                )
+                for service in capability.services
+            )
+        ):
+            raise ValueError(
+                "replay execution projection is not a subset of its verified capability"
+            )
     source_frozen_root = Path(capability.frozen_root).expanduser().resolve()
     if not (source_frozen_root / "runtime").is_dir() or not (
         source_frozen_root / "fixtures"
@@ -3177,9 +4328,11 @@ async def _start_replay_services(
                         ),
                     )
                 if service.transport == "skill_runtime":
-                    _validate_replay_service_protocol_trace(
+                    protocol_trace = (
                         service_scratch / _REPLAY_SERVICE_PROTOCOL_TRACE_NAME
                     )
+                    _validate_replay_service_protocol_trace(protocol_trace)
+                    _reset_replay_service_protocol_trace(protocol_trace)
             except Exception as exc:
                 raise _replay_service_failure_with_stderr(
                     exc,
@@ -3204,6 +4357,7 @@ async def preflight_frozen_replay_capability(
     artifact_dir: str | Path,
     required_nonempty_probe_operations: Sequence[str] = (),
     required_recorded_probe_operations: Sequence[str] = (),
+    integrity_capability: FrozenReplayCapability | None = None,
 ) -> Mapping[str, str]:
     """Start a frozen capability, execute every declared probe, then stop it.
 
@@ -3219,6 +4373,7 @@ async def preflight_frozen_replay_capability(
         artifact_dir=resolved_artifact_dir,
         required_nonempty_probe_operations=required_nonempty_probe_operations,
         required_recorded_probe_operations=required_recorded_probe_operations,
+        integrity_capability=integrity_capability,
     )
     try:
         return dict(session.endpoints)
@@ -3774,7 +4929,15 @@ def _replay_service_failure_with_stderr(
         return exc
     message = f"{exc}; service stderr: {stderr}"
     if isinstance(exc, ReplayServiceProtocolError):
-        return ReplayServiceProtocolError(message)
+        # Stderr enrichment is a presentation concern and must not erase the
+        # validator's executable diagnostic contract.  Preflight consumes the
+        # structured code/details to merge newly observed schema constraints
+        # into causal feedback for the next repair candidate.
+        return ReplayServiceProtocolError(
+            message,
+            code=exc.code,
+            details=exc.details,
+        )
     if isinstance(exc, TimeoutError):
         return TimeoutError(message)
     if isinstance(exc, RuntimeError):
@@ -3882,7 +5045,18 @@ async def _wait_for_replay_service(
 
 
 class ReplayServiceProtocolError(OSError):
-    pass
+    """Candidate-owned protocol error with optional payload-free diagnostics."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str | None = None,
+        details: Mapping[str, object] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.code = code
+        self.details = dict(details or {})
 
 
 def _probe_replay_service(
@@ -4185,14 +5359,11 @@ def _validate_websocket_handshake_response(
         )
         != expected_accept
     ):
-        response_preview = sanitize_text(
-            response.decode("utf-8", errors="replace"),
-            max_chars=180,
-        ).replace("\n", " ")
         raise ReplayServiceProtocolError(
             "advertised WebSocket handshake failed: "
             f"response_bytes={len(response)} "
-            f"response_preview={response_preview}"
+            f"response_sha256={hashlib.sha256(response).hexdigest()} "
+            f"response_shape={_protocol_payload_shape(response)}"
         )
 
 
@@ -4429,22 +5600,14 @@ def _protocol_probe_response_mismatch(
     diagnostic_recorded_response_values: Sequence[str] = (),
 ) -> str:
     expected_bytes = expected.encode("utf-8")
-    preview_bytes = (
+    payload_bytes = (
         response.partition(b"\r\n\r\n")[2]
         if kind == "http" and b"\r\n\r\n" in response
         else response
     )
-    preview = sanitize_text(
-        preview_bytes.decode("utf-8", errors="replace"),
-        max_chars=240,
-    ).replace("\n", " ")
-    expected_preview = sanitize_text(
-        expected,
-        max_chars=120,
-    ).replace("\n", " ")
     selector_drift = _recorded_response_selector_drift(
         expected=expected,
-        response=preview_bytes,
+        response=payload_bytes,
         recorded_response_values=diagnostic_recorded_response_values,
     )
     classification = (
@@ -4460,11 +5623,42 @@ def _protocol_probe_response_mismatch(
         "match=substring "
         f"expected_sha256={hashlib.sha256(expected_bytes).hexdigest()} "
         f"expected_bytes={len(expected_bytes)} "
-        f"expected_preview={expected_preview} "
+        f"expected_shape={_protocol_payload_shape(expected_bytes)} "
         f"response_bytes={len(response)} "
-        f"response_preview={preview}"
+        f"response_payload_bytes={len(payload_bytes)} "
+        f"response_sha256={hashlib.sha256(payload_bytes).hexdigest()} "
+        f"response_shape={_protocol_payload_shape(payload_bytes)}"
         f"{classification}"
     )
+
+
+def _protocol_payload_shape(payload: bytes) -> str:
+    """Return a content-free, single-token protocol payload classification."""
+
+    if not payload:
+        return "empty"
+    try:
+        text = payload.decode("utf-8")
+    except UnicodeDecodeError:
+        return "binary"
+    stripped = text.strip()
+    if not stripped:
+        return "utf8_whitespace"
+    try:
+        decoded = json.loads(stripped)
+    except json.JSONDecodeError:
+        return "utf8_text"
+    if isinstance(decoded, Mapping):
+        return "json_object"
+    if isinstance(decoded, list):
+        return "json_array"
+    if isinstance(decoded, str):
+        return "json_string"
+    if isinstance(decoded, bool):
+        return "json_boolean"
+    if decoded is None:
+        return "json_null"
+    return "json_number"
 
 
 def _recorded_response_selector_drift(
@@ -4771,7 +5965,20 @@ def _legacy_member_replay_dir(root: Path, case_id: str) -> Path | None:
 def _distributed_member_repetitions(repetitions: int, *, member_count: int) -> int:
     if member_count <= 0:
         raise ValueError("member_count must be positive")
-    return max(1, (max(1, repetitions) + member_count - 1) // member_count)
+    if repetitions <= 0:
+        raise ValueError("replay repetitions must be positive")
+    # Repetitions are configured per normalized replay member.  Keep the
+    # historical helper name because runner-side baseline reuse imports it,
+    # but never divide an explicit repetition count by trajectory cardinality.
+    return repetitions
+
+
+def _has_authoritative_per_member_repetitions(
+    request: CandidateReplayRequest,
+) -> bool:
+    """Return whether a request can authorize new per-member replay work."""
+
+    return request.repetition_semantics == _PER_MEMBER_REPETITION_SEMANTICS
 
 
 def _infer_baseline_skill_root_from_target(target: SelfEvolveTargetRef) -> str | None:
@@ -4787,10 +5994,18 @@ def _infer_baseline_skill_root_from_target(target: SelfEvolveTargetRef) -> str |
 
 def _is_self_evolve_draft_skill_path(path: Path) -> bool:
     normalized_parts = tuple(part.lower() for part in path.parts)
-    marker = (".aworld", "self_evolve", "drafts", "skills")
+    legacy_marker = (".aworld", "self_evolve", "drafts", "skills")
+    if any(
+        normalized_parts[index : index + len(legacy_marker)] == legacy_marker
+        for index in range(0, len(normalized_parts) - len(legacy_marker) + 1)
+    ):
+        return True
     return any(
-        normalized_parts[index : index + len(marker)] == marker
-        for index in range(0, len(normalized_parts) - len(marker) + 1)
+        normalized_parts[index : index + 2] == (".aworld", "self_evolve")
+        and index + 5 < len(normalized_parts)
+        and normalized_parts[index + 3] == "draft_target"
+        and normalized_parts[index + 5] == "skill.md"
+        for index in range(0, max(0, len(normalized_parts) - 5))
     )
 
 
@@ -5390,6 +6605,9 @@ def _evidence_quality_failure(metrics: Mapping[str, Any]) -> dict[str, Any] | No
     if not isinstance(signals, list):
         signals = []
     return {
+        "code": "evidence_quality_failed",
+        "outcome": "task_failure",
+        "failure_stage": "evaluation",
         "reason": "evidence_quality_failed",
         "detail": "replay produced compacted, truncated, or otherwise unusable evidence",
         "evidence_compacted": compacted,
@@ -5441,7 +6659,10 @@ def _artifact_manifest_trajectory(
 
 def _is_evidence_quality_failure(result: ReplayVariantResult) -> bool:
     failure = result.failure
-    return isinstance(failure, Mapping) and failure.get("reason") == "evidence_quality_failed"
+    return (
+        isinstance(failure, ReplayFailureEvent)
+        and failure.code == "evidence_quality_failed"
+    )
 
 
 def _merge_replay_attempt_metrics(
@@ -5453,7 +6674,7 @@ def _merge_replay_attempt_metrics(
     if len(attempts) == 1:
         return result
     retry_failures = [
-        attempt.failure
+        attempt.failure.compatibility_dict()
         for attempt in attempts[:-1]
         if attempt.failure is not None
     ]
@@ -5503,6 +6724,50 @@ def _write_json(path: Path, payload: Any) -> None:
     )
 
 
+def _persist_variant_lifecycle(
+    artifact_dir: Path,
+    result: ReplayVariantResult,
+) -> None:
+    """Persist typed lifecycle plus the legacy inspection files additively."""
+
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    for source_path, filename in (
+        (result.stdout_path, "stdout.txt"),
+        (result.stderr_path, "stderr.txt"),
+    ):
+        destination = artifact_dir / filename
+        if not result.executed:
+            if destination.exists():
+                destination.unlink()
+            continue
+        if source_path is None:
+            continue
+        source = Path(source_path)
+        try:
+            if source.exists() and source.resolve() != destination.resolve():
+                shutil.copyfile(source, destination)
+        except OSError:
+            pass
+    _write_json(artifact_dir / "trajectory.json", result.trajectory)
+    _write_json(artifact_dir / "metrics.json", result.metrics)
+    failure_path = artifact_dir / "failure.json"
+    if result.failure is not None:
+        _write_json(failure_path, result.failure.compatibility_dict())
+    elif failure_path.exists():
+        failure_path.unlink()
+    _write_json(
+        artifact_dir / "lifecycle.json",
+        {
+            "schema_version": _REPLAY_LIFECYCLE_SCHEMA_V3,
+            "repetition_semantics": _PER_MEMBER_REPETITION_SEMANTICS,
+            "variant_id": result.variant_id,
+            "status": result.status,
+            "failure": result.failure.to_dict() if result.failure is not None else None,
+            "blocked_by": [event.to_dict() for event in result.blocked_by],
+        },
+    )
+
+
 def _safe_path(value: str) -> str:
     safe = "".join(
         character
@@ -5527,30 +6792,24 @@ def _aggregate_variant_results(
 ) -> ReplayVariantResult:
     if not results:
         raise ValueError("cannot aggregate empty replay results")
-    if len(results) == 1:
-        result = results[0]
-        failures = [result.failure] if result.failure is not None else []
-        metrics = {
-            **dict(result.metrics),
-            "repetition_count": 1,
-            "successful_repetition_count": 1 if result.succeeded else 0,
-            "failed_repetition_count": 0 if result.succeeded else 1,
-        }
-        if failures:
-            metrics["repetition_failures"] = failures
-        return ReplayVariantResult(
-            variant_id=base_variant_id,
-            status=result.status,
-            trajectory=result.trajectory,
-            metrics=metrics,
-            stdout_path=result.stdout_path,
-            stderr_path=result.stderr_path,
-            failure=result.failure,
-        )
-
     successful = [result for result in results if result.succeeded]
-    failed = [result for result in results if not result.succeeded]
-    status = "succeeded" if successful else "failed"
+    failed = [
+        result for result in results if result.status is ReplayExecutionStatus.FAILED
+    ]
+    blocked = [
+        result for result in results if result.status is ReplayExecutionStatus.BLOCKED
+    ]
+    not_run = [
+        result for result in results if result.status is ReplayExecutionStatus.NOT_RUN
+    ]
+    if successful:
+        status = ReplayExecutionStatus.SUCCEEDED
+    elif failed:
+        status = ReplayExecutionStatus.FAILED
+    elif blocked:
+        status = ReplayExecutionStatus.BLOCKED
+    else:
+        status = ReplayExecutionStatus.NOT_RUN
     numeric_metrics: dict[str, list[float]] = {}
     evidence_compaction_signals: list[str] = []
     evidence_compacted_values: list[bool] = []
@@ -5583,9 +6842,13 @@ def _aggregate_variant_results(
         "repetition_count": len(results),
         "successful_repetition_count": len(successful),
         "failed_repetition_count": len(failed),
+        "blocked_repetition_count": len(blocked),
+        "not_run_repetition_count": len(not_run),
     }
     repetition_failures = [
-        result.failure for result in failed if result.failure is not None
+        result.failure.compatibility_dict()
+        for result in failed
+        if result.failure is not None
     ]
     if repetition_failures:
         metrics["repetition_failures"] = repetition_failures
@@ -5618,31 +6881,65 @@ def _aggregate_variant_results(
             metrics[key] = sum(values) / len(values)
             metrics[f"{key}_values"] = values
 
-    selected = successful[-1] if successful else results[-1]
-    failure = None
-    if status != "succeeded":
-        failure = {
+    if status is ReplayExecutionStatus.SUCCEEDED:
+        selected = successful[-1]
+    elif status is ReplayExecutionStatus.FAILED:
+        selected = failed[-1]
+    else:
+        selected = results[-1]
+    failure: ReplayFailureEvent | None = None
+    blocked_by: tuple[ReplayFailureEvent, ...] = ()
+    if status is ReplayExecutionStatus.FAILED:
+        legacy_failure = {
             "reason": "one or more replay repetitions failed",
             "failures": [
-                result.failure
+                result.failure.compatibility_dict()
                 for result in results
                 if result.failure is not None
             ],
         }
-        if persist:
-            _write_json(artifact_dir / "failure.json", failure)
+        causal = causal_failure_events(
+            tuple(result.failure for result in failed if result.failure is not None)
+        )
+        exemplar = causal[0]
+        if len(causal) == 1:
+            failure = exemplar
+        else:
+            failure = ReplayFailureEvent(
+                code="replay_repetition_failure",
+                owner=exemplar.owner,
+                stage=exemplar.stage,
+                scope=exemplar.scope,
+                repairable=any(event.repairable for event in causal),
+                category="replay_repetition",
+                summary="one or more replay repetitions failed",
+                causes=tuple(event.event_id for event in causal),
+                _compatibility=legacy_failure,
+            )
+    elif status is ReplayExecutionStatus.BLOCKED:
+        blocked_by = causal_failure_events(
+            tuple(event for result in blocked for event in result.blocked_by)
+        )
     if persist:
         _write_json(artifact_dir / "aggregate_metrics.json", metrics)
-    return ReplayVariantResult(
+    aggregate_executed = status in {
+        ReplayExecutionStatus.SUCCEEDED,
+        ReplayExecutionStatus.FAILED,
+    }
+    aggregated = ReplayVariantResult(
         variant_id=base_variant_id,
         status=status,
-        trajectory=selected.trajectory,
+        trajectory=selected.trajectory if aggregate_executed else [],
         metrics=metrics,
-        stdout_path=selected.stdout_path,
-        stderr_path=selected.stderr_path,
+        stdout_path=selected.stdout_path if aggregate_executed else None,
+        stderr_path=selected.stderr_path if aggregate_executed else None,
         failure=failure,
-        repetition_results=tuple(results),
+        blocked_by=blocked_by,
+        repetition_results=tuple(results) if aggregate_executed else (),
     )
+    if persist:
+        _persist_variant_lifecycle(artifact_dir, aggregated)
+    return aggregated
 
 
 def _aggregate_member_variant_results(
@@ -5654,6 +6951,9 @@ def _aggregate_member_variant_results(
     persist: bool = True,
 ) -> ReplayVariantResult:
     member_variants = [select(member) for member in members]
+    if not member_variants:
+        raise ValueError("cannot aggregate an empty replay member set")
+    member_variant_pairs = tuple(zip(members, member_variants))
     repetition_results = [
         repetition
         for variant in member_variants
@@ -5661,45 +6961,150 @@ def _aggregate_member_variant_results(
             variant.repetition_results if variant.repetition_results else (variant,)
         )
     ]
-    aggregated = _aggregate_variant_results(
-        base_variant_id=base_variant_id,
-        results=repetition_results,
-        artifact_dir=artifact_dir,
-        persist=persist,
-    )
     failed_members = [
         {
             "case_id": member.case_id,
-            "failure": select(member).failure,
+            "failure": (
+                variant.failure.compatibility_dict()
+                if variant.failure is not None
+                else None
+            ),
         }
-        for member in members
-        if not select(member).succeeded
+        for member, variant in member_variant_pairs
+        if variant.status is ReplayExecutionStatus.FAILED
     ]
-    all_members_succeeded = not failed_members
+    blocked_members = [
+        (member, variant)
+        for member, variant in member_variant_pairs
+        if variant.status is ReplayExecutionStatus.BLOCKED
+    ]
+    not_run_members = [
+        (member, variant)
+        for member, variant in member_variant_pairs
+        if variant.status is ReplayExecutionStatus.NOT_RUN
+    ]
+    successful_members = [
+        (member, variant)
+        for member, variant in member_variant_pairs
+        if variant.succeeded
+    ]
+    generated_metric_keys = {
+        "member_count",
+        "successful_member_count",
+        "failed_member_count",
+        "blocked_member_count",
+        "not_run_member_count",
+        "repetition_count",
+        "successful_repetition_count",
+        "failed_repetition_count",
+        "member_failures",
+    }
+    common_metric_keys = set(member_variants[0].metrics)
+    for variant in member_variants[1:]:
+        common_metric_keys.intersection_update(variant.metrics)
+    common_metrics: dict[str, Any] = {}
+    for key in common_metric_keys - generated_metric_keys:
+        values = [variant.metrics[key] for variant in member_variants]
+        if all(value == values[0] for value in values[1:]):
+            common_metrics[key] = values[0]
     metrics = {
-        **dict(aggregated.metrics),
+        **common_metrics,
         "member_count": len(members),
-        "successful_member_count": len(members) - len(failed_members),
+        "successful_member_count": len(successful_members),
         "failed_member_count": len(failed_members),
+        "blocked_member_count": len(blocked_members),
+        "not_run_member_count": len(not_run_members),
+        "repetition_count": sum(
+            int(variant.metrics.get("repetition_count", 0))
+            for _, variant in member_variant_pairs
+            if variant.executed
+        ),
+        "successful_repetition_count": sum(
+            int(variant.metrics.get("successful_repetition_count", 0))
+            for _, variant in member_variant_pairs
+            if variant.executed
+        ),
+        "failed_repetition_count": sum(
+            int(variant.metrics.get("failed_repetition_count", 0))
+            for _, variant in member_variant_pairs
+            if variant.executed
+        ),
     }
     if failed_members:
         metrics["member_failures"] = failed_members
-    if persist:
-        _write_json(artifact_dir / "aggregate_metrics.json", metrics)
-    failure = None
-    if not all_members_succeeded:
-        failure = {
-            "reason": "one or more trajectory-set members failed replay",
-            "members": failed_members,
-        }
-        if persist:
-            _write_json(artifact_dir / "failure.json", failure)
-    return replace(
-        aggregated,
-        status="succeeded" if all_members_succeeded else "failed",
+    failure: ReplayFailureEvent | None = None
+    blocked_by: tuple[ReplayFailureEvent, ...] = ()
+    if failed_members:
+        causal = causal_failure_events(
+            tuple(
+                variant.failure
+                for _, variant in member_variant_pairs
+                if variant.failure is not None
+            )
+        )
+        exemplar = causal[0]
+        if len(causal) == 1:
+            failure = exemplar
+        else:
+            compatibility = {
+                **exemplar.compatibility_dict(),
+                "reason": "one or more trajectory-set members failed replay",
+                "members": failed_members,
+            }
+            failure = ReplayFailureEvent(
+                code="replay_member_failure",
+                owner=exemplar.owner,
+                stage=exemplar.stage,
+                scope=exemplar.scope,
+                repairable=any(event.repairable for event in causal),
+                category="replay_member_aggregate",
+                summary="one or more trajectory-set members failed replay",
+                causes=tuple(event.event_id for event in causal),
+                _compatibility=compatibility,
+            )
+        status = ReplayExecutionStatus.FAILED
+    elif blocked_members:
+        blocked_by = causal_failure_events(
+            tuple(
+                event
+                for _, variant in blocked_members
+                for event in variant.blocked_by
+            )
+        )
+        status = ReplayExecutionStatus.BLOCKED
+    elif not_run_members:
+        status = ReplayExecutionStatus.NOT_RUN
+    else:
+        status = ReplayExecutionStatus.SUCCEEDED
+    if status is ReplayExecutionStatus.SUCCEEDED:
+        selected_variant = successful_members[-1][1]
+    elif status is ReplayExecutionStatus.FAILED:
+        selected_variant = next(
+            variant
+            for _, variant in reversed(member_variant_pairs)
+            if variant.status is ReplayExecutionStatus.FAILED
+        )
+    else:
+        selected_variant = member_variants[-1]
+    aggregate_executed = status in {
+        ReplayExecutionStatus.SUCCEEDED,
+        ReplayExecutionStatus.FAILED,
+    }
+    aggregated = ReplayVariantResult(
+        variant_id=base_variant_id,
+        status=status,
+        trajectory=selected_variant.trajectory if aggregate_executed else [],
         metrics=metrics,
         failure=failure,
+        blocked_by=blocked_by,
+        stdout_path=selected_variant.stdout_path if aggregate_executed else None,
+        stderr_path=selected_variant.stderr_path if aggregate_executed else None,
+        repetition_results=(tuple(repetition_results) if aggregate_executed else ()),
     )
+    if persist:
+        _write_json(artifact_dir / "aggregate_metrics.json", metrics)
+        _persist_variant_lifecycle(artifact_dir, aggregated)
+    return aggregated
 
 
 def _candidate_replay_request_from_mapping(payload: Mapping[str, Any]) -> CandidateReplayRequest:
@@ -5739,6 +7144,11 @@ def _candidate_replay_request_from_mapping(payload: Mapping[str, Any]) -> Candid
         max_cost_usd=_optional_float(payload.get("max_cost_usd")),
         baseline_repetitions=_positive_int(payload.get("baseline_repetitions"), default=1),
         candidate_repetitions=_positive_int(payload.get("candidate_repetitions"), default=1),
+        repetition_semantics=(
+            str(payload.get("repetition_semantics"))
+            if payload.get("repetition_semantics") is not None
+            else _MIGRATED_DISTRIBUTED_REPETITION_SEMANTICS
+        ),
         dataset_fingerprint=(
             str(payload.get("dataset_fingerprint"))
             if payload.get("dataset_fingerprint") is not None
@@ -6036,6 +7446,12 @@ def _load_variant_result_from_dir(
 ) -> ReplayVariantResult:
     if not variant_dir.exists():
         raise FileNotFoundError(f"stored replay variant not found: {variant_dir}")
+    lifecycle_path = variant_dir / "lifecycle.json"
+    if lifecycle_path.exists():
+        return _load_lifecycle_variant_result(
+            variant_dir,
+            base_variant_id=base_variant_id,
+        )
     repetition_dirs = _stored_repetition_dirs(variant_dir)
     if not repetition_dirs:
         return _load_single_variant_result(
@@ -6063,7 +7479,9 @@ def _load_variant_result_from_dir(
         failure = {
             "reason": "one or more replay repetitions failed",
             "failures": [
-                result.failure for result in results if result.failure is not None
+                result.failure.compatibility_dict()
+                for result in results
+                if result.failure is not None
             ],
         }
     metrics = dict(aggregate_metrics or {})
@@ -6104,6 +7522,11 @@ def _effective_repetition_dir(repetition_dir: Path) -> Path:
 
 
 def _load_single_variant_result(variant_dir: Path, *, variant_id: str) -> ReplayVariantResult:
+    if (variant_dir / "lifecycle.json").exists():
+        return _load_lifecycle_variant_result(
+            variant_dir,
+            base_variant_id=variant_id,
+        )
     trajectory_payload = _load_json_value(variant_dir / "trajectory.json")
     if not isinstance(trajectory_payload, list):
         raise ValueError(f"stored replay trajectory must be a list: {variant_dir}")
@@ -6130,6 +7553,79 @@ def _load_single_variant_result(variant_dir: Path, *, variant_id: str) -> Replay
         stdout_path=str(stdout_path) if stdout_path.exists() else None,
         stderr_path=str(stderr_path) if stderr_path.exists() else None,
         failure=failure,
+    )
+
+
+def _load_lifecycle_variant_result(
+    variant_dir: Path,
+    *,
+    base_variant_id: str,
+) -> ReplayVariantResult:
+    lifecycle = _load_json_object(variant_dir / "lifecycle.json")
+    lifecycle_schema = lifecycle.get("schema_version")
+    if lifecycle_schema not in {
+        _REPLAY_LIFECYCLE_SCHEMA_V2,
+        _REPLAY_LIFECYCLE_SCHEMA_V3,
+    }:
+        raise ValueError("unsupported stored replay lifecycle schema")
+    if (
+        lifecycle_schema == _REPLAY_LIFECYCLE_SCHEMA_V3
+        and lifecycle.get("repetition_semantics")
+        != _PER_MEMBER_REPETITION_SEMANTICS
+    ):
+        raise ValueError(
+            "stored v3 replay lifecycle is missing per-member repetition semantics"
+        )
+    raw_failure = lifecycle.get("failure")
+    failure = (
+        ReplayFailureEvent.from_dict(raw_failure)
+        if isinstance(raw_failure, Mapping)
+        else None
+    )
+    raw_blocked_by = lifecycle.get("blocked_by")
+    blocked_by = tuple(
+        ReplayFailureEvent.from_dict(item)
+        for item in raw_blocked_by
+        if isinstance(item, Mapping)
+    ) if isinstance(raw_blocked_by, list) else ()
+    trajectory_payload = (
+        _load_json_value(variant_dir / "trajectory.json")
+        if (variant_dir / "trajectory.json").exists()
+        else []
+    )
+    if not isinstance(trajectory_payload, list):
+        raise ValueError(f"stored replay trajectory must be a list: {variant_dir}")
+    trajectory = [item for item in trajectory_payload if isinstance(item, Mapping)]
+    metrics = _load_optional_json_object(variant_dir / "metrics.json") or {}
+    aggregate_metrics = _load_optional_json_object(
+        variant_dir / "aggregate_metrics.json"
+    )
+    if aggregate_metrics is not None:
+        metrics = {**dict(metrics), **dict(aggregate_metrics)}
+    stdout_path = variant_dir / "stdout.txt"
+    stderr_path = variant_dir / "stderr.txt"
+    repetition_dirs = _stored_repetition_dirs(variant_dir)
+    repetition_results = tuple(
+        _load_single_variant_result(
+            _effective_repetition_dir(path),
+            variant_id=(
+                base_variant_id
+                if len(repetition_dirs) == 1
+                else f"{base_variant_id}-{index}"
+            ),
+        )
+        for index, path in enumerate(repetition_dirs, start=1)
+    )
+    return ReplayVariantResult(
+        variant_id=str(lifecycle.get("variant_id") or base_variant_id),
+        status=str(lifecycle.get("status") or ""),
+        trajectory=trajectory,
+        metrics=metrics,
+        stdout_path=str(stdout_path) if stdout_path.exists() else None,
+        stderr_path=str(stderr_path) if stderr_path.exists() else None,
+        failure=failure,
+        blocked_by=blocked_by,
+        repetition_results=repetition_results,
     )
 
 
@@ -6176,32 +7672,32 @@ def build_paired_replay_dataset(
     dataset: SelfEvolveDataset,
     replay_result: CandidateReplayResult,
     candidate: CandidateVariant,
+    normalized: NormalizedReplayMembers | None = None,
 ) -> SelfEvolveDataset:
+    normalized = normalized or normalize_replay_members(
+        dataset=dataset,
+        replay_result=replay_result,
+    )
+    if not normalized.valid:
+        raise ValueError("candidate replay member result contract is invalid")
     if not replay_result.candidate.succeeded:
         raise ValueError("candidate replay did not succeed")
     if not candidate_replay_is_comparable(
         dataset=dataset,
         replay_result=replay_result,
+        normalized=normalized,
     ):
         raise ValueError("candidate replay did not produce comparable paired outcomes")
-
-    member_results = {
-        member.case_id: member for member in replay_result.member_results
-    }
+    member_results = {member.case_id: member for member in normalized.members}
     cases: list[EvalCase] = []
     source_to_replay_case_ids: dict[str, list[str]] = {}
     for case in dataset.cases:
-        if member_results:
-            member_result = member_results.get(case.case_id)
-            if member_result is None:
-                continue
-            baseline_variant = member_result.baseline
-            candidate_variant = member_result.candidate
-            replay_request = member_result.request
-        else:
-            baseline_variant = replay_result.baseline
-            candidate_variant = replay_result.candidate
-            replay_request = replay_result.request
+        member_result = member_results.get(case.case_id)
+        if member_result is None:
+            continue
+        baseline_variant = member_result.baseline
+        candidate_variant = member_result.candidate
+        replay_request = member_result.request
         baseline_trajectory, baseline_trajectory_source = (
             _baseline_comparison_trajectory(case, baseline_variant)
         )
@@ -6253,7 +7749,16 @@ def build_paired_replay_dataset(
                         repetition_metrics=baseline_result.metrics,
                     ),
                     "aggregate_metrics": dict(baseline_variant.metrics),
-                    "failure": baseline_variant.failure,
+                    "failure": (
+                        baseline_variant.failure.compatibility_dict()
+                        if baseline_variant.failure is not None
+                        else None
+                    ),
+                    "failure_event": (
+                        baseline_variant.failure.to_dict()
+                        if baseline_variant.failure is not None
+                        else None
+                    ),
                     "variant_id": baseline_result.variant_id,
                 },
                 "candidate": {
@@ -6264,7 +7769,16 @@ def build_paired_replay_dataset(
                         repetition_metrics=candidate_result.metrics,
                     ),
                     "aggregate_metrics": dict(candidate_variant.metrics),
-                    "failure": candidate_variant.failure,
+                    "failure": (
+                        candidate_variant.failure.compatibility_dict()
+                        if candidate_variant.failure is not None
+                        else None
+                    ),
+                    "failure_event": (
+                        candidate_variant.failure.to_dict()
+                        if candidate_variant.failure is not None
+                        else None
+                    ),
                     "variant_id": candidate_result.variant_id,
                 },
                 "repetition_index": index + 1,

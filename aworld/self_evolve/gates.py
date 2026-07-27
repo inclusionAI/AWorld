@@ -3,12 +3,26 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
+from aworld.self_evolve.evidence_diagnostics import (
+    evidence_repair_constraints_from_metrics,
+)
 from aworld.self_evolve.evaluation import CandidateConfidenceDecision, ReplayCostEstimate
-from aworld.self_evolve.provenance import TargetProvenance
+from aworld.self_evolve.failure_events import FailureOwner
+from aworld.self_evolve.provenance import (
+    InferredNewSkillPolicy,
+    TargetMutationIntent,
+    TargetProvenance,
+    TargetProvenancePolicyClass,
+    target_provenance_policy_class,
+)
 from aworld.self_evolve.replay_adaptation import ReplayAdaptationBundle
 from aworld.self_evolve.types import CandidateVariant, EvaluationSummary, GateResult
+from aworld.self_evolve.runtime_health import (
+    EvaluationRuntimeHealthStatus,
+    assess_evaluation_runtime_health,
+)
 from aworld.self_evolve.candidate_package import (
     candidate_files_total_bytes,
     validate_candidate_files,
@@ -359,13 +373,24 @@ class ProtectedPathGate:
 
 class BudgetGate:
     def evaluate(self, estimate: ReplayCostEstimate) -> GateResult:
+        passed = estimate.passed
+        reason = estimate.reason
+        if estimate.token_ceiling is not None and not estimate.estimate_known:
+            passed = False
+            reason = "estimated replay tokens are unknown under max_run_tokens"
         return GateResult(
             gate_name="budget",
-            passed=estimate.passed,
-            reason=estimate.reason,
+            passed=passed,
+            reason=reason,
             details={
                 "estimated_tokens": estimate.estimated_tokens,
+                "estimated_tokens_per_replay": (
+                    estimate.estimated_tokens_per_replay
+                ),
                 "estimated_cost_usd": estimate.estimated_cost_usd,
+                "estimate_source": estimate.estimate_source.value,
+                "estimate_confidence": estimate.estimate_confidence.value,
+                "estimate_known": estimate.estimate_known,
                 "total_replay_count": estimate.total_replay_count,
                 "judge_call_count": estimate.judge_call_count,
                 "verification_command_count": estimate.verification_command_count,
@@ -395,6 +420,51 @@ class RequiredVerificationGate:
             passed=True,
             reason="required verification commands passed",
             details={"command_case_count": command_case_count, "command_pass_count": command_pass_count},
+        )
+
+
+class EvaluationRuntimeHealthGate:
+    """Gate evaluator/judge availability before candidate quality policy."""
+
+    def evaluate(
+        self,
+        summaries: Iterable[EvaluationSummary],
+    ) -> GateResult:
+        health = assess_evaluation_runtime_health(summaries)
+        passed = health.status is not EvaluationRuntimeHealthStatus.UNHEALTHY
+        details: dict[str, object] = {
+            "runtime_health": health.to_dict(),
+        }
+        if not passed:
+            details.update(
+                {
+                    "failure_class": FailureOwner.INFRASTRUCTURE.value,
+                    "failure_owner": FailureOwner.INFRASTRUCTURE.value,
+                    "failure_scope": "shared_run",
+                    "failure_source": "native",
+                    "repairable": False,
+                    "code": "evaluation_runtime_unhealthy",
+                }
+            )
+        if health.status is EvaluationRuntimeHealthStatus.UNKNOWN:
+            reason = (
+                "evaluation runtime health telemetry is unavailable; "
+                "legacy evaluator result remains usable"
+            )
+        elif health.status is EvaluationRuntimeHealthStatus.DEGRADED:
+            reason = (
+                "evaluation runtime produced usable judge signals with "
+                "partial failures"
+            )
+        elif passed:
+            reason = "evaluation runtime produced usable judge signals"
+        else:
+            reason = "evaluation runtime did not produce a usable judge signal"
+        return GateResult(
+            gate_name="evaluation_runtime_health",
+            passed=passed,
+            reason=reason,
+            details=details,
         )
 
 
@@ -435,6 +505,24 @@ class EvidenceQualityGate:
         incomplete = _bool_metric(summary.metrics, "evidence_incomplete")
         if incomplete is None:
             incomplete = False
+        evidence_constraints = evidence_repair_constraints_from_metrics(
+            summary.metrics
+        )
+        has_declared_evidence_constraints = bool(
+            summary.metrics.get("evidence_repair_constraints")
+        )
+        constraint_owners = {item.owner for item in evidence_constraints}
+        if FailureOwner.INFRASTRUCTURE in constraint_owners:
+            failure_owner = FailureOwner.INFRASTRUCTURE
+        elif FailureOwner.FRAMEWORK in constraint_owners:
+            # A valid artifact bundle that becomes insufficient only at the
+            # bounded projection boundary cannot safely be blamed on the
+            # candidate until the framework exposes enough evidence to decide.
+            failure_owner = FailureOwner.FRAMEWORK
+        elif FailureOwner.TASK in constraint_owners:
+            failure_owner = FailureOwner.TASK
+        else:
+            failure_owner = FailureOwner.CANDIDATE
         details = {
             "has_evidence": has_evidence,
             "evidence_block_count": evidence_block_count,
@@ -445,6 +533,23 @@ class EvidenceQualityGate:
             "evidence_manifest_invalid_entry_count": evidence_manifest_invalid_entry_count,
             "evidence_bundle_valid": evidence_bundle_valid,
             "evidence_bundle_entry_count": evidence_bundle_entry_count,
+            "evidence_repair_constraints": [
+                item.to_dict() for item in evidence_constraints
+            ],
+            "evidence_constraint_count": len(evidence_constraints),
+            "failure_class": failure_owner.value,
+            "failure_owner": failure_owner.value,
+            "failure_scope": (
+                "shared_run"
+                if failure_owner
+                in {
+                    FailureOwner.FRAMEWORK,
+                    FailureOwner.INFRASTRUCTURE,
+                }
+                else "candidate"
+            ),
+            "failure_source": "native",
+            "repairable": True,
         }
         if not has_evidence:
             return GateResult(
@@ -458,6 +563,13 @@ class EvidenceQualityGate:
                 gate_name="evidence_quality",
                 passed=False,
                 reason="artifact-first evidence is not fully verifiable",
+                details=details,
+            )
+        if has_declared_evidence_constraints and evidence_constraints:
+            return GateResult(
+                gate_name="evidence_quality",
+                passed=False,
+                reason="typed evidence repair constraints remain unsatisfied",
                 details=details,
             )
         if incomplete:
@@ -627,33 +739,89 @@ class HeldOutVerificationGate:
 
 
 class TrustProvenanceGate:
-    _GENERATED_OR_EXTERNAL_TRUST_LEVELS = {"generated", "external"}
-    _GENERATED_OR_EXTERNAL_ORIGINS = {"agent_generated_artifact", "external"}
-
     def __init__(self, *, allow_generated: bool = False, allow_external: bool = False) -> None:
         self.allow_generated = allow_generated
         self.allow_external = allow_external
 
-    def evaluate(self, provenance: TargetProvenance) -> GateResult:
-        if provenance.protected:
+    def evaluate(
+        self,
+        provenance: TargetProvenance | None,
+        *,
+        unresolved_reason: str | None = None,
+        target_intent: TargetMutationIntent | str | None = None,
+    ) -> GateResult:
+        if provenance is None or unresolved_reason is not None:
+            if unresolved_reason is None:
+                reason_detail: object = "no target provenance was supplied"
+            elif isinstance(unresolved_reason, str):
+                reason_detail = unresolved_reason
+            else:
+                reason_detail = (
+                    "invalid unresolved reason type: "
+                    f"{type(unresolved_reason).__name__}"
+                )
+            return GateResult(
+                gate_name="trust_provenance",
+                passed=False,
+                reason="target provenance is unresolved",
+                details={
+                    "provenance_status": "unresolved",
+                    "unresolved_reason": reason_detail,
+                },
+            )
+        if not isinstance(provenance, TargetProvenance):
+            return GateResult(
+                gate_name="trust_provenance",
+                passed=False,
+                reason="target provenance is invalid",
+                details={
+                    "provenance_status": "invalid",
+                    "invalid_type": type(provenance).__name__,
+                },
+            )
+        policy_class = target_provenance_policy_class(provenance)
+        if policy_class is None:
+            return GateResult(
+                gate_name="trust_provenance",
+                passed=False,
+                reason="target provenance classification is not trusted",
+            )
+        if policy_class == TargetProvenancePolicyClass.PROTECTED:
             return GateResult(
                 gate_name="trust_provenance",
                 passed=False,
                 reason="protected target provenance cannot be mutated",
             )
+        try:
+            typed_intent = (
+                TargetMutationIntent(target_intent)
+                if target_intent is not None
+                else None
+            )
+        except ValueError:
+            return GateResult(
+                gate_name="trust_provenance",
+                passed=False,
+                reason="target mutation intent is invalid",
+            )
+        draft_evolution = (
+            policy_class == TargetProvenancePolicyClass.GENERATED
+            and typed_intent == TargetMutationIntent.INFERRED_DRAFT_CREATION
+        )
         if (
-            provenance.trust_level == "generated"
-            or provenance.write_origin == "agent_generated_artifact"
-        ) and not self.allow_generated:
+            policy_class == TargetProvenancePolicyClass.GENERATED
+            and not self.allow_generated
+            and not draft_evolution
+        ):
             return GateResult(
                 gate_name="trust_provenance",
                 passed=False,
                 reason="generated target requires explicit trust policy",
             )
         if (
-            provenance.trust_level == "external"
-            or provenance.write_origin == "external"
-        ) and not self.allow_external:
+            policy_class == TargetProvenancePolicyClass.EXTERNAL
+            and not self.allow_external
+        ):
             return GateResult(
                 gate_name="trust_provenance",
                 passed=False,
@@ -662,8 +830,145 @@ class TrustProvenanceGate:
         return GateResult(
             gate_name="trust_provenance",
             passed=True,
-            reason="target provenance satisfies trust policy",
+            reason=(
+                "generated target is authorized only for isolated draft evolution"
+                if draft_evolution
+                else "target provenance satisfies trust policy"
+            ),
+            details=(
+                {"authorized_scope": "draft_evolution"}
+                if draft_evolution
+                else None
+            ),
         )
+
+
+class NewSkillPromotionGate:
+    """Authorize draft evolution separately from publication into aworld-skills."""
+
+    def evaluate(
+        self,
+        candidate: CandidateVariant,
+        *,
+        target_intent: TargetMutationIntent | str | None,
+        policy: InferredNewSkillPolicy | str,
+        apply_policy: str,
+        workspace_root: str | Path,
+        provenance: TargetProvenance | None,
+    ) -> GateResult:
+        try:
+            typed_intent = (
+                TargetMutationIntent(target_intent)
+                if target_intent is not None
+                else None
+            )
+            typed_policy = InferredNewSkillPolicy(policy)
+        except ValueError:
+            return GateResult(
+                gate_name="new_skill_promotion",
+                passed=False,
+                reason="new-skill promotion policy or target intent is invalid",
+            )
+        if typed_intent != TargetMutationIntent.INFERRED_DRAFT_CREATION:
+            return GateResult(
+                gate_name="new_skill_promotion",
+                passed=True,
+                reason="candidate does not create an inferred skill draft",
+                details={"applicable": False},
+            )
+        if typed_policy == InferredNewSkillPolicy.DISABLED:
+            return GateResult(
+                gate_name="new_skill_promotion",
+                passed=False,
+                reason="inferred new-skill creation is disabled by policy",
+                details={"policy": typed_policy.value, "publication_allowed": False},
+            )
+        if provenance is None or provenance.target != candidate.target:
+            return GateResult(
+                gate_name="new_skill_promotion",
+                passed=False,
+                reason="candidate identity does not match generated target provenance",
+                details={"policy": typed_policy.value, "publication_allowed": False},
+            )
+        path_error = _run_owned_draft_path_error(
+            candidate.target,
+            workspace_root=workspace_root,
+        )
+        if path_error is not None:
+            return GateResult(
+                gate_name="new_skill_promotion",
+                passed=False,
+                reason=path_error,
+                details={"policy": typed_policy.value, "publication_allowed": False},
+            )
+        release_path = (
+            Path(workspace_root)
+            / "aworld-skills"
+            / candidate.target.target_id
+            / "SKILL.md"
+        )
+        publication_allowed = (
+            typed_policy == InferredNewSkillPolicy.AUTO_VERIFIED
+            and apply_policy == "auto_verified"
+        )
+        if publication_allowed and (release_path.exists() or release_path.is_symlink()):
+            return GateResult(
+                gate_name="new_skill_promotion",
+                passed=False,
+                reason="new-skill release path appeared after target inference",
+                details={
+                    "policy": typed_policy.value,
+                    "publication_allowed": False,
+                    "release_path": str(release_path),
+                },
+            )
+        return GateResult(
+            gate_name="new_skill_promotion",
+            passed=True,
+            reason=(
+                "verified publication is authorized after ordinary gates pass"
+                if publication_allowed
+                else "draft evolution is authorized but publication is disabled"
+            ),
+            details={
+                "policy": typed_policy.value,
+                "publication_allowed": publication_allowed,
+                "release_path": str(release_path),
+            },
+        )
+
+
+def _run_owned_draft_path_error(
+    target: Any,
+    *,
+    workspace_root: str | Path,
+) -> str | None:
+    raw_path = getattr(target, "path", None)
+    target_id = getattr(target, "target_id", None)
+    if not isinstance(raw_path, str) or not raw_path:
+        return "inferred skill draft has no run-owned path"
+    root = Path(workspace_root).resolve()
+    path = Path(raw_path).absolute()
+    try:
+        relative = path.relative_to(root)
+        path.resolve(strict=False).relative_to(root)
+    except ValueError:
+        return "inferred skill draft escapes the workspace"
+    expected_suffix = ("draft_target", str(target_id), "SKILL.md")
+    parts = relative.parts
+    if (
+        len(parts) != 6
+        or parts[:2] != (".aworld", "self_evolve")
+        or parts[3:] != expected_suffix
+        or not parts[2]
+    ):
+        return "inferred skill draft is not owned by exactly one run"
+    current = root
+    for part in relative.parts:
+        current = current / part
+        if current.is_symlink():
+            return "inferred skill draft path traverses a symlink"
+    return None
 
 
 class GlobalRegressionBenchmarkGate:

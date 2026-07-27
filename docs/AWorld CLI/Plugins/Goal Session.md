@@ -11,6 +11,7 @@ The plugin exposes a single session-scoped command surface:
 /goal status
 /goal pause
 /goal clear
+/goal --from-campaign <campaign-id> --max-turns 5
 ```
 
 Behavior:
@@ -19,6 +20,14 @@ Behavior:
 - `status` prints the current goal contract
 - `pause` marks an active goal as paused so the session can exit cleanly
 - `clear` removes the stored goal state
+- `--from-campaign` imports a validated paused self-evolve framework/shared
+  handoff from the current workspace; Campaign remains the canonical state
+
+The imported handoff contains no raw trajectory/candidate content and cannot
+supply verification shell commands. It fixes the next action to
+`aworld-cli optimize --resume-campaign <campaign-id>`. Goal turn/budget logic
+remains unchanged, and resuming the Campaign does not reset its cycles or
+cumulative usage.
 
 ## Status Model
 
@@ -44,6 +53,9 @@ Goal-session tracks a shared contract with fields such as:
 - last answer, error, or partial-answer excerpts
 
 The `source` field records where the goal was created. Native `/goal` sessions use `goal`.
+Campaign handoffs use `self_evolve` and add only the Campaign ID, latest run,
+validated handoff path, and fixed resume action. Raw trajectory content and
+diagnostic-provided commands are not imported.
 
 ## Hook Responsibilities
 

@@ -4,6 +4,7 @@ import hashlib
 import json
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -17,10 +18,123 @@ from aworld.self_evolve.replay_capability import (
     build_replay_sandboxed_command,
     compile_and_freeze_capability,
     discover_replay_capability,
+    frozen_replay_fixture_shape_fingerprints,
     materialize_replay_evidence_derivations,
     replay_process_memory_bytes,
     verify_frozen_replay_capability,
 )
+
+
+def test_frozen_fixture_shape_fingerprint_ignores_recorded_scalar_values(
+    tmp_path: Path,
+) -> None:
+    fixture_root = tmp_path / "fixtures"
+    fixture_root.mkdir()
+    fixture_path = fixture_root / "recorded.json"
+    service = SimpleNamespace(response_fixture="recorded.json")
+    capability = SimpleNamespace(
+        frozen_root=str(tmp_path),
+        services=(service,),
+    )
+    fixture_path.write_text(
+        json.dumps({"records": [{"token": "private-alpha", "count": 1}]}),
+        encoding="utf-8",
+    )
+    first = frozen_replay_fixture_shape_fingerprints(capability)
+    fixture_path.write_text(
+        json.dumps({"records": [{"token": "private-beta", "count": 99}]}),
+        encoding="utf-8",
+    )
+    second = frozen_replay_fixture_shape_fingerprints(capability)
+    fixture_path.write_text(
+        json.dumps({"records": [{"token": ["private-beta"], "count": 99}]}),
+        encoding="utf-8",
+    )
+    distinct = frozen_replay_fixture_shape_fingerprints(capability)
+
+    assert first == second
+    assert distinct != second
+    assert "private-alpha" not in json.dumps(first)
+    assert "private-beta" not in json.dumps(distinct)
+
+
+def test_frozen_fixture_shape_fingerprint_includes_structure_after_128th_node(
+    tmp_path: Path,
+) -> None:
+    fixture_root = tmp_path / "fixtures"
+    fixture_root.mkdir()
+    fixture_path = fixture_root / "recorded.json"
+    capability = SimpleNamespace(
+        frozen_root=str(tmp_path),
+        services=(SimpleNamespace(response_fixture="recorded.json"),),
+    )
+    prefix = [{"value": index} for index in range(128)]
+    fixture_path.write_text(
+        json.dumps([*prefix, {"tail": "private"}]),
+        encoding="utf-8",
+    )
+    object_tail = frozen_replay_fixture_shape_fingerprints(capability)
+    fixture_path.write_text(
+        json.dumps([*prefix, ["private"]]),
+        encoding="utf-8",
+    )
+    array_tail = frozen_replay_fixture_shape_fingerprints(capability)
+
+    assert object_tail != array_tail
+    assert "private" not in json.dumps(object_tail)
+    assert "private" not in json.dumps(array_tail)
+
+
+def test_frozen_fixture_shape_fingerprint_covers_oversized_json_structure(
+    tmp_path: Path,
+) -> None:
+    fixture_root = tmp_path / "fixtures"
+    fixture_root.mkdir()
+    fixture_path = fixture_root / "recorded.json"
+    capability = SimpleNamespace(
+        frozen_root=str(tmp_path),
+        services=(SimpleNamespace(response_fixture="recorded.json"),),
+    )
+    padding = "private-" + ("x" * (2 * 1024 * 1024))
+    fixture_path.write_text(
+        json.dumps({"padding": padding, "tail": []}, separators=(",", ":")),
+        encoding="utf-8",
+    )
+    array_tail = frozen_replay_fixture_shape_fingerprints(capability)
+    fixture_path.write_text(
+        json.dumps({"padding": padding, "tail": {}}, separators=(",", ":")),
+        encoding="utf-8",
+    )
+    object_tail = frozen_replay_fixture_shape_fingerprints(capability)
+
+    assert array_tail != object_tail
+    assert "private" not in json.dumps(array_tail)
+    assert "private" not in json.dumps(object_tail)
+
+
+def test_frozen_fixture_shape_fingerprint_covers_structure_beyond_depth_64(
+    tmp_path: Path,
+) -> None:
+    fixture_root = tmp_path / "fixtures"
+    fixture_root.mkdir()
+    fixture_path = fixture_root / "recorded.json"
+    capability = SimpleNamespace(
+        frozen_root=str(tmp_path),
+        services=(SimpleNamespace(response_fixture="recorded.json"),),
+    )
+
+    def nested(leaf: object) -> object:
+        value = leaf
+        for _ in range(80):
+            value = {"next": value}
+        return value
+
+    fixture_path.write_text(json.dumps(nested([])), encoding="utf-8")
+    array_leaf = frozen_replay_fixture_shape_fingerprints(capability)
+    fixture_path.write_text(json.dumps(nested({})), encoding="utf-8")
+    object_leaf = frozen_replay_fixture_shape_fingerprints(capability)
+
+    assert array_leaf != object_leaf
 
 
 def _nested_recorded_fixture_value() -> str:
@@ -264,6 +378,7 @@ def test_discover_capability_inside_skill_root(tmp_path: Path) -> None:
     assert discovered.package_fingerprint.startswith("sha256:")
 
 
+@pytest.mark.replay_sandbox
 def test_skill_runtime_requires_declared_protocol_probes(tmp_path: Path) -> None:
     skill = _write_capability_skill(tmp_path)
     compiler_path = skill / "replay/compiler.py"
@@ -291,6 +406,7 @@ def test_skill_runtime_requires_declared_protocol_probes(tmp_path: Path) -> None
         )
 
 
+@pytest.mark.replay_sandbox
 def test_runtime_required_requirement_rejects_fixture_only_transport(
     tmp_path: Path,
 ) -> None:
@@ -301,14 +417,27 @@ def test_runtime_required_requirement_rejects_fixture_only_transport(
     with pytest.raises(
         ReplayCapabilityError,
         match="runtime_required requirement must use skill_runtime",
-    ):
+    ) as error:
         compile_and_freeze_capability(
             capability,
             _request(skill, requirement_status="runtime_required"),
             tmp_path / "compile",
         )
 
+    assert error.value.code == "schema_field_validation_failed"
+    assert error.value.details["schema_field_constraints"] == [
+        {
+            "schema_layer": "compile_result",
+            "field_path": (
+                "services[*@request.requirement.status:runtime_required].transport"
+            ),
+            "rule": "enum",
+            "expected": ["skill_runtime"],
+        }
+    ]
 
+
+@pytest.mark.replay_sandbox
 def test_skill_runtime_rejects_readiness_only_protocol_probe(tmp_path: Path) -> None:
     skill = _write_capability_skill(tmp_path)
     compiler_path = skill / "replay/compiler.py"
@@ -337,6 +466,7 @@ def test_skill_runtime_rejects_readiness_only_protocol_probe(tmp_path: Path) -> 
         )
 
 
+@pytest.mark.replay_sandbox
 def test_skill_runtime_accepts_declared_websocket_data_plane_probe(
     tmp_path: Path,
 ) -> None:
@@ -374,6 +504,7 @@ def test_skill_runtime_accepts_declared_websocket_data_plane_probe(
     assert probe.response_contains == "recorded fixture"
 
 
+@pytest.mark.replay_sandbox
 def test_skill_runtime_with_recorded_responses_must_consume_response_index(
     tmp_path: Path,
 ) -> None:
@@ -407,14 +538,137 @@ def test_skill_runtime_with_recorded_responses_must_consume_response_index(
     with pytest.raises(
         ReplayCapabilityError,
         match="must consume AWORLD_REPLAY_RESPONSE_INDEX",
-    ):
+    ) as error:
         compile_and_freeze_capability(
             capability,
             _request(skill, recorded_value=_nested_recorded_fixture_value()),
             tmp_path / "compile",
         )
 
+    assert error.value.code == "schema_field_validation_failed"
+    assert error.value.details["schema_field_constraints"] == [
+        {
+            "schema_layer": "runtime",
+            "field_path": (
+                "environment.AWORLD_REPLAY_RESPONSE_INDEX.consumer"
+            ),
+            "rule": "enum",
+            "expected": ["json_sidecar_record_value_projector"],
+            "value_domain": "source_behavior",
+            "required_operations": [
+                "read_environment_binding_as_path",
+                "bind_environment_path_to_json_file_reader",
+                "access_records_array",
+                "project_record_value_field_directly",
+            ],
+            "forbidden_operations": [
+                "coerce_environment_binding_to_numeric_index",
+                "hide_environment_read_behind_zero_arg_return_helper",
+                "substitute_raw_fixture_recursive_scan",
+            ],
+        }
+    ]
+    assert error.value.details["schema_field_violations"][0]["actual_type"] == (
+        "string"
+    )
 
+
+@pytest.mark.parametrize(
+    ("source", "accepted"),
+    [
+        (
+            "import json, os\n"
+            "from pathlib import Path\n"
+            "index_path = os.environ.get('AWORLD_REPLAY_RESPONSE_INDEX')\n"
+            "index = json.loads(Path(index_path).read_text())\n"
+            "for record in index.get('records', []):\n"
+            "    response = record.get('value')\n",
+            True,
+        ),
+        (
+            "import json, os\n"
+            "def load_index():\n"
+            "    index_path = os.getenv('AWORLD_REPLAY_RESPONSE_INDEX')\n"
+            "    with open(index_path, encoding='utf-8') as stream:\n"
+            "        return json.load(stream)\n"
+            "def project(index):\n"
+            "    for record in index['records']:\n"
+            "        yield record['value']\n",
+            True,
+        ),
+        (
+            "import json, os\n"
+            "from pathlib import Path\n"
+            "def load_json(path):\n"
+            "    return json.loads(Path(path).read_text())\n"
+            "def project_sidecar(path):\n"
+            "    index = load_json(path)\n"
+            "    return [record.get('value') for record in index.get('records', [])]\n"
+            "def build_response():\n"
+            "    index_path = os.environ.get('AWORLD_REPLAY_RESPONSE_INDEX')\n"
+            "    return project_sidecar(index_path)\n",
+            True,
+        ),
+        (
+            "import json, os\n"
+            "index_text = os.environ.get('AWORLD_REPLAY_RESPONSE_INDEX')\n"
+            "index = json.loads(index_text)\n"
+            "with open('unrelated.json') as stream:\n"
+            "    unrelated = stream.read()\n"
+            "for record in index.get('records', []):\n"
+            "    response = record.get('value')\n",
+            False,
+        ),
+        (
+            "import json, os\n"
+            "def mention_binding():\n"
+            "    return os.environ.get('AWORLD_REPLAY_RESPONSE_INDEX')\n"
+            "def read_unrelated():\n"
+            "    with open('unrelated.json') as stream:\n"
+            "        index = json.load(stream)\n"
+            "    return index.get('records')[0].get('value')\n",
+            False,
+        ),
+        (
+            "import json, os\n"
+            "def read_environment_binding_as_path():\n"
+            "    return os.environ.get('AWORLD_REPLAY_RESPONSE_INDEX')\n"
+            "def parse_json_object(path):\n"
+            "    with open(path, encoding='utf-8') as stream:\n"
+            "        return json.load(stream)\n"
+            "def project_record_value(record):\n"
+            "    return record.get('value')\n"
+            "def build_response():\n"
+            "    path = read_environment_binding_as_path()\n"
+            "    index = parse_json_object(path)\n"
+            "    return [project_record_value(record) "
+            "for record in index.get('records', [])]\n",
+            False,
+        ),
+        (
+            "import json, os\n"
+            "def ignore_path(path):\n"
+            "    with open('unrelated.json') as stream:\n"
+            "        return json.load(stream)\n"
+            "def build_response():\n"
+            "    index_path = os.environ.get('AWORLD_REPLAY_RESPONSE_INDEX')\n"
+            "    index = ignore_path(index_path)\n"
+            "    return index.get('records')[0].get('value')\n",
+            False,
+        ),
+    ],
+)
+def test_response_index_source_behavior_requires_bound_file_reader_dataflow(
+    source: str,
+    accepted: bool,
+) -> None:
+    assert (
+        replay_capability_module._runtime_consumes_recorded_response_index(source)
+        is accepted
+    )
+
+
+@pytest.mark.replay_sandbox
 def test_frozen_verification_rejects_recorded_response_index_tampering(
     tmp_path: Path,
 ) -> None:
@@ -439,6 +693,7 @@ def test_frozen_verification_rejects_recorded_response_index_tampering(
         verify_frozen_replay_capability(frozen)
 
 
+@pytest.mark.replay_sandbox
 @pytest.mark.parametrize(
     ("probe_count", "accepted"),
     [(16, True), (17, False)],
@@ -490,6 +745,7 @@ def test_skill_runtime_protocol_probe_limit_is_bounded_but_covers_observed_opera
             )
 
 
+@pytest.mark.replay_sandbox
 def test_skill_runtime_advertised_websocket_validation_requires_websocket_data_plane_probe(
     tmp_path: Path,
 ) -> None:
@@ -525,6 +781,7 @@ def test_skill_runtime_advertised_websocket_validation_requires_websocket_data_p
         )
 
 
+@pytest.mark.replay_sandbox
 def test_skill_runtime_allows_structural_http_discovery_expectation_with_fixture_backed_websocket_probe(
     tmp_path: Path,
 ) -> None:
@@ -564,6 +821,7 @@ def test_skill_runtime_allows_structural_http_discovery_expectation_with_fixture
     ]
 
 
+@pytest.mark.replay_sandbox
 def test_skill_runtime_rejects_data_plane_expectation_not_in_fixture(
     tmp_path: Path,
 ) -> None:
@@ -601,10 +859,188 @@ def test_skill_runtime_rejects_data_plane_expectation_not_in_fixture(
     message = str(error.value)
     assert "kind=websocket" in message
     assert "path=/events" in message
-    assert "expected_preview=invented response" in message
     assert "expected_sha256=" in message
+    assert "expected_bytes=17" in message
+    assert "invented response" not in message
+    assert error.value.code == "protocol_probe_not_fixture_derived"
+    assert error.value.details["fixture_probe_violation_count"] == 1
+    assert error.value.details["fixture_probe_constraints"] == [
+        {
+            "requirement_id": "requirement-local",
+            "kind": "websocket",
+            "path": "/events",
+            "max_response_chars": 4096,
+        }
+    ]
 
 
+def test_fixture_probe_compile_error_aggregates_all_requirement_shapes(
+    tmp_path: Path,
+) -> None:
+    output_root = tmp_path / "compiled"
+    fixtures = ("fixtures/object.json", "fixtures/list.json")
+    for fixture, payload in zip(
+        fixtures,
+        ('{"value":"recorded-a"}', '["recorded-b"]'),
+        strict=True,
+    ):
+        path = output_root / fixture
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(payload, encoding="utf-8")
+    raw_services = [
+        {
+            "service_id": f"service-{index}",
+            "requirement_id": f"requirement-{index}",
+            "transport": "skill_runtime",
+            "response_fixture": fixture,
+            "runtime_entrypoint": "replay/runtime.py",
+            "readiness": {"kind": "http", "path": "/healthz"},
+            "protocol_probes": [
+                {
+                    "kind": "http",
+                    "path": "/data",
+                    "response_contains": f"metadata-wrapper-{index}",
+                }
+            ],
+        }
+        for index, fixture in enumerate(fixtures, start=1)
+    ]
+
+    with pytest.raises(ReplayCapabilityError) as error:
+        replay_capability_module._parse_services(
+            raw_services,
+            output_root=output_root,
+            fixtures=fixtures,
+            runtime_files=("replay/runtime.py",),
+            handled_requirements={"requirement-1", "requirement-2"},
+            fixture_evidence_refs={
+                fixture: (f"evidence-{index}",)
+                for index, fixture in enumerate(fixtures, start=1)
+            },
+            requirement_evidence_refs={
+                f"requirement-{index}": (f"evidence-{index}",)
+                for index in (1, 2)
+            },
+        )
+
+    assert error.value.code == "protocol_probe_not_fixture_derived"
+    assert error.value.details["fixture_probe_violation_count"] == 2
+    constraints = error.value.details["fixture_probe_constraints"]
+    assert [item["requirement_id"] for item in constraints] == [
+        "requirement-1",
+        "requirement-2",
+    ]
+
+
+def test_service_schema_error_aggregates_all_invalid_field_instances(
+    tmp_path: Path,
+) -> None:
+    raw_services = [
+        {
+            "service_id": f"service-{index}",
+            "requirement_id": f"requirement-{index}",
+            "transport": f"private-invalid-{index}",
+            "response_fixture": f"fixtures/{index}.json",
+            "readiness": {"kind": "http", "path": "/healthz"},
+        }
+        for index in (1, 2)
+    ]
+
+    with pytest.raises(
+        ReplayCapabilityError,
+        match="unsupported replay service transport",
+    ) as error:
+        replay_capability_module._parse_services(
+            raw_services,
+            output_root=tmp_path,
+            fixtures=("fixtures/1.json", "fixtures/2.json"),
+            runtime_files=(),
+            handled_requirements={"requirement-1", "requirement-2"},
+            fixture_evidence_refs={
+                "fixtures/1.json": ("evidence-1",),
+                "fixtures/2.json": ("evidence-2",),
+            },
+            requirement_evidence_refs={
+                "requirement-1": ("evidence-1",),
+                "requirement-2": ("evidence-2",),
+            },
+        )
+
+    assert error.value.code == "schema_field_validation_failed"
+    assert error.value.details["schema_field_violation_count"] == 2
+    assert error.value.details["schema_field_constraints"] == [
+        {
+            "schema_layer": "compile_result",
+            "field_path": "services[*].transport",
+            "rule": "enum",
+            "expected": ["http_fixture", "skill_runtime", "tcp_fixture"],
+        }
+    ]
+    encoded = json.dumps(error.value.details)
+    assert "private-invalid-1" not in encoded
+    assert "private-invalid-2" not in encoded
+
+
+def test_manifest_schema_enum_error_is_a_typed_field_constraint() -> None:
+    with pytest.raises(ReplayCapabilityError) as error:
+        replay_capability_module._parse_manifest(
+            {
+                "schema_version": "invalid-schema",
+                "capability_id": "generic.replay",
+                "protocol": "invalid-protocol",
+                "entrypoint": "replay/compiler.py",
+                "handles": ["local_endpoint"],
+            }
+        )
+
+    assert error.value.code == "schema_field_validation_failed"
+    assert error.value.details["schema_field_constraints"] == [
+        {
+            "schema_layer": "manifest",
+            "field_path": "schema_version",
+            "rule": "enum",
+            "expected": ["aworld.skill.replay_capability.v1"],
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    ("raw", "field_path", "rule", "expected"),
+    [
+        ([], "fixture_evidence_refs", "type", ["object"]),
+        ({}, "fixtures[*].evidence_refs", "required", []),
+    ],
+)
+def test_fixture_provenance_shape_errors_are_typed_schema_constraints(
+    tmp_path: Path,
+    raw: object,
+    field_path: str,
+    rule: str,
+    expected: list[str],
+) -> None:
+    skill = _write_capability_skill(tmp_path)
+
+    with pytest.raises(ReplayCapabilityError) as error:
+        replay_capability_module._validate_fixture_provenance(
+            raw,
+            fixtures=("fixture.json",),
+            requirement_evidence_refs={"requirement-1": ("evidence-1",)},
+            request=_request(skill),
+            output_root=tmp_path / "output",
+        )
+
+    assert error.value.code == "schema_field_validation_failed"
+    assert error.value.details["schema_field_constraints"] == [
+        {
+            "schema_layer": "compile_result",
+            "field_path": field_path,
+            "rule": rule,
+            "expected": expected,
+        }
+    ]
+
+
+@pytest.mark.replay_sandbox
 def test_skill_runtime_accepts_semantically_decoded_fixture_container_expectation(
     tmp_path: Path,
 ) -> None:
@@ -859,6 +1295,7 @@ def test_recorded_response_index_prefers_semantically_richer_transport_record() 
     assert ready[0]["semantic_payload_score"] > ready[1]["semantic_payload_score"]
 
 
+@pytest.mark.replay_sandbox
 def test_freeze_places_operation_index_next_to_nested_fixture(tmp_path: Path) -> None:
     skill = _write_capability_skill(tmp_path, nested_fixture=True)
     capability = discover_replay_capability(skill)
@@ -912,6 +1349,7 @@ def test_discovery_rejects_entrypoint_escape(tmp_path: Path) -> None:
         discover_replay_capability(skill)
 
 
+@pytest.mark.replay_sandbox
 def test_compile_and_freeze_capability_is_deterministic(tmp_path: Path) -> None:
     skill = _write_capability_skill(tmp_path)
     capability = discover_replay_capability(skill)
@@ -936,6 +1374,7 @@ def test_compile_and_freeze_capability_is_deterministic(tmp_path: Path) -> None:
     assert frozen.fingerprint.startswith("sha256:")
 
 
+@pytest.mark.replay_sandbox
 def test_compile_normalizes_requirement_id_endpoint_replacement_keys(
     tmp_path: Path,
 ) -> None:
@@ -962,6 +1401,7 @@ def test_compile_normalizes_requirement_id_endpoint_replacement_keys(
     }
 
 
+@pytest.mark.replay_sandbox
 def test_compile_infers_single_service_endpoint_replacement(tmp_path: Path) -> None:
     skill = _write_capability_skill(tmp_path)
     compiler = skill / "replay/compiler.py"
@@ -986,6 +1426,7 @@ def test_compile_infers_single_service_endpoint_replacement(tmp_path: Path) -> N
     }
 
 
+@pytest.mark.replay_sandbox
 def test_compile_accepts_unused_evidence_backed_fixture(tmp_path: Path) -> None:
     skill = _write_capability_skill(tmp_path)
     compiler = skill / "replay/compiler.py"
@@ -1015,6 +1456,7 @@ def test_compile_accepts_unused_evidence_backed_fixture(tmp_path: Path) -> None:
     assert {item.path for item in frozen.fixtures} == {"fixture.txt", "extra.txt"}
 
 
+@pytest.mark.replay_sandbox
 def test_double_compile_rejects_different_fixture_hashes(tmp_path: Path) -> None:
     skill = _write_capability_skill(tmp_path, nondeterministic=True)
     capability = discover_replay_capability(skill)
@@ -1028,6 +1470,7 @@ def test_double_compile_rejects_different_fixture_hashes(tmp_path: Path) -> None
         )
 
 
+@pytest.mark.replay_sandbox
 def test_compile_rejects_unrecorded_evidence_reference(tmp_path: Path) -> None:
     skill = _write_capability_skill(tmp_path, invalid_evidence=True)
     capability = discover_replay_capability(skill)
@@ -1041,6 +1484,7 @@ def test_compile_rejects_unrecorded_evidence_reference(tmp_path: Path) -> None:
         )
 
 
+@pytest.mark.replay_sandbox
 def test_compile_rejects_fixture_bytes_not_present_in_cited_context(
     tmp_path: Path,
 ) -> None:
@@ -1064,6 +1508,7 @@ def test_compile_rejects_fixture_bytes_not_present_in_cited_context(
         )
 
 
+@pytest.mark.replay_sandbox
 def test_compile_recomputes_context_snapshot_fingerprint(tmp_path: Path) -> None:
     skill = _write_capability_skill(tmp_path)
     compiler = skill / "replay/compiler.py"
@@ -1090,6 +1535,7 @@ def test_compile_recomputes_context_snapshot_fingerprint(tmp_path: Path) -> None
         )
 
 
+@pytest.mark.replay_sandbox
 def test_compile_rejects_capability_that_mutates_its_package(tmp_path: Path) -> None:
     skill = _write_capability_skill(tmp_path, mutate_runtime=True)
     capability = discover_replay_capability(skill)
@@ -1103,19 +1549,31 @@ def test_compile_rejects_capability_that_mutates_its_package(tmp_path: Path) -> 
         )
 
 
+@pytest.mark.replay_sandbox
 def test_compile_rejects_undeclared_output_files(tmp_path: Path) -> None:
     skill = _write_capability_skill(tmp_path, undeclared_output=True)
     capability = discover_replay_capability(skill)
     assert capability is not None
 
-    with pytest.raises(ReplayCapabilityError, match="undeclared output"):
+    with pytest.raises(ReplayCapabilityError, match="undeclared output") as error:
         compile_and_freeze_capability(
             capability,
             _request(skill),
             tmp_path / "artifacts",
         )
 
+    assert error.value.code == "schema_field_validation_failed"
+    assert error.value.details["schema_field_constraints"] == [
+        {
+            "schema_layer": "compiler_output",
+            "field_path": "files[*]",
+            "rule": "enum",
+            "expected": ["result.json", "declared_fixture"],
+        }
+    ]
 
+
+@pytest.mark.replay_sandbox
 def test_frozen_capability_verification_rejects_runtime_tampering(
     tmp_path: Path,
 ) -> None:

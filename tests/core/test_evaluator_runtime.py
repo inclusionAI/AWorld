@@ -942,6 +942,15 @@ def test_trajectory_prompt_can_use_generated_runtime_trajectory() -> None:
     assert "Do not include markdown" in prompt["instruction"]
     assert prompt["evidence_digest"]["mode"] == "judge_ready_evidence_digest"
     assert prompt["evidence_digest"]["entries"][0]["evidence"]["excerpt"] == "evidence"
+    read_policy = prompt["artifact_backed_evidence"]["read_policy"]
+    assert read_policy["projection_strategy"] == "incremental_non_overlapping_ranges"
+    assert read_policy["max_rounds"] == 2
+    assert read_policy["max_total_chars"] == 80000
+    constraint_schema = prompt["required_output_schema"][
+        "evidence_repair_constraints"
+    ][0]
+    assert "projection_compacted" in constraint_schema["failure_mode"]
+    assert "support_incomplete" in constraint_schema["failure_mode"]
 
 
 def test_build_trajectory_prompt_includes_runtime_context_from_source_target() -> None:
@@ -1198,6 +1207,8 @@ def test_trajectory_prompt_uses_bundle_first_compaction_for_large_replay_payload
     assert artifact_backed["prompt_payload_is_bounded"] is True
     assert artifact_backed["read_policy"]["external_network_allowed"] is False
     assert artifact_backed["read_policy"]["mutation_allowed"] is False
+    assert artifact_backed["read_policy"]["max_rounds"] == 3
+    assert artifact_backed["read_policy"]["max_total_chars"] == 120000
     assert {
         (artifact["kind"], artifact["path"])
         for artifact in artifact_backed["artifacts"]

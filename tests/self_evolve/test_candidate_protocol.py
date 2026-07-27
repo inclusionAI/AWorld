@@ -34,6 +34,40 @@ def test_normalizes_canonical_top_level_candidate() -> None:
     }
 
 
+def test_normalizes_bounded_addressed_improvement_signal_ids() -> None:
+    normalized = normalize_candidate_output(
+        {
+            "schema_version": CANDIDATE_SCHEMA_VERSION,
+            "content": "# Demo\n\nImproved guidance.\n",
+            "addressed_improvement_signal_ids": [
+                "signal-1",
+                "signal-2",
+            ],
+            "files": [],
+        },
+        current_content=CURRENT_CONTENT,
+    )
+
+    assert normalized["addressed_improvement_signal_ids"] == [
+        "signal-1",
+        "signal-2",
+    ]
+    with pytest.raises(CandidateProtocolError) as error:
+        normalize_candidate_output(
+            {
+                "content": "# Demo\n\nImproved guidance.\n",
+                "addressed_improvement_signal_ids": [
+                    "signal-1",
+                    "signal-1",
+                ],
+            },
+            current_content=CURRENT_CONTENT,
+        )
+    assert error.value.code == (
+        "invalid_addressed_improvement_signal_ids"
+    )
+
+
 def test_rejects_full_skill_content_that_drops_yaml_frontmatter() -> None:
     with pytest.raises(CandidateProtocolError) as error:
         normalize_candidate_output(

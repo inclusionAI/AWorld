@@ -63,6 +63,10 @@ _MAX_BUNDLE_FIRST_STEP_COUNT = 8
 _MAX_BUNDLE_FIRST_STEP_TEXT_CHARS = 180
 _MAX_EVIDENCE_DIGEST_ENTRIES = 8
 _MAX_EVIDENCE_DIGEST_VALUE_CHARS = 1200
+_DEFAULT_ARTIFACT_READ_ROUNDS = 2
+_CANONICAL_BUNDLE_ARTIFACT_READ_ROUNDS = 3
+_DEFAULT_ARTIFACT_READ_TOTAL_CHARS = 80000
+_CANONICAL_BUNDLE_ARTIFACT_READ_TOTAL_CHARS = 120000
 _SELF_EVOLVE_REPLAY_MARKER = "Self-evolve replay evidence requirements:"
 _TRAJECTORY_JUDGE_SYSTEM_CONTRACT = """AWorld trajectory evaluator runtime contract:
 - Prefer evidence_digest over artifact_backed_evidence and any legacy TRAJECTORY_LOG parsing instructions in the judge document.
@@ -70,6 +74,8 @@ _TRAJECTORY_JUDGE_SYSTEM_CONTRACT = """AWorld trajectory evaluator runtime contr
 - Do not parse trajectory_log_path yourself unless evidence_digest and framework-provided artifact_read_results are insufficient.
 - To inspect listed artifacts, return a single JSON object with artifact_read_requests, for example {"artifact_read_requests":[{"path":"<listed artifact path>","max_chars":4000}]}.
 - Request only files listed in artifact_backed_evidence.artifacts; the framework will deny every other path.
+- When a read is truncated, continue from next_start (or omit start to let the framework continue automatically); never request an overlapping range.
+- Before declaring evidence incomplete only because a bounded projection omits needed detail, request the indexed source artifact or canonical bundle within the supplied read budget.
 - After artifact_read_results are provided, return the final compact JSON assessment matching required_output_schema.
 - Never call network, shell, browser, task execution, or mutation tools while judging.
 """
@@ -722,6 +728,28 @@ def _build_trajectory_prompt(case_input: dict, target: dict, suite) -> str:
                 "evidence_incomplete": "boolean",
                 "evidence_issues": "array of short strings",
             },
+            "evidence_repair_constraints": [
+                {
+                    "subject_kind": (
+                        "artifact|bibliographic_claim|configuration_claim|"
+                        "evidence_manifest|general_claim|quantitative_claim|quote|symbolic_claim"
+                    ),
+                    "failure_mode": (
+                        "invalid_manifest|missing_source|projection_compacted|"
+                        "source_mismatch|support_incomplete|unreadable_artifact|unsupported_claim"
+                    ),
+                    "source_layer": (
+                        "artifact_capture|artifact_projection|candidate_output|"
+                        "evidence_manifest|judge_runtime"
+                    ),
+                    "required_action": (
+                        "capture_artifact|expand_bounded_projection|reconcile_source|"
+                        "repair_artifact_reference|support_or_omit|validate_manifest"
+                    ),
+                    "owner": "candidate|framework|infrastructure|task",
+                    "occurrence_count": "integer >= 1",
+                }
+            ],
         },
         "instruction": (
             "Apply the trajectory evaluator contract to the extracted trajectory. "
@@ -736,6 +764,13 @@ def _build_trajectory_prompt(case_input: dict, target: dict, suite) -> str:
             "When extracted_trajectory.evidence_bundle.valid is true, treat that canonical bundle as the "
             "primary evidence; raw evidence and steps may be metadata-only execution context. "
             "Evidence content may be bounded for prompt size; use evidence_summary to account for compaction. "
+            "Before setting evidence_incomplete solely because required detail is outside a bounded excerpt, "
+            "request the corresponding indexed source artifact within artifact_backed_evidence.read_policy. "
+            "Emit evidence_repair_constraints once per distinct constraint identity. Use owner=framework with "
+            "failure_mode=projection_compacted only when required support exists in an indexed artifact but "
+            "the bounded projection/read budget prevented inspection. Use owner=candidate with "
+            "failure_mode=support_incomplete when the submitted evidence bundle or indexed artifacts do not "
+            "contain support for final-answer claims. Do not put claim text or artifact contents in constraints. "
             "If extracted_trajectory is insufficient, return a valid JSON failure assessment instead of requesting more input. "
             "Return only one compact JSON object matching required_output_schema. "
             "Do not include analysis, rationale prose, or tables. "
@@ -1001,6 +1036,10 @@ def _artifact_backed_evidence_index(
             "path": path,
             "available": Path(path).expanduser().exists(),
         }
+        try:
+            artifact["size_bytes"] = Path(path).expanduser().stat().st_size
+        except OSError:
+            pass
         artifact.update({k: v for k, v in metadata.items() if v not in (None, "")})
         artifacts.append(artifact)
 
@@ -1029,6 +1068,7 @@ def _artifact_backed_evidence_index(
                 extraction_method=entry.get("extraction_method"),
             )
 
+    canonical_bundle_valid = bool(evidence_summary.get("canonical_bundle_valid"))
     return {
         "mode": "read_only_artifact_index",
         "prompt_payload_is_bounded": True,
@@ -1036,6 +1076,20 @@ def _artifact_backed_evidence_index(
             "read_only": True,
             "external_network_allowed": False,
             "mutation_allowed": False,
+            "projection_strategy": "incremental_non_overlapping_ranges",
+            "max_rounds": (
+                _CANONICAL_BUNDLE_ARTIFACT_READ_ROUNDS
+                if canonical_bundle_valid
+                else _DEFAULT_ARTIFACT_READ_ROUNDS
+            ),
+            "max_requests_per_round": 8,
+            "default_chars_per_read": 4000,
+            "max_chars_per_read": 20000,
+            "max_total_chars": (
+                _CANONICAL_BUNDLE_ARTIFACT_READ_TOTAL_CHARS
+                if canonical_bundle_valid
+                else _DEFAULT_ARTIFACT_READ_TOTAL_CHARS
+            ),
             "allowed_artifact_kinds": sorted({str(item["kind"]) for item in artifacts}),
         },
         "artifacts": artifacts,

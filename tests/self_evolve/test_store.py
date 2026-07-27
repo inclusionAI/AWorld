@@ -3,7 +3,15 @@ from __future__ import annotations
 import json
 import os
 import socket
+from pathlib import Path
 
+import pytest
+
+from aworld.self_evolve.budget import (
+    CandidateAttemptEvent,
+    CandidateAttemptKey,
+    CandidateAttemptStage,
+)
 from aworld.self_evolve.store import FilesystemSelfEvolveStore
 from aworld.self_evolve.types import (
     CandidateFileDelta,
@@ -73,6 +81,117 @@ def test_store_tracks_active_run_lease_until_terminal_status(tmp_path) -> None:
     assert not (run_dir / ".active.json").exists()
 
 
+def test_store_archives_dead_interrupted_campaign_run(tmp_path) -> None:
+    target = SelfEvolveTargetRef(target_type="skill", target_id="demo")
+    store = FilesystemSelfEvolveStore(workspace_root=tmp_path)
+    run_dir = store.create_run(
+        SelfEvolveRun(
+            run_id="campaign-demo-cycle-001",
+            target=target,
+            status=SelfEvolveRunStatus.RUNNING,
+        )
+    )
+    (run_dir / "partial.txt").write_text("durable partial artifact", encoding="utf-8")
+    (run_dir / ".active.json").write_text(
+        json.dumps(
+            {
+                "hostname": socket.gethostname(),
+                "pid": 2_147_483_647,
+                "started_at": 1.0,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    archived = store.archive_interrupted_campaign_run(
+        campaign_id="campaign-demo",
+        run_id="campaign-demo-cycle-001",
+        reserved_usage={
+            "tokens": 500_000,
+            "cost_usd": "0",
+            "wall_seconds": "0",
+        },
+    )
+
+    assert not run_dir.exists()
+    assert (archived / "partial.txt").read_text(encoding="utf-8") == (
+        "durable partial artifact"
+    )
+    interruption = _read_json(archived / "interruption.json")
+    assert interruption["code"] == "campaign_run_interrupted"
+    assert interruption["reserved_usage"]["tokens"] == 500_000
+
+
+def test_store_refuses_to_archive_live_campaign_run(tmp_path) -> None:
+    target = SelfEvolveTargetRef(target_type="skill", target_id="demo")
+    store = FilesystemSelfEvolveStore(workspace_root=tmp_path)
+    store.create_run(
+        SelfEvolveRun(
+            run_id="campaign-demo-cycle-001",
+            target=target,
+            status=SelfEvolveRunStatus.RUNNING,
+        )
+    )
+
+    with pytest.raises(RuntimeError, match="still active"):
+        store.archive_interrupted_campaign_run(
+            campaign_id="campaign-demo",
+            run_id="campaign-demo-cycle-001",
+            reserved_usage={
+                "tokens": 500_000,
+                "cost_usd": "0",
+                "wall_seconds": "0",
+            },
+        )
+
+
+def test_store_refuses_to_archive_run_without_valid_lease(tmp_path) -> None:
+    target = SelfEvolveTargetRef(target_type="skill", target_id="demo")
+    store = FilesystemSelfEvolveStore(workspace_root=tmp_path)
+    run_dir = store.create_run(
+        SelfEvolveRun(
+            run_id="campaign-demo-cycle-001",
+            target=target,
+            status=SelfEvolveRunStatus.RUNNING,
+        )
+    )
+    (run_dir / ".active.json").unlink()
+
+    with pytest.raises(RuntimeError, match="still active"):
+        store.archive_interrupted_campaign_run(
+            campaign_id="campaign-demo",
+            run_id="campaign-demo-cycle-001",
+            reserved_usage={
+                "tokens": 500_000,
+                "cost_usd": "0",
+                "wall_seconds": "0",
+            },
+        )
+
+
+def test_store_refuses_to_archive_run_from_another_campaign(tmp_path) -> None:
+    target = SelfEvolveTargetRef(target_type="skill", target_id="demo")
+    store = FilesystemSelfEvolveStore(workspace_root=tmp_path)
+    store.create_run(
+        SelfEvolveRun(
+            run_id="campaign-other-cycle-001",
+            target=target,
+            status=SelfEvolveRunStatus.RUNNING,
+        )
+    )
+
+    with pytest.raises(ValueError, match="does not belong"):
+        store.archive_interrupted_campaign_run(
+            campaign_id="campaign-demo",
+            run_id="campaign-other-cycle-001",
+            reserved_usage={
+                "tokens": 500_000,
+                "cost_usd": "0",
+                "wall_seconds": "0",
+            },
+        )
+
+
 def test_store_persists_candidate_report_recipe_and_lineage(tmp_path) -> None:
     target = SelfEvolveTargetRef(target_type="skill", target_id="demo")
     run = SelfEvolveRun(run_id="run-002", target=target)
@@ -123,6 +242,255 @@ def test_store_persists_candidate_report_recipe_and_lineage(tmp_path) -> None:
     assert _read_json(report_path) == report
     assert _read_json(recipe_path)["held_out_case_ids"] == ["case-3"]
     assert _read_json(lineage_path)["optimizer_name"] == "llm-mutator"
+
+
+def test_store_appends_duplicate_generation_attempts_without_overwriting_canonical(
+    tmp_path,
+) -> None:
+    target = SelfEvolveTargetRef(target_type="skill", target_id="demo")
+    candidate = CandidateVariant(
+        candidate_id="cand-stable",
+        target=target,
+        content="# Stable candidate\n",
+        rationale="canonical package",
+    )
+    lineage = OptimizerLineage(
+        candidate_id=candidate.candidate_id,
+        optimizer_name="llm-mutator",
+        optimizer_version="1",
+        rationale="canonical lineage",
+    )
+    store = FilesystemSelfEvolveStore(tmp_path)
+    store.create_run(SelfEvolveRun(run_id="run-attempts", target=target))
+    candidate_path = store.write_candidate("run-attempts", candidate)
+    lineage_path = store.write_optimizer_lineage("run-attempts", lineage)
+    canonical_candidate = candidate_path.read_bytes()
+    canonical_lineage = lineage_path.read_bytes()
+
+    first_key = CandidateAttemptKey("run-attempts", 0, 0)
+    second_key = CandidateAttemptKey("run-attempts", 1, 0)
+    events = (
+        CandidateAttemptEvent(
+            key=first_key,
+            sequence=0,
+            stage=CandidateAttemptStage.GENERATED,
+            candidate_id=candidate.candidate_id,
+        ),
+        CandidateAttemptEvent(
+            key=first_key,
+            sequence=1,
+            stage=CandidateAttemptStage.UNIQUE,
+            candidate_id=candidate.candidate_id,
+        ),
+        CandidateAttemptEvent(
+            key=second_key,
+            sequence=0,
+            stage=CandidateAttemptStage.GENERATED,
+            candidate_id=candidate.candidate_id,
+        ),
+        CandidateAttemptEvent(
+            key=second_key,
+            sequence=1,
+            stage=CandidateAttemptStage.DUPLICATE_FILTERED,
+            candidate_id=candidate.candidate_id,
+        ),
+        CandidateAttemptEvent(
+            key=second_key,
+            sequence=2,
+            stage=CandidateAttemptStage.NOT_RUN,
+            candidate_id=candidate.candidate_id,
+            reason_code="duplicate_candidate",
+        ),
+    )
+    for event in events:
+        store.append_candidate_attempt_event(event)
+
+    assert store.read_candidate_attempt_events(first_key) == events[:2]
+    assert store.read_candidate_attempt_events(second_key) == events[2:]
+    assert store.read_all_candidate_attempt_events("run-attempts") == events
+    assert store.candidate_attempt_path(first_key) != store.candidate_attempt_path(
+        second_key
+    )
+    assert candidate_path.read_bytes() == canonical_candidate
+    assert lineage_path.read_bytes() == canonical_lineage
+
+
+def test_store_rejects_invalid_attempt_transition_without_appending(tmp_path) -> None:
+    store = FilesystemSelfEvolveStore(tmp_path)
+    key = CandidateAttemptKey("run-invalid-attempt", 0, 0)
+    generated = CandidateAttemptEvent(
+        key=key,
+        sequence=0,
+        stage=CandidateAttemptStage.GENERATED,
+        candidate_id="candidate-1",
+    )
+    store.append_candidate_attempt_event(generated)
+    invalid = CandidateAttemptEvent(
+        key=key,
+        sequence=1,
+        stage=CandidateAttemptStage.PAIRED_REPLAY_STARTED,
+        candidate_id="candidate-1",
+    )
+
+    with pytest.raises(ValueError, match="illegal candidate attempt transition"):
+        store.append_candidate_attempt_event(invalid)
+
+    assert store.read_candidate_attempt_events(key) == (generated,)
+
+
+@pytest.mark.parametrize("with_existing_event", (False, True))
+def test_attempt_append_never_exposes_a_partial_json_record(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    with_existing_event: bool,
+) -> None:
+    store = FilesystemSelfEvolveStore(tmp_path)
+    key = CandidateAttemptKey("run-atomic-attempt", 0, 0)
+    generated = CandidateAttemptEvent(
+        key=key,
+        sequence=0,
+        stage=CandidateAttemptStage.GENERATED,
+        candidate_id="candidate-1",
+    )
+    existing = (generated,) if with_existing_event else ()
+    if with_existing_event:
+        store.append_candidate_attempt_event(generated)
+        pending = CandidateAttemptEvent(
+            key=key,
+            sequence=1,
+            stage=CandidateAttemptStage.UNIQUE,
+            candidate_id="candidate-1",
+        )
+    else:
+        pending = generated
+
+    original_open = Path.open
+    original_error = OSError("simulated partial attempt write")
+
+    class _PartialWriter:
+        def __init__(self, stream) -> None:
+            self._stream = stream
+
+        def __enter__(self):
+            self._stream.__enter__()
+            return self
+
+        def __exit__(self, *args):
+            return self._stream.__exit__(*args)
+
+        def write(self, payload: bytes) -> int:
+            written = self._stream.write(payload[: max(1, len(payload) // 2)])
+            self._stream.flush()
+            os.fsync(self._stream.fileno())
+            raise original_error
+
+        def flush(self) -> None:
+            self._stream.flush()
+
+        def fileno(self) -> int:
+            return self._stream.fileno()
+
+    def partial_temporary_open(path: Path, mode="r", *args, **kwargs):
+        stream = original_open(path, mode, *args, **kwargs)
+        if mode == "xb" and path.name.endswith(".tmp"):
+            return _PartialWriter(stream)
+        return stream
+
+    monkeypatch.setattr(Path, "open", partial_temporary_open)
+    with pytest.raises(OSError) as raised:
+        store.append_candidate_attempt_event(pending)
+
+    assert raised.value is original_error
+    assert store.read_candidate_attempt_events(key) == existing
+    attempt_dir = store.candidate_attempt_path(key).parent
+    assert tuple(attempt_dir.glob(".events.jsonl.*.tmp")) == ()
+
+
+@pytest.mark.parametrize("with_existing_event", (False, True))
+def test_attempt_append_completes_repeated_short_writes_before_replace(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    with_existing_event: bool,
+) -> None:
+    store = FilesystemSelfEvolveStore(tmp_path)
+    key = CandidateAttemptKey("run-short-write-attempt", 0, 0)
+    generated = CandidateAttemptEvent(
+        key=key,
+        sequence=0,
+        stage=CandidateAttemptStage.GENERATED,
+        candidate_id="candidate-1",
+    )
+    existing = (generated,) if with_existing_event else ()
+    if with_existing_event:
+        store.append_candidate_attempt_event(generated)
+        pending = CandidateAttemptEvent(
+            key=key,
+            sequence=1,
+            stage=CandidateAttemptStage.UNIQUE,
+            candidate_id="candidate-1",
+        )
+    else:
+        pending = generated
+
+    original_open = Path.open
+    write_calls = 0
+
+    class _ShortWriter:
+        def __init__(self, stream) -> None:
+            self._stream = stream
+
+        def __enter__(self):
+            self._stream.__enter__()
+            return self
+
+        def __exit__(self, *args):
+            return self._stream.__exit__(*args)
+
+        def write(self, payload) -> int:
+            nonlocal write_calls
+            write_calls += 1
+            return self._stream.write(payload[:7])
+
+        def flush(self) -> None:
+            self._stream.flush()
+
+        def fileno(self) -> int:
+            return self._stream.fileno()
+
+    def short_temporary_open(path: Path, mode="r", *args, **kwargs):
+        stream = original_open(path, mode, *args, **kwargs)
+        if mode == "xb" and path.name.endswith(".tmp"):
+            return _ShortWriter(stream)
+        return stream
+
+    monkeypatch.setattr(Path, "open", short_temporary_open)
+    store.append_candidate_attempt_event(pending)
+
+    assert write_calls > 1
+    assert store.read_candidate_attempt_events(key) == (*existing, pending)
+    attempt_dir = store.candidate_attempt_path(key).parent
+    assert tuple(attempt_dir.glob(".events.jsonl.*.tmp")) == ()
+
+
+def test_store_rejects_candidate_attempt_path_key_mismatch(tmp_path) -> None:
+    store = FilesystemSelfEvolveStore(tmp_path)
+    path_key = CandidateAttemptKey("run-path-key", 0, 0)
+    foreign_key = CandidateAttemptKey("run-path-key", 0, 1)
+    foreign_event = CandidateAttemptEvent(
+        key=foreign_key,
+        sequence=0,
+        stage=CandidateAttemptStage.GENERATED,
+        candidate_id="candidate-1",
+    )
+    path = store.candidate_attempt_path(path_key)
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        json.dumps(foreign_event.to_dict(), sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="path/key mismatch"):
+        store.read_candidate_attempt_events(path_key)
 
 
 def test_run_record_serializes_metrics_and_gate_results(tmp_path) -> None:

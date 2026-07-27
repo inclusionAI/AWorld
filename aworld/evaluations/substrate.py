@@ -60,10 +60,22 @@ _IMAGE_SUFFIX_TO_MIME = {
     ".bmp": "image/bmp",
     ".svg": "image/svg+xml",
 }
-_MAX_JUDGE_ARTIFACT_READ_ROUNDS = 2
+_DEFAULT_JUDGE_ARTIFACT_READ_ROUNDS = 2
+_MAX_JUDGE_ARTIFACT_READ_ROUNDS = 4
 _MAX_JUDGE_ARTIFACT_READ_REQUESTS = 8
 _DEFAULT_JUDGE_ARTIFACT_READ_CHARS = 4000
 _MAX_JUDGE_ARTIFACT_READ_CHARS = 20000
+_DEFAULT_JUDGE_ARTIFACT_READ_TOTAL_CHARS = 80000
+_MAX_JUDGE_ARTIFACT_READ_TOTAL_CHARS = 160000
+
+
+@dataclass(frozen=True)
+class _ArtifactReadPolicy:
+    max_rounds: int = _DEFAULT_JUDGE_ARTIFACT_READ_ROUNDS
+    max_requests_per_round: int = _MAX_JUDGE_ARTIFACT_READ_REQUESTS
+    default_chars_per_read: int = _DEFAULT_JUDGE_ARTIFACT_READ_CHARS
+    max_chars_per_read: int = _MAX_JUDGE_ARTIFACT_READ_CHARS
+    max_total_chars: int = _DEFAULT_JUDGE_ARTIFACT_READ_TOTAL_CHARS
 
 @dataclass(frozen=True)
 class EvalCaseDef:
@@ -541,18 +553,63 @@ class AgentJudgeBackend:
             phase="initial_judge",
             round_index=0,
         )
+        artifact_read_policy = _artifact_read_policy(prompt)
+        artifact_read_history: list[dict[str, Any]] = []
         prompt_for_reads = prompt
-        for read_round in range(1, _MAX_JUDGE_ARTIFACT_READ_ROUNDS + 1):
+        for read_round in range(1, artifact_read_policy.max_rounds + 1):
             read_requests = _extract_artifact_read_requests(response)
             if not read_requests:
                 break
-            read_results = _resolve_artifact_read_requests(prompt_for_reads, read_requests)
-            prompt_for_reads = _append_artifact_read_results_to_prompt(prompt_for_reads, read_results)
+            read_results = _resolve_artifact_read_requests(
+                prompt_for_reads,
+                read_requests,
+                policy=artifact_read_policy,
+                prior_results=artifact_read_history,
+            )
+            artifact_read_history.extend(read_results)
+            prompt_for_reads = _append_artifact_read_results_to_prompt(
+                prompt_for_reads,
+                read_results,
+                policy=artifact_read_policy,
+            )
             response = await _run_with_timeout(
                 prompt_for_reads,
                 phase=f"artifact_read_round_{read_round}",
                 round_index=read_round,
                 read_results=read_results,
+            )
+        pending_requests = _extract_artifact_read_requests(response)
+        if pending_requests:
+            unread_indexed_content = _requests_need_unread_projection(
+                prompt_for_reads,
+                pending_requests,
+                prior_results=artifact_read_history,
+                policy=artifact_read_policy,
+            )
+            exhausted_result = {
+                "status": "denied",
+                "reason": "read_round_budget_exhausted",
+                "request_count": len(pending_requests),
+                "max_rounds": artifact_read_policy.max_rounds,
+                "unread_indexed_content": unread_indexed_content,
+                "read_budget_used_chars": _artifact_read_chars(artifact_read_history),
+                "read_budget_remaining_chars": max(
+                    0,
+                    artifact_read_policy.max_total_chars
+                    - _artifact_read_chars(artifact_read_history),
+                ),
+            }
+            prompt_for_reads = _append_artifact_read_results_to_prompt(
+                prompt_for_reads,
+                [exhausted_result],
+                policy=artifact_read_policy,
+                finalize=True,
+            )
+            response = await _run_with_timeout(
+                prompt_for_reads,
+                phase="artifact_read_finalize",
+                round_index=artifact_read_policy.max_rounds + 1,
+                read_results=[exhausted_result],
             )
         payload = _coerce_judge_payload(response, judge_schema=getattr(suite, "judge_schema", None))
         return JudgeExecution(
@@ -1906,6 +1963,18 @@ def _judge_call_diagnostic(
         "artifact_read_denied_count": len(denied_reads),
         "artifact_read_denial_reasons": denial_reasons,
         "artifact_read_denied_path_fingerprints": denied_path_fingerprints,
+        "artifact_read_continuation_count": sum(
+            1 for result in successful_reads if result.get("continuation_applied")
+        ),
+        "artifact_read_budget_exhausted": any(
+            result.get("reason")
+            in {"read_char_budget_exhausted", "read_round_budget_exhausted"}
+            for result in denied_reads
+        ),
+        "artifact_read_projection_incomplete": any(
+            result.get("unread_indexed_content") is True
+            for result in denied_reads
+        ),
         "artifact_read_chars": sum(
             int(result.get("chars_returned") or 0)
             for result in successful_reads
@@ -1948,13 +2017,228 @@ def _allowed_artifact_paths(prompt: JudgePrompt) -> dict[str, str]:
     return allowed
 
 
+def _artifact_read_policy(prompt: JudgePrompt) -> _ArtifactReadPolicy:
+    try:
+        payload = json.loads(_prompt_text(prompt))
+    except (TypeError, json.JSONDecodeError):
+        payload = {}
+    artifact_backed = (
+        payload.get("artifact_backed_evidence")
+        if isinstance(payload, Mapping)
+        else None
+    )
+    configured = (
+        artifact_backed.get("read_policy")
+        if isinstance(artifact_backed, Mapping)
+        else None
+    )
+    if not isinstance(configured, Mapping):
+        configured = {}
+
+    max_chars_per_read = _bounded_int(
+        configured.get("max_chars_per_read"),
+        default=_MAX_JUDGE_ARTIFACT_READ_CHARS,
+        minimum=1,
+        maximum=_MAX_JUDGE_ARTIFACT_READ_CHARS,
+    )
+    return _ArtifactReadPolicy(
+        max_rounds=_bounded_int(
+            configured.get("max_rounds"),
+            default=_DEFAULT_JUDGE_ARTIFACT_READ_ROUNDS,
+            minimum=1,
+            maximum=_MAX_JUDGE_ARTIFACT_READ_ROUNDS,
+        ),
+        max_requests_per_round=_bounded_int(
+            configured.get("max_requests_per_round"),
+            default=_MAX_JUDGE_ARTIFACT_READ_REQUESTS,
+            minimum=1,
+            maximum=_MAX_JUDGE_ARTIFACT_READ_REQUESTS,
+        ),
+        default_chars_per_read=_bounded_int(
+            configured.get("default_chars_per_read"),
+            default=_DEFAULT_JUDGE_ARTIFACT_READ_CHARS,
+            minimum=1,
+            maximum=max_chars_per_read,
+        ),
+        max_chars_per_read=max_chars_per_read,
+        max_total_chars=_bounded_int(
+            configured.get("max_total_chars"),
+            default=_DEFAULT_JUDGE_ARTIFACT_READ_TOTAL_CHARS,
+            minimum=1,
+            maximum=_MAX_JUDGE_ARTIFACT_READ_TOTAL_CHARS,
+        ),
+    )
+
+
+def _artifact_read_chars(results: list[dict[str, Any]]) -> int:
+    return sum(
+        int(result.get("chars_returned") or 0)
+        for result in results
+        if result.get("status") == "ok"
+    )
+
+
+def _successful_artifact_ranges(
+    results: list[dict[str, Any]],
+) -> dict[str, list[tuple[int, int]]]:
+    ranges: dict[str, list[tuple[int, int]]] = {}
+    for result in results:
+        if result.get("status") != "ok":
+            continue
+        path_value = result.get("path")
+        if not isinstance(path_value, str) or not path_value.strip():
+            continue
+        try:
+            start = int(result.get("start") or 0)
+            end = int(result.get("end") or start)
+        except (TypeError, ValueError):
+            continue
+        if end <= start:
+            continue
+        resolved = str(Path(path_value).expanduser().resolve(strict=False))
+        ranges.setdefault(resolved, []).append((start, end))
+    return ranges
+
+
+def _ranges_overlap(
+    start: int,
+    end: int,
+    existing: list[tuple[int, int]],
+) -> bool:
+    return any(
+        start < existing_end and existing_start < end
+        for existing_start, existing_end in existing
+    )
+
+
+def _range_fully_covered(
+    start: int,
+    end: int,
+    existing: list[tuple[int, int]],
+) -> bool:
+    cursor = start
+    for existing_start, existing_end in sorted(existing):
+        if existing_end <= cursor:
+            continue
+        if existing_start > cursor:
+            return False
+        cursor = max(cursor, existing_end)
+        if cursor >= end:
+            return True
+    return cursor >= end
+
+
+def _requests_need_unread_projection(
+    prompt: JudgePrompt,
+    read_requests: list[dict[str, Any]],
+    *,
+    prior_results: list[dict[str, Any]],
+    policy: _ArtifactReadPolicy,
+) -> bool:
+    allowed_paths = _allowed_artifact_paths(prompt)
+    ranges = _successful_artifact_ranges(prior_results)
+    total_chars_by_path: dict[str, int] = {}
+    for result in prior_results:
+        if result.get("status") != "ok":
+            continue
+        path_value = result.get("path")
+        total_chars = result.get("total_chars")
+        if (
+            not isinstance(path_value, str)
+            or not path_value.strip()
+            or not isinstance(total_chars, int)
+        ):
+            continue
+        resolved = str(Path(path_value).expanduser().resolve(strict=False))
+        total_chars_by_path[resolved] = max(
+            total_chars,
+            total_chars_by_path.get(resolved, 0),
+        )
+
+    for request in read_requests[: policy.max_requests_per_round]:
+        path_value = request.get("path")
+        if not isinstance(path_value, str) or not path_value.strip():
+            continue
+        resolved = str(Path(path_value).expanduser().resolve(strict=False))
+        canonical_allowed = allowed_paths.get(resolved)
+        if canonical_allowed is None:
+            continue
+        existing = ranges.get(resolved, [])
+        known_total = total_chars_by_path.get(resolved)
+        if known_total is None:
+            try:
+                if Path(canonical_allowed).stat().st_size > 0:
+                    return True
+            except OSError:
+                continue
+            continue
+
+        requested_start = _bounded_int(
+            request.get("start"),
+            default=0,
+            minimum=0,
+            maximum=10_000_000,
+        )
+        if "start" not in request and existing:
+            requested_start = max(end for _, end in existing)
+        requested_chars = _bounded_int(
+            request.get("max_chars"),
+            default=policy.default_chars_per_read,
+            minimum=1,
+            maximum=policy.max_chars_per_read,
+        )
+        requested_end = min(known_total, requested_start + requested_chars)
+        if requested_start >= known_total:
+            continue
+        if not _range_fully_covered(
+            requested_start,
+            requested_end,
+            existing,
+        ):
+            return True
+    return False
+
+
+def _read_text_window(
+    path: Path,
+    *,
+    start: int,
+    max_chars: int,
+) -> tuple[str, int]:
+    """Read one character range without retaining the complete artifact in memory."""
+
+    chunks: list[str] = []
+    total_chars = 0
+    window_end = start + max_chars
+    with path.open("r", encoding="utf-8", errors="replace") as handle:
+        while True:
+            chunk = handle.read(64 * 1024)
+            if not chunk:
+                break
+            chunk_start = total_chars
+            chunk_end = chunk_start + len(chunk)
+            if chunk_end > start and chunk_start < window_end:
+                local_start = max(0, start - chunk_start)
+                local_end = min(len(chunk), window_end - chunk_start)
+                chunks.append(chunk[local_start:local_end])
+            total_chars = chunk_end
+    return "".join(chunks), total_chars
+
+
 def _resolve_artifact_read_requests(
     prompt: JudgePrompt,
     read_requests: list[dict[str, Any]],
+    *,
+    policy: _ArtifactReadPolicy | None = None,
+    prior_results: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
+    policy = policy or _artifact_read_policy(prompt)
+    prior_results = list(prior_results or [])
     allowed_paths = _allowed_artifact_paths(prompt)
+    prior_ranges = _successful_artifact_ranges(prior_results)
+    used_chars = _artifact_read_chars(prior_results)
     results: list[dict[str, Any]] = []
-    for index, request in enumerate(read_requests[:_MAX_JUDGE_ARTIFACT_READ_REQUESTS]):
+    for index, request in enumerate(read_requests[: policy.max_requests_per_round]):
         path_value = request.get("path")
         result: dict[str, Any] = {
             "request_index": index,
@@ -1981,39 +2265,109 @@ def _resolve_artifact_read_requests(
             )
             results.append(result)
             continue
-        start = _bounded_int(request.get("start"), default=0, minimum=0, maximum=10_000_000)
+        existing_ranges = prior_ranges.get(resolved_requested, [])
+        requested_start = _bounded_int(
+            request.get("start"),
+            default=0,
+            minimum=0,
+            maximum=10_000_000,
+        )
+        continuation_applied = "start" not in request and bool(existing_ranges)
+        start = (
+            max(end for _, end in existing_ranges)
+            if continuation_applied
+            else requested_start
+        )
         max_chars = _bounded_int(
             request.get("max_chars"),
-            default=_DEFAULT_JUDGE_ARTIFACT_READ_CHARS,
+            default=policy.default_chars_per_read,
             minimum=1,
-            maximum=_MAX_JUDGE_ARTIFACT_READ_CHARS,
+            maximum=policy.max_chars_per_read,
         )
+        remaining_chars = max(0, policy.max_total_chars - used_chars)
+        if remaining_chars <= 0:
+            result.update(
+                {
+                    "status": "denied",
+                    "reason": "read_char_budget_exhausted",
+                    "unread_indexed_content": _requests_need_unread_projection(
+                        prompt,
+                        [request],
+                        prior_results=prior_results + results,
+                        policy=policy,
+                    ),
+                    "read_budget_used_chars": used_chars,
+                    "read_budget_remaining_chars": 0,
+                }
+            )
+            results.append(result)
+            continue
+        max_chars = min(max_chars, remaining_chars)
+        if _ranges_overlap(start, start + max_chars, existing_ranges):
+            result.update(
+                {
+                    "status": "denied",
+                    "reason": "overlapping_read_range",
+                    "start": start,
+                    "suggested_next_start": max(end for _, end in existing_ranges),
+                    "read_budget_used_chars": used_chars,
+                    "read_budget_remaining_chars": remaining_chars,
+                }
+            )
+            results.append(result)
+            continue
         try:
-            text = Path(canonical_allowed).read_text(encoding="utf-8", errors="replace")
+            content, total_chars = _read_text_window(
+                Path(canonical_allowed),
+                start=start,
+                max_chars=max_chars,
+            )
         except OSError as exc:
             result.update({"status": "error", "reason": exc.__class__.__name__, "message": str(exc)})
             results.append(result)
             continue
-        end = min(len(text), start + max_chars)
+        end = start + len(content)
+        chars_returned = len(content)
+        used_chars += chars_returned
+        if chars_returned:
+            prior_ranges.setdefault(resolved_requested, []).append((start, end))
         result.update(
             {
                 "status": "ok",
                 "start": start,
                 "end": end,
-                "chars_returned": max(0, end - start),
-                "total_chars": len(text),
-                "truncated": end < len(text),
-                "content": text[start:end],
+                "chars_returned": chars_returned,
+                "total_chars": total_chars,
+                "truncated": end < total_chars,
+                "eof": end >= total_chars,
+                "content": content,
+                "read_budget_used_chars": used_chars,
+                "read_budget_remaining_chars": max(
+                    0,
+                    policy.max_total_chars - used_chars,
+                ),
             }
         )
+        if continuation_applied:
+            result["continuation_applied"] = True
+            result["requested_start"] = requested_start
+        if end < total_chars:
+            result["next_start"] = end
+        if max_chars < _bounded_int(
+            request.get("max_chars"),
+            default=policy.default_chars_per_read,
+            minimum=1,
+            maximum=policy.max_chars_per_read,
+        ):
+            result["budget_limited"] = True
         results.append(result)
-    if len(read_requests) > _MAX_JUDGE_ARTIFACT_READ_REQUESTS:
+    if len(read_requests) > policy.max_requests_per_round:
         results.append(
             {
                 "status": "denied",
                 "reason": "too_many_requests",
                 "request_count": len(read_requests),
-                "max_requests": _MAX_JUDGE_ARTIFACT_READ_REQUESTS,
+                "max_requests": policy.max_requests_per_round,
             }
         )
     return results
@@ -2030,7 +2384,11 @@ def _bounded_int(value: Any, *, default: int, minimum: int, maximum: int) -> int
 def _append_artifact_read_results_to_prompt(
     prompt: JudgePrompt,
     read_results: list[dict[str, Any]],
+    *,
+    policy: _ArtifactReadPolicy | None = None,
+    finalize: bool = False,
 ) -> JudgePrompt:
+    policy = policy or _artifact_read_policy(prompt)
     text = _prompt_text(prompt)
     try:
         payload = json.loads(text)
@@ -2045,10 +2403,24 @@ def _append_artifact_read_results_to_prompt(
         *[dict(item) for item in existing_results if isinstance(item, Mapping)],
         *read_results,
     ]
-    payload["artifact_read_followup_instruction"] = (
-        "Use artifact_read_results as read-only evidence and now return the final "
-        "single JSON object matching required_output_schema. Do not request the same artifact again."
-    )
+    if finalize:
+        payload["artifact_read_followup_instruction"] = (
+            "The bounded artifact-read round budget is exhausted. Return the final "
+            "single JSON object matching required_output_schema now; do not emit more "
+            "artifact_read_requests. If missing support is present in an indexed artifact "
+            "but could not be projected within the read budget, emit a framework-owned "
+            "projection_compacted evidence repair constraint. If the indexed evidence "
+            "does not contain the support, emit a candidate-owned support_incomplete constraint."
+        )
+    else:
+        payload["artifact_read_followup_instruction"] = (
+            "Use artifact_read_results as read-only evidence. Return the final single "
+            "JSON object matching required_output_schema when sufficient. If a truncated "
+            "result still contains necessary unread evidence, you may request the same "
+            "artifact again at its next_start (or omit start to continue automatically). "
+            "Do not request an overlapping range. The framework enforces "
+            f"{policy.max_rounds} read rounds and {policy.max_total_chars} total returned characters."
+        )
     updated = json.dumps(payload, ensure_ascii=False, indent=2)
     if isinstance(prompt, tuple):
         return updated, prompt[1]

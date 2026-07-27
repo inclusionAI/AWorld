@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import replace
+import hashlib
 import json
+from dataclasses import replace
 
 from aworld.self_evolve.datasets import EvalCase
 from aworld.self_evolve.evolution_context import (
@@ -9,7 +10,15 @@ from aworld.self_evolve.evolution_context import (
     MAX_CONTEXT_TRACE_CHARS,
     compile_evolution_context,
 )
-from aworld.self_evolve.lessons import LessonRecord
+from aworld.self_evolve.failure_events import (
+    FailureOwner,
+    FailureScope,
+    FailureStage,
+    ReplayFailureEvent,
+    ReplayFailureObservation,
+    aggregate_replay_failure_observations,
+)
+from aworld.self_evolve.lessons import LessonRecord, extract_lesson_records
 from aworld.self_evolve.optimizers.base import OptimizerRequest
 from aworld.self_evolve.replay_adaptation import ReplayCapabilityRequirement
 from aworld.self_evolve.sanitization import sanitize_source_text
@@ -68,6 +77,168 @@ def _request() -> OptimizerRequest:
         ),
         target_package_inventory=("SKILL.md",),
     )
+
+
+def test_lesson_context_ranks_unique_repairable_cause_without_occurrence_bias() -> None:
+    low_value = tuple(
+        LessonRecord(
+            lesson_id=f"success-{index:02d}",
+            lesson_type="success_memory",
+            title="Preserve success",
+            summary=f"success memory {index}",
+            occurrence_count=1000,
+        )
+        for index in range(40)
+    )
+    causal = LessonRecord(
+        lesson_id="causal-priority",
+        lesson_type="causal_failure_memory",
+        title="Repair typed cause",
+        summary="Repair a typed capability cause.",
+        metrics={"repairable": True, "causal_code": "contract_rejected"},
+        occurrence_count=1,
+        distinct_source_count=2,
+        source_task_ids=("task-a", "task-b"),
+        affected_case_ids=("case-a", "case-b"),
+    )
+    request = replace(_request(), lesson_records=(*low_value, causal, causal))
+
+    payload = compile_evolution_context(request).to_prompt_payload(candidate_index=0)
+    lesson_payloads = payload["lesson_records"]
+    assert len(lesson_payloads) == 32
+    assert lesson_payloads[0]["lesson_id"] == "causal-priority"
+    assert sum(item["lesson_id"] == "causal-priority" for item in lesson_payloads) == 1
+    assert lesson_payloads[0]["occurrence_count"] == 1
+    assert lesson_payloads[0]["distinct_source_count"] == 2
+
+
+def test_private_v2_causal_aggregate_reaches_prompt_as_identity_digests_only() -> None:
+    private_capability = "PRIVATE_CAPABILITY_IDENTITY"
+    private_requirement = "PRIVATE_REQUIREMENT_IDENTITY"
+    private_contract = "PRIVATE_CONTRACT_FINGERPRINT"
+    aggregate = aggregate_replay_failure_observations(
+        tuple(
+            ReplayFailureObservation(
+                event=ReplayFailureEvent(
+                    event_id=f"private-causal-event-{index}",
+                    code="capability_contract_rejected",
+                    owner=FailureOwner.CANDIDATE,
+                    stage=FailureStage.CAPABILITY_PREFLIGHT,
+                    scope=FailureScope.CANDIDATE,
+                    repairable=True,
+                    capability_id=private_capability,
+                    requirement_id=private_requirement,
+                    contract_fingerprint=private_contract,
+                ),
+                case_id=f"private-case-{index}",
+                run_id=f"private-run-{index}",
+                task_id=f"private-task-{index}",
+                candidate_id=f"private-candidate-{index}",
+            )
+            for index in range(3)
+        )
+    )[0]
+    lessons = extract_lesson_records(
+        (
+            EvaluationSummary(
+                variant_id="private-candidate",
+                dataset_split="validation",
+                metrics={"causal_failure_events": [aggregate.to_dict()]},
+            ),
+        ),
+        target_scope={"target_type": "skill", "target_id": "demo"},
+    )
+
+    assert len(lessons) == 1
+    assert lessons[0].occurrence_count == 3
+    assert lessons[0].affected_case_count == 3
+    assert lessons[0].distinct_source_count == 3
+    causal_metrics = lessons[0].metrics
+    assert "capability_id" not in causal_metrics
+    assert "requirement_id" not in causal_metrics
+    assert "contract_fingerprint" not in causal_metrics
+    assert causal_metrics["capability_identity_digest"] == (
+        aggregate.capability_identity_digest
+    )
+    assert causal_metrics["requirement_identity_digest"] == (
+        aggregate.requirement_identity_digest
+    )
+    assert causal_metrics["contract_identity_digest"] == (
+        aggregate.contract_identity_digest
+    )
+
+    payload = compile_evolution_context(
+        replace(_request(), lesson_records=lessons)
+    ).to_prompt_payload(candidate_index=0)
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+    assert private_capability not in encoded
+    assert private_requirement not in encoded
+    assert private_contract not in encoded
+    assert aggregate.capability_identity_digest in encoded
+    assert aggregate.requirement_identity_digest in encoded
+    assert aggregate.contract_identity_digest in encoded
+
+
+def test_legacy_lesson_metrics_use_recursive_public_projection_in_prompt() -> None:
+    private_capability = "LEGACY_PRIVATE_CAPABILITY"
+    private_requirement = "LEGACY_PRIVATE_REQUIREMENT"
+    private_contract = "LEGACY_PRIVATE_CONTRACT"
+    private_response = "LEGACY_PRIVATE_EXPECTED_RESPONSE"
+    legacy_lesson = LessonRecord(
+        lesson_id="legacy-private-lesson",
+        lesson_type="causal_failure_memory",
+        title="Legacy causal lesson",
+        summary="Legacy external lesson with nested diagnostics.",
+        metrics={
+            "repairable": True,
+            "capability_id": private_capability,
+            "requirement_id": private_requirement,
+            "contract_fingerprint": private_contract,
+            "nested": [
+                {
+                    "repair_conformance": {
+                        "focus_candidate_id": "candidate-legacy",
+                        "contract_fingerprint": private_contract,
+                        "exact_probe": {
+                            "method": "POST",
+                            "expected_response": private_response,
+                        },
+                    }
+                }
+            ],
+        },
+    )
+
+    payload = compile_evolution_context(
+        replace(_request(), lesson_records=(legacy_lesson,))
+    ).to_prompt_payload(candidate_index=0)
+    lesson_metrics = payload["lesson_records"][0]["metrics"]
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+    encoded_metrics = json.dumps(lesson_metrics, ensure_ascii=False, sort_keys=True)
+
+    assert private_capability not in encoded
+    assert private_requirement not in encoded
+    assert private_contract not in encoded
+    assert private_response not in encoded
+    assert '"capability_id":' not in encoded_metrics
+    assert '"requirement_id":' not in encoded_metrics
+    assert '"contract_fingerprint":' not in encoded_metrics
+    assert lesson_metrics["capability_identity_digest"] == hashlib.sha256(
+        private_capability.encode("utf-8")
+    ).hexdigest()
+    assert lesson_metrics["requirement_identity_digest"] == hashlib.sha256(
+        private_requirement.encode("utf-8")
+    ).hexdigest()
+    assert lesson_metrics["contract_identity_digest"] == hashlib.sha256(
+        private_contract.encode("utf-8")
+    ).hexdigest()
+    public_probe = lesson_metrics["nested"][0]["repair_conformance"]["exact_probe"]
+    assert "expected_response" not in public_probe
+    assert public_probe["expected_response_fingerprint"].startswith("sha256:")
+    assert public_probe["expected_response_shape"] == {
+        "kind": "text",
+        "bytes": len(private_response.encode("utf-8")),
+    }
 
 
 def test_compiler_deduplicates_feedback_and_selects_typed_strategies() -> None:
@@ -706,6 +877,73 @@ def test_prompt_payload_prioritizes_judged_held_out_repair_over_replay_history()
     assert "repair_conformance" not in second_payload
 
 
+def test_judged_repair_does_not_inherit_sibling_schema_mutation_surface() -> None:
+    judged = EvaluationSummary(
+        variant_id="candidate-judged",
+        dataset_split="validation",
+        metrics={
+            "score": 66.0,
+            "A1_groundedness": 2,
+            "evidence_incomplete": True,
+            "failed_gates": ["evidence_quality"],
+            "repair_candidate_package": {
+                "candidate_id": "candidate-judged",
+                "content": "# Generic evidence behavior\n",
+                "files": [],
+            },
+        },
+    )
+    sibling_schema_failure = EvaluationSummary(
+        variant_id="candidate-schema-sibling",
+        dataset_split="validation",
+        metrics={
+            "failed_gates": ["candidate_repair_conformance"],
+            "candidate_validation_diagnostics": [
+                {
+                    "code": "schema_field_validation_failed",
+                    "stage": "repair_conformance",
+                    "schema_field_constraints": [
+                        {
+                            "schema_layer": "manifest",
+                            "field_path": "schema_version",
+                            "rule": "enum",
+                            "expected": ["valid-schema"],
+                        }
+                    ],
+                }
+            ],
+            "repair_candidate_package": {
+                "candidate_id": "candidate-schema-sibling",
+                "content": "# Sibling\n",
+                "files": [
+                    {
+                        "path": "replay/capability.json",
+                        "content": "{}",
+                    }
+                ],
+            },
+        },
+    )
+
+    context = compile_evolution_context(
+        replace(
+            _request(),
+            validation_feedback=(judged, sibling_schema_failure),
+            prior_feedback=(),
+        )
+    )
+    payload = context.to_prompt_payload(candidate_index=0)
+
+    assert payload["repair_focus"]["repair_candidate_package"][
+        "candidate_id"
+    ] == "candidate-judged"
+    assert "repair_conformance" not in payload
+    assert "inherited_typed_repair_constraints" not in json.dumps(
+        payload["validation_feedback"][0],
+        sort_keys=True,
+    )
+
+
 def test_prompt_payload_prefers_current_run_frontier_over_historical_authoritative_repair() -> None:
     def feedback(
         candidate_id: str,
@@ -1081,6 +1319,101 @@ def test_prompt_payload_does_not_regress_task_plane_frontier_to_transport_confor
         "candidate-conformance"
     )
     assert payload["repair_support"]["repair_candidate_source_omitted"] is True
+
+
+def test_prompt_payload_merges_typed_constraints_across_repair_lineages() -> None:
+    package_files = [
+        {
+            "path": "replay/capability.json",
+            "content": json.dumps(
+                {
+                    "schema_version": "aworld.skill.replay_capability.v1",
+                    "capability_id": "generic.replay",
+                    "protocol": "aworld.replay.subprocess.v1",
+                    "entrypoint": "replay/compiler.py",
+                    "handles": ["local_endpoint"],
+                    "runtime_files": ["replay/runtime.py"],
+                }
+            ),
+        },
+        {"path": "replay/compiler.py", "content": "def compile():\n    pass\n"},
+        {"path": "replay/runtime.py", "content": "def run():\n    pass\n"},
+    ]
+    runtime_feedback = EvaluationSummary(
+        variant_id="candidate-runtime",
+        dataset_split="validation",
+        metrics={
+            "failed_gates": ["candidate_replay"],
+            "interaction_progress": 138,
+            "candidate_validation_diagnostics": [
+                {
+                    "code": "implement_observed_endpoint_interactions",
+                    "stage": "replay_capability",
+                    "schema_field_constraints": [
+                        {
+                            "schema_layer": "runtime",
+                            "field_path": "protocol_trace",
+                            "rule": "required",
+                            "expected": [],
+                        }
+                    ],
+                }
+            ],
+            "repair_candidate_package": {
+                "candidate_id": "candidate-runtime",
+                "files": package_files,
+            },
+        },
+    )
+    compiler_feedback = EvaluationSummary(
+        variant_id="candidate-compiler",
+        dataset_split="validation",
+        metrics={
+            "failed_gates": ["candidate_repair_conformance"],
+            "interaction_progress": 10,
+            "candidate_validation_diagnostics": [
+                {
+                    "code": "repair_capability_compile_failed",
+                    "stage": "capability_compile",
+                    "schema_field_constraints": [
+                        {
+                            "schema_layer": "compiler_output",
+                            "field_path": "files[*]",
+                            "rule": "enum",
+                            "expected": ["result.json", "declared_fixture"],
+                        }
+                    ],
+                }
+            ],
+            "repair_candidate_package": {
+                "candidate_id": "candidate-compiler",
+                "files": package_files,
+            },
+        },
+    )
+
+    context = compile_evolution_context(
+        replace(
+            _request(),
+            validation_feedback=(runtime_feedback, compiler_feedback),
+            prior_feedback=(),
+        )
+    )
+    payload = context.to_prompt_payload(candidate_index=0)
+
+    assert payload["repair_focus"]["repair_candidate_package"][
+        "candidate_id"
+    ] == "candidate-runtime"
+    contract = payload["repair_conformance"]
+    assert payload["capability_contracts"]
+    assert payload["repair_prompt_budget"]["omitted_capability_contracts"] == 0
+    assert {
+        item["schema_layer"] for item in contract["schema_field_constraints"]
+    } == {"compiler_output", "runtime"}
+    assert set(contract["required_branch_paths"]) == {
+        "replay/compiler.py",
+        "replay/runtime.py",
+    }
 
 
 def test_prompt_payload_prioritizes_conformance_that_inherits_task_plane_frontier() -> None:

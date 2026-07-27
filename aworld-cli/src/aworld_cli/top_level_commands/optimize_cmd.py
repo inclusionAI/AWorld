@@ -5,6 +5,7 @@ from typing import Any, Callable
 
 
 SUPPORTED_APPLY_POLICIES = {"proposal", "auto_verified"}
+SUPPORTED_NEW_SKILL_POLICIES = {"disabled", "draft_only", "auto_verified"}
 AUTO_VERIFIED_JUDGE_REPETITIONS = 1
 AUTO_VERIFIED_JUDGE_TIMEOUT_SECONDS = 120
 AUTO_VERIFIED_BASELINE_REPLAY_REPETITIONS = 2
@@ -46,6 +47,58 @@ class OptimizeTopLevelCommand:
             ),
         )
         parser.add_argument(
+            "--from-source",
+            type=str,
+            dest="from_source",
+            help="File or directory to normalize through a source ingestor.",
+        )
+        parser.add_argument(
+            "--frozen-ingestion-id",
+            type=str,
+            dest="frozen_ingestion_id",
+            help=(
+                "Reuse or promote an immutable semantic ingestion without "
+                "rerunning source extraction."
+            ),
+        )
+        parser.add_argument(
+            "--source-ingestor",
+            type=str,
+            default="auto",
+            dest="source_ingestor",
+            help="Registered source ingestor strategy (default: auto).",
+        )
+        parser.add_argument(
+            "--source-manifest",
+            type=str,
+            dest="source_manifest",
+            help="Optional manifest constraining source discovery and mapping.",
+        )
+        parser.add_argument(
+            "--ingestion-model-profile",
+            type=str,
+            dest="ingestion_model_profile",
+            help="Model profile used by the auto source ingestor.",
+        )
+        parser.add_argument(
+            "--semantic-evidence-approval",
+            type=str,
+            dest="semantic_evidence_approval",
+            help="Operator-selected graph-bound semantic evidence approval JSON.",
+        )
+        parser.add_argument(
+            "--semantic-qualification-report",
+            type=str,
+            dest="semantic_qualification_report",
+            help="Allowlisted semantic model qualification report JSON.",
+        )
+        parser.add_argument(
+            "--ingestion-only",
+            action="store_true",
+            dest="ingestion_only",
+            help="Ingest and validate the source without running optimization.",
+        )
+        parser.add_argument(
             "--from-trajectory-set",
             type=str,
             dest="from_trajectory_set",
@@ -74,7 +127,28 @@ class OptimizeTopLevelCommand:
         )
         parser.add_argument("--batch-config", type=str, dest="batch_config")
         parser.add_argument("--iterations", type=int)
-        parser.add_argument("--apply", type=str, default="proposal")
+        parser.add_argument("--apply", type=str)
+        parser.add_argument(
+            "--max-improvement-cycles",
+            type=int,
+            default=3,
+            dest="max_improvement_cycles",
+            help="Maximum bounded cross-run self-improvement cycles for auto_verified.",
+        )
+        parser.add_argument(
+            "--resume-campaign",
+            type=str,
+            dest="resume_campaign",
+            help="Resume a paused or active self-improvement campaign.",
+        )
+        parser.add_argument(
+            "--new-skill-policy",
+            type=str,
+            choices=sorted(SUPPORTED_NEW_SKILL_POLICIES),
+            default="auto_verified",
+            dest="new_skill_policy",
+            help="Policy for inferred missing capabilities: disabled, draft_only, or auto_verified.",
+        )
         parser.add_argument("--judge-agent", type=str, dest="judge_agent")
         parser.add_argument("--judge-agent-name", type=str, dest="judge_agent_name")
         parser.add_argument("--judge-backend-ref", type=str, dest="judge_backend_ref")
@@ -128,7 +202,16 @@ class OptimizeTopLevelCommand:
             print(f"Drained pending self-evolve jobs: {drained}")
             return 0
 
-        apply_policy = getattr(args, "apply", "proposal") or "proposal"
+        resume_campaign = getattr(args, "resume_campaign", None)
+        if (
+            resume_campaign
+            and getattr(args, "apply", None) not in {None, "auto_verified"}
+        ):
+            print("Optimize error: --resume-campaign requires --apply auto_verified")
+            return 1
+        apply_policy = getattr(args, "apply", None) or (
+            "auto_verified" if resume_campaign else "proposal"
+        )
         if apply_policy not in SUPPORTED_APPLY_POLICIES:
             print("Optimize error: --apply must be one of proposal, auto_verified")
             return 0
@@ -150,13 +233,34 @@ class OptimizeTopLevelCommand:
                 dataset=getattr(args, "dataset", None),
                 from_session=getattr(args, "from_session", None),
                 from_trajectory=getattr(args, "from_trajectory", None),
+                from_source=getattr(args, "from_source", None),
+                frozen_ingestion_id=getattr(
+                    args, "frozen_ingestion_id", None
+                ),
+                source_ingestor=getattr(args, "source_ingestor", "auto"),
+                source_manifest=getattr(args, "source_manifest", None),
+                ingestion_model_profile=getattr(
+                    args, "ingestion_model_profile", None
+                ),
+                semantic_evidence_approval=getattr(
+                    args, "semantic_evidence_approval", None
+                ),
+                semantic_qualification_report=getattr(
+                    args, "semantic_qualification_report", None
+                ),
+                ingestion_only=bool(getattr(args, "ingestion_only", False)),
                 from_trajectory_set=getattr(args, "from_trajectory_set", None),
                 include_prior_runs=getattr(args, "include_prior_runs", False),
                 from_run=getattr(args, "from_run", None),
                 rerun_evaluator=getattr(args, "rerun_evaluator", False),
                 batch_config=getattr(args, "batch_config", None),
                 iterations=getattr(args, "iterations", None),
+                max_improvement_cycles=getattr(
+                    args, "max_improvement_cycles", 3
+                ),
+                resume_campaign=resume_campaign,
                 apply=apply_policy,
+                new_skill_policy=getattr(args, "new_skill_policy", "auto_verified"),
                 infer_target=target is None,
                 workspace_root=context.cwd,
                 judge_agent=getattr(args, "judge_agent", None),
@@ -191,10 +295,76 @@ def render_optimize_summary(report: Any) -> str:
     run_id = _read_report_value(report, "run_id")
     grouping_summary = _target_grouping_summary(report)
     replay_failure_summary = _replay_failure_summary(report)
+    promotion = _read_report_value(report, "promotion")
+    campaign_id = _read_report_value(report, "campaign_id")
+    campaign_status = _read_report_value(report, "campaign_status")
+    campaign_cycle = _read_report_value(report, "campaign_cycle")
+    campaign_max_cycles = _read_report_value(report, "campaign_max_cycles")
+    disposition = _read_report_value(report, "self_improvement_disposition")
+    goal_handoff_path = _read_report_value(report, "goal_handoff_path")
+    ingestion_id = _read_report_value(report, "ingestion_id")
+    ingestion_report_path = _read_report_value(report, "ingestion_report_path")
+    ingestion_status = _read_report_value(report, "ingestion_status")
+    ingestion_case_count = _read_report_value(
+        report, "ingestion_case_count"
+    )
+    ingestion_record_coverage_rate = _read_report_value(
+        report, "ingestion_record_coverage_rate"
+    )
+    ingestion_rejected_record_count = _read_report_value(
+        report, "ingestion_rejected_record_count"
+    )
+    ingestion_model_call_count = _read_report_value(
+        report, "ingestion_model_call_count"
+    )
 
-    lines = ["Optimize run submitted."]
+    lines = [
+        (
+            "Dataset ingestion completed."
+            if status == "ingested"
+            else "Optimize run submitted."
+        )
+    ]
     if status:
         lines.append(f"Status: {status}")
+    if ingestion_id:
+        lines.append(f"Ingestion: {ingestion_id}")
+    if ingestion_status:
+        lines.append(f"Ingestion status: {ingestion_status}")
+    if ingestion_case_count is not None:
+        lines.append(f"Ingestion cases: {ingestion_case_count}")
+    if ingestion_record_coverage_rate is not None:
+        lines.append(
+            "Ingestion coverage: "
+            f"{float(ingestion_record_coverage_rate):.3f}"
+        )
+    if ingestion_rejected_record_count is not None:
+        lines.append(
+            "Ingestion rejected records: "
+            f"{ingestion_rejected_record_count}"
+        )
+    if ingestion_model_call_count:
+        lines.append(
+            "Ingestion model calls: "
+            f"{ingestion_model_call_count}"
+        )
+    if ingestion_report_path:
+        lines.append(f"Ingestion report: {ingestion_report_path}")
+    if campaign_id:
+        lines.append(f"Campaign: {campaign_id}")
+    if campaign_status:
+        lines.append(f"Campaign status: {campaign_status}")
+    if campaign_cycle is not None and campaign_max_cycles is not None:
+        lines.append(f"Campaign cycle: {campaign_cycle}/{campaign_max_cycles}")
+    if isinstance(disposition, Mapping) and disposition.get("reason_code"):
+        lines.append(
+            "Self-improvement: "
+            f"{disposition.get('kind')} ({disposition['reason_code']})"
+        )
+    if goal_handoff_path:
+        lines.append(f"Goal handoff: {goal_handoff_path}")
+        if campaign_id:
+            lines.append(f"Continue goal: /goal --from-campaign {campaign_id}")
     if report_path:
         lines.append(f"Report: {report_path}")
     if target_selection_path:
@@ -211,6 +381,8 @@ def render_optimize_summary(report: Any) -> str:
         lines.append(f"Selected candidate: {selected_candidate_id}")
     if grouping_summary:
         lines.append(f"Target grouping: {grouping_summary}")
+    if isinstance(promotion, Mapping) and promotion.get("status"):
+        lines.append(f"New skill: {promotion['status']}")
     if status == "rejected" and failed_gate_names:
         lines.append(f"Rejected gates: {', '.join(failed_gate_names)}")
     if status == "rejected" and replay_failure_summary:
@@ -249,9 +421,12 @@ def run_optimize_cli(
     from_trajectory: str | None,
     batch_config: str | None,
     iterations: int | None,
+    max_improvement_cycles: int = 1,
+    resume_campaign: str | None = None,
     apply: str,
     infer_target: bool,
     workspace_root: str,
+    new_skill_policy: str = "auto_verified",
     include_prior_runs: bool = False,
     judge_agent: str | None = None,
     judge_agent_name: str | None = None,
@@ -269,26 +444,51 @@ def run_optimize_cli(
     from_run: str | None = None,
     rerun_evaluator: bool = False,
     from_trajectory_set: str | None = None,
+    from_source: str | None = None,
+    frozen_ingestion_id: str | None = None,
+    source_ingestor: str = "auto",
+    source_manifest: str | None = None,
+    ingestion_model_profile: str | None = None,
+    semantic_evidence_approval: str | None = None,
+    semantic_qualification_report: str | None = None,
+    ingestion_only: bool = False,
 ) -> Mapping[str, Any]:
+    _validate_ingestion_cli_options(
+        dataset=dataset,
+        from_session=from_session,
+        from_trajectory=from_trajectory,
+        from_trajectory_set=from_trajectory_set,
+        batch_config=batch_config,
+        from_run=from_run,
+        from_source=from_source,
+        frozen_ingestion_id=frozen_ingestion_id,
+        source_ingestor=source_ingestor,
+        source_manifest=source_manifest,
+        ingestion_model_profile=ingestion_model_profile,
+        semantic_evidence_approval=semantic_evidence_approval,
+        semantic_qualification_report=semantic_qualification_report,
+        ingestion_only=ingestion_only,
+    )
     import aworld.self_evolve as self_evolve
 
+    runtime_apply = "auto_verified" if resume_campaign else apply
     judge_repetitions = _auto_verified_default(
-        apply,
+        runtime_apply,
         judge_repetitions,
         AUTO_VERIFIED_JUDGE_REPETITIONS,
     )
     judge_timeout_seconds = _auto_verified_default(
-        apply,
+        runtime_apply,
         judge_timeout_seconds,
         AUTO_VERIFIED_JUDGE_TIMEOUT_SECONDS,
     )
     baseline_replay_repetitions = _auto_verified_default(
-        apply,
+        runtime_apply,
         baseline_replay_repetitions,
         AUTO_VERIFIED_BASELINE_REPLAY_REPETITIONS,
     )
     candidate_replay_repetitions = _auto_verified_default(
-        apply,
+        runtime_apply,
         candidate_replay_repetitions,
         AUTO_VERIFIED_CANDIDATE_REPLAY_REPETITIONS,
     )
@@ -301,43 +501,72 @@ def run_optimize_cli(
     mutation_model_config = (
         None if rerun_evaluator else _default_mutation_model_config()
     )
+    ingestion_model_config = (
+        None
+        if rerun_evaluator
+        else (
+            _model_config_for_profile(ingestion_model_profile)
+            if ingestion_model_profile
+            else mutation_model_config
+        )
+    )
     if progress_callback is not None:
         progress_callback("prepare", "Preparing self-evolve optimize request")
-    return self_evolve.optimize_from_cli_request(
-        agent=agent,
-        task=task,
-        target=target,
-        dataset=dataset,
-        from_session=from_session,
-        from_trajectory=from_trajectory,
-        from_trajectory_set=from_trajectory_set,
-        include_prior_runs=include_prior_runs,
-        from_run=from_run,
-        rerun_evaluator=rerun_evaluator,
-        batch_config=batch_config,
-        iterations=iterations,
-        apply_policy=apply,
-        infer_target=infer_target,
-        workspace_root=workspace_root,
-        judge_config=judge_config,
-        mutation_model_config=mutation_model_config,
-        concurrency_policy=self_evolve.SelfEvolveConcurrencyPolicy(),
+    request = {
+        "agent": agent,
+        "task": task,
+        "target": target,
+        "dataset": dataset,
+        "from_session": from_session,
+        "from_trajectory": from_trajectory,
+        "from_source": from_source,
+        "frozen_ingestion_id": frozen_ingestion_id,
+        "source_ingestor": source_ingestor if from_source is not None else None,
+        "source_manifest": source_manifest,
+        "semantic_evidence_approval": semantic_evidence_approval,
+        "semantic_qualification_report": semantic_qualification_report,
+        "ingestion_model_config": ingestion_model_config,
+        "ingestion_only": bool(ingestion_only),
+        "from_trajectory_set": from_trajectory_set,
+        "include_prior_runs": include_prior_runs,
+        "from_run": from_run,
+        "rerun_evaluator": rerun_evaluator,
+        "batch_config": batch_config,
+        "iterations": iterations,
+        "apply_policy": runtime_apply,
+        "inferred_new_skill_policy": new_skill_policy,
+        "infer_target": infer_target,
+        "workspace_root": workspace_root,
+        "judge_config": judge_config,
+        "mutation_model_config": mutation_model_config,
+        "concurrency_policy": self_evolve.SelfEvolveConcurrencyPolicy(),
         **_judge_options(
             judge_repetitions=judge_repetitions,
             judge_timeout_seconds=judge_timeout_seconds,
         ),
-        replay_enabled=apply == "auto_verified",
-        runtime_registry_refresher=runtime_registry_refresher,
-        runtime_skill_activator=runtime_skill_activator
+        "replay_enabled": runtime_apply == "auto_verified",
+        "runtime_registry_refresher": runtime_registry_refresher,
+        "runtime_skill_activator": runtime_skill_activator
         or _default_runtime_skill_activator(),
-        progress_callback=progress_callback,
+        "progress_callback": progress_callback,
         **_replay_options(
             replay_timeout_seconds=replay_timeout_seconds,
             replay_max_steps=replay_max_steps,
             baseline_replay_repetitions=baseline_replay_repetitions,
             candidate_replay_repetitions=candidate_replay_repetitions,
         ),
-    )
+    }
+    if not rerun_evaluator and not ingestion_only and (
+        resume_campaign
+        or (runtime_apply == "auto_verified" and max_improvement_cycles > 1)
+    ):
+        return self_evolve.run_self_improvement_campaign(
+            workspace_root=workspace_root,
+            request=request,
+            max_improvement_cycles=max_improvement_cycles,
+            resume_campaign=resume_campaign,
+        )
+    return self_evolve.optimize_from_cli_request(**request)
 
 
 def _default_mutation_model_config():
@@ -349,6 +578,64 @@ def _default_mutation_model_config():
         return resolve_model_profile("default")
     except KeyError:
         return None
+
+
+def _model_config_for_profile(profile_name: str):
+    from aworld_cli.core.model_profiles import resolve_model_profile
+
+    return resolve_model_profile(profile_name)
+
+
+def _validate_ingestion_cli_options(
+    *,
+    dataset: str | None,
+    from_session: str | None,
+    from_trajectory: str | None,
+    from_trajectory_set: str | None,
+    batch_config: str | None,
+    from_run: str | None,
+    from_source: str | None,
+    frozen_ingestion_id: str | None,
+    source_ingestor: str,
+    source_manifest: str | None,
+    ingestion_model_profile: str | None,
+    semantic_evidence_approval: str | None,
+    semantic_qualification_report: str | None,
+    ingestion_only: bool,
+) -> None:
+    sources = {
+        "--dataset": dataset,
+        "--from-session": from_session,
+        "--from-trajectory": from_trajectory,
+        "--from-trajectory-set": from_trajectory_set,
+        "--batch-config": batch_config,
+        "--from-run": from_run,
+        "--from-source": from_source,
+        "--frozen-ingestion-id": frozen_ingestion_id,
+    }
+    selected = [flag for flag, value in sources.items() if value is not None]
+    if len(selected) > 1:
+        raise ValueError(
+            "eval source options are mutually exclusive: " + ", ".join(selected)
+        )
+    source_only_options = (
+        source_manifest is not None
+        or ingestion_model_profile is not None
+        or bool(ingestion_only)
+        or source_ingestor != "auto"
+    )
+    if source_only_options and from_source is None:
+        raise ValueError(
+            "source ingestion and semantic trust options require --from-source"
+        )
+    if (
+        semantic_evidence_approval is not None
+        or semantic_qualification_report is not None
+    ) and from_source is None and frozen_ingestion_id is None:
+        raise ValueError(
+            "semantic trust options require --from-source or "
+            "--frozen-ingestion-id"
+        )
 
 
 def _default_runtime_skill_activator() -> Callable[[Any], Mapping[str, Any]]:

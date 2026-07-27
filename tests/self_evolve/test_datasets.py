@@ -99,6 +99,26 @@ def test_dataset_recipe_records_identity_and_deterministic_splits(tmp_path) -> N
     assert tuple(first_recipe.splits["held_out"]) == first_recipe.held_out_case_ids
 
 
+def test_two_case_recipe_preserves_one_independent_held_out_member() -> None:
+    cases = (
+        EvalCase(case_id="case-a", input="train candidate"),
+        EvalCase(case_id="case-b", input="verify candidate"),
+    )
+    config = SelfEvolveEvalSourceConfig(kind="current_trajectory")
+
+    recipe = build_dataset_recipe(cases, source_config=config, split_seed="seed-two")
+
+    assert len(recipe.splits["train"]) == 1
+    assert recipe.splits["validation"] == []
+    assert len(recipe.splits["held_out"]) == 1
+    assert set(recipe.splits["train"] + recipe.splits["held_out"]) == {
+        "case-a",
+        "case-b",
+    }
+    assert recipe.trainable_case_ids == tuple(recipe.splits["train"])
+    assert recipe.held_out_case_ids == tuple(recipe.splits["held_out"])
+
+
 def test_build_dataset_from_jsonl_applies_task_id_filter_and_records_it(tmp_path) -> None:
     path = tmp_path / "cases.jsonl"
     path.write_text(

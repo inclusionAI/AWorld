@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 import socket
 import time
@@ -11,6 +12,26 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from aworld.self_evolve.atomic_fs import atomic_exchange_paths
+from aworld.self_evolve.ingestion.types import (
+    FrozenIngestionSnapshot,
+    fingerprint_json,
+)
+from aworld.self_evolve.ingestion.semantic_snapshot import (
+    FROZEN_SEMANTIC_INGESTION_SNAPSHOT_SCHEMA_VERSION,
+    FrozenSemanticIngestionSnapshotV2,
+)
+from aworld.self_evolve.ingestion.verifier import (
+    validate_frozen_snapshot_quality,
+)
+from aworld.self_evolve.evaluation_plan import (
+    HumanEvidenceApprovalV1,
+    ManifestOrigin,
+)
+from aworld.self_evolve.budget import (
+    CandidateAttemptEvent,
+    CandidateAttemptKey,
+    validate_candidate_attempt_lifecycle,
+)
 from aworld.self_evolve.provenance import TargetProvenance
 from aworld.self_evolve.candidate_package import (
     candidate_package_fingerprint,
@@ -18,6 +39,7 @@ from aworld.self_evolve.candidate_package import (
 )
 from aworld.self_evolve.replay_adaptation import ReplayPreflightReport
 from aworld.self_evolve.judge import JudgeRecord
+from aworld.self_evolve.sanitization import public_diagnostic_projection
 from aworld.self_evolve.credit_assignment import TargetSelectionReport
 from aworld.self_evolve.types import (
     CandidateVariant,
@@ -28,6 +50,54 @@ from aworld.self_evolve.types import (
     to_json_dict,
 )
 from aworld.skills.release import mark_skill_content_candidate
+
+
+def _ingestion_semantic_payload(
+    snapshot: FrozenIngestionSnapshot | FrozenSemanticIngestionSnapshotV2,
+) -> dict[str, Any]:
+    payload = snapshot.to_dict(public=False)
+    if isinstance(snapshot, FrozenSemanticIngestionSnapshotV2):
+        return payload
+    payload.pop("mapping_candidates", None)
+    payload.pop("mapping_failures", None)
+    payload.pop("ingestion_model_call_count", None)
+    quality = payload.get("quality_report")
+    if isinstance(quality, dict):
+        quality.pop("mapping_candidate_count", None)
+        quality.pop("valid_mapping_candidate_count", None)
+    return payload
+
+
+def _semantic_evidence_approval_template(
+    snapshot: FrozenSemanticIngestionSnapshotV2,
+) -> dict[str, Any] | None:
+    if (
+        snapshot.manifest_fingerprint is None
+        or snapshot.manifest_origin.value != "operator_explicit"
+        or snapshot.resolution_evidence.extraction_origin.value
+        == "deterministic_canonical"
+    ):
+        return None
+    approval = HumanEvidenceApprovalV1(
+        evidence_graph_logical_fingerprint=(
+            snapshot.evidence_graph.logical_fingerprint
+        ),
+        evidence_graph_provenance_fingerprint=(
+            snapshot.evidence_graph.provenance_fingerprint
+        ),
+        source_bundle_fingerprint=snapshot.source_bundle.fingerprint,
+        constitution_fingerprint=snapshot.constitution.fingerprint,
+        semantic_profile_fingerprint=(
+            snapshot.semantic_profile.fingerprint
+        ),
+        manifest_fingerprint=snapshot.manifest_fingerprint,
+        approval_origin=ManifestOrigin.OPERATOR_EXPLICIT,
+        approved_claim_scope=("whole_graph",),
+    )
+    return {
+        **approval.to_dict(),
+        "approval_fingerprint": approval.fingerprint,
+    }
 
 
 class FilesystemSelfEvolveStore:
@@ -45,10 +115,845 @@ class FilesystemSelfEvolveStore:
         self._validate_id(run_id, "run_id")
         return self.artifact_root / run_id
 
+    def campaign_path(self, campaign_id: str) -> Path:
+        if not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9._-]{0,159}", campaign_id):
+            raise ValueError(f"invalid campaign_id: {campaign_id!r}")
+        return self.artifact_root / "campaigns" / campaign_id
+
+    def ingestion_path(self, ingestion_id: str) -> Path:
+        if not re.fullmatch(r"ingestion-[0-9a-f]{32}", ingestion_id):
+            raise ValueError(f"invalid ingestion_id: {ingestion_id!r}")
+        return self.artifact_root / "ingestions" / ingestion_id
+
+    def write_ingestion(
+        self,
+        snapshot: FrozenIngestionSnapshot | FrozenSemanticIngestionSnapshotV2,
+        *,
+        dataset_recipe: DatasetRecipe | None = None,
+    ) -> Path:
+        if isinstance(snapshot, FrozenSemanticIngestionSnapshotV2):
+            return self._write_semantic_ingestion(
+                snapshot,
+                dataset_recipe=dataset_recipe,
+            )
+        if not isinstance(snapshot, FrozenIngestionSnapshot):
+            raise TypeError("ingestion snapshot must be typed")
+        validate_frozen_snapshot_quality(snapshot)
+        if any(
+            case.source.ingestion_id != snapshot.ingestion_id
+            for case in snapshot.normalized_cases
+        ):
+            raise ValueError(
+                "normalized case provenance does not match ingestion identity"
+            )
+        destination = self.ingestion_path(snapshot.ingestion_id)
+        expected = snapshot.to_dict(public=False)
+        if destination.exists():
+            if destination.is_symlink() or not destination.is_dir():
+                raise ValueError("ingestion artifact destination is unsafe")
+            existing = self.read_ingestion(snapshot.ingestion_id)
+            if _ingestion_semantic_payload(
+                existing
+            ) != _ingestion_semantic_payload(snapshot):
+                raise ValueError(
+                    "immutable ingestion id already exists with different content"
+                )
+            return destination
+
+        root = destination.parent
+        self._reject_symlink_components(root)
+        root.mkdir(parents=True, exist_ok=True)
+        root.chmod(0o700)
+        temporary = root / f".{snapshot.ingestion_id}.{uuid.uuid4().hex}.tmp"
+        temporary.mkdir(mode=0o700)
+        try:
+            self._write_private_json(temporary / "ingestion.json", expected)
+            self._write_private_json(
+                temporary / "source_inventory.json",
+                snapshot.inventory.to_dict(public=False),
+            )
+            self._write_private_json(
+                temporary / "selected_mapping.json",
+                snapshot.selected_mapping.to_dict(),
+            )
+            self._write_private_json(
+                temporary / "structural_profile.json",
+                {
+                    asset.relative_path: dict(asset.structural_profile)
+                    for asset in snapshot.inventory.assets
+                },
+            )
+            mapping_candidates = (
+                snapshot.mapping_candidates
+                if snapshot.mapping_candidates
+                else (snapshot.selected_mapping,)
+            )
+            for index, candidate in enumerate(mapping_candidates):
+                self._write_private_json(
+                    temporary
+                    / "mapping_candidates"
+                    / f"candidate-{index:03d}.json",
+                    candidate.to_dict(),
+                )
+            if snapshot.mapping_failures:
+                self._write_private_json(
+                    temporary / "mapping_candidates" / "failures.json",
+                    list(snapshot.mapping_failures),
+                )
+            if snapshot.source_manifest is not None:
+                self._write_private_json(
+                    temporary / "source_manifest.json",
+                    snapshot.source_manifest,
+                )
+            self._write_private_json(
+                temporary / "quality_report.json",
+                snapshot.quality_report.to_dict(public=False),
+            )
+            self._write_private_jsonl(
+                temporary / "rejected_records.jsonl",
+                tuple(record.to_dict() for record in snapshot.rejected_records),
+            )
+            if dataset_recipe is None:
+                self._write_private_jsonl(
+                    temporary / "trainable_cases.jsonl",
+                    tuple(case.to_dict() for case in snapshot.normalized_cases),
+                )
+                self._write_private_jsonl(
+                    temporary / "held_out_cases.jsonl",
+                    (),
+                )
+            else:
+                trainable_ids = set(dataset_recipe.trainable_case_ids)
+                held_out_ids = set(dataset_recipe.held_out_case_ids)
+                self._write_private_jsonl(
+                    temporary / "trainable_cases.jsonl",
+                    tuple(
+                        case.to_dict()
+                        for case in snapshot.normalized_cases
+                        if case.case_id in trainable_ids
+                    ),
+                )
+                self._write_private_jsonl(
+                    temporary / "held_out_cases.jsonl",
+                    tuple(
+                        case.to_dict()
+                        for case in snapshot.normalized_cases
+                        if case.case_id in held_out_ids
+                    ),
+                )
+                self._write_private_json(
+                    temporary / "dataset_recipe.json",
+                    dataset_recipe,
+                )
+            os.replace(temporary, destination)
+        except FileExistsError:
+            existing = self.read_ingestion(snapshot.ingestion_id)
+            if existing.to_dict(public=False) != expected:
+                raise ValueError(
+                    "immutable ingestion id already exists with different content"
+                )
+        finally:
+            if temporary.exists():
+                shutil.rmtree(temporary)
+        reloaded = self.read_ingestion(snapshot.ingestion_id)
+        if reloaded.to_dict(public=False) != expected:
+            raise ValueError("persisted ingestion snapshot did not round trip")
+        return destination
+
+    def read_ingestion(
+        self,
+        ingestion_id: str,
+    ) -> FrozenIngestionSnapshot | FrozenSemanticIngestionSnapshotV2:
+        root = self.ingestion_path(ingestion_id)
+        path = root / "ingestion.json"
+        if (
+            root.is_symlink()
+            or path.is_symlink()
+            or not root.is_dir()
+            or not path.is_file()
+        ):
+            raise FileNotFoundError(f"frozen ingestion not found: {ingestion_id}")
+        payload = self._read_json(path)
+        if (
+            payload.get("schema_version")
+            == FROZEN_SEMANTIC_INGESTION_SNAPSHOT_SCHEMA_VERSION
+        ):
+            snapshot = FrozenSemanticIngestionSnapshotV2.from_dict(
+                payload
+            )
+            self._validate_semantic_ingestion_artifacts(root, snapshot)
+            if snapshot.ingestion_id != ingestion_id:
+                raise ValueError(
+                    "ingestion artifact identity does not match its path"
+                )
+            return snapshot
+        snapshot = FrozenIngestionSnapshot.from_dict(payload)
+        validate_frozen_snapshot_quality(snapshot)
+        if snapshot.ingestion_id != ingestion_id:
+            raise ValueError("ingestion artifact identity does not match its path")
+        if any(
+            case.source.ingestion_id != snapshot.ingestion_id
+            for case in snapshot.normalized_cases
+        ):
+            raise ValueError(
+                "normalized case provenance does not match ingestion identity"
+            )
+        return snapshot
+
+    def _write_semantic_ingestion(
+        self,
+        snapshot: FrozenSemanticIngestionSnapshotV2,
+        *,
+        dataset_recipe: DatasetRecipe | None,
+    ) -> Path:
+        if dataset_recipe is not None:
+            frozen_trainable_ids = {
+                case_id
+                for case_id, split in (
+                    snapshot.improvement_signal_set.case_splits.items()
+                )
+                if split.value in {"train", "validation"}
+            }
+            frozen_held_out_ids = {
+                case_id
+                for case_id, split in (
+                    snapshot.improvement_signal_set.case_splits.items()
+                )
+                if split.value == "held_out"
+            }
+            if (
+                set(dataset_recipe.trainable_case_ids)
+                != frozen_trainable_ids
+                or set(dataset_recipe.held_out_case_ids)
+                != frozen_held_out_ids
+            ):
+                raise ValueError(
+                    "dataset recipe differs from frozen semantic splits"
+                )
+        destination = self.ingestion_path(snapshot.ingestion_id)
+        expected = snapshot.to_dict(public=False)
+        if destination.exists():
+            if destination.is_symlink() or not destination.is_dir():
+                raise ValueError("ingestion artifact destination is unsafe")
+            existing = self.read_ingestion(snapshot.ingestion_id)
+            if not isinstance(
+                existing,
+                FrozenSemanticIngestionSnapshotV2,
+            ) or existing.to_dict(public=False) != expected:
+                raise ValueError(
+                    "immutable ingestion id already exists with different content"
+                )
+            return destination
+
+        root = destination.parent
+        self._reject_symlink_components(root)
+        root.mkdir(parents=True, exist_ok=True)
+        root.chmod(0o700)
+        temporary = root / (
+            f".{snapshot.ingestion_id}.{uuid.uuid4().hex}.tmp"
+        )
+        temporary.mkdir(mode=0o700)
+        try:
+            self._write_private_json(
+                temporary / "ingestion.json",
+                expected,
+            )
+            self._write_private_json(
+                temporary / "source_inventory.json",
+                snapshot.inventory.to_dict(public=False),
+            )
+            self._write_private_json(
+                temporary / "source_bundle.json",
+                snapshot.source_bundle.to_dict(),
+            )
+            self._write_private_json(
+                temporary / "constitution.json",
+                snapshot.constitution.to_dict(),
+            )
+            self._write_private_json(
+                temporary / "rollout_policy.json",
+                snapshot.rollout_policy.to_dict(),
+            )
+            self._write_private_json(
+                temporary / "semantic_profile.json",
+                snapshot.semantic_profile.to_dict(),
+            )
+            self._write_private_json(
+                temporary / "stage_reports.json",
+                {"reports": [
+                    item.to_dict() for item in snapshot.stage_reports
+                ]},
+            )
+            self._write_private_json(
+                temporary / "evidence_graph.json",
+                snapshot.evidence_graph.to_dict(),
+            )
+            self._write_private_json(
+                temporary / "evidence_authority_context.json",
+                snapshot.evidence_authority_context.to_dict(),
+            )
+            self._write_private_json(
+                temporary / "semantic_cases.json",
+                {"cases": [
+                    item.to_dict() for item in snapshot.semantic_cases
+                ]},
+            )
+            self._write_private_json(
+                temporary / "improvement_signals.json",
+                snapshot.improvement_signal_set.to_dict(),
+            )
+            self._write_private_json(
+                temporary / "target_evidence_bundle.json",
+                snapshot.compiled_dataset.target_evidence_bundle.to_dict(),
+            )
+            self._write_private_json(
+                temporary / "evaluation_plans.json",
+                {"plans": [
+                    item.to_dict()
+                    for item in snapshot.evaluation_plans
+                ]},
+            )
+            self._write_private_json(
+                temporary / "resolved_traces.json",
+                {"traces": [
+                    item.to_dict()
+                    for item in snapshot.resolved_traces
+                ]},
+            )
+            self._write_private_json(
+                temporary / "compiled_dataset.json",
+                snapshot.compiled_dataset.to_dict(),
+            )
+            self._write_private_json(
+                temporary / "quality_report.json",
+                snapshot.quality_report.to_dict(),
+            )
+            self._write_private_json(
+                temporary / "quality_gate.json",
+                snapshot.quality_gate.to_dict(),
+            )
+            self._write_private_json(
+                temporary / "resolution_evidence.json",
+                snapshot.resolution_evidence.to_dict(),
+            )
+            self._write_private_json(
+                temporary / "authority_registry.json",
+                {
+                    "authoritative_verification_ids": list(
+                        snapshot.authoritative_verification_ids
+                    ),
+                    "verification_registry_fingerprint": (
+                        snapshot.verification_registry_fingerprint
+                    ),
+                },
+            )
+            self._write_private_json(
+                temporary / "qualification_registry.json",
+                snapshot.qualification_registry.to_dict(),
+            )
+            if snapshot.qualification_report is not None:
+                self._write_private_json(
+                    temporary / "qualification_report.json",
+                    snapshot.qualification_report.to_dict(),
+                )
+            if snapshot.source_manifest is not None:
+                self._write_private_json(
+                    temporary / "source_manifest.json",
+                    snapshot.source_manifest,
+                )
+            approval_template = _semantic_evidence_approval_template(
+                snapshot
+            )
+            if approval_template is not None:
+                self._write_private_json(
+                    temporary / "evidence_approval_template.json",
+                    approval_template,
+                )
+            self._write_semantic_case_splits(
+                temporary,
+                snapshot,
+                dataset_recipe=dataset_recipe,
+            )
+            if dataset_recipe is not None:
+                self._write_private_json(
+                    temporary / "dataset_recipe.json",
+                    dataset_recipe,
+                )
+            os.replace(temporary, destination)
+        finally:
+            if temporary.exists():
+                shutil.rmtree(temporary)
+        reloaded = self.read_ingestion(snapshot.ingestion_id)
+        if (
+            not isinstance(
+                reloaded,
+                FrozenSemanticIngestionSnapshotV2,
+            )
+            or reloaded.to_dict(public=False) != expected
+        ):
+            raise ValueError(
+                "persisted semantic ingestion snapshot did not round trip"
+            )
+        return destination
+
+    def _write_semantic_case_splits(
+        self,
+        root: Path,
+        snapshot: FrozenSemanticIngestionSnapshotV2,
+        *,
+        dataset_recipe: DatasetRecipe | None,
+    ) -> None:
+        if dataset_recipe is None:
+            trainable_ids = {
+                case_id
+                for case_id, split in (
+                    snapshot.improvement_signal_set.case_splits.items()
+                )
+                if split.value in {"train", "validation"}
+            }
+            held_out_ids = {
+                case_id
+                for case_id, split in (
+                    snapshot.improvement_signal_set.case_splits.items()
+                )
+                if split.value == "held_out"
+            }
+        else:
+            trainable_ids = set(dataset_recipe.trainable_case_ids)
+            held_out_ids = set(dataset_recipe.held_out_case_ids)
+        self._write_private_jsonl(
+            root / "trainable_cases.jsonl",
+            tuple(
+                item.to_dict()
+                for item in snapshot.normalized_cases
+                if item.case_id in trainable_ids
+            ),
+        )
+        self._write_private_jsonl(
+            root / "held_out_cases.jsonl",
+            tuple(
+                item.to_dict()
+                for item in snapshot.normalized_cases
+                if item.case_id in held_out_ids
+            ),
+        )
+
+    def _validate_semantic_ingestion_artifacts(
+        self,
+        root: Path,
+        snapshot: FrozenSemanticIngestionSnapshotV2,
+    ) -> None:
+        expected = {
+            "source_inventory.json": (
+                snapshot.inventory.to_dict(public=False)
+            ),
+            "source_bundle.json": snapshot.source_bundle.to_dict(),
+            "constitution.json": snapshot.constitution.to_dict(),
+            "rollout_policy.json": snapshot.rollout_policy.to_dict(),
+            "semantic_profile.json": snapshot.semantic_profile.to_dict(),
+            "stage_reports.json": {
+                "reports": [
+                    item.to_dict() for item in snapshot.stage_reports
+                ]
+            },
+            "evidence_graph.json": snapshot.evidence_graph.to_dict(),
+            "evidence_authority_context.json": (
+                snapshot.evidence_authority_context.to_dict()
+            ),
+            "semantic_cases.json": {
+                "cases": [
+                    item.to_dict() for item in snapshot.semantic_cases
+                ]
+            },
+            "improvement_signals.json": (
+                snapshot.improvement_signal_set.to_dict()
+            ),
+            "target_evidence_bundle.json": (
+                snapshot.compiled_dataset.target_evidence_bundle.to_dict()
+            ),
+            "evaluation_plans.json": {
+                "plans": [
+                    item.to_dict()
+                    for item in snapshot.evaluation_plans
+                ]
+            },
+            "resolved_traces.json": {
+                "traces": [
+                    item.to_dict()
+                    for item in snapshot.resolved_traces
+                ]
+            },
+            "compiled_dataset.json": (
+                snapshot.compiled_dataset.to_dict()
+            ),
+            "quality_report.json": snapshot.quality_report.to_dict(),
+            "quality_gate.json": snapshot.quality_gate.to_dict(),
+            "resolution_evidence.json": (
+                snapshot.resolution_evidence.to_dict()
+            ),
+            "authority_registry.json": {
+                "authoritative_verification_ids": list(
+                    snapshot.authoritative_verification_ids
+                ),
+                "verification_registry_fingerprint": (
+                    snapshot.verification_registry_fingerprint
+                ),
+            },
+            "qualification_registry.json": (
+                snapshot.qualification_registry.to_dict()
+            ),
+        }
+        if snapshot.qualification_report is not None:
+            expected["qualification_report.json"] = (
+                snapshot.qualification_report.to_dict()
+            )
+        if snapshot.source_manifest is not None:
+            expected["source_manifest.json"] = dict(
+                snapshot.source_manifest
+            )
+        approval_template = _semantic_evidence_approval_template(snapshot)
+        if approval_template is not None:
+            expected["evidence_approval_template.json"] = (
+                approval_template
+            )
+        for relative_path, value in expected.items():
+            path = root / relative_path
+            if path.is_symlink() or not path.is_file():
+                raise ValueError(
+                    f"semantic ingestion artifact is missing: {relative_path}"
+                )
+            if self._read_json(path) != value:
+                raise ValueError(
+                    "semantic ingestion artifact differs from its frozen "
+                    f"snapshot: {relative_path}"
+                )
+        trainable_ids = {
+            case_id
+            for case_id, split in (
+                snapshot.improvement_signal_set.case_splits.items()
+            )
+            if split.value in {"train", "validation"}
+        }
+        held_out_ids = {
+            case_id
+            for case_id, split in (
+                snapshot.improvement_signal_set.case_splits.items()
+            )
+            if split.value == "held_out"
+        }
+        expected_jsonl = {
+            "trainable_cases.jsonl": [
+                item.to_dict()
+                for item in snapshot.normalized_cases
+                if item.case_id in trainable_ids
+            ],
+            "held_out_cases.jsonl": [
+                item.to_dict()
+                for item in snapshot.normalized_cases
+                if item.case_id in held_out_ids
+            ],
+        }
+        for relative_path, records in expected_jsonl.items():
+            path = root / relative_path
+            if path.is_symlink() or not path.is_file():
+                raise ValueError(
+                    f"semantic ingestion artifact is missing: {relative_path}"
+                )
+            actual = [
+                json.loads(line)
+                for line in path.read_text(
+                    encoding="utf-8"
+                ).splitlines()
+                if line
+            ]
+            if actual != records:
+                raise ValueError(
+                    "semantic ingestion case split differs from its frozen "
+                    f"snapshot: {relative_path}"
+                )
+
+    def write_ingestion_ref(
+        self,
+        run_id: str,
+        snapshot: FrozenIngestionSnapshot | FrozenSemanticIngestionSnapshotV2,
+        *,
+        dataset_recipe: DatasetRecipe | None = None,
+    ) -> Path:
+        if not isinstance(
+            snapshot,
+            (FrozenIngestionSnapshot, FrozenSemanticIngestionSnapshotV2),
+        ):
+            raise TypeError("ingestion snapshot must be typed")
+        source = dict(dataset_recipe.source) if dataset_recipe is not None else {}
+        split_fingerprint = source.get("split_fingerprint")
+        if split_fingerprint is None and dataset_recipe is not None:
+            split_fingerprint = fingerprint_json(dataset_recipe.splits)
+        semantic = isinstance(
+            snapshot,
+            FrozenSemanticIngestionSnapshotV2,
+        )
+        payload = {
+            "schema_version": (
+                "aworld.self_evolve.ingestion_ref.v2"
+                if semantic
+                else "aworld.self_evolve.ingestion_ref.v1"
+            ),
+            "ingestion_id": snapshot.ingestion_id,
+            "source_fingerprint": snapshot.inventory.source_root_fingerprint,
+            "normalization_kind": (
+                "semantic_evidence"
+                if semantic
+                else "structural_mapping"
+            ),
+            "mapping_fingerprint": (
+                None
+                if semantic
+                else snapshot.selected_mapping.fingerprint
+            ),
+            "normalization_fingerprint": (
+                snapshot.compiled_dataset.normalization_fingerprint
+                if semantic
+                else None
+            ),
+            "normalized_dataset_fingerprint": (
+                snapshot.normalized_dataset_fingerprint
+            ),
+            "split_fingerprint": split_fingerprint,
+            "quality_report_ref": str(
+                self.ingestion_path(snapshot.ingestion_id) / "quality_report.json"
+            ),
+        }
+        if semantic:
+            payload.update(
+                {
+                    "evidence_graph_logical_fingerprint": (
+                        snapshot.evidence_graph.logical_fingerprint
+                    ),
+                    "evidence_graph_provenance_fingerprint": (
+                        snapshot.evidence_graph.provenance_fingerprint
+                    ),
+                    "improvement_signal_set_fingerprint": (
+                        snapshot.improvement_signal_set.fingerprint
+                    ),
+                    "evaluation_plan_bundle_fingerprint": (
+                        snapshot.compiled_dataset
+                        .evaluation_plan_bundle_fingerprint
+                    ),
+                    "target_evidence_bundle_fingerprint": (
+                        snapshot.compiled_dataset
+                        .target_evidence_bundle.fingerprint
+                    ),
+                    "manifest_origin": snapshot.manifest_origin.value,
+                }
+            )
+        path = self.run_path(run_id) / "ingestion_ref.json"
+        self._write_json_atomic(path, payload)
+        return path
+
+    def read_ingestion_ref(self, run_id: str) -> dict[str, Any]:
+        path = self.run_path(run_id) / "ingestion_ref.json"
+        if not path.is_file() or path.is_symlink():
+            raise FileNotFoundError(f"ingestion reference not found for run: {run_id}")
+        payload = self._read_json(path)
+        if payload.get("schema_version") not in {
+            "aworld.self_evolve.ingestion_ref.v1",
+            "aworld.self_evolve.ingestion_ref.v2",
+        }:
+            raise ValueError("unsupported ingestion reference schema")
+        ingestion_id = payload.get("ingestion_id")
+        if not isinstance(ingestion_id, str):
+            raise ValueError("ingestion reference is missing ingestion_id")
+        snapshot = self.read_ingestion(ingestion_id)
+        semantic = isinstance(
+            snapshot,
+            FrozenSemanticIngestionSnapshotV2,
+        )
+        expected: dict[str, Any] = {
+            "source_fingerprint": snapshot.inventory.source_root_fingerprint,
+            "mapping_fingerprint": (
+                None
+                if semantic
+                else snapshot.selected_mapping.fingerprint
+            ),
+            "normalized_dataset_fingerprint": (
+                snapshot.normalized_dataset_fingerprint
+            ),
+        }
+        if semantic:
+            expected.update(
+                {
+                    "normalization_kind": "semantic_evidence",
+                    "normalization_fingerprint": (
+                        snapshot.compiled_dataset.normalization_fingerprint
+                    ),
+                    "evidence_graph_logical_fingerprint": (
+                        snapshot.evidence_graph.logical_fingerprint
+                    ),
+                    "evidence_graph_provenance_fingerprint": (
+                        snapshot.evidence_graph.provenance_fingerprint
+                    ),
+                    "improvement_signal_set_fingerprint": (
+                        snapshot.improvement_signal_set.fingerprint
+                    ),
+                    "evaluation_plan_bundle_fingerprint": (
+                        snapshot.compiled_dataset
+                        .evaluation_plan_bundle_fingerprint
+                    ),
+                    "target_evidence_bundle_fingerprint": (
+                        snapshot.compiled_dataset
+                        .target_evidence_bundle.fingerprint
+                    ),
+                    "manifest_origin": snapshot.manifest_origin.value,
+                }
+            )
+        for key, value in expected.items():
+            if payload.get(key) != value:
+                raise ValueError(f"ingestion reference {key} does not match snapshot")
+        return payload
+
+    def write_campaign(self, campaign: Any) -> Path:
+        from aworld.self_evolve.campaign import SelfImprovementCampaign
+
+        if not isinstance(campaign, SelfImprovementCampaign):
+            raise TypeError("campaign must be typed")
+        path = self.campaign_path(campaign.campaign_id) / "campaign.json"
+        self._write_json_atomic(path, campaign.to_dict())
+        reloaded = self.read_campaign(campaign.campaign_id)
+        if reloaded.to_dict() != campaign.to_dict():
+            raise ValueError("persisted campaign checkpoint did not round trip")
+        return path
+
+    def read_campaign(self, campaign_id: str) -> Any:
+        from aworld.self_evolve.campaign import (
+            SelfImprovementCampaign,
+            validate_campaign_source_snapshot,
+        )
+
+        path = self.campaign_path(campaign_id) / "campaign.json"
+        if not path.is_file() or path.is_symlink():
+            raise FileNotFoundError(f"self-improvement campaign not found: {campaign_id}")
+        campaign = SelfImprovementCampaign.from_dict(self._read_json(path))
+        validate_campaign_source_snapshot(
+            campaign,
+            workspace_root=self.workspace_root,
+        )
+        for run_id in campaign.run_ids:
+            report = self.run_path(run_id) / "report.json"
+            if not report.is_file() or report.is_symlink():
+                raise ValueError(
+                    f"campaign {campaign_id} references missing run {run_id}"
+                )
+        if campaign.status.value == "complete" and campaign.run_ids:
+            latest = self.read_report(campaign.run_ids[-1])
+            if latest.get("status") != "succeeded":
+                raise ValueError("complete campaign must reference a succeeded run")
+        return campaign
+
+    def write_campaign_goal_handoff(
+        self,
+        campaign_id: str,
+        payload: Mapping[str, Any],
+    ) -> Path:
+        path = self.campaign_path(campaign_id) / "goal_handoff.json"
+        if payload.get("campaign_id") != campaign_id:
+            raise ValueError("goal handoff does not match its campaign")
+        self._write_json_atomic(path, dict(payload))
+        return path
+
+    def read_campaign_goal_handoff(self, campaign_id: str) -> dict[str, Any]:
+        path = self.campaign_path(campaign_id) / "goal_handoff.json"
+        if not path.is_file() or path.is_symlink():
+            raise FileNotFoundError(f"campaign goal handoff not found: {campaign_id}")
+        payload = self._read_json(path)
+        if payload.get("campaign_id") != campaign_id:
+            raise ValueError("goal handoff does not match its campaign")
+        return payload
+
+    def read_report(self, run_id: str) -> dict[str, Any]:
+        path = self.run_path(run_id) / "report.json"
+        if not path.is_file() or path.is_symlink():
+            raise FileNotFoundError(f"self-evolve report not found: {run_id}")
+        return self._read_json(path)
+
+    def archive_interrupted_campaign_run(
+        self,
+        *,
+        campaign_id: str,
+        run_id: str,
+        reserved_usage: Mapping[str, Any],
+    ) -> Path:
+        """Atomically preserve a dead, incomplete Campaign run before retry."""
+
+        self._validate_id(campaign_id, "campaign_id")
+        self._validate_id(run_id, "run_id")
+        if not run_id.startswith(f"{campaign_id}-cycle-"):
+            raise ValueError("interrupted run does not belong to its campaign")
+        run_dir = self.run_path(run_id)
+        if not run_dir.is_dir() or run_dir.is_symlink():
+            raise FileNotFoundError(f"incomplete self-evolve run not found: {run_id}")
+        if (run_dir / "report.json").exists():
+            raise ValueError("completed self-evolve run cannot be archived as interrupted")
+        lease_path = run_dir / ".active.json"
+        lease = self._read_json(lease_path) if lease_path.is_file() else {}
+        if _run_lease_is_live(lease):
+            raise RuntimeError(f"self-evolve run is still active: {run_id}")
+        for journal_path in (run_dir / "apply").glob("*.journal.json"):
+            journal = self._read_json(journal_path)
+            if journal.get("status") in {"backup_written", "applying"}:
+                raise RuntimeError(
+                    f"self-evolve run has an interrupted apply journal: {run_id}"
+                )
+
+        archive_root = (
+            self.campaign_path(campaign_id) / "interrupted_run_attempts"
+        )
+        archive_root.mkdir(parents=True, exist_ok=True)
+        attempt_index = 1
+        while True:
+            archive_path = archive_root / f"{run_id}-attempt-{attempt_index:03d}"
+            if not archive_path.exists():
+                break
+            attempt_index += 1
+        os.replace(run_dir, archive_path)
+        self._write_json(
+            archive_path / "interruption.json",
+            {
+                "schema_version": "aworld.self_evolve.interrupted_run.v1",
+                "code": "campaign_run_interrupted",
+                "campaign_id": campaign_id,
+                "run_id": run_id,
+                "attempt_index": attempt_index,
+                "archived_at": time.time(),
+                "lease": public_diagnostic_projection(lease),
+                "reserved_usage": public_diagnostic_projection(reserved_usage),
+            },
+        )
+        return archive_path
+
     def create_run(self, run: SelfEvolveRun) -> Path:
         run_dir = self.run_path(run.run_id)
         run_dir.mkdir(parents=True, exist_ok=True)
-        self._write_json(run_dir / "run.json", run)
+        run_payload = to_json_dict(run)
+        raw_gates = run_payload.get("gate_results")
+        if isinstance(raw_gates, list):
+            for gate in raw_gates:
+                if isinstance(gate, dict):
+                    if "reason" in gate:
+                        gate["reason"] = public_diagnostic_projection(
+                            gate.get("reason")
+                        )
+                    if "details" in gate:
+                        gate["details"] = public_diagnostic_projection(
+                            gate.get("details")
+                        )
+        raw_metrics = run_payload.get("metrics")
+        if isinstance(raw_metrics, list):
+            for metric in raw_metrics:
+                if isinstance(metric, dict) and "metrics" in metric:
+                    metric["metrics"] = public_diagnostic_projection(
+                        metric.get("metrics")
+                    )
+        self._write_json(run_dir / "run.json", run_payload)
         active_lease = run_dir / ".active.json"
         if run.status == SelfEvolveRunStatus.RUNNING:
             self._write_json(
@@ -100,12 +1005,73 @@ class FilesystemSelfEvolveStore:
 
     def write_report(self, run_id: str, report: Mapping[str, Any]) -> Path:
         path = self.run_path(run_id) / "report.json"
-        self._write_json(path, report)
+        payload = dict(report)
+        ingestion_ref_path = self.run_path(run_id) / "ingestion_ref.json"
+        if ingestion_ref_path.is_file() and not ingestion_ref_path.is_symlink():
+            ingestion_ref = self.read_ingestion_ref(run_id)
+            snapshot = self.read_ingestion(str(ingestion_ref["ingestion_id"]))
+            if isinstance(
+                snapshot,
+                FrozenSemanticIngestionSnapshotV2,
+            ):
+                payload["ingestion"] = {
+                    **snapshot.public_projection(),
+                    "split_fingerprint": ingestion_ref.get(
+                        "split_fingerprint"
+                    ),
+                }
+            else:
+                payload["ingestion"] = {
+                    "schema_version": snapshot.schema_version,
+                    "ingestion_id": snapshot.ingestion_id,
+                    "source_fingerprint": snapshot.inventory.source_root_fingerprint,
+                    "mapping_fingerprint": snapshot.selected_mapping.fingerprint,
+                    "normalized_dataset_fingerprint": (
+                        snapshot.normalized_dataset_fingerprint
+                    ),
+                    "split_fingerprint": ingestion_ref.get("split_fingerprint"),
+                    "ingestor_name": snapshot.ingestor_name,
+                    "ingestor_version": snapshot.ingestor_version,
+                    "ingestor_trust_level": snapshot.ingestor_trust_level.value,
+                    "quality_report": snapshot.quality_report.public_projection(),
+                }
+        ingestion_gate_path = self.run_path(run_id) / "ingestion_gate.json"
+        if ingestion_gate_path.is_file() and not ingestion_gate_path.is_symlink():
+            ingestion_gate = self._read_json(ingestion_gate_path)
+            gates = [
+                item
+                for item in payload.get("gate_results", ())
+                if isinstance(item, Mapping)
+                and item.get("gate_name") != "dataset_ingestion"
+            ]
+            payload["gate_results"] = [ingestion_gate, *gates]
+        self._write_json(path, _public_report_payload(payload))
+        return path
+
+    def write_ingestion_gate(
+        self,
+        run_id: str,
+        gate: Mapping[str, Any],
+    ) -> Path:
+        if gate.get("gate_name") != "dataset_ingestion":
+            raise ValueError("ingestion gate must use dataset_ingestion")
+        path = self.run_path(run_id) / "ingestion_gate.json"
+        self._write_json_atomic(path, dict(gate))
         return path
 
     def write_dataset_recipe(self, run_id: str, recipe: DatasetRecipe) -> Path:
         path = self.run_path(run_id) / "dataset_recipe.json"
         self._write_json(path, recipe)
+        source = recipe.source
+        ingestion_id = source.get("ingestion_id")
+        if source.get("kind") == "agentic_source" and isinstance(
+            ingestion_id, str
+        ):
+            self.write_ingestion_ref(
+                run_id,
+                self.read_ingestion(ingestion_id),
+                dataset_recipe=recipe,
+            )
         return path
 
     def write_replay_requirements(
@@ -114,6 +1080,23 @@ class FilesystemSelfEvolveStore:
         report: ReplayPreflightReport,
     ) -> Path:
         path = self.run_path(run_id) / "replay_requirements.json"
+        self._write_json(path, report)
+        return path
+
+    def write_replay_evidence_reuse(
+        self,
+        run_id: str,
+        candidate_id: str,
+        report: Mapping[str, Any],
+    ) -> Path:
+        """Persist provenance for replay evidence reused without execution."""
+
+        self._validate_id(candidate_id, "candidate_id")
+        path = (
+            self.run_path(run_id)
+            / "replay_evidence_reuse"
+            / f"{candidate_id}.json"
+        )
         self._write_json(path, report)
         return path
 
@@ -139,10 +1122,181 @@ class FilesystemSelfEvolveStore:
         self._write_json(path, lineage)
         return path
 
+    def candidate_attempt_path(self, key: CandidateAttemptKey) -> Path:
+        """Return the append-only lifecycle stream path for one generation slot."""
+
+        if not isinstance(key, CandidateAttemptKey):
+            raise TypeError("candidate attempt key must be typed")
+        self._validate_id(key.run_id, "run_id")
+        run_root = self.run_path(key.run_id)
+        path = (
+            run_root
+            / "candidate_attempts"
+            / f"iteration-{key.iteration:08d}"
+            / f"slot-{key.slot:08d}"
+            / "events.jsonl"
+        )
+        if not path.resolve().is_relative_to(run_root.resolve()):
+            raise ValueError("candidate attempt path escapes its run directory")
+        return path
+
+    def append_candidate_attempt_event(
+        self,
+        event: CandidateAttemptEvent,
+    ) -> Path:
+        """Atomically append one event without exposing a partial JSON record."""
+
+        if not isinstance(event, CandidateAttemptEvent):
+            raise TypeError("candidate attempt event must be typed")
+        path = self.candidate_attempt_path(event.key)
+        if path.is_symlink():
+            raise ValueError("candidate attempt event stream cannot be a symlink")
+        existing = self.read_candidate_attempt_events(event.key)
+        validate_candidate_attempt_lifecycle((*existing, event))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if path.parent.is_symlink():
+            raise ValueError("candidate attempt directory cannot be a symlink")
+        encoded_events = [
+            json.dumps(
+                item.to_dict(),
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            for item in (*existing, event)
+        ]
+        payload = ("\n".join(encoded_events) + "\n").encode("utf-8")
+        temporary = path.parent / f".{path.name}.{uuid.uuid4().hex}.tmp"
+        try:
+            # Write the next complete logical stream away from the canonical
+            # path. A short write, ENOSPC, flush, or fsync failure therefore
+            # leaves the previously committed stream readable.
+            with temporary.open("xb") as stream:
+                offset = 0
+                while offset < len(payload):
+                    written = stream.write(memoryview(payload)[offset:])
+                    if (
+                        not isinstance(written, int)
+                        or isinstance(written, bool)
+                        or written <= 0
+                        or written > len(payload) - offset
+                    ):
+                        raise OSError(
+                            "candidate attempt stream write made invalid progress"
+                        )
+                    offset += written
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, path)
+            directory_fd = os.open(path.parent, os.O_RDONLY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+        finally:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                # Cleanup must never replace the append/fsync/rename error.
+                # Orphaned temp files are not part of the canonical stream.
+                pass
+        return path
+
+    def write_candidate_attempt_event(
+        self,
+        event: CandidateAttemptEvent,
+    ) -> Path:
+        """Compatibility spelling for the explicitly append-only operation."""
+
+        return self.append_candidate_attempt_event(event)
+
+    def read_candidate_attempt_events(
+        self,
+        key: CandidateAttemptKey,
+    ) -> tuple[CandidateAttemptEvent, ...]:
+        path = self.candidate_attempt_path(key)
+        if not path.exists():
+            return ()
+        if path.is_symlink() or not path.is_file():
+            raise ValueError("candidate attempt event stream must be a regular file")
+        events: list[CandidateAttemptEvent] = []
+        for line_number, line in enumerate(
+            path.read_text(encoding="utf-8").splitlines(),
+            start=1,
+        ):
+            if not line.strip():
+                raise ValueError(
+                    f"candidate attempt event stream has an empty line: {line_number}"
+                )
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise ValueError(
+                    f"candidate attempt event is invalid JSON: {line_number}"
+                ) from exc
+            if not isinstance(payload, Mapping):
+                raise ValueError("candidate attempt event must be a JSON object")
+            event = CandidateAttemptEvent.from_dict(payload)
+            if event.key != key:
+                raise ValueError("candidate attempt event path/key mismatch")
+            events.append(event)
+        if events:
+            validate_candidate_attempt_lifecycle(events)
+        return tuple(events)
+
+    def read_all_candidate_attempt_events(
+        self,
+        run_id: str,
+    ) -> tuple[CandidateAttemptEvent, ...]:
+        root = self.run_path(run_id) / "candidate_attempts"
+        if not root.exists():
+            return ()
+        if root.is_symlink() or not root.is_dir():
+            raise ValueError("candidate attempt root must be a regular directory")
+        events: list[CandidateAttemptEvent] = []
+        for path in sorted(root.glob("iteration-*/slot-*/events.jsonl")):
+            if path.is_symlink() or not path.is_file():
+                raise ValueError("candidate attempt event stream must be a regular file")
+            for line in path.read_text(encoding="utf-8").splitlines():
+                payload = json.loads(line)
+                if not isinstance(payload, Mapping):
+                    raise ValueError("candidate attempt event must be a JSON object")
+                event = CandidateAttemptEvent.from_dict(payload)
+                if event.key.run_id != run_id:
+                    raise ValueError("candidate attempt event belongs to another run")
+                if self.candidate_attempt_path(event.key) != path:
+                    raise ValueError("candidate attempt event path/key mismatch")
+                events.append(event)
+        grouped: dict[CandidateAttemptKey, list[CandidateAttemptEvent]] = {}
+        for event in events:
+            grouped.setdefault(event.key, []).append(event)
+        for values in grouped.values():
+            validate_candidate_attempt_lifecycle(values)
+        return tuple(
+            sorted(events, key=lambda item: (item.key, item.sequence))
+        )
+
     def write_lesson_records(self, run_id: str, lessons: tuple[Any, ...]) -> Path:
+        from aworld.self_evolve.lessons import (
+            LessonRecord,
+            aggregate_lesson_records,
+            validate_lesson_records,
+        )
+
         lessons_dir = self.run_path(run_id) / "lessons"
         lessons_dir.mkdir(parents=True, exist_ok=True)
         path = lessons_dir / "lessons.jsonl"
+        typed_lessons = tuple(
+            lesson for lesson in lessons if isinstance(lesson, LessonRecord)
+        )
+        if len(typed_lessons) == len(lessons):
+            validate_lesson_records(typed_lessons)
+            lessons = aggregate_lesson_records(typed_lessons)
+            validate_lesson_records(lessons)
+        else:
+            lesson_ids = [getattr(lesson, "lesson_id", None) for lesson in lessons]
+            if len(lesson_ids) != len(set(lesson_ids)):
+                raise ValueError("duplicate lesson ids require typed LessonRecord values")
         lines = [
             json.dumps(to_json_dict(lesson), ensure_ascii=False, sort_keys=True)
             for lesson in lessons
@@ -155,7 +1309,11 @@ class FilesystemSelfEvolveStore:
         diagnostics_dir.mkdir(parents=True, exist_ok=True)
         path = diagnostics_dir / "harness_diagnostics.jsonl"
         lines = [
-            json.dumps(to_json_dict(diagnostic), ensure_ascii=False, sort_keys=True)
+            json.dumps(
+                public_diagnostic_projection(to_json_dict(diagnostic)),
+                ensure_ascii=False,
+                sort_keys=True,
+            )
             for diagnostic in diagnostics
         ]
         path.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
@@ -362,6 +1520,55 @@ class FilesystemSelfEvolveStore:
             encoding="utf-8",
         )
 
+    def _write_json_atomic(self, path: Path, payload: Any) -> None:
+        self._reject_symlink_components(path.parent)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self._reject_symlink_components(path.parent)
+        if path.is_symlink():
+            raise ValueError("atomic JSON destination cannot be a symlink")
+        temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+        encoded = (
+            json.dumps(to_json_dict(payload), ensure_ascii=False, indent=2, sort_keys=True)
+            + "\n"
+        )
+        try:
+            with temporary.open("x", encoding="utf-8") as handle:
+                handle.write(encoded)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, path)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+    def _write_private_json(self, path: Path, payload: Any) -> None:
+        self._write_json(path, payload)
+        path.chmod(0o600)
+
+    def _write_private_jsonl(
+        self,
+        path: Path,
+        records: tuple[Mapping[str, Any], ...],
+    ) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        encoded = "".join(
+            json.dumps(
+                to_json_dict(record),
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            + "\n"
+            for record in records
+        )
+        path.write_text(encoded, encoding="utf-8")
+        path.chmod(0o600)
+
+    @staticmethod
+    def _reject_symlink_components(path: Path) -> None:
+        for component in (path, *path.parents):
+            if component.is_symlink():
+                raise ValueError("atomic JSON destination cannot traverse a symlink")
+
     def _read_json(self, path: Path) -> dict[str, Any]:
         payload = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(payload, dict):
@@ -396,3 +1603,95 @@ def _directory_fingerprint(root: Path) -> str:
         "utf-8"
     )
     return "sha256:" + hashlib.sha256(encoded).hexdigest()
+
+
+def _run_lease_is_live(lease: Mapping[str, Any]) -> bool:
+    hostname = lease.get("hostname")
+    if not isinstance(hostname, str) or not hostname:
+        # Absence of a valid ownership proof is not proof that the run died.
+        return True
+    if hostname != socket.gethostname():
+        # A foreign-host lease cannot be probed safely.
+        return True
+    pid = lease.get("pid")
+    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+        return True
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except (OSError, PermissionError):
+        return True
+    return True
+
+
+_DYNAMIC_REPORT_FIELDS = frozenset(
+    {
+        "acceptance_confidence",
+        "baseline_metrics",
+        "candidate_metrics",
+        "content_quality_diagnostics",
+        "gate_results",
+        "held_out_metrics",
+        "no_op",
+        "optimizer_diagnostics",
+        "population",
+        "release_checklist",
+        "stopping_condition",
+        "terminal_cause",
+    }
+)
+
+
+def _public_report_payload(report: Mapping[str, Any]) -> dict[str, Any]:
+    """Project dynamic report fields without truncating the top-level schema."""
+
+    projected = dict(report)
+    for key in _DYNAMIC_REPORT_FIELDS:
+        if key in projected:
+            projected[key] = public_diagnostic_projection(projected[key])
+    raw_gates = report.get("gate_results")
+    if isinstance(raw_gates, list):
+        projected["gate_results"] = [
+            {
+                str(key): public_diagnostic_projection(value)
+                for key, value in gate.items()
+            }
+            if isinstance(gate, Mapping)
+            else public_diagnostic_projection(gate)
+            for gate in raw_gates
+        ]
+    for section_name in ("post_apply", "release_normalization"):
+        section = report.get(section_name)
+        if isinstance(section, Mapping):
+            projected[section_name] = {
+                str(key): (
+                    value
+                    if str(key).endswith(("_path", "_paths"))
+                    else public_diagnostic_projection(value)
+                )
+                for key, value in section.items()
+            }
+    replay = projected.get("replay")
+    if isinstance(replay, Mapping):
+        replay_payload = dict(replay)
+        for variant_key in ("baseline", "candidate"):
+            variant = replay_payload.get(variant_key)
+            if isinstance(variant, Mapping):
+                replay_payload[variant_key] = {
+                    str(key): public_diagnostic_projection(value)
+                    for key, value in variant.items()
+                }
+        members = replay_payload.get("members")
+        if isinstance(members, list):
+            replay_payload["members"] = [
+                {
+                    str(key): public_diagnostic_projection(value)
+                    for key, value in member.items()
+                }
+                if isinstance(member, Mapping)
+                else public_diagnostic_projection(member)
+                for member in members
+            ]
+        projected["replay"] = replay_payload
+    return projected

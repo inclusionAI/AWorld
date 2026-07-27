@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import shutil
 import socket
 import subprocess
 import sys
@@ -27,6 +28,7 @@ from aworld.self_evolve.replay import (
     AWorldCliCandidateReplayBackend,
     AWorldCliReplayExecutor,
     CandidateReplayRequest,
+    CandidateReplayMemberResult,
     CandidateReplayResult,
     ReplayExecutionRequest,
     ReplayExecutionResult,
@@ -35,15 +37,23 @@ from aworld.self_evolve.replay import (
     build_paired_replay_dataset,
     build_replay_request,
     candidate_replay_is_comparable,
+    candidate_replay_pair_coverage,
     load_candidate_replay_result,
+    normalize_replay_members,
+    _aggregate_member_variant_results,
+    _aggregate_variant_results,
     _invalid_evidence_manifest_entry_reason,
+    _infer_baseline_skill_root_from_target,
     _evidence_manifest_metrics,
+    _has_authoritative_per_member_repetitions,
     _member_artifact_name,
     _member_baseline_replay_dir,
     _probe_advertised_websockets,
     _attach_replay_service_protocol_diagnostics,
     _classify_candidate_task_rollout_nontermination,
     _preserve_replay_service_protocol_trace,
+    _reset_replay_service_protocol_trace,
+    _persist_variant_lifecycle,
     _protocol_probe_response_mismatch,
     _probe_replay_service,
     _replay_capability_recorded_response_values,
@@ -53,13 +63,44 @@ from aworld.self_evolve.replay import (
     replay_capability_fixture_leaf_values,
     replay_capability_fixture_response_leaf_values,
     _replay_service_failure_with_stderr,
+    _stored_baseline_matches_request,
     _replay_failure_outcome,
     _run_replay_cli,
     _validate_nonempty_correlated_json_response,
     _validate_replay_service_protocol_trace,
     _validate_websocket_handshake_response,
+    _load_variant_result_from_dir,
 )
+from aworld.self_evolve.failure_events import (
+    FailureEventSource,
+    FailureOwner,
+    FailureScope,
+    FailureStage,
+    ReplayExecutionStatus,
+    ReplayFailureEvent,
+)
+from aworld.self_evolve.types import SelfEvolveTargetRef
 from aworld.self_evolve.replay_adaptation import ReplayAdaptationCompiler
+
+
+def test_run_owned_inferred_draft_is_not_used_as_baseline_skill_root(
+    tmp_path: Path,
+) -> None:
+    target = SelfEvolveTargetRef(
+        "skill",
+        "remote-recovery-1234567890",
+        str(
+            tmp_path
+            / ".aworld"
+            / "self_evolve"
+            / "cli-test"
+            / "draft_target"
+            / "remote-recovery-1234567890"
+            / "SKILL.md"
+        ),
+    )
+
+    assert _infer_baseline_skill_root_from_target(target) is None
 from aworld.self_evolve.replay_adaptation import ReplayAdapterBinding
 from aworld.self_evolve.replay_capability import (
     FrozenReplayCapability,
@@ -67,6 +108,7 @@ from aworld.self_evolve.replay_capability import (
     ReplayReadinessProbe,
     ReplayServiceSpec,
 )
+from aworld.self_evolve.runner import _replay_result_has_reusable_baseline
 from aworld.self_evolve.types import (
     CandidateFileDelta,
     CandidateVariant,
@@ -84,6 +126,1294 @@ def _candidate(content: str, candidate_id: str = "cand-1") -> CandidateVariant:
         rationale="test candidate",
         target_fingerprint="sha256:old",
     )
+
+
+def test_replay_failure_event_round_trip_preserves_orthogonal_semantics() -> None:
+    event = ReplayFailureEvent(
+        event_id="replay-event-contract",
+        code="capability_start_failed",
+        owner=FailureOwner.CANDIDATE,
+        stage=FailureStage.CAPABILITY_PREFLIGHT,
+        scope=FailureScope.CANDIDATE,
+        repairable=True,
+        category="replay_capability",
+        summary="candidate capability could not start",
+        diagnostics={"attempt": 1},
+        artifact_refs=("artifact/runtime.log",),
+    )
+
+    loaded = ReplayFailureEvent.from_dict(event.to_dict())
+
+    assert loaded.to_dict() == event.to_dict()
+    assert loaded.owner is FailureOwner.CANDIDATE
+    assert loaded.stage is FailureStage.CAPABILITY_PREFLIGHT
+    assert loaded.scope is FailureScope.CANDIDATE
+    with pytest.raises(ValueError, match="shared_run failures"):
+        ReplayFailureEvent(
+            code="invalid_shared_scope",
+            owner=FailureOwner.CANDIDATE,
+            stage=FailureStage.CAPABILITY_PREFLIGHT,
+            scope=FailureScope.SHARED_RUN,
+            repairable=True,
+        )
+
+
+def test_unknown_legacy_failure_never_gains_shared_run_scope() -> None:
+    event = ReplayFailureEvent.from_legacy_mapping(
+        {"reason": "an old artifact did not record machine failure fields"}
+    )
+
+    assert event.owner is FailureOwner.FRAMEWORK
+    assert event.stage is FailureStage.LEGACY_IMPORT
+    assert event.scope is FailureScope.CANDIDATE
+    assert event.source is FailureEventSource.LEGACY_UNKNOWN
+    assert event.code == "legacy_unclassified_failure"
+
+
+def test_non_native_failure_event_cannot_claim_shared_run_scope() -> None:
+    with pytest.raises(ValueError, match="native failure events"):
+        ReplayFailureEvent(
+            code="legacy_shared_failure",
+            owner=FailureOwner.INFRASTRUCTURE,
+            stage=FailureStage.LEGACY_IMPORT,
+            scope=FailureScope.SHARED_RUN,
+            repairable=False,
+            source=FailureEventSource.LEGACY_INFERRED,
+        )
+
+    payload = {
+        "schema_version": "aworld.self_evolve.replay_failure.v2",
+        "event_id": "legacy-shared-event",
+        "code": "legacy_shared_failure",
+        "owner": "infrastructure",
+        "stage": "legacy_import",
+        "scope": "shared_run",
+        "repairable": False,
+        "source": "legacy_inferred",
+    }
+    with pytest.raises(ValueError, match="native failure events"):
+        ReplayFailureEvent.from_dict(payload)
+
+
+def test_v2_failure_event_requires_explicit_source() -> None:
+    event = ReplayFailureEvent(
+        code="task_failed",
+        owner=FailureOwner.TASK,
+        stage=FailureStage.TASK_ROLLOUT,
+        scope=FailureScope.MEMBER,
+        repairable=False,
+    )
+    payload = event.to_dict()
+    payload.pop("source")
+
+    with pytest.raises(ValueError, match="source is required"):
+        ReplayFailureEvent.from_dict(payload)
+
+
+def test_lifecycle_loader_rejects_v2_failure_without_source(tmp_path: Path) -> None:
+    variant_dir = tmp_path / "missing-source"
+    variant_dir.mkdir()
+    event = ReplayFailureEvent(
+        code="task_failed",
+        owner=FailureOwner.TASK,
+        stage=FailureStage.TASK_ROLLOUT,
+        scope=FailureScope.MEMBER,
+        repairable=False,
+    ).to_dict()
+    event.pop("source")
+    (variant_dir / "lifecycle.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "aworld.self_evolve.replay_lifecycle.v2",
+                "variant_id": "candidate",
+                "status": "failed",
+                "failure": event,
+                "blocked_by": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="source is required"):
+        _load_variant_result_from_dir(variant_dir, base_variant_id="candidate")
+
+
+def test_lifecycle_loader_rejects_non_native_shared_run_failure(tmp_path: Path) -> None:
+    variant_dir = tmp_path / "invalid-lifecycle"
+    variant_dir.mkdir()
+    (variant_dir / "lifecycle.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "aworld.self_evolve.replay_lifecycle.v2",
+                "variant_id": "candidate",
+                "status": "failed",
+                "failure": {
+                    "schema_version": "aworld.self_evolve.replay_failure.v2",
+                    "event_id": "legacy-shared-event",
+                    "code": "legacy_shared_failure",
+                    "owner": "infrastructure",
+                    "stage": "legacy_import",
+                    "scope": "shared_run",
+                    "repairable": False,
+                    "source": "legacy_inferred",
+                },
+                "blocked_by": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="native failure events"):
+        _load_variant_result_from_dir(variant_dir, base_variant_id="candidate")
+
+
+def test_replay_variant_status_rejects_impossible_lifecycle_combinations() -> None:
+    event = ReplayFailureEvent(
+        code="execution_failed",
+        owner=FailureOwner.TASK,
+        stage=FailureStage.TASK_ROLLOUT,
+        scope=FailureScope.MEMBER,
+        repairable=False,
+    )
+
+    with pytest.raises(ValueError, match="failed replay variant requires"):
+        ReplayVariantResult(
+            variant_id="candidate",
+            status=ReplayExecutionStatus.FAILED,
+            trajectory=[],
+        )
+    with pytest.raises(ValueError, match="blocked replay variant requires"):
+        ReplayVariantResult(
+            variant_id="candidate",
+            status=ReplayExecutionStatus.BLOCKED,
+            trajectory=[],
+        )
+    with pytest.raises(ValueError, match="blocked replay variant cannot"):
+        ReplayVariantResult(
+            variant_id="candidate",
+            status=ReplayExecutionStatus.BLOCKED,
+            trajectory=[{"action": {}}],
+            blocked_by=(event,),
+        )
+    with pytest.raises(ValueError, match="executed replay variant cannot have blocked_by"):
+        ReplayVariantResult(
+            variant_id="candidate",
+            status=ReplayExecutionStatus.FAILED,
+            trajectory=[],
+            failure=event,
+            blocked_by=(event,),
+        )
+    with pytest.raises(ValueError, match="unexecuted replay variant cannot contain execution artifacts"):
+        ReplayVariantResult(
+            variant_id="candidate",
+            status=ReplayExecutionStatus.BLOCKED,
+            trajectory=[],
+            stdout_path="stale.stdout",
+            blocked_by=(event,),
+        )
+    with pytest.raises(ValueError, match="unexecuted replay variant cannot contain execution artifacts"):
+        ReplayVariantResult(
+            variant_id="candidate",
+            status=ReplayExecutionStatus.NOT_RUN,
+            trajectory=[],
+            repetition_results=(
+                ReplayVariantResult(
+                    variant_id="candidate-1",
+                    status=ReplayExecutionStatus.SUCCEEDED,
+                    trajectory=[{"action": {"content": "ran"}}],
+                ),
+            ),
+        )
+
+
+def test_not_run_lifecycle_is_materialized_and_loaded_without_failure(
+    tmp_path: Path,
+) -> None:
+    variant_dir = tmp_path / "not-run"
+    _persist_variant_lifecycle(
+        variant_dir,
+        ReplayVariantResult(
+            variant_id="candidate",
+            status=ReplayExecutionStatus.NOT_RUN,
+            trajectory=[],
+        ),
+    )
+
+    loaded = _load_variant_result_from_dir(
+        variant_dir,
+        base_variant_id="candidate",
+    )
+
+    assert loaded.status is ReplayExecutionStatus.NOT_RUN
+    assert loaded.failure is None
+    assert loaded.blocked_by == ()
+
+
+@pytest.mark.parametrize("status", (ReplayExecutionStatus.BLOCKED, ReplayExecutionStatus.NOT_RUN))
+def test_persist_unexecuted_lifecycle_removes_stale_stream_artifacts(
+    tmp_path: Path,
+    status: ReplayExecutionStatus,
+) -> None:
+    variant_dir = tmp_path / status.value
+    variant_dir.mkdir()
+    (variant_dir / "stdout.txt").write_text("stale stdout", encoding="utf-8")
+    (variant_dir / "stderr.txt").write_text("stale stderr", encoding="utf-8")
+    blocker = ReplayFailureEvent(
+        code="candidate_preflight_failed",
+        owner=FailureOwner.CANDIDATE,
+        stage=FailureStage.CAPABILITY_PREFLIGHT,
+        scope=FailureScope.CANDIDATE,
+        repairable=True,
+    )
+    result = ReplayVariantResult(
+        variant_id="candidate",
+        status=status,
+        trajectory=[],
+        blocked_by=(blocker,) if status is ReplayExecutionStatus.BLOCKED else (),
+    )
+
+    _persist_variant_lifecycle(variant_dir, result)
+
+    assert not (variant_dir / "stdout.txt").exists()
+    assert not (variant_dir / "stderr.txt").exists()
+
+
+def test_mixed_member_aggregate_has_consistent_unexecuted_lifecycle(
+    tmp_path: Path,
+) -> None:
+    request = CandidateReplayRequest(
+        run_id="run-mixed",
+        task_id="root",
+        workspace_root=str(tmp_path),
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo"),
+        candidate_id="candidate",
+        overlay_skill_root=str(tmp_path / "overlay"),
+        task_input="root",
+    )
+    succeeded = ReplayVariantResult(
+        variant_id="candidate",
+        status=ReplayExecutionStatus.SUCCEEDED,
+        trajectory=[{"action": {"content": "executed"}}],
+        stdout_path=str(tmp_path / "executed.stdout"),
+    )
+    blocker = ReplayFailureEvent(
+        code="candidate_preflight_failed",
+        owner=FailureOwner.CANDIDATE,
+        stage=FailureStage.CAPABILITY_PREFLIGHT,
+        scope=FailureScope.CANDIDATE,
+        repairable=True,
+    )
+    blocked = ReplayVariantResult(
+        variant_id="candidate",
+        status=ReplayExecutionStatus.BLOCKED,
+        trajectory=[],
+        blocked_by=(blocker,),
+    )
+    members = (
+        CandidateReplayMemberResult("one", replace(request, task_id="one"), succeeded, succeeded),
+        CandidateReplayMemberResult("two", replace(request, task_id="two"), blocked, blocked),
+    )
+
+    aggregate = _aggregate_member_variant_results(
+        base_variant_id="candidate",
+        members=members,
+        select=lambda member: member.candidate,
+        artifact_dir=tmp_path / "aggregate",
+        persist=False,
+    )
+
+    assert aggregate.status is ReplayExecutionStatus.BLOCKED
+    assert aggregate.metrics["successful_member_count"] == 1
+    assert aggregate.metrics["blocked_member_count"] == 1
+    assert aggregate.trajectory == []
+    assert aggregate.stdout_path is None
+    assert aggregate.stderr_path is None
+    assert aggregate.repetition_results == ()
+
+
+@pytest.mark.parametrize("case_count", (1, 3))
+def test_normalized_replay_members_are_dataset_ordered_and_detect_contract_gaps(
+    tmp_path: Path,
+    case_count: int,
+) -> None:
+    case_ids = tuple(f"member-{index}" for index in range(case_count))
+    dataset = SelfEvolveDataset(
+        cases=tuple(EvalCase(case_id=case_id, input={"index": index}) for index, case_id in enumerate(case_ids)),
+        recipe=DatasetRecipe(
+            source={"kind": "typed_lifecycle_contract"},
+            split_seed="seed",
+            splits={"train": list(case_ids), "validation": [], "held_out": []},
+        ),
+    )
+    candidate = _candidate("---\nname: demo\n---\n# Demo\n")
+    root_request = build_replay_request(
+        run_id="run-normalized-members",
+        workspace_root=tmp_path,
+        target=candidate.target,
+        candidate=candidate,
+        overlay_skill_root=tmp_path / "overlay",
+        dataset=dataset,
+    )
+    succeeded = ReplayVariantResult(
+        variant_id="baseline",
+        status=ReplayExecutionStatus.SUCCEEDED,
+        trajectory=[{"action": {"content": "ok"}}],
+    )
+    members = tuple(
+        CandidateReplayMemberResult(
+            case_id=case_id,
+            request=replace(
+                root_request,
+                task_id=case_id,
+                task_input=next(
+                    case.input for case in dataset.cases if case.case_id == case_id
+                ),
+            ),
+            baseline=succeeded,
+            candidate=replace(succeeded, variant_id=candidate.candidate_id),
+        )
+        for case_id in reversed(case_ids)
+    )
+    replay_result = CandidateReplayResult(
+        request=root_request,
+        baseline=succeeded,
+        candidate=replace(succeeded, variant_id=candidate.candidate_id),
+        member_results=members,
+    )
+
+    normalized = normalize_replay_members(dataset=dataset, replay_result=replay_result)
+
+    assert normalized.valid
+    assert tuple(member.case_id for member in normalized.members) == case_ids
+
+    malformed_members = members[:-1]
+    if malformed_members:
+        malformed_members = (*malformed_members, malformed_members[0])
+    malformed = replace(replay_result, member_results=malformed_members)
+    normalized_malformed = normalize_replay_members(
+        dataset=dataset,
+        replay_result=malformed,
+    )
+    assert not normalized_malformed.valid
+    assert normalized_malformed.missing_case_ids
+    if malformed_members:
+        assert normalized_malformed.duplicate_case_ids
+    assert all(
+        event.owner is FailureOwner.FRAMEWORK
+        and event.stage is FailureStage.RESULT_NORMALIZATION
+        and event.scope is FailureScope.CANDIDATE
+        for event in normalized_malformed.failure_events
+    )
+
+
+@pytest.mark.parametrize("case_count", (1, 3))
+@pytest.mark.parametrize(
+    "contract_gap",
+    ("duplicate", "unexpected", "request_mismatch", "explicit_empty"),
+)
+def test_structurally_invalid_members_are_never_comparable_without_adaptation(
+    tmp_path: Path,
+    case_count: int,
+    contract_gap: str,
+) -> None:
+    case_ids = tuple(f"case-{index}" for index in range(case_count))
+    dataset = SelfEvolveDataset(
+        cases=tuple(
+            EvalCase(case_id=case_id, input={"index": index})
+            for index, case_id in enumerate(case_ids)
+        ),
+        recipe=DatasetRecipe(
+            source={"kind": "normalization_adversarial"},
+            split_seed="seed",
+            splits={"train": list(case_ids), "validation": [], "held_out": []},
+        ),
+    )
+    candidate = _candidate("---\nname: demo\n---\n# Demo\n")
+    root_request = build_replay_request(
+        run_id="run-normalization-adversarial",
+        workspace_root=tmp_path,
+        target=candidate.target,
+        candidate=candidate,
+        overlay_skill_root=tmp_path / "overlay",
+        dataset=dataset,
+        baseline_repetitions=1,
+        candidate_repetitions=1,
+    )
+    succeeded = ReplayVariantResult(
+        variant_id="baseline",
+        status=ReplayExecutionStatus.SUCCEEDED,
+        trajectory=[{"action": {"content": "ok"}}],
+    )
+    members = tuple(
+        CandidateReplayMemberResult(
+            case_id=case_id,
+            request=replace(
+                root_request,
+                task_id=case_id,
+                task_input=dataset.cases[index].input,
+                baseline_repetitions=1,
+                candidate_repetitions=1,
+            ),
+            baseline=succeeded,
+            candidate=replace(succeeded, variant_id=candidate.candidate_id),
+        )
+        for index, case_id in enumerate(case_ids)
+    )
+    if contract_gap == "duplicate":
+        malformed_members = (*members, members[0])
+    elif contract_gap == "unexpected":
+        malformed_members = (
+            *members,
+            replace(
+                members[0],
+                case_id="outside-dataset",
+                request=replace(members[0].request, task_id="outside-dataset"),
+            ),
+        )
+    elif contract_gap == "request_mismatch":
+        malformed_members = (
+            replace(
+                members[0],
+                request=replace(members[0].request, run_id="different-run"),
+            ),
+            *members[1:],
+        )
+    else:
+        malformed_members = ()
+    replay_result = CandidateReplayResult(
+        request=root_request,
+        baseline=succeeded,
+        candidate=replace(succeeded, variant_id=candidate.candidate_id),
+        member_results=malformed_members,
+    )
+
+    normalized = normalize_replay_members(dataset=dataset, replay_result=replay_result)
+
+    assert root_request.adaptation_fingerprint is None
+    assert not normalized.valid
+    assert candidate_replay_is_comparable(
+        dataset=dataset,
+        replay_result=replay_result,
+    ) is False
+    coverage = candidate_replay_pair_coverage(
+        dataset=dataset,
+        replay_result=replay_result,
+        normalized=normalized,
+    )
+    assert coverage["normalization_failure_count"] > 0
+    assert coverage["member_count"] == case_count
+    assert (
+        coverage["comparable_pair_count"] + coverage["incomparable_pair_count"]
+        == case_count
+    )
+
+
+@pytest.mark.parametrize("case_count", (1, 3))
+@pytest.mark.parametrize(
+    ("field_name", "tampered_value"),
+    (
+        ("task_input", {"tampered": True}),
+        ("task_input_fingerprint", "sha256:tampered"),
+        ("baseline_replay_dir", "/tmp/tampered-baseline"),
+    ),
+)
+def test_member_derived_request_fields_fail_closed_for_comparison_and_reuse(
+    tmp_path: Path,
+    case_count: int,
+    field_name: str,
+    tampered_value: object,
+) -> None:
+    case_ids = tuple(f"derived-{index}" for index in range(case_count))
+    dataset = SelfEvolveDataset(
+        cases=tuple(
+            EvalCase(case_id=case_id, input={"index": index})
+            for index, case_id in enumerate(case_ids)
+        ),
+        recipe=DatasetRecipe(
+            source={"kind": "member_derived_identity"},
+            split_seed="seed",
+            splits={"train": list(case_ids), "validation": [], "held_out": []},
+        ),
+    )
+    candidate = _candidate("---\nname: demo\n---\n# Demo\n")
+    root_request = build_replay_request(
+        run_id="run-derived-identity",
+        workspace_root=tmp_path,
+        target=candidate.target,
+        candidate=candidate,
+        overlay_skill_root=tmp_path / "overlay",
+        dataset=dataset,
+        baseline_repetitions=1,
+        candidate_repetitions=1,
+    )
+    succeeded = ReplayVariantResult(
+        variant_id="baseline",
+        status=ReplayExecutionStatus.SUCCEEDED,
+        trajectory=[{"action": {"content": "ok"}}],
+    )
+    members = tuple(
+        CandidateReplayMemberResult(
+            case_id=case.case_id,
+            request=replace(
+                root_request,
+                task_id=case.case_id,
+                task_input=(tampered_value if index == 0 and field_name == "task_input" else case.input),
+                task_input_fingerprint=(
+                    tampered_value
+                    if index == 0 and field_name == "task_input_fingerprint"
+                    else root_request.task_input_fingerprint
+                ),
+                baseline_replay_dir=(
+                    tampered_value
+                    if index == 0 and field_name == "baseline_replay_dir"
+                    else None
+                ),
+                baseline_repetitions=1,
+                candidate_repetitions=1,
+            ),
+            baseline=succeeded,
+            candidate=replace(succeeded, variant_id=candidate.candidate_id),
+        )
+        for index, case in enumerate(dataset.cases)
+    )
+    replay_result = CandidateReplayResult(
+        request=root_request,
+        baseline=succeeded,
+        candidate=replace(succeeded, variant_id=candidate.candidate_id),
+        member_results=members,
+    )
+
+    normalized = normalize_replay_members(dataset=dataset, replay_result=replay_result)
+    coverage = candidate_replay_pair_coverage(
+        dataset=dataset,
+        replay_result=replay_result,
+        normalized=normalized,
+    )
+
+    assert normalized.request_mismatch_case_ids == (case_ids[0],)
+    mismatch = next(
+        event
+        for event in normalized.failure_events
+        if event.code == "replay_request_member_mismatch"
+    )
+    assert field_name in mismatch.diagnostics["fields"]
+    assert candidate_replay_is_comparable(
+        dataset=dataset,
+        replay_result=replay_result,
+        normalized=normalized,
+    ) is False
+    assert _replay_result_has_reusable_baseline(
+        dataset=dataset,
+        replay_result=replay_result,
+    ) is False
+    assert coverage["member_count"] == case_count
+    assert coverage["comparable_pair_count"] + coverage["incomparable_pair_count"] == case_count
+
+
+@pytest.mark.parametrize(
+    "occurrence_order",
+    ("bad_bad", "bad_good", "good_bad"),
+)
+def test_duplicate_member_occurrences_are_order_independent_and_never_selected(
+    tmp_path: Path,
+    occurrence_order: str,
+) -> None:
+    dataset = SelfEvolveDataset(
+        cases=(EvalCase(case_id="case-a", input={"expected": True}),),
+        recipe=DatasetRecipe(
+            source={"kind": "duplicate_occurrence_contract"},
+            split_seed="seed",
+            splits={"train": ["case-a"], "validation": [], "held_out": []},
+        ),
+    )
+    candidate = _candidate("---\nname: demo\n---\n# Demo\n")
+    root_request = build_replay_request(
+        run_id="run-duplicate-occurrence",
+        workspace_root=tmp_path,
+        target=candidate.target,
+        candidate=candidate,
+        overlay_skill_root=tmp_path / "overlay",
+        dataset=dataset,
+    )
+    succeeded = ReplayVariantResult(
+        variant_id="baseline",
+        status=ReplayExecutionStatus.SUCCEEDED,
+        trajectory=[{"action": {"content": "ok"}}],
+    )
+
+    def occurrence(**request_updates: object) -> CandidateReplayMemberResult:
+        derived_request_values = {
+            "task_id": "case-a",
+            "task_input": dataset.cases[0].input,
+            **request_updates,
+        }
+        return CandidateReplayMemberResult(
+            case_id="case-a",
+            request=replace(root_request, **derived_request_values),
+            baseline=succeeded,
+            candidate=replace(succeeded, variant_id=candidate.candidate_id),
+        )
+
+    good = occurrence()
+    bad_input = occurrence(task_input={"bad": "input"})
+    bad_fingerprint = occurrence(task_input_fingerprint="sha256:bad")
+    occurrence_pairs = {
+        "bad_bad": (bad_input, bad_fingerprint),
+        "bad_good": (bad_input, good),
+        "good_bad": (good, bad_input),
+    }
+    replay_result = CandidateReplayResult(
+        request=root_request,
+        baseline=succeeded,
+        candidate=replace(succeeded, variant_id=candidate.candidate_id),
+        member_results=occurrence_pairs[occurrence_order],
+    )
+
+    normalized = normalize_replay_members(dataset=dataset, replay_result=replay_result)
+    coverage = candidate_replay_pair_coverage(
+        dataset=dataset,
+        replay_result=replay_result,
+        normalized=normalized,
+    )
+
+    assert normalized.members == ()
+    assert normalized.missing_case_ids == ()
+    assert normalized.duplicate_case_ids == ("case-a",)
+    assert normalized.request_mismatch_case_ids == ("case-a",)
+    mismatch = next(
+        event
+        for event in normalized.failure_events
+        if event.code == "replay_request_member_mismatch"
+    )
+    expected_fields = (
+        {"task_input", "task_input_fingerprint"}
+        if occurrence_order == "bad_bad"
+        else {"task_input"}
+    )
+    assert set(mismatch.diagnostics["fields"]) == expected_fields
+    assert coverage["member_count"] == 1
+    assert coverage["comparable_pair_count"] == 0
+    assert coverage["incomparable_pair_count"] == 1
+    assert coverage["duplicate_member_count"] == 1
+    assert coverage["request_mismatch_count"] == 1
+
+
+def test_member_request_per_member_repetitions_are_part_of_normalization_contract(
+    tmp_path: Path,
+) -> None:
+    dataset = SelfEvolveDataset(
+        cases=(
+            EvalCase(case_id="one", input="one"),
+            EvalCase(case_id="two", input="two"),
+            EvalCase(case_id="three", input="three"),
+        ),
+        recipe=DatasetRecipe(
+            source={"kind": "repetition_distribution_contract"},
+            split_seed="seed",
+            splits={"train": ["one", "two", "three"], "validation": [], "held_out": []},
+        ),
+    )
+    candidate = _candidate("---\nname: demo\n---\n# Demo\n")
+    root_request = build_replay_request(
+        run_id="run-repetition-contract",
+        workspace_root=tmp_path,
+        target=candidate.target,
+        candidate=candidate,
+        overlay_skill_root=tmp_path / "overlay",
+        dataset=dataset,
+        baseline_repetitions=6,
+        candidate_repetitions=9,
+    )
+    succeeded = ReplayVariantResult(
+        variant_id="baseline",
+        status=ReplayExecutionStatus.SUCCEEDED,
+        trajectory=[{"action": {"content": "ok"}}],
+    )
+    members = tuple(
+        CandidateReplayMemberResult(
+            case_id=case.case_id,
+            request=replace(
+                root_request,
+                task_id=case.case_id,
+                task_input=case.input,
+                baseline_repetitions=(99 if index == 0 else 6),
+                candidate_repetitions=9,
+            ),
+            baseline=succeeded,
+            candidate=replace(succeeded, variant_id=candidate.candidate_id),
+        )
+        for index, case in enumerate(dataset.cases)
+    )
+    replay_result = CandidateReplayResult(
+        request=root_request,
+        baseline=succeeded,
+        candidate=replace(succeeded, variant_id=candidate.candidate_id),
+        member_results=members,
+    )
+
+    normalized = normalize_replay_members(dataset=dataset, replay_result=replay_result)
+
+    assert not normalized.valid
+    mismatch = next(
+        event
+        for event in normalized.failure_events
+        if event.code == "replay_request_member_mismatch"
+    )
+    assert mismatch.diagnostics["case_ids"] == ["one"]
+    assert "baseline_repetitions" in mismatch.diagnostics["fields"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("case_count", (1, 3))
+async def test_replay_lifecycle_v3_round_trip_materializes_blocked_members(
+    tmp_path: Path,
+    case_count: int,
+) -> None:
+    case_ids = tuple(f"member-{index}" for index in range(case_count))
+    dataset = SelfEvolveDataset(
+        cases=tuple(EvalCase(case_id=case_id, input=case_id) for case_id in case_ids),
+        recipe=DatasetRecipe(
+            source={"kind": "lifecycle_round_trip"},
+            split_seed="seed",
+            splits={"train": list(case_ids), "validation": [], "held_out": []},
+        ),
+    )
+    candidate = _candidate(
+        "---\nname: demo\n---\n# Demo\n",
+        candidate_id="candidate-lifecycle",
+    )
+
+    async def fake_executor(request: ReplayExecutionRequest) -> ReplayExecutionResult:
+        if request.variant_id == "baseline":
+            return ReplayExecutionResult(
+                status="failed",
+                trajectory=[],
+                failure={
+                    "type": "ReplayServiceProtocolError",
+                    "outcome": "candidate_failure",
+                    "reason": "synthetic preflight failure",
+                },
+            )
+        raise AssertionError("candidate execution must be blocked")
+
+    request = build_replay_request(
+        run_id=f"run-lifecycle-round-trip-{case_count}",
+        workspace_root=tmp_path,
+        target=candidate.target,
+        candidate=candidate,
+        overlay_skill_root=tmp_path / "overlay",
+        dataset=dataset,
+    )
+    result = await AWorldCliCandidateReplayBackend(executor=fake_executor).replay_candidate(
+        request,
+        candidate=candidate,
+        dataset=dataset,
+    )
+    replay_dir = (
+        tmp_path
+        / ".aworld"
+        / "self_evolve"
+        / request.run_id
+        / "replay"
+        / candidate.candidate_id
+    )
+    loaded = load_candidate_replay_result(replay_dir)
+
+    assert loaded.member_results is not None
+    assert tuple(member.case_id for member in loaded.member_results) == case_ids
+    assert all(
+        member.candidate.status is ReplayExecutionStatus.BLOCKED
+        for member in loaded.member_results
+    )
+    cause_id = result.member_results[0].baseline.failure.event_id
+    assert all(
+        member.candidate.blocked_by[0].event_id == cause_id
+        for member in loaded.member_results
+    )
+    manifest = json.loads((replay_dir / "members" / "manifest.json").read_text())
+    assert manifest["schema_version"] == "aworld.self_evolve.member_replay.v3"
+    assert manifest["repetition_semantics"] == "per_member_v3"
+    assert all(
+        (
+            replay_dir
+            / "members"
+            / item["path"]
+            / candidate.candidate_id
+            / "lifecycle.json"
+        ).exists()
+        for item in manifest["members"]
+    )
+    assert all(
+        json.loads(path.read_text())["schema_version"]
+        == "aworld.self_evolve.replay_lifecycle.v3"
+        and json.loads(path.read_text())["repetition_semantics"]
+        == "per_member_v3"
+        for path in replay_dir.rglob("lifecycle.json")
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("case_count", (1, 3))
+async def test_lifecycle_v3_round_trip_restores_member_repetition_children(
+    tmp_path: Path,
+    case_count: int,
+) -> None:
+    case_ids = tuple(f"repetition-member-{index}" for index in range(case_count))
+    dataset = SelfEvolveDataset(
+        cases=tuple(EvalCase(case_id=case_id, input=case_id) for case_id in case_ids),
+        recipe=DatasetRecipe(
+            source={"kind": "repetition_lifecycle_round_trip"},
+            split_seed="seed",
+            splits={"train": list(case_ids), "validation": [], "held_out": []},
+        ),
+    )
+    candidate = _candidate(
+        "---\nname: demo\n---\n# Demo\n",
+        candidate_id="candidate-repetitions",
+    )
+
+    async def fake_executor(request: ReplayExecutionRequest) -> ReplayExecutionResult:
+        return ReplayExecutionResult(
+            status="succeeded",
+            trajectory=[
+                {
+                    "action": {
+                        "content": f"{request.task_id}:{request.variant_id}"
+                    }
+                }
+            ],
+        )
+
+    request = build_replay_request(
+        run_id=f"run-repetition-lifecycle-{case_count}",
+        workspace_root=tmp_path,
+        target=candidate.target,
+        candidate=candidate,
+        overlay_skill_root=tmp_path / "overlay",
+        dataset=dataset,
+        baseline_repetitions=2,
+        candidate_repetitions=3,
+    )
+    before = await AWorldCliCandidateReplayBackend(executor=fake_executor).replay_candidate(
+        request,
+        candidate=candidate,
+        dataset=dataset,
+    )
+    replay_dir = (
+        tmp_path
+        / ".aworld"
+        / "self_evolve"
+        / request.run_id
+        / "replay"
+        / candidate.candidate_id
+    )
+    after = load_candidate_replay_result(replay_dir)
+
+    assert before.member_results is not None
+    assert after.member_results is not None
+    for replay_result in (before, after):
+        assert [len(member.baseline.repetition_results) for member in replay_result.member_results] == [
+            2
+        ] * case_count
+        assert [len(member.candidate.repetition_results) for member in replay_result.member_results] == [
+            3
+        ] * case_count
+    before_paired = build_paired_replay_dataset(
+        dataset=dataset,
+        replay_result=before,
+        candidate=candidate,
+    )
+    normalized_after = normalize_replay_members(dataset=dataset, replay_result=after)
+    after_paired = build_paired_replay_dataset(
+        dataset=dataset,
+        replay_result=after,
+        candidate=candidate,
+        normalized=normalized_after,
+    )
+    assert len(before_paired.cases) == len(after_paired.cases) == 3 * case_count
+    assert [
+        case.metadata["replay"]["replay_case_count"] for case in after_paired.cases
+    ] == [3] * (3 * case_count)
+
+
+@pytest.mark.asyncio
+async def test_v2_distributed_artifact_migrates_to_non_authoritative_per_member_view(
+    tmp_path: Path,
+) -> None:
+    case_ids = ("legacy-a", "legacy-b", "legacy-c")
+    dataset = SelfEvolveDataset(
+        cases=tuple(EvalCase(case_id=case_id, input=case_id) for case_id in case_ids),
+        recipe=DatasetRecipe(
+            source={"kind": "legacy_distributed_repetitions"},
+            split_seed="seed",
+            splits={"train": list(case_ids), "validation": [], "held_out": []},
+        ),
+    )
+    candidate = _candidate(
+        "---\nname: demo\n---\n# Demo\n",
+        candidate_id="legacy-candidate",
+    )
+    adaptation = ReplayAdaptationCompiler().compile(
+        dataset=dataset,
+        workspace_root=tmp_path,
+        artifact_root=tmp_path / "adaptation",
+    )
+
+    async def fake_executor(request: ReplayExecutionRequest) -> ReplayExecutionResult:
+        return ReplayExecutionResult(
+            status="succeeded",
+            trajectory=[{"action": {"content": request.variant_id}}],
+        )
+
+    request = build_replay_request(
+        run_id="legacy-v2-distributed",
+        workspace_root=tmp_path,
+        target=candidate.target,
+        candidate=candidate,
+        overlay_skill_root=tmp_path / "overlay",
+        dataset=dataset,
+        replay_adaptation=adaptation,
+        baseline_repetitions=2,
+        candidate_repetitions=3,
+    )
+    backend = AWorldCliCandidateReplayBackend(executor=fake_executor)
+    await backend.replay_candidate(request, candidate=candidate, dataset=dataset)
+    replay_dir = (
+        tmp_path
+        / ".aworld"
+        / "self_evolve"
+        / request.run_id
+        / "replay"
+        / candidate.candidate_id
+    )
+
+    root_payload = json.loads((replay_dir / "request.json").read_text())
+    root_payload.pop("repetition_semantics")
+    root_payload["baseline_repetitions"] = 6
+    root_payload["candidate_repetitions"] = 9
+    _write_json(replay_dir / "request.json", root_payload)
+    manifest_path = replay_dir / "members" / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["schema_version"] = "aworld.self_evolve.member_replay.v2"
+    manifest.pop("repetition_semantics")
+    _write_json(manifest_path, manifest)
+    for member_request_path in (replay_dir / "members").glob("*/request.json"):
+        member_payload = json.loads(member_request_path.read_text())
+        member_payload.pop("repetition_semantics")
+        _write_json(member_request_path, member_payload)
+    for lifecycle_path in replay_dir.rglob("lifecycle.json"):
+        lifecycle = json.loads(lifecycle_path.read_text())
+        lifecycle["schema_version"] = "aworld.self_evolve.replay_lifecycle.v2"
+        lifecycle.pop("repetition_semantics")
+        _write_json(lifecycle_path, lifecycle)
+
+    loaded = load_candidate_replay_result(replay_dir)
+    normalized = normalize_replay_members(dataset=dataset, replay_result=loaded)
+
+    assert loaded.request.baseline_repetitions == 2
+    assert loaded.request.candidate_repetitions == 3
+    assert loaded.request.repetition_semantics == "distributed_v2_migrated"
+    assert loaded.baseline.metrics["repetition_count"] == 6
+    assert loaded.candidate.metrics["repetition_count"] == 9
+    assert all(
+        member.request.baseline_repetitions == 2
+        and member.request.candidate_repetitions == 3
+        and member.request.repetition_semantics == "distributed_v2_migrated"
+        for member in loaded.member_results
+    )
+    assert len(normalized.members) == 3
+    assert not normalized.valid
+    assert normalized.failure_events[0].code == (
+        "legacy_repetition_semantics_non_authoritative"
+    )
+    assert not _replay_result_has_reusable_baseline(
+        dataset=dataset,
+        replay_result=loaded,
+    )
+    assert not _has_authoritative_per_member_repetitions(loaded.request)
+
+    first_member = loaded.member_results[0]
+    first_member_root = (
+        replay_dir / "members" / _member_artifact_name(first_member.case_id)
+    )
+    new_request = replace(
+        first_member.request,
+        baseline_replay_dir=str(first_member_root / "baseline"),
+        repetition_semantics="per_member_v3",
+    )
+    assert not _stored_baseline_matches_request(new_request)
+    with pytest.raises(ValueError, match="explicit per-member repetition semantics"):
+        await backend.replay_candidate(
+            loaded.request,
+            candidate=candidate,
+            dataset=dataset,
+        )
+
+
+@pytest.mark.asyncio
+async def test_v2_lifecycle_cannot_claim_v3_per_member_authority(
+    tmp_path: Path,
+) -> None:
+    dataset = SelfEvolveDataset(
+        cases=(EvalCase(case_id="legacy-lifecycle", input="task"),),
+        recipe=DatasetRecipe(
+            source={"kind": "legacy_lifecycle"},
+            split_seed="seed",
+            splits={"train": ["legacy-lifecycle"], "validation": [], "held_out": []},
+        ),
+    )
+    candidate = _candidate("---\nname: demo\n---\n# Demo\n")
+
+    async def fake_executor(request: ReplayExecutionRequest) -> ReplayExecutionResult:
+        return ReplayExecutionResult(
+            status="succeeded",
+            trajectory=[{"action": {"content": request.variant_id}}],
+        )
+
+    request = build_replay_request(
+        run_id="legacy-lifecycle-v2",
+        workspace_root=tmp_path,
+        target=candidate.target,
+        candidate=candidate,
+        overlay_skill_root=tmp_path / "overlay",
+        dataset=dataset,
+    )
+    await AWorldCliCandidateReplayBackend(executor=fake_executor).replay_candidate(
+        request,
+        candidate=candidate,
+        dataset=dataset,
+    )
+    replay_dir = (
+        tmp_path
+        / ".aworld"
+        / "self_evolve"
+        / request.run_id
+        / "replay"
+        / candidate.candidate_id
+    )
+    for lifecycle_path in replay_dir.rglob("lifecycle.json"):
+        lifecycle = json.loads(lifecycle_path.read_text())
+        lifecycle["schema_version"] = "aworld.self_evolve.replay_lifecycle.v2"
+        lifecycle.pop("repetition_semantics")
+        _write_json(lifecycle_path, lifecycle)
+
+    loaded = load_candidate_replay_result(replay_dir)
+    normalized = normalize_replay_members(dataset=dataset, replay_result=loaded)
+
+    assert loaded.request.repetition_semantics == "distributed_v2_migrated"
+    assert not normalized.valid
+    assert normalized.failure_events[0].code == (
+        "legacy_repetition_semantics_non_authoritative"
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("tamper", "expected_code"),
+    (
+        ("delete_child", "replay_v3_repetition_children_invalid"),
+        ("delete_other_member_candidate_child", "replay_v3_repetition_children_invalid"),
+        ("delete_lifecycle", "replay_v3_lifecycle_missing"),
+        ("unexpected_child", "replay_v3_repetition_children_invalid"),
+        ("aggregate_count", "replay_v3_repetition_count_mismatch"),
+        ("root_aggregate_count", "replay_v3_root_aggregate_metrics_mismatch"),
+        ("request_count", "replay_v3_repetition_children_invalid"),
+        ("manifest_status", "replay_v3_manifest_status_mismatch"),
+        ("mixed_lifecycle", "replay_v3_lifecycle_contract_invalid"),
+    ),
+)
+async def test_v3_repetition_artifact_tamper_is_typed_and_non_authoritative(
+    tmp_path: Path,
+    tamper: str,
+    expected_code: str,
+) -> None:
+    case_ids = ("tamper-a", "tamper-b", "tamper-c")
+    dataset = SelfEvolveDataset(
+        cases=tuple(EvalCase(case_id=case_id, input=case_id) for case_id in case_ids),
+        recipe=DatasetRecipe(
+            source={"kind": "v3_repetition_tamper"},
+            split_seed="seed",
+            splits={"train": list(case_ids), "validation": [], "held_out": []},
+        ),
+    )
+    candidate = _candidate(
+        "---\nname: demo\n---\n# Demo\n",
+        candidate_id="tamper-candidate",
+    )
+
+    async def fake_executor(request: ReplayExecutionRequest) -> ReplayExecutionResult:
+        return ReplayExecutionResult(
+            status="succeeded",
+            trajectory=[{"action": {"content": request.variant_id}}],
+        )
+
+    request = build_replay_request(
+        run_id=f"v3-tamper-{tamper}",
+        workspace_root=tmp_path,
+        target=candidate.target,
+        candidate=candidate,
+        overlay_skill_root=tmp_path / "overlay",
+        dataset=dataset,
+        baseline_repetitions=2,
+        candidate_repetitions=3,
+    )
+    request = replace(
+        request,
+        adaptation_fingerprint="sha256:tamper-adaptation",
+        workspace_seed_fingerprint="sha256:tamper-workspace",
+        task_input_fingerprint="sha256:tamper-input",
+    )
+    original = await AWorldCliCandidateReplayBackend(
+        executor=fake_executor
+    ).replay_candidate(
+        request,
+        candidate=candidate,
+        dataset=dataset,
+    )
+    replay_dir = (
+        tmp_path
+        / ".aworld"
+        / "self_evolve"
+        / request.run_id
+        / "replay"
+        / candidate.candidate_id
+    )
+    manifest_path = replay_dir / "members" / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    first_member_root = replay_dir / "members" / manifest["members"][0]["path"]
+    other_member_root = replay_dir / "members" / manifest["members"][1]["path"]
+    first_baseline = first_member_root / "baseline"
+    assert original.member_results is not None
+    direct_reuse_request = replace(
+        original.member_results[0].request,
+        baseline_replay_dir=str(first_baseline),
+    )
+    assert _stored_baseline_matches_request(direct_reuse_request)
+
+    if tamper == "delete_child":
+        shutil.rmtree(first_baseline / "2")
+    elif tamper == "delete_other_member_candidate_child":
+        shutil.rmtree(other_member_root / candidate.candidate_id / "3")
+    elif tamper == "delete_lifecycle":
+        for lifecycle_path in replay_dir.rglob("lifecycle.json"):
+            lifecycle_path.unlink()
+    elif tamper == "unexpected_child":
+        shutil.copytree(first_baseline / "1", first_baseline / "01")
+    elif tamper == "aggregate_count":
+        aggregate_path = first_baseline / "aggregate_metrics.json"
+        aggregate = json.loads(aggregate_path.read_text())
+        aggregate["repetition_count"] = 99
+        aggregate["successful_repetition_count"] = 99
+        _write_json(aggregate_path, aggregate)
+    elif tamper == "root_aggregate_count":
+        aggregate_path = replay_dir / "baseline" / "aggregate_metrics.json"
+        aggregate = json.loads(aggregate_path.read_text())
+        aggregate["repetition_count"] = 99
+        aggregate["successful_repetition_count"] = 99
+        _write_json(aggregate_path, aggregate)
+    elif tamper == "request_count":
+        root_payload = json.loads((replay_dir / "request.json").read_text())
+        root_payload["baseline_repetitions"] = 1
+        _write_json(replay_dir / "request.json", root_payload)
+        for member_request_path in (replay_dir / "members").glob("*/request.json"):
+            member_payload = json.loads(member_request_path.read_text())
+            member_payload["baseline_repetitions"] = 1
+            _write_json(member_request_path, member_payload)
+    elif tamper == "manifest_status":
+        manifest["members"][0]["baseline_status"] = "failed"
+        _write_json(manifest_path, manifest)
+    else:
+        lifecycle_path = first_baseline / "1" / "lifecycle.json"
+        lifecycle = json.loads(lifecycle_path.read_text())
+        lifecycle["schema_version"] = "aworld.self_evolve.replay_lifecycle.v2"
+        lifecycle.pop("repetition_semantics")
+        _write_json(lifecycle_path, lifecycle)
+
+    loaded = load_candidate_replay_result(replay_dir)
+    normalized = normalize_replay_members(dataset=dataset, replay_result=loaded)
+    failure_codes = {event.code for event in normalized.failure_events}
+
+    assert expected_code in failure_codes
+    assert not normalized.valid
+    assert not _has_authoritative_per_member_repetitions(loaded.request)
+    assert not _replay_result_has_reusable_baseline(
+        dataset=dataset,
+        replay_result=loaded,
+    )
+    if tamper not in {
+        "delete_other_member_candidate_child",
+        "manifest_status",
+        "root_aggregate_count",
+    }:
+        assert not _stored_baseline_matches_request(direct_reuse_request)
+    assert not candidate_replay_is_comparable(
+        dataset=dataset,
+        replay_result=loaded,
+        normalized=normalized,
+    )
+    with pytest.raises(ValueError, match="member result contract is invalid"):
+        build_paired_replay_dataset(
+            dataset=dataset,
+            replay_result=loaded,
+            candidate=candidate,
+            normalized=normalized,
+        )
+    if tamper == "delete_child":
+        assert loaded.member_results is not None
+        assert len(loaded.member_results[0].baseline.repetition_results) == 1
+        assert loaded.member_results[0].baseline.metrics["repetition_count"] == 1
+    if tamper == "aggregate_count":
+        assert loaded.member_results is not None
+        assert loaded.member_results[0].baseline.metrics["repetition_count"] == 2
+        assert (
+            loaded.member_results[0].baseline.metrics[
+                "successful_repetition_count"
+            ]
+            == 2
+        )
+    if tamper == "delete_other_member_candidate_child":
+        assert loaded.member_results is not None
+        assert len(loaded.member_results[1].candidate.repetition_results) == 2
+        assert loaded.member_results[1].candidate.metrics["repetition_count"] == 2
+    if tamper == "root_aggregate_count":
+        assert loaded.baseline.metrics["repetition_count"] == 6
+        assert loaded.baseline.metrics["successful_repetition_count"] == 6
+
+
+def test_all_blocked_repetition_aggregate_is_unexecuted_and_artifact_free(
+    tmp_path: Path,
+) -> None:
+    blocker = ReplayFailureEvent(
+        code="shared_preflight_failed",
+        owner=FailureOwner.INFRASTRUCTURE,
+        stage=FailureStage.CAPABILITY_PREFLIGHT,
+        scope=FailureScope.SHARED_RUN,
+        repairable=False,
+    )
+    blocked = [
+        ReplayVariantResult(
+            variant_id=f"candidate-{index}",
+            status=ReplayExecutionStatus.BLOCKED,
+            trajectory=[],
+            blocked_by=(blocker,),
+        )
+        for index in (1, 2)
+    ]
+
+    aggregate = _aggregate_variant_results(
+        base_variant_id="candidate",
+        results=blocked,
+        artifact_dir=tmp_path / "aggregate",
+        persist=False,
+    )
+
+    assert aggregate.status is ReplayExecutionStatus.BLOCKED
+    assert aggregate.blocked_by == (blocker,)
+    assert aggregate.trajectory == []
+    assert aggregate.stdout_path is None
+    assert aggregate.stderr_path is None
+    assert aggregate.repetition_results == ()
+    assert aggregate.metrics["blocked_repetition_count"] == 2
 
 
 def _write_json(path: Path, payload) -> None:
@@ -966,8 +2296,11 @@ def test_protocol_probe_mismatch_reports_actionable_bounded_diagnostics() -> Non
     assert "expected_sha256=" in message
     assert "expected_bytes=23" in message
     assert "match=substring" in message
-    assert "expected_preview=recorded fixture marker" in message
-    assert 'response_preview={"Browser":"ReplayChrome"' in message
+    assert "expected_shape=utf8_text" in message
+    assert "response_sha256=" in message
+    assert "response_shape=json_object" in message
+    assert "recorded fixture marker" not in message
+    assert "ReplayChrome" not in message
     assert len(message) < 500
 
 
@@ -1024,7 +2357,7 @@ def test_protocol_probe_mismatch_classifies_recorded_response_selector_drift() -
         "required_change=align_compiler_runtime_recorded_response_selection"
         in message
     )
-    assert "recorded tool response" in message
+    assert "recorded tool response" not in message
 
 
 def test_protocol_probe_mismatch_does_not_misclassify_recorded_expected_value() -> None:
@@ -1117,7 +2450,7 @@ def test_websocket_probe_rejects_http_1_0_upgrade_response() -> None:
         )
 
 
-def test_websocket_probe_reports_bounded_invalid_handshake_preview() -> None:
+def test_websocket_probe_reports_content_free_invalid_handshake_diagnostics() -> None:
     with pytest.raises(ReplayServiceProtocolError) as error:
         _validate_websocket_handshake_response(
             (
@@ -1130,7 +2463,10 @@ def test_websocket_probe_reports_bounded_invalid_handshake_preview() -> None:
 
     message = str(error.value)
     assert "response_bytes=" in message
-    assert "response_preview=HTTP/1.1 200 OK" in message
+    assert "response_sha256=" in message
+    assert "response_shape=utf8_text" in message
+    assert "HTTP/1.1 200 OK" not in message
+    assert "upgrade route not reached" not in message
     assert len(message) < 500
 
 
@@ -1491,13 +2827,20 @@ def test_websocket_probe_rejects_masked_server_frame() -> None:
 
 
 def test_candidate_owned_runtime_protocol_failure_is_not_infrastructure() -> None:
-    assert _replay_failure_outcome(
-        {
+    variant = ReplayVariantResult(
+        variant_id="candidate",
+        status=ReplayExecutionStatus.FAILED,
+        trajectory=[],
+        failure={
             "type": "ReplayServiceProtocolError",
             "reason": "advertised WebSocket handshake failed",
             "outcome": "candidate_failure",
-        }
-    ) == "candidate_failure"
+        },
+    )
+
+    assert isinstance(variant.failure, ReplayFailureEvent)
+    assert variant.failure.source is FailureEventSource.LEGACY_INFERRED
+    assert _replay_failure_outcome(variant.failure) == "candidate_failure"
 
 
 def test_replay_service_failure_includes_bounded_sanitized_runtime_stderr(
@@ -1521,6 +2864,34 @@ def test_replay_service_failure_includes_bounded_sanitized_runtime_stderr(
     assert "<LOCAL_PATH>" in str(enriched)
 
 
+def test_replay_service_stderr_enrichment_preserves_typed_diagnostics(
+    tmp_path: Path,
+) -> None:
+    stderr_path = tmp_path / "stderr.txt"
+    stderr_path.write_text("runtime diagnostic\n", encoding="utf-8")
+    constraint = {
+        "schema_layer": "protocol_trace",
+        "field_path": "records[*].correlation",
+        "rule": "required",
+        "expected": [],
+    }
+    error = ReplayServiceProtocolError(
+        "protocol trace field is missing",
+        code="protocol_trace_schema_field_validation_failed",
+        details={"schema_field_constraints": [constraint]},
+    )
+
+    enriched = _replay_service_failure_with_stderr(
+        error,
+        stderr_path=stderr_path,
+    )
+
+    assert isinstance(enriched, ReplayServiceProtocolError)
+    assert enriched.code == "protocol_trace_schema_field_validation_failed"
+    assert enriched.details == {"schema_field_constraints": [constraint]}
+    assert "runtime diagnostic" in str(enriched)
+
+
 def test_replay_service_protocol_trace_is_bounded_and_sanitized(
     tmp_path: Path,
 ) -> None:
@@ -1542,6 +2913,50 @@ def test_replay_service_protocol_trace_is_bounded_and_sanitized(
     assert "<REDACTED_SECRET>" in preserved
     assert "/Users/me/private.json" not in preserved
     assert "<LOCAL_PATH>" in preserved
+
+
+def test_protocol_trace_reset_separates_preflight_from_task_interactions(
+    tmp_path: Path,
+) -> None:
+    trace = tmp_path / "scratch" / "protocol_trace.jsonl"
+    trace.parent.mkdir(parents=True)
+    trace.write_text(
+        '{"direction":"in","sequence":0,"kind":"preflight"}\n',
+        encoding="utf-8",
+    )
+
+    _reset_replay_service_protocol_trace(trace)
+    with trace.open("a", encoding="utf-8") as handle:
+        handle.write('{"direction":"in","sequence":1,"kind":"task"}\n')
+
+    assert "preflight" not in trace.read_text(encoding="utf-8")
+    assert '"kind":"task"' in trace.read_text(encoding="utf-8")
+
+
+def test_successful_replay_records_task_plane_intervention_metric(
+    tmp_path: Path,
+) -> None:
+    trace = (
+        tmp_path
+        / "artifacts"
+        / "replay_services"
+        / "recorded-endpoint"
+        / "protocol_trace.log"
+    )
+    trace.parent.mkdir(parents=True)
+    trace.write_text(
+        '{"direction":"in","sequence":1,"kind":"task"}\n',
+        encoding="utf-8",
+    )
+    result = ReplayExecutionResult(status="succeeded", trajectory=[])
+
+    attached = _attach_replay_service_protocol_diagnostics(
+        result,
+        artifact_dir=tmp_path / "artifacts",
+    )
+
+    assert attached.failure is None
+    assert attached.metrics["replay_service_protocol_trace_count"] == 1
 
 
 def test_failed_replay_includes_preserved_protocol_trace_diagnostics(
@@ -1756,6 +3171,44 @@ def test_replay_service_protocol_trace_contract_requires_bidirectional_records(
         _validate_replay_service_protocol_trace(trace)
 
 
+def test_protocol_trace_missing_fields_emits_typed_multi_field_constraints(
+    tmp_path: Path,
+) -> None:
+    trace = tmp_path / "protocol_trace.jsonl"
+    trace.write_text(
+        json.dumps(
+            {
+                "direction": "inbound",
+                "sequence": 1,
+                "message_kind": "request",
+                "top_level_fields": ["path"],
+                "correlation": {},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ReplayServiceProtocolError) as error:
+        _validate_replay_service_protocol_trace(trace)
+
+    assert error.value.code == "protocol_trace_schema_field_validation_failed"
+    assert error.value.details["schema_field_constraints"] == [
+        {
+            "schema_layer": "protocol_trace",
+            "field_path": "records[*].fields",
+            "rule": "required",
+            "expected": [],
+        },
+        {
+            "schema_layer": "protocol_trace",
+            "field_path": "records[*].kind",
+            "rule": "required",
+            "expected": [],
+        },
+    ]
+
+
 def test_replay_service_protocol_trace_contract_accepts_sanitized_summary(
     tmp_path: Path,
 ) -> None:
@@ -1831,6 +3284,7 @@ def test_replay_service_protocol_trace_contract_rejects_missing_trace(
 
 
 @pytest.mark.asyncio
+@pytest.mark.replay_sandbox
 async def test_skill_owned_replay_service_is_isolated_per_variant(
     tmp_path: Path,
 ) -> None:
@@ -1986,7 +3440,10 @@ HTTPServer(('127.0.0.1', args.port), Handler).serve_forever()
         observed_ports.append(port)
         with socket.create_connection(("127.0.0.1", port), timeout=1) as connection:
             connection.sendall(b"GET / HTTP/1.0\r\nHost: localhost\r\n\r\n")
-            response = connection.recv(4096)
+            chunks: list[bytes] = []
+            while chunk := connection.recv(4096):
+                chunks.append(chunk)
+            response = b"".join(chunks)
             assert b"recorded" in response
             assert str(execution_request.artifact_dir).encode() not in response
             assert b"baseline" not in response
@@ -2351,7 +3808,7 @@ def test_paired_replay_dataset_requires_successful_candidate_replay() -> None:
             target=SelfEvolveTargetRef(target_type="skill", target_id="demo"),
             candidate_id="cand-1",
             overlay_skill_root="/tmp/overlay",
-            task_input="task",
+            task_input=dataset.cases[0].input,
         ),
         baseline=ReplayVariantResult(
             variant_id="baseline",
@@ -2395,7 +3852,7 @@ def test_paired_replay_dataset_rejects_source_trajectory_baseline_fallback() -> 
             target=SelfEvolveTargetRef(target_type="skill", target_id="demo"),
             candidate_id="cand-1",
             overlay_skill_root="/tmp/overlay",
-            task_input="task",
+            task_input=dataset.cases[0].input,
         ),
         baseline=ReplayVariantResult(
             variant_id="baseline",
@@ -2440,7 +3897,7 @@ def test_paired_replay_dataset_rejects_infrastructure_baseline_failure() -> None
             target=SelfEvolveTargetRef(target_type="skill", target_id="demo"),
             candidate_id="cand-1",
             overlay_skill_root="/tmp/overlay",
-            task_input="task",
+            task_input=dataset.cases[0].input,
         ),
         baseline=ReplayVariantResult(
             variant_id="baseline",
@@ -2798,8 +4255,10 @@ async def test_multi_member_replay_executes_and_maps_each_member_independently(
 
 
 @pytest.mark.asyncio
-async def test_multi_member_replay_distributes_repetition_budget_across_members(
+@pytest.mark.parametrize("case_count", (1, 2, 3, 4))
+async def test_replay_repetitions_apply_to_every_normalized_member(
     tmp_path: Path,
+    case_count: int,
 ) -> None:
     calls: list[ReplayExecutionRequest] = []
 
@@ -2819,15 +4278,15 @@ async def test_multi_member_replay_distributes_repetition_budget_across_members(
     dataset = SelfEvolveDataset(
         cases=tuple(
             EvalCase(case_id=f"task-{index}", input=f"Replay task {index}")
-            for index in range(1, 5)
+            for index in range(1, case_count + 1)
         ),
         recipe=DatasetRecipe(
-            source={"kind": "test", "case_count": 4},
+            source={"kind": "test", "case_count": case_count},
             split_seed="seed",
             splits={
-                "train": ["task-1", "task-2"],
-                "validation": ["task-3"],
-                "held_out": ["task-4"],
+                "train": [f"task-{index}" for index in range(1, case_count + 1)],
+                "validation": [],
+                "held_out": [],
             },
         ),
     )
@@ -2849,21 +4308,23 @@ async def test_multi_member_replay_distributes_repetition_budget_across_members(
         dataset=dataset,
     )
 
-    assert [(call.task_id, call.variant_id) for call in calls] == [
-        ("task-1", "baseline"),
-        ("task-2", "baseline"),
-        ("task-3", "baseline"),
-        ("task-4", "baseline"),
-        ("task-1", "cand-1"),
-        ("task-2", "cand-1"),
-        ("task-3", "cand-1"),
-        ("task-4", "cand-1"),
+    expected_calls = [
+        (f"task-{member}", f"baseline-{repetition}")
+        for member in range(1, case_count + 1)
+        for repetition in range(1, 3)
+    ] + [
+        (f"task-{member}", f"cand-1-{repetition}")
+        for member in range(1, case_count + 1)
+        for repetition in range(1, 4)
     ]
-    assert result.baseline.metrics["repetition_count"] == 4
-    assert result.candidate.metrics["repetition_count"] == 4
+    assert [(call.task_id, call.variant_id) for call in calls] == expected_calls
+    assert result.baseline.metrics["repetition_count"] == case_count * 2
+    assert result.candidate.metrics["repetition_count"] == case_count * 3
     assert all(
-        member.baseline.metrics["repetition_count"] == 1
-        and member.candidate.metrics["repetition_count"] == 1
+        member.request.baseline_repetitions == 2
+        and member.request.candidate_repetitions == 3
+        and member.baseline.metrics["repetition_count"] == 2
+        and member.candidate.metrics["repetition_count"] == 3
         for member in result.member_results
     )
 
@@ -2943,17 +4404,15 @@ async def test_multi_member_replay_stops_after_shared_baseline_infrastructure_fa
         ]
     }
     for member in result.member_results[1:]:
-        assert member.baseline.failure == {
-            "outcome": "infrastructure_failure",
-            "reason": "baseline_preflight_aborted",
-            "detail": (
-                "baseline replay skipped because shared replay infrastructure "
-                "failed for task-a"
-            ),
-            "blocked_by_case_id": "task-a",
-        }
+        assert member.baseline.status is ReplayExecutionStatus.BLOCKED
+        assert member.baseline.failure is None
+        assert member.baseline.blocked_by[0].event_id == (
+            result.member_results[0].baseline.failure.event_id
+        )
     assert all(
-        member.candidate.failure["reason"] == "baseline_preflight_failed"
+        member.candidate.status is ReplayExecutionStatus.BLOCKED
+        and member.candidate.failure is None
+        and member.candidate.blocked_by[0].scope is FailureScope.SHARED_RUN
         for member in result.member_results
     )
 
@@ -2999,8 +4458,12 @@ async def test_single_member_replay_skips_candidate_after_capability_preflight_f
     ).replay_candidate(request, candidate=candidate, dataset=dataset)
 
     assert calls == ["baseline"]
-    assert result.baseline.failure["outcome"] == "candidate_failure"
-    assert result.candidate.failure["reason"] == "baseline_preflight_failed"
+    assert result.baseline.failure.owner is FailureOwner.CANDIDATE
+    assert result.baseline.failure.stage is FailureStage.CAPABILITY_PREFLIGHT
+    assert result.baseline.failure.scope is FailureScope.CANDIDATE
+    assert result.candidate.status is ReplayExecutionStatus.BLOCKED
+    assert result.candidate.failure is None
+    assert result.candidate.blocked_by[0].event_id == result.baseline.failure.event_id
 
 
 @pytest.mark.asyncio
@@ -3181,14 +4644,14 @@ async def test_load_candidate_replay_result_restores_multi_member_mapping(
         "task-b",
     ]
     assert all(
-        len(member.baseline.repetition_results) == 0
-        and member.baseline.metrics["repetition_count"] == 1
-        and len(member.candidate.repetition_results) == 0
-        and member.candidate.metrics["repetition_count"] == 1
+        len(member.baseline.repetition_results) == 2
+        and member.baseline.metrics["repetition_count"] == 2
+        and len(member.candidate.repetition_results) == 2
+        and member.candidate.metrics["repetition_count"] == 2
         for member in loaded.member_results
     )
-    assert loaded.baseline.metrics["repetition_count"] == 2
-    assert loaded.candidate.metrics["repetition_count"] == 2
+    assert loaded.baseline.metrics["repetition_count"] == 4
+    assert loaded.candidate.metrics["repetition_count"] == 4
     paired = build_paired_replay_dataset(
         dataset=dataset,
         replay_result=loaded,
@@ -3243,6 +4706,8 @@ async def test_multi_member_replay_reuses_each_members_baseline(
         overlay_skill_root=tmp_path / "overlay-1",
         dataset=dataset,
         replay_adaptation=replay_adaptation,
+        baseline_repetitions=2,
+        candidate_repetitions=3,
     )
     backend = AWorldCliCandidateReplayBackend(executor=fake_executor)
     await backend.replay_candidate(
@@ -3250,6 +4715,18 @@ async def test_multi_member_replay_reuses_each_members_baseline(
         candidate=first_candidate,
         dataset=dataset,
     )
+    assert [(call.task_id, call.variant_id) for call in calls] == [
+        ("task-a", "baseline-1"),
+        ("task-a", "baseline-2"),
+        ("task-b", "baseline-1"),
+        ("task-b", "baseline-2"),
+        ("task-a", "cand-1-1"),
+        ("task-a", "cand-1-2"),
+        ("task-a", "cand-1-3"),
+        ("task-b", "cand-1-1"),
+        ("task-b", "cand-1-2"),
+        ("task-b", "cand-1-3"),
+    ]
     calls.clear()
     second_candidate = _candidate(
         "---\nname: demo\n---\n# Demo\nSecond.\n",
@@ -3273,6 +4750,8 @@ async def test_multi_member_replay_reuses_each_members_baseline(
         dataset=dataset,
         baseline_replay_dir=members_root,
         replay_adaptation=replay_adaptation,
+        baseline_repetitions=2,
+        candidate_repetitions=3,
     )
 
     result = await backend.replay_candidate(
@@ -3283,10 +4762,16 @@ async def test_multi_member_replay_reuses_each_members_baseline(
 
     assert result.succeeded is True
     assert [(call.task_id, call.variant_id) for call in calls] == [
-        ("task-a", "cand-2"),
-        ("task-b", "cand-2"),
+        ("task-a", "cand-2-1"),
+        ("task-a", "cand-2-2"),
+        ("task-a", "cand-2-3"),
+        ("task-b", "cand-2-1"),
+        ("task-b", "cand-2-2"),
+        ("task-b", "cand-2-3"),
     ]
     assert all(member.baseline.succeeded for member in result.member_results)
+    assert result.baseline.metrics["repetition_count"] == 4
+    assert result.candidate.metrics["repetition_count"] == 6
     second_replay_dir = (
         tmp_path
         / ".aworld"
@@ -3468,11 +4953,9 @@ async def test_multi_member_replay_stops_before_candidates_when_baseline_preflig
     assert calls == [("task-a", "baseline"), ("task-b", "baseline")]
     assert result.baseline.succeeded is False
     assert all(
-        member.candidate.failure
-        == {
-            "reason": "baseline_preflight_failed",
-            "detail": "candidate replay skipped because baseline infrastructure replay failed",
-        }
+        member.candidate.status is ReplayExecutionStatus.BLOCKED
+        and member.candidate.failure is None
+        and member.candidate.blocked_by
         for member in result.member_results
     )
 

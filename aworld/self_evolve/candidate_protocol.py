@@ -42,6 +42,12 @@ CANDIDATE_OUTPUT_CONTRACT: Mapping[str, object] = {
         ]
     },
     "rationale": "bounded explanation of the reusable behavior delta",
+    "addressed_improvement_signal_ids": [
+        (
+            "optional IDs of exposed self-improvement signals materially "
+            "addressed by this candidate"
+        )
+    ],
     "files": [
         {
             "path": "replay/<relative-path>",
@@ -53,7 +59,14 @@ CANDIDATE_OUTPUT_CONTRACT: Mapping[str, object] = {
 }
 
 _CANDIDATE_FIELDS = frozenset(
-    {"schema_version", "content", "patch_intent", "rationale", "files"}
+    {
+        "schema_version",
+        "content",
+        "patch_intent",
+        "rationale",
+        "addressed_improvement_signal_ids",
+        "files",
+    }
 )
 _JSON_FENCE = re.compile(
     r"```(?:json)?\s*(.*?)\s*```",
@@ -385,6 +398,28 @@ def _validate_candidate_payload(
             field_path="rationale",
         )
 
+    raw_addressed_signals = payload.get(
+        "addressed_improvement_signal_ids",
+        [],
+    )
+    if (
+        not isinstance(raw_addressed_signals, list)
+        or len(raw_addressed_signals) > 2_000
+        or any(
+            not isinstance(item, str)
+            or not item
+            or len(item) > 512
+            for item in raw_addressed_signals
+        )
+        or len(raw_addressed_signals)
+        != len(set(raw_addressed_signals))
+    ):
+        raise CandidateProtocolError(
+            "invalid_addressed_improvement_signal_ids",
+            "addressed improvement signal IDs must be a bounded unique string array",
+            field_path="addressed_improvement_signal_ids",
+        )
+
     raw_files = payload.get("files", [])
     if not isinstance(raw_files, list) or any(
         not isinstance(item, Mapping) for item in raw_files
@@ -433,6 +468,10 @@ def _validate_candidate_payload(
             for item in normalized_files
         ],
     }
+    if "addressed_improvement_signal_ids" in payload:
+        normalized["addressed_improvement_signal_ids"] = list(
+            raw_addressed_signals
+        )
     if has_content:
         normalized["content"] = content
     elif has_patch_intent:

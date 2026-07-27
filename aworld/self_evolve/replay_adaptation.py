@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Mapping, Protocol, Sequence
 
 from aworld.self_evolve.datasets import EvalCase, SelfEvolveDataset
+from aworld.self_evolve.trajectory_context import task_input_requires_prior_context
 
 if TYPE_CHECKING:
     from aworld.self_evolve.replay_capability import FrozenReplayCapability
@@ -85,13 +86,6 @@ _STATEFUL_BROWSER_TOOL_TOKENS = frozenset(
 _STATEFUL_WEB_ACTION_TOKENS = frozenset(
     {"run", "search", "fetch", "open", "navigate", "click"}
 )
-_CONTINUATION_MARKERS = (
-    "continue the current task",
-    "additional operator steering",
-    "interrupt requested by operator",
-)
-
-
 class ReplayAdaptationError(RuntimeError):
     """Raised when a deterministic replay seed cannot be constructed."""
 
@@ -1057,18 +1051,15 @@ def _detected_runtime_dependencies(
 ) -> tuple[ReplayDependency, ...]:
     task_text = _text_fragments(task_input)
     dependencies: list[ReplayDependency] = []
-    lowered = task_text.lower()
-    if (
-        any(marker in lowered for marker in _CONTINUATION_MARKERS)
-        and not _case_has_reconstructed_context(case)
-    ):
+    context_incomplete = _case_context_incomplete(case, task_input)
+    if context_incomplete is not None:
         dependencies.append(
             ReplayDependency(
                 kind="conversation_context",
                 identifier="prior-task-context",
                 status="context_incomplete",
                 deterministic=False,
-                detail="required prior task context is absent",
+                detail=context_incomplete,
             )
         )
     local_endpoints = tuple(
@@ -1182,6 +1173,20 @@ def _normalize_detected_url(value: str) -> str:
 def _case_has_reconstructed_context(case: EvalCase) -> bool:
     snapshot = case.context_snapshot
     return bool(snapshot is not None and snapshot.prior_turns)
+
+
+def _case_context_incomplete(case: EvalCase, task_input: Any) -> str | None:
+    snapshot = case.context_snapshot
+    if snapshot is not None and snapshot.context_status == "incomplete":
+        if snapshot.context_reason == "inherited_incomplete_context":
+            return "required prior task context inherits an incomplete conversation root"
+        return "required prior task context is absent"
+    if (
+        task_input_requires_prior_context(task_input)
+        and not _case_has_reconstructed_context(case)
+    ):
+        return "required prior task context is absent"
+    return None
 
 
 def _context_evidence_ref(case: EvalCase) -> str:

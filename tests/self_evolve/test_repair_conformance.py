@@ -1,18 +1,31 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
+
+import pytest
 
 from aworld.self_evolve.repair_conformance import (
+    ExactRepairProbe,
+    FixtureDerivedProbeConstraint,
     RepairConformanceContract,
+    build_repair_conformance_probe_plan,
     compile_repair_conformance_contract,
     evaluate_candidate_source_conformance,
     evaluate_compiled_probe_conformance,
+    merge_repair_conformance_constraint_context,
+    project_replay_capability_for_probe_group,
 )
 from aworld.self_evolve.replay_capability import (
+    FrozenReplayCapability,
+    FrozenReplayFile,
     ReplayProtocolProbe,
     ReplayReadinessProbe,
     ReplayServiceSpec,
 )
+from aworld.self_evolve.replay_adaptation import ReplayCapabilityRequirement
+from aworld.self_evolve.sanitization import public_diagnostic_projection
+from aworld.self_evolve.schema_diagnostics import SchemaFieldRepairConstraint
 from aworld.self_evolve.types import CandidateFileDelta, CandidateVariant, SelfEvolveTargetRef
 
 
@@ -66,16 +79,303 @@ def _candidate(*, runtime_source: str, compiler_source: str | None = None) -> Ca
     )
 
 
-def _service(*probes: ReplayProtocolProbe) -> ReplayServiceSpec:
+def _service(
+    *probes: ReplayProtocolProbe,
+    service_id: str = "service-1",
+    requirement_id: str = "requirement-1",
+    response_fixture: str = "fixtures/recorded.json",
+) -> ReplayServiceSpec:
     return ReplayServiceSpec(
-        service_id="service-1",
-        requirement_id="requirement-1",
+        service_id=service_id,
+        requirement_id=requirement_id,
         transport="skill_runtime",
-        response_fixture="fixtures/recorded.json",
+        response_fixture=response_fixture,
         runtime_entrypoint="replay/runtime.py",
         readiness=ReplayReadinessProbe(kind="http", timeout_seconds=1, path="/ready"),
         protocol_probes=tuple(probes),
     )
+
+
+def _private_exact_contract(
+    expected_response: str,
+    *,
+    observed_operations: tuple[str, ...] = (),
+) -> RepairConformanceContract:
+    contract = compile_repair_conformance_contract(
+        {
+            "repair_candidate_package": _package(),
+            "candidate_validation_diagnostics": [
+                {
+                    "code": "verify_declared_protocol_probe_branch",
+                    "stage": "replay_capability",
+                    "probe_kind": "websocket",
+                    "probe_path": "/session",
+                    "observed_request_operations": list(observed_operations),
+                }
+            ],
+        }
+    )
+    assert contract is not None
+    return replace(
+        contract,
+        exact_probe=ExactRepairProbe(
+            kind="websocket",
+            path="/session",
+            expected_response=expected_response,
+        ),
+    )
+
+
+def test_public_contract_projection_cannot_reconstruct_private_assertion() -> None:
+    secret = "PRIVATE_RAW_RECORDED_FIXTURE_VALUE"
+    contract = RepairConformanceContract(
+        focus_candidate_id="candidate-parent",
+        failure_codes=("generic_failure",),
+        interaction_progress=1,
+        base_file_fingerprints={"replay/runtime.py": "sha256:base"},
+        required_branch_paths=("replay/runtime.py",),
+        base_branch_fingerprints={"replay/runtime.py": "sha256:branch"},
+        exact_probe=ExactRepairProbe(
+            kind="http",
+            path="/query",
+            expected_response=secret,
+        ),
+    )
+
+    private_roundtrip = RepairConformanceContract.from_dict(contract.to_dict())
+    public = contract.to_public_dict()
+    assert private_roundtrip == contract
+    assert secret not in json.dumps(public, sort_keys=True)
+    with pytest.raises(ValueError, match="public repair conformance"):
+        RepairConformanceContract.from_dict(public)
+
+
+def test_probe_group_projection_executes_only_selected_service_and_probe() -> None:
+    requirements = tuple(
+        ReplayCapabilityRequirement(
+            requirement_id=f"requirement-{index}",
+            kind="local_endpoint",
+            identifier=f"endpoint-{index}",
+            case_ids=(f"case-{index}",),
+            evidence_refs=(f"evidence-{index}",),
+            status="runtime_required",
+        )
+        for index in (1, 2)
+    )
+    services = tuple(
+        ReplayServiceSpec(
+            service_id=f"service-{index}",
+            requirement_id=f"requirement-{index}",
+            transport="skill_runtime",
+            response_fixture=f"fixture-{index}.json",
+            runtime_entrypoint="replay/runtime.py",
+            readiness=ReplayReadinessProbe(
+                kind="http", timeout_seconds=1, path=f"/ready-{index}"
+            ),
+            protocol_probes=(
+                ReplayProtocolProbe(
+                    kind="http",
+                    timeout_seconds=1,
+                    path=f"/query-{index}",
+                    request_text=json.dumps({"operation": f"records.{index}"}),
+                ),
+            ),
+        )
+        for index in (1, 2)
+    )
+    contract = RepairConformanceContract(
+        focus_candidate_id="candidate-parent",
+        failure_codes=("generic_failure",),
+        interaction_progress=1,
+        base_file_fingerprints={"replay/runtime.py": "sha256:base"},
+        required_branch_paths=("replay/runtime.py",),
+        base_branch_fingerprints={"replay/runtime.py": "sha256:branch"},
+    )
+    plan = build_repair_conformance_probe_plan(
+        capability_id="generic-capability",
+        services=services,
+        requirements=requirements,
+        fixture_shape_fingerprints={
+            "fixture-1.json": "sha256:shape-1",
+            "fixture-2.json": "sha256:shape-2",
+        },
+        contract=contract,
+        dataset_case_ids=("case-1", "case-2"),
+    )
+    capability = FrozenReplayCapability(
+        capability_id="generic-capability",
+        capability_package_fingerprint="sha256:package",
+        request_fingerprint="sha256:request",
+        frozen_root="/tmp/frozen",
+        handled_requirements=("requirement-1", "requirement-2"),
+        unhandled_requirements=(),
+        evidence_refs={
+            "requirement-1": ("evidence-1",),
+            "requirement-2": ("evidence-2",),
+        },
+        fixture_evidence_refs={
+            "fixture-1.json": ("evidence-1",),
+            "fixture-2.json": ("evidence-2",),
+        },
+        fixtures=tuple(
+            FrozenReplayFile(path=f"fixture-{index}.json", sha256="x", size=1)
+            for index in (1, 2)
+        ),
+        runtime_files=(),
+        endpoint_replacements={
+            "requirement-1": "service-1",
+            "requirement-2": "service-2",
+        },
+        services=services,
+        deterministic=True,
+        fingerprint="sha256:frozen",
+        ready=True,
+    )
+
+    projections = tuple(
+        project_replay_capability_for_probe_group(capability, group)
+        for group in plan.groups
+    )
+
+    assert len(projections) == 2
+    assert [len(item.services) for item in projections] == [1, 1]
+    assert {
+        item.services[0].service_id for item in projections
+    } == {"service-1", "service-2"}
+    assert all(len(item.services[0].protocol_probes) == 1 for item in projections)
+    assert all("selector" not in group.to_dict() for group in plan.groups)
+
+
+def test_probe_plan_deduplicates_repeated_cases_and_preserves_distinct_shapes() -> None:
+    repeated = ReplayCapabilityRequirement(
+        requirement_id="requirement-1",
+        kind="local_endpoint",
+        identifier="endpoint-alpha",
+        case_ids=("case-a", "case-b"),
+        evidence_refs=("evidence-a", "evidence-b"),
+        status="runtime_required",
+        detail="shape=object-list",
+    )
+    distinct = ReplayCapabilityRequirement(
+        requirement_id="requirement-2",
+        kind="stateful_tool",
+        identifier="tool-beta",
+        case_ids=("case-c",),
+        evidence_refs=("evidence-c",),
+        status="runtime_required",
+        detail="shape=array-record",
+    )
+    services = (
+        _service(
+            ReplayProtocolProbe(
+                kind="http",
+                timeout_seconds=1,
+                path="/query",
+                request_text='{"operation":"records.query"}',
+                response_contains="private-recorded-value",
+            )
+        ),
+        ReplayServiceSpec(
+            service_id="service-2",
+            requirement_id="requirement-2",
+            transport="skill_runtime",
+            response_fixture="fixtures/second.json",
+            runtime_entrypoint="replay/runtime.py",
+            readiness=ReplayReadinessProbe(
+                kind="http", timeout_seconds=1, path="/ready"
+            ),
+            protocol_probes=(
+                ReplayProtocolProbe(
+                    kind="websocket",
+                    timeout_seconds=1,
+                    path="/stream",
+                    request_text='{"operation":"records.stream"}',
+                ),
+            ),
+        ),
+    )
+
+    plan = build_repair_conformance_probe_plan(
+        capability_id="generic-capability",
+        services=services,
+        requirements=(repeated, distinct),
+        fixture_shape_fingerprints={
+            "fixtures/recorded.json": "sha256:shape-one",
+            "fixtures/second.json": "sha256:shape-two",
+        },
+        contract=RepairConformanceContract(
+            focus_candidate_id="candidate-parent",
+            failure_codes=("generic_failure",),
+            interaction_progress=1,
+            base_file_fingerprints={"replay/runtime.py": "sha256:base"},
+            required_branch_paths=("replay/runtime.py",),
+            base_branch_fingerprints={"replay/runtime.py": "sha256:branch"},
+        ),
+    )
+
+    assert plan.total_case_count == 3
+    assert plan.covered_case_ids == ("case-a", "case-b", "case-c")
+    assert len(plan.groups) == 2
+    assert {group.case_ids for group in plan.groups} == {
+        ("case-a", "case-b"),
+        ("case-c",),
+    }
+    report_text = json.dumps(plan.to_dict(), sort_keys=True)
+    assert "private-recorded-value" not in report_text
+    assert tuple(group.fingerprint for group in plan.groups) == tuple(
+        sorted(group.fingerprint for group in plan.groups)
+    )
+
+
+def test_probe_plan_preserves_long_case_identity_beyond_report_sample() -> None:
+    prefix = "case-" + ("shared-" * 40)
+    case_a = prefix + "member-a"
+    case_b = prefix + "member-b"
+    requirement = ReplayCapabilityRequirement(
+        requirement_id="requirement-long",
+        kind="local_endpoint",
+        identifier="endpoint-long",
+        case_ids=(case_a, case_b),
+        evidence_refs=("evidence-long",),
+        status="runtime_required",
+    )
+    service = ReplayServiceSpec(
+        service_id="service-long",
+        requirement_id="requirement-long",
+        transport="skill_runtime",
+        response_fixture="fixture.json",
+        runtime_entrypoint="replay/runtime.py",
+        protocol_probes=(
+            ReplayProtocolProbe(
+                kind="http",
+                path="/query",
+                timeout_seconds=1,
+                response_contains="private",
+            ),
+        ),
+    )
+    plan = build_repair_conformance_probe_plan(
+        capability_id="capability-long",
+        services=(service,),
+        requirements=(requirement,),
+        fixture_shape_fingerprints={"fixture.json": "sha256:fixture"},
+        contract=RepairConformanceContract(
+            focus_candidate_id="candidate",
+            failure_codes=("failure",),
+            interaction_progress=1,
+            base_file_fingerprints={"runtime.py": "sha256:base"},
+            required_branch_paths=("runtime.py",),
+            base_branch_fingerprints={},
+        ),
+        dataset_case_ids=(case_a, case_b),
+    )
+
+    assert plan.covered_case_ids == (case_a, case_b)
+    assert plan.groups[0].case_ids == (case_a, case_b)
+    report = plan.to_dict()
+    assert report["covered_case_id_count"] == 2
+    assert report["covered_case_ids_truncated"] is True
+    assert report["covered_case_ids_fingerprint"].startswith("sha256:")
 
 
 def test_completed_task_interaction_does_not_force_runtime_repair() -> None:
@@ -93,22 +393,7 @@ def test_completed_task_interaction_does_not_force_runtime_repair() -> None:
 
 
 def test_exact_probe_contract_rejects_rationale_only_or_unrelated_source_change() -> None:
-    focus = {
-        "repair_candidate_package": _package(),
-        "candidate_validation_diagnostics": [
-            {
-                "code": "verify_declared_protocol_probe_branch",
-                "stage": "replay_capability",
-                "probe_kind": "websocket",
-                "probe_path": "/session",
-                "expected_preview": "fixture_token",
-            }
-        ],
-    }
-
-    contract = compile_repair_conformance_contract(focus)
-
-    assert contract is not None
+    contract = _private_exact_contract("fixture_token")
     assert contract.focus_candidate_id == "candidate-failed"
     assert contract.required_branch_paths == ("replay/runtime.py",)
     assert contract.exact_probe is not None
@@ -127,6 +412,27 @@ def test_exact_probe_contract_rejects_rationale_only_or_unrelated_source_change(
         runtime_source="def respond():\n    return {'token': 'fixture_token'}\n"
     )
     assert evaluate_candidate_source_conformance(changed_runtime, contract).passed is True
+
+
+def test_legacy_expected_preview_cannot_recreate_private_execution_contract() -> None:
+    secret = "PRIVATE_LEGACY_EXPECTED_PREVIEW"
+    contract = compile_repair_conformance_contract(
+        {
+            "repair_candidate_package": _package(),
+            "candidate_validation_diagnostics": [
+                {
+                    "code": "verify_declared_protocol_probe_branch",
+                    "probe_kind": "websocket",
+                    "probe_path": "/session",
+                    "expected_preview": secret,
+                }
+            ],
+        }
+    )
+
+    assert contract is not None
+    assert contract.exact_probe is None
+    assert secret not in json.dumps(contract.to_public_dict(), sort_keys=True)
 
 
 def test_source_conformance_treats_omitted_runtime_delta_as_unchanged() -> None:
@@ -1224,21 +1530,7 @@ def test_source_conformance_rejects_unconditional_root_fallback_after_gateway() 
 
 
 def test_exact_probe_contract_requires_and_checks_the_declared_probe() -> None:
-    contract = compile_repair_conformance_contract(
-        {
-            "repair_candidate_package": _package(),
-            "candidate_validation_diagnostics": [
-                {
-                    "code": "verify_declared_protocol_probe_branch",
-                    "stage": "replay_capability",
-                    "probe_kind": "websocket",
-                    "probe_path": "/session",
-                    "expected_preview": "fixture_token",
-                }
-            ],
-        }
-    )
-    assert contract is not None
+    contract = _private_exact_contract("fixture_token")
 
     stale = _service(
         ReplayProtocolProbe(
@@ -1290,22 +1582,486 @@ def test_exact_probe_contract_requires_and_checks_the_declared_probe() -> None:
     assert key_result.code == "exact_repair_probe_not_recorded"
 
 
-def test_exact_probe_can_replace_stale_key_evidence_with_a_recorded_leaf() -> None:
+def test_compile_contract_preserves_typed_fixture_probe_constraints() -> None:
+    diagnostics = [
+        {
+            "code": "invalid_replay_capability_compile",
+            "capability_error_code": "protocol_probe_not_fixture_derived",
+            "fixture_probe_constraints": [
+                {
+                    "requirement_id": "requirement-1",
+                    "kind": "http",
+                    "path": "/data",
+                    "max_response_chars": 4096,
+                },
+                {
+                    "requirement_id": "requirement-2",
+                    "kind": "websocket",
+                    "path": "/events",
+                    "max_response_chars": 2048,
+                },
+            ],
+        }
+    ]
+    contract = compile_repair_conformance_contract(
+        {
+            "repair_candidate_package": _package(),
+            "candidate_validation_diagnostics": diagnostics,
+        }
+    )
+
+    assert contract is not None
+    assert "protocol_probe_not_fixture_derived" in contract.failure_codes
+    assert set(contract.fixture_probe_constraints) == {
+        FixtureDerivedProbeConstraint(
+            requirement_id="requirement-1",
+            kind="http",
+            path="/data",
+            max_response_chars=4096,
+        ),
+        FixtureDerivedProbeConstraint(
+            requirement_id="requirement-2",
+            kind="websocket",
+            path="/events",
+            max_response_chars=2048,
+        ),
+    }
+    assert RepairConformanceContract.from_dict(contract.to_dict()) == contract
+    public = contract.to_public_dict()
+    assert public["fixture_probe_constraints"] == [
+        item.to_public_dict() for item in contract.fixture_probe_constraints
+    ]
+    assert all(
+        "requirement_id" not in item
+        for item in public["fixture_probe_constraints"]
+    )
+    assert "recorded" not in json.dumps(public)
+    projected = public_diagnostic_projection(
+        {"repair_conformance": contract}
+    )
+    assert projected == {"repair_conformance": public}
+    inherited = compile_repair_conformance_contract(
+        {
+            "repair_candidate_package": _package(
+                "def respond():\n    return {'changed': True}\n"
+            ),
+            "candidate_validation_diagnostics": [
+                {
+                    "code": "repair_branch_unchanged",
+                    "details": projected,
+                }
+            ],
+        }
+    )
+    assert inherited is not None
+    assert inherited.fixture_probe_constraints == contract.fixture_probe_constraints
+    assert all(
+        item.requirement_id is None
+        for item in inherited.fixture_probe_constraints
+    )
+    inherited_services = (
+        _service(
+            ReplayProtocolProbe(
+                kind="http",
+                path="/data",
+                timeout_seconds=1,
+                response_contains="recorded-a",
+            ),
+            requirement_id="requirement-1",
+        ),
+        _service(
+            ReplayProtocolProbe(
+                kind="websocket",
+                path="/events",
+                timeout_seconds=1,
+                request_text='{"operation":"events.read"}',
+                response_contains="recorded-b",
+            ),
+            service_id="service-2",
+            requirement_id="requirement-2",
+            response_fixture="fixtures/second.json",
+        ),
+    )
+    inherited_result = evaluate_compiled_probe_conformance(
+        inherited_services,
+        inherited,
+        fixture_leaf_values={
+            "fixtures/recorded.json": ("recorded-a",),
+            "fixtures/second.json": ("recorded-b",),
+        },
+    )
+    assert inherited_result.passed is True
+    requirements = tuple(
+        ReplayCapabilityRequirement(
+            requirement_id=f"requirement-{index}",
+            kind="http_resource",
+            identifier=f"https://resource.invalid/{index}",
+            case_ids=(f"case-{index}",),
+            evidence_refs=(f"evidence-{index}",),
+            status="runtime_required",
+        )
+        for index in (1, 2)
+    )
+    plan_arguments = {
+        "capability_id": "generic.replay",
+        "services": inherited_services,
+        "requirements": requirements,
+        "fixture_shape_fingerprints": {
+            "fixtures/recorded.json": "sha256:first-shape",
+            "fixtures/second.json": "sha256:second-shape",
+        },
+        "dataset_case_ids": ("case-1", "case-2"),
+    }
+    private_plan = build_repair_conformance_probe_plan(
+        **plan_arguments,
+        contract=contract,
+    )
+    inherited_plan = build_repair_conformance_probe_plan(
+        **plan_arguments,
+        contract=inherited,
+    )
+    assert tuple(group.fingerprint for group in inherited_plan.groups) == tuple(
+        group.fingerprint for group in private_plan.groups
+    )
+
+
+def test_compile_contract_preserves_schema_field_constraints_across_repairs() -> None:
+    constraint = SchemaFieldRepairConstraint(
+        schema_layer="compile_result",
+        field_path="services[*].transport",
+        rule="enum",
+        expected=("http_fixture", "skill_runtime", "tcp_fixture"),
+    )
     contract = compile_repair_conformance_contract(
         {
             "repair_candidate_package": _package(),
             "candidate_validation_diagnostics": [
                 {
-                    "code": "verify_declared_protocol_probe_branch",
-                    "stage": "replay_capability",
-                    "probe_kind": "websocket",
-                    "probe_path": "/session",
-                    "expected_preview": "ext_info",
+                    "code": "invalid_replay_capability_compile",
+                    "capability_error_code": "schema_field_validation_failed",
+                    "schema_field_constraints": [constraint.to_dict()],
                 }
             ],
         }
     )
+
     assert contract is not None
+    assert contract.schema_field_constraints == (constraint,)
+    assert contract.required_branch_paths == ("replay/compiler.py",)
+    assert RepairConformanceContract.from_dict(contract.to_dict()) == contract
+    public = contract.to_public_dict()
+    assert public["schema_field_constraints"] == [constraint.to_dict()]
+    inherited = compile_repair_conformance_contract(
+        {
+            "repair_candidate_package": _package(
+                "def respond():\n    return {'changed': True}\n"
+            ),
+            "candidate_validation_diagnostics": [
+                {
+                    "code": "repair_branch_unchanged",
+                    "details": {"repair_conformance": public},
+                }
+            ],
+        }
+    )
+    assert inherited is not None
+    assert inherited.schema_field_constraints == (constraint,)
+    assert inherited.required_branch_paths == ("replay/compiler.py",)
+
+
+def test_public_projection_preserves_nested_typed_repair_contract() -> None:
+    schema_constraint = SchemaFieldRepairConstraint(
+        schema_layer="compile_result",
+        field_path="services[*].protocol_probes[*].response_contains",
+        rule="max_chars",
+        expected=("4096",),
+    )
+    fixture_constraint = FixtureDerivedProbeConstraint(
+        requirement_id="member-a-requirement",
+        kind="http",
+        path="/member-a",
+    )
+    contract = RepairConformanceContract(
+        focus_candidate_id="candidate-parent",
+        failure_codes=("schema_field_validation_failed",),
+        interaction_progress=2,
+        base_file_fingerprints={"replay/compiler.py": "sha256:base"},
+        required_branch_paths=("replay/compiler.py",),
+        base_branch_fingerprints={"replay/compiler.py": "sha256:branch"},
+        exact_probe=ExactRepairProbe(
+            kind="http",
+            path="/member-a",
+            expected_response="private recorded response",
+        ),
+        fixture_probe_constraints=(fixture_constraint,),
+        schema_field_constraints=(schema_constraint,),
+    )
+    public = contract.to_public_dict()
+    diagnostic = {
+        "optimizer_diagnostics": {
+            "iterations": [
+                {
+                    "diagnostics": {
+                        "candidate_strategies": [
+                            {"repair_conformance": public}
+                        ]
+                    }
+                }
+            ]
+        }
+    }
+
+    projected = public_diagnostic_projection(diagnostic)
+    inherited_public = projected["optimizer_diagnostics"]["iterations"][0][
+        "diagnostics"
+    ]["candidate_strategies"][0]["repair_conformance"]
+
+    assert inherited_public == public
+    assert inherited_public["schema_field_constraints"] == [
+        schema_constraint.to_dict()
+    ]
+    assert inherited_public["fixture_probe_constraints"] == [
+        fixture_constraint.to_public_dict()
+    ]
+    assert "private recorded response" not in json.dumps(projected)
+
+
+def test_public_repair_contract_projection_rejects_private_probe_payload() -> None:
+    public_contract = {
+        "projection_schema_version": (
+            "aworld.self_evolve.repair_conformance.public.v1"
+        ),
+        "focus_candidate_id": "candidate-parent",
+        "exact_probe": {
+            "kind": "http",
+            "path": "/member-a",
+            "expected_response": "must not cross the public boundary",
+        },
+    }
+
+    with pytest.raises(ValueError, match="must not contain an exact response"):
+        public_diagnostic_projection({"repair_conformance": public_contract})
+
+
+def test_runtime_schema_constraint_recomputes_runtime_required_branch() -> None:
+    constraint = SchemaFieldRepairConstraint(
+        schema_layer="runtime",
+        field_path="environment.AWORLD_REPLAY_RESPONSE_INDEX.consumer",
+        rule="enum",
+        expected=("json_sidecar_record_value_projector",),
+    )
+
+    contract = compile_repair_conformance_contract(
+        {
+            "repair_candidate_package": _package(),
+            "candidate_validation_diagnostics": [
+                {
+                    "code": "invalid_replay_capability_compile",
+                    "capability_error_code": "schema_field_validation_failed",
+                    "schema_field_constraints": [constraint.to_dict()],
+                }
+            ],
+        }
+    )
+
+    assert contract is not None
+    assert contract.schema_field_constraints == (constraint,)
+    assert contract.required_branch_paths == ("replay/runtime.py",)
+
+
+def test_constraint_context_merges_multi_member_schema_and_fixture_rules() -> None:
+    inherited_fixture = FixtureDerivedProbeConstraint(
+        requirement_id="member-a-requirement",
+        kind="http",
+        path="/member-a",
+        max_response_chars=4096,
+    )
+    additional_fixture = FixtureDerivedProbeConstraint(
+        requirement_id="member-b-requirement",
+        kind="websocket",
+        path="/member-b",
+        max_response_chars=2048,
+    )
+    transport_constraint = SchemaFieldRepairConstraint(
+        schema_layer="compile_result",
+        field_path="services[*].transport",
+        rule="enum",
+        expected=("http_fixture", "skill_runtime", "tcp_fixture"),
+    )
+    response_bound = SchemaFieldRepairConstraint(
+        schema_layer="compile_result",
+        field_path="services[*].protocol_probes[*].response_contains",
+        rule="max_chars",
+        expected=("4096",),
+    )
+    inherited = {
+        "projection_schema_version": (
+            "aworld.self_evolve.repair_conformance.public.v1"
+        ),
+        "focus_candidate_id": "candidate-parent",
+        "failure_codes": ["repair_branch_unchanged"],
+        "required_branch_paths": ["replay/runtime.py"],
+        "fixture_probe_constraints": [inherited_fixture.to_public_dict()],
+        "schema_field_constraints": [transport_constraint.to_dict()],
+    }
+
+    merged = merge_repair_conformance_constraint_context(
+        inherited,
+        {
+            "fixture_probe_constraints": [
+                inherited_fixture.to_dict(),
+                additional_fixture.to_dict(),
+            ],
+            "schema_field_constraints": [
+                transport_constraint.to_dict(),
+                response_bound.to_dict(),
+            ],
+        },
+    )
+
+    assert merged is not None
+    assert len(merged["fixture_probe_constraints"]) == 2
+    assert all(
+        "requirement_id" not in item
+        for item in merged["fixture_probe_constraints"]
+    )
+    assert {
+        SchemaFieldRepairConstraint.from_dict(item)
+        for item in merged["schema_field_constraints"]
+    } == {transport_constraint, response_bound}
+    compiled = compile_repair_conformance_contract(
+        {
+            "repair_candidate_package": _package(
+                "def respond():\n    return {'changed': True}\n"
+            ),
+            "candidate_validation_diagnostics": [
+                {
+                    "code": "schema_field_validation_failed",
+                    "repair_conformance": merged,
+                }
+            ],
+        }
+    )
+    assert compiled is not None
+    assert set(compiled.schema_field_constraints) == {
+        transport_constraint,
+        response_bound,
+    }
+    assert len(compiled.fixture_probe_constraints) == 2
+    assert compiled.required_branch_paths == ("replay/compiler.py",)
+
+
+def test_fixture_probe_constraints_validate_every_distinct_fixture_shape() -> None:
+    contract = replace(
+        compile_repair_conformance_contract(
+            {
+                "repair_candidate_package": _package(),
+                "candidate_validation_diagnostics": [
+                    {"code": "invalid_replay_capability_compile"}
+                ],
+            }
+        ),
+        fixture_probe_constraints=(
+            FixtureDerivedProbeConstraint(
+                requirement_id="requirement-1",
+                kind="http",
+                path="/data",
+            ),
+            FixtureDerivedProbeConstraint(
+                requirement_id="requirement-2",
+                kind="http",
+                path="/data",
+            ),
+        ),
+    )
+    first = _service(
+        ReplayProtocolProbe(
+            kind="http",
+            path="/data",
+            timeout_seconds=1,
+            response_contains="recorded-a",
+        ),
+        service_id="service-1",
+        requirement_id="requirement-1",
+        response_fixture="fixtures/object.json",
+    )
+    second_invalid = _service(
+        ReplayProtocolProbe(
+            kind="http",
+            path="/data",
+            timeout_seconds=1,
+            response_contains="metadata-wrapper",
+        ),
+        service_id="service-2",
+        requirement_id="requirement-2",
+        response_fixture="fixtures/list.json",
+    )
+    fixture_leaves = {
+        "fixtures/object.json": ("recorded-a",),
+        "fixtures/list.json": ("recorded-b",),
+    }
+
+    rejected = evaluate_compiled_probe_conformance(
+        (first, second_invalid),
+        contract,
+        fixture_leaf_values=fixture_leaves,
+    )
+
+    assert rejected.passed is False
+    assert rejected.code == "fixture_derived_probe_not_recorded"
+    assert rejected.details["violation_count"] == 1
+    second_valid = replace(
+        second_invalid,
+        protocol_probes=(
+            replace(
+                second_invalid.protocol_probes[0],
+                response_contains="recorded-b",
+            ),
+        ),
+    )
+    accepted = evaluate_compiled_probe_conformance(
+        (first, second_valid),
+        contract,
+        fixture_leaf_values=fixture_leaves,
+    )
+    assert accepted.passed is True
+
+    requirements = (
+        ReplayCapabilityRequirement(
+            requirement_id="requirement-1",
+            kind="http_resource",
+            identifier="https://resource.invalid/a",
+            case_ids=("case-1",),
+            evidence_refs=("evidence-1",),
+            status="runtime_required",
+        ),
+        ReplayCapabilityRequirement(
+            requirement_id="requirement-2",
+            kind="http_resource",
+            identifier="https://resource.invalid/b",
+            case_ids=("case-2", "case-3", "case-4"),
+            evidence_refs=("evidence-2",),
+            status="runtime_required",
+        ),
+    )
+    plan = build_repair_conformance_probe_plan(
+        capability_id="generic.replay",
+        services=(first, second_valid),
+        requirements=requirements,
+        fixture_shape_fingerprints={
+            "fixtures/object.json": "sha256:object-shape",
+            "fixtures/list.json": "sha256:list-shape",
+        },
+        contract=contract,
+        dataset_case_ids=("case-1", "case-2", "case-3", "case-4"),
+    )
+    assert plan.total_case_count == 4
+    assert plan.covered_case_ids == ("case-1", "case-2", "case-3", "case-4")
+    assert len(plan.groups) == 2
+
+
+def test_exact_probe_can_replace_stale_key_evidence_with_a_recorded_leaf() -> None:
+    contract = _private_exact_contract("ext_info")
     repaired = _service(
         ReplayProtocolProbe(
             kind="websocket",
@@ -1330,23 +2086,7 @@ def test_exact_probe_can_replace_stale_key_evidence_with_a_recorded_leaf() -> No
 def test_exact_probe_can_replace_a_stale_recorded_preview_with_another_leaf() -> None:
     """A failed preview is evidence, not a value the next repair must echo."""
 
-    contract = compile_repair_conformance_contract(
-        {
-            "repair_candidate_package": _package(),
-            "candidate_validation_diagnostics": [
-                {
-                    "code": "verify_declared_protocol_probe_branch",
-                    "stage": "replay_capability",
-                    "probe_kind": "websocket",
-                    "probe_path": "/session",
-                    # This value happens to exist in the fixture, but it was
-                    # the stale value emitted by the failed implementation.
-                    "expected_preview": "stale-recorded-value",
-                }
-            ],
-        }
-    )
-    assert contract is not None
+    contract = _private_exact_contract("stale-recorded-value")
     repaired = _service(
         ReplayProtocolProbe(
             kind="websocket",

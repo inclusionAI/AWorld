@@ -8,7 +8,9 @@ import time
 from typing import Any, Awaitable, Callable, Mapping, Sequence
 
 from aworld.self_evolve.candidate_package import (
+    candidate_content_semantic_fingerprint,
     candidate_package_fingerprint,
+    candidate_semantic_package_fingerprint,
     validate_candidate_files,
 )
 from aworld.self_evolve.candidate_generation import (
@@ -23,8 +25,18 @@ from aworld.self_evolve.evolution_context import (
     compile_evolution_context,
 )
 from aworld.self_evolve.feedback import normalize_feedback_summary
-from aworld.self_evolve.optimizers.base import OptimizerRequest, OptimizerResult
+from aworld.self_evolve.optimizers.base import (
+    OptimizerRequest,
+    OptimizerResult,
+    declared_addressed_improvement_signal_ids,
+    exposed_improvement_signal_ids,
+)
 from aworld.self_evolve.patch_intent import apply_skill_patch_intent
+from aworld.self_evolve.repair_conformance import (
+    RepairConformanceContract,
+    compile_repair_conformance_contract,
+)
+from aworld.self_evolve.sanitization import sanitize_text
 from aworld.self_evolve.types import CandidateFileDelta, CandidateVariant, OptimizerLineage
 
 
@@ -74,8 +86,10 @@ class TraceReflectiveLLMMutator:
         seen_content_fingerprints: set[str] = set()
         require_targeted_delta = _request_has_high_baseline_regression(request)
         candidate_strategy_records: list[dict[str, Any]] = []
+        private_repair_contracts: dict[str, RepairConformanceContract] = {}
         candidate_generation_failure: dict[str, str] | None = None
         candidate_protocol_invalid_count = 0
+        candidate_materialization_failures: list[dict[str, object]] = []
         candidate_outputs: list[tuple[int, Any]] = []
         population_diagnostics: dict[str, Any]
         population_started_at = time.monotonic()
@@ -132,15 +146,20 @@ class TraceReflectiveLLMMutator:
                 "queue_wait_seconds": 0.0,
                 "execution_seconds": time.monotonic() - population_started_at,
                 "elapsed_seconds": time.monotonic() - population_started_at,
-            }
+        }
 
         for index, output in candidate_outputs:
-            strategy_record = _candidate_strategy_record(request, candidate_index=index)
             try:
                 content, rationale, materialization, files = _materialize_mutator_output(
                     output,
                     request=request,
                     candidate_index=index,
+                )
+                addressed_signal_ids = (
+                    declared_addressed_improvement_signal_ids(
+                        request,
+                        output,
+                    )
                 )
                 files, inherited_file_count = _overlay_repair_focus_files(
                     request,
@@ -149,9 +168,30 @@ class TraceReflectiveLLMMutator:
                 )
                 if inherited_file_count:
                     materialization = f"{materialization}+repair_focus_overlay"
-            except ValueError:
+            except ValueError as exc:
                 filtered_invalid_patch_count += 1
+                candidate_materialization_failures.append(
+                    {
+                        "code": "candidate_materialization_invalid",
+                        "stage": "candidate_generation",
+                        "failure_class": "candidate",
+                        "repairable": True,
+                        "candidate_index": index,
+                        "representation": (
+                            "patch_intent"
+                            if isinstance(output, Mapping)
+                            and isinstance(output.get("patch_intent"), Mapping)
+                            else "candidate_package"
+                        ),
+                        "reason": sanitize_text(str(exc), max_chars=240),
+                    }
+                )
                 continue
+            strategy_record = _candidate_strategy_record(
+                request,
+                candidate_index=index,
+                addressed_signal_ids=addressed_signal_ids,
+            )
             if _violates_transport_completion_invariant(content):
                 content = _append_transport_completion_invariant(content)
                 repaired_transport_completion_violation_count += 1
@@ -167,7 +207,10 @@ class TraceReflectiveLLMMutator:
                 files=files,
             )
             content_fingerprint = candidate_package_fingerprint(candidate)
-            if content_fingerprint in seen_content_fingerprints:
+            semantic_package_fingerprint = (
+                candidate_semantic_package_fingerprint(candidate)
+            )
+            if semantic_package_fingerprint in seen_content_fingerprints:
                 filtered_duplicate_count += 1
                 continue
             regression_base_content = (
@@ -184,7 +227,7 @@ class TraceReflectiveLLMMutator:
             ):
                 filtered_high_baseline_regression_count += 1
                 continue
-            seen_content_fingerprints.add(content_fingerprint)
+            seen_content_fingerprints.add(semantic_package_fingerprint)
 
             candidate_id = _candidate_id(
                 request,
@@ -201,6 +244,20 @@ class TraceReflectiveLLMMutator:
                 files=files,
             )
             candidates.append(candidate)
+            context = request.evolution_context or compile_evolution_context(request)
+            repair_focus = context.repair_focus_for_candidate(
+                candidate_index=index
+            )
+            private_contract = (
+                None
+                if (
+                    isinstance(repair_focus, Mapping)
+                    and _repair_feedback_reached_judged_task_output(repair_focus)
+                )
+                else compile_repair_conformance_contract(repair_focus)
+            )
+            if private_contract is not None:
+                private_repair_contracts[candidate_id] = private_contract
             candidate_strategy_records.append(
                 {
                     "candidate_id": candidate_id,
@@ -215,9 +272,18 @@ class TraceReflectiveLLMMutator:
                     optimizer_version=self.optimizer_version,
                     trainable_case_ids=tuple(case.case_id for case in request.trainable_cases),
                     content_fingerprint=content_fingerprint,
-                    semantic_fingerprint=_semantic_fingerprint(content),
+                    semantic_fingerprint=candidate_content_semantic_fingerprint(
+                        content
+                    ),
                     lesson_set_fingerprint=_lesson_set_fingerprint(request),
                     addressed_lesson_ids=_addressed_lesson_ids(request),
+                    improvement_signal_set_fingerprint=(
+                        request.improvement_signal_set_fingerprint
+                    ),
+                    exposed_improvement_signal_ids=(
+                        exposed_improvement_signal_ids(request)
+                    ),
+                    addressed_improvement_signal_ids=addressed_signal_ids,
                     rationale=rationale,
                 )
             )
@@ -235,6 +301,9 @@ class TraceReflectiveLLMMutator:
             "candidate_strategies": candidate_strategy_records,
             "candidate_population_execution": population_diagnostics,
             "candidate_protocol_invalid_count": candidate_protocol_invalid_count,
+            "candidate_materialization_failures": (
+                candidate_materialization_failures
+            ),
         }
         if candidate_generation_failure is not None:
             diagnostics["candidate_generation_failure"] = candidate_generation_failure
@@ -243,6 +312,7 @@ class TraceReflectiveLLMMutator:
             candidates=tuple(candidates),
             lineage=tuple(lineage),
             diagnostics=diagnostics,
+            private_context=private_repair_contracts,
         )
 
 
@@ -283,6 +353,12 @@ def _build_mutation_prompt(request: OptimizerRequest, *, candidate_index: int) -
         "The framework creates only the compiler output root. The compiler owns every "
         "declared subdirectory and must create parents such as output/fixtures before "
         "copying or writing files; it must not assume those directories already exist. "
+        "The compiler is a deterministic artifact transform and runs without network or "
+        "loopback access: never bind/connect sockets, select a live port, launch the runtime, "
+        "or probe readiness during compile. Declare the runtime in result.json; the framework "
+        "starts it later with an allocated port. Each request requirement's evidence_refs is "
+        "an array of string keys; resolve each key through request.evidence_derivations, whose "
+        "values are arrays of source objects. Never call mapping methods on an evidence_ref. "
         "For a skill_runtime, AWORLD_REPLAY_RESPONSE_INDEX is a filesystem path supplied "
         "by the framework to a JSON sidecar with schema "
         "{schema_version, operations, records}; it is not an integer, inline response, "
@@ -315,6 +391,30 @@ def _build_mutation_prompt(request: OptimizerRequest, *, candidate_index: int) -
         "expected_preview as diagnostic evidence rather than a value to hard-code. "
         "When validation_feedback contains repair_candidate_package, edit that bounded "
         "source as a delta and preserve its verified behavior. "
+        "When validation_feedback contains a typed recovery_trace, preserve members and "
+        "repetitions with positive recovery_delta while repairing unrecovered members. "
+        "Treat failed_progress_exceeded_success as evidence of post-checkpoint overrun: "
+        "bound further attempts or switch to one materially different strategy instead "
+        "of repeating the failed path. Treat failure_loop_detected or the corresponding "
+        "typed guidance as a requirement for an explicit attempt bound and a materially "
+        "different fallback, not another equivalent retry. Never key behavior to member "
+        "identities or copy "
+        "tool names as case-specific rules. "
+        "When validation_feedback reports duplicate_semantic_lesson, produce a materially "
+        "different complete candidate package by changing reusable target behavior or "
+        "candidate-owned files. Renaming, reformatting, changing rationale, or copying the "
+        "same files does not satisfy that typed repair frontier. Apply the distinction "
+        "generically across every trajectory member represented by the active capability "
+        "and verification contracts. "
+        "Treat evidence_repair_constraints as the authoritative evidence frontier: "
+        "deduplicate by constraint_identity_digest, honor owner and source_layer, and "
+        "implement the declared required_action. Do not mutate candidate behavior for a "
+        "framework- or infrastructure-owned constraint, and do not infer policy from "
+        "free-form evidence issue wording. "
+        "Keep reusable examples schema-neutral: use role placeholders such as "
+        "<CLAIM>, <ARTIFACT_PATH>, and <OFFSET> instead of copying proper nouns, "
+        "resource names, claim text, filenames, URLs, or identifiers from trajectory "
+        "evidence. "
         "Replay files must accompany a reusable target behavior delta, not replace it. "
         "Return the value of expected_output as exactly one JSON object, without a wrapper; "
         "use at most one of content or patch_intent, and omit both only when candidate-owned "
@@ -335,6 +435,32 @@ def _focused_repair_prompt_instructions(
     }
     requires_fixture_reconstruction = (
         contract_mapping.get("requires_fixture_derived_probe") is True
+    )
+    raw_fixture_probe_constraints = contract_mapping.get(
+        "fixture_probe_constraints",
+        (),
+    )
+    fixture_probe_constraints = (
+        tuple(
+            item
+            for item in raw_fixture_probe_constraints
+            if isinstance(item, Mapping)
+        )
+        if isinstance(raw_fixture_probe_constraints, (list, tuple))
+        else ()
+    )
+    raw_schema_field_constraints = contract_mapping.get(
+        "schema_field_constraints",
+        (),
+    )
+    schema_field_constraints = (
+        tuple(
+            item
+            for item in raw_schema_field_constraints
+            if isinstance(item, Mapping)
+        )
+        if isinstance(raw_schema_field_constraints, (list, tuple))
+        else ()
     )
     validation_feedback = payload.get("validation_feedback", ())
     focused_feedback = (
@@ -368,7 +494,67 @@ def _focused_repair_prompt_instructions(
         "record, or tool-execution summary alone is insufficient; otherwise try one "
         "materially different bounded artifact-backed source or report the insufficiency. "
         "Never add a blanket first-response-means-complete rule or case-specific behavior. "
+        "Keep reusable examples schema-neutral: use role placeholders such as "
+        "<CLAIM>, <ARTIFACT_PATH>, and <OFFSET> instead of copying proper nouns, "
+        "resource names, claim text, filenames, URLs, or identifiers from trajectory "
+        "evidence. "
     )
+    recovery_trace = (
+        focused_feedback.get("recovery_trace")
+        if isinstance(focused_feedback, Mapping)
+        else None
+    )
+    if isinstance(recovery_trace, Mapping):
+        instructions += (
+            "This repair has a typed recovery_trace. Keep the focused candidate's "
+            "positive recovery deltas and successful structural checkpoint, then make "
+            "the unrecovered or unstable branches converge within a bounded attempt "
+            "budget. A timeout path that progresses beyond a successful checkpoint is "
+            "an overrun signal, not evidence that more identical exploration is needed. "
+            "A detected repeated-failure loop must gain an explicit attempt bound and "
+            "one structurally different fallback before finalizing or reporting bounded "
+            "insufficiency. "
+        )
+    constraint_recovery_trace = (
+        focused_feedback.get("constraint_recovery_trace")
+        if isinstance(focused_feedback, Mapping)
+        else None
+    )
+    if isinstance(constraint_recovery_trace, Mapping):
+        instructions += (
+            "This repair also has a typed constraint_recovery_trace. Preserve every "
+            "constraint whose status is recovered as a last-good checkpoint. Restore "
+            "any regressed constraint before adding new behavior. When an active "
+            "constraint has violation_attempt_count greater than one, do not repeat "
+            "the same source shape with renamed helpers or a rationale-only change; "
+            "switch to a materially different implementation of the declared typed "
+            "operations and verify the actual source data flow before finalizing. "
+            "Constraint identities are hashes and must never become runtime branches. "
+        )
+    raw_evidence_constraints = (
+        focused_feedback.get("evidence_repair_constraints")
+        if isinstance(focused_feedback, Mapping)
+        else None
+    )
+    candidate_evidence_constraints = (
+        [
+            item
+            for item in raw_evidence_constraints
+            if isinstance(item, Mapping)
+            and item.get("owner") == "candidate"
+        ]
+        if isinstance(raw_evidence_constraints, list)
+        else []
+    )
+    if candidate_evidence_constraints:
+        instructions += (
+            "This repair has candidate-owned typed evidence_repair_constraints. "
+            "Apply every distinct required_action at its declared source_layer and "
+            "subject_kind, preserving occurrence counts only as prioritization evidence. "
+            "Do not copy claim text into reusable instructions, do not branch on constraint "
+            "identity hashes, and do not reinterpret evaluator prose as an additional "
+            "constraint. "
+        )
     if (
         '"evidence_incomplete": true' in feedback_text
         or '"a1_groundedness": 2' in feedback_text
@@ -415,6 +601,64 @@ def _focused_repair_prompt_instructions(
             "the declared result schema to output/result.json. The framework creates "
             "only the output root; create every declared subdirectory and its parents "
             "before copying or writing fixtures or runtime artifacts. "
+            "The compiler runs as a deterministic, network-disabled artifact transform: "
+            "do not bind or connect sockets, allocate a live port, launch runtime code, or "
+            "probe readiness. Declare runtime_entrypoint in result.json and let the framework "
+            "start it later with an allocated port. request requirements contain evidence_refs "
+            "as string keys; resolve them through request.evidence_derivations before reading "
+            "source-object fields. Do not call .get on an evidence_ref string. "
+        )
+    if fixture_probe_constraints:
+        instructions += (
+            "The fixture_probe_constraints list is a shape-complete compiler "
+            "contract, not a representative example. For every listed requirement, "
+            "probe kind, and path, recursively decode that service's own declared "
+            "fixture and select a deterministic non-empty scalar value from mapping "
+            "values or sequence items. Emit only that scalar (or a bounded substring "
+            "within max_response_chars) as response_contains. Do not serialize a "
+            "metadata wrapper containing fixture hashes, byte counts, shapes, keys, "
+            "or previews; those values are not descendants of the fixture payload. "
+            "Use one generic selector for all listed constraints and all fixture "
+            "shapes, including when multiple trajectory members contribute distinct "
+            "fixtures. "
+        )
+    if schema_field_constraints:
+        instructions += (
+            "The schema_field_constraints list is an executable, shape-complete contract "
+            "with typed value domains. A constraint whose value_domain is source_behavior "
+            "describes behavior detected by static analysis in the required source "
+            "branch. Its field_path is an analyzer-owned predicate name, not a JSON "
+            "or environment path: implement the expected behavior in source code and "
+            "never assign, overwrite, or synthesize that path at runtime. For the "
+            "source_behavior domain, required_operations is a conjunctive structural "
+            "data-flow contract: implement every listed operation in the same bounded "
+            "execution path. An operation that binds one value to another requires "
+            "syntactically provable value flow (direct use or an explicit parameter), "
+            "not disconnected helpers or matching names. An operation that projects "
+            "a field directly requires explicit access to that field rather than a "
+            "generic recursive fallback. forbidden_operations names structural substitutions that "
+            "must be absent. These operation tokens describe behavior, not identifiers "
+            "to copy into comments, strings, or metadata; source must actually realize "
+            "the data flow and the analyzer will verify it. For the "
+            "default schema_value domain, treat field_path as an absolute path from "
+            "the root of schema_layer: a path with no dot or "
+            "[*] names exactly one top-level field, while [*] selects every array "
+            "member. A selector [*@predicate.path:value] applies only to members "
+            "correlated with an input or related-schema record whose predicate "
+            "matches value; preserve that condition for mixed and multi-member "
+            "inputs rather than forcing the value on unrelated members. Do not "
+            "satisfy a root-field constraint by adding a similarly "
+            "named field to a nested service or probe. Apply every rule to every "
+            "instance selected by its field_path, including services or probes "
+            "produced for different trajectory members. Consult the retained "
+            "capability_contracts schema shape for field placement. enum rules permit "
+            "only their expected values; type rules permit only their expected "
+            "JSON types; required, non_empty, unique, max_chars, and max_items "
+            "rules retain their literal schema meanings. Keep schema_layer "
+            "boundaries intact: a valid manifest value is not automatically valid "
+            "in a compile-result service field. Repair the compiler or manifest "
+            "that owns the field rather than suppressing validation, changing the "
+            "diagnostic, or special-casing a recorded case. "
         )
     if (
         "response_contains" in feedback_text
@@ -506,15 +750,22 @@ def _overlay_repair_focus_files(
     """Apply a repair response as a delta over its focused candidate package."""
 
     context = request.evolution_context or compile_evolution_context(request)
+    files_authorized_by_requirements = bool(request.replay_requirements)
     repair_focus = context.repair_focus_for_candidate(
         candidate_index=candidate_index
     )
     if not isinstance(repair_focus, Mapping):
-        return candidate_files, 0
+        return (
+            candidate_files if files_authorized_by_requirements else (),
+            0,
+        )
     package = repair_focus.get("repair_candidate_package")
     raw_files = package.get("files") if isinstance(package, Mapping) else None
     if not isinstance(raw_files, list):
-        return candidate_files, 0
+        return (
+            candidate_files if files_authorized_by_requirements else (),
+            0,
+        )
 
     base_files = validate_candidate_files(
         CandidateFileDelta(
@@ -530,13 +781,17 @@ def _overlay_repair_focus_files(
         for item in raw_files
         if isinstance(item, Mapping)
     )
-    if not base_files:
-        return candidate_files, 0
     if _repair_feedback_reached_judged_task_output(repair_focus):
         # Judge-stage repair is a target-behavior delta over a runtime that has
         # already passed authoritative replay. Ignore model-proposed harness
-        # changes and carry the verified candidate-owned files byte-for-byte.
+        # changes and carry the verified candidate-owned files byte-for-byte,
+        # including when the verified package intentionally owns no replay files.
         return base_files, len(base_files)
+    if not base_files:
+        return (
+            candidate_files if files_authorized_by_requirements else (),
+            0,
+        )
     replacements = {item.path: item for item in candidate_files}
     inherited = sum(1 for item in base_files if item.path not in replacements)
     merged = {
@@ -559,9 +814,11 @@ def _candidate_strategy_record(
     request: OptimizerRequest,
     *,
     candidate_index: int,
+    addressed_signal_ids: tuple[str, ...],
 ) -> dict[str, Any]:
     population_strategy = _population_strategy(request, candidate_index)
     addressed_lessons = _addressed_lesson_ids(request)
+    exposed_signals = exposed_improvement_signal_ids(request)
     preserved_success_behaviors = _preserved_success_behaviors(request)
     risk_notes = _risk_notes(request)
     strategy_hints = _strategy_hints(request)
@@ -570,6 +827,10 @@ def _candidate_strategy_record(
         "candidate_family": population_strategy["name"],
         "intended_behavior_delta": population_strategy["instruction"],
         "addressed_lessons": list(addressed_lessons),
+        "exposed_improvement_signals": list(exposed_signals),
+        "addressed_improvement_signals": list(
+            addressed_signal_ids
+        ),
         "harness_diagnostics_considered": list(_harness_diagnostic_ids(request)),
         "preserved_success_behaviors": preserved_success_behaviors,
         "risk_notes": risk_notes,
@@ -801,15 +1062,6 @@ def _candidate_id(
 def _content_fingerprint(content: str) -> str:
     normalized = "\n".join(line.rstrip() for line in content.strip().splitlines())
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
-
-
-def _semantic_fingerprint(content: str) -> str:
-    semantic_lines = [
-        re.sub(r"\s+", " ", line.strip().lower())
-        for line in content.splitlines()
-        if line.strip() and line.strip() != "---"
-    ]
-    return hashlib.sha256("\n".join(semantic_lines).encode("utf-8")).hexdigest()
 
 
 def _violates_transport_completion_invariant(content: str) -> bool:

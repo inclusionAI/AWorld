@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import pytest
+from pathlib import Path
+
 from aworld.self_evolve.evaluation import CandidateConfidenceDecision, ReplayCostEstimate
 from aworld.self_evolve.gates import (
     BudgetGate,
@@ -10,6 +13,7 @@ from aworld.self_evolve.gates import (
     HeldOutVerificationGate,
     JudgeOnlySignalGate,
     MalformedCandidateGate,
+    NewSkillPromotionGate,
     NoopCandidateGate,
     PromptSectionGate,
     ProtectedPathGate,
@@ -28,7 +32,7 @@ from aworld.self_evolve.replay_adaptation import (
     ReplayCaseAdaptation,
     ReplayDependency,
 )
-from aworld.self_evolve.provenance import TargetProvenance
+from aworld.self_evolve.provenance import TargetMutationIntent, TargetProvenance
 from aworld.self_evolve.types import CandidateVariant, EvaluationSummary, SelfEvolveTargetRef
 
 
@@ -412,6 +416,24 @@ def test_budget_and_judge_only_gates_downgrade_or_reject() -> None:
     assert budget_gate.evaluate(budget).passed is False
     assert budget_gate.evaluate(budget).reason == "estimated replay tokens exceed max_run_tokens"
 
+    unknown_budget = ReplayCostEstimate(
+        passed=True,
+        reason="within budget",
+        baseline_replay_count=1,
+        candidate_replay_count=1,
+        total_replay_count=2,
+        verification_command_count=0,
+        judge_call_count=0,
+        estimated_tokens=None,
+        token_ceiling=10_000,
+    )
+    unknown_result = budget_gate.evaluate(unknown_budget)
+    assert unknown_result.passed is False
+    assert unknown_result.reason == (
+        "estimated replay tokens are unknown under max_run_tokens"
+    )
+    assert unknown_result.details["estimate_known"] is False
+
     judge_gate = JudgeOnlySignalGate()
     decision = CandidateConfidenceDecision(
         confidence="limited",
@@ -551,12 +573,25 @@ def test_trust_provenance_gate_rejects_protected_generated_and_external_targets(
     )
     generated = gate.evaluate(
         TargetProvenance(
-            target=target,
+            target=SelfEvolveTargetRef(
+                target_type="workspace-artifact",
+                target_id="generated-artifact",
+            ),
             source_kind="workspace_artifact",
             write_origin="agent_generated_artifact",
             trust_level="generated",
             protected=False,
             reason="generated artifact",
+        )
+    )
+    external = gate.evaluate(
+        TargetProvenance(
+            target=target,
+            source_kind="skill",
+            write_origin="external",
+            trust_level="external",
+            protected=False,
+            reason="external capability",
         )
     )
     trusted = gate.evaluate(
@@ -574,4 +609,268 @@ def test_trust_provenance_gate_rejects_protected_generated_and_external_targets(
     assert protected.reason == "protected target provenance cannot be mutated"
     assert generated.passed is False
     assert generated.reason == "generated target requires explicit trust policy"
+    assert external.passed is False
+    assert external.reason == "external target requires explicit trust policy"
     assert trusted.passed is True
+
+
+def test_trust_provenance_gate_fails_closed_for_unresolved_provenance() -> None:
+    result = TrustProvenanceGate().evaluate(
+        None,
+        unresolved_reason="target identity is incomplete",
+    )
+
+    assert result.gate_name == "trust_provenance"
+    assert result.passed is False
+    assert result.reason == "target provenance is unresolved"
+    assert result.details == {
+        "provenance_status": "unresolved",
+        "unresolved_reason": "target identity is incomplete",
+    }
+
+
+@pytest.mark.parametrize("unresolved_reason", ["", 0, False])
+def test_trust_provenance_gate_treats_every_supplied_reason_as_unresolved(
+    unresolved_reason,
+) -> None:
+    provenance = TargetProvenance(
+        target=SelfEvolveTargetRef("skill", "capability"),
+        source_kind="skill",
+        write_origin="repository",
+        trust_level="local",
+        protected=False,
+        reason="local capability",
+    )
+
+    result = TrustProvenanceGate().evaluate(
+        provenance,
+        unresolved_reason=unresolved_reason,
+    )
+
+    assert result.passed is False
+    assert result.reason == "target provenance is unresolved"
+    assert result.details["provenance_status"] == "unresolved"
+
+
+@pytest.mark.parametrize(
+    "provenance",
+    [
+        {},
+        {"target": {"target_type": "skill", "target_id": "capability"}},
+        object(),
+        "local",
+    ],
+)
+def test_trust_provenance_gate_fails_closed_for_untyped_provenance(provenance) -> None:
+    result = TrustProvenanceGate(
+        allow_generated=True,
+        allow_external=True,
+    ).evaluate(provenance)
+
+    assert result.passed is False
+    assert result.reason == "target provenance is invalid"
+    assert result.details == {
+        "provenance_status": "invalid",
+        "invalid_type": type(provenance).__name__,
+    }
+
+
+def test_trust_provenance_gate_fails_closed_when_reason_marks_resolution_unresolved() -> None:
+    provenance = TargetProvenance(
+        target=SelfEvolveTargetRef("skill", "capability"),
+        source_kind="skill",
+        write_origin="repository",
+        trust_level="local",
+        protected=False,
+        reason="local capability",
+    )
+
+    result = TrustProvenanceGate(
+        allow_generated=True,
+        allow_external=True,
+    ).evaluate(
+        provenance,
+        unresolved_reason="authoritative resolution disagrees with supplied claim",
+    )
+
+    assert result.passed is False
+    assert result.reason == "target provenance is unresolved"
+    assert result.details == {
+        "provenance_status": "unresolved",
+        "unresolved_reason": (
+            "authoritative resolution disagrees with supplied claim"
+        ),
+    }
+
+
+def test_trust_provenance_gate_requires_named_policy_for_generated_target() -> None:
+    target = SelfEvolveTargetRef(target_type="skill", target_id="generated")
+    provenance = TargetProvenance(
+        target=target,
+        source_kind="skill",
+        write_origin="target_inference",
+        trust_level="generated",
+        protected=False,
+        reason="inferred target is absent from inventory",
+    )
+
+    denied = TrustProvenanceGate().evaluate(provenance)
+    allowed = TrustProvenanceGate(allow_generated=True).evaluate(provenance)
+
+    assert denied.passed is False
+    assert allowed.passed is True
+
+
+def test_trust_provenance_gate_authorizes_generated_draft_scope_without_global_bypass() -> None:
+    target = SelfEvolveTargetRef("skill", "remote-recovery-1234567890")
+    provenance = TargetProvenance(
+        target=target,
+        source_kind="skill",
+        write_origin="target_inference",
+        trust_level="generated",
+        protected=False,
+        reason="validated capability gap",
+    )
+
+    result = TrustProvenanceGate().evaluate(
+        provenance,
+        target_intent=TargetMutationIntent.INFERRED_DRAFT_CREATION,
+    )
+
+    assert result.passed is True
+    assert result.details == {"authorized_scope": "draft_evolution"}
+
+
+@pytest.mark.parametrize(
+    ("policy", "apply_policy", "publication_allowed"),
+    (
+        ("draft_only", "auto_verified", False),
+        ("auto_verified", "proposal", False),
+        ("auto_verified", "auto_verified", True),
+    ),
+)
+def test_new_skill_promotion_gate_separates_draft_evolution_from_publication(
+    tmp_path: Path,
+    policy: str,
+    apply_policy: str,
+    publication_allowed: bool,
+) -> None:
+    target = SelfEvolveTargetRef(
+        "skill",
+        "remote-recovery-1234567890",
+        str(
+            tmp_path
+            / ".aworld"
+            / "self_evolve"
+            / "cli-test"
+            / "draft_target"
+            / "remote-recovery-1234567890"
+            / "SKILL.md"
+        ),
+    )
+    candidate = CandidateVariant(
+        candidate_id="cand-new-skill",
+        target=target,
+        content="---\nname: remote-recovery-1234567890\n---\n# Recovery\n",
+        rationale="trajectory-backed capability",
+    )
+    provenance = TargetProvenance(
+        target=target,
+        source_kind="skill",
+        write_origin="target_inference",
+        trust_level="generated",
+        protected=False,
+        reason="validated capability gap",
+    )
+
+    result = NewSkillPromotionGate().evaluate(
+        candidate,
+        target_intent="inferred_draft_creation",
+        policy=policy,
+        apply_policy=apply_policy,
+        workspace_root=tmp_path,
+        provenance=provenance,
+    )
+
+    assert result.passed is True
+    assert result.details["publication_allowed"] is publication_allowed
+
+
+def test_new_skill_promotion_gate_rejects_disabled_policy(tmp_path: Path) -> None:
+    target = SelfEvolveTargetRef(
+        "skill",
+        "remote-recovery-1234567890",
+        str(tmp_path / "draft" / "SKILL.md"),
+    )
+    candidate = CandidateVariant("cand", target, "# Draft", "test")
+    provenance = TargetProvenance(
+        target=target,
+        source_kind="skill",
+        write_origin="target_inference",
+        trust_level="generated",
+        protected=False,
+        reason="validated capability gap",
+    )
+
+    result = NewSkillPromotionGate().evaluate(
+        candidate,
+        target_intent="inferred_draft_creation",
+        policy="disabled",
+        apply_policy="proposal",
+        workspace_root=tmp_path,
+        provenance=provenance,
+    )
+
+    assert result.passed is False
+
+
+def test_trust_provenance_gate_requires_named_policy_for_external_target() -> None:
+    target = SelfEvolveTargetRef(target_type="skill", target_id="external-capability")
+    provenance = TargetProvenance(
+        target=target,
+        source_kind="skill",
+        write_origin="external",
+        trust_level="external",
+        protected=False,
+        reason="external capability",
+    )
+
+    denied = TrustProvenanceGate().evaluate(provenance)
+    allowed = TrustProvenanceGate(allow_external=True).evaluate(provenance)
+
+    assert denied.passed is False
+    assert allowed.passed is True
+
+
+@pytest.mark.parametrize(
+    ("source_kind", "write_origin", "trust_level"),
+    [
+        ("skill", "target_inference", "local"),
+        ("skill", "operator_selection", "generated"),
+        ("skill", "installed_skill", "external"),
+        ("workspace_artifact", "installed_skill", "local"),
+    ],
+)
+def test_trust_provenance_gate_fails_closed_for_malformed_enum_combinations(
+    source_kind: str,
+    write_origin: str,
+    trust_level: str,
+) -> None:
+    target = SelfEvolveTargetRef("skill", "capability")
+
+    result = TrustProvenanceGate(
+        allow_generated=True,
+        allow_external=True,
+    ).evaluate(
+        TargetProvenance(
+            target=target,
+            source_kind=source_kind,
+            write_origin=write_origin,
+            trust_level=trust_level,
+            protected=False,
+            reason="malformed combination",
+        )
+    )
+
+    assert result.passed is False
+    assert result.reason == "target provenance classification is not trusted"

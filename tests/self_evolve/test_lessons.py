@@ -1,6 +1,24 @@
 from __future__ import annotations
 
-from aworld.self_evolve.lessons import extract_lesson_records
+from dataclasses import replace
+
+import pytest
+
+from aworld.self_evolve.failure_events import (
+    FailureOwner,
+    FailureScope,
+    FailureStage,
+    ReplayFailureEvent,
+    ReplayFailureObservation,
+    aggregate_replay_failure_observations,
+)
+from aworld.self_evolve.lessons import (
+    LessonRecord,
+    aggregate_lesson_records,
+    extract_lesson_records,
+)
+from aworld.self_evolve.store import FilesystemSelfEvolveStore
+import json
 from aworld.self_evolve.trace_pack import build_trace_pack
 from aworld.self_evolve.types import EvaluationSummary
 
@@ -198,3 +216,253 @@ def test_extract_lesson_records_adds_bounded_trace_memories_without_raw_transcri
     assert lean_lesson.metrics["step_count"] == 1
     assert lean_lesson.metrics["tool_names"] == ["read_artifact"]
     assert lean_lesson.confidence == "high"
+
+
+def _causal_feedback(*, case_id: str, task_id: str, code: str = "contract_rejected") -> EvaluationSummary:
+    return EvaluationSummary(
+        variant_id=f"candidate-{case_id}",
+        dataset_split="validation",
+        metrics={
+            "run_id": "run-generic",
+            "task_id": task_id,
+            "causal_failure_events": [
+                {
+                    "semantic_key": f"replay-failure-{code}",
+                    "code": code,
+                    "owner": "candidate",
+                    "stage": "capability_preflight",
+                    "scope": "candidate",
+                    "repairable": True,
+                    "category": "capability_contract",
+                    "occurrence_count": 1,
+                    "occurrence_ids": [f"occurrence-{case_id}"],
+                    "affected_member_count": 1,
+                    "affected_case_ids": [case_id],
+                    "source_run_ids": ["run-generic"],
+                    "source_task_ids": [task_id],
+                    "source_candidate_ids": [f"candidate-{case_id}"],
+                    "artifact_refs": [f"/private/{case_id}/artifact.json"],
+                }
+            ],
+        },
+    )
+
+
+def test_causal_lessons_aggregate_same_event_across_trajectories() -> None:
+    lessons = extract_lesson_records(
+        tuple(
+            _causal_feedback(case_id=f"case-{index}", task_id=f"task-{index}")
+            for index in range(3)
+        ),
+        target_scope={"target_type": "skill", "target_id": "generic"},
+    )
+
+    assert len(lessons) == 1
+    lesson = lessons[0]
+    assert lesson.lesson_type == "causal_failure_memory"
+    assert lesson.occurrence_count == 3
+    assert lesson.affected_case_ids == ("case-0", "case-1", "case-2")
+    assert lesson.affected_case_count == 3
+    assert lesson.source_task_ids == ("task-0", "task-1", "task-2")
+    assert lesson.distinct_source_count >= 3
+    assert lesson.metrics["causal_code"] == "contract_rejected"
+    assert "/private/" not in str(lesson)
+
+
+def test_causal_lessons_keep_heterogeneous_codes_distinct_and_dedupe_feedback() -> None:
+    first = _causal_feedback(case_id="case-a", task_id="task-a", code="first_code")
+    second = _causal_feedback(case_id="case-b", task_id="task-b", code="second_code")
+    lessons = extract_lesson_records(
+        (first, first, second),
+        target_scope={"target_type": "skill", "target_id": "generic"},
+    )
+
+    assert len(lessons) == 2
+    by_code = {lesson.metrics["causal_code"]: lesson for lesson in lessons}
+    assert by_code["first_code"].occurrence_count == 1
+    assert by_code["first_code"].distinct_source_count == 1
+    assert by_code["second_code"].occurrence_count == 1
+
+
+def test_store_writes_one_jsonl_row_per_semantic_lesson(tmp_path) -> None:
+    lesson = extract_lesson_records(
+        (_causal_feedback(case_id="case-a", task_id="task-a"),),
+        target_scope={"target_type": "skill", "target_id": "generic"},
+    )[0]
+    store = FilesystemSelfEvolveStore(tmp_path)
+    path = store.write_lesson_records("run-generic", (lesson, lesson))
+
+    lines = path.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 1
+    assert json.loads(lines[0])["occurrence_count"] == 1
+
+
+def test_causal_lessons_are_idempotent_per_emission_and_add_exact_cross_batch_counts() -> None:
+    def aggregate(batch: str):
+        observations = tuple(
+            ReplayFailureObservation(
+                event=ReplayFailureEvent(
+                    event_id=f"{batch}-event-{index:03d}",
+                    code="generic_contract_rejected",
+                    owner=FailureOwner.CANDIDATE,
+                    stage=FailureStage.TASK_ROLLOUT,
+                    scope=FailureScope.MEMBER,
+                    repairable=True,
+                    capability_id="generic-capability",
+                ),
+                case_id=f"{batch}-case-{index:03d}",
+                run_id=f"{batch}-run-{index:03d}",
+                task_id=f"{batch}-task-{index:03d}",
+                candidate_id=f"{batch}-candidate-{index:03d}",
+            )
+            for index in range(70)
+        )
+        return aggregate_replay_failure_observations(observations)[0]
+
+    first = aggregate("first")
+    second = aggregate("second")
+
+    def feedback(item) -> EvaluationSummary:
+        return EvaluationSummary(
+            variant_id="candidate",
+            dataset_split="validation",
+            metrics={"causal_failure_events": [item.to_feedback_dict()]},
+        )
+
+    lessons = extract_lesson_records(
+        (feedback(first), feedback(first), feedback(second)),
+        target_scope={"target_type": "skill", "target_id": "generic"},
+    )
+
+    assert len(lessons) == 1
+    lesson = lessons[0]
+    assert lesson.occurrence_count == 140
+    assert lesson.affected_case_count == 140
+    assert lesson.distinct_source_count == 140
+    assert len(lesson.occurrence_ids) == 64
+    assert len(lesson.source_task_ids) == 32
+    assert lesson.emission_ids == tuple(sorted((first.emission_id, second.emission_id)))
+    assert set(lesson.batch_ids) == {first.batch_id, second.batch_id}
+
+
+def test_lesson_aggregation_and_store_fail_closed_on_semantic_id_collision(
+    tmp_path,
+) -> None:
+    first = LessonRecord(
+        lesson_id="forged-causal-id",
+        lesson_type="causal_failure_memory",
+        title="Repair typed cause",
+        summary="Repair first typed cause.",
+        metrics={"causal_code": "first_code", "repairable": True},
+    )
+    second = LessonRecord(
+        lesson_id="forged-causal-id",
+        lesson_type="causal_failure_memory",
+        title="Repair typed cause",
+        summary="Repair second typed cause.",
+        metrics={"causal_code": "second_code", "repairable": True},
+    )
+
+    with pytest.raises(ValueError, match="conflicting semantic payloads"):
+        aggregate_lesson_records((first, second))
+    with pytest.raises(ValueError, match="conflicting semantic payloads"):
+        FilesystemSelfEvolveStore(tmp_path).write_lesson_records(
+            "run-generic", (first, second)
+        )
+
+
+def test_causal_lesson_unions_complete_identities_across_emissions() -> None:
+    def aggregate(*, emission: str, case_id: str, task_id: str):
+        event = ReplayFailureEvent(
+            event_id=f"event-{emission}",
+            code="generic_contract_rejected",
+            owner=FailureOwner.CANDIDATE,
+            stage=FailureStage.TASK_ROLLOUT,
+            scope=FailureScope.MEMBER,
+            repairable=True,
+        )
+        return aggregate_replay_failure_observations(
+            (
+                ReplayFailureObservation(
+                    event=event,
+                    case_id=case_id,
+                    run_id="run-shared",
+                    task_id=task_id,
+                    candidate_id="candidate-shared",
+                ),
+            )
+        )[0]
+
+    first = aggregate(emission="first", case_id="case-shared", task_id="task-shared")
+    repeated_case = aggregate(
+        emission="second", case_id="case-shared", task_id="task-shared"
+    )
+    distinct_case = aggregate(
+        emission="third", case_id="case-distinct", task_id="task-distinct"
+    )
+
+    def feedback(item) -> EvaluationSummary:
+        return EvaluationSummary(
+            variant_id="candidate",
+            dataset_split="validation",
+            metrics={"causal_failure_events": [item.to_feedback_dict()]},
+        )
+
+    duplicate_union = extract_lesson_records(
+        (feedback(first), feedback(repeated_case)),
+        target_scope={"target_type": "skill", "target_id": "generic"},
+    )[0]
+    assert duplicate_union.occurrence_count == 2
+    assert duplicate_union.affected_case_count == 1
+    assert duplicate_union.distinct_source_count == 1
+    assert len(duplicate_union.affected_case_identity_digests) == 1
+    assert len(duplicate_union.source_identity_digests) == 1
+
+    distinct_union = extract_lesson_records(
+        (feedback(first), feedback(distinct_case)),
+        target_scope={"target_type": "skill", "target_id": "generic"},
+    )[0]
+    assert distinct_union.occurrence_count == 2
+    assert distinct_union.affected_case_count == 2
+    assert distinct_union.distinct_source_count == 2
+
+
+def test_same_lesson_emission_rejects_any_exact_provenance_tamper() -> None:
+    event = ReplayFailureEvent(
+        event_id="event-exact",
+        code="generic_contract_rejected",
+        owner=FailureOwner.CANDIDATE,
+        stage=FailureStage.TASK_ROLLOUT,
+        scope=FailureScope.MEMBER,
+        repairable=True,
+    )
+    aggregate = aggregate_replay_failure_observations(
+        (
+            ReplayFailureObservation(
+                event=event,
+                case_id="case-a",
+                run_id="run-a",
+                task_id="task-a",
+                candidate_id="candidate-a",
+            ),
+        )
+    )[0]
+    feedback = EvaluationSummary(
+        variant_id="candidate-a",
+        dataset_split="validation",
+        metrics={"causal_failure_events": [aggregate.to_feedback_dict()]},
+    )
+    lesson = extract_lesson_records(
+        (feedback,),
+        target_scope={"target_type": "skill", "target_id": "generic"},
+    )[0]
+    tampered_stats = {
+        key: {**value, "occurrence_count": value["occurrence_count"] + 1}
+        for key, value in lesson.emission_stats.items()
+    }
+    tampered = replace(lesson, occurrence_count=2, emission_stats=tampered_stats)
+
+    with pytest.raises(
+        ValueError, match="emission digest|conflicting exact provenance"
+    ):
+        aggregate_lesson_records((lesson, tampered))

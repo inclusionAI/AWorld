@@ -2,10 +2,18 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
+from aworld.self_evolve.evidence_diagnostics import (
+    evidence_repair_constraints_from_metrics,
+    public_evidence_constraint_payload,
+)
 from aworld.self_evolve.sanitization import (
     sanitize_metric_value,
     sanitize_source_text,
     sanitize_text,
+)
+from aworld.self_evolve.recovery_trace import (
+    validate_public_constraint_recovery_trace,
+    validate_public_recovery_trace,
 )
 from aworld.self_evolve.types import EvaluationSummary
 
@@ -77,6 +85,7 @@ _SCALAR_METRIC_KEYS = {
     "failure_class",
     "repairable",
     "candidate_protocol_invalid_count",
+    "candidate_materialization_invalid_count",
     "authoritative_replay_failure",
     "interaction_progress",
 }
@@ -132,6 +141,9 @@ def normalize_feedback_summary(feedback: EvaluationSummary) -> dict[str, Any]:
         "required_behaviors": required_behaviors,
         "repair_plan": repair_plan,
     }
+    evidence_constraints = public_evidence_constraint_payload(metrics)
+    if evidence_constraints:
+        result["evidence_repair_constraints"] = evidence_constraints
     diagnostics = metrics.get("candidate_validation_diagnostics")
     if isinstance(diagnostics, list):
         result["candidate_validation_diagnostics"] = [
@@ -139,6 +151,14 @@ def normalize_feedback_summary(feedback: EvaluationSummary) -> dict[str, Any]:
             for item in diagnostics[:16]
             if isinstance(item, Mapping)
         ]
+    recovery_trace = validate_public_recovery_trace(metrics.get("recovery_trace"))
+    if recovery_trace is not None:
+        result["recovery_trace"] = recovery_trace
+    constraint_recovery_trace = validate_public_constraint_recovery_trace(
+        metrics.get("constraint_recovery_trace")
+    )
+    if constraint_recovery_trace is not None:
+        result["constraint_recovery_trace"] = constraint_recovery_trace
     repair_candidate_package = _repair_candidate_package_summary(
         metrics.get("repair_candidate_package")
     )
@@ -173,16 +193,24 @@ def _repair_candidate_package_summary(value: Any) -> dict[str, Any] | None:
             item["content"] = bounded_content
             remaining_chars -= len(bounded_content)
         files.append(item)
-    if not files:
+    raw_content = value.get("content")
+    bounded_target_content = (
+        sanitize_source_text(raw_content, max_chars=8_000)
+        if isinstance(raw_content, str) and raw_content.strip()
+        else None
+    )
+    # Target-only candidates are a complete, valid package. Dropping an empty
+    # replay-file set loses the deepest judge-scored repair frontier and allows
+    # unrelated lower-level runtime failures to take over subsequent mutation.
+    if not files and bounded_target_content is None:
         return None
     package = {
         "candidate_id": sanitize_text(value.get("candidate_id"), max_chars=160),
         "rationale": sanitize_text(value.get("rationale"), max_chars=1_000),
         "files": files,
     }
-    raw_content = value.get("content")
-    if isinstance(raw_content, str) and raw_content.strip():
-        package["content"] = sanitize_source_text(raw_content, max_chars=8_000)
+    if bounded_target_content is not None:
+        package["content"] = bounded_target_content
     return package
 
 
@@ -372,6 +400,8 @@ def _required_behaviors(
                 "repair_held_out_regression_before_release",
             ]
         )
+    for constraint in evidence_repair_constraints_from_metrics(metrics):
+        behaviors.append(constraint.required_action)
     return list(dict.fromkeys(behaviors))
 
 

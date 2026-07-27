@@ -285,6 +285,16 @@ async def test_aworld_trajectory_evaluator_backend_extracts_evidence_quality_met
                             "evidence_block_count": 2,
                             "evidence_compacted": False,
                             "evidence_incomplete": False,
+                            "evidence_repair_constraints": [
+                                {
+                                    "subject_kind": "quantitative_claim",
+                                    "failure_mode": "unsupported_claim",
+                                    "source_layer": "candidate_output",
+                                    "required_action": "support_or_omit",
+                                    "owner": "candidate",
+                                    "occurrence_count": 2,
+                                }
+                            ],
                         },
                     },
                 }
@@ -306,6 +316,9 @@ async def test_aworld_trajectory_evaluator_backend_extracts_evidence_quality_met
     assert summary.metrics["evidence_block_count"] == 2
     assert summary.metrics["evidence_compacted"] is False
     assert summary.metrics["evidence_incomplete"] is False
+    constraint = summary.metrics["evidence_repair_constraints"][0]
+    assert constraint["occurrence_count"] == 2
+    assert constraint["constraint_identity_digest"]
 
 
 @pytest.mark.asyncio
@@ -569,6 +582,9 @@ async def test_aworld_trajectory_evaluator_backend_summarizes_judge_call_diagnos
                             "artifact_request_count": 0,
                             "artifact_read_count": 1,
                             "artifact_read_chars": 700,
+                            "artifact_read_continuation_count": 1,
+                            "artifact_read_budget_exhausted": True,
+                            "artifact_read_projection_incomplete": True,
                             "latency_ms": 40.0,
                         },
                     ],
@@ -592,6 +608,12 @@ async def test_aworld_trajectory_evaluator_backend_summarizes_judge_call_diagnos
     assert summary.metrics["judge_artifact_request_count"] == 1
     assert summary.metrics["judge_artifact_read_count"] == 1
     assert summary.metrics["judge_artifact_read_chars"] == 700
+    assert summary.metrics["judge_artifact_read_continuation_count"] == 1
+    assert summary.metrics["judge_artifact_read_budget_exhausted"] is True
+    assert summary.metrics["judge_artifact_read_budget_exhausted_count"] == 1
+    assert summary.metrics["judge_artifact_projection_incomplete"] is True
+    assert summary.metrics["judge_artifact_projection_incomplete_count"] == 1
+    assert summary.metrics["judge_artifact_finalize_count"] == 0
     assert summary.metrics["judge_prompt_chars_total"] == 3400
     assert summary.metrics["judge_estimated_input_tokens_total"] == 1050
     assert summary.metrics["judge_model_latency_ms_total"] == pytest.approx(65.0)
@@ -1233,7 +1255,78 @@ def test_replay_cost_preflight_counts_replays_judges_and_verification_budget() -
     assert estimate.verification_command_count == 8
     assert estimate.judge_call_count == 9
     assert estimate.estimated_tokens == 1200
+    assert estimate.estimated_tokens_per_replay == 100
     assert estimate.estimated_cost_usd == 0.12
+    assert estimate.estimate_known is True
+    assert estimate.estimate_source.value == "configured_cold_start"
+    assert estimate.estimate_confidence.value == "low"
+
+
+def test_replay_cost_unknown_tokens_fail_closed_under_token_ceiling() -> None:
+    estimate = estimate_replay_cost(
+        dataset=_dataset((EvalCase(case_id="case-1", input="one"),)),
+        candidate_count=1,
+        judge_repetitions=1,
+        max_run_tokens=10_000,
+    )
+
+    assert estimate.estimated_tokens is None
+    assert estimate.estimated_tokens_per_replay is None
+    assert estimate.estimate_known is False
+    assert estimate.estimate_source.value == "unknown"
+    assert estimate.estimate_confidence.value == "unknown"
+    assert estimate.passed is False
+    assert estimate.reason == "estimated replay tokens are unknown under max_run_tokens"
+
+
+def test_replay_cost_accepts_only_explicit_backend_proven_zero() -> None:
+    dataset = _dataset((EvalCase(case_id="case-1", input="one"),))
+
+    estimate = estimate_replay_cost(
+        dataset=dataset,
+        candidate_count=3,
+        judge_repetitions=1,
+        backend_proven_zero=True,
+        max_run_tokens=1,
+    )
+
+    assert estimate.estimated_tokens == 0
+    assert estimate.estimated_tokens_per_replay == 0
+    assert estimate.estimate_known is True
+    assert estimate.estimate_source.value == "backend_proven_zero"
+    assert estimate.estimate_confidence.value == "proven"
+    assert estimate.passed is True
+    with pytest.raises(ValueError, match="backend_proven_zero"):
+        estimate_replay_cost(
+            dataset=dataset,
+            candidate_count=1,
+            judge_repetitions=1,
+            estimated_tokens_per_replay=0,
+        )
+
+
+def test_replay_cost_is_monotonic_from_one_to_three_candidates() -> None:
+    dataset = _dataset((EvalCase(case_id="case-1", input="one"),))
+
+    one = estimate_replay_cost(
+        dataset=dataset,
+        candidate_count=1,
+        judge_repetitions=2,
+        estimated_tokens_per_replay=100,
+    )
+    three = estimate_replay_cost(
+        dataset=dataset,
+        candidate_count=3,
+        judge_repetitions=2,
+        estimated_tokens_per_replay=100,
+    )
+
+    assert three.candidate_replay_count > one.candidate_replay_count
+    assert three.total_replay_count > one.total_replay_count
+    assert three.judge_call_count > one.judge_call_count
+    assert three.estimated_tokens is not None
+    assert one.estimated_tokens is not None
+    assert three.estimated_tokens > one.estimated_tokens
 
 
 @pytest.mark.asyncio
@@ -1520,6 +1613,220 @@ def test_candidate_confidence_counts_multi_member_single_case_replay_metadata() 
     assert decision.verification_mode == "single_case_replay"
     assert decision.baseline_replay_count == 8
     assert decision.candidate_replay_count == 12
+
+
+def test_candidate_confidence_accepts_stable_native_negative_baseline() -> None:
+    stable_failure = {
+        "outcome": "task_failure",
+        "failure_event": {
+            "owner": "task",
+            "stage": "task_rollout",
+            "source_kinds": ["native"],
+        },
+        "metrics": {
+            "repetition_count": 2,
+            "successful_repetition_count": 0,
+            "failed_repetition_count": 2,
+            "blocked_repetition_count": 0,
+            "not_run_repetition_count": 0,
+            "repetition_failures": [
+                {"type": "TimeoutExpired", "reason": "replay timed out"},
+                {"type": "TimeoutExpired", "reason": "replay timed out"},
+            ],
+        },
+    }
+    dataset = SelfEvolveDataset(
+        cases=(
+            EvalCase(
+                case_id="case-1",
+                input="demo",
+                metadata={
+                    "replay": {
+                        "baseline": stable_failure,
+                        "candidate": {
+                            "metrics": {
+                                "repetition_count": 3,
+                                "successful_repetition_count": 3,
+                            }
+                        },
+                    }
+                },
+            ),
+        ),
+        recipe=DatasetRecipe(
+            source={
+                "kind": "trajectory_log",
+                "original_case_count": 1,
+                "paired_replay": True,
+            },
+            split_seed="seed",
+            splits={"train": ["case-1"], "validation": [], "held_out": []},
+            held_out_case_ids=(),
+        ),
+    )
+
+    decision = determine_candidate_confidence(
+        dataset=dataset,
+        validation_summary=EvaluationSummary(
+            variant_id="cand-1",
+            metrics={"deterministic_signal": True},
+            dataset_split="validation",
+        ),
+        held_out_summary=None,
+        min_eval_cases=30,
+    )
+
+    assert decision.confidence == "verified"
+    assert decision.verification_mode == "single_case_replay"
+    assert decision.baseline_replay_count == 2
+    assert decision.candidate_replay_count == 3
+
+
+def test_candidate_confidence_accepts_stable_candidate_owned_task_rollout_control() -> None:
+    dataset = SelfEvolveDataset(
+        cases=(
+            EvalCase(
+                case_id="case-1",
+                input="demo",
+                metadata={
+                    "replay": {
+                        "baseline": {
+                            "outcome": "candidate_failure",
+                            "failure_event": {
+                                "owner": "candidate",
+                                "stage": "task_rollout",
+                                "source_kinds": ["native"],
+                            },
+                            "metrics": {
+                                "repetition_count": 2,
+                                "successful_repetition_count": 0,
+                                "failed_repetition_count": 2,
+                                "blocked_repetition_count": 0,
+                                "not_run_repetition_count": 0,
+                                "repetition_failures": [
+                                    {"type": "TimeoutExpired", "reason": "timed out"},
+                                    {"type": "TimeoutExpired", "reason": "timed out"},
+                                ],
+                            },
+                        },
+                        "candidate": {
+                            "metrics": {
+                                "repetition_count": 3,
+                                "successful_repetition_count": 3,
+                            }
+                        },
+                    }
+                },
+            ),
+        ),
+        recipe=DatasetRecipe(
+            source={"original_case_count": 1, "paired_replay": True},
+            split_seed="seed",
+            splits={"train": ["case-1"], "validation": [], "held_out": []},
+            held_out_case_ids=(),
+        ),
+    )
+
+    decision = determine_candidate_confidence(
+        dataset=dataset,
+        validation_summary=EvaluationSummary(
+            variant_id="cand-1",
+            metrics={"deterministic_signal": True},
+            dataset_split="validation",
+        ),
+        held_out_summary=None,
+        min_eval_cases=30,
+    )
+
+    assert decision.confidence == "verified"
+    assert decision.baseline_replay_count == 2
+    assert decision.candidate_replay_count == 3
+
+
+@pytest.mark.parametrize(
+    ("outcome", "owner", "stage", "reasons"),
+    [
+        (
+            "task_failure",
+            "infrastructure",
+            "task_rollout",
+            ("same failure", "same failure"),
+        ),
+        (
+            "task_failure",
+            "task",
+            "task_rollout",
+            ("first failure", "different failure"),
+        ),
+        (
+            "candidate_failure",
+            "candidate",
+            "capability_preflight",
+            ("same failure", "same failure"),
+        ),
+    ],
+)
+def test_candidate_confidence_rejects_nonconclusive_negative_baseline(
+    outcome: str,
+    owner: str,
+    stage: str,
+    reasons: tuple[str, str],
+) -> None:
+    dataset = SelfEvolveDataset(
+        cases=(
+            EvalCase(
+                case_id="case-1",
+                input="demo",
+                metadata={
+                    "replay": {
+                        "baseline": {
+                            "outcome": outcome,
+                            "failure_event": {
+                                "owner": owner,
+                                "stage": stage,
+                                "source_kinds": ["native"],
+                            },
+                            "metrics": {
+                                "repetition_count": 2,
+                                "successful_repetition_count": 0,
+                                "failed_repetition_count": 2,
+                                "repetition_failures": [
+                                    {"type": "Failure", "reason": reasons[0]},
+                                    {"type": "Failure", "reason": reasons[1]},
+                                ],
+                            },
+                        },
+                        "candidate": {
+                            "metrics": {
+                                "repetition_count": 3,
+                                "successful_repetition_count": 3,
+                            }
+                        },
+                    }
+                },
+            ),
+        ),
+        recipe=DatasetRecipe(
+            source={"original_case_count": 1, "paired_replay": True},
+            split_seed="seed",
+            splits={"train": ["case-1"], "validation": [], "held_out": []},
+            held_out_case_ids=(),
+        ),
+    )
+
+    decision = determine_candidate_confidence(
+        dataset=dataset,
+        validation_summary=EvaluationSummary(
+            variant_id="cand-1",
+            metrics={"deterministic_signal": True},
+            dataset_split="validation",
+        ),
+        held_out_summary=None,
+        min_eval_cases=30,
+    )
+
+    assert decision.confidence == "limited"
+    assert decision.baseline_replay_count == 0
 
 
 def test_candidate_confidence_accepts_trajectory_set_validation_with_small_held_out_pool() -> None:

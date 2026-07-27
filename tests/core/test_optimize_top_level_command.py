@@ -50,6 +50,8 @@ def test_optimize_command_passes_generic_target_dataset_and_apply_to_framework(
             "eval.jsonl",
             "--apply",
             "proposal",
+            "--new-skill-policy",
+            "draft_only",
         ]
     )
 
@@ -58,11 +60,273 @@ def test_optimize_command_passes_generic_target_dataset_and_apply_to_framework(
     assert calls["target"] == "skill:demo"
     assert calls["dataset"] == "eval.jsonl"
     assert calls["apply"] == "proposal"
+    assert calls["new_skill_policy"] == "draft_only"
+    assert calls["max_improvement_cycles"] == 3
     assert callable(calls["progress_callback"])
     assert calls["from_trajectory"] is None
     assert calls["task"] is None
     assert "report.json" in output
     assert "cand-1" in output
+
+
+def test_optimize_command_defaults_file_or_directory_source_to_auto_ingestor(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    calls = {}
+
+    def fake_run_optimize_cli(**kwargs):
+        calls.update(kwargs)
+        return {
+            "status": "ingested",
+            "ingestion_id": "ingestion-demo",
+            "ingestion_report_path": str(tmp_path / "ingestion.json"),
+        }
+
+    monkeypatch.setattr(
+        "aworld_cli.top_level_commands.optimize_cmd.run_optimize_cli",
+        fake_run_optimize_cli,
+    )
+
+    handled = main_module._maybe_dispatch_top_level_command(
+        [
+            "aworld-cli",
+            "optimize",
+            "--from-source",
+            str(tmp_path / "domain-data"),
+            "--source-manifest",
+            str(tmp_path / "aworld-source.yaml"),
+            "--ingestion-only",
+        ]
+    )
+
+    assert handled is True
+    assert calls["from_source"] == str(tmp_path / "domain-data")
+    assert calls["source_ingestor"] == "auto"
+    assert calls["source_manifest"] == str(tmp_path / "aworld-source.yaml")
+    assert calls["ingestion_only"] is True
+
+
+def test_optimize_command_allows_registered_ingestor_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = {}
+
+    def fake_run_optimize_cli(**kwargs):
+        calls.update(kwargs)
+        return {"status": "rejected"}
+
+    monkeypatch.setattr(
+        "aworld_cli.top_level_commands.optimize_cmd.run_optimize_cli",
+        fake_run_optimize_cli,
+    )
+
+    handled = main_module._maybe_dispatch_top_level_command(
+        [
+            "aworld-cli",
+            "optimize",
+            "--from-source",
+            "domain-data",
+            "--source-ingestor",
+            "crm-export-v2",
+            "--target",
+            "skill:crm",
+        ]
+    )
+
+    assert handled is True
+    assert calls["source_ingestor"] == "crm-export-v2"
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"dataset": "eval.jsonl", "from_source": "domain-data"},
+        {"source_manifest": "aworld-source.yaml"},
+        {"source_ingestor": "crm-export-v2"},
+        {"ingestion_model_profile": "ingestion"},
+        {"semantic_evidence_approval": "approval.json"},
+        {"semantic_qualification_report": "qualification.json"},
+        {"ingestion_only": True},
+    ],
+)
+def test_run_optimize_cli_rejects_invalid_agentic_source_option_combinations(
+    kwargs: dict[str, object],
+    tmp_path: Path,
+) -> None:
+    request = {
+        "agent": None,
+        "task": None,
+        "target": None,
+        "dataset": None,
+        "from_session": None,
+        "from_trajectory": None,
+        "batch_config": None,
+        "iterations": None,
+        "apply": "proposal",
+        "infer_target": True,
+        "workspace_root": str(tmp_path),
+        **kwargs,
+    }
+
+    with pytest.raises(ValueError):
+        run_optimize_cli(**request)
+
+
+def test_run_optimize_cli_resolves_explicit_ingestion_model_profile(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import aworld.self_evolve as self_evolve
+
+    calls = {}
+    resolved_profiles = []
+    configs = {
+        name: ModelConfig(
+            llm_provider="openai",
+            llm_model_name=f"{name}-model",
+            llm_api_key="test-key",
+        )
+        for name in ("default", "source-mapper")
+    }
+
+    def fake_resolve_model_profile(profile_name):
+        resolved_profiles.append(profile_name)
+        return configs[profile_name]
+
+    def fake_optimize_from_cli_request(**kwargs):
+        calls.update(kwargs)
+        return {"status": "ingested"}
+
+    monkeypatch.setattr(
+        "aworld_cli.core.model_profiles.resolve_model_profile",
+        fake_resolve_model_profile,
+    )
+    monkeypatch.setattr(
+        self_evolve,
+        "optimize_from_cli_request",
+        fake_optimize_from_cli_request,
+    )
+
+    run_optimize_cli(
+        agent=None,
+        task=None,
+        target=None,
+        dataset=None,
+        from_session=None,
+        from_trajectory=None,
+        from_source="domain-data",
+        ingestion_model_profile="source-mapper",
+        ingestion_only=True,
+        batch_config=None,
+        iterations=None,
+        apply="proposal",
+        infer_target=True,
+        workspace_root=str(tmp_path),
+    )
+
+    assert resolved_profiles == ["default", "source-mapper"]
+    assert calls["mutation_model_config"] is configs["default"]
+    assert calls["ingestion_model_config"] is configs["source-mapper"]
+
+
+def test_optimize_command_forwards_semantic_trust_artifacts(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    calls = {}
+
+    def fake_run_optimize_cli(**kwargs):
+        calls.update(kwargs)
+        return {"status": "ingested"}
+
+    monkeypatch.setattr(
+        "aworld_cli.top_level_commands.optimize_cmd.run_optimize_cli",
+        fake_run_optimize_cli,
+    )
+    handled = main_module._maybe_dispatch_top_level_command(
+        [
+            "aworld-cli",
+            "optimize",
+            "--from-source",
+            "domain-data",
+            "--semantic-evidence-approval",
+            str(tmp_path / "approval.json"),
+            "--semantic-qualification-report",
+            str(tmp_path / "qualification.json"),
+            "--ingestion-only",
+        ]
+    )
+
+    assert handled is True
+    assert calls["semantic_evidence_approval"].endswith("approval.json")
+    assert calls["semantic_qualification_report"].endswith(
+        "qualification.json"
+    )
+
+
+def test_optimize_command_forwards_frozen_ingestion_promotion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = {}
+
+    def fake_run_optimize_cli(**kwargs):
+        calls.update(kwargs)
+        return {"status": "promoted"}
+
+    monkeypatch.setattr(
+        "aworld_cli.top_level_commands.optimize_cmd.run_optimize_cli",
+        fake_run_optimize_cli,
+    )
+    handled = main_module._maybe_dispatch_top_level_command(
+        [
+            "aworld-cli",
+            "optimize",
+            "--frozen-ingestion-id",
+            "ingestion-semantic-v2",
+            "--semantic-evidence-approval",
+            "approval.json",
+            "--semantic-qualification-report",
+            "qualification.json",
+            "--apply",
+            "auto_verified",
+        ]
+    )
+
+    assert handled is True
+    assert calls["frozen_ingestion_id"] == "ingestion-semantic-v2"
+    assert calls["semantic_evidence_approval"] == "approval.json"
+    assert calls["semantic_qualification_report"] == "qualification.json"
+
+
+def test_run_optimize_cli_ingestion_only_executes_default_auto_framework_path(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "cases.jsonl"
+    source.write_text(
+        '{"case_id":"case-1","input":"question","expected_output":"answer"}\n',
+        encoding="utf-8",
+    )
+
+    summary = run_optimize_cli(
+        agent=None,
+        task=None,
+        target=None,
+        dataset=None,
+        from_session=None,
+        from_trajectory=None,
+        from_source=str(source),
+        ingestion_only=True,
+        batch_config=None,
+        iterations=None,
+        apply="proposal",
+        infer_target=True,
+        workspace_root=str(tmp_path),
+    )
+
+    assert summary["status"] == "ingested"
+    assert summary["ingestion_id"].startswith("ingestion-")
+    assert Path(summary["ingestion_report_path"]).is_file()
 
 
 def test_optimize_command_drains_pending_self_evolve_jobs(
@@ -113,6 +377,56 @@ def test_optimize_command_rejects_phase1_external_apply_modes(
     output = capsys.readouterr().out
     assert handled is True
     assert "Optimize error: --apply must be one of proposal, auto_verified" in output
+
+
+def test_optimize_command_forwards_campaign_cycle_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = {}
+
+    def fake_run_optimize_cli(**kwargs):
+        calls.update(kwargs)
+        return {"status": "rejected"}
+
+    monkeypatch.setattr(
+        "aworld_cli.top_level_commands.optimize_cmd.run_optimize_cli",
+        fake_run_optimize_cli,
+    )
+
+    handled = main_module._maybe_dispatch_top_level_command(
+        [
+            "aworld-cli",
+            "optimize",
+            "--from-trajectory",
+            "trajectory.log",
+            "--apply",
+            "auto_verified",
+            "--max-improvement-cycles",
+            "5",
+        ]
+    )
+
+    assert handled is True
+    assert calls["max_improvement_cycles"] == 5
+
+
+def test_optimize_command_rejects_proposal_campaign_resume(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit) as exc_info:
+        main_module._maybe_dispatch_top_level_command(
+            [
+                "aworld-cli",
+                "optimize",
+                "--resume-campaign",
+                "campaign-generic",
+                "--apply",
+                "proposal",
+            ]
+        )
+
+    assert exc_info.value.code == 1
+    assert "--resume-campaign requires --apply auto_verified" in capsys.readouterr().out
 
 
 @pytest.mark.parametrize("target", ["skill:demo", "prompt:system", "tool:browser"])
@@ -332,6 +646,37 @@ def test_render_optimize_summary_suggests_rerun_evaluator_after_judge_timeout() 
     )
 
 
+def test_render_optimize_summary_reports_new_skill_promotion_status() -> None:
+    summary = render_optimize_summary(
+        {
+            "status": "succeeded",
+            "report_path": ".aworld/self_evolve/cli-123/report.json",
+            "promotion": {"status": "draft_retained"},
+        }
+    )
+
+    assert "New skill: draft_retained" in summary
+
+
+def test_render_optimize_summary_reports_ingestion_quality_metrics() -> None:
+    summary = render_optimize_summary(
+        {
+            "status": "ingested",
+            "ingestion_id": "ingestion-" + "a" * 32,
+            "ingestion_status": "ingestion_passed_with_warnings",
+            "ingestion_case_count": 12,
+            "ingestion_record_coverage_rate": 0.975,
+            "ingestion_rejected_record_count": 1,
+            "ingestion_model_call_count": 2,
+        }
+    )
+
+    assert "Ingestion cases: 12" in summary
+    assert "Ingestion coverage: 0.975" in summary
+    assert "Ingestion rejected records: 1" in summary
+    assert "Ingestion model calls: 2" in summary
+
+
 def test_render_optimize_summary_warns_when_replay_success_count_is_insufficient() -> None:
     summary = render_optimize_summary(
         {
@@ -442,6 +787,7 @@ def test_run_optimize_cli_uses_interactive_auto_verified_defaults(
         batch_config=None,
         iterations=None,
         apply="auto_verified",
+        new_skill_policy="disabled",
         infer_target=True,
         workspace_root=str(tmp_path),
         judge_agent="agent.md",
@@ -689,6 +1035,7 @@ def test_run_optimize_cli_delegates_generic_request_to_framework_api(
         batch_config=None,
         iterations=3,
         apply="auto_verified",
+        new_skill_policy="disabled",
         infer_target=False,
         workspace_root=str(tmp_path),
         judge_agent="agent.md",
@@ -706,6 +1053,7 @@ def test_run_optimize_cli_delegates_generic_request_to_framework_api(
     assert calls["include_prior_runs"] is True
     assert calls["iterations"] == 3
     assert calls["apply_policy"] == "auto_verified"
+    assert calls["inferred_new_skill_policy"] == "disabled"
     assert calls["infer_target"] is False
     assert calls["judge_config"].mode == "agent_md"
     assert calls["judge_config"].agent_path == "agent.md"
@@ -888,7 +1236,7 @@ def test_run_optimize_cli_defaults_runtime_skill_activator(
     run_optimize_cli(
         agent=None,
         task=None,
-        target="skill:web-content-grounding",
+        target="skill:generated-capability",
         dataset="eval.jsonl",
         from_session=None,
         from_trajectory=None,
@@ -907,7 +1255,7 @@ def test_run_optimize_cli_defaults_runtime_skill_activator(
             {
                 "target": SelfEvolveTargetRef(
                     target_type="skill",
-                    target_id="web-content-grounding",
+                    target_id="generated-capability",
                     path=str(tmp_path / "SKILL.md"),
                 )
             },
@@ -916,7 +1264,7 @@ def test_run_optimize_cli_defaults_runtime_skill_activator(
 
     assert result == {
         "status": "enabled",
-        "skill_name": "web-content-grounding",
+        "skill_name": "generated-capability",
         "was_enabled": False,
         "enabled": True,
     }
@@ -1099,6 +1447,27 @@ def test_render_optimize_summary_lists_failed_gates_for_rejected_runs() -> None:
         "Rejected gates: held_out_verification, global_regression_benchmark"
         in summary
     )
+
+
+def test_render_optimize_summary_reports_campaign_outcome() -> None:
+    summary = render_optimize_summary(
+        {
+            "status": "rejected",
+            "campaign_id": "campaign-generic",
+            "campaign_status": "active",
+            "campaign_cycle": 1,
+            "campaign_max_cycles": 3,
+            "self_improvement_disposition": {
+                "kind": "continue_candidate",
+                "reason_code": "candidate_repair_frontier_progressed",
+            },
+        }
+    )
+
+    assert "Campaign: campaign-generic" in summary
+    assert "Campaign status: active" in summary
+    assert "Campaign cycle: 1/3" in summary
+    assert "candidate_repair_frontier_progressed" in summary
 
 
 def test_optimize_command_module_does_not_own_framework_self_evolve_components() -> None:

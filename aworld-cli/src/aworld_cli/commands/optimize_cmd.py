@@ -17,16 +17,22 @@ from aworld_cli.top_level_commands.optimize_cmd import (
 
 def _usage() -> str:
     return """Usage:
+  /optimize --from-source <file-or-directory> [--source-manifest <path>] [--ingestion-only]
+  /optimize --from-source <file-or-directory> --source-ingestor <registered-name> --target <target>
+  /optimize --frozen-ingestion-id <id> --semantic-evidence-approval <approval.json> --semantic-qualification-report <report.json> --apply auto_verified
   /optimize --from-trajectory <trajectory.log> --apply proposal [--target <target>]
-  /optimize --from-trajectory <trajectory.log> --apply auto_verified --judge-agent <agent.md>
+  /optimize --from-trajectory <trajectory.log> --apply auto_verified --new-skill-policy auto_verified --judge-agent <agent.md>
   /optimize --from-trajectory <multi-task-trajectory.log> --include-prior-runs --apply proposal
   /optimize --from-trajectory-set <trajectory-set.json> --apply auto_verified --judge-agent <agent.md>
   /optimize --from-trajectory-set <trajectory-set.json> --include-prior-runs --apply proposal
   /optimize --from-run <run-id-or-path> --rerun-evaluator --apply auto_verified --judge-agent <agent.md>
+  /optimize --resume-campaign <campaign-id>
   /optimize --target skill:<name> --dataset <eval.jsonl> --apply proposal
   /optimize --drain-pending
 
 Examples:
+  /optimize --from-source ~/Documents/domain-data --ingestion-only
+  /optimize --frozen-ingestion-id <id> --semantic-evidence-approval ./approval.json --semantic-qualification-report ./qualification.json --apply auto_verified
   /optimize --from-trajectory ~/Documents/task.log --apply proposal
   /optimize --from-trajectory ~/Documents/task.log --apply auto_verified --judge-agent ~/Documents/agent.md
   /optimize --from-trajectory-set ./trajectory-set.json --apply auto_verified --judge-agent ~/Documents/agent.md
@@ -43,13 +49,41 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--dataset")
     parser.add_argument("--from-session", dest="from_session")
     parser.add_argument("--from-trajectory", dest="from_trajectory")
+    parser.add_argument("--from-source", dest="from_source")
+    parser.add_argument(
+        "--frozen-ingestion-id",
+        dest="frozen_ingestion_id",
+    )
+    parser.add_argument("--source-ingestor", default="auto", dest="source_ingestor")
+    parser.add_argument("--source-manifest", dest="source_manifest")
+    parser.add_argument(
+        "--ingestion-model-profile",
+        dest="ingestion_model_profile",
+    )
+    parser.add_argument(
+        "--semantic-evidence-approval",
+        dest="semantic_evidence_approval",
+    )
+    parser.add_argument(
+        "--semantic-qualification-report",
+        dest="semantic_qualification_report",
+    )
+    parser.add_argument("--ingestion-only", action="store_true", dest="ingestion_only")
     parser.add_argument("--from-trajectory-set", dest="from_trajectory_set")
     parser.add_argument("--include-prior-runs", action="store_true", dest="include_prior_runs")
     parser.add_argument("--from-run", dest="from_run")
     parser.add_argument("--rerun-evaluator", action="store_true", dest="rerun_evaluator")
     parser.add_argument("--batch-config", dest="batch_config")
     parser.add_argument("--iterations", type=int)
-    parser.add_argument("--apply", default="proposal")
+    parser.add_argument("--apply")
+    parser.add_argument("--max-improvement-cycles", type=int, default=3, dest="max_improvement_cycles")
+    parser.add_argument("--resume-campaign", dest="resume_campaign")
+    parser.add_argument(
+        "--new-skill-policy",
+        choices=("disabled", "draft_only", "auto_verified"),
+        default="auto_verified",
+        dest="new_skill_policy",
+    )
     parser.add_argument("--judge-agent", dest="judge_agent")
     parser.add_argument("--judge-agent-name", dest="judge_agent_name")
     parser.add_argument("--judge-backend-ref", dest="judge_backend_ref")
@@ -82,6 +116,7 @@ class OptimizeCommand(Command):
     @property
     def completion_items(self) -> dict[str, str]:
         return {
+            "/optimize --from-source": "Normalize a file or directory before self-evolve",
             "/optimize --from-trajectory": "Run self-evolve from one or more AWorld trajectory log records",
             "/optimize --from-trajectory-set": "Run self-evolve from an advanced explicit trajectory-set file",
             "/optimize --apply auto_verified": "Run verified replay/evaluation before applying",
@@ -121,6 +156,9 @@ class OptimizeCommand(Command):
             )
             return f"Drained pending self-evolve jobs: {drained}"
 
+        if args.resume_campaign and args.apply not in {None, "auto_verified"}:
+            return "Optimize error: --resume-campaign requires --apply auto_verified"
+
         try:
             runtime_registry_refresher = _runtime_registry_refresher(context.runtime)
             report = await asyncio.to_thread(
@@ -131,13 +169,28 @@ class OptimizeCommand(Command):
                 dataset=args.dataset,
                 from_session=args.from_session,
                 from_trajectory=args.from_trajectory,
+                from_source=args.from_source,
+                frozen_ingestion_id=args.frozen_ingestion_id,
+                source_ingestor=args.source_ingestor,
+                source_manifest=args.source_manifest,
+                ingestion_model_profile=args.ingestion_model_profile,
+                semantic_evidence_approval=(
+                    args.semantic_evidence_approval
+                ),
+                semantic_qualification_report=(
+                    args.semantic_qualification_report
+                ),
+                ingestion_only=args.ingestion_only,
                 from_trajectory_set=args.from_trajectory_set,
                 include_prior_runs=args.include_prior_runs,
                 from_run=args.from_run,
                 rerun_evaluator=args.rerun_evaluator,
                 batch_config=args.batch_config,
                 iterations=args.iterations,
-                apply=args.apply,
+                max_improvement_cycles=args.max_improvement_cycles,
+                resume_campaign=args.resume_campaign,
+                apply=args.apply or ("auto_verified" if args.resume_campaign else "proposal"),
+                new_skill_policy=args.new_skill_policy,
                 infer_target=args.target is None,
                 workspace_root=context.cwd,
                 judge_agent=args.judge_agent,

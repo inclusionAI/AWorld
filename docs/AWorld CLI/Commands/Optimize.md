@@ -32,12 +32,71 @@ Verified apply for an allowlisted skill target:
 aworld-cli optimize \
   --from-trajectory ~/Documents/trajectory1.log \
   --apply auto_verified \
+  --new-skill-policy auto_verified \
   --judge-agent ~/Documents/agent.md \
   --judge-timeout 600 \
   --judge-model-profile gpt-5.5
 ```
 
 `--judge-model-profile` is the name of a configured CLI model profile. It does not directly set a provider model id. Add `--target skill:<name>` when you want to bypass target inference.
+
+### Bounded self-improvement campaigns
+
+`--apply auto_verified` starts a bounded self-improvement Campaign. A Campaign
+keeps the original source, target-selection policy, verification contract,
+cumulative budget, and exact run lineage. Its default maximum is three
+cross-run cycles; override it with `--max-improvement-cycles N`. Set the value
+to `1` to preserve single-run behavior. `--iterations` remains the separate
+within-run candidate-population budget.
+
+When the caller does not configure a token ceiling, the CLI preserves the
+existing 500,000-token allowance for each permitted cycle and derives the
+Campaign hard ceiling as that allowance multiplied by the cycle cap. Each run
+is still capped at 500,000 tokens. An explicitly supplied
+`total_run_token_budget` or legacy `max_run_tokens` remains a Campaign-total
+ceiling and is reduced by every completed run's usage.
+
+After a rejected run, the framework continues only when typed causal evidence
+identifies either a newly progressed candidate-owned repair frontier or a
+retryable infrastructure failure. It stops on an unchanged frontier,
+non-retryable failure, policy/permission/evidence denial, or cumulative budget
+exhaustion. A framework-owned or shared blocker creates a validated Goal
+handoff instead of allowing a candidate to modify protected framework code.
+Cross-run progress is monotonic: losing an already-passing gate, recovery
+achievement, or reached stage is a regression, and a newly observed failure
+fingerprint alone is not improvement. Bounded prior feedback loads the
+verification-quality champion first, so a weaker recent run cannot replace a
+stronger repair base.
+Material candidate quality is also tracked in coarse buckets. A whole-point
+score improvement, a groundedness-tenth improvement, a better command or
+deterministic verification signal, or fewer failed repetitions can continue
+the bounded Campaign only when groundedness, command pass rate, recovery
+achievements, and already-passing gates do not regress. Smaller judge-score
+variation does not consume another cross-run cycle.
+An empty candidate population caused by a schema-valid but non-materializable
+patch is reported as a repairable candidate-generation event and receives one
+bounded same-run representation retry; it is not exposed as a legacy
+missing-disposition pause.
+
+Resume an active or paused Campaign without replacing its source, target, or
+verification contract:
+
+```bash
+aworld-cli optimize --resume-campaign <campaign-id>
+```
+
+`--resume-campaign` is distinct from `--from-run --rerun-evaluator`: Campaign
+resume may start the next bounded improvement run, while evaluator resume only
+reuses already verified replay artifacts from one run. Complete,
+budget-limited, and exhausted Campaigns cannot be resumed.
+
+If the previous local Campaign worker died before producing `report.json`,
+resume verifies that its lease is no longer live, preserves the incomplete run
+as an interrupted-attempt audit artifact, and retries the same bounded cycle.
+It will not take over a live/foreign lease or an interrupted apply operation.
+The incomplete attempt is conservatively charged its full reserved allowance,
+so recovery cannot bypass the Campaign's cumulative token, cost, or wall-time
+ceiling.
 
 Drain pending post-run jobs:
 
@@ -51,18 +110,215 @@ Resume evaluator/gates from a previous run:
 aworld-cli optimize --from-run <run_id> --rerun-evaluator
 ```
 
+Evaluator-only reruns preserve the original candidate package fingerprint and therefore
+cannot rebind an inferred new-skill candidate to another run-owned draft path. Rerun the
+full optimize command for an inferred draft; existing-target runs can use
+`--rerun-evaluator` normally.
+
 ## Data Sources
 
 Exactly one evaluation source is normally provided:
 
 - `--dataset <path>`: JSONL eval dataset. Rows may include `input`, `expected_output`, and `verification_command`.
-- `--from-trajectory <path>`: trajectory log used to build trace packs and infer failure patterns. When the log contains multiple task trajectories, the framework automatically groups them by inferred target/task family before candidate generation so unrelated tasks do not pollute a single candidate.
+- `--from-trajectory <path>`: trajectory log used to build trace packs and infer failure patterns. When the log contains multiple task trajectories, the framework automatically groups them by inferred target/task family, recovery opportunity, and context completeness before candidate generation so unrelated or unreplayable tasks do not pollute a single candidate.
 - `--from-trajectory-set <path>`: advanced explicit-control input for baseline trajectory collections. Most manual optimize workflows should use `--from-trajectory`; user-authored set files may contain `baseline` and `operator_added` members only. Framework-owned accepted, rejected, and replay members are imported from self-evolve run history rather than hand-authored by users.
 - `--from-session <id>`: session-backed dataset construction.
 - `--batch-config <path>`: batch config for a larger request.
+- `--from-source <path>`: an arbitrary readable file or directory. The
+  framework defaults to the registered `auto` ingestor, preserves all source
+  units, and compiles structural or semantic evidence into a frozen internal
+  schema before target inference.
+- `--frozen-ingestion-id <id>`: an immutable prior semantic ingestion. Use it
+  to promote an already reviewed graph with explicit approval and
+  qualification artifacts without rescanning source files or rerunning the
+  semantic model.
 - `--from-run <run_id>`: previous run artifacts, usually with `--rerun-evaluator`.
 
-When `--target` is omitted, the CLI sets `infer_target=True` and the framework performs credit assignment. The inference inventory is filtered to target types with a registered CLI adapter before scoring. Phase 1 registers the `skill` adapter only, so automatic inference cannot select an unsupported `prompt-section`, `tool-description`, `config`, or `workspace-artifact` target. Low-confidence inferred targets are blocked for `auto_verified` apply.
+### Agentic file/directory ingestion
+
+`--from-source` separates the flexible external format from the stable
+self-evolve dataset protocol. It accepts a single file or a directory; users
+do not need to write `--source-ingestor auto`.
+
+```bash
+# Scan, map, validate, and freeze only
+aworld-cli optimize \
+  --from-source ~/Documents/domain-data \
+  --ingestion-only
+
+# Constrain auto discovery with a manifest
+aworld-cli optimize \
+  --from-source ~/Documents/domain-data \
+  --source-manifest ~/Documents/domain-data/aworld-source.yaml \
+  --target skill:domain_agent \
+  --apply proposal
+
+# Free-form, production-trusted two-stage flow
+aworld-cli optimize \
+  --from-source ~/Documents/domain-data \
+  --source-manifest ~/Documents/domain-data/aworld-source.yaml \
+  --ingestion-only
+
+aworld-cli optimize \
+  --frozen-ingestion-id <ingestion-id-from-first-run> \
+  --semantic-evidence-approval \
+    .aworld/self_evolve/ingestions/<ingestion-id>/evidence_approval_template.json \
+  --semantic-qualification-report ~/Documents/qualification.json \
+  --target skill:domain_agent \
+  --apply auto_verified
+
+# Select an SDK-registered structural domain ingestor
+aworld-cli optimize \
+  --from-source ~/Documents/domain-data \
+  --source-ingestor crm-export-v2 \
+  --target skill:crm_assistant \
+  --apply proposal
+```
+
+`--source-manifest` constrains the default flow; it is not a separate ingestion
+mode. `--ingestion-model-profile` selects the isolated semantic/mapping
+deployment when deterministic decoding is insufficient. Custom ingestor names
+are resolved from `IngestionRegistry`; CLI import strings and generated parser
+code are not executed.
+
+The external format is deliberately flexible. One Markdown file or many files
+may freely combine Harness trajectories, human comparisons, historical judge
+results, and analysis. The semantic swarm extracts this into framework-owned
+entities, cited claims, source dispositions, conflicts, actionable signals,
+evaluation plans, and trace attestations. It cannot grant authority or claim
+qualification. A strict
+`aworld.self_evolve.canonical_semantic_source.v1` JSON/YAML source instead uses
+the deterministic canonical decoder with zero model calls; any canonical
+marker makes mixed/unknown/dangling/control-field input fail closed. Conflicting
+payloads in the same semantic slot must be declared as a typed conflict;
+undeclared contradictions are rejected and declared unresolved conflicts
+cannot pass `auto_verified`.
+
+Free-form input remains proposal/human-review evidence unless two independent
+trust requirements pass:
+
+1. `--semantic-evidence-approval` is an operator-selected JSON artifact bound
+   to the exact logical/provenance graph, SourceBundle, constitution, semantic
+   profile, explicit manifest, and claim scope. `--ingestion-only` writes the
+   review template; merely placing approval text in the source or a
+   conventional manifest grants nothing.
+2. `--semantic-qualification-report` is bound to the exact
+   model/provider/protocol/constitution/corpus/threshold identities and its
+   fingerprint must be listed in
+   `.aworld/self_evolve/semantic_qualifications/index.json`. Failed, expired,
+   false-authority, drifted, unlisted, malformed, duplicate-key, or symlinked
+   artifacts are rejected. Reports contain an issuance and expiry window.
+   The versioned qualification corpus carries source-only single/multi-file
+   inputs. The exact-deployment runner gives the tested deployment only a
+   random opaque token and the raw documents, validates the returned frozen
+   semantic snapshot against the exact source/model/provider/protocol, and
+   derives scored outcomes in framework code. Gold case IDs, scenario tags,
+   and labels are not exposed. Scoring compares real source locator/hash,
+   canonical entity identity, claim payload/direction/relations, conflict
+   membership, and signal case/execution relations. Required-claim recall and
+   accepted-claim/conflict precision penalize omissions and every unmatched
+   extra output; gold values are never copied from kind/count matches.
+   Production reports must declare `exact_snapshot_v1`, the framework runner
+   protocol fingerprint, and a per-case source/snapshot attestation bundle
+   fingerprint. Recorded-outcome reports remain offline-only even when all
+   metrics pass.
+
+Qualification proves the semantic deployment, not the truth of a source
+claim. Approval proves operator authority for a frozen evidence graph, not
+model quality. Supplying only one cannot pass `auto_verified`. Canonical typed
+sources use framework deterministic verification and therefore need neither.
+For free-form evidence, the recommended second stage uses
+`--frozen-ingestion-id`: the framework recompiles authority, qualification,
+plans, quality, and the ingestion identity from the reviewed snapshot without
+reading source files or invoking the semantic model again.
+The qualification check time is frozen for audit/reload, while every new
+`auto_verified` admission rechecks report expiry against current time. A
+proposal or shadow snapshot cannot be reused under a verified runtime mode
+without deterministic promotion. Campaign creation performs that promotion
+before checkpointing and stores only the promoted ingestion ID, not mutable
+approval/report paths.
+The workspace registry is a framework-owned JSON file:
+
+```json
+{
+  "schema_version": "aworld.self_evolve.semantic_qualification_registry.v1",
+  "trusted_report_fingerprints": ["sha256:<report-fingerprint>"]
+}
+```
+
+SDK-registered ingestors and extractors cannot grant themselves trust.
+`framework_builtin` identity is registry-owned;
+`workspace_allowlisted` entries require a stable configuration fingerprint
+explicitly included in the registry allowlist; unlisted/custom entries remain
+`external_untrusted` and cannot pass `auto_verified`. A returned snapshot's
+name, version, trust, extractor fingerprints, case counts, coverage, and other
+derivable quality metrics are checked by the framework.
+Registered semantic snapshots are additionally fail-closed: external
+snapshots cannot supply authority/qualification, and allowlisted registered
+semantic authority is disabled until the framework can re-derive its
+claim-level attestations.
+
+Every successful ingestion writes an immutable snapshot under
+`.aworld/self_evolve/ingestions/<ingestion_id>/`. Normalized private cases use
+owner-only permissions. A normal run records `ingestion_ref.json` and a
+`dataset_ingestion` gate. Baseline/candidate evaluation, evaluator reruns, and
+all cycles of one Campaign reuse that frozen snapshot and split; changes to the
+raw directory after Campaign creation do not alter the active dataset.
+Evaluator-only reruns fail closed if `ingestion_ref.json` is absent or if its
+source, mapping, normalized dataset, or split fingerprint differs from the
+recipe/snapshot. They also recheck the frozen rollout mode and current
+qualification expiry, so a proposal run cannot be upgraded to
+`auto_verified` and an expired report cannot be reused through
+`--rerun-evaluator`.
+
+Flexible source formats do not mean an unconstrained internal protocol. Stable
+case/signal/plan IDs, logical and physical provenance fingerprints, complete
+source dispositions, citations, entailment, conflict preservation,
+deterministic splits, trace attestations, authority context, qualification
+evidence, and frozen snapshot identity remain mandatory. `auto_verified`
+requires every train/validation plan to be verified-eligible before optimizer
+projection.
+
+The CLI summary includes ingestion status, normalized case count, record
+coverage, rejected-record count, and mapping-model call count. Mapping-model
+calls are conservatively debited as the `frozen-dataset-ingestion` item in the
+existing candidate-generation run/Campaign budget ledger; they are not
+treated as free work.
+
+When `--target` is omitted, the CLI sets `infer_target=True` and the framework performs credit assignment. The inference inventory is filtered to target types with a registered CLI adapter before scoring. Phase 1 registers the `skill` adapter only, so automatic inference cannot select an unsupported `prompt-section`, `tool-description`, `config`, or `workspace-artifact` target. Low-confidence inference remains blocked when it would mutate an existing skill. A validated capability gap may instead create an isolated run-owned draft because draft evolution does not authorize mutation of an existing target.
+
+Skill matching ignores generic action tokens such as `search`, `read`, `open`, and
+`write` when they appear only in tool names. Such tokens do not prove that an
+installed skill owns the failed behavior; target selection requires a specific skill
+identity, a non-generic anchored alias, or a validated capability fingerprint.
+
+Target confidence and target provenance are independent gates. Confidence answers
+whether the trajectory evidence identifies the right capability; provenance answers
+whether that capability is authorized for mutation. Target intent independently records
+whether the run mutates an inventory target or creates a new draft. Inferred drafts are
+stored under `.aworld/self_evolve/<run_id>/draft_target/<skill_id>/SKILL.md`; they never
+use another run's draft as a baseline.
+
+`--new-skill-policy` controls inferred capability gaps:
+
+- `disabled`: return a typed no-target result without creating a draft.
+- `draft_only`: generate, replay, and evaluate a run-owned draft, but never publish it.
+- `auto_verified` (default): permit publication to `aworld-skills/<skill_id>/SKILL.md`
+  only after the ordinary verified gates, collision checks, and post-apply checks pass.
+
+The apply policy is still authoritative: `--apply proposal` never publishes, regardless
+of the new-skill policy. `allow_generated_target_mutation` retains its separate SDK
+meaning and does not authorize new-skill publication. Adding `skill` to
+`auto_apply_target_types` is also insufficient by itself.
+
+Supplying `--target skill:<name>` is strict operator selection. If that skill does not
+exist, optimize fails instead of falling back to inferred creation.
+
+Aggregating multiple trajectories can strengthen target evidence and add evidence IDs,
+but it produces one provenance decision for the selected target. Aggregation cannot
+erase inventory protection or grant write trust. Behavioral replay and evaluator success
+never substitute for mutation authorization. Reports record the single provenance
+sidecar path, or a structured unresolved reason when classification is impossible.
 
 ## Replay Adaptation and Portability
 
@@ -76,6 +332,22 @@ abstracts workspace paths, snapshots bounded local inputs and non-secret environ
 metadata, records external prerequisites, and creates one content-addressed workspace
 seed. Baseline and candidate repetitions each start from a separate copy of that same
 seed. This isolates skill changes from workspace mutations and host drift.
+
+Multi-record trajectory logs preserve their conversation boundary by session id.
+When a later record is a natural follow-up, replay receives a bounded chain of prior
+user/assistant turns, with early user-provided URLs and artifact anchors protected
+from eviction by long recent answers. A follow-up with no recoverable same-session
+context fails adaptation as `context_incomplete` rather than entering a misleading
+candidate replay.
+
+Context incompleteness propagates across dependent follow-ups but not across a later
+independent request in the same session. Automatic grouping reports
+`context_completeness_rate`, `max_recovery_opportunity_tier`, and opportunity-kind
+counts for each target group. Recovery opportunity is an ordinal structural class:
+unrecovered failure, recovered path, repeated-action loop, or none. Ranking considers
+only complete members; after selection, incomplete members are listed under
+`excluded_context_incomplete_case_ids` and omitted from replay. This applies to one or
+many trajectory members without a single-case branch.
 
 Stateful external resources require a deterministic registered adapter. An unbound
 live URL, local endpoint, stateful browser/tool name observed in the source trace,
@@ -94,17 +366,53 @@ as a new strict baseline.
 
 The CLI builds a typed, bounded `EvolutionContext` and runs each candidate-generation slot as an isolated AWorld task. The context contains only trainable cases, bounded trace evidence, reusable lessons, capability requirements, prior validation feedback, and acceptance constraints. Candidate output must match the framework JSON package contract; a skill candidate may contain `SKILL.md`, a bounded patch intent, and candidate-owned replay files such as `replay/capability.json`, a compiler, and a runtime.
 
+Judge evidence feedback is normalized into typed
+`evidence_repair_constraints`. Constraint identity excludes evaluator prose and
+task payloads, so the same failure can be aggregated across repetitions and
+trajectory members. The owner and source layer decide whether the next action
+is a candidate repair or a framework/infrastructure blocker. In particular, a
+valid canonical bundle that becomes incomplete only after bounded judge
+projection is attributed to the framework boundary until a complete projection
+can distinguish unsupported candidate output from missing judge context.
+
+Artifact projection is a bounded continuation protocol rather than a single
+prefix read. The evaluator can continue an indexed artifact from `next_start`
+or omit `start` for automatic continuation; overlapping reads are denied.
+Read-round, per-request, and cumulative character budgets are declared in the
+prompt and clamped by the runtime. If the round budget is consumed, the judge
+receives a finalization call and must return typed constraints instead of
+another read request. This behavior is uniform for one or many trajectory
+members; it does not encode task- or artifact-specific repair rules.
+
 The framework ranks the generated population and validates repair candidates before an expensive task rollout:
 
 1. `candidate_repair_conformance` first proves that the candidate materially changed the failed source branch and that the request operation participates in the response data flow.
 2. The candidate-owned replay capability is compiled and frozen with immutable fixture and package fingerprints. Recorded operation responses are exposed through `AWORLD_REPLAY_RESPONSE_INDEX`.
 3. Compiled probe declarations must cover the observed operation and assert a non-empty value derived from the recorded response payload.
 4. The frozen runtime is started in the replay subprocess sandbox and every declared HTTP/TCP/WebSocket readiness and protocol probe is executed. Required WebSocket probes validate handshake, ping/text exchange, operation correlation, non-empty result, and recorded-response binding.
-5. Only a candidate that passes conformance proceeds to representative screening and then the authoritative paired baseline/candidate rollout.
+5. Conformance always runs when a repair contract applies, including for a dataset with one replayable trajectory. Multiple trajectories are grouped by a stable semantic fingerprint covering the capability, service, operation, transport, recorded-response structure, exact probe, and assertion set. Equivalent shapes may execute once with every affected case ID recorded; every distinct shape is validated.
+6. Only a candidate that passes conformance proceeds to optional representative task screening and then the authoritative paired baseline/candidate rollout. Representative screening is a cost-control signal, not evidence that unselected conformance shapes work; the final paired replay remains the authoritative dataset-wide behavioral check.
 
 This sequence is generic: contracts are compiled from observed operations, protocol traces, fixture provenance, and the candidate package. There is no target-specific repair adapter for one trajectory case. A source-conformant candidate can still fail at runtime preflight; that result is intentionally reported before the longer task rollout and fed into the next focused repair iteration.
 
-Candidate repair gate diagnostics are summarized in `report.json`. When execution preflight is reached, bounded service/probe artifacts are stored under `.aworld/self_evolve/<run_id>/repair_conformance/<candidate_id>/`. Increasing `--replay-timeout` affects task rollouts but does not weaken or bypass exact repair probes.
+Repair inheritance respects causal depth and mutation authority. Once a
+candidate has completed replay and received judge metrics, its candidate-owned
+replay files are frozen, even when it owns zero replay files; subsequent
+evidence-quality repair is restricted to reusable target behavior. Constraints
+from lower-level sibling failures remain diagnostic lessons but do not force a
+judge-scored lineage back into compiler/runtime mutation. Candidate semantic
+deduplication also normalizes line endings and terminal blank lines while
+preserving internal source changes, preventing formatting-only retries from
+consuming the bounded Campaign.
+
+Candidate-owned replay files are accepted only when replay preflight declares a
+capability requirement or the focused repair lineage already owns such files.
+When the trajectory has no replay requirement, generated compiler/runtime files
+do not expand the mutation surface; the candidate remains a target-behavior
+change. This prevents dependency-free cases from creating and then repairing an
+unnecessary harness.
+
+Candidate repair gate diagnostics are summarized in a separate population `conformance` section in `report.json`; optional task sampling remains in `screening`. Probe-group reports contain stable fingerprints, status codes, and bounded affected-case IDs, never raw recorded-response values. When execution preflight is reached, bounded service/probe artifacts are stored under `.aworld/self_evolve/<run_id>/repair_conformance/<candidate_id>/`. Increasing `--replay-timeout` affects task rollouts but does not weaken or bypass exact repair probes.
 
 ## Options
 
@@ -113,6 +421,11 @@ Candidate repair gate diagnostics are summarized in `report.json`. When executio
 - `--target`: explicit target reference. Phase 1 CLI runs support `skill:<name>` end to end. Automatic inference uses the same adapter registry and therefore considers skills only. Other target forms remain framework/SDK types until general CLI adapters are implemented.
 - `--iterations`: maximum candidate optimization iterations.
 - `--apply`: `proposal` or `auto_verified`. The default is `proposal`.
+- `--max-improvement-cycles`: hard cross-run Campaign cap for `auto_verified`;
+  defaults to `3`.
+- `--resume-campaign`: resume a persisted active or paused Campaign using its
+  immutable source/target/verification contract and remaining cumulative budget.
+- `--new-skill-policy`: `disabled`, `draft_only`, or `auto_verified`. The default is `auto_verified`; it affects inferred missing capabilities only.
 - `--judge-agent`: markdown judge agent path.
 - `--judge-agent-name`: configured custom judge agent id/name.
 - `--judge-backend-ref`: evaluator backend reference.
@@ -144,6 +457,74 @@ Proposal runs default to one iteration. `auto_verified` uses the larger budget b
 
 The CLI also enables framework replay for `auto_verified`. Skill candidates must have candidate replay evidence, evaluator evidence, deterministic or objective verification signals, passing gates, and a post-apply runtime-loader check before they can remain applied.
 
+Evaluator availability is checked before those quality gates. An evaluator run
+with no successful judge signal is reported as
+`evaluation_runtime_health`/infrastructure rather than being converted into
+score, evidence, required-verification, or held-out candidate failures. The
+environment fingerprint is fixed by the first adaptation in one run; any later
+drift stops replay as `environment_fingerprint_drift`.
+
+For a single original trajectory, the default two baseline and three candidate repetitions
+form a strict sparse-data verification path. A stable native task/candidate failure across
+all baseline repetitions is a conclusive negative control when the candidate succeeds in
+all three repetitions and evaluation supplies a deterministic signal. Infrastructure,
+blocked, not-run, mixed, and inconsistent baseline outcomes remain inconclusive. A
+multi-trajectory set is validated by its distinct members; repetition counts never replace
+independent member coverage.
+
+## Stage-Aware Budgets and Candidate Lifecycle
+
+`SelfEvolveConfig.total_run_token_budget` is the authoritative token ceiling for a
+complete optimize run. `per_attempt_replay_token_limit` is a separate hard ceiling
+for one replay attempt; it does not divide or replace the total-run budget. The same
+run ledger can enforce `max_run_cost_usd` and `max_run_wall_seconds` when those
+ceilings are configured.
+
+Before an expensive stage starts, the framework reserves its estimated token, cost,
+and wall usage. Completion debits observed usage and releases the reservation.
+Observed samples then replace cold-start assumptions with a conservative robust
+estimate for later units. An unknown token estimate is not zero: if a token ceiling
+is active, the budget gate denies the work until the backend proves zero usage or a
+positive cold estimate is configured. The per-unit cold-start knobs are:
+
+- `candidate_generation_tokens_per_unit`
+- `candidate_screening_tokens_per_unit`
+- `replay_tokens_per_unit`
+- `evaluation_tokens_per_unit`
+
+Each has optional matching `_cost_usd_per_unit` and `_wall_seconds_per_unit` fields.
+Token cold estimates must be positive; cost and wall estimates may be zero but cannot
+be negative.
+
+Budget units follow actual workload cardinality rather than the number of input
+files. Generation and local stages count per candidate attempt. Conformance counts
+distinct executable contract shapes, so equivalent cases share one unit while
+different response/probe shapes remain separate. Representative screening uses at
+most one case per candidate. Paired replay, evaluation, and judge usage scale with
+`case_count * repetitions`; therefore a three-trajectory dataset cannot be priced as
+a one-trajectory run.
+
+Every candidate slot has an explicit funnel record:
+`generated -> unique` (or `duplicate_filtered`) -> local gates -> adaptation ->
+repair conformance -> representative screening -> paired replay started/completed/
+comparable -> evaluation -> `selected`, `rejected`, `blocked`, or `not_run`.
+Terminal reasons and observed usage remain attached to the attempt, including work
+that was denied before replay.
+
+The scheduler begins with bounded exploration. After a candidate-owned repairable
+failure establishes a semantic frontier, the next iteration reserves one focused
+repair slot for that frontier. It may add one diverse exploration slot only for a new
+frontier and only when a separate reservation is available. Repeated failures do not
+silently recreate a full population.
+
+`max_run_tokens` remains readable for compatibility. When the new fields are
+omitted, both `SelfEvolveConfig` and direct `SelfEvolveRunner` construction map the
+legacy value to `total_run_token_budget` and `per_attempt_replay_token_limit`.
+Reports expose those decisions as `max_run_tokens_to_total_run_token_budget` and
+`max_run_tokens_to_per_attempt_replay_token_limit` in
+`deprecated_config_mappings`. New callers should set both fields directly; these
+mappings are deprecated compatibility paths, not additional independent budgets.
+
 ## Output
 
 The command prints the stable artifact paths returned by the framework:
@@ -151,6 +532,10 @@ The command prints the stable artifact paths returned by the framework:
 ```text
 Optimize run submitted.
 Status: succeeded
+Campaign: campaign-...
+Campaign status: complete
+Campaign cycle: 2/3
+Self-improvement: complete (verified_run_succeeded)
 Report: .aworld/self_evolve/<run_id>/report.json
 Target selection: .aworld/self_evolve/<run_id>/target_selection.json
 Replay: .aworld/self_evolve/<run_id>/replay.json
@@ -164,6 +549,16 @@ For rejected runs, the summary includes rejected gate names. If no candidate was
 Resume evaluator: aworld-cli optimize --from-run <run_id> --rerun-evaluator
 ```
 
+For Campaign runs, `Status` is the latest ordinary run result and
+`Campaign status` is the authoritative cross-run outcome. `active` means
+another bounded generation is eligible, `paused` requires an operator or Goal
+handoff, `budget_limited` means a cycle/resource/telemetry ceiling stopped the
+Campaign, `exhausted` means its typed repair frontier stopped progressing, and
+`complete` means the latest run passed the unchanged verified-apply gates. All
+three terminal states are non-resumable. Worker execution success is
+reported separately and never converts a rejected framework result into
+success.
+
 If replay repetitions are missing, rerun full optimize with a larger `--replay-timeout`; evaluator-only resume cannot add new replay rollouts.
 
 For an `auto_verified` release, treat the run as successful only when `report.json` has `status: "succeeded"`, no blocking failed gate, a selected candidate, and `post_apply.status: "accepted"` with `release_state: "verified"`. `status: "rejected"`, `post_apply.status: "rolled_back"`, or a missing post-apply record is not a successful verified release even if candidate generation or source conformance passed.
@@ -176,6 +571,7 @@ Open `.aworld/self_evolve/<run_id>/report.json` for the release-facing result:
 - `apply_policy`: `proposal` or `auto_verified`.
 - `selected_candidate_id`: selected candidate when one exists.
 - `gate_results`: low-level gate decisions.
+- `target_provenance`: resolved sidecar path and reason, or an explicit unresolved status.
 - `release_checklist`: grouped release checks derived from gates.
 - `content_quality_diagnostics`: non-blocking publication/content quality diagnostics when evaluator metrics provide them.
 - `population`: generated candidates, representative screening attempts, selection reason, focused repair telemetry, concurrency, and candidate-generation token usage.
@@ -198,6 +594,35 @@ Replay adaptation artifacts live under
 contains `bundle.json`, `workspace_manifest.json`, `environment_snapshot.json`, and
 `workspace_seed/`. Each executed repetition stores its disposable workspace under the
 corresponding replay repetition directory.
+
+Replay lifecycle records are cardinality-neutral: one task produces one member and a
+trajectory set produces one member per replayable task, always in dataset order. New
+artifacts use `members/manifest.json` v2 and a `lifecycle.json` v2 for every baseline
+and candidate variant, including work that did not execute:
+
+- `succeeded`: execution started and completed with usable trajectory evidence.
+- `failed`: execution started and produced a typed failure event.
+- `blocked`: execution did not start because the event in `blocked_by` prevented it.
+- `not_run`: the framework intentionally did not schedule the variant.
+
+A failure event records `owner` (`candidate`, `task`, `infrastructure`, or
+`framework`), `stage`, `scope`, a stable code, and repairability independently from
+execution status. For example, if a candidate capability fails preflight on the first
+member of a three-member dataset, that baseline member is `failed` with
+`owner: candidate`, `stage: capability_preflight`, and `scope: candidate`; all three
+candidate variants and the remaining baseline variants are `blocked` by the same
+event. The next candidate in the population is still evaluated. Only an explicit
+native `shared_run` event owned by infrastructure or the framework stops the population.
+Legacy status and failure files remain readable, but unknown legacy failures are not
+promoted to run-wide infrastructure failures.
+
+Member manifests fail closed when members are missing, duplicated, unexpected, empty,
+or carry a request that changes root-level run, candidate, target, overlay, agent, or
+provenance fields. Task identity/input, task-input fingerprint, member baseline path,
+and repetition counts must exactly match the values deterministically derived for that
+dataset member; every other request field must equal the root request. Numeric
+repetition child directories are reconstructed when lifecycle v2 artifacts are loaded,
+so paired evaluation has the same repetition cardinality before and after persistence.
 
 Artifact GC runs at optimize startup and terminal completion. It preserves the two
 newest runs, lineage and apply recovery dependencies, and runs with a live process

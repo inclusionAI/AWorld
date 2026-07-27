@@ -143,6 +143,24 @@ def test_compiler_marks_continuation_without_prior_context_incomplete(tmp_path: 
     assert bundle.ready is False
 
 
+def test_compiler_marks_natural_follow_up_without_prior_context_incomplete(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "demo"
+    workspace.mkdir()
+
+    bundle = ReplayAdaptationCompiler().compile(
+        dataset=_dataset("把论文里的这些细节补全"),
+        workspace_root=workspace,
+        artifact_root=tmp_path / "run" / "adaptation",
+    )
+
+    case = bundle.case("task-1")
+    assert case.readiness == "context_incomplete"
+    assert any(item.kind == "conversation_context" for item in case.dependencies)
+    assert bundle.ready is False
+
+
 def test_compiler_marks_unbound_local_endpoint_runtime_required(tmp_path: Path) -> None:
     workspace = tmp_path / "demo"
     workspace.mkdir()
@@ -224,6 +242,57 @@ def test_preflight_does_not_require_context_when_snapshot_reconstructed(
     )
 
     assert not any(item.kind == "conversation_context" for item in report.requirements)
+
+
+def test_preflight_keeps_inherited_incomplete_context_non_replayable(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "demo"
+    workspace.mkdir()
+    trajectory_log = tmp_path / "trajectory.log"
+    missing_root = [
+        {
+            "meta": {"step": 1, "session_id": "session-a"},
+            "state": {"input": {"content": "Continue with the previous analysis."}},
+            "action": {"content": "Partial result.", "tool_calls": []},
+            "reward": {"status": "ok"},
+        }
+    ]
+    dependent = [
+        {
+            "meta": {"step": 1, "session_id": "session-a"},
+            "state": {"input": {"content": "继续补全这些细节"}},
+            "action": {"content": "Still partial.", "tool_calls": []},
+            "reward": {"status": "ok"},
+        }
+    ]
+    trajectory_log.write_text(
+        repr({"task_id": "missing-root", "trajectory": json.dumps(missing_root)})
+        + "\n"
+        + repr({"task_id": "dependent", "trajectory": json.dumps(dependent)})
+        + "\n",
+        encoding="utf-8",
+    )
+    dataset = build_dataset_from_source(
+        SelfEvolveEvalSourceConfig(
+            kind="trajectory_log",
+            path=str(trajectory_log),
+        )
+    )
+
+    report = ReplayAdaptationCompiler().preflight(
+        dataset=dataset,
+        workspace_root=workspace,
+    )
+
+    requirement = next(
+        item for item in report.requirements if item.kind == "conversation_context"
+    )
+    assert requirement.case_ids == ("missing-root", "dependent")
+    assert dataset.cases[1].context_snapshot is not None
+    assert dataset.cases[1].context_snapshot.context_reason == (
+        "inherited_incomplete_context"
+    )
 
 
 def test_dependency_analysis_ignores_paths_from_reconstructed_prior_turns(
@@ -912,12 +981,31 @@ async def test_each_variant_and_repetition_starts_from_same_clean_seed(
 
     legacy_request = replace(
         result.request,
+        task_input=dataset.cases[0].input,
         replay_adaptation=None,
         adaptation_fingerprint=None,
         workspace_seed_fingerprint=None,
         task_input_fingerprint=None,
     )
-    legacy_result = replace(result, request=legacy_request)
+    assert result.member_results is not None
+    legacy_result = replace(
+        result,
+        request=legacy_request,
+        member_results=tuple(
+            replace(
+                member,
+                request=replace(
+                    member.request,
+                    task_input=dataset.cases[0].input,
+                    replay_adaptation=None,
+                    adaptation_fingerprint=None,
+                    workspace_seed_fingerprint=None,
+                    task_input_fingerprint=None,
+                ),
+            )
+            for member in result.member_results
+        ),
+    )
     assert candidate_replay_is_comparable(
         dataset=dataset,
         replay_result=legacy_result,
@@ -933,33 +1021,46 @@ async def test_each_variant_and_repetition_starts_from_same_clean_seed(
         for key, value in result.baseline.metrics.items()
         if not key.startswith("isolated_workspace_path")
     }
+    assert result.member_results is not None
+    member = result.member_results[0]
     assert candidate_replay_is_comparable(
         dataset=dataset,
         replay_result=replace(
             result,
-            baseline=replace(
-                result.baseline,
-                metrics=missing_workspace_provenance,
+            member_results=(
+                replace(
+                    member,
+                    baseline=replace(
+                        member.baseline,
+                        metrics=missing_workspace_provenance,
+                    ),
+                ),
             ),
         ),
     ) is False
 
-    missing_provenance_baseline = replace(result.baseline, metrics={})
+    missing_provenance_baseline = replace(member.baseline, metrics={})
     assert candidate_replay_is_comparable(
         dataset=dataset,
-        replay_result=replace(result, baseline=missing_provenance_baseline),
+        replay_result=replace(
+            result,
+            member_results=(replace(member, baseline=missing_provenance_baseline),),
+        ),
     ) is False
 
     mismatched_candidate = replace(
-        result.candidate,
+        member.candidate,
         metrics={
-            **dict(result.candidate.metrics),
+            **dict(member.candidate.metrics),
             "workspace_seed_fingerprint": "sha256:different-seed",
         },
     )
     assert candidate_replay_is_comparable(
         dataset=dataset,
-        replay_result=replace(result, candidate=mismatched_candidate),
+        replay_result=replace(
+            result,
+            member_results=(replace(member, candidate=mismatched_candidate),),
+        ),
     ) is False
 
     lookup = {

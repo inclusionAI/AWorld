@@ -1,12 +1,22 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping
 
-from aworld.self_evolve.provenance import TargetProvenance
+from aworld.self_evolve.provenance import (
+    TargetMutationIntent,
+    TargetProvenance,
+    TargetProvenanceResolution,
+    TargetProvenanceStatus,
+    TargetSelectionOrigin,
+    canonical_local_target_path,
+    resolve_target_provenance,
+)
+from aworld.self_evolve.recovery_trace import trace_pack_recovery_opportunity
 from aworld.self_evolve.trace_pack import TraceEvidenceStep, TracePack
 from aworld.self_evolve.types import SelfEvolveTargetRef
 
@@ -22,12 +32,23 @@ class TargetInventoryEntry:
 class TargetInventory:
     entries: tuple[TargetInventoryEntry, ...]
     draft_skill_root: str | None = None
+    workspace_root: str | None = None
 
     def find(self, target_type: str, target_id: str) -> TargetInventoryEntry | None:
-        for entry in self.entries:
-            if entry.target.target_type == target_type and entry.target.target_id == target_id:
-                return entry
-        return None
+        matches = self.find_all(target_type, target_id)
+        return matches[0] if len(matches) == 1 else None
+
+    def find_all(
+        self,
+        target_type: str,
+        target_id: str,
+    ) -> tuple[TargetInventoryEntry, ...]:
+        return tuple(
+            entry
+            for entry in self.entries
+            if entry.target.target_type == target_type
+            and entry.target.target_id == target_id
+        )
 
     def only_target_types(self, target_types: Iterable[str]) -> TargetInventory:
         allowed = frozenset(target_types)
@@ -38,6 +59,7 @@ class TargetInventory:
             draft_skill_root=(
                 self.draft_skill_root if "skill" in allowed else None
             ),
+            workspace_root=self.workspace_root,
         )
 
 
@@ -50,6 +72,148 @@ class TargetSelectionReport:
     signals: tuple[str, ...] = ()
     no_target_reason: str | None = None
     diagnostics: Mapping[str, Any] | None = None
+    provenance_status: str | None = None
+    provenance_reason: str | None = None
+    selection_origin: TargetSelectionOrigin | None = None
+    target_intent: TargetMutationIntent | None = None
+    capability_fingerprint: str | None = None
+
+
+@dataclass(frozen=True)
+class TargetSelectionDecision:
+    """A target-selection report coupled to its authorization classification."""
+
+    report: TargetSelectionReport
+    provenance_resolution: TargetProvenanceResolution
+    selection_origin: TargetSelectionOrigin = TargetSelectionOrigin.UNKNOWN
+    target_intent: TargetMutationIntent | None = None
+
+    @property
+    def provenance(self) -> TargetProvenance | None:
+        return self.provenance_resolution.provenance
+
+    @property
+    def unresolved_reason(self) -> str | None:
+        if self.provenance_resolution.resolved:
+            return None
+        return self.provenance_resolution.reason
+
+
+def build_target_selection_decision(
+    report: TargetSelectionReport,
+    *,
+    inventory: TargetInventory,
+    selection_origin: TargetSelectionOrigin,
+    workspace_root: str | Path | None = None,
+    target_intent: TargetMutationIntent | str | None = None,
+) -> TargetSelectionDecision:
+    try:
+        typed_origin = TargetSelectionOrigin(selection_origin)
+    except ValueError:
+        typed_origin = TargetSelectionOrigin.UNKNOWN
+    target = report.selected_target
+    effective_workspace_root = workspace_root or inventory.workspace_root
+    if target is None:
+        resolution = TargetProvenanceResolution(
+            status=TargetProvenanceStatus.UNRESOLVED,
+            provenance=None,
+            reason=report.no_target_reason or "no mutation target was selected",
+        )
+        return TargetSelectionDecision(
+            report=replace(report, selection_origin=typed_origin),
+            provenance_resolution=resolution,
+            selection_origin=typed_origin,
+            target_intent=None,
+        )
+
+    inventory_entries = inventory.find_all(target.target_type, target.target_id)
+    try:
+        typed_intent = (
+            TargetMutationIntent(target_intent or report.target_intent)
+            if target_intent is not None or report.target_intent is not None
+            else (
+                TargetMutationIntent.INFERRED_DRAFT_CREATION
+                if typed_origin == TargetSelectionOrigin.INFERRED
+                and not inventory_entries
+                else TargetMutationIntent.EXISTING_TARGET_MUTATION
+            )
+        )
+    except ValueError:
+        typed_intent = None
+
+    intent_error = _target_intent_error(
+        report,
+        target=target,
+        inventory_entries=inventory_entries,
+        selection_origin=typed_origin,
+        target_intent=typed_intent,
+    )
+    if intent_error is not None:
+        resolution = TargetProvenanceResolution(
+            status=TargetProvenanceStatus.UNRESOLVED,
+            provenance=None,
+            reason=intent_error,
+        )
+    elif len(inventory_entries) > 1:
+        resolution = TargetProvenanceResolution(
+            status=TargetProvenanceStatus.UNRESOLVED,
+            provenance=None,
+            reason="inventory contains duplicate target identity",
+        )
+    else:
+        resolution = resolve_target_provenance(
+            target,
+            selection_origin=typed_origin,
+            inventory_provenance=(
+                inventory_entries[0].provenance if inventory_entries else None
+            ),
+            workspace_root=effective_workspace_root,
+        )
+    return TargetSelectionDecision(
+        report=replace(
+            report,
+            provenance_status=resolution.status,
+            provenance_reason=resolution.reason,
+            selection_origin=typed_origin,
+            target_intent=typed_intent,
+        ),
+        provenance_resolution=resolution,
+        selection_origin=typed_origin,
+        target_intent=typed_intent,
+    )
+
+
+def _target_intent_error(
+    report: TargetSelectionReport,
+    *,
+    target: SelfEvolveTargetRef,
+    inventory_entries: tuple[TargetInventoryEntry, ...],
+    selection_origin: TargetSelectionOrigin,
+    target_intent: TargetMutationIntent | None,
+) -> str | None:
+    if (
+        isinstance(report.diagnostics, Mapping)
+        and report.diagnostics.get("invalid_target_intent") is not None
+    ):
+        return "target mutation intent is invalid"
+    if target_intent is None:
+        return "target mutation intent is missing or invalid"
+    if target_intent == TargetMutationIntent.INFERRED_DRAFT_CREATION:
+        if selection_origin != TargetSelectionOrigin.INFERRED:
+            return "draft creation intent requires inferred target selection"
+        if target.target_type != "skill":
+            return "draft creation intent requires a skill target"
+        if inventory_entries:
+            return "draft creation intent cannot replace an inventory target"
+        if not report.evidence_step_ids:
+            return "draft creation intent requires trajectory evidence"
+        if not _valid_capability_fingerprint(report.capability_fingerprint):
+            return "draft creation intent requires a valid capability fingerprint"
+        if not _valid_skill_id(target.target_id):
+            return "draft creation intent requires a valid skill id"
+    elif selection_origin == TargetSelectionOrigin.INFERRED and len(inventory_entries) != 1:
+        return "inferred existing-target mutation requires one inventory target"
+    return None
 
 
 @dataclass(frozen=True)
@@ -60,6 +224,19 @@ class LLMTargetDiagnosis:
     evidence_step_ids: tuple[str, ...]
     failure_category: str
     rationale: str
+    selection_kind: str = "existing_target"
+
+
+@dataclass(frozen=True)
+class NewSkillIntent:
+    capability_fingerprint: str
+    target_id: str
+    capability_summary: str
+    confidence: float
+    evidence_step_ids: tuple[str, ...]
+    operation_ids: tuple[str, ...] = ()
+    dependency_kinds: tuple[str, ...] = ()
+    failure_codes: tuple[str, ...] = ()
 
 
 LLMTargetDiagnoser = Callable[[TracePack, TargetInventory], LLMTargetDiagnosis | None]
@@ -67,19 +244,34 @@ LLMTargetDiagnoser = Callable[[TracePack, TargetInventory], LLMTargetDiagnosis |
 
 _WEAK_SKILL_ALIAS_TOKENS = {
     "agent",
+    "analyze",
+    "analysis",
     "assistant",
     "audio",
+    "browse",
+    "browser",
     "content",
+    "create",
     "document",
     "documents",
+    "edit",
     "extension",
+    "fetch",
     "files",
+    "find",
+    "generate",
     "image",
     "images",
     "media",
+    "navigate",
+    "open",
+    "read",
+    "search",
     "skill",
     "specialized",
+    "summarize",
     "video",
+    "write",
 }
 
 
@@ -174,6 +366,15 @@ class TrajectoryCreditAssigner:
             diagnostics={"pack_id": trace_pack.pack_id},
         )
 
+    def assign_decision(self, trace_pack: TracePack) -> TargetSelectionDecision:
+        """Select and classify one target through a total provenance boundary."""
+
+        return build_target_selection_decision(
+            self.assign(trace_pack),
+            inventory=self.inventory,
+            selection_origin="inferred",
+        )
+
     def _assign_fallback_target(
         self,
         trace_pack: TracePack,
@@ -186,116 +387,104 @@ class TrajectoryCreditAssigner:
             llm_report = self._assign_from_llm(trace_pack, existing_signals)
             if llm_report is not None:
                 return llm_report
-        existing_reusable_skill_report = self._assign_existing_reusable_skill(
+        existing_skill_report = self._assign_from_skill_inventory(
             trace_pack,
-            serialized=serialized,
             existing_signals=existing_signals,
         )
-        if existing_reusable_skill_report is not None:
-            return existing_reusable_skill_report
-        draft_skill_report = self._assign_new_skill_candidate(
+        if existing_skill_report is not None:
+            return existing_skill_report
+        capability_report = self._assign_capability_intent(
             trace_pack,
-            serialized=serialized,
             existing_signals=existing_signals,
         )
-        if draft_skill_report is not None:
-            return draft_skill_report
-        return self._assign_from_skill_inventory(
-            trace_pack,
-            serialized=serialized,
-            existing_signals=existing_signals,
-        )
+        return capability_report
 
-    def _assign_new_skill_candidate(
+    def _assign_capability_intent(
         self,
         trace_pack: TracePack,
         *,
-        serialized: str,
         existing_signals: tuple[str, ...],
+        suggested_skill_id: str | None = None,
+        confidence: float | None = None,
+        capability_summary: str | None = None,
     ) -> TargetSelectionReport | None:
         if self.inventory.draft_skill_root is None:
             return None
-        target_id = _reusable_skill_target_id(serialized)
-        if target_id is None:
-            return None
-        if self.inventory.find("skill", target_id) is not None:
-            return None
-
-        target_path = Path(self.inventory.draft_skill_root) / target_id / "SKILL.md"
-        evidence_ids = _matching_evidence_ids(
+        intent = _compile_new_skill_intent(
             trace_pack,
-            ("http", "podcast", "播客", "xiaoyuzhou", "grounding", "evidence"),
+            suggested_skill_id=suggested_skill_id,
+            confidence=confidence,
+            capability_summary=capability_summary,
         )
+        if intent is None:
+            return None
+        inventory_entry = self.inventory.find("skill", intent.target_id)
+        if inventory_entry is not None:
+            return TargetSelectionReport(
+                selected_target=inventory_entry.target,
+                confidence=max(0.9, intent.confidence),
+                evidence_step_ids=intent.evidence_step_ids,
+                failure_category="skill",
+                signals=_dedupe(
+                    tuple(
+                        signal
+                        for signal in existing_signals
+                        if signal != "low_confidence"
+                    )
+                    + ("capability_fingerprint_inventory_match",)
+                ),
+                diagnostics={
+                    "pack_id": trace_pack.pack_id,
+                    "capability_summary": intent.capability_summary,
+                    "operation_ids": intent.operation_ids,
+                    "dependency_kinds": intent.dependency_kinds,
+                    "failure_codes": intent.failure_codes,
+                },
+                target_intent=TargetMutationIntent.EXISTING_TARGET_MUTATION,
+                capability_fingerprint=intent.capability_fingerprint,
+            )
         signals = _dedupe(
             existing_signals
             + (
                 "new_skill_candidate",
-                f"draft_skill_target:{target_id}",
+                "validated_capability_gap",
             )
         )
         return TargetSelectionReport(
             selected_target=SelfEvolveTargetRef(
                 target_type="skill",
-                target_id=target_id,
-                path=str(target_path),
+                target_id=intent.target_id,
+                path=None,
             ),
-            confidence=0.85,
-            evidence_step_ids=evidence_ids,
+            confidence=intent.confidence,
+            evidence_step_ids=intent.evidence_step_ids,
             failure_category="skill",
             signals=signals,
             diagnostics={
                 "pack_id": trace_pack.pack_id,
-                "draft_skill_reason": "trajectory indicates a reusable web evidence grounding gap",
+                "capability_summary": intent.capability_summary,
+                "operation_ids": intent.operation_ids,
+                "dependency_kinds": intent.dependency_kinds,
+                "failure_codes": intent.failure_codes,
             },
-        )
-
-    def _assign_existing_reusable_skill(
-        self,
-        trace_pack: TracePack,
-        *,
-        serialized: str,
-        existing_signals: tuple[str, ...],
-    ) -> TargetSelectionReport | None:
-        target_id = _reusable_skill_target_id(serialized)
-        if target_id is None:
-            return None
-        entry = self.inventory.find("skill", target_id)
-        if entry is None or entry.provenance.protected:
-            return None
-
-        evidence_ids = _matching_evidence_ids(
-            trace_pack,
-            ("http", "podcast", "播客", "xiaoyuzhou", "grounding", "evidence"),
-        )
-        signals = _dedupe(
-            tuple(signal for signal in existing_signals if signal != "low_confidence")
-            + (
-                "reusable_skill_target",
-                f"verified_skill_target:{target_id}",
-            )
-        )
-        return TargetSelectionReport(
-            selected_target=entry.target,
-            confidence=0.9,
-            evidence_step_ids=evidence_ids,
-            failure_category="skill",
-            signals=signals,
-            diagnostics={
-                "pack_id": trace_pack.pack_id,
-                "reusable_skill_reason": (
-                    "trajectory matches an installed self-evolve skill capability"
-                ),
-            },
+            target_intent=TargetMutationIntent.INFERRED_DRAFT_CREATION,
+            capability_fingerprint=intent.capability_fingerprint,
         )
 
     def _assign_from_skill_inventory(
         self,
         trace_pack: TracePack,
         *,
-        serialized: str,
         existing_signals: tuple[str, ...],
     ) -> TargetSelectionReport | None:
         matches: list[tuple[int, TargetInventoryEntry, tuple[str, ...]]] = []
+        failed_text = " ".join(
+            _step_text(step)
+            for step in trace_pack.steps
+            if _reward_failed(step.reward)
+        )
+        if not failed_text and trace_pack.steps:
+            failed_text = _step_text(trace_pack.steps[-1])
         for entry in self.inventory.entries:
             if entry.target.target_type != "skill" or entry.provenance.protected:
                 continue
@@ -303,7 +492,7 @@ class TrajectoryCreditAssigner:
                 _skill_match_aliases(entry)
                 + _tool_anchored_skill_aliases(entry, trace_pack)
             )
-            matched_aliases = tuple(alias for alias in aliases if alias in serialized)
+            matched_aliases = tuple(alias for alias in aliases if alias in failed_text)
             if matched_aliases:
                 matches.append((len(matched_aliases), entry, matched_aliases))
 
@@ -331,6 +520,7 @@ class TrajectoryCreditAssigner:
                 "pack_id": trace_pack.pack_id,
                 "matched_aliases": matched_aliases,
             },
+            target_intent=TargetMutationIntent.EXISTING_TARGET_MUTATION,
         )
 
     def _assign_from_llm(
@@ -384,6 +574,61 @@ class TrajectoryCreditAssigner:
                 diagnostics=diagnostics,
             )
 
+        if (
+            diagnosis.selection_kind == "new_skill"
+            or diagnosis.target_type == "new_skill"
+        ):
+            if diagnosis.target_type not in {"skill", "new_skill"}:
+                return TargetSelectionReport(
+                    selected_target=None,
+                    confidence=0.0,
+                    evidence_step_ids=diagnosis.evidence_step_ids,
+                    failure_category="no_target",
+                    signals=signals,
+                    no_target_reason="new-skill diagnosis requires a skill target type",
+                    diagnostics=diagnostics,
+                )
+            if not _valid_skill_id(diagnosis.target_id):
+                return TargetSelectionReport(
+                    selected_target=None,
+                    confidence=0.0,
+                    evidence_step_ids=diagnosis.evidence_step_ids,
+                    failure_category="no_target",
+                    signals=signals,
+                    no_target_reason="new-skill diagnosis supplied an invalid skill id",
+                    diagnostics=diagnostics,
+                )
+            if self.inventory.find_all("skill", diagnosis.target_id):
+                return TargetSelectionReport(
+                    selected_target=None,
+                    confidence=0.0,
+                    evidence_step_ids=diagnosis.evidence_step_ids,
+                    failure_category="no_target",
+                    signals=signals,
+                    no_target_reason=(
+                        "new-skill diagnosis collides with an inventory target"
+                    ),
+                    diagnostics=diagnostics,
+                )
+            capability_report = self._assign_capability_intent(
+                trace_pack,
+                existing_signals=signals,
+                suggested_skill_id=diagnosis.target_id,
+                confidence=diagnosis.confidence,
+                capability_summary=diagnosis.rationale,
+            )
+            if capability_report is not None:
+                return capability_report
+            return TargetSelectionReport(
+                selected_target=None,
+                confidence=diagnosis.confidence,
+                evidence_step_ids=diagnosis.evidence_step_ids,
+                failure_category="no_target",
+                signals=signals,
+                no_target_reason="new-skill diagnosis lacks a structured capability gap",
+                diagnostics=diagnostics,
+            )
+
         entry = self.inventory.find(diagnosis.target_type, diagnosis.target_id)
         if entry is None:
             return TargetSelectionReport(
@@ -406,20 +651,16 @@ class TrajectoryCreditAssigner:
             failure_category=diagnosis.failure_category,
             signals=signals,
             diagnostics=diagnostics,
+            target_intent=TargetMutationIntent.EXISTING_TARGET_MUTATION,
         )
 
 
 def build_default_target_inventory(workspace_root: str | Path) -> TargetInventory:
-    root = Path(workspace_root)
+    root = Path(workspace_root).resolve()
     entries: list[TargetInventoryEntry] = []
-    seen: set[tuple[str, str]] = set()
 
     def add(entry: TargetInventoryEntry) -> None:
-        key = (entry.target.target_type, entry.target.target_id)
-        if key in seen:
-            return
         entries.append(entry)
-        seen.add(key)
 
     for entry in _skill_entries_from_workspace(root):
         add(entry)
@@ -466,6 +707,7 @@ def build_default_target_inventory(workspace_root: str | Path) -> TargetInventor
     return TargetInventory(
         entries=tuple(entries),
         draft_skill_root=str(root / ".aworld" / "self_evolve" / "drafts" / "skills"),
+        workspace_root=str(root),
     )
 
 
@@ -508,7 +750,11 @@ def _entry(
 
 
 def _deterministic_signal(serialized: str) -> _Signal:
-    if "result validation mismatch" in serialized or "anchors" in serialized:
+    # Target evidence must describe the failure contract, not merely reuse a
+    # common implementation noun. Source code, research prompts, and shell
+    # commands frequently contain words such as "anchors" without implicating
+    # the result-validation policy.
+    if "result validation mismatch" in serialized:
         return _Signal(
             target_type="prompt-section",
             target_id="result-validation-anchor-policy",
@@ -573,36 +819,214 @@ def _looks_like_browser_runtime_issue(serialized: str) -> bool:
     )
 
 
-def _reusable_skill_target_id(serialized: str) -> str | None:
-    has_web_source = "http://" in serialized or "https://" in serialized
-    if not has_web_source:
-        return None
-    web_grounding_markers = (
-        "podcast",
-        "播客",
-        "xiaoyuzhou",
-        "shownotes",
-        "show notes",
-        "audio",
-        "核心内容",
-        "关键洞察",
-        "grounded evidence",
-        "source evidence",
-        "evidence grounding",
+_SKILL_ID_PATTERN = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$")
+_CAPABILITY_FINGERPRINT_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
+_RESERVED_SKILL_IDS = frozenset({"app-evaluator", "no-target", "self-evolve"})
+_FAILED_STATUSES = frozenset(
+    {"cancelled", "error", "failed", "failure", "rejected", "timeout"}
+)
+
+
+def _valid_skill_id(value: str | None) -> bool:
+    return bool(
+        isinstance(value, str)
+        and value not in _RESERVED_SKILL_IDS
+        and _SKILL_ID_PATTERN.fullmatch(value)
     )
-    if any(marker in serialized for marker in web_grounding_markers):
-        return "web-content-grounding"
-    return None
+
+
+def _valid_capability_fingerprint(value: str | None) -> bool:
+    return bool(
+        isinstance(value, str)
+        and _CAPABILITY_FINGERPRINT_PATTERN.fullmatch(value)
+    )
+
+
+def _compile_new_skill_intent(
+    trace_pack: TracePack,
+    *,
+    suggested_skill_id: str | None = None,
+    confidence: float | None = None,
+    capability_summary: str | None = None,
+) -> NewSkillIntent | None:
+    """Compile a path-free, stable capability intent from bounded trace features."""
+
+    failed_steps = tuple(
+        step for step in trace_pack.steps if _reward_failed(step.reward)
+    )
+    recovery_opportunity = trace_pack_recovery_opportunity(trace_pack)
+    if not failed_steps and int(recovery_opportunity["tier"]) <= 0:
+        return None
+
+    operation_ids = _dedupe(
+        tuple(
+            operation
+            for step in trace_pack.steps
+            for operation in (_normalize_operation_id(item) for item in step.tool_names)
+            if operation
+        )
+    )
+    dependency_kinds = _dedupe(
+        tuple(
+            dependency
+            for step in trace_pack.steps
+            for dependency in _structured_dependency_kinds(step)
+        )
+    )
+    if not operation_ids and not dependency_kinds:
+        return None
+
+    failure_codes = _dedupe(
+        tuple(
+            code
+            for step in failed_steps
+            for code in _structured_failure_codes(step.reward)
+        )
+    )
+    if not failure_codes:
+        opportunity_kind = str(recovery_opportunity["kind"])
+        failure_codes = (
+            f"recovery_opportunity.{opportunity_kind}"
+            if opportunity_kind != "none"
+            else "task_failed",
+        )
+    fingerprint_payload = {
+        "schema_version": 1,
+        "operation_ids": sorted(operation_ids),
+        "dependency_kinds": sorted(dependency_kinds),
+        "failure_codes": sorted(failure_codes),
+    }
+    digest = hashlib.sha256(
+        json.dumps(
+            fingerprint_payload,
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    fingerprint = f"sha256:{digest}"
+    target_id = suggested_skill_id or _capability_skill_id(
+        operation_ids=operation_ids,
+        dependency_kinds=dependency_kinds,
+        digest=digest,
+    )
+    if not _valid_skill_id(target_id):
+        return None
+    evidence_step_ids = _dedupe(
+        tuple(
+            step.evidence_id
+            for step in trace_pack.steps
+            if step in failed_steps or step.tool_names or _structured_dependency_kinds(step)
+        )
+    )[:16]
+    if not evidence_step_ids:
+        return None
+    summary = (
+        capability_summary.strip()
+        if isinstance(capability_summary, str) and capability_summary.strip()
+        else _capability_summary(operation_ids, dependency_kinds, failure_codes)
+    )[:240]
+    return NewSkillIntent(
+        capability_fingerprint=fingerprint,
+        target_id=target_id,
+        capability_summary=summary,
+        confidence=(
+            min(1.0, max(0.0, float(confidence)))
+            if confidence is not None
+            else 0.85
+        ),
+        evidence_step_ids=evidence_step_ids,
+        operation_ids=operation_ids,
+        dependency_kinds=dependency_kinds,
+        failure_codes=failure_codes,
+    )
+
+
+def _normalize_operation_id(value: str) -> str | None:
+    normalized = re.sub(r"[^a-z0-9]+", ".", str(value).strip().lower()).strip(".")
+    return normalized[:80] or None
+
+
+def _structured_dependency_kinds(step: TraceEvidenceStep) -> tuple[str, ...]:
+    text = _step_text(step)
+    kinds: list[str] = []
+    if re.search(r"https?://", text):
+        kinds.append("http_resource")
+    if _generated_artifact_paths(step):
+        kinds.append("filesystem_artifact")
+    return _dedupe(tuple(kinds))
+
+
+def _structured_failure_codes(reward: Mapping[str, Any]) -> tuple[str, ...]:
+    codes: list[str] = []
+    status = str(reward.get("status") or "").strip().lower()
+    if status in _FAILED_STATUSES:
+        codes.append(status)
+    for key in ("code", "error_code", "failure_code", "type"):
+        value = reward.get(key)
+        if isinstance(value, str) and value.strip():
+            normalized = _normalize_operation_id(value)
+            if normalized:
+                codes.append(normalized)
+    return _dedupe(tuple(codes))
+
+
+def _capability_skill_id(
+    *,
+    operation_ids: tuple[str, ...],
+    dependency_kinds: tuple[str, ...],
+    digest: str,
+) -> str:
+    readable = next(
+        (
+            token
+            for value in (*operation_ids, *dependency_kinds)
+            for token in reversed(re.findall(r"[a-z0-9]+", value))
+            if len(token) >= 3
+            and token not in _WEAK_SKILL_ALIAS_TOKENS
+            and token not in {"execute", "mcp", "resource", "run", "tool"}
+        ),
+        "capability",
+    )
+    return f"{readable[:32]}-recovery-{digest[:10]}"
+
+
+def _capability_summary(
+    operation_ids: tuple[str, ...],
+    dependency_kinds: tuple[str, ...],
+    failure_codes: tuple[str, ...],
+) -> str:
+    operations = ", ".join(operation_ids) or "unidentified operation"
+    dependencies = ", ".join(dependency_kinds) or "no external dependency"
+    failures = ", ".join(failure_codes)
+    return (
+        f"Recover reusable workflow behavior for {operations} with {dependencies}; "
+        f"observed failure classes: {failures}."
+    )
 
 
 def _skill_entries_from_workspace(root: Path) -> tuple[TargetInventoryEntry, ...]:
     entries: list[TargetInventoryEntry] = []
     for base in (root / "aworld-skills", root / "skills"):
-        if not base.exists():
+        if not base.exists() or base.is_symlink() or not base.is_dir():
             continue
-        for skill_path in sorted(base.glob("*/SKILL.md")):
-            target_id = skill_path.parent.name
-            frontmatter = _skill_frontmatter(skill_path)
+        for skill_dir in sorted(base.iterdir()):
+            if skill_dir.is_symlink() or not skill_dir.is_dir():
+                continue
+            skill_path = skill_dir / "SKILL.md"
+            if (
+                not skill_path.is_file()
+                or skill_path.is_symlink()
+            ):
+                continue
+            canonical_path = canonical_local_target_path(
+                skill_path,
+                workspace_root=root,
+            )
+            if canonical_path is None:
+                continue
+            target_id = skill_dir.name
+            frontmatter = _skill_frontmatter(canonical_path)
             name = frontmatter.get("name") or target_id
             description = frontmatter.get("description", "")
             aliases = tuple(
@@ -614,7 +1038,7 @@ def _skill_entries_from_workspace(root: Path) -> tuple[TargetInventoryEntry, ...
                 _entry(
                     target_type="skill",
                     target_id=target_id,
-                    path=str(skill_path),
+                    path=str(canonical_path),
                     source_kind="skill",
                     write_origin="installed_skill",
                     trust_level="local",
@@ -744,13 +1168,13 @@ def _extract_structured_signals(trace_pack: TracePack) -> tuple[str, ...]:
 
 def _reward_failed(reward: Mapping[str, Any]) -> bool:
     status = str(reward.get("status", "")).lower()
-    if status in {"failed", "failure", "error"}:
+    if status in _FAILED_STATUSES:
         return True
     score = reward.get("score")
     if isinstance(score, (int, float)) and score <= 0:
         return True
     for output in reward.get("tool_outputs", []) if isinstance(reward.get("tool_outputs"), list) else []:
-        if isinstance(output, Mapping) and str(output.get("status", "")).lower() in {"failed", "failure", "error"}:
+        if isinstance(output, Mapping) and str(output.get("status", "")).lower() in _FAILED_STATUSES:
             return True
     return False
 

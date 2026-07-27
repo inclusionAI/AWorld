@@ -25,8 +25,16 @@ from aworld.runners.batch import (
     TaskResourceClaim,
 )
 from aworld.runners.evaluate_runner import EvaluateRunner
+from aworld.self_evolve.budget import (
+    BudgetEstimateConfidence,
+    BudgetEstimateSource,
+)
 from aworld.self_evolve.concurrency import SelfEvolveExecutionTelemetry
 from aworld.self_evolve.datasets import SelfEvolveDataset
+from aworld.self_evolve.evidence_diagnostics import (
+    EvidenceRepairConstraint,
+    merge_evidence_repair_constraints,
+)
 from aworld.self_evolve.types import CandidateVariant, EvaluationSummary
 
 
@@ -49,8 +57,45 @@ class ReplayCostEstimate:
     total_replay_count: int
     verification_command_count: int
     judge_call_count: int
-    estimated_tokens: int
+    estimated_tokens: int | None
     estimated_cost_usd: float | None = None
+    estimated_tokens_per_replay: int | None = None
+    estimate_source: BudgetEstimateSource = BudgetEstimateSource.UNKNOWN
+    estimate_confidence: BudgetEstimateConfidence = BudgetEstimateConfidence.UNKNOWN
+    estimate_known: bool | None = None
+    token_ceiling: int | None = None
+
+    def __post_init__(self) -> None:
+        known = (
+            self.estimated_tokens is not None
+            if self.estimate_known is None
+            else self.estimate_known
+        )
+        if known != (self.estimated_tokens is not None):
+            raise ValueError(
+                "estimate_known must agree with estimated_tokens availability"
+            )
+        source = BudgetEstimateSource(self.estimate_source)
+        confidence = BudgetEstimateConfidence(self.estimate_confidence)
+        if known and source is BudgetEstimateSource.UNKNOWN:
+            source = BudgetEstimateSource.CONFIGURED_COLD_START
+        if known and confidence is BudgetEstimateConfidence.UNKNOWN:
+            confidence = BudgetEstimateConfidence.LOW
+        if not known and (
+            source is not BudgetEstimateSource.UNKNOWN
+            or confidence is not BudgetEstimateConfidence.UNKNOWN
+        ):
+            raise ValueError("unknown replay token estimate must use unknown metadata")
+        if self.token_ceiling is not None and self.token_ceiling <= 0:
+            raise ValueError("token_ceiling must be positive")
+        if self.estimated_tokens_per_replay is not None and (
+            self.estimated_tokens_per_replay < 0
+            or isinstance(self.estimated_tokens_per_replay, bool)
+        ):
+            raise ValueError("estimated_tokens_per_replay must be non-negative")
+        object.__setattr__(self, "estimate_known", known)
+        object.__setattr__(self, "estimate_source", source)
+        object.__setattr__(self, "estimate_confidence", confidence)
 
 
 @dataclass(frozen=True)
@@ -819,7 +864,8 @@ def estimate_replay_cost(
     baseline_repetitions: int = 1,
     candidate_repetitions: int = 1,
     replay_candidate_limit: int | None = None,
-    estimated_tokens_per_replay: int = 0,
+    estimated_tokens_per_replay: int | None = None,
+    backend_proven_zero: bool = False,
     estimated_cost_usd_per_replay: float | None = None,
     max_run_tokens: int | None = None,
     max_run_cost_usd: float | None = None,
@@ -834,6 +880,31 @@ def estimate_replay_cost(
         raise ValueError("candidate_repetitions must be positive")
     if replay_candidate_limit is not None and replay_candidate_limit <= 0:
         raise ValueError("replay_candidate_limit must be positive")
+    if estimated_tokens_per_replay is not None and (
+        isinstance(estimated_tokens_per_replay, bool)
+        or estimated_tokens_per_replay < 0
+    ):
+        raise ValueError("estimated_tokens_per_replay must be non-negative")
+    if backend_proven_zero:
+        if estimated_tokens_per_replay not in (None, 0):
+            raise ValueError(
+                "backend_proven_zero conflicts with a non-zero replay estimate"
+            )
+        effective_tokens_per_replay: int | None = 0
+        estimate_source = BudgetEstimateSource.BACKEND_PROVEN_ZERO
+        estimate_confidence = BudgetEstimateConfidence.PROVEN
+    elif estimated_tokens_per_replay == 0:
+        raise ValueError(
+            "zero replay token estimate requires backend_proven_zero=True"
+        )
+    elif estimated_tokens_per_replay is None:
+        effective_tokens_per_replay = None
+        estimate_source = BudgetEstimateSource.UNKNOWN
+        estimate_confidence = BudgetEstimateConfidence.UNKNOWN
+    else:
+        effective_tokens_per_replay = estimated_tokens_per_replay
+        estimate_source = BudgetEstimateSource.CONFIGURED_COLD_START
+        estimate_confidence = BudgetEstimateConfidence.LOW
 
     case_count = len(dataset.cases)
     replayed_candidate_count = (
@@ -851,7 +922,11 @@ def estimate_replay_cost(
         baseline_repetitions + replayed_candidate_count * candidate_repetitions
     )
     judge_call_count = case_count * replayed_candidate_count * judge_repetitions
-    estimated_tokens = total_replay_count * estimated_tokens_per_replay
+    estimated_tokens = (
+        total_replay_count * effective_tokens_per_replay
+        if effective_tokens_per_replay is not None
+        else None
+    )
     estimated_cost_usd = (
         total_replay_count * estimated_cost_usd_per_replay
         if estimated_cost_usd_per_replay is not None
@@ -860,7 +935,14 @@ def estimate_replay_cost(
 
     passed = True
     reason = "within budget"
-    if max_run_tokens is not None and estimated_tokens > max_run_tokens:
+    if max_run_tokens is not None and estimated_tokens is None:
+        passed = False
+        reason = "estimated replay tokens are unknown under max_run_tokens"
+    elif (
+        max_run_tokens is not None
+        and estimated_tokens is not None
+        and estimated_tokens > max_run_tokens
+    ):
         passed = False
         reason = "estimated replay tokens exceed max_run_tokens"
     elif (
@@ -881,6 +963,11 @@ def estimate_replay_cost(
         judge_call_count=judge_call_count,
         estimated_tokens=estimated_tokens,
         estimated_cost_usd=estimated_cost_usd,
+        estimated_tokens_per_replay=effective_tokens_per_replay,
+        estimate_source=estimate_source,
+        estimate_confidence=estimate_confidence,
+        estimate_known=estimated_tokens is not None,
+        token_ceiling=max_run_tokens,
     )
 
 
@@ -947,8 +1034,7 @@ def determine_candidate_confidence(
 
     if held_out_case_count < min_eval_cases or held_out_summary is None:
         if (
-            held_out_summary is not None
-            and deterministic_signal_present
+            deterministic_signal_present
             and _has_sufficient_single_case_replay(
                 baseline_replay_count=baseline_replay_count,
                 candidate_replay_count=candidate_replay_count,
@@ -1023,9 +1109,61 @@ def _single_case_replay_counts(dataset: SelfEvolveDataset) -> tuple[int, int]:
     if not isinstance(replay, Mapping):
         return 0, 0
     return (
-        _successful_replay_count(replay.get("baseline")),
+        _conclusive_baseline_replay_count(replay.get("baseline")),
         _successful_replay_count(replay.get("candidate")),
     )
+
+
+def _conclusive_baseline_replay_count(payload: Any) -> int:
+    """Count a stable native failure as a valid negative replay control."""
+
+    successful = _successful_replay_count(payload)
+    if successful:
+        return successful
+    if not isinstance(payload, Mapping) or payload.get("outcome") not in {
+        "task_failure",
+        "candidate_failure",
+    }:
+        return 0
+    metrics = payload.get("metrics")
+    failure_event = payload.get("failure_event")
+    if not isinstance(metrics, Mapping) or not isinstance(failure_event, Mapping):
+        return 0
+    if failure_event.get("owner") not in {"task", "candidate"}:
+        return 0
+    if failure_event.get("stage") != "task_rollout":
+        return 0
+    if (
+        payload.get("outcome") == "candidate_failure"
+        and failure_event.get("owner") != "candidate"
+    ):
+        return 0
+    source_kinds = failure_event.get("source_kinds")
+    if not isinstance(source_kinds, (list, tuple)) or "native" not in source_kinds:
+        return 0
+    repetition_count = _int_metric(metrics, "repetition_count")
+    failed_count = _int_metric(metrics, "failed_repetition_count")
+    blocked_count = _int_metric(metrics, "blocked_repetition_count") or 0
+    not_run_count = _int_metric(metrics, "not_run_repetition_count") or 0
+    if (
+        repetition_count is None
+        or repetition_count < 2
+        or failed_count != repetition_count
+        or blocked_count
+        or not_run_count
+    ):
+        return 0
+    raw_failures = metrics.get("repetition_failures")
+    if not isinstance(raw_failures, (list, tuple)) or len(raw_failures) != repetition_count:
+        return 0
+    signatures = {
+        (str(item.get("type") or ""), str(item.get("reason") or ""))
+        for item in raw_failures
+        if isinstance(item, Mapping)
+    }
+    if len(signatures) != 1 or any(not value for value in next(iter(signatures), ())):
+        return 0
+    return repetition_count
 
 
 def _successful_replay_count(payload: Any) -> int:
@@ -1340,6 +1478,19 @@ def _aggregate_aworld_evaluator_metrics(
                     dict(item) for item in value if isinstance(item, Mapping)
                 )
             continue
+        if key == "evidence_repair_constraints":
+            constraint_groups = [
+                _parse_evidence_repair_constraints(value)
+                for value in values
+            ]
+            constraints = merge_evidence_repair_constraints(
+                *constraint_groups
+            )
+            if constraints:
+                aggregated[key] = [
+                    constraint.to_dict() for constraint in constraints
+                ]
+            continue
         if key in {"evidence_compacted", "evidence_incomplete"}:
             aggregated[key] = any(_truthy_metric(value) for value in values)
             continue
@@ -1417,6 +1568,14 @@ def _summarize_judge_diagnostics(
         return 0.0
 
     latencies = [_number(item, "latency_ms") for item in diagnostics]
+    artifact_read_budget_exhausted_count = sum(
+        1 for item in diagnostics if item.get("artifact_read_budget_exhausted") is True
+    )
+    artifact_projection_incomplete_count = sum(
+        1
+        for item in diagnostics
+        if item.get("artifact_read_projection_incomplete") is True
+    )
     return {
         "judge_call_diagnostics": [dict(item) for item in diagnostics],
         "judge_call_count": len(diagnostics),
@@ -1431,6 +1590,27 @@ def _summarize_judge_diagnostics(
         ),
         "judge_artifact_read_chars": int(
             sum(_number(item, "artifact_read_chars") for item in diagnostics)
+        ),
+        "judge_artifact_read_continuation_count": int(
+            sum(
+                _number(item, "artifact_read_continuation_count")
+                for item in diagnostics
+            )
+        ),
+        "judge_artifact_read_budget_exhausted": bool(
+            artifact_read_budget_exhausted_count
+        ),
+        "judge_artifact_read_budget_exhausted_count": (
+            artifact_read_budget_exhausted_count
+        ),
+        "judge_artifact_projection_incomplete": bool(
+            artifact_projection_incomplete_count
+        ),
+        "judge_artifact_projection_incomplete_count": (
+            artifact_projection_incomplete_count
+        ),
+        "judge_artifact_finalize_count": sum(
+            1 for item in diagnostics if item.get("phase") == "artifact_read_finalize"
         ),
         "judge_prompt_chars_total": int(
             sum(_number(item, "prompt_chars") for item in diagnostics)
@@ -1470,6 +1650,7 @@ def _aworld_evidence_quality_metrics(report: Mapping[str, Any]) -> dict[str, Any
                 "evidence_compacted",
                 "evidence_incomplete",
                 "evidence_issues",
+                "evidence_repair_constraints",
             ):
                 if key in judge:
                     record[key] = judge[key]
@@ -1502,10 +1683,16 @@ def _aworld_evidence_quality_metrics(report: Mapping[str, Any]) -> dict[str, Any
         if record.get("evidence_incomplete") is not None
     ]
     issues: list[str] = []
+    constraint_groups: list[tuple[EvidenceRepairConstraint, ...]] = []
     for record in records:
         record_issues = record.get("evidence_issues")
         if isinstance(record_issues, list):
             issues.extend(str(issue) for issue in record_issues if issue)
+        constraint_groups.append(
+            _parse_evidence_repair_constraints(
+                record.get("evidence_repair_constraints")
+            )
+        )
 
     if has_evidence_values:
         metrics["has_evidence"] = 1.0 if all(has_evidence_values) else 0.0
@@ -1518,7 +1705,28 @@ def _aworld_evidence_quality_metrics(report: Mapping[str, Any]) -> dict[str, Any
         metrics["evidence_incomplete"] = any(incomplete_values)
     if issues:
         metrics["evidence_issues"] = issues
+    constraints = merge_evidence_repair_constraints(*constraint_groups)
+    if constraints:
+        metrics["evidence_repair_constraints"] = [
+            constraint.to_dict() for constraint in constraints
+        ]
     return metrics
+
+
+def _parse_evidence_repair_constraints(
+    value: Any,
+) -> tuple[EvidenceRepairConstraint, ...]:
+    if not isinstance(value, (list, tuple)):
+        return ()
+    constraints: list[EvidenceRepairConstraint] = []
+    for item in value[:128]:
+        if not isinstance(item, Mapping):
+            continue
+        try:
+            constraints.append(EvidenceRepairConstraint.from_dict(item))
+        except (TypeError, ValueError):
+            continue
+    return tuple(constraints)
 
 
 def _truthy_metric(value: Any) -> bool:

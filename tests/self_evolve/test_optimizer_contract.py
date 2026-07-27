@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 
 import pytest
@@ -26,6 +27,18 @@ from aworld.self_evolve.types import (
 
 def _target() -> SelfEvolveTargetRef:
     return SelfEvolveTargetRef(target_type="skill", target_id="demo-skill", path="SKILL.md")
+
+
+def _replay_requirement() -> ReplayCapabilityRequirement:
+    return ReplayCapabilityRequirement(
+        requirement_id="requirement-generic",
+        kind="http_resource",
+        identifier="recorded-resource",
+        case_ids=("train-1",),
+        evidence_refs=("event:1",),
+        status="unbound",
+        detail="requires deterministic replay",
+    )
 
 
 def _prompt_payload(prompt: str) -> dict:
@@ -185,6 +198,145 @@ async def test_trace_reflective_llm_mutator_proposes_candidate_and_lineage() -> 
 
 
 @pytest.mark.asyncio
+async def test_optimizer_lineage_distinguishes_exposed_from_addressed_signals() -> None:
+    signal = {
+        "signal_id": "signal-1",
+        "desired_behavior": ["recover after a failed tool call"],
+    }
+    request = OptimizerRequest(
+        target=_target(),
+        current_content="# Demo\n\nOld guidance.\n",
+        target_fingerprint="sha256:old",
+        trace_packs=(_trace_pack(),),
+        trainable_cases=(
+            EvalCase(
+                case_id="train-1",
+                input="web task",
+                self_improvement_signals=(signal,),
+            ),
+        ),
+        improvement_signal_set_fingerprint="sha256:" + "a" * 64,
+    )
+
+    unclaimed = await TraceReflectiveLLMMutator(
+        mutate_text=lambda _: {
+            "content": "# Demo\n\nUnrelated bounded improvement.\n",
+        }
+    ).propose(request)
+    claimed = await TraceReflectiveLLMMutator(
+        mutate_text=lambda _: {
+            "content": "# Demo\n\nRecover after a failed tool call.\n",
+            "addressed_improvement_signal_ids": ["signal-1"],
+        }
+    ).propose(request)
+
+    assert unclaimed.lineage[0].exposed_improvement_signal_ids == (
+        "signal-1",
+    )
+    assert unclaimed.lineage[0].addressed_improvement_signal_ids == ()
+    assert claimed.lineage[0].exposed_improvement_signal_ids == (
+        "signal-1",
+    )
+    assert claimed.lineage[0].addressed_improvement_signal_ids == (
+        "signal-1",
+    )
+    assert claimed.diagnostics["candidate_strategies"][0][
+        "exposed_improvement_signals"
+    ] == ["signal-1"]
+
+
+@pytest.mark.asyncio
+async def test_optimizer_rejects_addressing_an_unexposed_signal() -> None:
+    request = OptimizerRequest(
+        target=_target(),
+        current_content="# Demo\n\nOld guidance.\n",
+        target_fingerprint="sha256:old",
+        trace_packs=(_trace_pack(),),
+        trainable_cases=(
+            EvalCase(
+                case_id="train-1",
+                input="web task",
+                self_improvement_signals=(
+                    {"signal_id": "signal-1"},
+                ),
+            ),
+        ),
+    )
+
+    result = await TraceReflectiveLLMMutator(
+        mutate_text=lambda _: {
+            "content": "# Demo\n\nCandidate.\n",
+            "addressed_improvement_signal_ids": ["signal-forged"],
+        }
+    ).propose(request)
+
+    assert result.candidates == ()
+    assert result.diagnostics["filtered_invalid_patch_candidates"] == 1
+
+
+@pytest.mark.asyncio
+async def test_legacy_preview_does_not_recreate_private_contract_or_leak() -> None:
+    secret = "PRIVATE_RAW_RECORDED_FIXTURE_VALUE"
+    prompts: list[str] = []
+
+    async def mutate(prompt: str) -> dict:
+        prompts.append(prompt)
+        return {
+            "content": "# Demo\n",
+            "rationale": "repair the generic probe branch",
+            "files": [
+                {
+                    "path": "replay/runtime.py",
+                    "content": "def respond():\n    return {'ok': True}\n",
+                }
+            ],
+        }
+
+    feedback = EvaluationSummary(
+        variant_id="candidate-failed",
+        dataset_split="validation",
+        metrics={
+            "failed_gates": ["candidate_repair_conformance"],
+            "repair_candidate_package": {
+                "candidate_id": "candidate-failed",
+                "files": [
+                    {
+                        "path": "replay/runtime.py",
+                        "content": "def respond():\n    return {}\n",
+                    }
+                ],
+            },
+            "candidate_validation_diagnostics": [
+                {
+                    "code": "verify_declared_protocol_probe_branch",
+                    "probe_kind": "http",
+                    "probe_path": "/query",
+                    "expected_preview": secret,
+                }
+            ],
+        },
+    )
+    request = OptimizerRequest(
+        target=_target(),
+        current_content="# Demo\n",
+        target_fingerprint="sha256:old",
+        trace_packs=(_trace_pack(),),
+        validation_feedback=(feedback,),
+        trainable_cases=(EvalCase(case_id="train-1", input="generic task"),),
+        max_candidates=1,
+    )
+
+    result = await TraceReflectiveLLMMutator(mutate_text=mutate).propose(request)
+
+    assert len(result.candidates) == 1
+    candidate_id = result.candidates[0].candidate_id
+    assert secret not in prompts[0]
+    assert secret not in json.dumps(result.diagnostics, sort_keys=True)
+    private_contract = result.private_context[candidate_id]
+    assert private_contract.exact_probe is None
+
+
+@pytest.mark.asyncio
 async def test_trace_reflective_llm_mutator_materializes_candidate_files() -> None:
     async def mutate(prompt: str) -> dict:
         return {
@@ -209,6 +361,7 @@ async def test_trace_reflective_llm_mutator_materializes_candidate_files() -> No
         target_fingerprint="sha256:old",
         trace_packs=(_trace_pack(),),
         trainable_cases=(EvalCase(case_id="train-1", input="login task"),),
+        replay_requirements=(_replay_requirement(),),
         max_candidates=1,
     )
 
@@ -248,6 +401,7 @@ async def test_llm_mutator_unwraps_structured_expected_output_envelope() -> None
         target_fingerprint="sha256:old",
         trace_packs=(_trace_pack(),),
         trainable_cases=(EvalCase(case_id="train-1", input="login task"),),
+        replay_requirements=(_replay_requirement(),),
         max_candidates=1,
     )
 
@@ -278,6 +432,7 @@ async def test_llm_mutator_inherits_primary_content_for_files_only_delta() -> No
         target_fingerprint="sha256:old",
         trace_packs=(_trace_pack(),),
         trainable_cases=(EvalCase(case_id="train-1", input="login task"),),
+        replay_requirements=(_replay_requirement(),),
         max_candidates=1,
     )
 
@@ -394,7 +549,33 @@ async def test_llm_mutator_carries_candidate_specific_repair_conformance() -> No
                                 "session.open",
                                 "records.query",
                             ],
-                        }
+                        },
+                        {
+                            "code": "invalid_replay_capability_compile",
+                            "capability_error_code": (
+                                "protocol_probe_not_fixture_derived"
+                            ),
+                            "fixture_probe_constraints": [
+                                {
+                                    "requirement_id": "requirement-1",
+                                    "kind": "http",
+                                    "path": "/data",
+                                    "max_response_chars": 4096,
+                                }
+                            ],
+                            "schema_field_constraints": [
+                                {
+                                    "schema_layer": "compile_result",
+                                    "field_path": "services[*].transport",
+                                    "rule": "enum",
+                                    "expected": [
+                                        "http_fixture",
+                                        "skill_runtime",
+                                        "tcp_fixture",
+                                    ],
+                                }
+                            ],
+                        },
                     ],
                     "repair_candidate_package": {
                         "candidate_id": "candidate-failed",
@@ -440,6 +621,34 @@ async def test_llm_mutator_carries_candidate_specific_repair_conformance() -> No
     assert "response_contains must remain a recorded scalar leaf" in prompts[0]
     assert "runtime response must carry the surrounding decoded container" in prompts[0]
     assert "Never remove or relocate the contract's exact_probe" in prompts[0]
+    assert "shape-complete compiler contract" in prompts[0]
+    assert "Do not serialize a metadata wrapper" in prompts[0]
+    assert "executable, shape-complete contract" in prompts[0]
+    assert "required_operations is a conjunctive structural" in prompts[0]
+    assert "forbidden_operations names structural substitutions" in prompts[0]
+    assert "absolute path from the root of schema_layer" in prompts[0]
+    assert "[*@predicate.path:value]" in prompts[0]
+    assert "mixed and multi-member inputs" in prompts[0]
+    assert "similarly named field to a nested service or probe" in prompts[0]
+    assert "Keep schema_layer boundaries intact" in prompts[0]
+    assert strategy["repair_conformance"]["fixture_probe_constraints"] == [
+        {
+            "requirement_identity_digest": hashlib.sha256(
+                b"requirement-1"
+            ).hexdigest(),
+            "kind": "http",
+            "path": "/data",
+            "max_response_chars": 4096,
+        }
+    ]
+    assert strategy["repair_conformance"]["schema_field_constraints"] == [
+        {
+            "schema_layer": "compile_result",
+            "field_path": "services[*].transport",
+            "rule": "enum",
+            "expected": ["http_fixture", "skill_runtime", "tcp_fixture"],
+        }
+    ]
     assert result.candidates[0].files == (
         CandidateFileDelta(
             path="replay/compiler.py",
@@ -521,6 +730,7 @@ async def test_llm_mutator_judge_stage_repair_freezes_verified_replay_files() ->
     assert len(result.candidates) == 1
     assert "Preserve every candidate-owned replay file byte-for-byte" in prompts[0]
     assert "repair_conformance" not in _prompt_payload(prompts[0])
+    assert result.private_context == {}
     assert [item.path for item in result.candidates[0].files] == [
         "replay/compiler.py",
         "replay/runtime.py",
@@ -1026,6 +1236,17 @@ async def test_trace_reflective_llm_mutator_rejects_invalid_patch_intent_before_
 
     assert result.candidates == ()
     assert result.diagnostics["filtered_invalid_patch_candidates"] == 1
+    assert result.diagnostics["candidate_materialization_failures"] == [
+        {
+            "code": "candidate_materialization_invalid",
+            "stage": "candidate_generation",
+            "failure_class": "candidate",
+            "repairable": True,
+            "candidate_index": 0,
+            "representation": "patch_intent",
+            "reason": "patch intent contains a protected reference",
+        }
+    ]
 
 
 @pytest.mark.asyncio
@@ -1309,6 +1530,85 @@ async def test_llm_mutator_compacts_feedback_before_prompting() -> None:
 
 
 @pytest.mark.asyncio
+async def test_judged_target_repair_freezes_empty_replay_file_set() -> None:
+    async def mutate(prompt: str) -> dict:
+        assert "<CLAIM>" in prompt
+        return {
+            "content": (
+                "# Demo\n\nVerify each generic claim against bounded artifact evidence.\n"
+            ),
+            "files": [
+                {
+                    "path": "replay/runtime.py",
+                    "content": "print('unrequested harness mutation')\n",
+                }
+            ],
+            "rationale": "Repair claim coverage at the judged target frontier.",
+        }
+
+    request = OptimizerRequest(
+        target=_target(),
+        current_content="# Demo\n\nOld guidance.\n",
+        target_fingerprint="sha256:old",
+        trace_packs=(_trace_pack(),),
+        validation_feedback=(
+            EvaluationSummary(
+                variant_id="candidate-judged",
+                metrics={
+                    "score": 66.0,
+                    "A1_groundedness": 2.0,
+                    "evidence_incomplete": True,
+                    "failed_gates": ["evidence_quality"],
+                    "repair_candidate_package": {
+                        "candidate_id": "candidate-judged",
+                        "content": "# Demo\n\nPersist bounded evidence.\n",
+                        "files": [],
+                    },
+                },
+                dataset_split="validation",
+            ),
+        ),
+        trainable_cases=(EvalCase(case_id="train-1", input="web task"),),
+    )
+
+    result = await TraceReflectiveLLMMutator(mutate_text=mutate).propose(request)
+
+    assert len(result.candidates) == 1
+    assert result.candidates[0].files == ()
+    assert "Verify each generic claim" in result.candidates[0].content
+
+
+@pytest.mark.asyncio
+async def test_candidate_files_require_replay_authority_or_existing_file_focus() -> None:
+    async def mutate(prompt: str) -> dict:
+        return {
+            "content": "# Demo\n\nUse generic bounded evidence.\n",
+            "files": [
+                {
+                    "path": "replay/runtime.py",
+                    "content": "print('unrequested runtime')\n",
+                }
+            ],
+            "rationale": "Improve target behavior without a replay dependency.",
+        }
+
+    request = OptimizerRequest(
+        target=_target(),
+        current_content="# Demo\n\nOld guidance.\n",
+        target_fingerprint="sha256:old",
+        trace_packs=(_trace_pack(),),
+        trainable_cases=(EvalCase(case_id="train-1", input="web task"),),
+        replay_requirements=(),
+    )
+
+    result = await TraceReflectiveLLMMutator(mutate_text=mutate).propose(request)
+
+    assert len(result.candidates) == 1
+    assert result.candidates[0].files == ()
+    assert "generic bounded evidence" in result.candidates[0].content
+
+
+@pytest.mark.asyncio
 async def test_llm_mutator_turns_low_efficiency_feedback_into_generic_strategy() -> None:
     prompts = []
 
@@ -1413,6 +1713,94 @@ def test_feedback_normalization_requires_stronger_evidence_repair_for_veto_and_m
     assert "pre_final_veto_check" in summary["required_behaviors"]
     assert "support_every_claim_with_artifact_reference" in summary["required_behaviors"]
     assert "raise_groundedness_before_breadth" in summary["required_behaviors"]
+
+
+def test_feedback_normalization_preserves_target_only_repair_package() -> None:
+    summary = normalize_feedback_summary(
+        EvaluationSummary(
+            variant_id="candidate-target-only",
+            dataset_split="validation",
+            metrics={
+                "score": 66.0,
+                "evidence_incomplete": True,
+                "failed_gates": ["evidence_quality"],
+                "repair_candidate_package": {
+                    "candidate_id": "candidate-target-only",
+                    "content": "# Generic evidence repair\n",
+                    "files": [],
+                },
+            },
+        )
+    )
+
+    assert summary["repair_candidate_package"] == {
+        "candidate_id": "candidate-target-only",
+        "rationale": "",
+        "content": "# Generic evidence repair",
+        "files": [],
+    }
+
+
+def test_feedback_normalization_preserves_typed_recovery_trace() -> None:
+    summary = normalize_feedback_summary(
+        EvaluationSummary(
+            variant_id="candidate-recovery",
+            dataset_split="validation",
+            metrics={
+                "failed_gates": ["candidate_replay"],
+                "recovery_trace": {
+                    "schema_version": "aworld.self_evolve.recovery_trace.public.v1",
+                    "member_count": 2,
+                    "candidate_success_rate": 0.5,
+                    "recovered_member_count": 1,
+                    "guidance": ["preserve_positive_recovery_delta"],
+                    "raw_response": "SECRET",
+                },
+            },
+        )
+    )
+
+    assert summary["recovery_trace"]["recovered_member_count"] == 1
+    assert summary["recovery_trace"]["guidance"] == [
+        "preserve_positive_recovery_delta"
+    ]
+    assert "SECRET" not in json.dumps(summary["recovery_trace"])
+
+
+def test_feedback_normalization_preserves_constraint_recovery_trace() -> None:
+    summary = normalize_feedback_summary(
+        EvaluationSummary(
+            variant_id="candidate-constraint-recovery",
+            dataset_split="validation",
+            metrics={
+                "failed_gates": ["candidate_repair_conformance"],
+                "constraint_recovery_trace": {
+                    "schema_version": (
+                        "aworld.self_evolve.constraint_recovery_trace.public.v1"
+                    ),
+                    "attempt_count": 3,
+                    "repeated_violation_count": 1,
+                    "guidance": [
+                        "switch_implementation_for_repeated_constraint_failure"
+                    ],
+                    "constraints": [
+                        {
+                            "constraint_identity": "sha256:" + "d" * 64,
+                            "status": "active",
+                            "violation_attempt_count": 3,
+                            "raw_value": "SECRET",
+                        }
+                    ],
+                },
+            },
+        )
+    )
+
+    trace = summary["constraint_recovery_trace"]
+    assert trace["attempt_count"] == 3
+    assert trace["repeated_violation_count"] == 1
+    assert trace["constraints"][0]["violation_attempt_count"] == 3
+    assert "SECRET" not in json.dumps(trace)
 
 
 def test_feedback_normalization_turns_held_out_failure_into_generalization_constraints() -> None:

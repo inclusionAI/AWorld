@@ -17,6 +17,7 @@ def test_default_retention_bounds_large_replay_workspace_history() -> None:
     assert policy.keep_latest_runs == 2
     assert policy.raw_artifact_retention_days == 0
     assert policy.stale_run_retention_hours == 24
+    assert policy.unreferenced_ingestion_retention_days == 7
     assert policy.prune_unselected_candidate_materializations is True
 
 
@@ -167,6 +168,93 @@ def test_cleanup_skips_running_interrupted_apply_and_lineage_referenced_runs(
     assert skipped["run-running"] == "run_not_terminal"
     assert skipped["run-apply"] == "apply_interrupted"
     assert skipped["run-source"] == "referenced_by_lineage"
+
+
+def test_cleanup_protects_runs_referenced_by_active_campaign(tmp_path: Path) -> None:
+    artifact_root = tmp_path / ".aworld" / "self_evolve"
+    run_dir = artifact_root / "campaign-generic-cycle-001"
+    _write_json(
+        run_dir / "run.json",
+        {"run_id": run_dir.name, "status": "rejected"},
+    )
+    _write_json(
+        run_dir / "report.json",
+        {"run_id": run_dir.name, "status": "rejected"},
+    )
+    _write_json(run_dir / "replay" / "candidate" / "result.json", {})
+    _write_json(
+        artifact_root / "campaigns" / "campaign-generic" / "campaign.json",
+        {
+            "schema_version": "aworld.self_evolve.campaign.v1",
+            "status": "active",
+            "run_ids": [run_dir.name],
+        },
+    )
+    _touch_tree(run_dir, 1_000.0)
+
+    cleanup = cleanup_self_evolve_artifacts(
+        tmp_path,
+        policy=SelfEvolveArtifactRetentionPolicy(keep_latest_runs=0),
+        now=10_000.0,
+    )
+
+    assert (run_dir / "replay").exists()
+    assert run_dir.name in cleanup["protected_run_ids"]
+    assert cleanup["skipped_runs"] == [
+        {"run_id": run_dir.name, "reason": "referenced_by_lineage"}
+    ]
+
+
+def test_cleanup_reclaims_only_unreferenced_expired_ingestions(
+    tmp_path: Path,
+) -> None:
+    artifact_root = tmp_path / ".aworld" / "self_evolve"
+    ingestion_root = artifact_root / "ingestions"
+    run_ingestion = ingestion_root / "ingestion-run"
+    campaign_ingestion = ingestion_root / "ingestion-campaign"
+    stale_ingestion = ingestion_root / "ingestion-stale"
+    for path in (run_ingestion, campaign_ingestion, stale_ingestion):
+        _write_json(
+            path / "ingestion.json",
+            {"ingestion_id": path.name},
+        )
+        _touch_tree(path, 1_000.0)
+
+    run_dir = artifact_root / "run-retained"
+    _write_json(run_dir / "run.json", {"run_id": run_dir.name, "status": "rejected"})
+    _write_json(
+        run_dir / "ingestion_ref.json",
+        {"ingestion_id": run_ingestion.name},
+    )
+    _write_json(
+        artifact_root / "campaigns" / "campaign-generic" / "campaign.json",
+        {
+            "schema_version": "aworld.self_evolve.campaign.v1",
+            "status": "paused",
+            "run_ids": [],
+            "source_snapshot": {
+                "ingestion_id": campaign_ingestion.name,
+            },
+        },
+    )
+
+    cleanup = cleanup_self_evolve_artifacts(
+        tmp_path,
+        policy=SelfEvolveArtifactRetentionPolicy(
+            keep_latest_runs=0,
+            unreferenced_ingestion_retention_days=0,
+        ),
+        now=10_000.0,
+    )
+
+    assert run_ingestion.is_dir()
+    assert campaign_ingestion.is_dir()
+    assert not stale_ingestion.exists()
+    assert cleanup["removed_ingestion_ids"] == ["ingestion-stale"]
+    assert cleanup["protected_ingestion_ids"] == [
+        "ingestion-campaign",
+        "ingestion-run",
+    ]
 
 
 def test_cleanup_prunes_only_unselected_candidate_materializations(tmp_path: Path) -> None:

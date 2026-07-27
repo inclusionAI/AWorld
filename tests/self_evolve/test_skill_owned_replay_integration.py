@@ -25,6 +25,7 @@ from aworld.self_evolve.types import CandidateFileDelta, CandidateVariant
 
 
 @pytest.mark.asyncio
+@pytest.mark.replay_sandbox
 async def test_candidate_owned_replay_capability_runs_end_to_end(
     tmp_path: Path,
 ) -> None:
