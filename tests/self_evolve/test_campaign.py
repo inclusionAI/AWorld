@@ -673,6 +673,50 @@ def test_campaign_missing_usage_telemetry_stops_before_second_run(tmp_path: Path
     )
 
 
+def test_campaign_no_target_uses_zero_usage_and_pauses_for_operator(
+    tmp_path: Path,
+) -> None:
+    trajectory = [
+        {
+            "meta": {"step": 1},
+            "state": {"input": {"content": "Summarize the supplied material."}},
+            "action": {"content": "Summary complete."},
+            "reward": {"status": "success"},
+        }
+    ]
+
+    result = run_self_improvement_campaign(
+        workspace_root=tmp_path,
+        request={
+            "current_trajectory": trajectory,
+            "task": "low-signal-task",
+            "apply_policy": "auto_verified",
+            "infer_target": True,
+            "max_run_tokens": 1_000,
+        },
+        max_improvement_cycles=3,
+    )
+
+    assert result["status"] == "rejected"
+    assert result["campaign_status"] == "paused"
+    assert result["campaign_cycle"] == 1
+    assert result["self_improvement_disposition"] == {
+        "schema_version": "aworld.self_evolve.disposition.v1",
+        "kind": "pause_operator",
+        "reason_code": "target_selection_no_target",
+        "owner": "task",
+        "stage": "target_selection",
+        "scope": "shared_run",
+        "repairable": False,
+        "continuable": False,
+        "progress_delta_ids": [],
+        "diagnostic_refs": [],
+    }
+    report = json.loads(Path(result["report_path"]).read_text(encoding="utf-8"))
+    assert report["budget"]["ledger"]["spent_by_stage"] == {}
+    assert report["budget"]["ledger"]["ceilings"]["total_tokens"] == 1_000
+
+
 def test_campaign_recovers_completed_run_after_checkpoint_interruption(
     tmp_path: Path,
 ) -> None:

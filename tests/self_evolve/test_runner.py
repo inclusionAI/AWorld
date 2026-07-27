@@ -14719,6 +14719,9 @@ def test_auto_verified_inferred_existing_target_blocks_low_confidence_auto_apply
         target=None,
         apply_policy="auto_verified",
         infer_target=True,
+        total_run_token_budget=12_345,
+        max_run_cost_usd=Decimal("4.5"),
+        max_run_wall_seconds=Decimal("67"),
     )
 
     assert report_summary["status"] == "rejected"
@@ -14733,6 +14736,16 @@ def test_auto_verified_inferred_existing_target_blocks_low_confidence_auto_apply
     assert report["target_selection"]["diagnostics"]["blocked_selected_target"][
         "target_id"
     ] == "agent-browser"
+    budget_ledger = RunBudgetLedger.from_dict(report["budget"]["ledger"])
+    assert budget_ledger.ceilings == BudgetCeilings(
+        total_tokens=12_345,
+        total_cost_usd=Decimal("4.5"),
+        wall_seconds=Decimal("67"),
+    )
+    assert budget_ledger.total_spent() == BudgetUsage()
+    assert report["budget"]["decisions"] == []
+    assert report["budget"]["debits"] == []
+    assert report["budget"]["releases"] == []
 
 
 def test_inferred_new_skill_disabled_policy_rejects_before_draft_materialization(

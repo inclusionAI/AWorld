@@ -7632,6 +7632,12 @@ def optimize_from_cli_request(
             progress_callback=progress_callback,
             concurrency_policy=effective_concurrency_policy,
         )
+    pre_execution_budget_report = _empty_run_budget_report(
+        max_run_tokens=max_run_tokens,
+        total_run_token_budget=total_run_token_budget,
+        max_run_cost_usd=max_run_cost_usd,
+        max_run_wall_seconds=max_run_wall_seconds,
+    )
     _validate_eval_source_request(
         dataset=dataset,
         from_session=from_session,
@@ -8007,6 +8013,7 @@ def optimize_from_cli_request(
                 dataset=built_dataset,
                 target_selection_report=target_selection_report,
                 apply_policy=apply_policy,
+                budget_report=pre_execution_budget_report,
             )
         target_selection_decision = _infer_target_from_trace_packs(
             trace_packs,
@@ -8043,6 +8050,7 @@ def optimize_from_cli_request(
                 dataset=built_dataset,
                 target_selection_report=target_selection_report,
                 apply_policy=apply_policy,
+                budget_report=pre_execution_budget_report,
             )
         if not _campaign_target_matches(
             target_selection_report.selected_target,
@@ -8059,6 +8067,7 @@ def optimize_from_cli_request(
                 dataset=built_dataset,
                 target_selection_report=target_selection_decision.report,
                 apply_policy=apply_policy,
+                budget_report=pre_execution_budget_report,
             )
         if (
             target_selection_decision.target_intent
@@ -8077,6 +8086,7 @@ def optimize_from_cli_request(
                 dataset=built_dataset,
                 target_selection_report=target_selection_report,
                 apply_policy=apply_policy,
+                budget_report=pre_execution_budget_report,
             )
         if (
             target_selection_decision.target_intent
@@ -8098,6 +8108,7 @@ def optimize_from_cli_request(
                     dataset=built_dataset,
                     target_selection_report=target_selection_report,
                     apply_policy=apply_policy,
+                    budget_report=pre_execution_budget_report,
                 )
         if not target_selection_decision.provenance_resolution.resolved:
             target_selection_decision = _blocked_inferred_target_selection_decision(
@@ -8112,6 +8123,7 @@ def optimize_from_cli_request(
                 dataset=built_dataset,
                 target_selection_report=target_selection_report,
                 apply_policy=apply_policy,
+                budget_report=pre_execution_budget_report,
             )
         if apply_policy == "auto_verified" and not _inferred_target_admitted_for_auto_apply(
             target_selection_decision
@@ -8125,6 +8137,7 @@ def optimize_from_cli_request(
                 dataset=built_dataset,
                 target_selection_report=target_selection_report,
                 apply_policy=apply_policy,
+                budget_report=pre_execution_budget_report,
             )
         try:
             target_adapter = _target_from_ref(
@@ -8145,6 +8158,7 @@ def optimize_from_cli_request(
                 target_provenance=target_provenance,
                 apply_policy=apply_policy,
                 reason=str(exc),
+                budget_report=pre_execution_budget_report,
             )
     else:
         if not target:
@@ -15689,6 +15703,32 @@ def _blocked_low_confidence_target_selection_report(
     )
 
 
+def _empty_run_budget_report(
+    *,
+    max_run_tokens: int,
+    total_run_token_budget: int | None,
+    max_run_cost_usd: float | Decimal | None,
+    max_run_wall_seconds: float | Decimal | None,
+) -> dict[str, object]:
+    """Build typed zero-usage telemetry for runs rejected before execution."""
+
+    effective_token_budget = (
+        max_run_tokens
+        if total_run_token_budget is None
+        else total_run_token_budget
+    )
+    return _RunBudgetContext(
+        ledger=RunBudgetLedger(
+            BudgetCeilings(
+                total_tokens=effective_token_budget,
+                total_cost_usd=max_run_cost_usd,
+                wall_seconds=max_run_wall_seconds,
+            )
+        ),
+        cold_start_by_stage={},
+    ).to_dict()
+
+
 def _persist_no_target_cli_result(
     *,
     store: FilesystemSelfEvolveStore,
@@ -15696,6 +15736,7 @@ def _persist_no_target_cli_result(
     dataset: SelfEvolveDataset,
     target_selection_report: TargetSelectionReport,
     apply_policy: str,
+    budget_report: Mapping[str, object],
 ) -> Mapping[str, Any]:
     target = SelfEvolveTargetRef(target_type="no_target", target_id="no_target")
     run = SelfEvolveRun(run_id=run_id, target=target, status=SelfEvolveRunStatus.REJECTED)
@@ -15714,6 +15755,7 @@ def _persist_no_target_cli_result(
         "selected_candidate_id": None,
         "status": run.status.value,
         "target_selection": to_json_dict(target_selection_report),
+        "budget": dict(budget_report),
     }
     report["artifact_retention"] = _artifact_retention_report(store, run_id)
     report_path = store.write_report(run_id, report)
@@ -15737,6 +15779,7 @@ def _persist_unsupported_target_cli_result(
     target_provenance: TargetProvenance | None,
     apply_policy: str,
     reason: str,
+    budget_report: Mapping[str, object],
 ) -> Mapping[str, Any]:
     if target_selection_report.selected_target is None:
         return _persist_no_target_cli_result(
@@ -15745,6 +15788,7 @@ def _persist_unsupported_target_cli_result(
             dataset=dataset,
             target_selection_report=target_selection_report,
             apply_policy=apply_policy,
+            budget_report=budget_report,
         )
 
     target = target_selection_report.selected_target
@@ -15784,6 +15828,7 @@ def _persist_unsupported_target_cli_result(
             "target_ref": _target_ref_text(target),
             "reason": reason,
         },
+        "budget": dict(budget_report),
     }
     report["artifact_retention"] = _artifact_retention_report(store, run_id)
     report_path = store.write_report(run_id, report)

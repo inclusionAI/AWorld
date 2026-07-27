@@ -1119,6 +1119,24 @@ def derive_self_improvement_disposition(
             progress_delta_ids=delta,
         )
 
+    target = report.get("target")
+    target_selection = report.get("target_selection")
+    if (
+        isinstance(target, Mapping)
+        and target.get("target_type") == "no_target"
+        and isinstance(target_selection, Mapping)
+        and target_selection.get("failure_category") == "no_target"
+    ):
+        return SelfImprovementDisposition(
+            kind=SelfImprovementDispositionKind.PAUSE_OPERATOR,
+            reason_code="target_selection_no_target",
+            owner="task",
+            stage="target_selection",
+            scope="shared_run",
+            repairable=False,
+            progress_delta_ids=delta,
+        )
+
     events = _typed_failure_events(report)
     candidate = next(
         (
