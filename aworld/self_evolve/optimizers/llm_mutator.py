@@ -25,7 +25,12 @@ from aworld.self_evolve.evolution_context import (
     compile_evolution_context,
 )
 from aworld.self_evolve.feedback import normalize_feedback_summary
-from aworld.self_evolve.optimizers.base import OptimizerRequest, OptimizerResult
+from aworld.self_evolve.optimizers.base import (
+    OptimizerRequest,
+    OptimizerResult,
+    declared_addressed_improvement_signal_ids,
+    exposed_improvement_signal_ids,
+)
 from aworld.self_evolve.patch_intent import apply_skill_patch_intent
 from aworld.self_evolve.repair_conformance import (
     RepairConformanceContract,
@@ -141,15 +146,20 @@ class TraceReflectiveLLMMutator:
                 "queue_wait_seconds": 0.0,
                 "execution_seconds": time.monotonic() - population_started_at,
                 "elapsed_seconds": time.monotonic() - population_started_at,
-            }
+        }
 
         for index, output in candidate_outputs:
-            strategy_record = _candidate_strategy_record(request, candidate_index=index)
             try:
                 content, rationale, materialization, files = _materialize_mutator_output(
                     output,
                     request=request,
                     candidate_index=index,
+                )
+                addressed_signal_ids = (
+                    declared_addressed_improvement_signal_ids(
+                        request,
+                        output,
+                    )
                 )
                 files, inherited_file_count = _overlay_repair_focus_files(
                     request,
@@ -177,6 +187,11 @@ class TraceReflectiveLLMMutator:
                     }
                 )
                 continue
+            strategy_record = _candidate_strategy_record(
+                request,
+                candidate_index=index,
+                addressed_signal_ids=addressed_signal_ids,
+            )
             if _violates_transport_completion_invariant(content):
                 content = _append_transport_completion_invariant(content)
                 repaired_transport_completion_violation_count += 1
@@ -262,6 +277,13 @@ class TraceReflectiveLLMMutator:
                     ),
                     lesson_set_fingerprint=_lesson_set_fingerprint(request),
                     addressed_lesson_ids=_addressed_lesson_ids(request),
+                    improvement_signal_set_fingerprint=(
+                        request.improvement_signal_set_fingerprint
+                    ),
+                    exposed_improvement_signal_ids=(
+                        exposed_improvement_signal_ids(request)
+                    ),
+                    addressed_improvement_signal_ids=addressed_signal_ids,
                     rationale=rationale,
                 )
             )
@@ -792,9 +814,11 @@ def _candidate_strategy_record(
     request: OptimizerRequest,
     *,
     candidate_index: int,
+    addressed_signal_ids: tuple[str, ...],
 ) -> dict[str, Any]:
     population_strategy = _population_strategy(request, candidate_index)
     addressed_lessons = _addressed_lesson_ids(request)
+    exposed_signals = exposed_improvement_signal_ids(request)
     preserved_success_behaviors = _preserved_success_behaviors(request)
     risk_notes = _risk_notes(request)
     strategy_hints = _strategy_hints(request)
@@ -803,6 +827,10 @@ def _candidate_strategy_record(
         "candidate_family": population_strategy["name"],
         "intended_behavior_delta": population_strategy["instruction"],
         "addressed_lessons": list(addressed_lessons),
+        "exposed_improvement_signals": list(exposed_signals),
+        "addressed_improvement_signals": list(
+            addressed_signal_ids
+        ),
         "harness_diagnostics_considered": list(_harness_diagnostic_ids(request)),
         "preserved_success_behaviors": preserved_success_behaviors,
         "risk_notes": risk_notes,

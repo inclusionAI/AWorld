@@ -16,6 +16,10 @@ from aworld.self_evolve.ingestion.types import (
     FrozenIngestionSnapshot,
     fingerprint_json,
 )
+from aworld.self_evolve.ingestion.semantic_snapshot import (
+    FROZEN_SEMANTIC_INGESTION_SNAPSHOT_SCHEMA_VERSION,
+    FrozenSemanticIngestionSnapshotV2,
+)
 from aworld.self_evolve.ingestion.verifier import (
     validate_frozen_snapshot_quality,
 )
@@ -45,9 +49,11 @@ from aworld.skills.release import mark_skill_content_candidate
 
 
 def _ingestion_semantic_payload(
-    snapshot: FrozenIngestionSnapshot,
+    snapshot: FrozenIngestionSnapshot | FrozenSemanticIngestionSnapshotV2,
 ) -> dict[str, Any]:
     payload = snapshot.to_dict(public=False)
+    if isinstance(snapshot, FrozenSemanticIngestionSnapshotV2):
+        return payload
     payload.pop("mapping_candidates", None)
     payload.pop("mapping_failures", None)
     payload.pop("ingestion_model_call_count", None)
@@ -85,10 +91,15 @@ class FilesystemSelfEvolveStore:
 
     def write_ingestion(
         self,
-        snapshot: FrozenIngestionSnapshot,
+        snapshot: FrozenIngestionSnapshot | FrozenSemanticIngestionSnapshotV2,
         *,
         dataset_recipe: DatasetRecipe | None = None,
     ) -> Path:
+        if isinstance(snapshot, FrozenSemanticIngestionSnapshotV2):
+            return self._write_semantic_ingestion(
+                snapshot,
+                dataset_recipe=dataset_recipe,
+            )
         if not isinstance(snapshot, FrozenIngestionSnapshot):
             raise TypeError("ingestion snapshot must be typed")
         validate_frozen_snapshot_quality(snapshot)
@@ -213,7 +224,10 @@ class FilesystemSelfEvolveStore:
             raise ValueError("persisted ingestion snapshot did not round trip")
         return destination
 
-    def read_ingestion(self, ingestion_id: str) -> FrozenIngestionSnapshot:
+    def read_ingestion(
+        self,
+        ingestion_id: str,
+    ) -> FrozenIngestionSnapshot | FrozenSemanticIngestionSnapshotV2:
         root = self.ingestion_path(ingestion_id)
         path = root / "ingestion.json"
         if (
@@ -223,7 +237,21 @@ class FilesystemSelfEvolveStore:
             or not path.is_file()
         ):
             raise FileNotFoundError(f"frozen ingestion not found: {ingestion_id}")
-        snapshot = FrozenIngestionSnapshot.from_dict(self._read_json(path))
+        payload = self._read_json(path)
+        if (
+            payload.get("schema_version")
+            == FROZEN_SEMANTIC_INGESTION_SNAPSHOT_SCHEMA_VERSION
+        ):
+            snapshot = FrozenSemanticIngestionSnapshotV2.from_dict(
+                payload
+            )
+            self._validate_semantic_ingestion_artifacts(root, snapshot)
+            if snapshot.ingestion_id != ingestion_id:
+                raise ValueError(
+                    "ingestion artifact identity does not match its path"
+                )
+            return snapshot
+        snapshot = FrozenIngestionSnapshot.from_dict(payload)
         validate_frozen_snapshot_quality(snapshot)
         if snapshot.ingestion_id != ingestion_id:
             raise ValueError("ingestion artifact identity does not match its path")
@@ -236,24 +264,408 @@ class FilesystemSelfEvolveStore:
             )
         return snapshot
 
+    def _write_semantic_ingestion(
+        self,
+        snapshot: FrozenSemanticIngestionSnapshotV2,
+        *,
+        dataset_recipe: DatasetRecipe | None,
+    ) -> Path:
+        if dataset_recipe is not None:
+            frozen_trainable_ids = {
+                case_id
+                for case_id, split in (
+                    snapshot.improvement_signal_set.case_splits.items()
+                )
+                if split.value in {"train", "validation"}
+            }
+            frozen_held_out_ids = {
+                case_id
+                for case_id, split in (
+                    snapshot.improvement_signal_set.case_splits.items()
+                )
+                if split.value == "held_out"
+            }
+            if (
+                set(dataset_recipe.trainable_case_ids)
+                != frozen_trainable_ids
+                or set(dataset_recipe.held_out_case_ids)
+                != frozen_held_out_ids
+            ):
+                raise ValueError(
+                    "dataset recipe differs from frozen semantic splits"
+                )
+        destination = self.ingestion_path(snapshot.ingestion_id)
+        expected = snapshot.to_dict(public=False)
+        if destination.exists():
+            if destination.is_symlink() or not destination.is_dir():
+                raise ValueError("ingestion artifact destination is unsafe")
+            existing = self.read_ingestion(snapshot.ingestion_id)
+            if not isinstance(
+                existing,
+                FrozenSemanticIngestionSnapshotV2,
+            ) or existing.to_dict(public=False) != expected:
+                raise ValueError(
+                    "immutable ingestion id already exists with different content"
+                )
+            return destination
+
+        root = destination.parent
+        self._reject_symlink_components(root)
+        root.mkdir(parents=True, exist_ok=True)
+        root.chmod(0o700)
+        temporary = root / (
+            f".{snapshot.ingestion_id}.{uuid.uuid4().hex}.tmp"
+        )
+        temporary.mkdir(mode=0o700)
+        try:
+            self._write_private_json(
+                temporary / "ingestion.json",
+                expected,
+            )
+            self._write_private_json(
+                temporary / "source_inventory.json",
+                snapshot.inventory.to_dict(public=False),
+            )
+            self._write_private_json(
+                temporary / "source_bundle.json",
+                snapshot.source_bundle.to_dict(),
+            )
+            self._write_private_json(
+                temporary / "constitution.json",
+                snapshot.constitution.to_dict(),
+            )
+            self._write_private_json(
+                temporary / "rollout_policy.json",
+                snapshot.rollout_policy.to_dict(),
+            )
+            self._write_private_json(
+                temporary / "semantic_profile.json",
+                snapshot.semantic_profile.to_dict(),
+            )
+            self._write_private_json(
+                temporary / "stage_reports.json",
+                {"reports": [
+                    item.to_dict() for item in snapshot.stage_reports
+                ]},
+            )
+            self._write_private_json(
+                temporary / "evidence_graph.json",
+                snapshot.evidence_graph.to_dict(),
+            )
+            self._write_private_json(
+                temporary / "evidence_authority_context.json",
+                snapshot.evidence_authority_context.to_dict(),
+            )
+            self._write_private_json(
+                temporary / "semantic_cases.json",
+                {"cases": [
+                    item.to_dict() for item in snapshot.semantic_cases
+                ]},
+            )
+            self._write_private_json(
+                temporary / "improvement_signals.json",
+                snapshot.improvement_signal_set.to_dict(),
+            )
+            self._write_private_json(
+                temporary / "target_evidence_bundle.json",
+                snapshot.compiled_dataset.target_evidence_bundle.to_dict(),
+            )
+            self._write_private_json(
+                temporary / "evaluation_plans.json",
+                {"plans": [
+                    item.to_dict()
+                    for item in snapshot.evaluation_plans
+                ]},
+            )
+            self._write_private_json(
+                temporary / "resolved_traces.json",
+                {"traces": [
+                    item.to_dict()
+                    for item in snapshot.resolved_traces
+                ]},
+            )
+            self._write_private_json(
+                temporary / "compiled_dataset.json",
+                snapshot.compiled_dataset.to_dict(),
+            )
+            self._write_private_json(
+                temporary / "quality_report.json",
+                snapshot.quality_report.to_dict(),
+            )
+            self._write_private_json(
+                temporary / "quality_gate.json",
+                snapshot.quality_gate.to_dict(),
+            )
+            self._write_private_json(
+                temporary / "resolution_evidence.json",
+                snapshot.resolution_evidence.to_dict(),
+            )
+            self._write_private_json(
+                temporary / "authority_registry.json",
+                {
+                    "authoritative_verification_ids": list(
+                        snapshot.authoritative_verification_ids
+                    ),
+                    "verification_registry_fingerprint": (
+                        snapshot.verification_registry_fingerprint
+                    ),
+                },
+            )
+            self._write_private_json(
+                temporary / "qualification_registry.json",
+                snapshot.qualification_registry.to_dict(),
+            )
+            if snapshot.qualification_report is not None:
+                self._write_private_json(
+                    temporary / "qualification_report.json",
+                    snapshot.qualification_report.to_dict(),
+                )
+            if snapshot.source_manifest is not None:
+                self._write_private_json(
+                    temporary / "source_manifest.json",
+                    snapshot.source_manifest,
+                )
+            self._write_semantic_case_splits(
+                temporary,
+                snapshot,
+                dataset_recipe=dataset_recipe,
+            )
+            if dataset_recipe is not None:
+                self._write_private_json(
+                    temporary / "dataset_recipe.json",
+                    dataset_recipe,
+                )
+            os.replace(temporary, destination)
+        finally:
+            if temporary.exists():
+                shutil.rmtree(temporary)
+        reloaded = self.read_ingestion(snapshot.ingestion_id)
+        if (
+            not isinstance(
+                reloaded,
+                FrozenSemanticIngestionSnapshotV2,
+            )
+            or reloaded.to_dict(public=False) != expected
+        ):
+            raise ValueError(
+                "persisted semantic ingestion snapshot did not round trip"
+            )
+        return destination
+
+    def _write_semantic_case_splits(
+        self,
+        root: Path,
+        snapshot: FrozenSemanticIngestionSnapshotV2,
+        *,
+        dataset_recipe: DatasetRecipe | None,
+    ) -> None:
+        if dataset_recipe is None:
+            trainable_ids = {
+                case_id
+                for case_id, split in (
+                    snapshot.improvement_signal_set.case_splits.items()
+                )
+                if split.value in {"train", "validation"}
+            }
+            held_out_ids = {
+                case_id
+                for case_id, split in (
+                    snapshot.improvement_signal_set.case_splits.items()
+                )
+                if split.value == "held_out"
+            }
+        else:
+            trainable_ids = set(dataset_recipe.trainable_case_ids)
+            held_out_ids = set(dataset_recipe.held_out_case_ids)
+        self._write_private_jsonl(
+            root / "trainable_cases.jsonl",
+            tuple(
+                item.to_dict()
+                for item in snapshot.normalized_cases
+                if item.case_id in trainable_ids
+            ),
+        )
+        self._write_private_jsonl(
+            root / "held_out_cases.jsonl",
+            tuple(
+                item.to_dict()
+                for item in snapshot.normalized_cases
+                if item.case_id in held_out_ids
+            ),
+        )
+
+    def _validate_semantic_ingestion_artifacts(
+        self,
+        root: Path,
+        snapshot: FrozenSemanticIngestionSnapshotV2,
+    ) -> None:
+        expected = {
+            "source_inventory.json": (
+                snapshot.inventory.to_dict(public=False)
+            ),
+            "source_bundle.json": snapshot.source_bundle.to_dict(),
+            "constitution.json": snapshot.constitution.to_dict(),
+            "rollout_policy.json": snapshot.rollout_policy.to_dict(),
+            "semantic_profile.json": snapshot.semantic_profile.to_dict(),
+            "stage_reports.json": {
+                "reports": [
+                    item.to_dict() for item in snapshot.stage_reports
+                ]
+            },
+            "evidence_graph.json": snapshot.evidence_graph.to_dict(),
+            "evidence_authority_context.json": (
+                snapshot.evidence_authority_context.to_dict()
+            ),
+            "semantic_cases.json": {
+                "cases": [
+                    item.to_dict() for item in snapshot.semantic_cases
+                ]
+            },
+            "improvement_signals.json": (
+                snapshot.improvement_signal_set.to_dict()
+            ),
+            "target_evidence_bundle.json": (
+                snapshot.compiled_dataset.target_evidence_bundle.to_dict()
+            ),
+            "evaluation_plans.json": {
+                "plans": [
+                    item.to_dict()
+                    for item in snapshot.evaluation_plans
+                ]
+            },
+            "resolved_traces.json": {
+                "traces": [
+                    item.to_dict()
+                    for item in snapshot.resolved_traces
+                ]
+            },
+            "compiled_dataset.json": (
+                snapshot.compiled_dataset.to_dict()
+            ),
+            "quality_report.json": snapshot.quality_report.to_dict(),
+            "quality_gate.json": snapshot.quality_gate.to_dict(),
+            "resolution_evidence.json": (
+                snapshot.resolution_evidence.to_dict()
+            ),
+            "authority_registry.json": {
+                "authoritative_verification_ids": list(
+                    snapshot.authoritative_verification_ids
+                ),
+                "verification_registry_fingerprint": (
+                    snapshot.verification_registry_fingerprint
+                ),
+            },
+            "qualification_registry.json": (
+                snapshot.qualification_registry.to_dict()
+            ),
+        }
+        if snapshot.qualification_report is not None:
+            expected["qualification_report.json"] = (
+                snapshot.qualification_report.to_dict()
+            )
+        if snapshot.source_manifest is not None:
+            expected["source_manifest.json"] = dict(
+                snapshot.source_manifest
+            )
+        for relative_path, value in expected.items():
+            path = root / relative_path
+            if path.is_symlink() or not path.is_file():
+                raise ValueError(
+                    f"semantic ingestion artifact is missing: {relative_path}"
+                )
+            if self._read_json(path) != value:
+                raise ValueError(
+                    "semantic ingestion artifact differs from its frozen "
+                    f"snapshot: {relative_path}"
+                )
+        trainable_ids = {
+            case_id
+            for case_id, split in (
+                snapshot.improvement_signal_set.case_splits.items()
+            )
+            if split.value in {"train", "validation"}
+        }
+        held_out_ids = {
+            case_id
+            for case_id, split in (
+                snapshot.improvement_signal_set.case_splits.items()
+            )
+            if split.value == "held_out"
+        }
+        expected_jsonl = {
+            "trainable_cases.jsonl": [
+                item.to_dict()
+                for item in snapshot.normalized_cases
+                if item.case_id in trainable_ids
+            ],
+            "held_out_cases.jsonl": [
+                item.to_dict()
+                for item in snapshot.normalized_cases
+                if item.case_id in held_out_ids
+            ],
+        }
+        for relative_path, records in expected_jsonl.items():
+            path = root / relative_path
+            if path.is_symlink() or not path.is_file():
+                raise ValueError(
+                    f"semantic ingestion artifact is missing: {relative_path}"
+                )
+            actual = [
+                json.loads(line)
+                for line in path.read_text(
+                    encoding="utf-8"
+                ).splitlines()
+                if line
+            ]
+            if actual != records:
+                raise ValueError(
+                    "semantic ingestion case split differs from its frozen "
+                    f"snapshot: {relative_path}"
+                )
+
     def write_ingestion_ref(
         self,
         run_id: str,
-        snapshot: FrozenIngestionSnapshot,
+        snapshot: FrozenIngestionSnapshot | FrozenSemanticIngestionSnapshotV2,
         *,
         dataset_recipe: DatasetRecipe | None = None,
     ) -> Path:
-        if not isinstance(snapshot, FrozenIngestionSnapshot):
+        if not isinstance(
+            snapshot,
+            (FrozenIngestionSnapshot, FrozenSemanticIngestionSnapshotV2),
+        ):
             raise TypeError("ingestion snapshot must be typed")
         source = dict(dataset_recipe.source) if dataset_recipe is not None else {}
         split_fingerprint = source.get("split_fingerprint")
         if split_fingerprint is None and dataset_recipe is not None:
             split_fingerprint = fingerprint_json(dataset_recipe.splits)
+        semantic = isinstance(
+            snapshot,
+            FrozenSemanticIngestionSnapshotV2,
+        )
         payload = {
-            "schema_version": "aworld.self_evolve.ingestion_ref.v1",
+            "schema_version": (
+                "aworld.self_evolve.ingestion_ref.v2"
+                if semantic
+                else "aworld.self_evolve.ingestion_ref.v1"
+            ),
             "ingestion_id": snapshot.ingestion_id,
             "source_fingerprint": snapshot.inventory.source_root_fingerprint,
-            "mapping_fingerprint": snapshot.selected_mapping.fingerprint,
+            "normalization_kind": (
+                "semantic_evidence"
+                if semantic
+                else "structural_mapping"
+            ),
+            "mapping_fingerprint": (
+                None
+                if semantic
+                else snapshot.selected_mapping.fingerprint
+            ),
+            "normalization_fingerprint": (
+                snapshot.compiled_dataset.normalization_fingerprint
+                if semantic
+                else None
+            ),
             "normalized_dataset_fingerprint": (
                 snapshot.normalized_dataset_fingerprint
             ),
@@ -262,6 +674,29 @@ class FilesystemSelfEvolveStore:
                 self.ingestion_path(snapshot.ingestion_id) / "quality_report.json"
             ),
         }
+        if semantic:
+            payload.update(
+                {
+                    "evidence_graph_logical_fingerprint": (
+                        snapshot.evidence_graph.logical_fingerprint
+                    ),
+                    "evidence_graph_provenance_fingerprint": (
+                        snapshot.evidence_graph.provenance_fingerprint
+                    ),
+                    "improvement_signal_set_fingerprint": (
+                        snapshot.improvement_signal_set.fingerprint
+                    ),
+                    "evaluation_plan_bundle_fingerprint": (
+                        snapshot.compiled_dataset
+                        .evaluation_plan_bundle_fingerprint
+                    ),
+                    "target_evidence_bundle_fingerprint": (
+                        snapshot.compiled_dataset
+                        .target_evidence_bundle.fingerprint
+                    ),
+                    "manifest_origin": snapshot.manifest_origin.value,
+                }
+            )
         path = self.run_path(run_id) / "ingestion_ref.json"
         self._write_json_atomic(path, payload)
         return path
@@ -271,19 +706,57 @@ class FilesystemSelfEvolveStore:
         if not path.is_file() or path.is_symlink():
             raise FileNotFoundError(f"ingestion reference not found for run: {run_id}")
         payload = self._read_json(path)
-        if payload.get("schema_version") != "aworld.self_evolve.ingestion_ref.v1":
+        if payload.get("schema_version") not in {
+            "aworld.self_evolve.ingestion_ref.v1",
+            "aworld.self_evolve.ingestion_ref.v2",
+        }:
             raise ValueError("unsupported ingestion reference schema")
         ingestion_id = payload.get("ingestion_id")
         if not isinstance(ingestion_id, str):
             raise ValueError("ingestion reference is missing ingestion_id")
         snapshot = self.read_ingestion(ingestion_id)
-        expected = {
+        semantic = isinstance(
+            snapshot,
+            FrozenSemanticIngestionSnapshotV2,
+        )
+        expected: dict[str, Any] = {
             "source_fingerprint": snapshot.inventory.source_root_fingerprint,
-            "mapping_fingerprint": snapshot.selected_mapping.fingerprint,
+            "mapping_fingerprint": (
+                None
+                if semantic
+                else snapshot.selected_mapping.fingerprint
+            ),
             "normalized_dataset_fingerprint": (
                 snapshot.normalized_dataset_fingerprint
             ),
         }
+        if semantic:
+            expected.update(
+                {
+                    "normalization_kind": "semantic_evidence",
+                    "normalization_fingerprint": (
+                        snapshot.compiled_dataset.normalization_fingerprint
+                    ),
+                    "evidence_graph_logical_fingerprint": (
+                        snapshot.evidence_graph.logical_fingerprint
+                    ),
+                    "evidence_graph_provenance_fingerprint": (
+                        snapshot.evidence_graph.provenance_fingerprint
+                    ),
+                    "improvement_signal_set_fingerprint": (
+                        snapshot.improvement_signal_set.fingerprint
+                    ),
+                    "evaluation_plan_bundle_fingerprint": (
+                        snapshot.compiled_dataset
+                        .evaluation_plan_bundle_fingerprint
+                    ),
+                    "target_evidence_bundle_fingerprint": (
+                        snapshot.compiled_dataset
+                        .target_evidence_bundle.fingerprint
+                    ),
+                    "manifest_origin": snapshot.manifest_origin.value,
+                }
+            )
         for key, value in expected.items():
             if payload.get(key) != value:
                 raise ValueError(f"ingestion reference {key} does not match snapshot")
@@ -488,20 +961,31 @@ class FilesystemSelfEvolveStore:
         if ingestion_ref_path.is_file() and not ingestion_ref_path.is_symlink():
             ingestion_ref = self.read_ingestion_ref(run_id)
             snapshot = self.read_ingestion(str(ingestion_ref["ingestion_id"]))
-            payload["ingestion"] = {
-                "schema_version": snapshot.schema_version,
-                "ingestion_id": snapshot.ingestion_id,
-                "source_fingerprint": snapshot.inventory.source_root_fingerprint,
-                "mapping_fingerprint": snapshot.selected_mapping.fingerprint,
-                "normalized_dataset_fingerprint": (
-                    snapshot.normalized_dataset_fingerprint
-                ),
-                "split_fingerprint": ingestion_ref.get("split_fingerprint"),
-                "ingestor_name": snapshot.ingestor_name,
-                "ingestor_version": snapshot.ingestor_version,
-                "ingestor_trust_level": snapshot.ingestor_trust_level.value,
-                "quality_report": snapshot.quality_report.public_projection(),
-            }
+            if isinstance(
+                snapshot,
+                FrozenSemanticIngestionSnapshotV2,
+            ):
+                payload["ingestion"] = {
+                    **snapshot.public_projection(),
+                    "split_fingerprint": ingestion_ref.get(
+                        "split_fingerprint"
+                    ),
+                }
+            else:
+                payload["ingestion"] = {
+                    "schema_version": snapshot.schema_version,
+                    "ingestion_id": snapshot.ingestion_id,
+                    "source_fingerprint": snapshot.inventory.source_root_fingerprint,
+                    "mapping_fingerprint": snapshot.selected_mapping.fingerprint,
+                    "normalized_dataset_fingerprint": (
+                        snapshot.normalized_dataset_fingerprint
+                    ),
+                    "split_fingerprint": ingestion_ref.get("split_fingerprint"),
+                    "ingestor_name": snapshot.ingestor_name,
+                    "ingestor_version": snapshot.ingestor_version,
+                    "ingestor_trust_level": snapshot.ingestor_trust_level.value,
+                    "quality_report": snapshot.quality_report.public_projection(),
+                }
         ingestion_gate_path = self.run_path(run_id) / "ingestion_gate.json"
         if ingestion_gate_path.is_file() and not ingestion_gate_path.is_symlink():
             ingestion_gate = self._read_json(ingestion_gate_path)

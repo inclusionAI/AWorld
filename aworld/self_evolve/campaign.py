@@ -1724,15 +1724,31 @@ def _source_snapshot(
     frozen_ingestion_id = request.get("frozen_ingestion_id")
     if isinstance(frozen_ingestion_id, str) and frozen_ingestion_id:
         from aworld.self_evolve.store import FilesystemSelfEvolveStore
+        from aworld.self_evolve.ingestion.semantic_snapshot import (
+            FrozenSemanticIngestionSnapshotV2,
+        )
 
         snapshot = FilesystemSelfEvolveStore(workspace_root).read_ingestion(
             frozen_ingestion_id
         )
-        return {
+        semantic = isinstance(
+            snapshot,
+            FrozenSemanticIngestionSnapshotV2,
+        )
+        result = {
             "kind": "agentic_source",
             "ingestion_id": snapshot.ingestion_id,
             "source_fingerprint": snapshot.inventory.source_root_fingerprint,
-            "mapping_fingerprint": snapshot.selected_mapping.fingerprint,
+            "normalization_kind": (
+                "semantic_evidence"
+                if semantic
+                else "structural_mapping"
+            ),
+            "mapping_fingerprint": (
+                None
+                if semantic
+                else snapshot.selected_mapping.fingerprint
+            ),
             "normalized_dataset_fingerprint": (
                 snapshot.normalized_dataset_fingerprint
             ),
@@ -1743,6 +1759,48 @@ def _source_snapshot(
             "ingestor_trust_level": snapshot.ingestor_trust_level.value,
             "ingestion_schema_version": snapshot.schema_version,
         }
+        if semantic:
+            result.update(
+                {
+                    "normalization_fingerprint": (
+                        snapshot.compiled_dataset
+                        .normalization_fingerprint
+                    ),
+                    "evidence_graph_logical_fingerprint": (
+                        snapshot.evidence_graph.logical_fingerprint
+                    ),
+                    "evidence_graph_provenance_fingerprint": (
+                        snapshot.evidence_graph.provenance_fingerprint
+                    ),
+                    "improvement_signal_set_fingerprint": (
+                        snapshot.improvement_signal_set.fingerprint
+                    ),
+                    "evaluation_plan_bundle_fingerprint": (
+                        snapshot.compiled_dataset
+                        .evaluation_plan_bundle_fingerprint
+                    ),
+                    "target_evidence_bundle_fingerprint": (
+                        snapshot.compiled_dataset
+                        .target_evidence_bundle.fingerprint
+                    ),
+                    "manifest_origin": snapshot.manifest_origin.value,
+                    "semantic_model_profile_fingerprint": (
+                        snapshot.semantic_model_profile_fingerprint
+                    ),
+                    "semantic_provider_fingerprint": (
+                        snapshot.semantic_provider_fingerprint
+                    ),
+                    "semantic_protocol_fingerprint": (
+                        snapshot.semantic_protocol_fingerprint
+                    ),
+                    "qualification_report_fingerprint": (
+                        snapshot.qualification_report.report_fingerprint
+                        if snapshot.qualification_report is not None
+                        else None
+                    ),
+                }
+            )
+        return result
 
     root = Path(workspace_root)
     file_keys = {

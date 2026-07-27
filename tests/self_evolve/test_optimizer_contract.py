@@ -198,6 +198,83 @@ async def test_trace_reflective_llm_mutator_proposes_candidate_and_lineage() -> 
 
 
 @pytest.mark.asyncio
+async def test_optimizer_lineage_distinguishes_exposed_from_addressed_signals() -> None:
+    signal = {
+        "signal_id": "signal-1",
+        "desired_behavior": ["recover after a failed tool call"],
+    }
+    request = OptimizerRequest(
+        target=_target(),
+        current_content="# Demo\n\nOld guidance.\n",
+        target_fingerprint="sha256:old",
+        trace_packs=(_trace_pack(),),
+        trainable_cases=(
+            EvalCase(
+                case_id="train-1",
+                input="web task",
+                self_improvement_signals=(signal,),
+            ),
+        ),
+        improvement_signal_set_fingerprint="sha256:" + "a" * 64,
+    )
+
+    unclaimed = await TraceReflectiveLLMMutator(
+        mutate_text=lambda _: {
+            "content": "# Demo\n\nUnrelated bounded improvement.\n",
+        }
+    ).propose(request)
+    claimed = await TraceReflectiveLLMMutator(
+        mutate_text=lambda _: {
+            "content": "# Demo\n\nRecover after a failed tool call.\n",
+            "addressed_improvement_signal_ids": ["signal-1"],
+        }
+    ).propose(request)
+
+    assert unclaimed.lineage[0].exposed_improvement_signal_ids == (
+        "signal-1",
+    )
+    assert unclaimed.lineage[0].addressed_improvement_signal_ids == ()
+    assert claimed.lineage[0].exposed_improvement_signal_ids == (
+        "signal-1",
+    )
+    assert claimed.lineage[0].addressed_improvement_signal_ids == (
+        "signal-1",
+    )
+    assert claimed.diagnostics["candidate_strategies"][0][
+        "exposed_improvement_signals"
+    ] == ["signal-1"]
+
+
+@pytest.mark.asyncio
+async def test_optimizer_rejects_addressing_an_unexposed_signal() -> None:
+    request = OptimizerRequest(
+        target=_target(),
+        current_content="# Demo\n\nOld guidance.\n",
+        target_fingerprint="sha256:old",
+        trace_packs=(_trace_pack(),),
+        trainable_cases=(
+            EvalCase(
+                case_id="train-1",
+                input="web task",
+                self_improvement_signals=(
+                    {"signal_id": "signal-1"},
+                ),
+            ),
+        ),
+    )
+
+    result = await TraceReflectiveLLMMutator(
+        mutate_text=lambda _: {
+            "content": "# Demo\n\nCandidate.\n",
+            "addressed_improvement_signal_ids": ["signal-forged"],
+        }
+    ).propose(request)
+
+    assert result.candidates == ()
+    assert result.diagnostics["filtered_invalid_patch_candidates"] == 1
+
+
+@pytest.mark.asyncio
 async def test_legacy_preview_does_not_recreate_private_contract_or_leak() -> None:
     secret = "PRIVATE_RAW_RECORDED_FIXTURE_VALUE"
     prompts: list[str] = []

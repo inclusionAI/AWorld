@@ -6,6 +6,11 @@ import json
 from dataclasses import dataclass, replace
 from typing import Any, Awaitable, Callable, Mapping, Protocol
 
+from aworld.self_evolve.evaluation_plan import (
+    SemanticModelQualificationReportV1,
+    SemanticQualificationRegistryV1,
+)
+
 from .extractors import (
     AWORLD_TRAJECTORY_LOG_MEDIA_TYPE,
     builtin_extractors,
@@ -18,6 +23,9 @@ from .mapping import (
     validate_mapping_spec,
 )
 from .scanner import SourceScanner
+from .semantic_ingestor import SemanticSelfImprovementIngestor
+from .semantic_snapshot import FrozenSemanticIngestionSnapshotV2
+from .semantic_workflow import SemanticProvider
 from .types import (
     AssetSelector,
     CaseFieldMappings,
@@ -30,6 +38,7 @@ from .types import (
     FrozenIngestionSnapshot,
     IngestionContractError,
     IngestionLimits,
+    IngestionManifestOrigin,
     IngestionMode,
     IngestorTrustLevel,
     RecordFramingSpec,
@@ -115,6 +124,11 @@ class DatasetMappingAgent:
         manifest: SourceManifest | None = None,
     ) -> MappingAgentResult:
         if manifest is not None:
+            if manifest.mapping_spec is None:
+                raise IngestionContractError(
+                    "mapping_protocol_invalid",
+                    "semantic-only manifest has no structural mapping",
+                )
             # A complete user manifest is deterministic and does not need a
             # model. Its verification command is deliberately not exposed here.
             return MappingAgentResult(
@@ -251,15 +265,41 @@ class AgenticDatasetIngestor:
         *,
         extractors: tuple[DatasetExtractor, ...] | None = None,
         timeout_seconds: float = 60.0,
+        semantic_provider: SemanticProvider | None = None,
+        semantic_provider_fingerprint: str | None = None,
+        semantic_model_profile_fingerprint: str | None = None,
+        semantic_protocol_fingerprint: str | None = None,
+        semantic_qualification_report: (
+            SemanticModelQualificationReportV1 | None
+        ) = None,
+        semantic_qualification_registry: (
+            SemanticQualificationRegistryV1 | None
+        ) = None,
     ) -> None:
         self.provider = provider
         self.extractors = tuple(extractors or builtin_extractors())
         self.timeout_seconds = timeout_seconds
+        self.semantic_provider = semantic_provider
+        self.semantic_provider_fingerprint = (
+            semantic_provider_fingerprint
+        )
+        self.semantic_model_profile_fingerprint = (
+            semantic_model_profile_fingerprint
+        )
+        self.semantic_protocol_fingerprint = (
+            semantic_protocol_fingerprint
+        )
+        self.semantic_qualification_report = (
+            semantic_qualification_report
+        )
+        self.semantic_qualification_registry = (
+            semantic_qualification_registry
+        )
 
     async def prepare(
         self,
         request: DatasetIngestionRequest,
-    ) -> FrozenIngestionSnapshot:
+    ) -> FrozenIngestionSnapshot | FrozenSemanticIngestionSnapshotV2:
         if request.ingestor_name != self.name:
             raise IngestionContractError(
                 "ingestor_request_mismatch",
@@ -277,18 +317,98 @@ class AgenticDatasetIngestor:
             else request.source_path
         )
         manifest_path = request.manifest_path
+        manifest_origin = request.manifest_origin
         if manifest_path is None and request.source_path.is_dir():
             conventional = request.source_path / "aworld-source.yaml"
             conventional_yml = request.source_path / "aworld-source.yml"
             if conventional.is_file() and not conventional.is_symlink():
                 manifest_path = conventional
+                manifest_origin = (
+                    IngestionManifestOrigin.CONVENTIONAL_UNTRUSTED
+                )
             elif conventional_yml.is_file() and not conventional_yml.is_symlink():
                 manifest_path = conventional_yml
+                manifest_origin = (
+                    IngestionManifestOrigin.CONVENTIONAL_UNTRUSTED
+                )
         if manifest_path is not None:
             manifest = await asyncio.to_thread(
                 load_source_manifest,
                 manifest_path,
                 source_root=source_root,
+            )
+        used_extractor_fingerprints = tuple(
+            sorted(
+                {
+                    extractor_fingerprint(extractor)
+                    for extractor in self.extractors
+                    if any(
+                        asset.extractor_name == extractor.name
+                        and asset.extractor_version == extractor.version
+                        for asset in inventory.assets
+                    )
+                }
+            )
+        )
+        semantic_requested = (
+            manifest is not None
+            and manifest.semantic_profile is not None
+        )
+        explicit_structural_manifest = (
+            manifest is not None
+            and manifest.mapping_spec is not None
+            and not semantic_requested
+        )
+        if (
+            self.semantic_provider is not None
+            and not explicit_structural_manifest
+            and (
+                semantic_requested
+                or not _inventory_is_semantically_exhaustive(
+                    inventory
+                )
+            )
+        ):
+            if (
+                self.semantic_provider_fingerprint is None
+                or self.semantic_model_profile_fingerprint is None
+            ):
+                raise IngestionContractError(
+                    "semantic_provider_identity_missing",
+                    "semantic provider requires frozen provider and model identities",
+                )
+            kwargs: dict[str, Any] = {}
+            if self.semantic_protocol_fingerprint is not None:
+                kwargs["protocol_fingerprint"] = (
+                    self.semantic_protocol_fingerprint
+                )
+            return await SemanticSelfImprovementIngestor(
+                provider=self.semantic_provider,
+                provider_fingerprint=(
+                    self.semantic_provider_fingerprint
+                ),
+                model_profile_fingerprint=(
+                    self.semantic_model_profile_fingerprint
+                ),
+                qualification_report=(
+                    self.semantic_qualification_report
+                ),
+                qualification_registry=(
+                    self.semantic_qualification_registry
+                ),
+                timeout_seconds=self.timeout_seconds,
+                **kwargs,
+            ).prepare(
+                request,
+                inventory=inventory,
+                manifest=manifest,
+                manifest_origin=manifest_origin,
+                extractor_fingerprints=(
+                    used_extractor_fingerprints
+                ),
+                ingestor_name=self.name,
+                ingestor_version=self.version,
+                trust_level=self.trust_level,
             )
         deterministic = (
             deterministic_mapping_for_inventory(inventory)
@@ -340,19 +460,6 @@ class AgenticDatasetIngestor:
             manifest=manifest,
         )
         selected = verification.selected_mapping
-        used_extractor_fingerprints = tuple(
-            sorted(
-                {
-                    extractor_fingerprint(extractor)
-                    for extractor in self.extractors
-                    if any(
-                        asset.extractor_name == extractor.name
-                        and asset.extractor_version == extractor.version
-                        for asset in inventory.assets
-                    )
-                }
-            )
-        )
         ingestion_id = FrozenIngestionSnapshot.identity_for(
             inventory_fingerprint=inventory.source_root_fingerprint,
             mapping_fingerprint=selected.fingerprint,
@@ -361,6 +468,8 @@ class AgenticDatasetIngestor:
             ingestor_name=self.name,
             ingestor_version=self.version,
             trust_level=self.trust_level,
+            manifest_origin=manifest_origin,
+            identity_schema_version="v2",
         )
         normalized_cases = tuple(
             replace(
@@ -402,7 +511,63 @@ class AgenticDatasetIngestor:
             ingestor_name=self.name,
             ingestor_version=self.version,
             ingestor_trust_level=self.trust_level,
+            manifest_origin=manifest_origin,
+            identity_schema_version="v2",
         )
+
+
+def _inventory_is_semantically_exhaustive(
+    inventory: SourceInventory,
+) -> bool:
+    """Recognize only framework-owned structural schemas with no extra fields."""
+
+    supported = tuple(
+        item
+        for item in inventory.assets
+        if item.extractor_name is not None
+    )
+    if not supported or len(supported) != len(inventory.assets):
+        return False
+    if all(
+        item.media_type == AWORLD_TRAJECTORY_LOG_MEDIA_TYPE
+        for item in supported
+    ):
+        return all(
+            set(
+                str(value)
+                for value in item.structural_profile.get(
+                    "field_names",
+                    (),
+                )
+            ).issubset({"task_id", "trajectory"})
+            for item in supported
+        )
+    allowed_case_fields = {
+        "case_id",
+        "id",
+        "input",
+        "expected_output",
+        "task_id",
+        "trajectory",
+    }
+    structured_media_types = {
+        "application/json",
+        "application/x-ndjson",
+        "text/csv",
+        "text/tab-separated-values",
+        "application/yaml",
+    }
+    return all(
+        item.media_type in structured_media_types
+        and set(
+            str(value)
+            for value in item.structural_profile.get(
+                "field_names",
+                (),
+            )
+        ).issubset(allowed_case_fields)
+        for item in supported
+    )
 
 
 def build_mapping_prompt(

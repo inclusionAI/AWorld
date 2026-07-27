@@ -60,6 +60,13 @@ class IngestionMode(str, Enum):
     AUTO_VERIFIED = "auto_verified"
 
 
+class IngestionManifestOrigin(str, Enum):
+    OPERATOR_EXPLICIT = "operator_explicit"
+    CONVENTIONAL_UNTRUSTED = "conventional_untrusted"
+    TRUSTED_REGISTERED_INGESTOR = "trusted_registered_ingestor"
+    ABSENT = "absent"
+
+
 def canonical_json_bytes(value: Any) -> bytes:
     return json.dumps(
         _json_value(value),
@@ -603,6 +610,9 @@ class DatasetIngestionRequest:
     model_profile: str | None = None
     limits: IngestionLimits = field(default_factory=IngestionLimits)
     mode: IngestionMode = IngestionMode.PROPOSAL
+    manifest_origin: IngestionManifestOrigin = (
+        IngestionManifestOrigin.ABSENT
+    )
     schema_version: str = DATASET_INGESTION_REQUEST_SCHEMA_VERSION
 
     def __post_init__(self) -> None:
@@ -615,6 +625,29 @@ class DatasetIngestionRequest:
             object.__setattr__(self, "source_path", Path(self.source_path))
         if self.manifest_path is not None and not isinstance(self.manifest_path, Path):
             object.__setattr__(self, "manifest_path", Path(self.manifest_path))
+        object.__setattr__(
+            self,
+            "manifest_origin",
+            IngestionManifestOrigin(self.manifest_origin),
+        )
+        if (
+            self.manifest_path is not None
+            and self.manifest_origin
+            is not IngestionManifestOrigin.OPERATOR_EXPLICIT
+        ):
+            raise IngestionContractError(
+                "manifest_origin_invalid",
+                "explicit manifest paths require operator-issued origin",
+            )
+        if (
+            self.manifest_path is None
+            and self.manifest_origin
+            is not IngestionManifestOrigin.ABSENT
+        ):
+            raise IngestionContractError(
+                "manifest_origin_invalid",
+                "request manifest origin requires an explicit manifest path",
+            )
         if not _SAFE_NAME_PATTERN.fullmatch(self.ingestor_name):
             raise IngestionContractError(
                 "unsafe_identity",
@@ -629,6 +662,7 @@ class DatasetIngestionRequest:
             "limits": self.limits.to_dict(),
             "mode": self.mode.value,
             "has_manifest": self.manifest_path is not None,
+            "manifest_origin": self.manifest_origin.value,
         }
         if not public:
             result["source_path"] = str(self.source_path)
@@ -656,6 +690,12 @@ class DatasetIngestionRequest:
                 _mapping(payload.get("limits", {}), field_name="limits")
             ),
             mode=IngestionMode(payload.get("mode", IngestionMode.PROPOSAL.value)),
+            manifest_origin=IngestionManifestOrigin(
+                payload.get(
+                    "manifest_origin",
+                    IngestionManifestOrigin.ABSENT.value,
+                )
+            ),
         )
 
 
@@ -1202,9 +1242,10 @@ class DatasetMappingSpec:
 class CaseSourceProvenance:
     asset_ids: tuple[str, ...]
     record_locators: tuple[str, ...]
-    mapping_fingerprint: str
+    mapping_fingerprint: str | None
     ingestion_id: str | None = None
     verification_origin: str | None = None
+    normalization_fingerprint: str | None = None
 
     def __post_init__(self) -> None:
         if not self.asset_ids:
@@ -1224,10 +1265,24 @@ class CaseSourceProvenance:
                 "provenance_missing",
                 "asset identities and locators must align",
             )
-        validate_fingerprint(
-            self.mapping_fingerprint,
-            field_name="mapping_fingerprint",
-        )
+        if (
+            self.mapping_fingerprint is None
+            and self.normalization_fingerprint is None
+        ):
+            raise IngestionContractError(
+                "normalization_provenance_missing",
+                "case provenance requires mapping or normalization identity",
+            )
+        if self.mapping_fingerprint is not None:
+            validate_fingerprint(
+                self.mapping_fingerprint,
+                field_name="mapping_fingerprint",
+            )
+        if self.normalization_fingerprint is not None:
+            validate_fingerprint(
+                self.normalization_fingerprint,
+                field_name="normalization_fingerprint",
+            )
         if self.ingestion_id is not None:
             validate_safe_id(self.ingestion_id, field_name="ingestion_id")
         if self.verification_origin not in {
@@ -1241,13 +1296,18 @@ class CaseSourceProvenance:
             )
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        result = {
             "ingestion_id": self.ingestion_id,
             "asset_ids": list(self.asset_ids),
             "record_locators": list(self.record_locators),
             "mapping_fingerprint": self.mapping_fingerprint,
             "verification_origin": self.verification_origin,
         }
+        if self.normalization_fingerprint is not None:
+            result["normalization_fingerprint"] = (
+                self.normalization_fingerprint
+            )
+        return result
 
     @classmethod
     def from_dict(cls, payload: Mapping[str, Any]) -> "CaseSourceProvenance":
@@ -1257,10 +1317,17 @@ class CaseSourceProvenance:
             record_locators=tuple(
                 str(item) for item in payload.get("record_locators", ())
             ),
-            mapping_fingerprint=str(
-                payload.get("mapping_fingerprint") or ""
+            mapping_fingerprint=(
+                str(payload["mapping_fingerprint"])
+                if payload.get("mapping_fingerprint") is not None
+                else None
             ),
             verification_origin=payload.get("verification_origin"),
+            normalization_fingerprint=(
+                str(payload["normalization_fingerprint"])
+                if payload.get("normalization_fingerprint") is not None
+                else None
+            ),
         )
 
 
@@ -1274,6 +1341,7 @@ class NormalizedCaseRecord:
     metadata: Mapping[str, Any] = field(default_factory=dict)
     trajectory: Mapping[str, Any] | None = None
     trace_replayability: str = "absent"
+    self_improvement_signals: tuple[Mapping[str, Any], ...] = ()
     schema_version: str = NORMALIZED_CASE_SCHEMA_VERSION
 
     def __post_init__(self) -> None:
@@ -1311,13 +1379,14 @@ class NormalizedCaseRecord:
         canonical_json_bytes(self.expected_output)
         canonical_json_bytes(self.metadata)
         canonical_json_bytes(self.trajectory)
+        canonical_json_bytes(self.self_improvement_signals)
 
     @property
     def fingerprint(self) -> str:
         return fingerprint_json(self.to_dict())
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        result = {
             "schema_version": self.schema_version,
             "case_id": self.case_id,
             "input": _json_value(self.input),
@@ -1328,6 +1397,12 @@ class NormalizedCaseRecord:
             "trace_replayability": self.trace_replayability,
             "source": self.source.to_dict(),
         }
+        if self.self_improvement_signals:
+            result["self_improvement_signals"] = [
+                _json_value(item)
+                for item in self.self_improvement_signals
+            ]
+        return result
 
     @classmethod
     def from_dict(cls, payload: Mapping[str, Any]) -> "NormalizedCaseRecord":
@@ -1348,6 +1423,10 @@ class NormalizedCaseRecord:
             ),
             source=CaseSourceProvenance.from_dict(
                 _mapping(payload.get("source", {}), field_name="source")
+            ),
+            self_improvement_signals=tuple(
+                _mapping(item, field_name="self_improvement_signal")
+                for item in payload.get("self_improvement_signals", ())
             ),
         )
 
@@ -1567,6 +1646,10 @@ class FrozenIngestionSnapshot:
     ingestor_trust_level: IngestorTrustLevel = (
         IngestorTrustLevel.FRAMEWORK_BUILTIN
     )
+    manifest_origin: IngestionManifestOrigin = (
+        IngestionManifestOrigin.ABSENT
+    )
+    identity_schema_version: str = "v1"
     schema_version: str = FROZEN_INGESTION_SNAPSHOT_SCHEMA_VERSION
 
     def __post_init__(self) -> None:
@@ -1591,6 +1674,24 @@ class FrozenIngestionSnapshot:
             "ingestor_trust_level",
             IngestorTrustLevel(self.ingestor_trust_level),
         )
+        object.__setattr__(
+            self,
+            "manifest_origin",
+            IngestionManifestOrigin(self.manifest_origin),
+        )
+        if self.identity_schema_version not in {"v1", "v2"}:
+            raise IngestionContractError(
+                "schema_version_mismatch",
+                "unsupported ingestion identity schema",
+            )
+        if (
+            self.identity_schema_version == "v1"
+            and self.manifest_origin is not IngestionManifestOrigin.ABSENT
+        ):
+            raise IngestionContractError(
+                "manifest_origin_unbound",
+                "manifest origin requires v2 ingestion identity",
+            )
         if self.manifest_fingerprint is not None:
             validate_fingerprint(
                 self.manifest_fingerprint,
@@ -1608,6 +1709,25 @@ class FrozenIngestionSnapshot:
                 "provenance_missing",
                 "manifest fingerprint requires a frozen private manifest",
             )
+        if self.identity_schema_version == "v2":
+            if (
+                self.source_manifest is None
+                and self.manifest_origin
+                is not IngestionManifestOrigin.ABSENT
+            ):
+                raise IngestionContractError(
+                    "manifest_origin_invalid",
+                    "v2 manifest origin requires a frozen manifest",
+                )
+            if (
+                self.source_manifest is not None
+                and self.manifest_origin
+                is IngestionManifestOrigin.ABSENT
+            ):
+                raise IngestionContractError(
+                    "manifest_origin_invalid",
+                    "v2 frozen manifest requires a typed origin",
+                )
         for fingerprint in self.extractor_fingerprints:
             validate_fingerprint(
                 fingerprint,
@@ -1670,6 +1790,8 @@ class FrozenIngestionSnapshot:
                 ingestor_name=self.ingestor_name,
                 ingestor_version=self.ingestor_version,
                 trust_level=self.ingestor_trust_level,
+                manifest_origin=self.manifest_origin,
+                identity_schema_version=self.identity_schema_version,
             )
             if self.ingestion_id != expected_identity:
                 raise IngestionContractError(
@@ -1693,9 +1815,17 @@ class FrozenIngestionSnapshot:
         ingestor_name: str,
         ingestor_version: str,
         trust_level: IngestorTrustLevel,
+        manifest_origin: IngestionManifestOrigin = (
+            IngestionManifestOrigin.ABSENT
+        ),
+        identity_schema_version: str = "v1",
     ) -> str:
-        digest = fingerprint_json(
-            {
+        if identity_schema_version not in {"v1", "v2"}:
+            raise IngestionContractError(
+                "schema_version_mismatch",
+                "unsupported ingestion identity schema",
+            )
+        identity_payload = {
                 "schema_version": FROZEN_INGESTION_SNAPSHOT_SCHEMA_VERSION,
                 "inventory_fingerprint": validate_fingerprint(
                     inventory_fingerprint
@@ -1707,7 +1837,12 @@ class FrozenIngestionSnapshot:
                 "ingestor_version": ingestor_version,
                 "trust_level": trust_level.value,
             }
-        )
+        if identity_schema_version == "v2":
+            identity_payload["identity_schema_version"] = "v2"
+            identity_payload["manifest_origin"] = (
+                IngestionManifestOrigin(manifest_origin).value
+            )
+        digest = fingerprint_json(identity_payload)
         return "ingestion-" + digest.removeprefix("sha256:")[:32]
 
     def to_dict(self, *, public: bool = False) -> dict[str, Any]:
@@ -1726,6 +1861,12 @@ class FrozenIngestionSnapshot:
             "ingestion_model_call_count": self.ingestion_model_call_count,
             "quality_report": self.quality_report.to_dict(public=public),
         }
+        if self.identity_schema_version != "v1":
+            result["identity_schema_version"] = (
+                self.identity_schema_version
+            )
+        if self.manifest_origin is not IngestionManifestOrigin.ABSENT:
+            result["manifest_origin"] = self.manifest_origin.value
         if not public:
             result["source_manifest"] = (
                 _json_value(self.source_manifest)
@@ -1818,6 +1959,15 @@ class FrozenIngestionSnapshot:
                     "ingestor_trust_level",
                     IngestorTrustLevel.FRAMEWORK_BUILTIN.value,
                 )
+            ),
+            manifest_origin=IngestionManifestOrigin(
+                payload.get(
+                    "manifest_origin",
+                    IngestionManifestOrigin.ABSENT.value,
+                )
+            ),
+            identity_schema_version=str(
+                payload.get("identity_schema_version") or "v1"
             ),
         )
         claimed = payload.get("normalized_dataset_fingerprint")

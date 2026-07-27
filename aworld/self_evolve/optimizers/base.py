@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import TYPE_CHECKING, Mapping, Protocol
+from typing import Any, TYPE_CHECKING, Mapping, Protocol
 
 from aworld.self_evolve.datasets import EvalCase, SelfEvolveDataset
 from aworld.self_evolve.lessons import LessonRecord
@@ -83,6 +83,7 @@ class OptimizerRequest:
     replay_requirements: tuple[ReplayCapabilityRequirement, ...] = ()
     target_package_inventory: tuple[str, ...] = ()
     evolution_context: EvolutionContext | None = None
+    improvement_signal_set_fingerprint: str | None = None
 
     @classmethod
     def from_dataset(
@@ -115,7 +116,66 @@ class OptimizerRequest:
             max_candidates=max_candidates,
             replay_requirements=tuple(replay_requirements),
             target_package_inventory=tuple(target_package_inventory),
+            improvement_signal_set_fingerprint=(
+                str(
+                    dataset.recipe.source[
+                        "improvement_signal_set_fingerprint"
+                    ]
+                )
+                if dataset.recipe.source.get(
+                    "improvement_signal_set_fingerprint"
+                )
+                is not None
+                else None
+            ),
         )
+
+
+def exposed_improvement_signal_ids(
+    request: OptimizerRequest,
+) -> tuple[str, ...]:
+    signal_ids: list[str] = []
+    for case in request.trainable_cases:
+        for signal in getattr(case, "self_improvement_signals", ()):
+            if not isinstance(signal, Mapping):
+                continue
+            signal_id = signal.get("signal_id")
+            if isinstance(signal_id, str) and signal_id:
+                signal_ids.append(signal_id)
+    return tuple(dict.fromkeys(signal_ids))
+
+
+def declared_addressed_improvement_signal_ids(
+    request: OptimizerRequest,
+    output: Any,
+) -> tuple[str, ...]:
+    """Accept only candidate-declared IDs that were exposed in its context."""
+
+    payload = output
+    if isinstance(payload, Mapping):
+        expected_output = payload.get("expected_output")
+        if isinstance(expected_output, Mapping):
+            payload = expected_output
+    raw_ids = (
+        payload.get("addressed_improvement_signal_ids", ())
+        if isinstance(payload, Mapping)
+        else ()
+    )
+    if not isinstance(raw_ids, (list, tuple)) or any(
+        not isinstance(item, str) or not item
+        for item in raw_ids
+    ):
+        raise ValueError(
+            "addressed improvement signal IDs must be a string array"
+        )
+    addressed = tuple(dict.fromkeys(raw_ids))
+    exposed = set(exposed_improvement_signal_ids(request))
+    unknown = set(addressed) - exposed
+    if unknown:
+        raise ValueError(
+            "candidate addressed an improvement signal that was not exposed"
+        )
+    return addressed
 
 
 @dataclass(frozen=True)

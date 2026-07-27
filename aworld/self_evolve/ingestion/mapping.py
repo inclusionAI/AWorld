@@ -8,6 +8,9 @@ from typing import Any, Iterable, Mapping, Sequence
 
 import yaml
 
+from aworld.self_evolve.evaluation_plan import (
+    SemanticIngestionProfileV1,
+)
 from .extractors import (
     builtin_extractors,
     extract_asset,
@@ -55,6 +58,7 @@ _MANIFEST_ALLOWED_KEYS = frozenset(
         "verification",
         "policy",
         "mapping",
+        "semantics",
     }
 )
 _EXECUTABLE_KEY_TOKENS = (
@@ -106,7 +110,8 @@ class SourceManifestPolicy:
 
 @dataclass(frozen=True)
 class SourceManifest:
-    mapping_spec: DatasetMappingSpec
+    mapping_spec: DatasetMappingSpec | None = None
+    semantic_profile: SemanticIngestionProfileV1 | None = None
     verification_command: str | None = None
     policy: SourceManifestPolicy = field(default_factory=SourceManifestPolicy)
     include_patterns: tuple[str, ...] = ()
@@ -118,6 +123,11 @@ class SourceManifest:
             raise IngestionContractError(
                 "schema_version_mismatch",
                 "invalid source manifest schema",
+            )
+        if self.mapping_spec is None and self.semantic_profile is None:
+            raise IngestionContractError(
+                "manifest_invalid",
+                "source manifest requires mapping or semantics",
             )
         for pattern in (*self.include_patterns, *self.exclude_patterns):
             _validate_glob(pattern)
@@ -137,13 +147,12 @@ class SourceManifest:
         return fingerprint_json(self.to_dict())
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        result = {
             "schema_version": self.schema_version,
             "assets": {
                 "include": list(self.include_patterns),
                 "exclude": list(self.exclude_patterns),
             },
-            "mapping": self.mapping_spec.to_dict(),
             "verification": (
                 {"command": self.verification_command}
                 if self.verification_command is not None
@@ -151,6 +160,11 @@ class SourceManifest:
             ),
             "policy": self.policy.to_dict(),
         }
+        if self.mapping_spec is not None:
+            result["mapping"] = self.mapping_spec.to_dict()
+        if self.semantic_profile is not None:
+            result["semantics"] = self.semantic_profile.to_dict()
+        return result
 
 
 @dataclass(frozen=True)
@@ -278,11 +292,25 @@ def parse_source_manifest(payload: Any) -> SourceManifest:
     for pattern in (*include, *exclude):
         _validate_glob(pattern)
 
+    has_legacy_mapping_sections = any(
+        payload.get(key) is not None
+        for key in ("case", "joins", "trajectory")
+    )
     if payload.get("mapping") is not None:
         mapping_payload = _as_mapping(payload["mapping"], "mapping")
         mapping_spec = DatasetMappingSpec.from_dict(mapping_payload)
-    else:
+    elif has_legacy_mapping_sections:
         mapping_spec = _mapping_from_manifest_sections(payload, include, exclude)
+    else:
+        mapping_spec = None
+    semantics_payload = payload.get("semantics")
+    semantic_profile = (
+        SemanticIngestionProfileV1.from_dict(
+            _as_mapping(semantics_payload, "semantics")
+        )
+        if semantics_payload is not None
+        else None
+    )
     verification = _as_mapping(payload.get("verification", {}), "verification")
     unexpected_verification = set(verification) - {"command"}
     if unexpected_verification:
@@ -303,6 +331,7 @@ def parse_source_manifest(payload: Any) -> SourceManifest:
         )
     return SourceManifest(
         mapping_spec=mapping_spec,
+        semantic_profile=semantic_profile,
         verification_command=verification.get("command"),
         policy=SourceManifestPolicy(
             allow_rejected_record_ratio=policy_payload.get(

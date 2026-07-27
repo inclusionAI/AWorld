@@ -15,8 +15,13 @@ from aworld.self_evolve.trace_pack import (
 from aworld.self_evolve.ingestion.types import (
     FrozenIngestionSnapshot,
     NormalizedCaseRecord,
+    canonical_json_bytes,
     fingerprint_json,
 )
+from aworld.self_evolve.ingestion.semantic_snapshot import (
+    FrozenSemanticIngestionSnapshotV2,
+)
+from aworld.self_evolve.improvement_signals import DatasetSplit
 from aworld.self_evolve.trajectory_context import (
     TrajectoryContextSnapshot,
     build_trajectory_context_snapshots,
@@ -58,7 +63,11 @@ class SelfEvolveEvalSourceConfig:
     session_id: str | None = None
     task_ids: tuple[str, ...] = ()
     max_cases: int = 100
-    ingestion_snapshot: FrozenIngestionSnapshot | None = None
+    ingestion_snapshot: (
+        FrozenIngestionSnapshot
+        | FrozenSemanticIngestionSnapshotV2
+        | None
+    ) = None
 
     def __post_init__(self) -> None:
         if self.kind not in SUPPORTED_SOURCE_KINDS:
@@ -84,6 +93,7 @@ class EvalCase:
     trace_pack: TracePack | None = None
     source: Mapping[str, Any] = field(default_factory=dict)
     context_snapshot: TrajectoryContextSnapshot | None = None
+    self_improvement_signals: tuple[Mapping[str, Any], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -143,10 +153,22 @@ def build_dataset_from_source(
             _agentic_eval_cases(snapshot),
             source_config=source_config,
         )
-        recipe = build_dataset_recipe(
-            cases,
-            source_config=source_config,
-            split_seed=split_seed,
+        recipe = (
+            _semantic_dataset_recipe(
+                cases,
+                source_config=source_config,
+                snapshot=snapshot,
+                split_seed=split_seed,
+            )
+            if isinstance(
+                snapshot,
+                FrozenSemanticIngestionSnapshotV2,
+            )
+            else build_dataset_recipe(
+                cases,
+                source_config=source_config,
+                split_seed=split_seed,
+            )
         )
         source = dict(recipe.source)
         source["split_fingerprint"] = fingerprint_json(recipe.splits)
@@ -605,11 +627,63 @@ def build_dataset_recipe(
         split_seed=split_seed,
     )
     return DatasetRecipe(
-        source=_source_recipe(case_tuple, source_config=source_config),
+        source=_source_recipe(
+            case_tuple,
+            source_config=source_config,
+        ),
         split_seed=split_seed,
         splits=splits,
         synthetic_generation_policy=synthetic_generation_policy,
-        trainable_case_ids=tuple(splits["train"] + splits["validation"]),
+        trainable_case_ids=tuple(
+            splits["train"] + splits["validation"]
+        ),
+        held_out_case_ids=tuple(splits["held_out"]),
+    )
+
+
+def _semantic_dataset_recipe(
+    cases: Iterable[EvalCase],
+    *,
+    source_config: SelfEvolveEvalSourceConfig,
+    snapshot: FrozenSemanticIngestionSnapshotV2,
+    split_seed: str,
+) -> DatasetRecipe:
+    case_tuple = tuple(cases)
+    selected_ids = {item.case_id for item in case_tuple}
+    frozen_splits = snapshot.improvement_signal_set.case_splits
+    if not selected_ids.issubset(frozen_splits):
+        raise ValueError(
+            "semantic ingestion snapshot has incomplete frozen splits"
+        )
+    splits = {
+        "train": sorted(
+            case_id
+            for case_id in selected_ids
+            if frozen_splits[case_id] is DatasetSplit.TRAIN
+        ),
+        "validation": sorted(
+            case_id
+            for case_id in selected_ids
+            if frozen_splits[case_id] is DatasetSplit.VALIDATION
+        ),
+        "held_out": sorted(
+            case_id
+            for case_id in selected_ids
+            if frozen_splits[case_id] is DatasetSplit.HELD_OUT
+        ),
+    }
+    source = dict(
+        _source_recipe(case_tuple, source_config=source_config)
+    )
+    source["split_origin"] = "frozen_semantic_evidence"
+    return DatasetRecipe(
+        source=source,
+        split_seed=split_seed,
+        splits=splits,
+        synthetic_generation_policy="disabled",
+        trainable_case_ids=tuple(
+            splits["train"] + splits["validation"]
+        ),
         held_out_case_ids=tuple(splits["held_out"]),
     )
 
@@ -640,13 +714,58 @@ def _source_recipe(
             {
                 "ingestion_id": snapshot.ingestion_id,
                 "source_fingerprint": snapshot.inventory.source_root_fingerprint,
-                "mapping_fingerprint": snapshot.selected_mapping.fingerprint,
+                "normalization_kind": (
+                    "semantic_evidence"
+                    if isinstance(
+                        snapshot,
+                        FrozenSemanticIngestionSnapshotV2,
+                    )
+                    else "structural_mapping"
+                ),
+                "mapping_fingerprint": (
+                    None
+                    if isinstance(
+                        snapshot,
+                        FrozenSemanticIngestionSnapshotV2,
+                    )
+                    else snapshot.selected_mapping.fingerprint
+                ),
                 "normalized_dataset_fingerprint": (
                     snapshot.normalized_dataset_fingerprint
                 ),
                 "ingestion_schema_version": snapshot.schema_version,
             }
         )
+        if isinstance(
+            snapshot,
+            FrozenSemanticIngestionSnapshotV2,
+        ):
+            source.update(
+                {
+                    "normalization_fingerprint": (
+                        snapshot.compiled_dataset
+                        .normalization_fingerprint
+                    ),
+                    "evidence_graph_logical_fingerprint": (
+                        snapshot.evidence_graph.logical_fingerprint
+                    ),
+                    "evidence_graph_provenance_fingerprint": (
+                        snapshot.evidence_graph.provenance_fingerprint
+                    ),
+                    "improvement_signal_set_fingerprint": (
+                        snapshot.improvement_signal_set.fingerprint
+                    ),
+                    "evaluation_plan_bundle_fingerprint": (
+                        snapshot.compiled_dataset
+                        .evaluation_plan_bundle_fingerprint
+                    ),
+                    "target_evidence_bundle_fingerprint": (
+                        snapshot.compiled_dataset
+                        .target_evidence_bundle.fingerprint
+                    ),
+                    "manifest_origin": snapshot.manifest_origin.value,
+                }
+            )
         if snapshot.manifest_fingerprint is not None:
             source["manifest_fingerprint"] = snapshot.manifest_fingerprint
         if snapshot.extractor_fingerprints:
@@ -657,7 +776,7 @@ def _source_recipe(
 
 
 def _agentic_eval_cases(
-    snapshot: FrozenIngestionSnapshot,
+    snapshot: FrozenIngestionSnapshot | FrozenSemanticIngestionSnapshotV2,
 ) -> tuple[EvalCase, ...]:
     trajectory_records: list[TrajectoryLogRecord] = []
     trajectory_by_case: dict[str, tuple[Mapping[str, Any], ...]] = {}
@@ -723,6 +842,9 @@ def _agentic_eval_cases(
                     "ingestion_id": snapshot.ingestion_id,
                 },
                 context_snapshot=context_snapshot,
+                self_improvement_signals=(
+                    normalized.self_improvement_signals
+                ),
             )
         )
     return tuple(cases)
@@ -873,11 +995,27 @@ def _cases_fingerprint(cases: tuple[EvalCase, ...]) -> str:
                 if case.context_snapshot is not None
                 else None
             ),
+            **(
+                {
+                    "self_improvement_signals": (
+                        case.self_improvement_signals
+                    )
+                }
+                if case.self_improvement_signals
+                else {}
+            ),
         }
         for case in cases
     ]
+    normalized_payload = json.loads(
+        canonical_json_bytes(payload).decode("utf-8")
+    )
     return "sha256:" + hashlib.sha256(
-        json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+        json.dumps(
+            normalized_payload,
+            ensure_ascii=False,
+            sort_keys=True,
+        ).encode("utf-8")
     ).hexdigest()
 
 

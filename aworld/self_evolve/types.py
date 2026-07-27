@@ -68,6 +68,9 @@ class OptimizerLineage:
     semantic_package_fingerprint: str | None = None
     verification_contract_fingerprint: str | None = None
     addressed_lesson_ids: tuple[str, ...] = ()
+    improvement_signal_set_fingerprint: str | None = None
+    exposed_improvement_signal_ids: tuple[str, ...] = ()
+    addressed_improvement_signal_ids: tuple[str, ...] = ()
     rationale: str | None = None
 
 

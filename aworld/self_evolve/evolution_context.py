@@ -969,8 +969,7 @@ def _trainable_case_payloads(
 ) -> tuple[Mapping[str, object], ...]:
     payloads: list[Mapping[str, object]] = []
     for case in cases[:MAX_CONTEXT_CASES]:
-        payloads.append(
-            {
+        payload = {
                 "case_id": sanitize_text(case.case_id, max_chars=160),
                 "input": sanitize_metric_value(case.input, max_chars=8_000),
                 "expected_output": sanitize_metric_value(
@@ -979,7 +978,13 @@ def _trainable_case_payloads(
                 ),
                 "metadata": sanitize_metric_value(case.metadata, max_chars=240),
             }
-        )
+        signals = getattr(case, "self_improvement_signals", ())
+        if signals:
+            payload["self_improvement_signals"] = sanitize_metric_value(
+                signals,
+                max_chars=12_000,
+            )
+        payloads.append(payload)
     return tuple(payloads)
 
 

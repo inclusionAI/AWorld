@@ -4,7 +4,12 @@ import hashlib
 import importlib
 from typing import Callable
 
-from aworld.self_evolve.optimizers.base import OptimizerRequest, OptimizerResult
+from aworld.self_evolve.optimizers.base import (
+    OptimizerRequest,
+    OptimizerResult,
+    declared_addressed_improvement_signal_ids,
+    exposed_improvement_signal_ids,
+)
 from aworld.self_evolve.candidate_package import (
     candidate_content_semantic_fingerprint,
 )
@@ -83,6 +88,10 @@ def _delegate_dspy_optimizer(
     rationale = output.get("rationale", "")
     if not isinstance(rationale, str):
         rationale = ""
+    exposed_signal_ids = exposed_improvement_signal_ids(request)
+    addressed_signal_ids = (
+        declared_addressed_improvement_signal_ids(request, output)
+    )
 
     candidate_id = f"{optimizer_name}-{abs(hash((request.target.target_type, request.target.target_id, content))) % 10**12:012d}"
     candidate = CandidateVariant(
@@ -104,6 +113,11 @@ def _delegate_dspy_optimizer(
                 semantic_fingerprint=candidate_content_semantic_fingerprint(
                     content
                 ),
+                improvement_signal_set_fingerprint=(
+                    request.improvement_signal_set_fingerprint
+                ),
+                exposed_improvement_signal_ids=exposed_signal_ids,
+                addressed_improvement_signal_ids=addressed_signal_ids,
                 rationale=rationale,
             ),
         ),
