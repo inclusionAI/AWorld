@@ -292,6 +292,12 @@ class TraceReflectiveLLMMutator:
                 {
                     "candidate_id": candidate_id,
                     "materialization": materialization,
+                    "structural_edit_intent": (
+                        _candidate_structural_edit_intent(
+                            output,
+                            base_content=request.current_content,
+                        )
+                    ),
                     **strategy_record,
                 }
             )
@@ -982,6 +988,54 @@ def _candidate_strategy_record(
     if isinstance(repair_conformance, Mapping):
         record["repair_conformance"] = dict(repair_conformance)
     return record
+
+
+def _candidate_structural_edit_intent(
+    output: Any,
+    *,
+    base_content: str,
+) -> dict[str, object]:
+    base_fingerprint = "sha256:" + hashlib.sha256(
+        base_content.encode("utf-8")
+    ).hexdigest()
+    patch_intent = (
+        output.get("patch_intent")
+        if isinstance(output, Mapping)
+        else None
+    )
+    if not isinstance(patch_intent, Mapping):
+        return {
+            "schema_version": "aworld.skill.edit_intent.v1",
+            "mode": "full_content",
+            "base_content_fingerprint": base_fingerprint,
+            "framework_anchor": "candidate_protocol.full_content",
+            "rewritten_sections": [],
+            "removed_sections": [],
+            "added_sections": [],
+        }
+    rewritten: list[str] = []
+    added: list[str] = []
+    operations = patch_intent.get("operations")
+    if isinstance(operations, list):
+        for operation in operations[:32]:
+            if not isinstance(operation, Mapping):
+                continue
+            heading = operation.get("heading")
+            if not isinstance(heading, str) or not heading.strip():
+                continue
+            if operation.get("op") == "replace_section":
+                rewritten.append(heading)
+            elif operation.get("op") == "append_section":
+                added.append(heading)
+    return {
+        "schema_version": "aworld.skill.edit_intent.v1",
+        "mode": "patch_intent",
+        "base_content_fingerprint": base_fingerprint,
+        "framework_anchor": "candidate_protocol.patch_intent",
+        "rewritten_sections": list(dict.fromkeys(rewritten)),
+        "removed_sections": [],
+        "added_sections": list(dict.fromkeys(added)),
+    }
 
 
 def _population_strategy(

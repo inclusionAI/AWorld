@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 
 from aworld.self_evolve.evidence_diagnostics import (
     evidence_repair_constraints_from_metrics,
@@ -27,6 +27,7 @@ from aworld.self_evolve.candidate_package import (
     candidate_files_total_bytes,
     validate_candidate_files,
 )
+from aworld.skills.structure import validate_skill_markdown_structure
 
 
 class ReplayAdaptationGate:
@@ -195,19 +196,66 @@ class MalformedCandidateGate:
 
 
 class SkillMarkdownGate:
-    _FRONTMATTER_RE = re.compile(r"^---\s*\n.*?\n---\s*\n", flags=re.DOTALL)
-
     def evaluate(self, candidate: CandidateVariant) -> GateResult:
-        if not self._FRONTMATTER_RE.match(candidate.content):
-            return GateResult(
-                gate_name="skill_markdown",
-                passed=False,
-                reason="skill candidate must preserve YAML frontmatter",
+        validation = validate_skill_markdown_structure(
+            candidate.content,
+        )
+        details = {
+            **dict(validation.details),
+            "code": validation.code,
+            "field_path": validation.field_path,
+            "contract_fingerprint": validation.contract_fingerprint,
+        }
+        if not validation.passed:
+            details.update(
+                {
+                    "failure_class": "candidate",
+                    "failure_owner": "candidate",
+                    "failure_scope": "candidate",
+                    "repairable": True,
+                }
             )
         return GateResult(
             gate_name="skill_markdown",
-            passed=True,
-            reason="skill candidate markdown shape is valid",
+            passed=validation.passed,
+            reason=validation.reason,
+            details=details,
+        )
+
+
+class SkillReleaseFidelityGate:
+    def evaluate(
+        self,
+        candidate: CandidateVariant,
+        *,
+        current_content: str,
+        edit_intent: Mapping[str, Any] | None = None,
+    ) -> GateResult:
+        validation = validate_skill_markdown_structure(
+            candidate.content,
+            original_content=current_content,
+            edit_intent=edit_intent,
+        )
+        details = {
+            **dict(validation.details),
+            "code": validation.code,
+            "field_path": validation.field_path,
+            "contract_fingerprint": validation.contract_fingerprint,
+        }
+        if not validation.passed:
+            details.update(
+                {
+                    "failure_class": "candidate",
+                    "failure_owner": "candidate",
+                    "failure_scope": "candidate",
+                    "repairable": True,
+                }
+            )
+        return GateResult(
+            gate_name="skill_release_fidelity",
+            passed=validation.passed,
+            reason=validation.reason,
+            details=details,
         )
 
 

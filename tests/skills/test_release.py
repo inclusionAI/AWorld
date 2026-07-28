@@ -44,3 +44,52 @@ def test_normalize_verified_skill_release_fails_when_only_internal_lines_remain(
     assert "candidate_score" not in normalized
     assert "source task ids" not in normalized
     assert metrics["preserved_runtime_constraints"] == []
+
+
+def test_normalize_verified_skill_release_rechecks_original_structure() -> None:
+    original = (
+        "---\nname: demo\n---\n# Demo\n\n"
+        "## Usage\n\nPreserve the normal workflow and its result artifact.\n\n"
+        "## Debugging\n\n"
+        "Inspect the session, save a protocol trace, compare the final response, "
+        "and record the bounded recovery action before retrying.\n\n"
+        "```console\nagent-browser inspect --session active\n```\n\n"
+        "## Safety\n\nNever expose credentials.\n"
+    )
+    truncated = (
+        "---\nname: demo\n---\n# Demo\n\n"
+        "## Usage\n\nPreserve the normal workflow and its result artifact.\n\n"
+        "## Debugging\n\nShort.\n\n"
+        "## Safety\n\nNever expose credentials.\n"
+    )
+
+    _, metrics = normalize_verified_skill_release(
+        truncated,
+        run_id="run-1",
+        candidate_id="cand-1",
+        original_content=original,
+    )
+
+    assert metrics["normalization_equivalence_passed"] is False
+    assert metrics["structural_validation_passed"] is False
+    assert metrics["structural_failure_code"] == (
+        "skill_section_content_truncated"
+    )
+
+
+def test_normalize_verified_skill_release_rejects_unclosed_fence_after_normalization() -> None:
+    original = "---\nname: demo\n---\n# Demo\n\nExisting guidance.\n"
+    candidate = (
+        "---\nname: demo\n---\n# Demo\n\n"
+        "```bash\nagent-browser open https://example.test\n"
+    )
+
+    _, metrics = normalize_verified_skill_release(
+        candidate,
+        run_id="run-1",
+        candidate_id="cand-1",
+        original_content=original,
+    )
+
+    assert metrics["normalization_equivalence_passed"] is False
+    assert metrics["structural_failure_code"] == "skill_code_fence_unclosed"

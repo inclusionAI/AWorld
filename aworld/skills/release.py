@@ -8,6 +8,8 @@ from typing import Any, Mapping
 
 import yaml
 
+from aworld.skills.structure import validate_skill_markdown_structure
+
 
 BLOCKED_SELF_EVOLVE_RELEASE_STATES = frozenset({"draft", "candidate", "rejected", "disabled"})
 INTERNAL_RELEASE_PATTERNS = (
@@ -90,6 +92,8 @@ def normalize_verified_skill_release(
     *,
     run_id: str,
     candidate_id: str,
+    original_content: str | None = None,
+    structural_edit_intent: Mapping[str, Any] | None = None,
 ) -> tuple[str, Mapping[str, Any]]:
     """Return verified release content plus equivalence metrics.
 
@@ -99,6 +103,11 @@ def normalize_verified_skill_release(
     rejected before the runtime skill is written.
     """
 
+    pre_structure = validate_skill_markdown_structure(
+        content,
+        original_content=original_content,
+        edit_intent=structural_edit_intent,
+    )
     marked = mark_skill_content_verified(
         content,
         run_id=run_id,
@@ -107,13 +116,43 @@ def normalize_verified_skill_release(
     normalized = _remove_internal_release_lines(marked)
     pre_constraints = _runtime_constraint_lines(content)
     normalized_constraints = _runtime_constraint_lines(normalized)
-    equivalence_passed = bool(pre_constraints) and all(
-        constraint in normalized_constraints for constraint in pre_constraints
+    normalized_structure = validate_skill_markdown_structure(
+        normalized,
+        original_content=original_content,
+        edit_intent=structural_edit_intent,
+    )
+    equivalence_passed = (
+        pre_structure.passed
+        and normalized_structure.passed
+        and bool(pre_constraints)
+        and all(
+            constraint in normalized_constraints
+            for constraint in pre_constraints
+        )
+    )
+    structural_failure = (
+        pre_structure if not pre_structure.passed else normalized_structure
     )
     return normalized, {
         "pre_normalization_fingerprint": _content_fingerprint(content),
         "normalized_release_fingerprint": _content_fingerprint(normalized),
         "normalization_equivalence_passed": equivalence_passed,
+        "structural_validation_passed": (
+            pre_structure.passed and normalized_structure.passed
+        ),
+        "structural_failure_code": (
+            None
+            if pre_structure.passed and normalized_structure.passed
+            else structural_failure.code
+        ),
+        "structural_failure_field_path": (
+            None
+            if pre_structure.passed and normalized_structure.passed
+            else structural_failure.field_path
+        ),
+        "structural_contract_fingerprint": (
+            pre_structure.contract_fingerprint
+        ),
         "preserved_runtime_constraints": normalized_constraints,
         "removed_internal_line_count": _removed_internal_line_count(marked, normalized),
         "evaluator_mode": "release_normalization_equivalence",

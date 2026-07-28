@@ -384,6 +384,38 @@ def test_source_sanitizer_preserves_expressions_and_redacts_literals() -> None:
     assert "sk-private-literal-value" not in sanitized
 
 
+def test_source_sanitizer_preserves_auth_documentation_and_redacts_credentials() -> None:
+    source = (
+        "Use HTTP basic auth or Bearer token authentication when configured.\n"
+        "Document Authorization: Basic authentication and "
+        "Authorization: Bearer token schemes.\n"
+        "Authorization: Basic dXNlcjpwYXNzd29yZA==\n"
+        "Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.actual-signature\n"
+    )
+
+    sanitized = sanitize_source_text(source)
+
+    assert "Use HTTP basic auth or Bearer token authentication" in sanitized
+    assert "Authorization: Basic authentication" in sanitized
+    assert "Authorization: Bearer token schemes" in sanitized
+    assert "dXNlcjpwYXNzd29yZA==" not in sanitized
+    assert "eyJhbGciOiJIUzI1NiJ9.actual-signature" not in sanitized
+    assert sanitized.count("<REDACTED_SECRET>") == 2
+
+
+def test_evolution_context_preserves_benign_auth_source_text() -> None:
+    content = (
+        "---\nname: demo\n---\n# Demo\n\n"
+        "Support HTTP basic auth and Bearer token authentication.\n"
+    )
+
+    context = compile_evolution_context(
+        replace(_request(), current_content=content)
+    )
+
+    assert context.current_content == content.strip()
+
+
 def test_prompt_payload_is_bounded_canonical_and_contains_no_held_out_cases() -> None:
     context = compile_evolution_context(_request())
 

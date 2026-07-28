@@ -35,6 +35,7 @@ from aworld.self_evolve.sanitization import (
     public_diagnostic_projection,
     sanitize_metric_value,
     sanitize_path_ref,
+    sanitize_source_text,
     sanitize_text,
 )
 
@@ -777,7 +778,7 @@ def compile_evolution_context(request: OptimizerRequest) -> EvolutionContext:
                 max_chars=160,
             ),
         },
-        current_content=sanitize_text(
+        current_content=sanitize_source_text(
             request.current_content,
             max_chars=MAX_CURRENT_CONTENT_CHARS,
         ),
@@ -804,6 +805,8 @@ def compile_evolution_context(request: OptimizerRequest) -> EvolutionContext:
         acceptance_constraints=(
             "return_one_canonical_candidate_package",
             "preserve_unrelated_target_behavior",
+            "preserve_published_skill_markdown_structure",
+            "use_patch_intent_for_targeted_section_rewrites",
             "satisfy_registered_capability_contracts",
             "improve_target_behavior_separately_from_replay_harness_files",
             "pass_isolated_baseline_candidate_comparison",

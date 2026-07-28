@@ -7,13 +7,38 @@ from pathlib import Path
 from typing import Any, Mapping
 
 
+_AUTH_DESCRIPTION_TERMS = (
+    r"auth(?:entication|orization)?|credentials?|header|http|jwt|"
+    r"password|scheme|token|username"
+)
+_AUTH_SCHEME_CREDENTIAL_PATTERN = re.compile(
+    r"(?i)\b(?:bearer|basic)\s+"
+    rf"(?!(?:{_AUTH_DESCRIPTION_TERMS})\b)"
+    r"[A-Za-z0-9._~+/\-]{4,}=*"
+)
+_AUTHORIZATION_SCHEME_CREDENTIAL_PATTERN = re.compile(
+    r"(?i)\bauthorization\s*[:=]\s*"
+    r"(?:bearer|basic)\s+"
+    rf"(?!(?:{_AUTH_DESCRIPTION_TERMS})\b)"
+    r"\S{4,}"
+)
+_AUTHORIZATION_OPAQUE_CREDENTIAL_PATTERN = re.compile(
+    r"(?i)\bauthorization\s*[:=]\s*"
+    r"(?!(?:bearer|basic)\b)"
+    rf"(?!(?:{_AUTH_DESCRIPTION_TERMS})\b)"
+    r"\S{4,}"
+)
+_NAMED_SECRET_PATTERN = re.compile(
+    r"(?i)(secret|token|api[_-]?key|password|cookie)"
+    r"\s*[:=]\s*(?:bearer|basic)?\s*\S+"
+)
+_SK_SECRET_PATTERN = re.compile(r"sk-[A-Za-z0-9_-]{12,}")
 _SECRET_PATTERNS = (
-    re.compile(r"(?i)(bearer|basic)\s+[A-Za-z0-9._~+/\-]+=*"),
-    re.compile(
-        r"(?i)(secret|token|api[_-]?key|password|authorization|cookie)"
-        r"\s*[:=]\s*(?:bearer|basic)?\s*\S+"
-    ),
-    re.compile(r"sk-[A-Za-z0-9_-]{12,}"),
+    _AUTH_SCHEME_CREDENTIAL_PATTERN,
+    _AUTHORIZATION_SCHEME_CREDENTIAL_PATTERN,
+    _AUTHORIZATION_OPAQUE_CREDENTIAL_PATTERN,
+    _NAMED_SECRET_PATTERN,
+    _SK_SECRET_PATTERN,
 )
 _SOURCE_QUOTED_SECRET_PATTERN = re.compile(
     r"(?i)(\b(?:secret|token|api[_-]?key|password|authorization|cookie)"
@@ -89,13 +114,18 @@ def sanitize_source_text(value: Any, *, max_chars: int | None = None) -> str:
     """
 
     text = str(value or "")
-    text = _SECRET_PATTERNS[0].sub("<REDACTED_SECRET>", text)
-    text = _SECRET_PATTERNS[2].sub("<REDACTED_SECRET>", text)
+    text = _AUTH_SCHEME_CREDENTIAL_PATTERN.sub("<REDACTED_SECRET>", text)
+    text = _AUTHORIZATION_SCHEME_CREDENTIAL_PATTERN.sub(
+        "<REDACTED_SECRET>",
+        text,
+    )
+    text = _AUTHORIZATION_OPAQUE_CREDENTIAL_PATTERN.sub(
+        "<REDACTED_SECRET>",
+        text,
+    )
+    text = _SK_SECRET_PATTERN.sub("<REDACTED_SECRET>", text)
     text = _SOURCE_QUOTED_SECRET_PATTERN.sub(
-        lambda match: (
-            f"{match.group(1)}{match.group(2)}"
-            f"<REDACTED_SECRET>{match.group(4)}"
-        ),
+        _redact_source_quoted_secret,
         text,
     )
     for pattern in _LOCAL_PATH_PATTERNS:
@@ -106,6 +136,23 @@ def sanitize_source_text(value: Any, *, max_chars: int | None = None) -> str:
     if max_chars is not None and len(text) > max_chars:
         return text[: max_chars - 1].rstrip() + "…"
     return text
+
+
+def _redact_source_quoted_secret(match: re.Match[str]) -> str:
+    prefix = match.group(1)
+    value = match.group(3)
+    if (
+        "authorization" in prefix.casefold()
+        and re.fullmatch(
+            rf"(?i)(?:basic|bearer)\s+(?:{_AUTH_DESCRIPTION_TERMS})(?:\s+\w+)*",
+            value.strip(),
+        )
+    ):
+        return match.group(0)
+    return (
+        f"{prefix}{match.group(2)}"
+        f"<REDACTED_SECRET>{match.group(4)}"
+    )
 
 
 def sanitize_metric_value(value: Any, *, max_chars: int = 240) -> Any:

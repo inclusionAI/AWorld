@@ -67,6 +67,7 @@ from aworld.self_evolve.gates import (
     ReplayAdaptationGate,
     ScoreImprovementGate,
     SkillMarkdownGate,
+    SkillReleaseFidelityGate,
     StoppingConditionGate,
     StoppingConditionState,
     TokenLimitGate,
@@ -1658,6 +1659,8 @@ def _rejection_attribution(
 
 
 _CANDIDATE_REPAIRABLE_GATE_STAGES = {
+    "skill_markdown": FailureStage.CANDIDATE_GENERATION,
+    "skill_release_fidelity": FailureStage.CANDIDATE_GENERATION,
     "score_improvement": FailureStage.EVALUATION,
     "cost_latency_regression": FailureStage.EVALUATION,
     "replay_stability_margin": FailureStage.EVALUATION,
@@ -1737,7 +1740,13 @@ def _with_typed_gate_failure_event(gate: GateResult) -> GateResult:
         summary=gate.reason,
         diagnostics={
             "gate_name": gate.gate_name,
+            "field_path": details.get("field_path"),
         },
+        contract_fingerprint=(
+            str(details["contract_fingerprint"])
+            if isinstance(details.get("contract_fingerprint"), str)
+            else None
+        ),
     ).to_dict()
     details.update(
         {
@@ -3186,30 +3195,53 @@ class SelfEvolveRunner:
             locally_valid_candidates: list[CandidateVariant] = []
             local_gate_feedback: list[EvaluationSummary] = []
             current_content = target.load_current_content()
+            candidate_strategy_by_id = {
+                str(item.get("candidate_id")): item
+                for item in optimizer_result.diagnostics.get(
+                    "candidate_strategies",
+                    (),
+                )
+                if isinstance(item, Mapping)
+                and isinstance(item.get("candidate_id"), str)
+            }
             for candidate in candidate_population:
                 attempt_key = attempt_key_by_candidate_id.get(
                     candidate.candidate_id
                 )
+                strategy = candidate_strategy_by_id.get(
+                    candidate.candidate_id,
+                    {},
+                )
+                raw_local_results = _candidate_gate_results(
+                    candidate,
+                    current_content=current_content,
+                    workspace_root=self.store.workspace_root,
+                    max_chars=self.max_run_tokens,
+                    target_provenance=target_provenance,
+                    target_provenance_unresolved_reason=(
+                        target_provenance_unresolved_reason
+                    ),
+                    allow_generated_target_mutation=(
+                        self.allow_generated_target_mutation
+                    ),
+                    allow_external_target_mutation=(
+                        self.allow_external_target_mutation
+                    ),
+                    target_intent=self._active_target_intent,
+                    inferred_new_skill_policy=self.inferred_new_skill_policy,
+                    apply_policy=apply_policy,
+                    structural_edit_intent=(
+                        strategy.get("structural_edit_intent")
+                        if isinstance(
+                            strategy.get("structural_edit_intent"),
+                            Mapping,
+                        )
+                        else None
+                    ),
+                )
                 local_results = tuple(
-                    _candidate_gate_results(
-                        candidate,
-                        current_content=current_content,
-                        workspace_root=self.store.workspace_root,
-                        max_chars=self.max_run_tokens,
-                        target_provenance=target_provenance,
-                        target_provenance_unresolved_reason=(
-                            target_provenance_unresolved_reason
-                        ),
-                        allow_generated_target_mutation=(
-                            self.allow_generated_target_mutation
-                        ),
-                        allow_external_target_mutation=(
-                            self.allow_external_target_mutation
-                        ),
-                        target_intent=self._active_target_intent,
-                        inferred_new_skill_policy=self.inferred_new_skill_policy,
-                        apply_policy=apply_policy,
-                    )
+                    _with_typed_gate_failure_event(gate)
+                    for gate in raw_local_results
                 )
                 local_gate_results_by_candidate[candidate.candidate_id] = local_results
                 if attempt_key is None:
@@ -3227,15 +3259,23 @@ class SelfEvolveRunner:
                 if not failed_local:
                     locally_valid_candidates.append(candidate)
                     continue
-                local_feedback = EvaluationSummary(
-                    variant_id=candidate.candidate_id,
-                    dataset_split="validation",
-                    metrics={
-                        "failed_gates": [gate.gate_name for gate in failed_local],
+                local_feedback_metrics = _typed_gate_feedback_metrics(
+                    failed_local
+                )
+                local_feedback_metrics.update(
+                    {
+                        "failed_gates": [
+                            gate.gate_name for gate in failed_local
+                        ],
                         "candidate_status": "rejected",
                         "failure_class": "candidate",
                         "repairable": True,
-                    },
+                    }
+                )
+                local_feedback = EvaluationSummary(
+                    variant_id=candidate.candidate_id,
+                    dataset_split="validation",
+                    metrics=local_feedback_metrics,
                 )
                 local_gate_feedback.append(local_feedback)
                 iteration_states.append(
@@ -3677,6 +3717,12 @@ class SelfEvolveRunner:
                     addressed_lesson_ids=_lineage_addressed_lesson_ids(
                         optimizer_lineage_paths_by_candidate.get(
                             selected_candidate.candidate_id
+                        )
+                    ),
+                    structural_edit_intent=(
+                        _candidate_structural_edit_intent_from_diagnostics(
+                            optimizer_diagnostics,
+                            candidate_id=selected_candidate.candidate_id,
                         )
                     ),
                 )
@@ -6479,6 +6525,7 @@ class SelfEvolveRunner:
         candidate: CandidateVariant,
         expected_package_fingerprint: str | None = None,
         addressed_lesson_ids: tuple[str, ...] = (),
+        structural_edit_intent: Mapping[str, Any] | None = None,
     ) -> dict[str, object]:
         if self.post_apply_evaluator is None:
             raise ValueError("auto_verified apply policy requires post_apply_evaluator")
@@ -6515,6 +6562,8 @@ class SelfEvolveRunner:
                 candidate.content,
                 run_id=run_id,
                 candidate_id=candidate.candidate_id,
+                original_content=original_content,
+                structural_edit_intent=structural_edit_intent,
             )
             normalization_metrics = _with_release_lesson_mapping(
                 normalization_metrics,
@@ -6545,6 +6594,35 @@ class SelfEvolveRunner:
                 candidate,
                 content=normalized_content,
             )
+        latest_content = target.load_current_content()
+        if latest_content != original_content:
+            drift_metrics = {
+                "post_apply_passed": False,
+                "release_state": "rejected",
+                "code": "skill_target_drift",
+                "failure_class": "framework",
+                "repairable": False,
+                "base_content_fingerprint": _content_fingerprint(
+                    original_content
+                ),
+                "latest_content_fingerprint": _content_fingerprint(
+                    latest_content
+                ),
+                **dict(normalization_metrics),
+            }
+            self.store.update_apply_journal(
+                journal_path,
+                status="rejected",
+                details=drift_metrics,
+            )
+            return {
+                "status": "rejected",
+                "metrics": drift_metrics,
+                "dataset_split": "post_apply",
+                "backup_path": str(backup_path),
+                "journal_path": str(journal_path),
+                "release_state": "rejected",
+            }
         try:
             if (
                 applied_candidate.target.target_type == "skill"
@@ -13927,6 +14005,18 @@ def _release_normalization_report(post_apply: Mapping[str, object]) -> dict[str,
             else []
         ),
         "removed_internal_line_count": metrics.get("removed_internal_line_count"),
+        "structural_validation_passed": metrics.get(
+            "structural_validation_passed"
+        ),
+        "structural_failure_code": metrics.get(
+            "structural_failure_code"
+        ),
+        "structural_failure_field_path": metrics.get(
+            "structural_failure_field_path"
+        ),
+        "structural_contract_fingerprint": metrics.get(
+            "structural_contract_fingerprint"
+        ),
         "status": post_apply.get("status"),
     }
 
@@ -14263,6 +14353,23 @@ def _candidate_strategy_records(
             if isinstance(strategy, Mapping) and isinstance(strategy.get("candidate_id"), str):
                 records.append(dict(strategy))
     return records
+
+
+def _candidate_structural_edit_intent_from_diagnostics(
+    optimizer_diagnostics: Iterable[Mapping[str, object]],
+    *,
+    candidate_id: str,
+) -> Mapping[str, Any] | None:
+    records = _candidate_strategy_records(
+        tuple(dict(item) for item in optimizer_diagnostics)
+    )
+    for record in reversed(records):
+        if record.get("candidate_id") != candidate_id:
+            continue
+        edit_intent = record.get("structural_edit_intent")
+        if isinstance(edit_intent, Mapping):
+            return dict(edit_intent)
+    return None
 
 
 def _rank_candidate_population(
@@ -15142,6 +15249,7 @@ def _candidate_gate_results(
     target_intent: TargetMutationIntent | str | None = None,
     inferred_new_skill_policy: InferredNewSkillPolicy | str = InferredNewSkillPolicy.AUTO_VERIFIED,
     apply_policy: str = "proposal",
+    structural_edit_intent: Mapping[str, Any] | None = None,
 ) -> list[GateResult]:
     results = [
         NoopCandidateGate().evaluate(current_content=current_content, candidate=candidate),
@@ -15153,6 +15261,13 @@ def _candidate_gate_results(
     ]
     if candidate.target.target_type == "skill":
         results.append(SkillMarkdownGate().evaluate(candidate))
+        results.append(
+            SkillReleaseFidelityGate().evaluate(
+                candidate,
+                current_content=current_content,
+                edit_intent=structural_edit_intent,
+            )
+        )
     results.append(
         TrustProvenanceGate(
             allow_generated=allow_generated_target_mutation,

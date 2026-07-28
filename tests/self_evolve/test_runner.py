@@ -49,6 +49,7 @@ from aworld.self_evolve.failure_events import (
     ReplayFailureObservation,
     aggregate_replay_failure_observations,
 )
+from aworld.self_evolve.gates import SkillReleaseFidelityGate
 from aworld.self_evolve.replay import (
     CandidateReplayMemberResult,
     CandidateReplayRequest,
@@ -508,6 +509,150 @@ def test_feedback_from_report_joins_selected_candidate_held_out_judge_metrics(
     assert feedback[0].metrics["repair_candidate_package"]["candidate_id"] == (
         candidate_id
     )
+
+
+def test_skill_release_fidelity_failure_enters_typed_repair_frontier() -> None:
+    current = (
+        "---\nname: demo\n---\n# Demo\n\n"
+        "## Debugging\n\n"
+        "Inspect the session, preserve a protocol trace, compare the final "
+        "response, and record the bounded recovery action before retrying.\n\n"
+        "```console\nagent-browser inspect --session active\n```\n"
+    )
+    candidate = CandidateVariant(
+        candidate_id="candidate-structure",
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo"),
+        content=(
+            "---\nname: demo\n---\n# Demo\n\n"
+            "## Debugging\n\nShort.\n"
+        ),
+        rationale="candidate",
+    )
+    raw_gate = SkillReleaseFidelityGate().evaluate(
+        candidate,
+        current_content=current,
+    )
+
+    gate = _with_typed_gate_failure_event(raw_gate)
+    metrics = runner_module._typed_gate_feedback_metrics((gate,))
+    feedback = EvaluationSummary(
+        variant_id=candidate.candidate_id,
+        dataset_split="validation",
+        metrics=metrics,
+    )
+    frontiers = runner_module._typed_repair_frontiers((feedback,))
+
+    assert gate.details["code"] == "skill_section_content_truncated"
+    assert gate.details["failure_class"] == "candidate"
+    assert metrics["causal_failure_events"][0]["owner"] == "candidate"
+    assert metrics["causal_failure_events"][0]["stage"] == (
+        "candidate_generation"
+    )
+    assert len(
+        metrics["causal_failure_events"][0]["contract_identity_digest"]
+    ) == 64
+    assert len(frontiers) == 1
+    assert frontiers[0].repairable is True
+    assert frontiers[0].semantic_key == metrics["causal_failure_events"][0][
+        "semantic_key"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_local_skill_fidelity_gate_feeds_next_generation_frontier(
+    tmp_path,
+) -> None:
+    skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    original = (
+        "---\nname: demo\n---\n# Demo\n\n"
+        "## Debugging\n\n"
+        "Inspect the session, preserve a protocol trace, compare the final "
+        "response with the result artifact, classify the failure, and record "
+        "the bounded recovery action before retrying.\n\n"
+        "```console\nagent-browser inspect --session active\n```\n"
+    )
+    skill_path.write_text(original, encoding="utf-8")
+    trajectory = [
+        {
+            "meta": {"step": 1, "agent_id": "agent", "pre_agent": "runner"},
+            "state": {"input": {"content": "Improve debugging guidance."}},
+            "action": {"content": "The prior attempt truncated guidance."},
+            "reward": {"status": "failed"},
+        }
+    ]
+    dataset = build_dataset_from_source(
+        SelfEvolveEvalSourceConfig(kind="current_trajectory"),
+        current_trajectory=trajectory,
+        task_id="skill-fidelity-feedback",
+    )
+    target_ref = SelfEvolveTargetRef(
+        target_type="skill",
+        target_id="demo",
+        path=str(skill_path),
+    )
+
+    class IteratingOptimizer:
+        def __init__(self) -> None:
+            self.requests: list[OptimizerRequest] = []
+
+        async def propose(self, request: OptimizerRequest) -> OptimizerResult:
+            self.requests.append(request)
+            if len(self.requests) == 1:
+                content = (
+                    "---\nname: demo\n---\n# Demo\n\n"
+                    "## Debugging\n\nShort.\n"
+                )
+            else:
+                content = original + "\n## Recovery\n\nRetry once with evidence.\n"
+            return OptimizerResult(
+                candidates=(
+                    CandidateVariant(
+                        candidate_id=f"candidate-{len(self.requests)}",
+                        target=target_ref,
+                        content=content,
+                        rationale="bounded structural repair",
+                        target_fingerprint=request.target_fingerprint,
+                    ),
+                )
+            )
+
+    optimizer = IteratingOptimizer()
+    store = FilesystemSelfEvolveStore(tmp_path)
+    result = await SelfEvolveRunner(
+        store=store,
+        optimizer=optimizer,
+        max_iterations=2,
+    ).run_explicit_target(
+        run_id="run-skill-fidelity-feedback",
+        target=SkillTextTarget(skill_path),
+        dataset=dataset,
+        trace_packs=(
+            build_trace_pack(
+                trajectory,
+                source_kind="current_trajectory",
+                task_id="skill-fidelity-feedback",
+            ),
+        ),
+        apply_policy="proposal",
+    )
+
+    assert result.run.status is SelfEvolveRunStatus.SUCCEEDED
+    assert len(optimizer.requests) == 2
+    feedback = optimizer.requests[1].validation_feedback[0]
+    assert "skill_release_fidelity" in feedback.metrics["failed_gates"]
+    assert feedback.metrics["causal_failure_events"][0]["code"] == (
+        "skill_section_content_truncated"
+    )
+    report = json.loads(
+        (
+            store.run_path("run-skill-fidelity-feedback")
+            / "report.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert report["population"]["scheduler_decisions"][1][
+        "reason_code"
+    ] == "focused_repair_with_diversity"
 
 
 def test_framework_evidence_projection_failure_does_not_create_candidate_repair_package() -> None:
@@ -6429,6 +6574,59 @@ async def test_runner_rejects_apply_when_release_normalization_removes_runtime_c
     assert report["release_normalization"]["pre_normalization_fingerprint"].startswith(
         "sha256:"
     )
+
+
+@pytest.mark.asyncio
+async def test_apply_rejects_skill_target_drift_before_release_write(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    original = "---\nname: demo\n---\n# Demo\n\nOriginal guidance.\n"
+    candidate_content = (
+        "---\nname: demo\n---\n# Demo\n\nUpdated bounded guidance.\n"
+    )
+    drifted = (
+        "---\nname: demo\n---\n# Demo\n\nConcurrent external edit.\n"
+    )
+    skill_path.write_text(original, encoding="utf-8")
+    target = SkillTextTarget(skill_path, allow_auto_apply=True)
+    reads = iter((original, drifted))
+    monkeypatch.setattr(
+        target,
+        "load_current_content",
+        lambda: next(reads),
+    )
+    candidate = CandidateVariant(
+        candidate_id="candidate-drift",
+        target=target.identity,
+        content=candidate_content,
+        rationale="bounded update",
+        target_fingerprint="sha256:base",
+    )
+    runner = SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=_FixedCandidateOptimizer(
+            candidate,
+            source_run_id="source-run",
+        ),
+        post_apply_evaluator=lambda item: EvaluationSummary(
+            variant_id=item.candidate_id,
+            metrics={"post_apply_passed": True},
+        ),
+    )
+
+    result = await runner._apply_auto_verified(
+        "run-target-drift",
+        target,
+        candidate,
+    )
+
+    assert result["status"] == "rejected"
+    assert result["metrics"]["code"] == "skill_target_drift"
+    assert result["metrics"]["repairable"] is False
+    assert skill_path.read_text(encoding="utf-8") == original
 
 
 @pytest.mark.asyncio
