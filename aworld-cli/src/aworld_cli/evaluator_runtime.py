@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import atexit
 import asyncio
 import builtins
 import hashlib
@@ -11,6 +12,7 @@ import re
 import secrets
 import stat
 import tempfile
+import threading
 import time
 from pathlib import Path
 from typing import Any, Mapping
@@ -35,7 +37,9 @@ from aworld.evaluations.substrate import (
     JudgeBackend,
     JudgeSchemaDef,
     StateCheckGrader,
+    cleanup_evaluation_private_artifact_session,
     describe_eval_target,
+    register_evaluation_private_artifact_session,
     run_evaluation_flow,
 )
 from aworld.evaluations.runtime_composition import RolloutState, RolloutTurn, derive_standard_metrics
@@ -79,10 +83,27 @@ _VERIFIED_EVIDENCE_SNAPSHOT_ROOT = (
     Path(tempfile.gettempdir())
     / (
         "aworld-evaluator-verified-evidence-"
-        f"{getattr(os, 'getuid', lambda: 0)()}-{os.getpid()}-"
-        f"{secrets.token_hex(8)}"
+        f"{getattr(os, 'getuid', lambda: 0)()}"
     )
 )
+_VERIFIED_EVIDENCE_SESSION_FORMAT = (
+    "aworld.evaluator.verified_evidence_session"
+)
+_VERIFIED_EVIDENCE_SESSION_VERSION = 1
+_VERIFIED_EVIDENCE_SESSION_METADATA = ".session.json"
+_VERIFIED_EVIDENCE_SESSION_STALE_AGE_SECONDS = 60 * 60
+_VERIFIED_EVIDENCE_SESSION_NAME_PATTERN = re.compile(
+    r"^session-(?P<pid>[1-9][0-9]*)-(?P<created_ns>[0-9]{16,20})-"
+    r"(?P<session_id>[0-9a-f]{32})$"
+)
+_VERIFIED_EVIDENCE_LEGACY_ROOT_NAME_PATTERN = re.compile(
+    r"^aworld-evaluator-verified-evidence-(?P<uid>[0-9]+)-"
+    r"(?P<pid>[1-9][0-9]*)-(?P<token>[0-9a-f]{16})$"
+)
+_ACTIVE_VERIFIED_EVIDENCE_SESSIONS: dict[str, Path] = {}
+_ACTIVE_VERIFIED_EVIDENCE_SESSIONS_LOCK = threading.Lock()
+_VERIFIED_EVIDENCE_SNAPSHOT_ROOT_LOCK = threading.RLock()
+_VERIFIED_EVIDENCE_STALE_RECLAIMED = False
 _PROMPT_EVIDENCE_MANIFEST_PAYLOAD_KEYS = (
     "excerpt",
     "excerpts",
@@ -1116,10 +1137,17 @@ def _artifact_backed_evidence_index(
             and manifest.get("valid") is True
         )
         if manifest_was_valid:
+            private_session_id = _verified_snapshot_session_id(
+                manifest.get("snapshot_session")
+            )
             manifest_for_index = _validate_verified_manifest_snapshot(
                 manifest
             )
             if manifest_for_index.get("valid") is not True:
+                if private_session_id is not None:
+                    cleanup_evaluation_private_artifact_session(
+                        private_session_id
+                    )
                 if isinstance(manifest, dict):
                     manifest.clear()
                     manifest.update(manifest_for_index)
@@ -1135,7 +1163,13 @@ def _artifact_backed_evidence_index(
     )
     if manifest_was_valid and isinstance(manifest_for_index, Mapping):
         manifest_path = manifest_for_index.get("path")
-        if _is_verified_snapshot_path(manifest_path):
+        snapshot_session_id = _verified_snapshot_session_id(
+            manifest_for_index.get("snapshot_session")
+        )
+        if _is_verified_snapshot_path(
+            manifest_path,
+            session_id=snapshot_session_id,
+        ):
             add_artifact(
                 "evidence_manifest",
                 manifest_path,
@@ -1172,8 +1206,21 @@ def _artifact_backed_evidence_index(
             )
 
     canonical_bundle_valid = bool(evidence_summary.get("canonical_bundle_valid"))
+    private_artifact_session = (
+        manifest_for_index.get("snapshot_session")
+        if (
+            isinstance(manifest_for_index, Mapping)
+            and manifest_for_index.get("valid") is True
+            and isinstance(
+                manifest_for_index.get("snapshot_session"),
+                Mapping,
+            )
+        )
+        else {}
+    )
     return {
         "mode": "read_only_artifact_index",
+        "private_artifact_session": private_artifact_session,
         "prompt_payload_is_bounded": True,
         "read_policy": {
             "read_only": True,
@@ -1554,11 +1601,19 @@ def _validate_prompt_evidence_manifest(
     result["invalid_entry_count"] = len(record_errors)
     result["valid"] = not errors and bool(records)
     if result["valid"] is True:
-        snapshot_path, snapshot_error = _materialize_verified_manifest_snapshot(
+        (
+            snapshot_path,
+            snapshot_session,
+            snapshot_error,
+        ) = _materialize_verified_manifest_snapshot(
             manifest_bytes,
             fingerprint=actual_fingerprint,
         )
-        if snapshot_error is not None or snapshot_path is None:
+        if (
+            snapshot_error is not None
+            or snapshot_path is None
+            or snapshot_session is None
+        ):
             add_error(
                 snapshot_error or "manifest_snapshot_materialization_failed"
             )
@@ -1567,6 +1622,7 @@ def _validate_prompt_evidence_manifest(
             result["source_path"] = result["path"]
             result["path"] = str(snapshot_path)
             result["content_addressed"] = True
+            result["snapshot_session"] = snapshot_session
     return result
 
 
@@ -1729,30 +1785,568 @@ def _prompt_synthetic_artifact_excerpt(
     }
 
 
+def _ensure_verified_evidence_snapshot_root() -> str | None:
+    with _VERIFIED_EVIDENCE_SNAPSHOT_ROOT_LOCK:
+        root = _VERIFIED_EVIDENCE_SNAPSHOT_ROOT
+        try:
+            root.mkdir(mode=0o700, parents=True, exist_ok=True)
+            root_stat = os.lstat(root)
+            if not stat.S_ISDIR(root_stat.st_mode):
+                return "manifest_snapshot_root_not_directory"
+            getuid = getattr(os, "getuid", None)
+            if callable(getuid) and root_stat.st_uid != getuid():
+                return "manifest_snapshot_root_owner_mismatch"
+            if stat.S_IMODE(root_stat.st_mode) != 0o700:
+                os.chmod(root, 0o700)
+                root_stat = os.lstat(root)
+                if stat.S_IMODE(root_stat.st_mode) != 0o700:
+                    return "manifest_snapshot_root_permissions_invalid"
+        except OSError:
+            return "manifest_snapshot_root_unavailable"
+    return None
+
+
+def _create_verified_evidence_session(
+) -> tuple[Path | None, dict[str, Any] | None, str | None]:
+    with _VERIFIED_EVIDENCE_SNAPSHOT_ROOT_LOCK:
+        root_error = _ensure_verified_evidence_snapshot_root()
+        if root_error is not None:
+            return None, None, root_error
+        _reclaim_stale_verified_evidence_sessions()
+        root_error = _ensure_verified_evidence_snapshot_root()
+        if root_error is not None:
+            return None, None, root_error
+        session_id = secrets.token_hex(16)
+        created_ns = time.time_ns()
+        pid = os.getpid()
+        session_name = f"session-{pid}-{created_ns}-{session_id}"
+        session_root = _VERIFIED_EVIDENCE_SNAPSHOT_ROOT / session_name
+        uid = getattr(os, "getuid", lambda: 0)()
+        metadata = {
+            "format": _VERIFIED_EVIDENCE_SESSION_FORMAT,
+            "version": _VERIFIED_EVIDENCE_SESSION_VERSION,
+            "session_id": session_id,
+            "pid": pid,
+            "uid": uid,
+            "created_ns": created_ns,
+            "session_name": session_name,
+        }
+        metadata_bytes = json.dumps(
+            metadata,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+        try:
+            session_root.mkdir(mode=0o700)
+            metadata_path = (
+                session_root / _VERIFIED_EVIDENCE_SESSION_METADATA
+            )
+            flags = (
+                os.O_WRONLY
+                | os.O_CREAT
+                | os.O_EXCL
+                | getattr(os, "O_CLOEXEC", 0)
+            )
+            if hasattr(os, "O_NOFOLLOW"):
+                flags |= os.O_NOFOLLOW
+            descriptor = os.open(metadata_path, flags, 0o400)
+            try:
+                written = 0
+                while written < len(metadata_bytes):
+                    write_count = os.write(
+                        descriptor,
+                        metadata_bytes[written:],
+                    )
+                    if write_count <= 0:
+                        raise OSError("zero-byte session metadata write")
+                    written += write_count
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+            directory_flags = (
+                os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+            )
+            if hasattr(os, "O_NOFOLLOW"):
+                directory_flags |= os.O_NOFOLLOW
+            directory_descriptor = os.open(
+                session_root,
+                directory_flags,
+            )
+            try:
+                os.fsync(directory_descriptor)
+            finally:
+                os.close(directory_descriptor)
+        except OSError:
+            _cleanup_verified_evidence_session(
+                session_id,
+                session_root,
+                allow_missing_metadata=True,
+                expected_creator_pid=pid,
+            )
+            return None, None, "manifest_snapshot_session_create_failed"
+        with _ACTIVE_VERIFIED_EVIDENCE_SESSIONS_LOCK:
+            _ACTIVE_VERIFIED_EVIDENCE_SESSIONS[session_id] = session_root
+    contract = {
+        "format": "aworld.evaluation.private_artifact_session",
+        "version": 1,
+        "session_id": session_id,
+    }
+    return session_root, contract, None
+
+
+def _read_verified_evidence_session_metadata(
+    session_root: Path,
+) -> dict[str, Any] | None:
+    metadata_path = session_root / _VERIFIED_EVIDENCE_SESSION_METADATA
+    try:
+        metadata_stat = os.lstat(metadata_path)
+        if not stat.S_ISREG(metadata_stat.st_mode):
+            return None
+        if stat.S_IMODE(metadata_stat.st_mode) != 0o400:
+            return None
+        getuid = getattr(os, "getuid", None)
+        if callable(getuid) and metadata_stat.st_uid != getuid():
+            return None
+        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        descriptor = os.open(metadata_path, flags)
+        try:
+            opened_stat = os.fstat(descriptor)
+            if _verified_evidence_stat_identity(opened_stat) != (
+                _verified_evidence_stat_identity(metadata_stat)
+            ) or opened_stat.st_size != metadata_stat.st_size:
+                return None
+            metadata_bytes = os.read(descriptor, 8193)
+        finally:
+            os.close(descriptor)
+        if len(metadata_bytes) > 8192:
+            return None
+        final_stat = os.lstat(metadata_path)
+        if _verified_evidence_stat_identity(final_stat) != (
+            _verified_evidence_stat_identity(metadata_stat)
+        ) or final_stat.st_size != metadata_stat.st_size:
+            return None
+        metadata = json.loads(metadata_bytes.decode("utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    return dict(metadata) if isinstance(metadata, Mapping) else None
+
+
+def _verified_evidence_stat_identity(
+    value: os.stat_result,
+) -> tuple[int, int, int, int]:
+    return (
+        value.st_dev,
+        value.st_ino,
+        value.st_mode,
+        value.st_uid,
+    )
+
+
+def _verified_evidence_session_metadata_matches(
+    session_root: Path,
+    metadata: Mapping[str, Any],
+    *,
+    session_id: str | None = None,
+) -> bool:
+    match = _VERIFIED_EVIDENCE_SESSION_NAME_PATTERN.fullmatch(
+        session_root.name
+    )
+    if match is None:
+        return False
+    try:
+        root_stat = os.lstat(session_root)
+    except OSError:
+        return False
+    if not stat.S_ISDIR(root_stat.st_mode):
+        return False
+    if stat.S_IMODE(root_stat.st_mode) != 0o700:
+        return False
+    getuid = getattr(os, "getuid", None)
+    current_uid = getuid() if callable(getuid) else 0
+    if callable(getuid) and root_stat.st_uid != current_uid:
+        return False
+    expected_session_id = match.group("session_id")
+    if session_id is not None and session_id != expected_session_id:
+        return False
+    return (
+        metadata.get("format") == _VERIFIED_EVIDENCE_SESSION_FORMAT
+        and type(metadata.get("version")) is int
+        and metadata.get("version") == _VERIFIED_EVIDENCE_SESSION_VERSION
+        and metadata.get("session_id") == expected_session_id
+        and type(metadata.get("pid")) is int
+        and metadata.get("pid") == int(match.group("pid"))
+        and type(metadata.get("uid")) is int
+        and metadata.get("uid") == current_uid
+        and type(metadata.get("created_ns")) is int
+        and metadata.get("created_ns") == int(match.group("created_ns"))
+        and metadata.get("session_name") == session_root.name
+    )
+
+
+def _cleanup_verified_evidence_session(
+    session_id: str,
+    session_root: Path,
+    *,
+    allow_missing_metadata: bool = False,
+    expected_creator_pid: int | None = None,
+) -> bool:
+    with _VERIFIED_EVIDENCE_SNAPSHOT_ROOT_LOCK:
+        base = Path(
+            os.path.abspath(
+                os.path.normpath(str(_VERIFIED_EVIDENCE_SNAPSHOT_ROOT))
+            )
+        )
+        root = Path(
+            os.path.abspath(
+                os.path.normpath(str(session_root.expanduser()))
+            )
+        )
+        if root.parent != base:
+            return False
+        match = _VERIFIED_EVIDENCE_SESSION_NAME_PATTERN.fullmatch(root.name)
+        if match is None or match.group("session_id") != session_id:
+            return False
+        if (
+            expected_creator_pid is not None
+            and int(match.group("pid")) != expected_creator_pid
+        ):
+            return False
+        try:
+            root_stat = os.lstat(root)
+        except FileNotFoundError:
+            root_stat = None
+        except OSError:
+            return False
+        if root_stat is not None:
+            getuid = getattr(os, "getuid", None)
+            if (
+                not stat.S_ISDIR(root_stat.st_mode)
+                or stat.S_IMODE(root_stat.st_mode) != 0o700
+                or (
+                    callable(getuid)
+                    and root_stat.st_uid != getuid()
+                )
+            ):
+                return False
+            metadata = _read_verified_evidence_session_metadata(root)
+            if metadata is None:
+                if not allow_missing_metadata:
+                    return False
+            elif not _verified_evidence_session_metadata_matches(
+                root,
+                metadata,
+                session_id=session_id,
+            ):
+                return False
+        try:
+            directory_descriptor: int | None = None
+            if root_stat is not None:
+                directory_flags = (
+                    os.O_RDONLY
+                    | getattr(os, "O_DIRECTORY", 0)
+                    | getattr(os, "O_CLOEXEC", 0)
+                )
+                if hasattr(os, "O_NOFOLLOW"):
+                    directory_flags |= os.O_NOFOLLOW
+                directory_descriptor = os.open(root, directory_flags)
+                opened_root_stat = os.fstat(directory_descriptor)
+                if _verified_evidence_stat_identity(opened_root_stat) != (
+                    _verified_evidence_stat_identity(root_stat)
+                ):
+                    os.close(directory_descriptor)
+                    directory_descriptor = None
+                    return False
+                entries = list(os.scandir(directory_descriptor))
+            else:
+                entries = []
+            for entry in entries:
+                entry_stat = entry.stat(follow_symlinks=False)
+                if not stat.S_ISREG(entry_stat.st_mode):
+                    return False
+                if entry.name == _VERIFIED_EVIDENCE_SESSION_METADATA:
+                    continue
+                if re.fullmatch(
+                    r"evidence-manifest-[0-9a-f]{64}\.jsonl",
+                    entry.name,
+                ):
+                    continue
+                if re.fullmatch(
+                    r"\.evidence-manifest-[0-9a-f]{64}-[0-9]+-[0-9]+\.tmp",
+                    entry.name,
+                ):
+                    continue
+                return False
+            for entry in entries:
+                os.unlink(entry.name, dir_fd=directory_descriptor)
+            if directory_descriptor is not None:
+                os.close(directory_descriptor)
+                directory_descriptor = None
+            if root_stat is not None:
+                final_root_stat = os.lstat(root)
+                if _verified_evidence_stat_identity(final_root_stat) != (
+                    _verified_evidence_stat_identity(root_stat)
+                ):
+                    return False
+                os.rmdir(root)
+        except FileNotFoundError:
+            pass
+        except OSError:
+            return False
+        finally:
+            if directory_descriptor is not None:
+                os.close(directory_descriptor)
+        with _ACTIVE_VERIFIED_EVIDENCE_SESSIONS_LOCK:
+            _ACTIVE_VERIFIED_EVIDENCE_SESSIONS.pop(session_id, None)
+        _remove_empty_verified_evidence_snapshot_root()
+    return True
+
+
+def _remove_empty_verified_evidence_snapshot_root() -> None:
+    with _VERIFIED_EVIDENCE_SNAPSHOT_ROOT_LOCK:
+        root = _VERIFIED_EVIDENCE_SNAPSHOT_ROOT
+        try:
+            root_stat = os.lstat(root)
+            getuid = getattr(os, "getuid", None)
+            if (
+                not stat.S_ISDIR(root_stat.st_mode)
+                or stat.S_IMODE(root_stat.st_mode) != 0o700
+                or (
+                    callable(getuid)
+                    and root_stat.st_uid != getuid()
+                )
+            ):
+                return
+            os.rmdir(root)
+        except OSError:
+            return
+
+
+def _verified_evidence_pid_is_alive(pid: int) -> bool:
+    if pid == os.getpid():
+        return True
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return True
+    return True
+
+
+def _reclaim_stale_verified_evidence_sessions() -> None:
+    global _VERIFIED_EVIDENCE_STALE_RECLAIMED
+    with _ACTIVE_VERIFIED_EVIDENCE_SESSIONS_LOCK:
+        if _VERIFIED_EVIDENCE_STALE_RECLAIMED:
+            return
+        _VERIFIED_EVIDENCE_STALE_RECLAIMED = True
+    root_error = _ensure_verified_evidence_snapshot_root()
+    if root_error is not None:
+        return
+    try:
+        candidates = list(_VERIFIED_EVIDENCE_SNAPSHOT_ROOT.iterdir())
+    except OSError:
+        return
+    now_ns = time.time_ns()
+    stale_age_ns = int(
+        _VERIFIED_EVIDENCE_SESSION_STALE_AGE_SECONDS * 1_000_000_000
+    )
+    for candidate in candidates:
+        metadata = _read_verified_evidence_session_metadata(candidate)
+        if metadata is None:
+            continue
+        if not _verified_evidence_session_metadata_matches(
+            candidate,
+            metadata,
+        ):
+            continue
+        created_ns = int(metadata["created_ns"])
+        pid = int(metadata["pid"])
+        if now_ns - created_ns < stale_age_ns:
+            continue
+        if _verified_evidence_pid_is_alive(pid):
+            continue
+        _cleanup_verified_evidence_session(
+            str(metadata["session_id"]),
+            candidate,
+        )
+    _reclaim_stale_legacy_verified_evidence_roots(
+        now_ns=now_ns,
+        stale_age_ns=stale_age_ns,
+    )
+    _remove_empty_verified_evidence_snapshot_root()
+
+
+def _reclaim_stale_legacy_verified_evidence_roots(
+    *,
+    now_ns: int,
+    stale_age_ns: int,
+) -> None:
+    legacy_parent = _VERIFIED_EVIDENCE_SNAPSHOT_ROOT.parent
+    try:
+        candidates = list(legacy_parent.iterdir())
+    except OSError:
+        return
+    getuid = getattr(os, "getuid", None)
+    current_uid = getuid() if callable(getuid) else 0
+    for candidate in candidates:
+        match = _VERIFIED_EVIDENCE_LEGACY_ROOT_NAME_PATTERN.fullmatch(
+            candidate.name
+        )
+        if match is None or int(match.group("uid")) != current_uid:
+            continue
+        pid = int(match.group("pid"))
+        if _verified_evidence_pid_is_alive(pid):
+            continue
+        try:
+            root_stat = os.lstat(candidate)
+        except OSError:
+            continue
+        if (
+            not stat.S_ISDIR(root_stat.st_mode)
+            or stat.S_IMODE(root_stat.st_mode) != 0o700
+            or (
+                callable(getuid)
+                and root_stat.st_uid != current_uid
+            )
+            or now_ns - root_stat.st_mtime_ns < stale_age_ns
+        ):
+            continue
+        _cleanup_stale_legacy_verified_evidence_root(
+            candidate,
+            root_stat=root_stat,
+            now_ns=now_ns,
+            stale_age_ns=stale_age_ns,
+            current_uid=current_uid,
+        )
+
+
+def _cleanup_stale_legacy_verified_evidence_root(
+    root: Path,
+    *,
+    root_stat: os.stat_result,
+    now_ns: int,
+    stale_age_ns: int,
+    current_uid: int,
+) -> bool:
+    try:
+        entries = list(os.scandir(root))
+    except OSError:
+        return False
+    entry_identities: dict[str, tuple[int, int, int, int]] = {}
+    for entry in entries:
+        match = re.fullmatch(
+            r"evidence-manifest-(?P<digest>[0-9a-f]{64})\.jsonl",
+            entry.name,
+        )
+        if match is None:
+            return False
+        try:
+            entry_stat = entry.stat(follow_symlinks=False)
+        except OSError:
+            return False
+        if (
+            not stat.S_ISREG(entry_stat.st_mode)
+            or stat.S_IMODE(entry_stat.st_mode) != 0o400
+            or entry_stat.st_uid != current_uid
+            or now_ns - entry_stat.st_mtime_ns < stale_age_ns
+        ):
+            return False
+        _, snapshot_error = _read_verified_snapshot_bytes(
+            Path(entry.path),
+            expected_size=entry_stat.st_size,
+            expected_fingerprint=f"sha256:{match.group('digest')}",
+        )
+        if snapshot_error is not None:
+            return False
+        entry_identities[entry.name] = _verified_evidence_stat_identity(
+            entry_stat
+        )
+
+    directory_descriptor: int | None = None
+    try:
+        directory_flags = (
+            os.O_RDONLY
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_CLOEXEC", 0)
+        )
+        if hasattr(os, "O_NOFOLLOW"):
+            directory_flags |= os.O_NOFOLLOW
+        directory_descriptor = os.open(root, directory_flags)
+        opened_root_stat = os.fstat(directory_descriptor)
+        if _verified_evidence_stat_identity(opened_root_stat) != (
+            _verified_evidence_stat_identity(root_stat)
+        ):
+            return False
+        final_entries = list(os.scandir(directory_descriptor))
+        if {entry.name for entry in final_entries} != set(entry_identities):
+            return False
+        for entry in final_entries:
+            entry_stat = entry.stat(follow_symlinks=False)
+            if _verified_evidence_stat_identity(entry_stat) != (
+                entry_identities[entry.name]
+            ):
+                return False
+        for entry in final_entries:
+            os.unlink(entry.name, dir_fd=directory_descriptor)
+        os.close(directory_descriptor)
+        directory_descriptor = None
+        final_root_stat = os.lstat(root)
+        if _verified_evidence_stat_identity(final_root_stat) != (
+            _verified_evidence_stat_identity(root_stat)
+        ):
+            return False
+        os.rmdir(root)
+    except OSError:
+        return False
+    finally:
+        if directory_descriptor is not None:
+            os.close(directory_descriptor)
+    return True
+
+
+def _cleanup_all_verified_evidence_sessions() -> None:
+    with _ACTIVE_VERIFIED_EVIDENCE_SESSIONS_LOCK:
+        sessions = list(_ACTIVE_VERIFIED_EVIDENCE_SESSIONS.items())
+    for session_id, session_root in sessions:
+        _cleanup_verified_evidence_session(
+            session_id,
+            session_root,
+            expected_creator_pid=os.getpid(),
+        )
+
+
+atexit.register(_cleanup_all_verified_evidence_sessions)
+
+
 def _materialize_verified_manifest_snapshot(
     manifest_bytes: bytes,
     *,
     fingerprint: str,
-) -> tuple[Path | None, str | None]:
+) -> tuple[Path | None, dict[str, Any] | None, str | None]:
     digest = fingerprint.removeprefix("sha256:")
     if not _is_sha256_fingerprint(fingerprint):
-        return None, "manifest_snapshot_fingerprint_invalid"
-    root = _VERIFIED_EVIDENCE_SNAPSHOT_ROOT
-    try:
-        root.mkdir(mode=0o700, parents=True, exist_ok=True)
-        root_stat = os.lstat(root)
-        if not stat.S_ISDIR(root_stat.st_mode):
-            return None, "manifest_snapshot_root_not_directory"
-        getuid = getattr(os, "getuid", None)
-        if callable(getuid) and root_stat.st_uid != getuid():
-            return None, "manifest_snapshot_root_owner_mismatch"
-        if stat.S_IMODE(root_stat.st_mode) != 0o700:
-            os.chmod(root, 0o700)
-            root_stat = os.lstat(root)
-            if stat.S_IMODE(root_stat.st_mode) != 0o700:
-                return None, "manifest_snapshot_root_permissions_invalid"
-    except OSError:
-        return None, "manifest_snapshot_root_unavailable"
+        return None, None, "manifest_snapshot_fingerprint_invalid"
+    root, session_contract, session_error = (
+        _create_verified_evidence_session()
+    )
+    if session_error is not None or root is None or session_contract is None:
+        return None, None, (
+            session_error or "manifest_snapshot_session_create_failed"
+        )
+    session_id = str(session_contract["session_id"])
+
+    def fail(reason: str) -> tuple[None, None, str]:
+        _cleanup_verified_evidence_session(
+            session_id,
+            root,
+            expected_creator_pid=os.getpid(),
+        )
+        return None, None, reason
 
     snapshot_path = root / f"evidence-manifest-{digest}.jsonl"
     existing_bytes, existing_error = _read_verified_snapshot_bytes(
@@ -1761,9 +2355,9 @@ def _materialize_verified_manifest_snapshot(
         expected_fingerprint=fingerprint,
     )
     if existing_error is None:
-        return snapshot_path, None
+        return snapshot_path, session_contract, None
     if existing_error != "snapshot_missing":
-        return None, "manifest_snapshot_existing_object_invalid"
+        return fail("manifest_snapshot_existing_object_invalid")
 
     temporary_path = root / (
         f".evidence-manifest-{digest}-{os.getpid()}-{time.time_ns()}.tmp"
@@ -1799,7 +2393,7 @@ def _materialize_verified_manifest_snapshot(
                 expected_fingerprint=fingerprint,
             )
             if existing_error is not None:
-                return None, "manifest_snapshot_existing_object_invalid"
+                return fail("manifest_snapshot_existing_object_invalid")
         directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
         if hasattr(os, "O_NOFOLLOW"):
             directory_flags |= os.O_NOFOLLOW
@@ -1809,7 +2403,7 @@ def _materialize_verified_manifest_snapshot(
         finally:
             os.close(directory_descriptor)
     except OSError:
-        return None, "manifest_snapshot_write_failed"
+        return fail("manifest_snapshot_write_failed")
     finally:
         if descriptor is not None:
             os.close(descriptor)
@@ -1821,7 +2415,7 @@ def _materialize_verified_manifest_snapshot(
             cleanup_failed = True
 
     if cleanup_failed:
-        return None, "manifest_snapshot_cleanup_failed"
+        return fail("manifest_snapshot_cleanup_failed")
 
     snapshot_bytes, snapshot_error = _read_verified_snapshot_bytes(
         snapshot_path,
@@ -1829,8 +2423,24 @@ def _materialize_verified_manifest_snapshot(
         expected_fingerprint=fingerprint,
     )
     if snapshot_error is not None or snapshot_bytes != manifest_bytes:
-        return None, "manifest_snapshot_verification_failed"
-    return snapshot_path, None
+        return fail("manifest_snapshot_verification_failed")
+
+    def cleanup_session() -> None:
+        if not _cleanup_verified_evidence_session(
+            session_id,
+            root,
+            expected_creator_pid=os.getpid(),
+        ):
+            raise RuntimeError("verified evidence session cleanup failed")
+
+    try:
+        register_evaluation_private_artifact_session(
+            session_id,
+            cleanup_session,
+        )
+    except (TypeError, ValueError):
+        return fail("manifest_snapshot_session_register_failed")
+    return snapshot_path, session_contract, None
 
 
 def _read_verified_snapshot_bytes(
@@ -1906,8 +2516,15 @@ def _validate_verified_manifest_snapshot(
 
     if value.get("content_addressed") is not True:
         add_error("manifest_snapshot_not_content_addressed")
+    snapshot_session = value.get("snapshot_session")
+    session_id = _verified_snapshot_session_id(snapshot_session)
+    if session_id is None:
+        add_error("manifest_snapshot_session_invalid")
     snapshot_path_value = value.get("path")
-    if not _is_verified_snapshot_path(snapshot_path_value):
+    if not _is_verified_snapshot_path(
+        snapshot_path_value,
+        session_id=session_id,
+    ):
         add_error("manifest_snapshot_path_untrusted")
     expected_size = value.get("size_bytes")
     if not isinstance(expected_size, int) or isinstance(expected_size, bool):
@@ -1933,18 +2550,49 @@ def _validate_verified_manifest_snapshot(
     return result
 
 
-def _is_verified_snapshot_path(value: object) -> bool:
+def _verified_snapshot_session_id(value: object) -> str | None:
+    if not isinstance(value, Mapping):
+        return None
+    if value.get("format") != "aworld.evaluation.private_artifact_session":
+        return None
+    if value.get("version") != 1:
+        return None
+    session_id = value.get("session_id")
+    if (
+        not isinstance(session_id, str)
+        or re.fullmatch(r"[0-9a-f]{32}", session_id) is None
+    ):
+        return None
+    return session_id
+
+
+def _is_verified_snapshot_path(
+    value: object,
+    *,
+    session_id: str | None = None,
+) -> bool:
     if not isinstance(value, str) or not value.strip():
         return False
     root = Path(
         os.path.abspath(os.path.normpath(str(_VERIFIED_EVIDENCE_SNAPSHOT_ROOT)))
     )
     path = Path(os.path.abspath(os.path.normpath(str(Path(value).expanduser()))))
-    try:
-        path.relative_to(root)
-    except ValueError:
+    if path.parent.parent != root:
         return False
-    return path.parent == root
+    session_match = _VERIFIED_EVIDENCE_SESSION_NAME_PATTERN.fullmatch(
+        path.parent.name
+    )
+    if session_match is None:
+        return False
+    if (
+        session_id is not None
+        and session_match.group("session_id") != session_id
+    ):
+        return False
+    return re.fullmatch(
+        r"evidence-manifest-[0-9a-f]{64}\.jsonl",
+        path.name,
+    ) is not None
 
 
 def _stat_identity(value: object) -> tuple[object, object]:

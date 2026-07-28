@@ -11,6 +11,7 @@ import os
 import re
 import stat
 import tempfile
+import threading
 import time
 import uuid
 from dataclasses import dataclass, field, replace
@@ -69,6 +70,11 @@ _MAX_JUDGE_ARTIFACT_READ_CHARS = 20000
 _DEFAULT_JUDGE_ARTIFACT_READ_TOTAL_CHARS = 80000
 _MAX_JUDGE_ARTIFACT_READ_TOTAL_CHARS = 160000
 _MAX_JUDGE_INTEGRITY_BOUND_ARTIFACT_BYTES = 4 * 1024 * 1024
+_PRIVATE_ARTIFACT_SESSION_FORMAT = "aworld.evaluation.private_artifact_session"
+_PRIVATE_ARTIFACT_SESSION_VERSION = 1
+_PRIVATE_ARTIFACT_SESSION_ID_PATTERN = re.compile(r"^[0-9a-f]{32}$")
+_PRIVATE_ARTIFACT_SESSION_CLEANUPS: dict[str, Callable[[], None]] = {}
+_PRIVATE_ARTIFACT_SESSION_CLEANUPS_LOCK = threading.Lock()
 
 
 @dataclass(frozen=True)
@@ -433,6 +439,16 @@ class AgentJudgeBackend:
             raise RuntimeError(f"judge backend '{self.backend_id}' is not available")
         prompt_builder = self.prompt_builder or _build_default_judge_prompt
         prompt = prompt_builder(case_input, target, suite)
+        try:
+            return await self._execute_prompt(prompt, suite)
+        finally:
+            _cleanup_prompt_private_artifact_session(prompt)
+
+    async def _execute_prompt(
+        self,
+        prompt: JudgePrompt,
+        suite: "EvalSuiteDef",
+    ) -> JudgeExecution:
         executor = self.executor
         diagnostics: list[dict[str, Any]] = []
         suite_id = str(getattr(suite, "suite_id", "unknown") or "unknown")
@@ -1987,6 +2003,71 @@ def _judge_call_diagnostic(
 
 def _elapsed_monotonic_ms(started_at: float) -> float:
     return (time.monotonic() - started_at) * 1000
+
+
+def register_evaluation_private_artifact_session(
+    session_id: str,
+    cleanup: Callable[[], None],
+) -> None:
+    if not _PRIVATE_ARTIFACT_SESSION_ID_PATTERN.fullmatch(session_id):
+        raise ValueError("invalid private artifact session id")
+    if not callable(cleanup):
+        raise TypeError("private artifact session cleanup must be callable")
+    with _PRIVATE_ARTIFACT_SESSION_CLEANUPS_LOCK:
+        if session_id in _PRIVATE_ARTIFACT_SESSION_CLEANUPS:
+            raise ValueError("private artifact session is already registered")
+        _PRIVATE_ARTIFACT_SESSION_CLEANUPS[session_id] = cleanup
+
+
+def cleanup_evaluation_private_artifact_session(session_id: str) -> bool:
+    if not _PRIVATE_ARTIFACT_SESSION_ID_PATTERN.fullmatch(session_id):
+        return False
+    with _PRIVATE_ARTIFACT_SESSION_CLEANUPS_LOCK:
+        cleanup = _PRIVATE_ARTIFACT_SESSION_CLEANUPS.pop(session_id, None)
+    if cleanup is None:
+        return False
+    try:
+        cleanup()
+    except Exception as exc:
+        logger.warning(
+            "evaluation.private_artifact_session.cleanup_failed "
+            f"session_id={session_id} error_type={type(exc).__name__}"
+        )
+        return False
+    return True
+
+
+def _private_artifact_session_id(prompt: JudgePrompt) -> str | None:
+    try:
+        payload = json.loads(_prompt_text(prompt))
+    except (TypeError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, Mapping):
+        return None
+    artifact_backed = payload.get("artifact_backed_evidence")
+    if not isinstance(artifact_backed, Mapping):
+        return None
+    session = artifact_backed.get("private_artifact_session")
+    if not isinstance(session, Mapping):
+        return None
+    if session.get("format") != _PRIVATE_ARTIFACT_SESSION_FORMAT:
+        return None
+    if session.get("version") != _PRIVATE_ARTIFACT_SESSION_VERSION:
+        return None
+    session_id = session.get("session_id")
+    if (
+        not isinstance(session_id, str)
+        or not _PRIVATE_ARTIFACT_SESSION_ID_PATTERN.fullmatch(session_id)
+    ):
+        return None
+    return session_id
+
+
+def _cleanup_prompt_private_artifact_session(prompt: JudgePrompt) -> None:
+    session_id = _private_artifact_session_id(prompt)
+    if session_id is None:
+        return
+    cleanup_evaluation_private_artifact_session(session_id)
 
 
 def _artifact_lookup_key(path_value: str) -> str:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import json
@@ -96,6 +97,48 @@ def _write_verified_evidence_bundle(
     return manifest_path, manifest_fingerprint
 
 
+def _verified_evidence_prompt_builder(
+    root: Path,
+    *,
+    source_id: str,
+):
+    root.mkdir(parents=True, exist_ok=True)
+    source_path = root / "source.txt"
+    source_path.write_text(
+        f"verified evidence for {source_id}",
+        encoding="utf-8",
+    )
+    bundle_path = root / "evidence_bundle.json"
+    _write_verified_evidence_bundle(
+        bundle_path,
+        [
+            {
+                "source_id": source_id,
+                "artifact_path": str(source_path),
+                "extraction_method": "bounded_extract",
+                "bounded_evidence": {
+                    "bounded_excerpt": f"verified evidence for {source_id}"
+                },
+            }
+        ],
+    )
+
+    def build(case_input, target, suite):
+        return _build_trajectory_prompt(
+            {"input": "question"},
+            {
+                "case_id": source_id,
+                "answer": "answer",
+                "trajectory": [],
+                "artifacts": {"outcome": {"extracted_path": None}},
+                "evidence_bundle_path": str(bundle_path),
+            },
+            suite=None,
+        )
+
+    return build
+
+
 @pytest.fixture(autouse=True)
 def _reset_eval_registry_state(
     monkeypatch: pytest.MonkeyPatch,
@@ -109,6 +152,21 @@ def _reset_eval_registry_state(
         "_VERIFIED_EVIDENCE_SNAPSHOT_ROOT",
         tmp_path / "evaluator-private-snapshots",
         raising=False,
+    )
+    monkeypatch.setattr(
+        evaluator_runtime_module,
+        "_ACTIVE_VERIFIED_EVIDENCE_SESSIONS",
+        {},
+    )
+    monkeypatch.setattr(
+        evaluator_runtime_module,
+        "_VERIFIED_EVIDENCE_STALE_RECLAIMED",
+        False,
+    )
+    monkeypatch.setattr(
+        substrate_module,
+        "_PRIVATE_ARTIFACT_SESSION_CLEANUPS",
+        {},
     )
     substrate_module.register_eval_suite(
         "app-evaluator",
@@ -1320,7 +1378,9 @@ def test_trajectory_prompt_uses_bundle_first_compaction_for_large_replay_payload
     assert evidence_digest["mode"] == "judge_ready_evidence_digest"
     assert evidence_digest["canonical_bundle_valid"] is True
     assert evidence_digest["entry_count"] == 1
-    assert evidence_digest["manifest"] == {
+    manifest_digest = dict(evidence_digest["manifest"])
+    snapshot_session = manifest_digest.pop("snapshot_session")
+    assert manifest_digest == {
         "path": snapshot_manifest_path,
         "source_path": str(manifest_path),
         "present": True,
@@ -1334,6 +1394,12 @@ def test_trajectory_prompt_uses_bundle_first_compaction_for_large_replay_payload
         "validation_errors": [],
         "content_addressed": True,
     }
+    assert snapshot_session == artifact_backed["private_artifact_session"]
+    assert snapshot_session["format"] == (
+        "aworld.evaluation.private_artifact_session"
+    )
+    assert snapshot_session["version"] == 1
+    assert len(snapshot_session["session_id"]) == 32
     assert evidence_digest["entries"] == [
         {
             "source_id": "source-1",
@@ -1750,6 +1816,10 @@ def test_artifact_index_never_marks_unavailable_manifest_valid(
 ) -> None:
     missing_manifest = (
         evaluator_runtime_module._VERIFIED_EVIDENCE_SNAPSHOT_ROOT
+        / (
+            "session-999999-1000000000000000-"
+            + ("0" * 32)
+        )
         / ("evidence-manifest-" + ("0" * 64) + ".jsonl")
     )
     index = _artifact_backed_evidence_index(
@@ -1773,6 +1843,11 @@ def test_artifact_index_never_marks_unavailable_manifest_valid(
                 "size_bytes": 128,
                 "fingerprint": "sha256:" + ("0" * 64),
                 "content_addressed": True,
+                "snapshot_session": {
+                    "format": "aworld.evaluation.private_artifact_session",
+                    "version": 1,
+                    "session_id": "0" * 32,
+                },
             },
         },
         evidence_summary={"canonical_bundle_valid": True},
@@ -1997,6 +2072,413 @@ def test_manifest_artifact_read_detects_snapshot_toctou(
 
     assert read_results[0]["status"] == "denied"
     assert read_results[0]["reason"] == "artifact_changed_during_read"
+
+
+@pytest.mark.asyncio
+async def test_evaluator_cleans_private_snapshot_session_after_judge(
+    tmp_path: Path,
+) -> None:
+    observed_root: Path | None = None
+
+    async def executor(prompt: str, system_prompt: str):
+        nonlocal observed_root
+        payload = json.loads(prompt)
+        manifest_artifact = next(
+            artifact
+            for artifact in payload["artifact_backed_evidence"]["artifacts"]
+            if artifact["kind"] == "evidence_manifest"
+        )
+        observed_root = Path(manifest_artifact["path"]).parent
+        assert observed_root.exists()
+        return {"score": 80.0, "verdict": "Pass"}
+
+    backend = substrate_module.AgentJudgeBackend(
+        backend_id="cleanup-test",
+        system_prompt="judge",
+        executor=executor,
+        prompt_builder=_verified_evidence_prompt_builder(
+            tmp_path / "normal-cleanup",
+            source_id="normal-cleanup",
+        ),
+    )
+
+    await backend.execute(
+        {"input": "question"},
+        {"answer": "answer"},
+        substrate_module.EvalSuiteDef(suite_id="cleanup-suite"),
+    )
+
+    assert observed_root is not None
+    assert observed_root.exists() is False
+    assert (
+        evaluator_runtime_module._VERIFIED_EVIDENCE_SNAPSHOT_ROOT.exists()
+        is False
+    )
+
+
+@pytest.mark.asyncio
+async def test_evaluator_cleans_private_snapshot_session_after_judge_exception(
+    tmp_path: Path,
+) -> None:
+    observed_root: Path | None = None
+
+    async def executor(prompt: str, system_prompt: str):
+        nonlocal observed_root
+        payload = json.loads(prompt)
+        manifest_artifact = next(
+            artifact
+            for artifact in payload["artifact_backed_evidence"]["artifacts"]
+            if artifact["kind"] == "evidence_manifest"
+        )
+        observed_root = Path(manifest_artifact["path"]).parent
+        assert observed_root.exists()
+        raise RuntimeError("judge failed")
+
+    backend = substrate_module.AgentJudgeBackend(
+        backend_id="cleanup-exception-test",
+        system_prompt="judge",
+        executor=executor,
+        prompt_builder=_verified_evidence_prompt_builder(
+            tmp_path / "exception-cleanup",
+            source_id="exception-cleanup",
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="judge failed"):
+        await backend.execute(
+            {"input": "question"},
+            {"answer": "answer"},
+            substrate_module.EvalSuiteDef(suite_id="cleanup-suite"),
+        )
+
+    assert observed_root is not None
+    assert observed_root.exists() is False
+    assert (
+        evaluator_runtime_module._VERIFIED_EVIDENCE_SNAPSHOT_ROOT.exists()
+        is False
+    )
+
+
+@pytest.mark.asyncio
+async def test_concurrent_evaluators_only_cleanup_their_own_snapshot_session(
+    tmp_path: Path,
+) -> None:
+    both_started = asyncio.Event()
+    release_first = asyncio.Event()
+    release_second = asyncio.Event()
+    observed_roots: dict[str, Path] = {}
+
+    def executor_for(label: str, release: asyncio.Event):
+        async def executor(prompt: str, system_prompt: str):
+            payload = json.loads(prompt)
+            manifest_artifact = next(
+                artifact
+                for artifact in payload["artifact_backed_evidence"]["artifacts"]
+                if artifact["kind"] == "evidence_manifest"
+            )
+            observed_roots[label] = Path(manifest_artifact["path"]).parent
+            if len(observed_roots) == 2:
+                both_started.set()
+            await release.wait()
+            return {"score": 80.0, "verdict": "Pass"}
+
+        return executor
+
+    first_backend = substrate_module.AgentJudgeBackend(
+        backend_id="concurrent-first",
+        system_prompt="judge",
+        executor=executor_for("first", release_first),
+        prompt_builder=_verified_evidence_prompt_builder(
+            tmp_path / "concurrent-first",
+            source_id="concurrent-first",
+        ),
+    )
+    second_backend = substrate_module.AgentJudgeBackend(
+        backend_id="concurrent-second",
+        system_prompt="judge",
+        executor=executor_for("second", release_second),
+        prompt_builder=_verified_evidence_prompt_builder(
+            tmp_path / "concurrent-second",
+            source_id="concurrent-second",
+        ),
+    )
+    suite = substrate_module.EvalSuiteDef(suite_id="cleanup-suite")
+    first_task = asyncio.create_task(
+        first_backend.execute({"input": "question"}, {"answer": "answer"}, suite)
+    )
+    second_task = asyncio.create_task(
+        second_backend.execute({"input": "question"}, {"answer": "answer"}, suite)
+    )
+    await asyncio.wait_for(both_started.wait(), timeout=2)
+    assert observed_roots["first"] != observed_roots["second"]
+    assert observed_roots["first"].exists()
+    assert observed_roots["second"].exists()
+
+    release_first.set()
+    await first_task
+    assert observed_roots["first"].exists() is False
+    assert observed_roots["second"].exists()
+
+    release_second.set()
+    await second_task
+    assert observed_roots["second"].exists() is False
+    assert (
+        evaluator_runtime_module._VERIFIED_EVIDENCE_SNAPSHOT_ROOT.exists()
+        is False
+    )
+
+
+def test_atexit_cleanup_removes_active_verified_snapshot_sessions(
+    tmp_path: Path,
+) -> None:
+    bundle_path = tmp_path / "atexit" / "evidence_bundle.json"
+    bundle_path.parent.mkdir()
+    _write_verified_evidence_bundle(
+        bundle_path,
+        [
+            {
+                "source_id": "atexit-cleanup",
+                "artifact_path": str(tmp_path / "source.txt"),
+                "extraction_method": "bounded_extract",
+                "bounded_evidence": {"bounded_excerpt": "verified evidence"},
+            }
+        ],
+    )
+    bundle = _load_prompt_evidence_bundle(str(bundle_path))
+    session_root = Path(bundle["manifest"]["path"]).parent
+    assert session_root.exists()
+
+    evaluator_runtime_module._cleanup_all_verified_evidence_sessions()
+
+    assert session_root.exists() is False
+    assert evaluator_runtime_module._ACTIVE_VERIFIED_EVIDENCE_SESSIONS == {}
+    assert (
+        evaluator_runtime_module._VERIFIED_EVIDENCE_SNAPSHOT_ROOT.exists()
+        is False
+    )
+
+
+def test_atexit_cleanup_does_not_remove_another_process_session(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    bundle_path = tmp_path / "forked-atexit" / "evidence_bundle.json"
+    bundle_path.parent.mkdir()
+    _write_verified_evidence_bundle(
+        bundle_path,
+        [
+            {
+                "source_id": "forked-atexit",
+                "artifact_path": str(tmp_path / "source.txt"),
+                "extraction_method": "bounded_extract",
+                "bounded_evidence": {"bounded_excerpt": "verified evidence"},
+            }
+        ],
+    )
+    bundle = _load_prompt_evidence_bundle(str(bundle_path))
+    session_root = Path(bundle["manifest"]["path"]).parent
+    creator_pid = os.getpid()
+
+    monkeypatch.setattr(
+        evaluator_runtime_module.os,
+        "getpid",
+        lambda: creator_pid + 1,
+    )
+    evaluator_runtime_module._cleanup_all_verified_evidence_sessions()
+    assert session_root.exists()
+
+    monkeypatch.setattr(
+        evaluator_runtime_module.os,
+        "getpid",
+        lambda: creator_pid,
+    )
+    evaluator_runtime_module._cleanup_all_verified_evidence_sessions()
+    assert session_root.exists() is False
+
+
+def test_next_startup_reclaims_only_proven_stale_dead_pid_session(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    bundle_path = tmp_path / "stale" / "evidence_bundle.json"
+    bundle_path.parent.mkdir()
+    _write_verified_evidence_bundle(
+        bundle_path,
+        [
+            {
+                "source_id": "stale-cleanup",
+                "artifact_path": str(tmp_path / "source.txt"),
+                "extraction_method": "bounded_extract",
+                "bounded_evidence": {"bounded_excerpt": "verified evidence"},
+            }
+        ],
+    )
+    bundle = _load_prompt_evidence_bundle(str(bundle_path))
+    session_root = Path(bundle["manifest"]["path"]).parent
+    evaluator_runtime_module._ACTIVE_VERIFIED_EVIDENCE_SESSIONS.clear()
+    substrate_module._PRIVATE_ARTIFACT_SESSION_CLEANUPS.clear()
+    monkeypatch.setattr(
+        evaluator_runtime_module,
+        "_VERIFIED_EVIDENCE_SESSION_STALE_AGE_SECONDS",
+        0,
+    )
+    monkeypatch.setattr(
+        evaluator_runtime_module,
+        "_VERIFIED_EVIDENCE_STALE_RECLAIMED",
+        False,
+    )
+    monkeypatch.setattr(
+        evaluator_runtime_module,
+        "_verified_evidence_pid_is_alive",
+        lambda pid: True,
+    )
+
+    evaluator_runtime_module._reclaim_stale_verified_evidence_sessions()
+    assert session_root.exists()
+
+    session_root.chmod(0o755)
+    monkeypatch.setattr(
+        evaluator_runtime_module,
+        "_VERIFIED_EVIDENCE_STALE_RECLAIMED",
+        False,
+    )
+    monkeypatch.setattr(
+        evaluator_runtime_module,
+        "_verified_evidence_pid_is_alive",
+        lambda pid: False,
+    )
+    evaluator_runtime_module._reclaim_stale_verified_evidence_sessions()
+    assert session_root.exists()
+
+    session_root.chmod(0o700)
+    monkeypatch.setattr(
+        evaluator_runtime_module,
+        "_VERIFIED_EVIDENCE_STALE_RECLAIMED",
+        False,
+    )
+    replacement_bundle_path = (
+        tmp_path / "stale" / "replacement_evidence_bundle.json"
+    )
+    _write_verified_evidence_bundle(
+        replacement_bundle_path,
+        [
+            {
+                "source_id": "replacement-session",
+                "artifact_path": str(tmp_path / "replacement-source.txt"),
+                "extraction_method": "bounded_extract",
+                "bounded_evidence": {"bounded_excerpt": "replacement evidence"},
+            }
+        ],
+    )
+    replacement_bundle = _load_prompt_evidence_bundle(
+        str(replacement_bundle_path)
+    )
+    replacement_session_root = Path(
+        replacement_bundle["manifest"]["path"]
+    ).parent
+
+    assert session_root.exists() is False
+    assert replacement_session_root.exists()
+    evaluator_runtime_module._cleanup_all_verified_evidence_sessions()
+    assert replacement_session_root.exists() is False
+    assert (
+        evaluator_runtime_module._VERIFIED_EVIDENCE_SNAPSHOT_ROOT.exists()
+        is False
+    )
+
+
+def test_next_startup_reclaims_only_proven_legacy_snapshot_roots(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    legacy_parent = (
+        evaluator_runtime_module._VERIFIED_EVIDENCE_SNAPSHOT_ROOT.parent
+    )
+    uid = getattr(os, "getuid", lambda: 0)()
+    dead_pid = 999_999
+    alive_pid = os.getpid()
+    stale_ns = (
+        evaluator_runtime_module.time.time_ns()
+        - 120 * 1_000_000_000
+    )
+
+    def create_legacy_root(
+        *,
+        pid: int,
+        token: str,
+        content: bytes,
+        digest: str | None = None,
+        stale: bool = True,
+        mode: int = 0o700,
+    ) -> Path:
+        root = legacy_parent / (
+            f"aworld-evaluator-verified-evidence-{uid}-{pid}-{token}"
+        )
+        root.mkdir(mode=0o700)
+        resolved_digest = digest or hashlib.sha256(content).hexdigest()
+        snapshot = root / f"evidence-manifest-{resolved_digest}.jsonl"
+        snapshot.write_bytes(content)
+        snapshot.chmod(0o400)
+        if stale:
+            os.utime(snapshot, ns=(stale_ns, stale_ns))
+            os.utime(root, ns=(stale_ns, stale_ns))
+        root.chmod(mode)
+        return root
+
+    valid_root = create_legacy_root(
+        pid=dead_pid,
+        token="1" * 16,
+        content=b'{"source_id":"valid"}\n',
+    )
+    alive_root = create_legacy_root(
+        pid=alive_pid,
+        token="2" * 16,
+        content=b'{"source_id":"alive"}\n',
+    )
+    fresh_root = create_legacy_root(
+        pid=dead_pid,
+        token="3" * 16,
+        content=b'{"source_id":"fresh"}\n',
+        stale=False,
+    )
+    permissive_root = create_legacy_root(
+        pid=dead_pid,
+        token="4" * 16,
+        content=b'{"source_id":"permissive"}\n',
+        mode=0o755,
+    )
+    corrupt_root = create_legacy_root(
+        pid=dead_pid,
+        token="5" * 16,
+        content=b'{"source_id":"corrupt"}\n',
+        digest="0" * 64,
+    )
+    monkeypatch.setattr(
+        evaluator_runtime_module,
+        "_VERIFIED_EVIDENCE_SESSION_STALE_AGE_SECONDS",
+        60,
+    )
+    monkeypatch.setattr(
+        evaluator_runtime_module,
+        "_VERIFIED_EVIDENCE_STALE_RECLAIMED",
+        False,
+    )
+    monkeypatch.setattr(
+        evaluator_runtime_module,
+        "_verified_evidence_pid_is_alive",
+        lambda pid: pid == alive_pid,
+    )
+
+    evaluator_runtime_module._reclaim_stale_verified_evidence_sessions()
+
+    assert valid_root.exists() is False
+    assert alive_root.exists()
+    assert fresh_root.exists()
+    assert permissive_root.exists()
+    assert corrupt_root.exists()
+    assert (
+        evaluator_runtime_module._VERIFIED_EVIDENCE_SNAPSHOT_ROOT.exists()
+        is False
+    )
 
 
 def test_trajectory_prompt_artifact_index_lists_all_bundle_source_artifacts(
