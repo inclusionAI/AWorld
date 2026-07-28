@@ -89,6 +89,7 @@ class TraceReflectiveLLMMutator:
         filtered_duplicate_count = 0
         filtered_invalid_patch_count = 0
         repaired_transport_completion_violation_count = 0
+        preserved_existing_replay_file_delta_count = 0
         seen_content_fingerprints: set[str] = set()
         require_targeted_delta = _request_has_high_baseline_regression(request)
         candidate_strategy_records: list[dict[str, Any]] = []
@@ -199,6 +200,16 @@ class TraceReflectiveLLMMutator:
                 )
                 if inherited_file_count:
                     materialization = f"{materialization}+repair_focus_overlay"
+                files, preserved_replay_file_count = (
+                    _preserve_existing_replay_package_for_target_delta(
+                        request,
+                        candidate_index=index,
+                        candidate_files=files,
+                    )
+                )
+                preserved_existing_replay_file_delta_count += (
+                    preserved_replay_file_count
+                )
                 if _violates_transport_completion_invariant(content):
                     content = _append_transport_completion_invariant(content)
                     repaired_transport_completion_violation_count += 1
@@ -334,6 +345,9 @@ class TraceReflectiveLLMMutator:
             "filtered_invalid_patch_candidates": filtered_invalid_patch_count,
             "repaired_transport_completion_violation_candidates": (
                 repaired_transport_completion_violation_count
+            ),
+            "preserved_existing_replay_file_delta_count": (
+                preserved_existing_replay_file_delta_count
             ),
             "candidate_strategies": candidate_strategy_records,
             "candidate_population_execution": population_diagnostics,
@@ -478,6 +492,12 @@ def _build_mutation_prompt(request: OptimizerRequest, *, candidate_index: int) -
         "implement the declared required_action. Do not mutate candidate behavior for a "
         "framework- or infrastructure-owned constraint, and do not infer policy from "
         "free-form evidence issue wording. "
+        "Treat replay manifest capability_id as immutable package identity. A compiler "
+        "request carries that authoritative identity in request.capability_id, and the "
+        "compiler result must copy it exactly; never shorten it, derive it from the "
+        "skill name, or emit a template placeholder. For an enum schema_field_constraint "
+        "with one expected value, copy its single expected value exactly into the declared "
+        "field at the specified schema_layer. "
         "Keep reusable examples schema-neutral: use role placeholders such as "
         "<CLAIM>, <ARTIFACT_PATH>, and <OFFSET> instead of copying proper nouns, "
         "resource names, claim text, filenames, URLs, or identifiers from trajectory "
@@ -529,6 +549,20 @@ def _focused_repair_prompt_instructions(
         if isinstance(raw_schema_field_constraints, (list, tuple))
         else ()
     )
+    capability_identity = next(
+        (
+            str(expected[0])
+            for item in schema_field_constraints
+            for expected in (item.get("expected"),)
+            if item.get("schema_layer") == "compile_result"
+            and item.get("field_path") == "capability_id"
+            and item.get("rule") == "enum"
+            and isinstance(expected, (list, tuple))
+            and len(expected) == 1
+            and isinstance(expected[0], str)
+        ),
+        None,
+    )
     validation_feedback = payload.get("validation_feedback", ())
     focused_feedback = (
         validation_feedback[0]
@@ -561,11 +595,22 @@ def _focused_repair_prompt_instructions(
         "record, or tool-execution summary alone is insufficient; otherwise try one "
         "materially different bounded artifact-backed source or report the insufficiency. "
         "Never add a blanket first-response-means-complete rule or case-specific behavior. "
+        "For an enum schema_field_constraint with one expected value, copy its single "
+        "expected value exactly into that field at the declared schema_layer. Treat the "
+        "manifest capability identity as immutable and never infer it from the target "
+        "name. "
         "Keep reusable examples schema-neutral: use role placeholders such as "
         "<CLAIM>, <ARTIFACT_PATH>, and <OFFSET> instead of copying proper nouns, "
         "resource names, claim text, filenames, URLs, or identifiers from trajectory "
         "evidence. "
     )
+    if capability_identity is not None:
+        instructions += (
+            "The authoritative manifest capability identity for this repair is "
+            f"{json.dumps(capability_identity, ensure_ascii=True)}. Set the "
+            "compile-result capability_id to request['capability_id'], which must equal "
+            "exactly that value, and preserve the binding across later repair iterations. "
+        )
     recovery_trace = (
         focused_feedback.get("recovery_trace")
         if isinstance(focused_feedback, Mapping)
@@ -621,6 +666,18 @@ def _focused_repair_prompt_instructions(
             "Do not copy claim text into reusable instructions, do not branch on constraint "
             "identity hashes, and do not reinterpret evaluator prose as an additional "
             "constraint. "
+        )
+    repair_support = payload.get("repair_support")
+    if isinstance(repair_support, Mapping):
+        instructions += (
+            "repair_support is a distinct source-omitted repair frontier. When both "
+            "repair_focus and repair_support contain judge-stage metrics, treat their "
+            "passed and failed gates as complementary checkpoints: preserve the focused "
+            "package's verified behavior while satisfying the union of typed constraints "
+            "and required behaviors exposed by both frontiers. Do not infer or recreate "
+            "the omitted sibling source, average incompatible outputs, or trade a recovered "
+            "gate for a different gate. Produce one minimal focused delta that must retain "
+            "every recovered checkpoint under fresh paired replay. "
         )
     if (
         '"evidence_incomplete": true' in feedback_text
@@ -941,6 +998,42 @@ def _overlay_repair_focus_files(
     }
     merged.update(replacements)
     return validate_candidate_files(merged.values()), inherited
+
+
+def _preserve_existing_replay_package_for_target_delta(
+    request: OptimizerRequest,
+    *,
+    candidate_index: int,
+    candidate_files: tuple[CandidateFileDelta, ...],
+) -> tuple[tuple[CandidateFileDelta, ...], int]:
+    """Keep target-behavior exploration separate from replay capability authoring."""
+
+    if not candidate_files:
+        return candidate_files, 0
+    context = request.evolution_context or compile_evolution_context(request)
+    if isinstance(
+        context.repair_focus_for_candidate(candidate_index=candidate_index),
+        Mapping,
+    ):
+        return candidate_files, 0
+    if (
+        _population_strategy(request, candidate_index)["name"]
+        == "missing_capability_completion"
+    ):
+        return candidate_files, 0
+    inventory = {
+        str(path).strip().replace("\\", "/")
+        for path in request.target_package_inventory
+    }
+    if "replay/capability.json" not in inventory:
+        return candidate_files, 0
+
+    retained = tuple(
+        item
+        for item in candidate_files
+        if not item.path.replace("\\", "/").startswith("replay/")
+    )
+    return retained, len(candidate_files) - len(retained)
 
 
 def _has_lesson_backed_delta_signal(request: OptimizerRequest) -> bool:

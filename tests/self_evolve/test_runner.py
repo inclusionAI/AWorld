@@ -511,6 +511,74 @@ def test_feedback_from_report_joins_selected_candidate_held_out_judge_metrics(
     )
 
 
+def test_feedback_from_report_preserves_judged_target_only_candidate_package(
+    tmp_path: Path,
+) -> None:
+    run_root = tmp_path / "run-target-only-repair"
+    candidate_id = "candidate-target-only-repair"
+    candidate_content = (
+        "# Demo\n\n"
+        + ("Preserve the verified replay package.\n" * 300)
+        + "\n## Judge-scored repair\n\n"
+        + "Support every final claim or omit it.\n"
+    )
+    assert len(candidate_content) > 8_000
+    candidate_root = run_root / "candidates" / candidate_id
+    candidate_root.mkdir(parents=True)
+    (candidate_root / "candidate.json").write_text(
+        json.dumps(
+            {
+                "candidate_id": candidate_id,
+                "rationale": "repair grounded target guidance only",
+                "content": candidate_content,
+                "files": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_path = run_root / "report.json"
+    report = {
+        "run_id": "run-target-only-repair",
+        "selected_candidate_id": candidate_id,
+        "gate_results": [
+            {
+                "gate_name": "evidence_quality",
+                "passed": False,
+                "reason": "evaluation evidence is incomplete",
+                "details": {"evidence_incomplete": True},
+            }
+        ],
+        "iterations": [
+            {
+                "candidate_id": candidate_id,
+                "status": "rejected",
+                "failed_gates": ["evidence_quality"],
+                "candidate_metrics": {
+                    "score": 89.0,
+                    "A1_groundedness": 4,
+                    "evidence_incomplete": True,
+                },
+            }
+        ],
+        "population": {},
+    }
+    report_path.write_text(json.dumps(report), encoding="utf-8")
+
+    feedback = _feedback_from_report(report, report_path=report_path)
+
+    assert feedback[0].variant_id == candidate_id
+    assert feedback[0].dataset_split == "validation"
+    assert feedback[0].metrics["repair_candidate_package"] == {
+        "candidate_id": candidate_id,
+        "rationale": "repair grounded target guidance only",
+        "content": candidate_content.strip(),
+        "files": [],
+    }
+    assert feedback[0].metrics["repair_candidate_package"]["content"].endswith(
+        "Support every final claim or omit it."
+    )
+
+
 def test_skill_release_fidelity_failure_enters_typed_repair_frontier() -> None:
     current = (
         "---\nname: demo\n---\n# Demo\n\n"

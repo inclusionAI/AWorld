@@ -378,6 +378,56 @@ def test_discover_capability_inside_skill_root(tmp_path: Path) -> None:
     assert discovered.package_fingerprint.startswith("sha256:")
 
 
+def test_compile_request_binds_manifest_capability_identity(tmp_path: Path) -> None:
+    skill = _write_capability_skill(tmp_path)
+
+    request = _request(skill)
+
+    assert request.capability_id == "fixture-service"
+    assert request.to_dict()["capability_id"] == "fixture-service"
+
+
+@pytest.mark.replay_sandbox
+@pytest.mark.parametrize(
+    "result_capability_id",
+    ("wrong-service", "<wrong-service>"),
+)
+def test_compile_result_capability_identity_failure_is_typed_for_repair(
+    tmp_path: Path,
+    result_capability_id: str,
+) -> None:
+    skill = _write_capability_skill(tmp_path)
+    compiler_path = skill / "replay/compiler.py"
+    compiler_path.write_text(
+        compiler_path.read_text(encoding="utf-8").replace(
+            "'capability_id': 'fixture-service'",
+            f"'capability_id': {result_capability_id!r}",
+        ),
+        encoding="utf-8",
+    )
+    capability = discover_replay_capability(skill)
+    assert capability is not None
+
+    with pytest.raises(ReplayCapabilityError) as error:
+        compile_and_freeze_capability(
+            capability,
+            _request(skill),
+            tmp_path / "compile",
+        )
+
+    assert error.value.code == "schema_field_validation_failed"
+    assert error.value.details["schema_field_constraints"] == [
+        {
+            "schema_layer": "compile_result",
+            "field_path": "capability_id",
+            "rule": "enum",
+            "expected": ["fixture-service"],
+        }
+    ]
+    encoded = json.dumps(error.value.details)
+    assert result_capability_id not in encoded
+
+
 @pytest.mark.replay_sandbox
 def test_skill_runtime_requires_declared_protocol_probes(tmp_path: Path) -> None:
     skill = _write_capability_skill(tmp_path)

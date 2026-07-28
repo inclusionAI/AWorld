@@ -15,7 +15,7 @@ import sys
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path, PurePosixPath
-from typing import Any, Mapping, Protocol, Sequence
+from typing import Any, Mapping, NoReturn, Protocol, Sequence
 
 from aworld.self_evolve.replay_adaptation import (
     ReplayAdapterBinding,
@@ -160,7 +160,7 @@ class ReplayCapabilityError(RuntimeError):
 def _raise_schema_field_error(
     message: str,
     violations: Sequence[SchemaFieldViolation],
-) -> None:
+) -> NoReturn:
     if not violations:
         raise ValueError("schema field error requires at least one violation")
     raise ReplayCapabilityError(
@@ -238,6 +238,7 @@ class DiscoveredReplayCapability:
 @dataclass(frozen=True)
 class ReplayCapabilityCompileRequest:
     schema_version: str
+    capability_id: str
     requirements: tuple[ReplayCapabilityRequirement, ...]
     context_snapshots: Mapping[str, str]
     task_inputs: Mapping[str, Any]
@@ -262,14 +263,21 @@ class ReplayCapabilityCompileRequest:
         ] | None = None,
     ) -> ReplayCapabilityCompileRequest:
         root = Path(capability_root).expanduser().resolve()
-        package_fingerprint = capability_package_fingerprint
-        if package_fingerprint is None:
-            capability = discover_replay_capability(root)
-            if capability is None:
-                raise ReplayCapabilityError(
-                    f"replay capability manifest not found under: {root}"
-                )
-            package_fingerprint = capability.package_fingerprint
+        discovered = discover_replay_capability(root)
+        if discovered is None:
+            raise ReplayCapabilityError(
+                f"replay capability manifest not found under: {root}"
+            )
+        package_fingerprint = (
+            capability_package_fingerprint
+            if capability_package_fingerprint is not None
+            else discovered.package_fingerprint
+        )
+        authoritative_capability_id = discovered.manifest.capability_id
+        authoritative_capability_id = _parse_identifier(
+            authoritative_capability_id,
+            label="compile request capability_id",
+        )
         normalized_derivations = {
             str(evidence_ref): [dict(item) for item in entries]
             for evidence_ref, entries in sorted(
@@ -278,6 +286,7 @@ class ReplayCapabilityCompileRequest:
         }
         payload = {
             "schema_version": REPLAY_CAPABILITY_REQUEST_SCHEMA_VERSION,
+            "capability_id": authoritative_capability_id,
             "requirements": [asdict(item) for item in requirements],
             "context_snapshots": dict(sorted(context_snapshots.items())),
             "task_inputs": dict(sorted(task_inputs.items())),
@@ -288,6 +297,7 @@ class ReplayCapabilityCompileRequest:
         }
         return cls(
             schema_version=REPLAY_CAPABILITY_REQUEST_SCHEMA_VERSION,
+            capability_id=authoritative_capability_id,
             requirements=tuple(requirements),
             context_snapshots=payload["context_snapshots"],
             task_inputs=payload["task_inputs"],
@@ -1476,9 +1486,44 @@ def _parse_compile_result(
                 ),
             ),
         )
-    capability_id = _required_identifier(raw, "capability_id", "result")
+    raw_capability_id = raw.get("capability_id")
+    try:
+        capability_id = _parse_identifier(
+            raw_capability_id,
+            label="result capability_id",
+        )
+    except ReplayCapabilityError:
+        _raise_schema_field_error(
+            (
+                "replay capability result capability_id must match the "
+                "manifest capability_id"
+            ),
+            (
+                _schema_field_violation(
+                    schema_layer="compile_result",
+                    field_path="capability_id",
+                    rule="enum",
+                    expected=(capability.manifest.capability_id,),
+                    value=raw_capability_id,
+                ),
+            ),
+        )
     if capability_id != capability.manifest.capability_id:
-        raise ReplayCapabilityError("replay capability result capability_id mismatch")
+        _raise_schema_field_error(
+            (
+                "replay capability result capability_id must match the "
+                "manifest capability_id"
+            ),
+            (
+                _schema_field_violation(
+                    schema_layer="compile_result",
+                    field_path="capability_id",
+                    rule="enum",
+                    expected=(capability.manifest.capability_id,),
+                    value=capability_id,
+                ),
+            ),
+        )
     deterministic = raw.get("deterministic")
     if not isinstance(deterministic, bool):
         _raise_schema_field_error(

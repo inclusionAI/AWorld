@@ -427,6 +427,48 @@ async def test_trace_reflective_llm_mutator_materializes_candidate_files() -> No
 
 
 @pytest.mark.asyncio
+async def test_minimal_target_delta_preserves_existing_replay_package() -> None:
+    async def mutate(prompt: str) -> dict:
+        del prompt
+        return {
+            "content": "# Demo\n\nAdd bounded artifact evidence guidance.\n",
+            "rationale": "Improve target behavior without regressing replay.",
+            "files": [
+                {
+                    "path": "replay/compiler.py",
+                    "content": "raise RuntimeError('unverified rewrite')\n",
+                },
+                {
+                    "path": "replay/runtime.py",
+                    "content": "raise RuntimeError('unverified rewrite')\n",
+                },
+            ],
+        }
+
+    request = OptimizerRequest(
+        target=_target(),
+        current_content="# Demo\n\nOld guidance.\n",
+        target_fingerprint="sha256:old",
+        trace_packs=(_trace_pack(),),
+        trainable_cases=(EvalCase(case_id="train-1", input="login task"),),
+        replay_requirements=(_replay_requirement(),),
+        target_package_inventory=(
+            "SKILL.md",
+            "replay/capability.json",
+            "replay/compiler.py",
+            "replay/runtime.py",
+        ),
+        max_candidates=1,
+    )
+
+    result = await TraceReflectiveLLMMutator(mutate_text=mutate).propose(request)
+
+    assert len(result.candidates) == 1
+    assert result.candidates[0].files == ()
+    assert result.diagnostics["preserved_existing_replay_file_delta_count"] == 2
+
+
+@pytest.mark.asyncio
 async def test_llm_mutator_unwraps_structured_expected_output_envelope() -> None:
     async def mutate(prompt: str) -> dict:
         return {
@@ -619,7 +661,13 @@ async def test_llm_mutator_carries_candidate_specific_repair_conformance() -> No
                                         "skill_runtime",
                                         "tcp_fixture",
                                     ],
-                                }
+                                },
+                                {
+                                    "schema_layer": "compile_result",
+                                    "field_path": "capability_id",
+                                    "rule": "enum",
+                                    "expected": ["fixture-service"],
+                                },
                             ],
                         },
                     ],
@@ -677,6 +725,8 @@ async def test_llm_mutator_carries_candidate_specific_repair_conformance() -> No
     assert "mixed and multi-member inputs" in prompts[0]
     assert "similarly named field to a nested service or probe" in prompts[0]
     assert "Keep schema_layer boundaries intact" in prompts[0]
+    assert "copy its single expected value exactly" in prompts[0]
+    assert "manifest capability identity" in prompts[0]
     assert strategy["repair_conformance"]["fixture_probe_constraints"] == [
         {
             "requirement_identity_digest": hashlib.sha256(
@@ -687,14 +737,24 @@ async def test_llm_mutator_carries_candidate_specific_repair_conformance() -> No
             "max_response_chars": 4096,
         }
     ]
-    assert strategy["repair_conformance"]["schema_field_constraints"] == [
-        {
+    constraints_by_field = {
+        item["field_path"]: item
+        for item in strategy["repair_conformance"]["schema_field_constraints"]
+    }
+    assert constraints_by_field == {
+        "capability_id": {
+            "schema_layer": "compile_result",
+            "field_path": "capability_id",
+            "rule": "enum",
+            "expected": ["fixture-service"],
+        },
+        "services[*].transport": {
             "schema_layer": "compile_result",
             "field_path": "services[*].transport",
             "rule": "enum",
             "expected": ["http_fixture", "skill_runtime", "tcp_fixture"],
-        }
-    ]
+        },
+    }
     assert result.candidates[0].files == (
         CandidateFileDelta(
             path="replay/compiler.py",
@@ -1567,6 +1627,72 @@ async def test_llm_mutator_prompts_population_with_distinct_strategy_slots() -> 
 
 
 @pytest.mark.asyncio
+async def test_llm_mutator_preserves_complementary_judged_gate_checkpoints() -> None:
+    prompts: list[str] = []
+
+    async def mutate(prompt: str) -> dict:
+        prompts.append(prompt)
+        return {
+            "content": "# Demo\n\nPreserve score and evidence checkpoints.\n",
+            "rationale": "Merge complementary judged constraints.",
+        }
+
+    def judged_feedback(
+        candidate_id: str,
+        *,
+        score: float,
+        evidence_incomplete: bool,
+        failed_gate: str,
+    ) -> EvaluationSummary:
+        return EvaluationSummary(
+            variant_id=candidate_id,
+            dataset_split="validation",
+            metrics={
+                "score": score,
+                "evidence_incomplete": evidence_incomplete,
+                "failed_gates": [failed_gate],
+                "repair_candidate_package": {
+                    "candidate_id": candidate_id,
+                    "content": f"# Demo\n\n{candidate_id}\n",
+                    "files": [],
+                },
+            },
+        )
+
+    request = OptimizerRequest(
+        target=_target(),
+        current_content="# Demo\n\nCurrent.\n",
+        target_fingerprint="sha256:old",
+        trace_packs=(),
+        validation_feedback=(
+            judged_feedback(
+                "candidate-evidence-checkpoint",
+                score=89.2,
+                evidence_incomplete=False,
+                failed_gate="score_improvement",
+            ),
+            judged_feedback(
+                "candidate-score-checkpoint",
+                score=90.3,
+                evidence_incomplete=True,
+                failed_gate="evidence_quality",
+            ),
+        ),
+        max_candidates=1,
+    )
+
+    await TraceReflectiveLLMMutator(mutate_text=mutate).propose(request)
+
+    instruction, serialized = prompts[0].split("\n", 1)
+    payload = json.loads(serialized)
+    assert payload["repair_support"]["repair_candidate_id"] == (
+        "candidate-evidence-checkpoint"
+    )
+    assert "complementary checkpoints" in instruction
+    assert "trade a recovered gate" in instruction
+
+
+@pytest.mark.asyncio
 async def test_llm_mutator_compacts_feedback_before_prompting() -> None:
     prompts = []
 
@@ -1839,6 +1965,36 @@ def test_feedback_normalization_preserves_target_only_repair_package() -> None:
         "content": "# Generic evidence repair",
         "files": [],
     }
+
+
+def test_feedback_normalization_preserves_complete_large_target_repair() -> None:
+    target_content = (
+        "# Browser skill\n\n"
+        + ("Preserve the already verified workflow.\n" * 300)
+        + "\n## Judge-scored repair\n\n"
+        + "Support every final claim or omit it.\n"
+    )
+    assert len(target_content) > 8_000
+
+    summary = normalize_feedback_summary(
+        EvaluationSummary(
+            variant_id="candidate-large-target-repair",
+            dataset_split="validation",
+            metrics={
+                "evidence_incomplete": True,
+                "failed_gates": ["evidence_quality"],
+                "repair_candidate_package": {
+                    "candidate_id": "candidate-large-target-repair",
+                    "content": target_content,
+                    "files": [],
+                },
+            },
+        )
+    )
+
+    preserved = summary["repair_candidate_package"]["content"]
+    assert preserved == target_content.strip()
+    assert preserved.endswith("Support every final claim or omit it.")
 
 
 def test_feedback_normalization_preserves_typed_recovery_trace() -> None:

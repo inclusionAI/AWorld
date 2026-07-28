@@ -909,6 +909,62 @@ def test_prompt_payload_prioritizes_judged_held_out_repair_over_replay_history()
     assert "repair_conformance" not in second_payload
 
 
+def test_prompt_payload_exposes_source_omitted_judged_sibling_as_support() -> None:
+    def judged_feedback(
+        candidate_id: str,
+        *,
+        score: float,
+        evidence_incomplete: bool,
+        failed_gates: list[str],
+    ) -> EvaluationSummary:
+        return EvaluationSummary(
+            variant_id=candidate_id,
+            dataset_split="validation",
+            metrics={
+                "score": score,
+                "evidence_incomplete": evidence_incomplete,
+                "failed_gates": failed_gates,
+                "repair_candidate_package": {
+                    "candidate_id": candidate_id,
+                    "content": f"# {candidate_id}\n",
+                    "files": [],
+                },
+            },
+        )
+
+    context = compile_evolution_context(
+        replace(
+            _request(),
+            validation_feedback=(
+                judged_feedback(
+                    "candidate-evidence-checkpoint",
+                    score=89.2,
+                    evidence_incomplete=False,
+                    failed_gates=["score_improvement"],
+                ),
+                judged_feedback(
+                    "candidate-score-checkpoint",
+                    score=90.3,
+                    evidence_incomplete=True,
+                    failed_gates=["evidence_quality"],
+                ),
+            ),
+            prior_feedback=(),
+        )
+    )
+
+    payload = context.to_prompt_payload(candidate_index=0)
+
+    assert payload["repair_focus"]["repair_candidate_package"][
+        "candidate_id"
+    ] == "candidate-score-checkpoint"
+    assert payload["repair_support"]["repair_candidate_id"] == (
+        "candidate-evidence-checkpoint"
+    )
+    assert payload["repair_support"]["repair_candidate_source_omitted"] is True
+    assert "repair_candidate_package" not in payload["repair_support"]
+
+
 def test_judged_repair_does_not_inherit_sibling_schema_mutation_surface() -> None:
     judged = EvaluationSummary(
         variant_id="candidate-judged",

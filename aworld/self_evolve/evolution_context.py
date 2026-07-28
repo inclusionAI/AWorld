@@ -487,10 +487,13 @@ def _repair_support_is_complementary(
     """
 
     if _repair_feedback_reached_judged_task_output(focus):
-        # The focused package has already completed authoritative replay and
-        # exposed task output to a judge. Transplanting source from a lower
-        # replay/conformance frontier can only regress that verified runtime.
-        return False
+        # A judged package must never inherit source or diagnostics from a
+        # lower replay/conformance frontier.  A *second judged package* is
+        # different: it can carry a complementary gate checkpoint (for
+        # example, score improvement versus evidence completeness).  Support
+        # summaries omit candidate source, so exposing that typed checkpoint
+        # cannot expand the focused mutation surface or regress its runtime.
+        return _repair_feedback_reached_judged_task_output(support)
     focus_codes = _specific_repair_conformance_failure_codes(focus)
     if focus_codes:
         # A machine-checked conformance failure has an exact focused source and
