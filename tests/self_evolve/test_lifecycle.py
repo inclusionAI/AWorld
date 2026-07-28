@@ -736,6 +736,129 @@ def test_cleanup_rejects_symlinked_artifact_ancestor_without_touching_target(
     assert (run_dir / "replay" / "candidate" / "workspace" / "source.py").exists()
 
 
+def test_cleanup_accepts_stable_workspace_alias_and_uses_resolved_root(
+    tmp_path: Path,
+) -> None:
+    physical_anchor = tmp_path / "private-var"
+    physical_workspace = physical_anchor / "folders" / "workspace"
+    alias_anchor = tmp_path / "var"
+    alias_workspace = alias_anchor / "folders" / "workspace"
+    run_dir = (
+        physical_workspace
+        / ".aworld"
+        / "self_evolve"
+        / "run-terminal"
+    )
+    _write_json(
+        run_dir / "run.json",
+        {"run_id": run_dir.name, "status": "rejected"},
+    )
+    _write_json(
+        run_dir / "report.json",
+        {"run_id": run_dir.name, "status": "rejected"},
+    )
+    _write_json(
+        run_dir / "replay" / "candidate" / "execution_request.json",
+        {},
+    )
+    _write_json(
+        run_dir / "replay" / "candidate" / "result.json",
+        {"status": "rejected"},
+    )
+    raw_workspace = run_dir / "replay" / "candidate" / "workspace"
+    _write_text(raw_workspace / "source.py")
+    _touch_tree(run_dir, 1_000.0)
+    alias_anchor.symlink_to(physical_anchor, target_is_directory=True)
+
+    cleanup = cleanup_self_evolve_artifacts(alias_workspace, now=10_000.0)
+
+    assert cleanup["removed_path_count"] > 0
+    assert not raw_workspace.exists()
+    assert (run_dir / "run.json").exists()
+    assert (run_dir / "report.json").exists()
+    assert (run_dir / "replay" / "candidate" / "result.json").exists()
+
+
+def test_cleanup_fails_closed_when_workspace_alias_changes_during_binding(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    physical_anchor = tmp_path / "physical-anchor"
+    outside_anchor = tmp_path / "outside-anchor"
+    physical_workspace = physical_anchor / "workspace"
+    outside_workspace = outside_anchor / "workspace"
+    alias_anchor = tmp_path / "workspace-anchor"
+    alias_workspace = alias_anchor / "workspace"
+    physical_run = (
+        physical_workspace
+        / ".aworld"
+        / "self_evolve"
+        / "run-terminal"
+    )
+    _write_json(
+        physical_run / "run.json",
+        {"run_id": physical_run.name, "status": "rejected"},
+    )
+    _write_json(
+        physical_run / "replay" / "candidate" / "execution_request.json",
+        {},
+    )
+    physical_raw = (
+        physical_run / "replay" / "candidate" / "workspace" / "source.py"
+    )
+    _write_text(physical_raw)
+    outside_precious = (
+        outside_workspace
+        / ".aworld"
+        / "self_evolve"
+        / "run-terminal"
+        / "replay"
+        / "candidate"
+        / "workspace"
+        / "precious.txt"
+    )
+    _write_text(outside_precious, "do not delete\n")
+    alias_anchor.symlink_to(physical_anchor, target_is_directory=True)
+
+    real_assert_identity = lifecycle_module._assert_bound_path_identity
+    swapped = False
+
+    def swap_after_workspace_binding(
+        path: Path,
+        directory_fd: int,
+        *,
+        expected_identity: tuple[int, int],
+        label: str,
+    ) -> None:
+        nonlocal swapped
+        real_assert_identity(
+            path,
+            directory_fd,
+            expected_identity=expected_identity,
+            label=label,
+        )
+        if label == "workspace cleanup anchor" and not swapped:
+            swapped = True
+            alias_anchor.unlink()
+            alias_anchor.symlink_to(
+                outside_anchor,
+                target_is_directory=True,
+            )
+
+    monkeypatch.setattr(
+        lifecycle_module,
+        "_assert_bound_path_identity",
+        swap_after_workspace_binding,
+    )
+
+    with pytest.raises(ValueError, match="changed during binding"):
+        cleanup_self_evolve_artifacts(alias_workspace)
+
+    assert swapped is True
+    assert physical_raw.exists()
+    assert outside_precious.read_text(encoding="utf-8") == "do not delete\n"
+
+
 def test_cleanup_rejects_explicit_artifact_root_outside_workspace_boundary(
     tmp_path: Path,
 ) -> None:

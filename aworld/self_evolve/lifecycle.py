@@ -1246,26 +1246,80 @@ def _artifact_root_paths(
     workspace_root: str | Path,
     *,
     artifact_root: str | Path | None,
-) -> tuple[Path, Path, Path]:
-    workspace = Path(os.path.abspath(Path(workspace_root).expanduser()))
-    candidate = Path(
+) -> tuple[Path, Path, tuple[int, int], Path, Path, tuple[int, int] | None, Path]:
+    workspace_input = Path(os.path.abspath(Path(workspace_root).expanduser()))
+    workspace_identity = _path_directory_identity(
+        workspace_input,
+        label="workspace cleanup anchor",
+    )
+    try:
+        workspace = workspace_input.resolve(strict=True)
+    except (FileNotFoundError, RuntimeError) as exc:
+        raise ValueError(
+            "workspace cleanup anchor must be an existing directory"
+        ) from exc
+    if (
+        _path_directory_identity(
+            workspace,
+            label="resolved workspace cleanup anchor",
+        )
+        != workspace_identity
+    ):
+        raise ValueError("workspace cleanup anchor changed during binding")
+
+    candidate_input = Path(
         os.path.abspath(
             Path(artifact_root).expanduser()
             if artifact_root is not None
-            else workspace / ".aworld" / "self_evolve"
+            else workspace_input / ".aworld" / "self_evolve"
         )
     )
+    candidate_identity = _path_directory_identity(
+        candidate_input,
+        label="self-evolve artifact root",
+        missing_ok=True,
+    )
+    try:
+        candidate = candidate_input.resolve(strict=False)
+    except RuntimeError as exc:
+        raise ValueError(
+            "self-evolve artifact root contains a symlink loop"
+        ) from exc
+    if candidate_identity is not None and (
+        _path_directory_identity(
+            candidate,
+            label="resolved self-evolve artifact root",
+        )
+        != candidate_identity
+    ):
+        raise ValueError("self-evolve artifact root changed during binding")
     try:
         relative = candidate.relative_to(workspace)
     except ValueError as exc:
         raise ValueError(
-            "self-evolve artifact root must be within the workspace cleanup anchor"
+            "self-evolve artifact root must resolve within the workspace cleanup "
+            "anchor; symlink or alias escapes are not allowed"
         ) from exc
+    logical_candidate = Path(os.path.abspath(workspace_input / relative))
+    physical_candidate = Path(os.path.abspath(workspace / relative))
+    if candidate_input not in {logical_candidate, physical_candidate}:
+        raise ValueError(
+            "self-evolve artifact root cannot traverse a symlink or alias "
+            "below the workspace cleanup anchor"
+        )
     if not relative.parts:
         raise ValueError("self-evolve artifact root cannot be the workspace root")
     if any(part in {"", ".", ".."} for part in relative.parts):
         raise ValueError("self-evolve artifact root contains an unsafe component")
-    return workspace, candidate, relative
+    return (
+        workspace_input,
+        workspace,
+        workspace_identity,
+        candidate_input,
+        candidate,
+        candidate_identity,
+        relative,
+    )
 
 
 @contextmanager
@@ -1274,7 +1328,15 @@ def _bound_artifact_root(
     *,
     artifact_root: str | Path | None,
 ) -> Iterator[tuple[Path, int] | None]:
-    workspace, candidate, relative = _artifact_root_paths(
+    (
+        workspace_input,
+        workspace,
+        workspace_identity,
+        candidate_input,
+        candidate,
+        candidate_identity,
+        relative,
+    ) = _artifact_root_paths(
         workspace_root,
         artifact_root=artifact_root,
     )
@@ -1286,16 +1348,82 @@ def _bound_artifact_root(
         ) from exc
     root_fd = -1
     try:
+        _assert_bound_path_identity(
+            workspace_input,
+            workspace_fd,
+            expected_identity=workspace_identity,
+            label="workspace cleanup anchor",
+        )
         try:
             root_fd = _walk_directory_fd(workspace_fd, relative.parts)
         except FileNotFoundError:
+            if candidate_identity is not None:
+                raise ValueError(
+                    "self-evolve artifact root changed during binding"
+                )
+            try:
+                current_candidate = candidate_input.resolve(strict=False)
+            except RuntimeError as exc:
+                raise ValueError(
+                    "self-evolve artifact root changed during binding"
+                ) from exc
+            if current_candidate != candidate:
+                raise ValueError(
+                    "self-evolve artifact root changed during binding"
+                )
             yield None
             return
+        if candidate_identity is None:
+            raise ValueError("self-evolve artifact root appeared during binding")
+        _assert_bound_path_identity(
+            candidate_input,
+            root_fd,
+            expected_identity=candidate_identity,
+            label="self-evolve artifact root",
+        )
         yield candidate, root_fd
     finally:
         if root_fd >= 0:
             os.close(root_fd)
         os.close(workspace_fd)
+
+
+def _path_directory_identity(
+    path: Path,
+    *,
+    label: str,
+    missing_ok: bool = False,
+) -> tuple[int, int] | None:
+    try:
+        path_stat = os.stat(path)
+    except FileNotFoundError:
+        if missing_ok:
+            return None
+        raise ValueError(f"{label} must be an existing directory") from None
+    if not stat.S_ISDIR(path_stat.st_mode):
+        raise ValueError(f"{label} must be an existing directory")
+    return path_stat.st_dev, path_stat.st_ino
+
+
+def _assert_bound_path_identity(
+    path: Path,
+    directory_fd: int,
+    *,
+    expected_identity: tuple[int, int],
+    label: str,
+) -> None:
+    try:
+        path_identity = _path_directory_identity(path, label=label)
+        bound_stat = os.fstat(directory_fd)
+    except (FileNotFoundError, OSError, ValueError) as exc:
+        raise ValueError(f"{label} changed during binding") from exc
+    bound_identity = bound_stat.st_dev, bound_stat.st_ino
+    if (
+        not stat.S_ISDIR(bound_stat.st_mode)
+        or path_identity != expected_identity
+        or bound_identity != expected_identity
+    ):
+        raise ValueError(f"{label} changed during binding")
 
 
 def _directory_open_flags() -> int:
