@@ -72,7 +72,11 @@ from aworld.self_evolve.gates import (
     TokenLimitGate,
     TrustProvenanceGate,
 )
-from aworld.self_evolve.lifecycle import cleanup_self_evolve_artifacts
+from aworld.self_evolve.lifecycle import (
+    acknowledge_self_evolve_retention_transactions,
+    cleanup_self_evolve_artifacts,
+    read_self_evolve_retention_transactions,
+)
 from aworld.self_evolve.ingestion import (
     DEFAULT_INGESTION_REGISTRY,
     AgenticDatasetIngestor,
@@ -8830,7 +8834,9 @@ def _finalize_run_report(
         run_id,
         previous=previous_artifact_retention,
     )
-    return store.write_report(run_id, report)
+    report_path = store.write_report(run_id, report)
+    _acknowledge_reported_artifact_retention(store, run_id, report)
+    return report_path
 
 
 def _artifact_retention_report(
@@ -8839,6 +8845,15 @@ def _artifact_retention_report(
     *,
     previous: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
+    recovered = _recover_artifact_retention_transactions(store)
+    recovered_current = recovered.get(run_id)
+    effective_previous = previous
+    if recovered_current is not None:
+        effective_previous = (
+            _merge_artifact_retention_reports(previous, recovered_current)
+            if previous is not None
+            else recovered_current
+        )
     try:
         cleanup: dict[str, object] = cleanup_self_evolve_artifacts(
             store.workspace_root,
@@ -8850,16 +8865,79 @@ def _artifact_retention_report(
             "status": "failed",
             "error": str(exc),
         }
-        if previous is None:
+        if effective_previous is None:
             return current
-        return _merge_artifact_retention_reports(previous, current)
+        return _merge_artifact_retention_reports(effective_previous, current)
     current: dict[str, object] = {
         "status": "completed",
         **cleanup,
     }
-    if previous is None:
+    if effective_previous is None:
         return current
-    return _merge_artifact_retention_reports(previous, current)
+    return _merge_artifact_retention_reports(effective_previous, current)
+
+
+def _recover_artifact_retention_transactions(
+    store: FilesystemSelfEvolveStore,
+) -> dict[str, dict[str, object]]:
+    transactions = read_self_evolve_retention_transactions(
+        store.workspace_root,
+        artifact_root=store.artifact_root,
+    )
+    recovered_by_run: dict[str, dict[str, object]] = {}
+    for transaction in transactions:
+        owner_run_id = transaction.get("run_id")
+        transaction_id = transaction.get("transaction_id")
+        recovered_result = transaction.get("result")
+        if (
+            not isinstance(owner_run_id, str)
+            or not isinstance(transaction_id, str)
+            or not isinstance(recovered_result, Mapping)
+        ):
+            raise ValueError("artifact retention transaction projection is invalid")
+        try:
+            report = store.read_report(owner_run_id)
+        except FileNotFoundError:
+            continue
+        existing = report.get("artifact_retention")
+        merged_retention = (
+            _merge_artifact_retention_reports(existing, recovered_result)
+            if isinstance(existing, Mapping)
+            else dict(recovered_result)
+        )
+        report["artifact_retention"] = merged_retention
+        store.write_report(owner_run_id, report)
+        acknowledge_self_evolve_retention_transactions(
+            store.workspace_root,
+            artifact_root=store.artifact_root,
+            run_id=owner_run_id,
+            transaction_ids=(transaction_id,),
+        )
+        recovered_by_run[owner_run_id] = merged_retention
+    return recovered_by_run
+
+
+def _acknowledge_reported_artifact_retention(
+    store: FilesystemSelfEvolveStore,
+    run_id: str,
+    report: Mapping[str, object],
+) -> None:
+    retention = report.get("artifact_retention")
+    if not isinstance(retention, Mapping):
+        return
+    transaction_ids = tuple(
+        value
+        for value in _retention_sequence(retention.get("transaction_ids"))
+        if isinstance(value, str) and value
+    )
+    if not transaction_ids:
+        return
+    acknowledge_self_evolve_retention_transactions(
+        store.workspace_root,
+        artifact_root=store.artifact_root,
+        run_id=run_id,
+        transaction_ids=transaction_ids,
+    )
 
 
 def _merge_artifact_retention_reports(
@@ -8920,6 +8998,24 @@ def _merge_artifact_retention_reports(
             if isinstance(value, str) and value
         }
     )
+    transaction_ids = sorted(
+        {
+            str(value)
+            for report in (previous, current)
+            for value in _retention_sequence(report.get("transaction_ids"))
+            if isinstance(value, str) and value
+        }
+    )
+    uncertain_removed_paths = sorted(
+        {
+            str(value)
+            for report in (previous, current)
+            for value in _retention_sequence(
+                report.get("uncertain_removed_paths")
+            )
+            if isinstance(value, str) and value
+        }
+    )
     statuses = tuple(report.get("status") for report in (previous, current))
     merged: dict[str, object] = {
         "status": (
@@ -8935,7 +9031,10 @@ def _merge_artifact_retention_reports(
         "protected_run_ids": protected_run_ids,
         "removed_ingestion_ids": removed_ingestion_ids,
         "protected_ingestion_ids": protected_ingestion_ids,
+        "transaction_ids": transaction_ids,
     }
+    if uncertain_removed_paths:
+        merged["uncertain_removed_paths"] = uncertain_removed_paths
     errors = [
         report.get("error")
         for report in (previous, current)
@@ -15924,6 +16023,7 @@ def _persist_no_target_cli_result(
     }
     report["artifact_retention"] = _artifact_retention_report(store, run_id)
     report_path = store.write_report(run_id, report)
+    _acknowledge_reported_artifact_retention(store, run_id, report)
     summary = {
         "report_path": str(report_path),
         "target_selection_path": str(target_selection_path),
@@ -15997,6 +16097,7 @@ def _persist_unsupported_target_cli_result(
     }
     report["artifact_retention"] = _artifact_retention_report(store, run_id)
     report_path = store.write_report(run_id, report)
+    _acknowledge_reported_artifact_retention(store, run_id, report)
     summary = {
         "report_path": str(report_path),
         "target_selection_path": str(target_selection_path),

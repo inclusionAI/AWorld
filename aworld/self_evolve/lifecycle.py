@@ -1,15 +1,18 @@
 from __future__ import annotations
 
+import errno
 import json
 import math
 import os
-import shutil
+import re
+import stat
 import socket
 import time
 import uuid
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Iterable, Mapping
+from typing import Any, Iterable, Iterator, Mapping
 
 
 @dataclass(frozen=True)
@@ -48,6 +51,25 @@ _DUPLICATE_OUTPUT_NAMES = {
 }
 _ACTIVE_RUN_LEASE = ".active.json"
 _CLEANUP_QUARANTINE_DIR = ".artifact-retention-trash"
+_RETENTION_TRANSACTION_DIR = "artifact_retention_transactions"
+_RETENTION_TRANSACTION_SCHEMA = "aworld.self_evolve.artifact_retention_transaction.v1"
+_SAFE_RUN_ID = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9._-]{0,159}")
+_FD_CLEANUP_SUPPORTED = (
+    all(hasattr(os, name) for name in ("O_DIRECTORY", "O_NOFOLLOW"))
+    and all(
+        operation in os.supports_dir_fd
+        for operation in (
+            os.open,
+            os.mkdir,
+            os.rename,
+            os.rmdir,
+            os.stat,
+            os.unlink,
+        )
+    )
+    and os.listdir in os.supports_fd
+    and os.stat in os.supports_follow_symlinks
+)
 _EVALUATOR_RAW_DIRS = {
     "extracted",
     "logs",
@@ -86,6 +108,62 @@ _RUN_REFERENCE_SEQUENCE_KEYS = {
 _NON_LINEAGE_SUBTREES = {"artifact_retention"}
 
 
+@dataclass
+class _RetentionTransaction:
+    transaction_id: str
+    run_id: str
+    directory_fd: int
+    payload: dict[str, Any]
+
+    @property
+    def filename(self) -> str:
+        return f"{self.transaction_id}.json"
+
+    def persist(self) -> None:
+        _write_json_at(self.directory_fd, self.filename, self.payload)
+
+    def record_intent(self, path: str) -> None:
+        self.payload["pending_path"] = path
+        self.payload["updated_at"] = time.time()
+        self.persist()
+
+    def clear_intent(self) -> None:
+        self.payload["pending_path"] = None
+        self.payload["updated_at"] = time.time()
+        self.persist()
+
+    def record_removed(self, path: str) -> None:
+        result = self.payload["result"]
+        removed_paths = result["removed_paths"]
+        if path not in removed_paths:
+            removed_paths.append(path)
+        result["removed_path_count"] = len(removed_paths)
+        self.payload["pending_path"] = None
+        self.payload["updated_at"] = time.time()
+        self.persist()
+
+    def complete(self, result: Mapping[str, Any]) -> None:
+        self.payload["status"] = "completed"
+        self.payload["pending_path"] = None
+        self.payload["updated_at"] = time.time()
+        self.payload["result"] = {"status": "completed", **dict(result)}
+        self.persist()
+
+    def fail(self, error: str) -> None:
+        self.payload["status"] = "failed"
+        self.payload["updated_at"] = time.time()
+        result = self.payload["result"]
+        result["status"] = "failed"
+        result["error"] = error
+        pending_path = self.payload.get("pending_path")
+        if isinstance(pending_path, str) and pending_path:
+            result["uncertain_removed_paths"] = [pending_path]
+        self.persist()
+
+    def close(self) -> None:
+        os.close(self.directory_fd)
+
+
 def cleanup_self_evolve_artifacts(
     workspace_root: str | Path,
     *,
@@ -104,16 +182,73 @@ def cleanup_self_evolve_artifacts(
     if retention.unreferenced_ingestion_retention_days < 0:
         raise ValueError("unreferenced_ingestion_retention_days must be non-negative")
 
-    root = _validated_artifact_root(
+    with _bound_artifact_root(
         workspace_root,
         artifact_root=artifact_root,
-    )
-    if not root.exists():
-        return _empty_cleanup(retention)
-    if not root.is_dir():
-        raise ValueError("self-evolve artifact root must be a directory")
+    ) as bound_root:
+        if bound_root is None:
+            return _empty_cleanup(retention)
+        root, root_fd = bound_root
+        return _cleanup_bound_artifact_root(
+            root,
+            root_fd=root_fd,
+            retention=retention,
+            current_run_id=current_run_id,
+            now=now,
+        )
 
+
+def _cleanup_bound_artifact_root(
+    root: Path,
+    *,
+    root_fd: int,
+    retention: SelfEvolveArtifactRetentionPolicy,
+    current_run_id: str | None,
+    now: float | None,
+) -> dict[str, Any]:
     cleanup_time = now if now is not None else time.time()
+    transaction = _begin_retention_transaction(
+        root,
+        root_fd=root_fd,
+        current_run_id=current_run_id,
+        retention=retention,
+        started_at=cleanup_time,
+    )
+    try:
+        result = _perform_bound_artifact_cleanup(
+            root,
+            root_fd=root_fd,
+            retention=retention,
+            current_run_id=current_run_id,
+            cleanup_time=cleanup_time,
+            transaction=transaction,
+        )
+        if transaction is not None:
+            transaction.complete(result)
+        return result
+    except BaseException as exc:
+        if transaction is not None:
+            try:
+                transaction.fail(str(exc))
+            except Exception:
+                # Preserve the cleanup failure. The previously fsynced
+                # prepared transaction still carries the last durable intent.
+                pass
+        raise
+    finally:
+        if transaction is not None:
+            transaction.close()
+
+
+def _perform_bound_artifact_cleanup(
+    root: Path,
+    *,
+    root_fd: int,
+    retention: SelfEvolveArtifactRetentionPolicy,
+    current_run_id: str | None,
+    cleanup_time: float,
+    transaction: _RetentionTransaction | None,
+) -> dict[str, Any]:
     cutoff = cleanup_time - (
         retention.raw_artifact_retention_days * 24 * 60 * 60
     )
@@ -125,7 +260,9 @@ def cleanup_self_evolve_artifacts(
     )
     removed_paths = _recover_cleanup_quarantine(
         root,
+        cleanup_root_fd=root_fd,
         stale_cutoff=stale_run_cutoff,
+        transaction=transaction,
     )
     run_dirs = _run_dirs(root)
     run_ids = {path.name for path in run_dirs}
@@ -156,7 +293,12 @@ def cleanup_self_evolve_artifacts(
             continue
 
         if _is_stale_dead_run(run_dir, stale_run_cutoff=stale_run_cutoff):
-            _archive_stale_run(run_dir, archived_at=cleanup_time)
+            _archive_stale_run(
+                run_dir,
+                archived_at=cleanup_time,
+                cleanup_root=root,
+                cleanup_root_fd=root_fd,
+            )
             archived_run_ids.add(run_dir.name)
         run_removed = False
         for path in _terminal_cleanup_candidates(
@@ -170,7 +312,12 @@ def cleanup_self_evolve_artifacts(
                 continue
             if not path.exists() and not path.is_symlink():
                 continue
-            if _remove_path(path, cleanup_root=root):
+            if _remove_path(
+                path,
+                cleanup_root=root,
+                cleanup_root_fd=root_fd,
+                transaction=transaction,
+            ):
                 removed_paths.append(str(path))
                 run_removed = True
         if run_removed:
@@ -188,10 +335,20 @@ def cleanup_self_evolve_artifacts(
                 or _path_mtime(ingestion_dir) > ingestion_cutoff
             ):
                 continue
-            if _remove_path(ingestion_dir, cleanup_root=root):
+            if _remove_path(
+                ingestion_dir,
+                cleanup_root=root,
+                cleanup_root_fd=root_fd,
+                transaction=transaction,
+            ):
                 removed_paths.append(str(ingestion_dir))
                 removed_ingestion_ids.append(ingestion_dir.name)
 
+    transaction_ids = (
+        [transaction.transaction_id]
+        if transaction is not None
+        else []
+    )
     return {
         "policy": asdict(retention),
         "removed_run_count": len(removed_run_ids),
@@ -203,6 +360,187 @@ def cleanup_self_evolve_artifacts(
         "protected_run_ids": sorted(recent_run_ids | referenced_run_ids),
         "removed_ingestion_ids": removed_ingestion_ids,
         "protected_ingestion_ids": sorted(protected_ingestion_ids),
+        "transaction_ids": transaction_ids,
+    }
+
+
+def read_self_evolve_retention_transactions(
+    workspace_root: str | Path,
+    *,
+    artifact_root: str | Path | None = None,
+) -> list[dict[str, Any]]:
+    with _bound_artifact_root(
+        workspace_root,
+        artifact_root=artifact_root,
+    ) as bound_root:
+        if bound_root is None:
+            return []
+        root, root_fd = bound_root
+        transactions: list[dict[str, Any]] = []
+        for run_id in sorted(os.listdir(root_fd)):
+            if _SAFE_RUN_ID.fullmatch(run_id) is None:
+                continue
+            entry = os.stat(run_id, dir_fd=root_fd, follow_symlinks=False)
+            if not stat.S_ISDIR(entry.st_mode):
+                continue
+            run_fd = _open_directory_at(root_fd, run_id)
+            try:
+                try:
+                    transaction_fd = _open_directory_at(
+                        run_fd,
+                        _RETENTION_TRANSACTION_DIR,
+                    )
+                except FileNotFoundError:
+                    continue
+                try:
+                    for filename in sorted(os.listdir(transaction_fd)):
+                        if re.fullmatch(r"[0-9a-f]{32}\.json", filename) is None:
+                            continue
+                        payload = _read_json_at(transaction_fd, filename)
+                        transaction = _validated_retention_transaction(
+                            payload,
+                            root=root,
+                            run_id=run_id,
+                            transaction_id=filename.removesuffix(".json"),
+                        )
+                        if transaction is not None:
+                            transactions.append(transaction)
+                finally:
+                    os.close(transaction_fd)
+            finally:
+                os.close(run_fd)
+        return transactions
+
+
+def acknowledge_self_evolve_retention_transactions(
+    workspace_root: str | Path,
+    *,
+    artifact_root: str | Path | None = None,
+    run_id: str,
+    transaction_ids: Iterable[str],
+) -> None:
+    if _SAFE_RUN_ID.fullmatch(run_id) is None:
+        raise ValueError("run_id is unsafe for retention acknowledgement")
+    normalized_ids = tuple(dict.fromkeys(str(value) for value in transaction_ids))
+    if any(re.fullmatch(r"[0-9a-f]{32}", value) is None for value in normalized_ids):
+        raise ValueError("retention transaction id is invalid")
+    if not normalized_ids:
+        return
+    with _bound_artifact_root(
+        workspace_root,
+        artifact_root=artifact_root,
+    ) as bound_root:
+        if bound_root is None:
+            return
+        root, root_fd = bound_root
+        try:
+            run_fd = _open_directory_at(root_fd, run_id)
+        except FileNotFoundError:
+            return
+        try:
+            try:
+                transaction_fd = _open_directory_at(
+                    run_fd,
+                    _RETENTION_TRANSACTION_DIR,
+                )
+            except FileNotFoundError:
+                return
+            try:
+                for transaction_id in normalized_ids:
+                    filename = f"{transaction_id}.json"
+                    payload = _read_json_at(transaction_fd, filename)
+                    if payload is None:
+                        continue
+                    transaction = _validated_retention_transaction(
+                        payload,
+                        root=root,
+                        run_id=run_id,
+                        transaction_id=transaction_id,
+                    )
+                    if transaction is None:
+                        continue
+                    os.unlink(filename, dir_fd=transaction_fd)
+                    os.fsync(transaction_fd)
+            finally:
+                os.close(transaction_fd)
+            _remove_empty_directory_at(run_fd, _RETENTION_TRANSACTION_DIR)
+        finally:
+            os.close(run_fd)
+
+
+def _validated_retention_transaction(
+    payload: Mapping[str, Any] | None,
+    *,
+    root: Path,
+    run_id: str,
+    transaction_id: str,
+) -> dict[str, Any] | None:
+    if (
+        payload is None
+        or payload.get("schema_version") != _RETENTION_TRANSACTION_SCHEMA
+        or payload.get("run_id") != run_id
+        or payload.get("transaction_id") != transaction_id
+        or payload.get("artifact_root") != str(root)
+        or payload.get("status") not in {"prepared", "completed", "failed"}
+    ):
+        raise ValueError("artifact retention transaction is invalid")
+    raw_result = payload.get("result")
+    if not isinstance(raw_result, Mapping):
+        raise ValueError("artifact retention transaction result is invalid")
+    hostname = payload.get("hostname")
+    pid = payload.get("pid")
+    if (
+        not isinstance(hostname, str)
+        or not hostname
+        or not isinstance(pid, int)
+        or isinstance(pid, bool)
+        or pid <= 0
+    ):
+        raise ValueError("artifact retention transaction owner is invalid")
+    status = payload.get("status")
+    if status == "prepared":
+        if hostname != socket.gethostname():
+            return None
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            pass
+        except (OSError, PermissionError):
+            return None
+        else:
+            return None
+    result = dict(raw_result)
+    transaction_ids = {
+        value
+        for value in result.get("transaction_ids", ())
+        if isinstance(value, str) and value
+    } if isinstance(result.get("transaction_ids"), (list, tuple, set)) else set()
+    transaction_ids.add(transaction_id)
+    result["transaction_ids"] = sorted(transaction_ids)
+    if status == "completed":
+        result["status"] = "completed"
+    else:
+        result["status"] = "failed"
+        result.setdefault(
+            "error",
+            "artifact retention transaction did not complete",
+        )
+        pending_path = payload.get("pending_path")
+        if isinstance(pending_path, str) and pending_path:
+            uncertain = {
+                value
+                for value in result.get("uncertain_removed_paths", ())
+                if isinstance(value, str) and value
+            } if isinstance(
+                result.get("uncertain_removed_paths"),
+                (list, tuple, set),
+            ) else set()
+            uncertain.add(pending_path)
+            result["uncertain_removed_paths"] = sorted(uncertain)
+    return {
+        "run_id": run_id,
+        "transaction_id": transaction_id,
+        "result": result,
     }
 
 
@@ -218,7 +556,57 @@ def _empty_cleanup(policy: SelfEvolveArtifactRetentionPolicy) -> dict[str, Any]:
         "protected_run_ids": [],
         "removed_ingestion_ids": [],
         "protected_ingestion_ids": [],
+        "transaction_ids": [],
     }
+
+
+def _begin_retention_transaction(
+    root: Path,
+    *,
+    root_fd: int,
+    current_run_id: str | None,
+    retention: SelfEvolveArtifactRetentionPolicy,
+    started_at: float,
+) -> _RetentionTransaction | None:
+    if current_run_id is None:
+        return None
+    if _SAFE_RUN_ID.fullmatch(current_run_id) is None:
+        raise ValueError("current_run_id is unsafe for retention transaction")
+    run_fd = _open_or_create_directory_at(root_fd, current_run_id)
+    try:
+        transaction_directory_fd = _open_or_create_directory_at(
+            run_fd,
+            _RETENTION_TRANSACTION_DIR,
+        )
+    finally:
+        os.close(run_fd)
+    transaction_id = uuid.uuid4().hex
+    initial_result = _empty_cleanup(retention)
+    initial_result["transaction_ids"] = [transaction_id]
+    transaction = _RetentionTransaction(
+        transaction_id=transaction_id,
+        run_id=current_run_id,
+        directory_fd=transaction_directory_fd,
+        payload={
+            "schema_version": _RETENTION_TRANSACTION_SCHEMA,
+            "transaction_id": transaction_id,
+            "run_id": current_run_id,
+            "status": "prepared",
+            "started_at": started_at,
+            "updated_at": started_at,
+            "pending_path": None,
+            "artifact_root": str(root),
+            "hostname": socket.gethostname(),
+            "pid": os.getpid(),
+            "result": initial_result,
+        },
+    )
+    try:
+        transaction.persist()
+    except Exception:
+        transaction.close()
+        raise
+    return transaction
 
 
 def _run_dirs(root: Path) -> list[Path]:
@@ -519,33 +907,50 @@ def _run_activity_mtime(run_dir: Path) -> float:
     return max(timestamps)
 
 
-def _archive_stale_run(run_dir: Path, *, archived_at: float) -> None:
+def _archive_stale_run(
+    run_dir: Path,
+    *,
+    archived_at: float,
+    cleanup_root: Path,
+    cleanup_root_fd: int,
+) -> None:
     archive_path = run_dir / "artifact_retention_archive.json"
-    if archive_path.exists() or archive_path.is_symlink():
-        if archive_path.is_symlink() or not archive_path.is_file():
-            raise ValueError("stale run archive path is unsafe")
-        existing = _read_json_object(archive_path)
-        if (
-            existing is None
-            or existing.get("schema_version")
-            != "aworld.self_evolve.stale_run_archive.v1"
-            or existing.get("run_id") != run_dir.name
-            or existing.get("reason") != "stale_dead_lease"
-        ):
-            raise ValueError("stale run archive record is invalid")
-        return
-    lease = _read_json_object(run_dir / _ACTIVE_RUN_LEASE) or {}
-    _write_json_atomic(
+    parent_fd, leaf = _open_bound_parent(
         archive_path,
-        {
-            "schema_version": "aworld.self_evolve.stale_run_archive.v1",
-            "run_id": run_dir.name,
-            "reason": "stale_dead_lease",
-            "prior_status": _run_status(run_dir),
-            "archived_at": archived_at,
-            "lease": lease,
-        },
+        cleanup_root=cleanup_root,
+        cleanup_root_fd=cleanup_root_fd,
     )
+    try:
+        existing = _read_json_at(parent_fd, leaf)
+        if existing is not None:
+            entry = os.stat(leaf, dir_fd=parent_fd, follow_symlinks=False)
+            if not stat.S_ISREG(entry.st_mode):
+                raise ValueError("stale run archive path is unsafe")
+            if (
+                existing.get("schema_version")
+                != "aworld.self_evolve.stale_run_archive.v1"
+                or existing.get("run_id") != run_dir.name
+                or existing.get("reason") != "stale_dead_lease"
+            ):
+                raise ValueError("stale run archive record is invalid")
+            return
+        if _entry_exists_at(parent_fd, leaf):
+            raise ValueError("stale run archive record is invalid")
+        lease = _read_json_object(run_dir / _ACTIVE_RUN_LEASE) or {}
+        _write_json_at(
+            parent_fd,
+            leaf,
+            {
+                "schema_version": "aworld.self_evolve.stale_run_archive.v1",
+                "run_id": run_dir.name,
+                "reason": "stale_dead_lease",
+                "prior_status": _run_status(run_dir),
+                "archived_at": archived_at,
+                "lease": lease,
+            },
+        )
+    finally:
+        os.close(parent_fd)
 
 
 def _is_age_gated_raw_path(path: Path, *, run_dir: Path, root: Path) -> bool:
@@ -643,80 +1048,148 @@ def _path_mtime(path: Path) -> float:
         return 0.0
 
 
-def _remove_path(path: Path, *, cleanup_root: Path) -> bool:
-    _assert_controlled_cleanup_path(path, cleanup_root=cleanup_root)
-    if not path.exists() and not path.is_symlink():
-        return False
-    quarantine_root = cleanup_root / _CLEANUP_QUARANTINE_DIR
-    if quarantine_root.is_symlink() or (
-        quarantine_root.exists() and not quarantine_root.is_dir()
-    ):
-        raise ValueError("cleanup quarantine path is unsafe")
-    quarantine_root.mkdir(exist_ok=True)
-    operation = quarantine_root / uuid.uuid4().hex
-    operation.mkdir()
-    _write_json_atomic(
-        operation / "owner.json",
-        {
-            "schema_version": "aworld.self_evolve.cleanup_quarantine.v1",
-            "hostname": socket.gethostname(),
-            "pid": os.getpid(),
-            "started_at": time.time(),
-            "source_path": str(path),
-        },
-    )
-    quarantined = operation / "artifact"
+def _remove_path(
+    path: Path,
+    *,
+    cleanup_root: Path,
+    cleanup_root_fd: int,
+    transaction: _RetentionTransaction | None,
+) -> bool:
     try:
-        os.replace(path, quarantined)
+        parent_fd, leaf = _open_bound_parent(
+            path,
+            cleanup_root=cleanup_root,
+            cleanup_root_fd=cleanup_root_fd,
+        )
     except FileNotFoundError:
-        shutil.rmtree(operation)
-        try:
-            quarantine_root.rmdir()
-        except OSError:
-            pass
         return False
+    trash_fd = -1
+    operation_fd = -1
+    operation_name = uuid.uuid4().hex
     try:
-        shutil.rmtree(operation)
-    finally:
+        trash_fd = _open_or_create_directory_at(
+            cleanup_root_fd,
+            _CLEANUP_QUARANTINE_DIR,
+        )
+        os.mkdir(operation_name, mode=0o700, dir_fd=trash_fd)
+        os.fsync(trash_fd)
+        operation_fd = _open_directory_at(trash_fd, operation_name)
+        _write_json_at(
+            operation_fd,
+            "owner.json",
+            {
+                "schema_version": "aworld.self_evolve.cleanup_quarantine.v1",
+                "hostname": socket.gethostname(),
+                "pid": os.getpid(),
+                "started_at": time.time(),
+                "source_path": str(path),
+            },
+        )
+        if transaction is not None:
+            transaction.record_intent(str(path))
         try:
-            quarantine_root.rmdir()
-        except OSError:
-            pass
-    return True
+            os.rename(
+                leaf,
+                "artifact",
+                src_dir_fd=parent_fd,
+                dst_dir_fd=operation_fd,
+            )
+            os.fsync(parent_fd)
+            os.fsync(operation_fd)
+        except FileNotFoundError:
+            if transaction is not None:
+                transaction.clear_intent()
+            os.close(operation_fd)
+            operation_fd = -1
+            _remove_tree_entry(trash_fd, operation_name)
+            _remove_empty_directory_at(
+                cleanup_root_fd,
+                _CLEANUP_QUARANTINE_DIR,
+            )
+            return False
+        os.close(operation_fd)
+        operation_fd = -1
+        _remove_tree_entry(trash_fd, operation_name)
+        _remove_empty_directory_at(
+            cleanup_root_fd,
+            _CLEANUP_QUARANTINE_DIR,
+        )
+        if transaction is not None:
+            transaction.record_removed(str(path))
+        return True
+    finally:
+        if operation_fd >= 0:
+            os.close(operation_fd)
+        if trash_fd >= 0:
+            os.close(trash_fd)
+        os.close(parent_fd)
 
 
 def _recover_cleanup_quarantine(
     cleanup_root: Path,
     *,
+    cleanup_root_fd: int,
     stale_cutoff: float,
+    transaction: _RetentionTransaction | None,
 ) -> list[str]:
-    quarantine_root = cleanup_root / _CLEANUP_QUARANTINE_DIR
-    if not quarantine_root.exists() and not quarantine_root.is_symlink():
-        return []
-    if quarantine_root.is_symlink() or not quarantine_root.is_dir():
-        raise ValueError("cleanup quarantine path is unsafe")
-    removed: list[str] = []
-    for operation in sorted(quarantine_root.iterdir(), key=lambda path: path.name):
-        if operation.is_symlink() or not operation.is_dir():
-            raise ValueError("cleanup quarantine operation is unsafe")
-        owner = _read_json_object(operation / "owner.json")
-        if owner is None and not (operation / "artifact").exists():
-            if _path_mtime(operation) <= stale_cutoff:
-                shutil.rmtree(operation)
-                removed.append(str(operation))
-            continue
-        if not _is_recoverable_quarantine_owner(
-            owner,
-            stale_cutoff=stale_cutoff,
-        ):
-            continue
-        shutil.rmtree(operation)
-        removed.append(str(operation))
     try:
-        quarantine_root.rmdir()
-    except OSError:
-        pass
-    return removed
+        quarantine_fd = _open_directory_at(
+            cleanup_root_fd,
+            _CLEANUP_QUARANTINE_DIR,
+        )
+    except FileNotFoundError:
+        return []
+    removed: list[str] = []
+    try:
+        for operation_name in sorted(os.listdir(quarantine_fd)):
+            operation_fd = _open_directory_at(quarantine_fd, operation_name)
+            try:
+                owner = _read_json_at(operation_fd, "owner.json")
+                artifact_exists = _entry_exists_at(operation_fd, "artifact")
+                if owner is None and not artifact_exists:
+                    if os.fstat(operation_fd).st_mtime <= stale_cutoff:
+                        operation_path = str(
+                            cleanup_root
+                            / _CLEANUP_QUARANTINE_DIR
+                            / operation_name
+                        )
+                        if transaction is not None:
+                            transaction.record_intent(operation_path)
+                        os.close(operation_fd)
+                        operation_fd = -1
+                        _remove_tree_entry(quarantine_fd, operation_name)
+                        removed.append(operation_path)
+                        if transaction is not None:
+                            transaction.record_removed(operation_path)
+                    continue
+                if not _is_recoverable_quarantine_owner(
+                    owner,
+                    stale_cutoff=stale_cutoff,
+                ):
+                    continue
+                os.close(operation_fd)
+                operation_fd = -1
+                operation_path = str(
+                    cleanup_root
+                    / _CLEANUP_QUARANTINE_DIR
+                    / operation_name
+                )
+                if transaction is not None:
+                    transaction.record_intent(operation_path)
+                _remove_tree_entry(quarantine_fd, operation_name)
+                removed.append(operation_path)
+                if transaction is not None:
+                    transaction.record_removed(operation_path)
+            finally:
+                if operation_fd >= 0:
+                    os.close(operation_fd)
+        _remove_empty_directory_at(
+            cleanup_root_fd,
+            _CLEANUP_QUARANTINE_DIR,
+        )
+        return removed
+    finally:
+        os.close(quarantine_fd)
 
 
 def _is_recoverable_quarantine_owner(
@@ -755,7 +1228,7 @@ def _is_recoverable_quarantine_owner(
     return False
 
 
-def _assert_controlled_cleanup_path(path: Path, *, cleanup_root: Path) -> None:
+def _controlled_relative_path(path: Path, *, cleanup_root: Path) -> Path:
     root = Path(os.path.abspath(cleanup_root))
     candidate = Path(os.path.abspath(path))
     try:
@@ -764,25 +1237,17 @@ def _assert_controlled_cleanup_path(path: Path, *, cleanup_root: Path) -> None:
         raise ValueError("cleanup path escapes its controlled root") from exc
     if not relative.parts:
         raise ValueError("cleanup cannot remove its controlled root")
-    current = root
-    if current.is_symlink():
-        raise ValueError("cleanup root cannot be a symlink")
-    for part in relative.parts[:-1]:
-        current = current / part
-        if current.is_symlink():
-            raise ValueError("cleanup path cannot traverse a symlink")
+    if any(part in {"", ".", ".."} for part in relative.parts):
+        raise ValueError("cleanup path contains an unsafe component")
+    return relative
 
 
-def _validated_artifact_root(
+def _artifact_root_paths(
     workspace_root: str | Path,
     *,
     artifact_root: str | Path | None,
-) -> Path:
+) -> tuple[Path, Path, Path]:
     workspace = Path(os.path.abspath(Path(workspace_root).expanduser()))
-    if workspace.is_symlink():
-        raise ValueError("workspace cleanup anchor cannot be a symlink")
-    if not workspace.is_dir():
-        raise ValueError("workspace cleanup anchor must be an existing directory")
     candidate = Path(
         os.path.abspath(
             Path(artifact_root).expanduser()
@@ -798,33 +1263,228 @@ def _validated_artifact_root(
         ) from exc
     if not relative.parts:
         raise ValueError("self-evolve artifact root cannot be the workspace root")
-    current = workspace
-    for part in relative.parts:
-        current = current / part
-        if current.is_symlink():
-            raise ValueError(
-                "self-evolve artifact root cannot traverse a symlink"
-            )
-    workspace_resolved = workspace.resolve(strict=True)
-    candidate_resolved = candidate.resolve(strict=False)
+    if any(part in {"", ".", ".."} for part in relative.parts):
+        raise ValueError("self-evolve artifact root contains an unsafe component")
+    return workspace, candidate, relative
+
+
+@contextmanager
+def _bound_artifact_root(
+    workspace_root: str | Path,
+    *,
+    artifact_root: str | Path | None,
+) -> Iterator[tuple[Path, int] | None]:
+    workspace, candidate, relative = _artifact_root_paths(
+        workspace_root,
+        artifact_root=artifact_root,
+    )
     try:
-        resolved_relative = candidate_resolved.relative_to(workspace_resolved)
-    except ValueError as exc:
+        workspace_fd = _open_absolute_directory(workspace)
+    except FileNotFoundError as exc:
         raise ValueError(
-            "resolved self-evolve artifact root escapes the workspace cleanup anchor"
+            "workspace cleanup anchor must be an existing directory"
         ) from exc
-    if not resolved_relative.parts:
-        raise ValueError("self-evolve artifact root cannot resolve to the workspace root")
-    return candidate
-
-
-def _write_json_atomic(path: Path, payload: Mapping[str, Any]) -> None:
-    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    root_fd = -1
     try:
-        temporary.write_text(
-            json.dumps(payload, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
-        os.replace(temporary, path)
+        try:
+            root_fd = _walk_directory_fd(workspace_fd, relative.parts)
+        except FileNotFoundError:
+            yield None
+            return
+        yield candidate, root_fd
     finally:
-        temporary.unlink(missing_ok=True)
+        if root_fd >= 0:
+            os.close(root_fd)
+        os.close(workspace_fd)
+
+
+def _directory_open_flags() -> int:
+    if not _FD_CLEANUP_SUPPORTED:
+        raise RuntimeError("race-safe artifact cleanup is unsupported on this platform")
+    return (
+        os.O_RDONLY
+        | os.O_DIRECTORY
+        | os.O_NOFOLLOW
+        | getattr(os, "O_CLOEXEC", 0)
+    )
+
+
+def _open_absolute_directory(path: Path) -> int:
+    if not path.is_absolute():
+        raise ValueError("cleanup anchor must be absolute")
+    current_fd = os.open("/", _directory_open_flags())
+    try:
+        for part in path.parts[1:]:
+            next_fd = _open_directory_at(current_fd, part)
+            os.close(current_fd)
+            current_fd = next_fd
+        return current_fd
+    except Exception:
+        os.close(current_fd)
+        raise
+
+
+def _walk_directory_fd(parent_fd: int, parts: Iterable[str]) -> int:
+    current_fd = os.dup(parent_fd)
+    try:
+        for part in parts:
+            next_fd = _open_directory_at(current_fd, part)
+            os.close(current_fd)
+            current_fd = next_fd
+        return current_fd
+    except Exception:
+        os.close(current_fd)
+        raise
+
+
+def _open_directory_at(parent_fd: int, name: str) -> int:
+    if not name or name in {".", ".."} or "/" in name:
+        raise ValueError("unsafe directory component")
+    try:
+        return os.open(name, _directory_open_flags(), dir_fd=parent_fd)
+    except OSError as exc:
+        if isinstance(exc, FileNotFoundError):
+            raise
+        if exc.errno in {
+            errno.ELOOP,
+            errno.ENOTDIR,
+        }:
+            raise ValueError("cleanup path cannot traverse a symlink") from exc
+        raise
+
+
+def _open_or_create_directory_at(parent_fd: int, name: str) -> int:
+    created = False
+    try:
+        os.mkdir(name, mode=0o700, dir_fd=parent_fd)
+        created = True
+    except FileExistsError:
+        pass
+    if created:
+        os.fsync(parent_fd)
+    return _open_directory_at(parent_fd, name)
+
+
+def _open_bound_parent(
+    path: Path,
+    *,
+    cleanup_root: Path,
+    cleanup_root_fd: int,
+) -> tuple[int, str]:
+    relative = _controlled_relative_path(path, cleanup_root=cleanup_root)
+    parent_fd = _walk_directory_fd(
+        cleanup_root_fd,
+        relative.parts[:-1],
+    )
+    return parent_fd, relative.parts[-1]
+
+
+def _remove_tree_entry(parent_fd: int, name: str) -> None:
+    entry = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+    if not stat.S_ISDIR(entry.st_mode):
+        os.unlink(name, dir_fd=parent_fd)
+        os.fsync(parent_fd)
+        return
+    child_fd = _open_directory_at(parent_fd, name)
+    try:
+        for child_name in sorted(os.listdir(child_fd)):
+            _remove_tree_entry(child_fd, child_name)
+        os.rmdir(name, dir_fd=parent_fd)
+        os.fsync(parent_fd)
+    finally:
+        os.close(child_fd)
+
+
+def _remove_empty_directory_at(parent_fd: int, name: str) -> None:
+    try:
+        os.rmdir(name, dir_fd=parent_fd)
+        os.fsync(parent_fd)
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        if exc.errno in {
+            errno.ENOTEMPTY,
+            errno.EBUSY,
+        }:
+            return
+        raise
+
+
+def _entry_exists_at(parent_fd: int, name: str) -> bool:
+    try:
+        os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return False
+    return True
+
+
+def _read_json_at(parent_fd: int, name: str) -> dict[str, Any] | None:
+    flags = os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+    try:
+        descriptor = os.open(name, flags, dir_fd=parent_fd)
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            raise ValueError("JSON artifact cannot be a symlink") from exc
+        raise
+    try:
+        with os.fdopen(descriptor, "r", encoding="utf-8", closefd=False) as handle:
+            try:
+                payload = json.load(handle)
+            except json.JSONDecodeError:
+                return None
+    finally:
+        os.close(descriptor)
+    return payload if isinstance(payload, dict) else None
+
+
+def _write_json_at(
+    parent_fd: int,
+    name: str,
+    payload: Mapping[str, Any],
+) -> None:
+    if not name or name in {".", ".."} or "/" in name:
+        raise ValueError("unsafe JSON artifact name")
+    temporary = f".{name}.{uuid.uuid4().hex}.tmp"
+    encoded = (
+        json.dumps(payload, indent=2, sort_keys=True) + "\n"
+    ).encode("utf-8")
+    flags = (
+        os.O_WRONLY
+        | os.O_CREAT
+        | os.O_EXCL
+        | os.O_NOFOLLOW
+        | getattr(os, "O_CLOEXEC", 0)
+    )
+    descriptor = -1
+    try:
+        descriptor = os.open(
+            temporary,
+            flags,
+            0o600,
+            dir_fd=parent_fd,
+        )
+        offset = 0
+        while offset < len(encoded):
+            written = os.write(descriptor, encoded[offset:])
+            if written <= 0:
+                raise OSError("atomic JSON write made no progress")
+            offset += written
+        os.fsync(descriptor)
+        os.close(descriptor)
+        descriptor = -1
+        os.rename(
+            temporary,
+            name,
+            src_dir_fd=parent_fd,
+            dst_dir_fd=parent_fd,
+        )
+        os.fsync(parent_fd)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        try:
+            os.unlink(temporary, dir_fd=parent_fd)
+        except FileNotFoundError:
+            pass

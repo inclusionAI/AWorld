@@ -7,9 +7,13 @@ from pathlib import Path
 
 import pytest
 
+import aworld.self_evolve.lifecycle as lifecycle_module
+
 from aworld.self_evolve.lifecycle import (
     SelfEvolveArtifactRetentionPolicy,
+    acknowledge_self_evolve_retention_transactions,
     cleanup_self_evolve_artifacts,
+    read_self_evolve_retention_transactions,
 )
 
 
@@ -801,3 +805,196 @@ def test_cleanup_does_not_recover_live_quarantine_operation(tmp_path: Path) -> N
 
     assert operation.exists()
     assert str(operation) not in cleanup["removed_paths"]
+
+
+def test_cleanup_rename_is_bound_against_ancestor_symlink_swap(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    artifact_root = tmp_path / ".aworld" / "self_evolve"
+    run_dir = artifact_root / "run-terminal"
+    candidate_dir = run_dir / "replay" / "candidate"
+    workspace = candidate_dir / "workspace"
+    detached_candidate = run_dir / "replay" / "candidate-detached"
+    outside = tmp_path / "outside"
+    _write_json(
+        run_dir / "run.json",
+        {"run_id": run_dir.name, "status": "rejected"},
+    )
+    _write_json(candidate_dir / "execution_request.json", {})
+    _write_text(workspace / "source.py")
+    _write_text(outside / "workspace" / "precious.txt", "do not delete\n")
+
+    real_replace = os.replace
+    real_rename = os.rename
+    swapped = False
+
+    def swap_ancestor() -> None:
+        nonlocal swapped
+        if swapped:
+            return
+        swapped = True
+        candidate_dir.rename(detached_candidate)
+        candidate_dir.symlink_to(outside, target_is_directory=True)
+
+    def racing_replace(src, dst, *args, **kwargs):
+        if Path(src) == workspace:
+            swap_ancestor()
+        return real_replace(src, dst, *args, **kwargs)
+
+    def racing_rename(src, dst, *args, **kwargs):
+        if src == "workspace" and kwargs.get("src_dir_fd") is not None:
+            swap_ancestor()
+        return real_rename(src, dst, *args, **kwargs)
+
+    monkeypatch.setattr(lifecycle_module.os, "replace", racing_replace)
+    monkeypatch.setattr(lifecycle_module.os, "rename", racing_rename)
+
+    cleanup_self_evolve_artifacts(tmp_path)
+
+    assert swapped is True
+    assert (outside / "workspace" / "precious.txt").read_text(encoding="utf-8") == (
+        "do not delete\n"
+    )
+    assert not (detached_candidate / "workspace").exists()
+
+
+def test_cleanup_fails_closed_when_quarantine_is_swapped_to_symlink(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    artifact_root = tmp_path / ".aworld" / "self_evolve"
+    run_dir = artifact_root / "run-terminal"
+    _write_json(
+        run_dir / "run.json",
+        {"run_id": run_dir.name, "status": "rejected"},
+    )
+    _write_text(run_dir / "evidence" / "raw.json")
+    outside = tmp_path / "outside"
+    _write_text(outside / "precious.txt", "do not modify\n")
+    detached_trash = artifact_root / ".detached-trash"
+    real_open = os.open
+    swapped = False
+
+    def racing_open(path, flags, *args, **kwargs):
+        nonlocal swapped
+        if (
+            path == ".artifact-retention-trash"
+            and kwargs.get("dir_fd") is not None
+            and not swapped
+            and (artifact_root / ".artifact-retention-trash").is_dir()
+        ):
+            swapped = True
+            (artifact_root / ".artifact-retention-trash").rename(detached_trash)
+            (artifact_root / ".artifact-retention-trash").symlink_to(
+                outside,
+                target_is_directory=True,
+            )
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(lifecycle_module.os, "open", racing_open)
+
+    with pytest.raises(ValueError, match="symlink"):
+        cleanup_self_evolve_artifacts(tmp_path)
+
+    assert swapped is True
+    assert (outside / "precious.txt").read_text(encoding="utf-8") == (
+        "do not modify\n"
+    )
+    assert sorted(path.name for path in outside.iterdir()) == ["precious.txt"]
+    assert (run_dir / "evidence" / "raw.json").exists()
+
+
+def test_retention_transaction_never_executes_untrusted_pending_path(
+    tmp_path: Path,
+) -> None:
+    artifact_root = tmp_path / ".aworld" / "self_evolve"
+    run_id = "run-transaction"
+    transaction_id = "a" * 32
+    outside = tmp_path / "outside"
+    _write_text(outside / "precious.txt", "do not delete\n")
+    _write_json(
+        artifact_root
+        / run_id
+        / "artifact_retention_transactions"
+        / f"{transaction_id}.json",
+        {
+            "schema_version": (
+                "aworld.self_evolve.artifact_retention_transaction.v1"
+            ),
+            "transaction_id": transaction_id,
+            "run_id": run_id,
+            "artifact_root": str(artifact_root),
+            "status": "prepared",
+            "hostname": socket.gethostname(),
+            "pid": 2_147_483_647,
+            "pending_path": str(outside / "precious.txt"),
+            "result": {
+                "removed_paths": [],
+                "transaction_ids": [transaction_id],
+            },
+        },
+    )
+
+    transactions = read_self_evolve_retention_transactions(tmp_path)
+
+    assert transactions[0]["result"]["uncertain_removed_paths"] == [
+        str(outside / "precious.txt")
+    ]
+    assert (outside / "precious.txt").exists()
+
+    acknowledge_self_evolve_retention_transactions(
+        tmp_path,
+        run_id=run_id,
+        transaction_ids=(transaction_id,),
+    )
+
+    assert (outside / "precious.txt").read_text(encoding="utf-8") == (
+        "do not delete\n"
+    )
+    assert not (
+        artifact_root / run_id / "artifact_retention_transactions"
+    ).exists()
+
+
+def test_retention_recovery_does_not_acknowledge_live_transaction(
+    tmp_path: Path,
+) -> None:
+    artifact_root = tmp_path / ".aworld" / "self_evolve"
+    run_id = "run-live-transaction"
+    transaction_id = "b" * 32
+    transaction_path = (
+        artifact_root
+        / run_id
+        / "artifact_retention_transactions"
+        / f"{transaction_id}.json"
+    )
+    _write_json(
+        transaction_path,
+        {
+            "schema_version": (
+                "aworld.self_evolve.artifact_retention_transaction.v1"
+            ),
+            "transaction_id": transaction_id,
+            "run_id": run_id,
+            "artifact_root": str(artifact_root),
+            "status": "prepared",
+            "hostname": socket.gethostname(),
+            "pid": os.getpid(),
+            "pending_path": None,
+            "result": {
+                "removed_paths": [],
+                "transaction_ids": [transaction_id],
+            },
+        },
+    )
+
+    assert read_self_evolve_retention_transactions(tmp_path) == []
+
+    acknowledge_self_evolve_retention_transactions(
+        tmp_path,
+        run_id=run_id,
+        transaction_ids=(transaction_id,),
+    )
+
+    assert transaction_path.exists()

@@ -3661,6 +3661,9 @@ async def test_runner_records_terminal_artifact_retention_cleanup(
         "run-current/replay/terminal/workspace" in path
         for path in cleanup["removed_paths"]
     )
+    assert not (
+        artifact_root / "run-current" / "artifact_retention_transactions"
+    ).exists()
 
 
 def test_artifact_retention_merge_preserves_ingestion_cleanup_telemetry() -> None:
@@ -3684,6 +3687,68 @@ def test_artifact_retention_merge_preserves_ingestion_cleanup_telemetry() -> Non
         "ingestion-old",
     ]
     assert merged["protected_ingestion_ids"] == ["ingestion-current"]
+
+
+def test_artifact_retention_transaction_recovers_after_final_report_crash(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    store = FilesystemSelfEvolveStore(tmp_path)
+    run_id = "run-retention-crash"
+    run_dir = store.run_path(run_id)
+    _write_terminal_run_with_raw_artifacts(
+        store.artifact_root,
+        run_id,
+        1_000.0,
+    )
+    completed_run = SelfEvolveRun(
+        run_id=run_id,
+        target=SelfEvolveTargetRef(target_type="skill", target_id="generic"),
+        status=SelfEvolveRunStatus.REJECTED,
+    )
+    report = {
+        "run_id": run_id,
+        "status": SelfEvolveRunStatus.REJECTED.value,
+    }
+    original_write_report = store.write_report
+    write_count = 0
+
+    def crash_before_second_report_write(owner_run_id, payload):
+        nonlocal write_count
+        write_count += 1
+        if write_count == 2:
+            raise RuntimeError("simulated crash before retention report commit")
+        return original_write_report(owner_run_id, payload)
+
+    monkeypatch.setattr(store, "write_report", crash_before_second_report_write)
+
+    with pytest.raises(RuntimeError, match="simulated crash"):
+        runner_module._finalize_run_report(
+            store,
+            run_id,
+            report=report,
+            completed_run=completed_run,
+        )
+
+    assert not (run_dir / "replay" / "cand-1" / "workspace").exists()
+    persisted_before_recovery = json.loads(
+        (run_dir / "report.json").read_text(encoding="utf-8")
+    )
+    assert "artifact_retention" not in persisted_before_recovery
+    transaction_dir = run_dir / "artifact_retention_transactions"
+    assert any(transaction_dir.glob("*.json"))
+
+    monkeypatch.setattr(store, "write_report", original_write_report)
+    runner_module._recover_artifact_retention_transactions(store)
+
+    recovered = json.loads((run_dir / "report.json").read_text(encoding="utf-8"))
+    retention = recovered["artifact_retention"]
+    assert retention["status"] == "completed"
+    assert any(
+        "run-retention-crash/replay/cand-1/workspace" in path
+        for path in retention["removed_paths"]
+    )
+    assert not transaction_dir.exists()
 
 
 @pytest.mark.asyncio
