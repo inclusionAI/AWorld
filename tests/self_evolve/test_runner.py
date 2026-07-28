@@ -1394,6 +1394,13 @@ def _write_terminal_run_with_raw_artifacts(root: Path, run_id: str, timestamp: f
     replay_file = run_dir / "replay" / "cand-1" / "result.json"
     replay_file.parent.mkdir(parents=True)
     replay_file.write_text("{}\n", encoding="utf-8")
+    (replay_file.parent / "execution_request.json").write_text(
+        "{}\n",
+        encoding="utf-8",
+    )
+    replay_workspace = replay_file.parent / "workspace" / "source.py"
+    replay_workspace.parent.mkdir(parents=True)
+    replay_workspace.write_text("# source\n", encoding="utf-8")
     overlay_file = run_dir / "overlays" / "cand-1" / "skills" / "demo" / "SKILL.md"
     overlay_file.parent.mkdir(parents=True)
     overlay_file.write_text("# Demo\n", encoding="utf-8")
@@ -3478,7 +3485,10 @@ async def test_proposal_no_candidate_is_rejected_not_succeeded(tmp_path) -> None
 
 
 @pytest.mark.asyncio
-async def test_runner_records_terminal_artifact_retention_cleanup(tmp_path) -> None:
+async def test_runner_records_terminal_artifact_retention_cleanup(
+    tmp_path,
+    monkeypatch,
+) -> None:
     skill_path = tmp_path / "aworld-skills" / "demo" / "SKILL.md"
     skill_path.parent.mkdir(parents=True)
     skill_path.write_text("---\nname: demo\n---\n# Demo\n", encoding="utf-8")
@@ -3508,6 +3518,35 @@ async def test_runner_records_terminal_artifact_retention_cleanup(tmp_path) -> N
         source_kind="current_trajectory",
         task_id="task-1",
     )
+    original_cleanup = runner_module.cleanup_self_evolve_artifacts
+    current_run_observations: list[tuple[str, bool]] = []
+
+    def observe_cleanup(*args, **kwargs):
+        current_run = artifact_root / "run-current"
+        run_path = current_run / "run.json"
+        if run_path.is_file():
+            status = json.loads(run_path.read_text(encoding="utf-8"))["status"]
+            current_run_observations.append(
+                (status, (current_run / ".active.json").exists())
+            )
+            if status in {"succeeded", "failed", "rejected"}:
+                replay_root = current_run / "replay" / "terminal"
+                replay_root.mkdir(parents=True, exist_ok=True)
+                (replay_root / "result.json").write_text("{}\n", encoding="utf-8")
+                (replay_root / "execution_request.json").write_text(
+                    "{}\n",
+                    encoding="utf-8",
+                )
+                raw_path = replay_root / "workspace" / "source.py"
+                raw_path.parent.mkdir(parents=True, exist_ok=True)
+                raw_path.write_text("# source\n", encoding="utf-8")
+        return original_cleanup(*args, **kwargs)
+
+    monkeypatch.setattr(
+        runner_module,
+        "cleanup_self_evolve_artifacts",
+        observe_cleanup,
+    )
 
     await SelfEvolveRunner(
         store=FilesystemSelfEvolveStore(tmp_path),
@@ -3526,12 +3565,29 @@ async def test_runner_records_terminal_artifact_retention_cleanup(tmp_path) -> N
     )
     cleanup = report["artifact_retention"]
     assert cleanup["removed_run_count"] >= 1
-    assert any("run-old-0/replay" in path for path in cleanup["removed_paths"])
+    assert any(
+        "run-old-0/replay/cand-1/workspace" in path
+        for path in cleanup["removed_paths"]
+    )
     assert "run-old-0" not in cleanup["protected_run_ids"]
-    assert not (artifact_root / "run-old-0" / "replay").exists()
+    assert (artifact_root / "run-old-0" / "replay" / "cand-1" / "result.json").exists()
+    assert not (
+        artifact_root / "run-old-0" / "replay" / "cand-1" / "workspace"
+    ).exists()
     assert not (artifact_root / "run-old-0" / "overlays").exists()
     assert (artifact_root / "run-old-0" / "report.json").exists()
     assert (artifact_root / "run-current" / "run.json").exists()
+    assert current_run_observations[-1] == ("rejected", False)
+    assert (
+        artifact_root / "run-current" / "replay" / "terminal" / "result.json"
+    ).exists()
+    assert not (
+        artifact_root / "run-current" / "replay" / "terminal" / "workspace"
+    ).exists()
+    assert any(
+        "run-current/replay/terminal/workspace" in path
+        for path in cleanup["removed_paths"]
+    )
 
 
 @pytest.mark.asyncio
@@ -12543,8 +12599,18 @@ async def test_runner_auto_verified_uses_candidate_replay_dataset_for_evaluation
     assert replay_backend.requests
     assert replay_backend.requests[0].baseline_repetitions == 2
     assert replay_backend.requests[0].candidate_repetitions == 3
-    assert Path(replay_backend.requests[0].overlay_skill_root, "demo", "SKILL.md").read_text(encoding="utf-8") == candidate_content
-    assert Path(replay_backend.requests[0].overlay_skill_root, "helper", "SKILL.md").exists()
+    candidate_record = json.loads(
+        (
+            tmp_path
+            / ".aworld"
+            / "self_evolve"
+            / "run-replay-eval"
+            / "candidates"
+            / f"{replay_backend.requests[0].candidate_id}.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert candidate_record["content"] == candidate_content
+    assert not Path(replay_backend.requests[0].overlay_skill_root).exists()
     assert all(
         request.dataset.cases[0].metadata["variant_trajectories"]
         for request in evaluation_backend.requests
@@ -14619,11 +14685,17 @@ def test_inferred_new_skill_policy_controls_draft_retention_and_publication(
     assert replay_backend.requests[0].baseline_repetitions == 2
     assert replay_backend.requests[0].candidate_repetitions == 3
     assert replay_backend.requests[0].baseline_skill_root is None
-    assert Path(
-        replay_backend.requests[0].overlay_skill_root,
-        "generated-capability",
-        "SKILL.md",
-    ).exists()
+    candidate_record_path = (
+        tmp_path
+        / ".aworld"
+        / "self_evolve"
+        / report_summary["run_id"]
+        / "candidates"
+        / f"{replay_backend.requests[0].candidate_id}.json"
+    )
+    candidate_record = json.loads(candidate_record_path.read_text(encoding="utf-8"))
+    assert candidate_record["target"]["target_id"] == "generated-capability"
+    assert not Path(replay_backend.requests[0].overlay_skill_root).exists()
     assert skill_path.read_text(encoding="utf-8") == original_content
     assert [request.dataset_split for request in evaluation_backend.requests] == [
         "validation",

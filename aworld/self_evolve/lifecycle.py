@@ -24,8 +24,6 @@ _INTERRUPTED_APPLY_STATUSES = {"backup_written", "applying"}
 _RAW_RUN_DIRS = {
     "evidence",
     "repair_conformance",
-    "replay",
-    "replay_adaptation",
 }
 _TEMP_RUN_DIRS = {
     "archived_workspace",
@@ -53,6 +51,26 @@ _DURABLE_CANDIDATE_REFERENCE_KEYS = {
     "selected_candidate_id",
     "source_candidate_id",
 }
+_RUN_REFERENCE_KEYS = {
+    "from_run",
+    "from_run_id",
+    "latest_run_id",
+    "parent_run",
+    "parent_run_id",
+    "prior_run",
+    "prior_run_id",
+    "source_request_run_id",
+    "source_run",
+    "source_run_id",
+}
+_RUN_REFERENCE_SEQUENCE_KEYS = {
+    "campaign_prior_run_ids",
+    "campaign_run_ids",
+    "parent_run_ids",
+    "prior_run_ids",
+    "source_run_ids",
+}
+_NON_LINEAGE_SUBTREES = {"artifact_retention"}
 
 
 def cleanup_self_evolve_artifacts(
@@ -80,6 +98,8 @@ def cleanup_self_evolve_artifacts(
     )
     if not root.exists():
         return _empty_cleanup(retention)
+    if root.is_symlink():
+        raise ValueError("self-evolve artifact root cannot be a symlink")
 
     run_dirs = _run_dirs(root)
     run_ids = {path.name for path in run_dirs}
@@ -102,9 +122,6 @@ def cleanup_self_evolve_artifacts(
     cutoff = (now if now is not None else time.time()) - (
         retention.raw_artifact_retention_days * 24 * 60 * 60
     )
-    stale_run_cutoff = (now if now is not None else time.time()) - (
-        retention.stale_run_retention_hours * 60 * 60
-    )
     ingestion_cutoff = (now if now is not None else time.time()) - (
         retention.unreferenced_ingestion_retention_days * 24 * 60 * 60
     )
@@ -112,9 +129,6 @@ def cleanup_self_evolve_artifacts(
     for run_dir in sorted(run_dirs, key=lambda path: path.name):
         skip_reason = _cleanup_skip_reason(
             run_dir,
-            recent_run_ids=recent_run_ids,
-            referenced_run_ids=referenced_run_ids,
-            stale_run_cutoff=stale_run_cutoff,
         )
         if skip_reason is not None:
             skipped_runs.append({"run_id": run_dir.name, "reason": skip_reason})
@@ -130,9 +144,14 @@ def cleanup_self_evolve_artifacts(
         ):
             if _is_age_gated_raw_path(path, run_dir=run_dir, root=root) and _path_mtime(path) > cutoff:
                 continue
-            if not path.exists():
+            if not path.exists() and not path.is_symlink():
                 continue
-            _remove_path(path)
+            cleanup_root = (
+                root / "evaluator"
+                if path == root / "evaluator" / run_dir.name
+                else run_dir
+            )
+            _remove_path(path, cleanup_root=cleanup_root)
             removed_paths.append(str(path))
             run_removed = True
         if run_removed:
@@ -150,7 +169,7 @@ def cleanup_self_evolve_artifacts(
                 or _path_mtime(ingestion_dir) > ingestion_cutoff
             ):
                 continue
-            _remove_path(ingestion_dir)
+            _remove_path(ingestion_dir, cleanup_root=ingestion_root)
             removed_paths.append(str(ingestion_dir))
             removed_ingestion_ids.append(ingestion_dir.name)
 
@@ -186,6 +205,7 @@ def _run_dirs(root: Path) -> list[Path]:
         path
         for path in root.iterdir()
         if path.is_dir()
+        and not path.is_symlink()
         and path.name != "evaluator"
         and ((path / "run.json").exists() or (path / "report.json").exists())
     ]
@@ -253,22 +273,13 @@ def _referenced_ingestion_ids(
 
 def _cleanup_skip_reason(
     run_dir: Path,
-    *,
-    recent_run_ids: set[str],
-    referenced_run_ids: set[str],
-    stale_run_cutoff: float,
 ) -> str | None:
-    if run_dir.name in recent_run_ids:
-        return "recent_run"
-    if run_dir.name in referenced_run_ids:
-        return "referenced_by_lineage"
     if _has_interrupted_apply(run_dir):
         return "apply_interrupted"
+    if _has_live_run_lease(run_dir):
+        return "run_active"
     if _run_status(run_dir) not in _TERMINAL_STATUSES:
-        if _has_live_run_lease(run_dir):
-            return "run_active"
-        if _path_mtime(run_dir) > stale_run_cutoff:
-            return "run_not_terminal"
+        return "run_not_terminal"
     return None
 
 
@@ -300,6 +311,8 @@ def _terminal_cleanup_candidates(
 ) -> Iterable[Path]:
     for name in sorted(_RAW_RUN_DIRS | _TEMP_RUN_DIRS):
         yield run_dir / name
+    yield from _replay_workspace_paths(run_dir)
+    yield from _replay_adaptation_workspace_seed_paths(run_dir)
     yield run_dir / "overlays"
     yield run_dir / _ACTIVE_RUN_LEASE
     if prune_unselected_candidate_materializations:
@@ -311,9 +324,36 @@ def _terminal_cleanup_candidates(
     yield evaluator_dir
 
 
+def _replay_workspace_paths(run_dir: Path) -> Iterable[Path]:
+    replay_dir = run_dir / "replay"
+    if not replay_dir.is_dir() or replay_dir.is_symlink():
+        return
+    for request_path in replay_dir.rglob("execution_request.json"):
+        if request_path.is_symlink() or not request_path.is_file():
+            continue
+        workspace = request_path.parent / "workspace"
+        if workspace.exists() or workspace.is_symlink():
+            yield workspace
+
+
+def _replay_adaptation_workspace_seed_paths(run_dir: Path) -> Iterable[Path]:
+    adaptation_dir = run_dir / "replay_adaptation"
+    if not adaptation_dir.is_dir() or adaptation_dir.is_symlink():
+        return
+    for dataset_dir in sorted(adaptation_dir.iterdir(), key=lambda path: path.name):
+        if not dataset_dir.is_dir() or dataset_dir.is_symlink():
+            continue
+        for capability_dir in sorted(dataset_dir.iterdir(), key=lambda path: path.name):
+            if not capability_dir.is_dir() or capability_dir.is_symlink():
+                continue
+            seed = capability_dir / "workspace_seed"
+            if seed.exists() or seed.is_symlink():
+                yield seed
+
+
 def _candidate_materialization_paths(run_dir: Path) -> Iterable[Path]:
     candidate_dir = run_dir / "candidates"
-    if not candidate_dir.is_dir():
+    if not candidate_dir.is_dir() or candidate_dir.is_symlink():
         return
     protected_ids = _durable_candidate_ids(run_dir)
     for path in sorted(candidate_dir.iterdir()):
@@ -337,7 +377,9 @@ def _durable_candidate_ids(run_dir: Path) -> set[str]:
         candidate_id = payload.get("candidate_id") if payload else None
         if isinstance(candidate_id, str) and candidate_id:
             candidate_ids.add(candidate_id)
-    for lineage_path in (run_dir / "optimizer_lineage").glob("*.json"):
+    lineage_dir = run_dir / "optimizer_lineage"
+    lineage_paths = () if lineage_dir.is_symlink() else lineage_dir.glob("*.json")
+    for lineage_path in lineage_paths:
         payload = _read_json_object(lineage_path)
         parent_ids = payload.get("parent_candidate_ids") if payload else None
         if isinstance(parent_ids, list):
@@ -391,7 +433,20 @@ def _is_age_gated_raw_path(path: Path, *, run_dir: Path, root: Path) -> bool:
         return False
     if path.suffix in {".stdout", ".stderr"}:
         return False
-    return path in {run_dir / name for name in _RAW_RUN_DIRS} or path == root / "evaluator" / run_dir.name
+    return (
+        path in {run_dir / name for name in _RAW_RUN_DIRS}
+        or path == root / "evaluator" / run_dir.name
+        or _is_controlled_descendant(path, run_dir / "replay")
+        or _is_controlled_descendant(path, run_dir / "replay_adaptation")
+    )
+
+
+def _is_controlled_descendant(path: Path, root: Path) -> bool:
+    try:
+        relative = path.relative_to(root)
+    except ValueError:
+        return False
+    return bool(relative.parts)
 
 
 def _referenced_run_ids(run_dirs: list[Path], *, run_ids: set[str]) -> set[str]:
@@ -413,24 +468,35 @@ def _lineage_reference_files(run_dir: Path) -> Iterable[Path]:
         if path.exists():
             yield path
     for parent in (run_dir / "optimizer_lineage", run_dir / "lineage"):
-        if parent.exists():
+        if parent.exists() and not parent.is_symlink():
             yield from parent.glob("*.json")
 
 
-def _iter_reference_values(value: Any, *, key: str | None = None) -> Iterable[str]:
+def _iter_reference_values(
+    value: Any,
+    *,
+    key: str | None = None,
+    path: tuple[str, ...] = (),
+) -> Iterable[str]:
+    if any(part in _NON_LINEAGE_SUBTREES for part in path):
+        return
     if isinstance(value, Mapping):
         for child_key, child_value in value.items():
-            yield from _iter_reference_values(child_value, key=str(child_key))
+            normalized_key = str(child_key)
+            yield from _iter_reference_values(
+                child_value,
+                key=normalized_key,
+                path=(*path, normalized_key),
+            )
         return
     if isinstance(value, list):
         for child in value:
-            yield from _iter_reference_values(child, key=key)
+            yield from _iter_reference_values(child, key=key, path=path)
         return
     if (
         isinstance(value, str)
-        and key is not None
-        and key != "run_id"
-        and ("run_id" in key or key in {"from_run", "source_run", "parent_run"})
+        and key in (_RUN_REFERENCE_KEYS | _RUN_REFERENCE_SEQUENCE_KEYS)
+        and value
     ):
         yield value
 
@@ -452,8 +518,27 @@ def _path_mtime(path: Path) -> float:
         return 0.0
 
 
-def _remove_path(path: Path) -> None:
+def _remove_path(path: Path, *, cleanup_root: Path) -> None:
+    _assert_controlled_cleanup_path(path, cleanup_root=cleanup_root)
     if path.is_symlink() or path.is_file():
         path.unlink()
         return
     shutil.rmtree(path)
+
+
+def _assert_controlled_cleanup_path(path: Path, *, cleanup_root: Path) -> None:
+    root = Path(os.path.abspath(cleanup_root))
+    candidate = Path(os.path.abspath(path))
+    try:
+        relative = candidate.relative_to(root)
+    except ValueError as exc:
+        raise ValueError("cleanup path escapes its controlled root") from exc
+    if not relative.parts:
+        raise ValueError("cleanup cannot remove its controlled root")
+    current = root
+    if current.is_symlink():
+        raise ValueError("cleanup root cannot be a symlink")
+    for part in relative.parts[:-1]:
+        current = current / part
+        if current.is_symlink():
+            raise ValueError("cleanup path cannot traverse a symlink")

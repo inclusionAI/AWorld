@@ -2325,19 +2325,19 @@ class SelfEvolveRunner:
                     stages={},
                 ),
             }
-            report["artifact_retention"] = _artifact_retention_report(
-                self.store,
-                run_id,
-                previous=startup_artifact_retention,
-            )
-            self.store.write_report(run_id, report)
             completed_run = SelfEvolveRun(
                 run_id=run_id,
                 target=target.identity,
                 status=SelfEvolveRunStatus.REJECTED,
                 gate_results=(stopping_result,),
             )
-            self.store.create_run(completed_run)
+            _finalize_run_report(
+                self.store,
+                run_id,
+                report=report,
+                completed_run=completed_run,
+                previous_artifact_retention=startup_artifact_retention,
+            )
             _emit_progress(
                 self.progress_callback,
                 "completed",
@@ -3986,13 +3986,6 @@ class SelfEvolveRunner:
         report["content_quality_diagnostics"] = build_content_quality_diagnostics(
             content_quality_metrics
         )
-        report["artifact_retention"] = _artifact_retention_report(
-            self.store,
-            run_id,
-            previous=startup_artifact_retention,
-        )
-        self.store.write_report(run_id, report)
-
         completed_run = SelfEvolveRun(
             run_id=run_id,
             target=target.identity,
@@ -4003,7 +3996,13 @@ class SelfEvolveRunner:
             metrics=tuple(item for item in (baseline_summary, candidate_summary) if item is not None),
             gate_results=tuple(gate_results),
         )
-        self.store.create_run(completed_run)
+        _finalize_run_report(
+            self.store,
+            run_id,
+            report=report,
+            completed_run=completed_run,
+            previous_artifact_retention=startup_artifact_retention,
+        )
         _emit_progress(
             self.progress_callback,
             "completed",
@@ -8781,6 +8780,26 @@ def _stable_json_fingerprint(value: Any) -> str:
         separators=(",", ":"),
     ).encode("utf-8")
     return "sha256:" + hashlib.sha256(encoded).hexdigest()
+
+
+def _finalize_run_report(
+    store: FilesystemSelfEvolveStore,
+    run_id: str,
+    *,
+    report: dict[str, Any],
+    completed_run: SelfEvolveRun,
+    previous_artifact_retention: Mapping[str, object] | None = None,
+) -> Path:
+    """Persist terminal state before reclaiming artifacts from the completed run."""
+
+    store.write_report(run_id, report)
+    store.create_run(completed_run)
+    report["artifact_retention"] = _artifact_retention_report(
+        store,
+        run_id,
+        previous=previous_artifact_retention,
+    )
+    return store.write_report(run_id, report)
 
 
 def _artifact_retention_report(
