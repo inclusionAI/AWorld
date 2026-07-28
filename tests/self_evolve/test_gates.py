@@ -296,6 +296,97 @@ def test_skill_markdown_gate_allows_bounded_rewrite_delete_and_new_section() -> 
     )
 
 
+def test_auto_verified_section_anchors_bind_duplicate_titles_to_parent_paths() -> None:
+    current = (
+        "---\nname: demo\n---\n# Demo\n\n"
+        "## A\n\n### Notes\n\nA-specific note.\n\n"
+        "## B\n\n### Notes\n\nB-specific note.\n"
+    )
+    candidate = (
+        "---\nname: demo\n---\n# Demo\n\n"
+        "## A\n\n### Notes\n\nA-specific note.\n\n"
+        "## B\n\nB guidance remains.\n"
+    )
+
+    result = SkillReleaseFidelityGate().evaluate(
+        _candidate(candidate),
+        current_content=current,
+        require_exact_deletion_intent=True,
+    )
+
+    assert result.passed is False
+    assert result.details["code"] == "skill_existing_sections_deleted"
+    assert result.details["missing_sections"] == ["notes"]
+
+
+def test_auto_verified_section_anchors_allow_reordered_duplicate_titles() -> None:
+    current = (
+        "---\nname: demo\n---\n# Demo\n\n"
+        "## A\n\n### Notes\n\nA-specific note.\n\n"
+        "## B\n\n### Notes\n\nB-specific note.\n"
+    )
+    candidate = (
+        "---\nname: demo\n---\n# Demo\n\n"
+        "## B\n\n### Notes\n\nB-specific note.\n\n"
+        "## A\n\n### Notes\n\nA-specific note.\n"
+    )
+
+    result = SkillReleaseFidelityGate().evaluate(
+        _candidate(candidate),
+        current_content=current,
+        require_exact_deletion_intent=True,
+    )
+
+    assert result.passed is True
+
+
+def test_auto_verified_section_anchors_allow_exact_content_move() -> None:
+    current = (
+        "---\nname: demo\n---\n# Demo\n\n"
+        "## A\n\nA guidance.\n\n"
+        "### Notes\n\nMove this exact note.\n\n"
+        "## B\n\nB guidance.\n"
+    )
+    candidate = (
+        "---\nname: demo\n---\n# Demo\n\n"
+        "## A\n\nA guidance remains.\n\n"
+        "## B\n\nB guidance.\n\n"
+        "### Notes\n\nMove this exact note.\n"
+    )
+
+    result = SkillReleaseFidelityGate().evaluate(
+        _candidate(candidate),
+        current_content=current,
+        require_exact_deletion_intent=True,
+    )
+
+    assert result.passed is True
+
+
+def test_auto_verified_section_anchors_preserve_identical_duplicate_multiset() -> None:
+    current = (
+        "---\nname: demo\n---\n# Demo\n\n"
+        "## Parent\n\n"
+        "### Notes\n\nIdentical note.\n\n"
+        "### Notes\n\nIdentical note.\n"
+    )
+    candidate = (
+        "---\nname: demo\n---\n# Demo\n\n"
+        "## Parent\n\n"
+        "### Notes\n\nIdentical note.\n"
+    )
+
+    result = SkillReleaseFidelityGate().evaluate(
+        _candidate(candidate),
+        current_content=current,
+        require_exact_deletion_intent=True,
+    )
+
+    assert result.passed is False
+    assert result.details["code"] == "skill_existing_sections_deleted"
+    assert result.details["missing_sections"] == ["notes"]
+
+
 def test_skill_markdown_gate_contextualizes_unicode_ellipsis() -> None:
     current = (
         "---\nname: demo\n---\n# Demo\n\n"

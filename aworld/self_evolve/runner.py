@@ -14155,6 +14155,13 @@ def _release_normalization_report(post_apply: Mapping[str, object]) -> dict[str,
         "structural_failure_field_path": metrics.get(
             "structural_failure_field_path"
         ),
+        "normalization_structural_intent_rebind_passed": metrics.get(
+            "normalization_structural_intent_rebind_passed"
+        ),
+        "failure_class": metrics.get("failure_class"),
+        "failure_owner": metrics.get("failure_owner"),
+        "failure_scope": metrics.get("failure_scope"),
+        "repairable": metrics.get("repairable"),
         "structural_contract_fingerprint": metrics.get(
             "structural_contract_fingerprint"
         ),

@@ -159,3 +159,54 @@ def test_normalize_verified_skill_release_rebinds_exact_patch_intent() -> None:
     assert metrics["structural_validation_passed"] is True
     assert "release_state: verified" in normalized
     assert "Persist one bounded diagnostic artifact" in normalized
+
+
+def test_normalize_verified_skill_release_fails_closed_when_intent_rebind_fails() -> None:
+    original = (
+        "---\nname: demo\n---\n"
+        "# Demo\n\n"
+        "## Debugging\n\n"
+        "Inspect the session, preserve the trace, compare the response with "
+        "the artifact, classify the failure, and record the bounded recovery "
+        "action before retrying.\n"
+    )
+    patch_intent = {
+        "operations": [
+            {
+                "op": "replace_section",
+                "heading": "Debugging",
+                "content": (
+                    "Preserve the browser artifact before retrying.\n\n"
+                    "Apply the runtime gate only after reviewing "
+                    "user-visible evidence."
+                ),
+            }
+        ]
+    }
+    candidate = apply_skill_patch_intent(original, patch_intent)
+    structural_intent = build_skill_structural_edit_intent(
+        original_content=original,
+        candidate_content=candidate,
+        patch_intent=patch_intent,
+    )
+
+    normalized, metrics = normalize_verified_skill_release(
+        candidate,
+        run_id="run-rebind-failure",
+        candidate_id="candidate-rebind-failure",
+        original_content=original,
+        structural_edit_intent=structural_intent,
+        require_exact_deletion_intent=True,
+    )
+
+    assert "runtime gate" not in normalized
+    assert metrics["normalization_content_preservation_passed"] is True
+    assert metrics["normalization_structural_intent_rebind_passed"] is False
+    assert metrics["normalization_equivalence_passed"] is False
+    assert metrics["structural_validation_passed"] is False
+    assert metrics["structural_failure_code"] == (
+        "skill_structural_edit_intent_rebind_failed"
+    )
+    assert metrics["failure_class"] == "framework"
+    assert metrics["failure_owner"] == "framework"
+    assert metrics["repairable"] is False

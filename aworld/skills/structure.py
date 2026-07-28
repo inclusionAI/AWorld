@@ -70,6 +70,7 @@ class SkillSectionInventory:
     level: int
     body_chars: int
     content_fingerprint: str
+    anchor_fingerprint: str
     command_signatures: tuple[str, ...]
     command_fingerprints: tuple[str, ...]
     substantive_atom_fingerprints: tuple[str, ...]
@@ -793,6 +794,12 @@ def inspect_skill_markdown(content: str) -> _Inspection:
                         for item in lines[heading.line_index:end]
                     )
                 ),
+                anchor_fingerprint=_content_fingerprint(
+                    "\n".join(
+                        item.rstrip()
+                        for item in lines[heading.line_index:end]
+                    ).strip()
+                ),
                 command_signatures=section_commands,
                 command_fingerprints=section_command_fingerprints,
                 substantive_atom_fingerprints=section_atoms,
@@ -860,6 +867,7 @@ def skill_structure_contract_fingerprint(
                         "level": item.level,
                         "body_chars": item.body_chars,
                         "content_fingerprint": item.content_fingerprint,
+                        "anchor_fingerprint": item.anchor_fingerprint,
                         "commands": list(item.command_signatures),
                         "command_fingerprints": list(
                             item.command_fingerprints
@@ -1411,36 +1419,62 @@ def _missing_section_anchors(
     original_sections: Sequence[SkillSectionInventory],
     candidate_sections: Sequence[SkillSectionInventory],
 ) -> tuple[SkillSectionInventory, ...]:
-    candidate_by_title = {
-        item.title for item in candidate_sections
-    }
-    original_titles = {
-        item.title for item in original_sections
-    }
-    unmatched_candidates = [
+    candidates = [
         item
         for item in candidate_sections
-        if item.level >= 2 and item.title not in original_titles
+        if item.level >= 2
     ]
-    missing: list[SkillSectionInventory] = []
-    for section in original_sections:
-        if section.title in candidate_by_title:
-            continue
-        matched_index = next(
+    candidate_match: dict[int, int] = {}
+
+    def matching_candidates(
+        section: SkillSectionInventory,
+    ) -> tuple[int, ...]:
+        # An occurrence stays anchored either at its exact hierarchy path or
+        # by carrying its exact content to a new path. Matching remains
+        # one-to-one so duplicate headings and content preserve multiplicity.
+        matches = [
             (
-                index
-                for index, item in enumerate(unmatched_candidates)
-                if _section_content_preserved_after_rename(
-                    section,
-                    (item,),
-                )
-            ),
-            None,
+                0
+                if candidate.path == section.path
+                and candidate.anchor_fingerprint
+                == section.anchor_fingerprint
+                else 1
+                if candidate.anchor_fingerprint
+                == section.anchor_fingerprint
+                else 2,
+                index,
+            )
+            for index, candidate in enumerate(candidates)
+            if candidate.path == section.path
+            or candidate.anchor_fingerprint
+            == section.anchor_fingerprint
+        ]
+        return tuple(
+            index for _, index in sorted(matches)
         )
-        if matched_index is None:
+
+    def assign(
+        original_index: int,
+        visited_candidates: set[int],
+    ) -> bool:
+        section = original_sections[original_index]
+        for candidate_index in matching_candidates(section):
+            if candidate_index in visited_candidates:
+                continue
+            visited_candidates.add(candidate_index)
+            previous_original = candidate_match.get(candidate_index)
+            if previous_original is None or assign(
+                previous_original,
+                visited_candidates,
+            ):
+                candidate_match[candidate_index] = original_index
+                return True
+        return False
+
+    missing: list[SkillSectionInventory] = []
+    for original_index, section in enumerate(original_sections):
+        if not assign(original_index, set()):
             missing.append(section)
-        else:
-            unmatched_candidates.pop(matched_index)
     return tuple(missing)
 
 

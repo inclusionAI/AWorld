@@ -126,22 +126,25 @@ def normalize_verified_skill_release(
         normalized,
     )
     normalized_edit_intent = structural_edit_intent
-    if (
-        structural_edit_intent is not None
-        and isinstance(original_content, str)
-        and content_preservation_passed
-    ):
-        try:
-            normalized_edit_intent = (
-                rebind_skill_structural_edit_intent(
-                    structural_edit_intent,
-                    original_content=original_content,
-                    previous_candidate_content=content,
-                    candidate_content=normalized,
+    intent_rebind_passed = structural_edit_intent is None
+    if structural_edit_intent is not None:
+        if (
+            isinstance(original_content, str)
+            and content_preservation_passed
+        ):
+            try:
+                normalized_edit_intent = (
+                    rebind_skill_structural_edit_intent(
+                        structural_edit_intent,
+                        original_content=original_content,
+                        previous_candidate_content=content,
+                        candidate_content=normalized,
+                    )
                 )
-            )
-        except ValueError:
-            normalized_edit_intent = None
+            except ValueError:
+                pass
+            else:
+                intent_rebind_passed = True
     normalized_structure = validate_skill_markdown_structure(
         normalized,
         original_content=original_content,
@@ -152,6 +155,7 @@ def normalize_verified_skill_release(
         pre_structure.passed
         and normalized_structure.passed
         and content_preservation_passed
+        and intent_rebind_passed
         and bool(pre_constraints)
         and all(
             constraint in normalized_constraints
@@ -161,25 +165,53 @@ def normalize_verified_skill_release(
     structural_failure = (
         pre_structure if not pre_structure.passed else normalized_structure
     )
+    structural_validation_passed = (
+        pre_structure.passed
+        and normalized_structure.passed
+        and intent_rebind_passed
+    )
+    structural_failure_code = (
+        "skill_structural_edit_intent_rebind_failed"
+        if not intent_rebind_passed
+        else (
+            None
+            if pre_structure.passed and normalized_structure.passed
+            else structural_failure.code
+        )
+    )
+    structural_failure_field_path = (
+        "structural_edit_intent"
+        if not intent_rebind_passed
+        else (
+            None
+            if pre_structure.passed and normalized_structure.passed
+            else structural_failure.field_path
+        )
+    )
     return normalized, {
         "pre_normalization_fingerprint": _content_fingerprint(content),
         "normalized_release_fingerprint": _content_fingerprint(normalized),
         "normalization_equivalence_passed": equivalence_passed,
-        "structural_validation_passed": (
-            pre_structure.passed and normalized_structure.passed
-        ),
+        "structural_validation_passed": structural_validation_passed,
         "normalization_content_preservation_passed": (
             content_preservation_passed
         ),
-        "structural_failure_code": (
-            None
-            if pre_structure.passed and normalized_structure.passed
-            else structural_failure.code
+        "normalization_structural_intent_rebind_passed": (
+            intent_rebind_passed
         ),
+        "structural_failure_code": structural_failure_code,
         "structural_failure_field_path": (
-            None
-            if pre_structure.passed and normalized_structure.passed
-            else structural_failure.field_path
+            structural_failure_field_path
+        ),
+        **(
+            {
+                "failure_class": "framework",
+                "failure_owner": "framework",
+                "failure_scope": "shared_run",
+                "repairable": False,
+            }
+            if not intent_rebind_passed
+            else {}
         ),
         "structural_contract_fingerprint": (
             pre_structure.contract_fingerprint
