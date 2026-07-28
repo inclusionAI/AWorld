@@ -94,6 +94,7 @@ from aworld.self_evolve.runner import (
     _judge_actual_token_usage,
     _load_target_provenance,
     _load_target_selection_report,
+    _merge_artifact_retention_reports,
     _merge_validation_feedback,
     _parse_candidate_mutation_model_output,
     _population_report,
@@ -3660,6 +3661,29 @@ async def test_runner_records_terminal_artifact_retention_cleanup(
         "run-current/replay/terminal/workspace" in path
         for path in cleanup["removed_paths"]
     )
+
+
+def test_artifact_retention_merge_preserves_ingestion_cleanup_telemetry() -> None:
+    merged = _merge_artifact_retention_reports(
+        {
+            "status": "completed",
+            "policy": {"keep_latest_runs": 2},
+            "removed_ingestion_ids": ["ingestion-old"],
+            "protected_ingestion_ids": ["ingestion-startup"],
+        },
+        {
+            "status": "completed",
+            "policy": {"keep_latest_runs": 2},
+            "removed_ingestion_ids": ["ingestion-new", "ingestion-old"],
+            "protected_ingestion_ids": ["ingestion-current"],
+        },
+    )
+
+    assert merged["removed_ingestion_ids"] == [
+        "ingestion-new",
+        "ingestion-old",
+    ]
+    assert merged["protected_ingestion_ids"] == ["ingestion-current"]
 
 
 @pytest.mark.asyncio

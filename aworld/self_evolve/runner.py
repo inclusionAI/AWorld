@@ -8895,6 +8895,31 @@ def _merge_artifact_retention_reports(
             if isinstance(value, str) and value
         }
     )
+    archived_run_ids = sorted(
+        {
+            str(value)
+            for report in (previous, current)
+            for value in _retention_sequence(report.get("archived_run_ids"))
+            if isinstance(value, str) and value
+        }
+    )
+    removed_ingestion_ids = sorted(
+        {
+            str(value)
+            for report in (previous, current)
+            for value in _retention_sequence(report.get("removed_ingestion_ids"))
+            if isinstance(value, str) and value
+        }
+    )
+    protected_ingestion_ids = sorted(
+        {
+            str(value)
+            for value in _retention_sequence(
+                final_state.get("protected_ingestion_ids")
+            )
+            if isinstance(value, str) and value
+        }
+    )
     statuses = tuple(report.get("status") for report in (previous, current))
     merged: dict[str, object] = {
         "status": (
@@ -8903,10 +8928,13 @@ def _merge_artifact_retention_reports(
         "policy": current.get("policy", previous.get("policy", {})),
         "removed_run_count": len(removed_run_ids),
         "removed_run_ids": removed_run_ids,
+        "archived_run_ids": archived_run_ids,
         "removed_path_count": len(removed_paths),
         "removed_paths": removed_paths,
         "skipped_runs": skipped_runs,
         "protected_run_ids": protected_run_ids,
+        "removed_ingestion_ids": removed_ingestion_ids,
+        "protected_ingestion_ids": protected_ingestion_ids,
     }
     errors = [
         report.get("error")

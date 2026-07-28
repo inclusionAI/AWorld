@@ -5,6 +5,8 @@ import os
 import socket
 from pathlib import Path
 
+import pytest
+
 from aworld.self_evolve.lifecycle import (
     SelfEvolveArtifactRetentionPolicy,
     cleanup_self_evolve_artifacts,
@@ -86,8 +88,22 @@ def test_cleanup_removes_only_expired_raw_artifacts_and_preserves_durable_run_fi
         _write_text(run_dir / "stderr.log", "duplicate stderr\n")
         _write_text(run_dir / "workspace_copy" / "tmp.txt")
 
-    _write_json(artifact_root / "evaluator" / "run-old" / "baseline" / "report.json", {})
-    _write_json(artifact_root / "evaluator" / "run-recent" / "baseline" / "report.json", {})
+    for run_dir in (old_run, recent_run):
+        evaluator_dir = (
+            artifact_root
+            / "evaluator"
+            / run_dir.name
+            / "baseline"
+            / "validation"
+        )
+        evaluator_report = evaluator_dir / "report.json"
+        _write_json(evaluator_report, {"status": "passed"})
+        _write_text(evaluator_dir / "trajectory.log", "raw trajectory\n")
+        _write_text(evaluator_dir / "logs" / "judge.log", "raw log\n")
+        _write_json(evaluator_dir / "extracted" / "case.json", {"raw": True})
+        report = json.loads((run_dir / "report.json").read_text(encoding="utf-8"))
+        report["evaluator_report_paths"] = [str(evaluator_report)]
+        _write_json(run_dir / "report.json", report)
     _touch_tree(old_run, 1_000.0)
     _touch_tree(recent_run, 2_000.0)
     _touch_tree(artifact_root / "evaluator" / "run-old", 1_000.0)
@@ -121,7 +137,13 @@ def test_cleanup_removes_only_expired_raw_artifacts_and_preserves_durable_run_fi
     assert not (old_run / "stdout.txt").exists()
     assert not (old_run / "stderr.log").exists()
     assert not (old_run / "workspace_copy").exists()
-    assert not (artifact_root / "evaluator" / "run-old").exists()
+    old_evaluator = (
+        artifact_root / "evaluator" / "run-old" / "baseline" / "validation"
+    )
+    assert (old_evaluator / "report.json").exists()
+    assert not (old_evaluator / "trajectory.log").exists()
+    assert not (old_evaluator / "logs").exists()
+    assert not (old_evaluator / "extracted").exists()
 
     assert (old_run / "report.json").exists()
     assert (old_run / "run.json").exists()
@@ -149,7 +171,13 @@ def test_cleanup_removes_only_expired_raw_artifacts_and_preserves_durable_run_fi
     assert not (recent_run / "candidates" / "cand-1.md").exists()
     assert not (recent_run / "candidates" / "cand-1").exists()
     assert not (recent_run / "overlays").exists()
-    assert not (artifact_root / "evaluator" / "run-recent").exists()
+    recent_evaluator = (
+        artifact_root / "evaluator" / "run-recent" / "baseline" / "validation"
+    )
+    assert (recent_evaluator / "report.json").exists()
+    assert not (recent_evaluator / "trajectory.log").exists()
+    assert not (recent_evaluator / "logs").exists()
+    assert not (recent_evaluator / "extracted").exists()
     assert (recent_run / "report.json").exists()
     assert (recent_run / "run.json").exists()
     assert recent_run.name in cleanup["protected_run_ids"]
@@ -414,24 +442,64 @@ def test_raw_retention_and_candidate_pruning_compose_for_recent_terminal_run(
     assert run_dir.name in cleanup["protected_run_ids"]
 
 
-def test_cleanup_never_prunes_nonterminal_runs_and_preserves_live_lease(
+def test_cleanup_archives_only_stale_nonterminal_runs_with_proven_dead_lease(
     tmp_path: Path,
 ) -> None:
     artifact_root = tmp_path / ".aworld" / "self_evolve"
-    stale_run = artifact_root / "run-stale"
+    no_lease_run = artifact_root / "run-no-lease"
     live_run = artifact_root / "run-live"
-    for run_dir in (stale_run, live_run):
+    dead_run = artifact_root / "run-dead"
+    dead_grace_run = artifact_root / "run-dead-grace"
+    foreign_run = artifact_root / "run-foreign"
+    malformed_run = artifact_root / "run-malformed"
+    for run_dir in (
+        no_lease_run,
+        live_run,
+        dead_run,
+        dead_grace_run,
+        foreign_run,
+        malformed_run,
+    ):
         _write_json(
             run_dir / "run.json",
             {"run_id": run_dir.name, "status": "running"},
         )
-        _write_text(run_dir / "replay" / "cand-1" / "stdout.txt")
+        _write_json(run_dir / "replay" / "cand-1" / "execution_request.json", {})
+        _write_text(run_dir / "replay" / "cand-1" / "workspace" / "source.py")
     _write_json(
         live_run / ".active.json",
         {"hostname": socket.gethostname(), "pid": os.getpid()},
     )
-    _touch_tree(stale_run, 1_000.0)
+    _write_json(
+        dead_run / ".active.json",
+        {
+            "hostname": socket.gethostname(),
+            "pid": 2_147_483_647,
+            "started_at": 1.0,
+        },
+    )
+    _write_json(
+        dead_grace_run / ".active.json",
+        {
+            "hostname": socket.gethostname(),
+            "pid": 2_147_483_647,
+            "started_at": 1.0,
+        },
+    )
+    _write_json(
+        foreign_run / ".active.json",
+        {"hostname": "another-host", "pid": 2_147_483_647, "started_at": 1.0},
+    )
+    _write_json(
+        malformed_run / ".active.json",
+        {"hostname": socket.gethostname(), "pid": "not-a-pid", "started_at": 1.0},
+    )
+    _touch_tree(no_lease_run, 1_000.0)
     _touch_tree(live_run, 1_000.0)
+    _touch_tree(dead_run, 1_000.0)
+    _touch_tree(dead_grace_run, 9_000.0)
+    _touch_tree(foreign_run, 1_000.0)
+    _touch_tree(malformed_run, 1_000.0)
 
     cleanup = cleanup_self_evolve_artifacts(
         tmp_path,
@@ -442,11 +510,25 @@ def test_cleanup_never_prunes_nonterminal_runs_and_preserves_live_lease(
         now=10_000.0,
     )
 
-    assert (stale_run / "replay").exists()
-    assert (live_run / "replay").exists()
+    assert (no_lease_run / "replay" / "cand-1" / "workspace").exists()
+    assert (live_run / "replay" / "cand-1" / "workspace").exists()
+    assert not (dead_run / "replay" / "cand-1" / "workspace").exists()
+    assert not (dead_run / ".active.json").exists()
+    archive = json.loads(
+        (dead_run / "artifact_retention_archive.json").read_text(encoding="utf-8")
+    )
+    assert archive["reason"] == "stale_dead_lease"
+    assert archive["prior_status"] == "running"
+    assert (dead_grace_run / "replay" / "cand-1" / "workspace").exists()
+    assert (foreign_run / "replay" / "cand-1" / "workspace").exists()
+    assert (malformed_run / "replay" / "cand-1" / "workspace").exists()
+    assert cleanup["archived_run_ids"] == ["run-dead"]
     skipped = {item["run_id"]: item["reason"] for item in cleanup["skipped_runs"]}
-    assert skipped["run-stale"] == "run_not_terminal"
+    assert skipped["run-no-lease"] == "run_not_terminal"
     assert skipped["run-live"] == "run_active"
+    assert skipped["run-dead-grace"] == "run_not_terminal"
+    assert skipped["run-foreign"] == "run_active"
+    assert skipped["run-malformed"] == "run_active"
 
 
 def test_cleanup_ignores_retention_telemetry_as_lineage(tmp_path: Path) -> None:
@@ -629,3 +711,93 @@ def test_cleanup_unlinks_symlinked_raw_path_without_touching_target(
 
     assert not (run_dir / "replay" / "candidate" / "workspace").exists()
     assert (outside / "source.py").exists()
+
+
+def test_cleanup_rejects_symlinked_artifact_ancestor_without_touching_target(
+    tmp_path: Path,
+) -> None:
+    outside = tmp_path / "outside"
+    run_dir = outside / "self_evolve" / "run-terminal"
+    _write_json(
+        run_dir / "run.json",
+        {"run_id": run_dir.name, "status": "rejected"},
+    )
+    _write_json(run_dir / "replay" / "candidate" / "execution_request.json", {})
+    _write_text(run_dir / "replay" / "candidate" / "workspace" / "source.py")
+    (tmp_path / ".aworld").symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(ValueError, match="symlink"):
+        cleanup_self_evolve_artifacts(tmp_path)
+
+    assert (run_dir / "replay" / "candidate" / "workspace" / "source.py").exists()
+
+
+def test_cleanup_rejects_explicit_artifact_root_outside_workspace_boundary(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    artifact_root = tmp_path / "external-artifacts"
+    run_dir = artifact_root / "run-terminal"
+    _write_json(
+        run_dir / "run.json",
+        {"run_id": run_dir.name, "status": "rejected"},
+    )
+    _write_json(run_dir / "replay" / "candidate" / "execution_request.json", {})
+    _write_text(run_dir / "replay" / "candidate" / "workspace" / "source.py")
+
+    with pytest.raises(ValueError, match="workspace"):
+        cleanup_self_evolve_artifacts(
+            workspace,
+            artifact_root=artifact_root,
+        )
+
+    assert (run_dir / "replay" / "candidate" / "workspace" / "source.py").exists()
+
+
+def test_cleanup_recovers_atomically_quarantined_artifacts(tmp_path: Path) -> None:
+    artifact_root = tmp_path / ".aworld" / "self_evolve"
+    operation = artifact_root / ".artifact-retention-trash" / "orphan"
+    _write_json(
+        operation / "owner.json",
+        {
+            "schema_version": "aworld.self_evolve.cleanup_quarantine.v1",
+            "hostname": socket.gethostname(),
+            "pid": 2_147_483_647,
+            "started_at": 1.0,
+        },
+    )
+    _write_text(operation / "artifact" / "workspace" / "source.py")
+
+    cleanup = cleanup_self_evolve_artifacts(
+        tmp_path,
+        policy=SelfEvolveArtifactRetentionPolicy(stale_run_retention_hours=1),
+        now=10_000.0,
+    )
+
+    assert not operation.parent.exists()
+    assert str(operation) in cleanup["removed_paths"]
+
+
+def test_cleanup_does_not_recover_live_quarantine_operation(tmp_path: Path) -> None:
+    artifact_root = tmp_path / ".aworld" / "self_evolve"
+    operation = artifact_root / ".artifact-retention-trash" / "in-progress"
+    _write_json(
+        operation / "owner.json",
+        {
+            "schema_version": "aworld.self_evolve.cleanup_quarantine.v1",
+            "hostname": socket.gethostname(),
+            "pid": os.getpid(),
+            "started_at": 1.0,
+        },
+    )
+    _write_text(operation / "artifact" / "workspace" / "source.py")
+
+    cleanup = cleanup_self_evolve_artifacts(
+        tmp_path,
+        policy=SelfEvolveArtifactRetentionPolicy(stale_run_retention_hours=1),
+        now=10_000.0,
+    )
+
+    assert operation.exists()
+    assert str(operation) not in cleanup["removed_paths"]

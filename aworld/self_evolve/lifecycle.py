@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import shutil
 import socket
 import time
+import uuid
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping
@@ -45,6 +47,17 @@ _DUPLICATE_OUTPUT_NAMES = {
     "stdout.txt",
 }
 _ACTIVE_RUN_LEASE = ".active.json"
+_CLEANUP_QUARANTINE_DIR = ".artifact-retention-trash"
+_EVALUATOR_RAW_DIRS = {
+    "extracted",
+    "logs",
+    "temp",
+    "tmp",
+    "workspace",
+}
+_EVALUATOR_RAW_FILE_NAMES = {
+    "trajectory.log",
+}
 _DURABLE_CANDIDATE_REFERENCE_KEYS = {
     "applied_candidate_id",
     "best_candidate_id",
@@ -91,16 +104,29 @@ def cleanup_self_evolve_artifacts(
     if retention.unreferenced_ingestion_retention_days < 0:
         raise ValueError("unreferenced_ingestion_retention_days must be non-negative")
 
-    root = (
-        Path(artifact_root)
-        if artifact_root is not None
-        else Path(workspace_root) / ".aworld" / "self_evolve"
+    root = _validated_artifact_root(
+        workspace_root,
+        artifact_root=artifact_root,
     )
     if not root.exists():
         return _empty_cleanup(retention)
-    if root.is_symlink():
-        raise ValueError("self-evolve artifact root cannot be a symlink")
+    if not root.is_dir():
+        raise ValueError("self-evolve artifact root must be a directory")
 
+    cleanup_time = now if now is not None else time.time()
+    cutoff = cleanup_time - (
+        retention.raw_artifact_retention_days * 24 * 60 * 60
+    )
+    stale_run_cutoff = cleanup_time - (
+        retention.stale_run_retention_hours * 60 * 60
+    )
+    ingestion_cutoff = cleanup_time - (
+        retention.unreferenced_ingestion_retention_days * 24 * 60 * 60
+    )
+    removed_paths = _recover_cleanup_quarantine(
+        root,
+        stale_cutoff=stale_run_cutoff,
+    )
     run_dirs = _run_dirs(root)
     run_ids = {path.name for path in run_dirs}
     referenced_run_ids = _referenced_run_ids(run_dirs, run_ids=run_ids)
@@ -116,24 +142,22 @@ def cleanup_self_evolve_artifacts(
     if current_run_id:
         recent_run_ids.add(current_run_id)
 
-    removed_paths: list[str] = []
     removed_run_ids: set[str] = set()
+    archived_run_ids: set[str] = set()
     skipped_runs: list[dict[str, str]] = []
-    cutoff = (now if now is not None else time.time()) - (
-        retention.raw_artifact_retention_days * 24 * 60 * 60
-    )
-    ingestion_cutoff = (now if now is not None else time.time()) - (
-        retention.unreferenced_ingestion_retention_days * 24 * 60 * 60
-    )
 
     for run_dir in sorted(run_dirs, key=lambda path: path.name):
         skip_reason = _cleanup_skip_reason(
             run_dir,
+            stale_run_cutoff=stale_run_cutoff,
         )
         if skip_reason is not None:
             skipped_runs.append({"run_id": run_dir.name, "reason": skip_reason})
             continue
 
+        if _is_stale_dead_run(run_dir, stale_run_cutoff=stale_run_cutoff):
+            _archive_stale_run(run_dir, archived_at=cleanup_time)
+            archived_run_ids.add(run_dir.name)
         run_removed = False
         for path in _terminal_cleanup_candidates(
             root,
@@ -146,14 +170,9 @@ def cleanup_self_evolve_artifacts(
                 continue
             if not path.exists() and not path.is_symlink():
                 continue
-            cleanup_root = (
-                root / "evaluator"
-                if path == root / "evaluator" / run_dir.name
-                else run_dir
-            )
-            _remove_path(path, cleanup_root=cleanup_root)
-            removed_paths.append(str(path))
-            run_removed = True
+            if _remove_path(path, cleanup_root=root):
+                removed_paths.append(str(path))
+                run_removed = True
         if run_removed:
             removed_run_ids.add(run_dir.name)
 
@@ -169,14 +188,15 @@ def cleanup_self_evolve_artifacts(
                 or _path_mtime(ingestion_dir) > ingestion_cutoff
             ):
                 continue
-            _remove_path(ingestion_dir, cleanup_root=ingestion_root)
-            removed_paths.append(str(ingestion_dir))
-            removed_ingestion_ids.append(ingestion_dir.name)
+            if _remove_path(ingestion_dir, cleanup_root=root):
+                removed_paths.append(str(ingestion_dir))
+                removed_ingestion_ids.append(ingestion_dir.name)
 
     return {
         "policy": asdict(retention),
         "removed_run_count": len(removed_run_ids),
         "removed_run_ids": sorted(removed_run_ids),
+        "archived_run_ids": sorted(archived_run_ids),
         "removed_path_count": len(removed_paths),
         "removed_paths": removed_paths,
         "skipped_runs": skipped_runs,
@@ -191,6 +211,7 @@ def _empty_cleanup(policy: SelfEvolveArtifactRetentionPolicy) -> dict[str, Any]:
         "policy": asdict(policy),
         "removed_run_count": 0,
         "removed_run_ids": [],
+        "archived_run_ids": [],
         "removed_path_count": 0,
         "removed_paths": [],
         "skipped_runs": [],
@@ -273,12 +294,19 @@ def _referenced_ingestion_ids(
 
 def _cleanup_skip_reason(
     run_dir: Path,
+    *,
+    stale_run_cutoff: float,
 ) -> str | None:
     if _has_interrupted_apply(run_dir):
         return "apply_interrupted"
     if _has_live_run_lease(run_dir):
         return "run_active"
-    if _run_status(run_dir) not in _TERMINAL_STATUSES:
+    if _run_status(run_dir) in _TERMINAL_STATUSES:
+        return None
+    if not _is_stale_dead_run(
+        run_dir,
+        stale_run_cutoff=stale_run_cutoff,
+    ):
         return "run_not_terminal"
     return None
 
@@ -314,14 +342,15 @@ def _terminal_cleanup_candidates(
     yield from _replay_workspace_paths(run_dir)
     yield from _replay_adaptation_workspace_seed_paths(run_dir)
     yield run_dir / "overlays"
-    yield run_dir / _ACTIVE_RUN_LEASE
     if prune_unselected_candidate_materializations:
         yield from _candidate_materialization_paths(run_dir)
     for child in sorted(run_dir.iterdir() if run_dir.exists() else ()):
         if child.name in _DUPLICATE_OUTPUT_NAMES or child.suffix in {".stdout", ".stderr"}:
             yield child
-    evaluator_dir = root / "evaluator" / run_dir.name
-    yield evaluator_dir
+    yield from _evaluator_raw_paths(root, run_dir)
+    # Release dead/terminal ownership proof only after every other cleanup
+    # candidate has been atomically detached.
+    yield run_dir / _ACTIVE_RUN_LEASE
 
 
 def _replay_workspace_paths(run_dir: Path) -> Iterable[Path]:
@@ -349,6 +378,29 @@ def _replay_adaptation_workspace_seed_paths(run_dir: Path) -> Iterable[Path]:
             seed = capability_dir / "workspace_seed"
             if seed.exists() or seed.is_symlink():
                 yield seed
+
+
+def _evaluator_raw_paths(root: Path, run_dir: Path) -> Iterable[Path]:
+    evaluator_root = root / "evaluator"
+    evaluator_run = evaluator_root / run_dir.name
+    if evaluator_root.is_symlink() or evaluator_run.is_symlink():
+        raise ValueError("evaluator artifact path cannot traverse a symlink")
+    if not evaluator_run.is_dir():
+        return
+    for path in evaluator_run.rglob("*"):
+        if path.name in _EVALUATOR_RAW_DIRS and (
+            path.is_dir() or path.is_symlink()
+        ):
+            yield path
+            continue
+        if path.name in _EVALUATOR_RAW_FILE_NAMES or (
+            path.is_file()
+            and (
+                path.name in _DUPLICATE_OUTPUT_NAMES
+                or path.suffix in {".stdout", ".stderr"}
+            )
+        ):
+            yield path
 
 
 def _candidate_materialization_paths(run_dir: Path) -> Iterable[Path]:
@@ -407,23 +459,93 @@ def _candidate_reference_values(value: Any, *, key: str | None = None) -> Iterab
 
 
 def _has_live_run_lease(run_dir: Path) -> bool:
-    payload = _read_json_object(run_dir / _ACTIVE_RUN_LEASE)
+    return _run_lease_state(run_dir) in {"foreign", "invalid", "live"}
+
+
+def _run_lease_state(run_dir: Path) -> str:
+    lease_path = run_dir / _ACTIVE_RUN_LEASE
+    if not lease_path.exists() and not lease_path.is_symlink():
+        return "absent"
+    if lease_path.is_symlink():
+        return "invalid"
+    payload = _read_json_object(lease_path)
     if payload is None:
-        return False
+        return "invalid"
     hostname = payload.get("hostname")
-    if isinstance(hostname, str) and hostname and hostname != socket.gethostname():
+    if not isinstance(hostname, str) or not hostname:
+        return "invalid"
+    if hostname != socket.gethostname():
         # A foreign host cannot be probed safely. Prefer retaining its run.
-        return True
+        return "foreign"
     pid = payload.get("pid")
-    if not isinstance(pid, int) or pid <= 0:
-        return False
+    if (
+        not isinstance(pid, int)
+        or isinstance(pid, bool)
+        or pid <= 0
+    ):
+        return "invalid"
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
-        return False
+        return "dead"
     except (OSError, PermissionError):
-        return True
-    return True
+        return "live"
+    return "live"
+
+
+def _is_stale_dead_run(run_dir: Path, *, stale_run_cutoff: float) -> bool:
+    return (
+        _run_status(run_dir) not in _TERMINAL_STATUSES
+        and _run_lease_state(run_dir) == "dead"
+        and _run_activity_mtime(run_dir) <= stale_run_cutoff
+    )
+
+
+def _run_activity_mtime(run_dir: Path) -> float:
+    timestamps = [
+        _path_mtime(run_dir),
+        _path_mtime(run_dir / "run.json"),
+        _path_mtime(run_dir / "report.json"),
+        _path_mtime(run_dir / _ACTIVE_RUN_LEASE),
+    ]
+    lease = _read_json_object(run_dir / _ACTIVE_RUN_LEASE)
+    started_at = lease.get("started_at") if lease else None
+    if (
+        isinstance(started_at, (int, float))
+        and not isinstance(started_at, bool)
+        and math.isfinite(float(started_at))
+    ):
+        timestamps.append(float(started_at))
+    return max(timestamps)
+
+
+def _archive_stale_run(run_dir: Path, *, archived_at: float) -> None:
+    archive_path = run_dir / "artifact_retention_archive.json"
+    if archive_path.exists() or archive_path.is_symlink():
+        if archive_path.is_symlink() or not archive_path.is_file():
+            raise ValueError("stale run archive path is unsafe")
+        existing = _read_json_object(archive_path)
+        if (
+            existing is None
+            or existing.get("schema_version")
+            != "aworld.self_evolve.stale_run_archive.v1"
+            or existing.get("run_id") != run_dir.name
+            or existing.get("reason") != "stale_dead_lease"
+        ):
+            raise ValueError("stale run archive record is invalid")
+        return
+    lease = _read_json_object(run_dir / _ACTIVE_RUN_LEASE) or {}
+    _write_json_atomic(
+        archive_path,
+        {
+            "schema_version": "aworld.self_evolve.stale_run_archive.v1",
+            "run_id": run_dir.name,
+            "reason": "stale_dead_lease",
+            "prior_status": _run_status(run_dir),
+            "archived_at": archived_at,
+            "lease": lease,
+        },
+    )
 
 
 def _is_age_gated_raw_path(path: Path, *, run_dir: Path, root: Path) -> bool:
@@ -435,7 +557,10 @@ def _is_age_gated_raw_path(path: Path, *, run_dir: Path, root: Path) -> bool:
         return False
     return (
         path in {run_dir / name for name in _RAW_RUN_DIRS}
-        or path == root / "evaluator" / run_dir.name
+        or _is_controlled_descendant(
+            path,
+            root / "evaluator" / run_dir.name,
+        )
         or _is_controlled_descendant(path, run_dir / "replay")
         or _is_controlled_descendant(path, run_dir / "replay_adaptation")
     )
@@ -518,12 +643,116 @@ def _path_mtime(path: Path) -> float:
         return 0.0
 
 
-def _remove_path(path: Path, *, cleanup_root: Path) -> None:
+def _remove_path(path: Path, *, cleanup_root: Path) -> bool:
     _assert_controlled_cleanup_path(path, cleanup_root=cleanup_root)
-    if path.is_symlink() or path.is_file():
-        path.unlink()
-        return
-    shutil.rmtree(path)
+    if not path.exists() and not path.is_symlink():
+        return False
+    quarantine_root = cleanup_root / _CLEANUP_QUARANTINE_DIR
+    if quarantine_root.is_symlink() or (
+        quarantine_root.exists() and not quarantine_root.is_dir()
+    ):
+        raise ValueError("cleanup quarantine path is unsafe")
+    quarantine_root.mkdir(exist_ok=True)
+    operation = quarantine_root / uuid.uuid4().hex
+    operation.mkdir()
+    _write_json_atomic(
+        operation / "owner.json",
+        {
+            "schema_version": "aworld.self_evolve.cleanup_quarantine.v1",
+            "hostname": socket.gethostname(),
+            "pid": os.getpid(),
+            "started_at": time.time(),
+            "source_path": str(path),
+        },
+    )
+    quarantined = operation / "artifact"
+    try:
+        os.replace(path, quarantined)
+    except FileNotFoundError:
+        shutil.rmtree(operation)
+        try:
+            quarantine_root.rmdir()
+        except OSError:
+            pass
+        return False
+    try:
+        shutil.rmtree(operation)
+    finally:
+        try:
+            quarantine_root.rmdir()
+        except OSError:
+            pass
+    return True
+
+
+def _recover_cleanup_quarantine(
+    cleanup_root: Path,
+    *,
+    stale_cutoff: float,
+) -> list[str]:
+    quarantine_root = cleanup_root / _CLEANUP_QUARANTINE_DIR
+    if not quarantine_root.exists() and not quarantine_root.is_symlink():
+        return []
+    if quarantine_root.is_symlink() or not quarantine_root.is_dir():
+        raise ValueError("cleanup quarantine path is unsafe")
+    removed: list[str] = []
+    for operation in sorted(quarantine_root.iterdir(), key=lambda path: path.name):
+        if operation.is_symlink() or not operation.is_dir():
+            raise ValueError("cleanup quarantine operation is unsafe")
+        owner = _read_json_object(operation / "owner.json")
+        if owner is None and not (operation / "artifact").exists():
+            if _path_mtime(operation) <= stale_cutoff:
+                shutil.rmtree(operation)
+                removed.append(str(operation))
+            continue
+        if not _is_recoverable_quarantine_owner(
+            owner,
+            stale_cutoff=stale_cutoff,
+        ):
+            continue
+        shutil.rmtree(operation)
+        removed.append(str(operation))
+    try:
+        quarantine_root.rmdir()
+    except OSError:
+        pass
+    return removed
+
+
+def _is_recoverable_quarantine_owner(
+    owner: Mapping[str, Any] | None,
+    *,
+    stale_cutoff: float,
+) -> bool:
+    if (
+        owner is None
+        or owner.get("schema_version")
+        != "aworld.self_evolve.cleanup_quarantine.v1"
+    ):
+        raise ValueError("cleanup quarantine owner record is invalid")
+    hostname = owner.get("hostname")
+    pid = owner.get("pid")
+    started_at = owner.get("started_at")
+    if (
+        not isinstance(hostname, str)
+        or not hostname
+        or not isinstance(pid, int)
+        or isinstance(pid, bool)
+        or pid <= 0
+        or not isinstance(started_at, (int, float))
+        or isinstance(started_at, bool)
+        or not math.isfinite(float(started_at))
+    ):
+        raise ValueError("cleanup quarantine owner record is invalid")
+    if hostname != socket.gethostname() or float(started_at) > stale_cutoff:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return True
+    except (OSError, PermissionError):
+        return False
+    return False
 
 
 def _assert_controlled_cleanup_path(path: Path, *, cleanup_root: Path) -> None:
@@ -542,3 +771,60 @@ def _assert_controlled_cleanup_path(path: Path, *, cleanup_root: Path) -> None:
         current = current / part
         if current.is_symlink():
             raise ValueError("cleanup path cannot traverse a symlink")
+
+
+def _validated_artifact_root(
+    workspace_root: str | Path,
+    *,
+    artifact_root: str | Path | None,
+) -> Path:
+    workspace = Path(os.path.abspath(Path(workspace_root).expanduser()))
+    if workspace.is_symlink():
+        raise ValueError("workspace cleanup anchor cannot be a symlink")
+    if not workspace.is_dir():
+        raise ValueError("workspace cleanup anchor must be an existing directory")
+    candidate = Path(
+        os.path.abspath(
+            Path(artifact_root).expanduser()
+            if artifact_root is not None
+            else workspace / ".aworld" / "self_evolve"
+        )
+    )
+    try:
+        relative = candidate.relative_to(workspace)
+    except ValueError as exc:
+        raise ValueError(
+            "self-evolve artifact root must be within the workspace cleanup anchor"
+        ) from exc
+    if not relative.parts:
+        raise ValueError("self-evolve artifact root cannot be the workspace root")
+    current = workspace
+    for part in relative.parts:
+        current = current / part
+        if current.is_symlink():
+            raise ValueError(
+                "self-evolve artifact root cannot traverse a symlink"
+            )
+    workspace_resolved = workspace.resolve(strict=True)
+    candidate_resolved = candidate.resolve(strict=False)
+    try:
+        resolved_relative = candidate_resolved.relative_to(workspace_resolved)
+    except ValueError as exc:
+        raise ValueError(
+            "resolved self-evolve artifact root escapes the workspace cleanup anchor"
+        ) from exc
+    if not resolved_relative.parts:
+        raise ValueError("self-evolve artifact root cannot resolve to the workspace root")
+    return candidate
+
+
+def _write_json_atomic(path: Path, payload: Mapping[str, Any]) -> None:
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        temporary.write_text(
+            json.dumps(payload, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
