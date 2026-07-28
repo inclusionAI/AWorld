@@ -135,6 +135,13 @@ from aworld.self_evolve.candidate_package import (
     candidate_package_fingerprint,
     candidate_semantic_package_fingerprint,
 )
+from aworld.self_evolve.candidate_errors import (
+    candidate_materialization_requirement_id,
+    normalize_candidate_contract_fingerprint,
+    normalize_candidate_failure_field,
+    normalize_candidate_materialization_code,
+    normalize_candidate_representation,
+)
 from aworld.self_evolve.candidate_protocol import (
     CANDIDATE_OUTPUT_CONTRACT,
     CandidateProtocolError,
@@ -173,6 +180,7 @@ from aworld.self_evolve.concurrency import (
 )
 from aworld.self_evolve.optimizers.base import (
     CandidateOptimizer,
+    CandidateSemanticValidationError,
     CandidateSourceDisposition,
     CandidateSourceKind,
     OptimizerRequest,
@@ -1246,30 +1254,40 @@ def _candidate_materialization_failures(
     for item in raw_failures[:16]:
         if not isinstance(item, Mapping):
             continue
+        code = normalize_candidate_materialization_code(
+            item.get("code")
+        ).value
+        representation = normalize_candidate_representation(
+            item.get("representation")
+        ).value
+        field_path = normalize_candidate_failure_field(
+            item.get("field_path")
+        ).value
+        raw_stage = str(item.get("stage") or "").strip()
         failure = {
-            "code": sanitize_text(
-                item.get("code") or "candidate_materialization_invalid",
-                max_chars=96,
+            "code": code,
+            "stage": (
+                raw_stage
+                if raw_stage
+                in {
+                    "candidate_generation",
+                    "candidate_protocol",
+                    "candidate_semantic_validation",
+                }
+                else "candidate_generation"
             ),
-            "stage": "candidate_generation",
             "failure_class": "candidate",
             "repairable": item.get("repairable") is not False,
             "candidate_index": _non_negative_int(item.get("candidate_index")),
-            "representation": sanitize_text(
-                item.get("representation") or "candidate_package",
-                max_chars=80,
-            ),
+            "representation": representation,
+            "field_path": field_path,
             "reason": sanitize_text(item.get("reason"), max_chars=240),
         }
-        field_path = item.get("field_path")
-        if isinstance(field_path, str) and field_path:
-            failure["field_path"] = sanitize_text(field_path, max_chars=160)
-        contract_fingerprint = item.get("contract_fingerprint")
-        if isinstance(contract_fingerprint, str) and contract_fingerprint:
-            failure["contract_fingerprint"] = sanitize_text(
-                contract_fingerprint,
-                max_chars=160,
-            )
+        contract_fingerprint = normalize_candidate_contract_fingerprint(
+            item.get("contract_fingerprint")
+        )
+        if contract_fingerprint is not None:
+            failure["contract_fingerprint"] = contract_fingerprint
         raw_allowed_ids = item.get("allowed_improvement_signal_ids")
         if isinstance(raw_allowed_ids, (list, tuple)):
             failure["allowed_improvement_signal_ids"] = [
@@ -1284,12 +1302,18 @@ def _candidate_materialization_failures(
 def _candidate_materialization_failure_event(
     failure: Mapping[str, object],
 ) -> dict[str, object]:
-    raw_code = str(
-        failure.get("code") or "candidate_materialization_invalid"
+    code = normalize_candidate_materialization_code(
+        failure.get("code")
+    ).value
+    field_path = normalize_candidate_failure_field(
+        failure.get("field_path")
+    ).value
+    representation = normalize_candidate_representation(
+        failure.get("representation")
+    ).value
+    contract_fingerprint = normalize_candidate_contract_fingerprint(
+        failure.get("contract_fingerprint")
     )
-    code = re.sub(r"[^a-z0-9_]+", "_", raw_code.casefold()).strip("_")
-    code = code[:96] or "candidate_materialization_invalid"
-    contract_fingerprint = failure.get("contract_fingerprint")
     event = ReplayFailureEvent(
         code=code,
         owner=FailureOwner.CANDIDATE,
@@ -1299,14 +1323,15 @@ def _candidate_materialization_failure_event(
         category="candidate_generation",
         summary="candidate package could not be materialized",
         diagnostics={
-            "field_path": failure.get("field_path"),
-            "representation": failure.get("representation"),
+            "field_path": field_path,
+            "representation": representation,
         },
+        requirement_id=candidate_materialization_requirement_id(
+            representation=representation,
+            field_path=field_path,
+        ),
         contract_fingerprint=(
-            str(contract_fingerprint)
-            if isinstance(contract_fingerprint, str)
-            and contract_fingerprint
-            else None
+            contract_fingerprint
         ),
     )
     return event.to_dict()
@@ -8541,7 +8566,13 @@ def _candidate_mutation_repair_prompt(
 ) -> str:
     diagnostic = (
         error.to_diagnostic()
-        if isinstance(error, CandidateProtocolError)
+        if isinstance(
+            error,
+            (
+                CandidateProtocolError,
+                CandidateSemanticValidationError,
+            ),
+        )
         else {
             "code": "candidate_protocol_invalid",
             "stage": "candidate_protocol",

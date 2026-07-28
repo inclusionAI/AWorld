@@ -8,6 +8,9 @@ from aworld.self_evolve.candidate_protocol import (
     MAX_EXPOSED_IMPROVEMENT_SIGNAL_IDS,
     candidate_output_contract_fingerprint,
 )
+from aworld.self_evolve.candidate_errors import (
+    normalize_candidate_representation,
+)
 from aworld.self_evolve.datasets import EvalCase, SelfEvolveDataset
 from aworld.self_evolve.lessons import LessonRecord
 from aworld.self_evolve.trace_pack import TracePack
@@ -37,11 +40,17 @@ class CandidateSemanticValidationError(ValueError):
         message: str,
         *,
         field_path: str | None = None,
+        representation: str | None = None,
         repairable: bool = True,
         allowed_improvement_signal_ids: tuple[str, ...] = (),
     ) -> None:
         self.code = str(code)
         self.field_path = field_path
+        self.representation = (
+            normalize_candidate_representation(representation).value
+            if representation is not None
+            else None
+        )
         self.repairable = bool(repairable)
         self.allowed_improvement_signal_ids = tuple(
             allowed_improvement_signal_ids
@@ -64,6 +73,8 @@ class CandidateSemanticValidationError(ValueError):
         }
         if self.field_path is not None:
             diagnostic["field_path"] = self.field_path
+        if self.representation is not None:
+            diagnostic["representation"] = self.representation
         return diagnostic
 
 

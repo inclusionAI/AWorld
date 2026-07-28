@@ -16,6 +16,12 @@ from aworld.self_evolve.candidate_package import (
 from aworld.self_evolve.candidate_generation import (
     CandidateGenerationInfrastructureError,
 )
+from aworld.self_evolve.candidate_errors import (
+    CandidateFailureField,
+    CandidateMaterializationCode,
+    CandidateMaterializationError,
+    CandidateRepresentation,
+)
 from aworld.self_evolve.concurrency import (
     CandidatePopulationResult,
     SelfEvolveConcurrencyPolicy,
@@ -129,7 +135,10 @@ class TraceReflectiveLLMMutator:
                             {
                                 **failure,
                                 "candidate_index": slot.index,
-                                "representation": "candidate_package",
+                                "representation": (
+                                    failure.get("representation")
+                                    or CandidateRepresentation.CANDIDATE_PACKAGE.value
+                                ),
                             }
                         )
                     else:
@@ -190,25 +199,19 @@ class TraceReflectiveLLMMutator:
                     materialization = f"{materialization}+repair_focus_overlay"
             except ValueError as exc:
                 filtered_invalid_patch_count += 1
-                diagnostic = (
-                    exc.to_diagnostic()
-                    if isinstance(exc, CandidateSemanticValidationError)
-                    else {
-                        "code": "candidate_materialization_invalid",
-                        "stage": "candidate_generation",
-                        "failure_class": "candidate",
-                        "repairable": True,
-                    }
+                semantic_error = _candidate_semantic_error(
+                    exc,
+                    output=output,
+                    request=request,
                 )
+                diagnostic = semantic_error.to_diagnostic()
                 candidate_materialization_failures.append(
                     {
                         **diagnostic,
                         "candidate_index": index,
                         "representation": (
-                            "patch_intent"
-                            if isinstance(output, Mapping)
-                            and isinstance(output.get("patch_intent"), Mapping)
-                            else "candidate_package"
+                            diagnostic.get("representation")
+                            or _candidate_output_representation(output).value
                         ),
                         "reason": sanitize_text(str(exc), max_chars=240),
                     }
@@ -820,16 +823,56 @@ def _validate_mutator_output_context(
         )
     except CandidateSemanticValidationError:
         raise
+    except CandidateMaterializationError as exc:
+        raise _candidate_semantic_error(
+            exc,
+            output=output,
+            request=request,
+        ) from exc
     except ValueError as exc:
-        raise CandidateSemanticValidationError(
-            "candidate_materialization_invalid",
-            str(exc),
-            repairable=True,
-            allowed_improvement_signal_ids=(
-                exposed_improvement_signal_ids(request)
-            ),
+        raise _candidate_semantic_error(
+            exc,
+            output=output,
+            request=request,
         ) from exc
     return output
+
+
+def _candidate_output_representation(output: Any) -> CandidateRepresentation:
+    if not isinstance(output, Mapping):
+        return CandidateRepresentation.FULL_CONTENT
+    if isinstance(output.get("patch_intent"), Mapping):
+        return CandidateRepresentation.PATCH_INTENT
+    if isinstance(output.get("content"), str) and output.get("content"):
+        return CandidateRepresentation.FULL_CONTENT
+    raw_files = output.get("files")
+    if isinstance(raw_files, (list, tuple)) and raw_files:
+        return CandidateRepresentation.FILES_ONLY
+    return CandidateRepresentation.CANDIDATE_PACKAGE
+
+
+def _candidate_semantic_error(
+    error: ValueError,
+    *,
+    output: Any,
+    request: OptimizerRequest,
+) -> CandidateSemanticValidationError:
+    if isinstance(error, CandidateSemanticValidationError):
+        return error
+    if isinstance(error, CandidateMaterializationError):
+        code = error.code.value
+        field_path = error.field_path.value
+    else:
+        code = CandidateMaterializationCode.INVALID.value
+        field_path = CandidateFailureField.CANDIDATE.value
+    return CandidateSemanticValidationError(
+        code,
+        str(error),
+        field_path=field_path,
+        representation=_candidate_output_representation(output).value,
+        repairable=True,
+        allowed_improvement_signal_ids=exposed_improvement_signal_ids(request),
+    )
 
 
 def _overlay_repair_focus_files(
@@ -1079,13 +1122,19 @@ def _materialize_mutator_output(
             content = base_content
             materialization = "files_only"
         else:
-            raise ValueError(
-                "mutator output must include content, patch_intent, or package files"
+            raise CandidateMaterializationError(
+                CandidateMaterializationCode.CONTENT_REQUIRED,
+                "mutator output must include content, patch_intent, or package files",
+                field_path=CandidateFailureField.CONTENT,
             )
     if not isinstance(rationale, str):
         rationale = ""
     if not isinstance(raw_files, (list, tuple)):
-        raise ValueError("mutator files must be a list")
+        raise CandidateMaterializationError(
+            CandidateMaterializationCode.FILES_TYPE_INVALID,
+            "mutator files must be a list",
+            field_path=CandidateFailureField.FILES,
+        )
     files = validate_candidate_files(
         CandidateFileDelta(
             path=str(item.get("path") or ""),
@@ -1101,7 +1150,11 @@ def _materialize_mutator_output(
         if isinstance(item, Mapping)
     )
     if materialization == "files_only" and not files:
-        raise ValueError("files-only mutator output must include a valid file delta")
+        raise CandidateMaterializationError(
+            CandidateMaterializationCode.FILES_ONLY_DELTA_REQUIRED,
+            "files-only mutator output must include a valid file delta",
+            field_path=CandidateFailureField.FILES,
+        )
     return content, rationale, materialization, files
 
 

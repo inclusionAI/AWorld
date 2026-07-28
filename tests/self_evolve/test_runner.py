@@ -34,7 +34,11 @@ from aworld.self_evolve.datasets import (
     build_dataset_from_source,
 )
 from aworld.self_evolve.optimizers.llm_mutator import TraceReflectiveLLMMutator
-from aworld.self_evolve.optimizers.base import OptimizerRequest, OptimizerResult
+from aworld.self_evolve.optimizers.base import (
+    CandidateSemanticValidationError,
+    OptimizerRequest,
+    OptimizerResult,
+)
 from aworld.self_evolve.failure_events import (
     FailureEventSource,
     FailureOwner,
@@ -78,6 +82,8 @@ from aworld.self_evolve.runner import (
     _default_post_apply_evaluator,
     _candidate_generation_limit,
     _candidate_generation_actual_usage,
+    _candidate_materialization_failure_events,
+    _candidate_mutation_repair_prompt,
     _configured_budget_usage,
     _feedback_from_report,
     _trajectory_group_rank_key,
@@ -3326,6 +3332,72 @@ async def test_candidate_materialization_failure_retries_as_typed_feedback(
     assert report["population"]["scheduler_decisions"][1]["slots"][0][
         "role"
     ] == "focused_repair"
+
+
+def test_candidate_repair_prompt_preserves_typed_semantic_diagnostic() -> None:
+    error = CandidateSemanticValidationError(
+        "unexposed_improvement_signal_ids",
+        "candidate addressed an improvement signal that was not exposed",
+        field_path="addressed_improvement_signal_ids",
+        representation="candidate_package",
+        allowed_improvement_signal_ids=("signal-visible",),
+    )
+
+    prompt = _candidate_mutation_repair_prompt('{"content":"valid"}', error)
+    payload = json.loads(prompt.split("\n", 1)[1])
+    diagnostic = payload["diagnostics"][0]
+
+    assert diagnostic["code"] == "unexposed_improvement_signal_ids"
+    assert diagnostic["stage"] == "candidate_semantic_validation"
+    assert diagnostic["field_path"] == "addressed_improvement_signal_ids"
+    assert diagnostic["contract_fingerprint"] == error.contract_fingerprint
+    assert diagnostic["representation"] == "candidate_package"
+
+
+def test_candidate_materialization_frontier_identity_is_typed_and_stable() -> None:
+    failures = (
+        {
+            "code": "candidate_materialization_invalid",
+            "field_path": "files[0].path",
+            "representation": "files_only",
+            "reason": "first free-form reason",
+            "contract_fingerprint": "first free-form contract prose",
+        },
+        {
+            "code": "candidate_materialization_invalid",
+            "field_path": "files[7].path",
+            "representation": "files_only",
+            "reason": "different free-form reason",
+            "contract_fingerprint": "different free-form contract prose",
+        },
+        {
+            "code": "candidate_materialization_invalid",
+            "field_path": "files[0].content",
+            "representation": "files_only",
+            "reason": "another reason",
+        },
+        {
+            "code": "candidate_materialization_invalid",
+            "field_path": "files[3].path",
+            "representation": "full_content",
+            "reason": "representation differs",
+        },
+    )
+
+    events = _candidate_materialization_failure_events(failures)
+
+    assert len(events) == 3
+    assert len({event["semantic_key"] for event in events}) == 3
+    assert events[0]["diagnostics"] == {
+        "field_path": "files[].path",
+        "representation": "files_only",
+    }
+    assert events[0]["requirement_id"] == (
+        "candidate-materialization/files_only/files[].path"
+    )
+    assert events[0]["contract_fingerprint"] is None
+    assert events[0]["semantic_key"] != events[1]["semantic_key"]
+    assert events[0]["semantic_key"] != events[2]["semantic_key"]
 
 
 @pytest.mark.asyncio

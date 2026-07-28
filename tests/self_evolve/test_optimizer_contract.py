@@ -1281,17 +1281,56 @@ async def test_trace_reflective_llm_mutator_rejects_invalid_patch_intent_before_
 
     assert result.candidates == ()
     assert result.diagnostics["filtered_invalid_patch_candidates"] == 1
-    assert result.diagnostics["candidate_materialization_failures"] == [
-        {
-            "code": "candidate_materialization_invalid",
-            "stage": "candidate_generation",
-            "failure_class": "candidate",
-            "repairable": True,
-            "candidate_index": 0,
-            "representation": "patch_intent",
-            "reason": "patch intent contains a protected reference",
+    failure = result.diagnostics["candidate_materialization_failures"][0]
+    assert failure == {
+        "code": "patch_content_protected_reference",
+        "stage": "candidate_semantic_validation",
+        "failure_class": "candidate",
+        "repairable": True,
+        "field_path": "patch_intent.operations[].content",
+        "contract_fingerprint": failure["contract_fingerprint"],
+        "allowed_improvement_signal_ids": [],
+        "candidate_index": 0,
+        "representation": "patch_intent",
+        "reason": "patch intent contains a protected reference",
+    }
+    assert failure["contract_fingerprint"].startswith("sha256:")
+
+
+@pytest.mark.asyncio
+async def test_trace_reflective_llm_mutator_types_candidate_file_path_failure() -> None:
+    async def mutate(prompt: str) -> dict:
+        del prompt
+        return {
+            "content": "# Demo\n\nKeep the reusable workflow.\n",
+            "rationale": "Invalid package path.",
+            "files": [{"path": "../escape.py", "content": "bad"}],
         }
-    ]
+
+    request = OptimizerRequest(
+        target=_target(),
+        current_content="---\nname: demo\n---\n# Demo\n",
+        target_fingerprint="sha256:old",
+        trace_packs=(_trace_pack(),),
+        lesson_records=(
+            LessonRecord(
+                lesson_id="lesson-evidence",
+                lesson_type="required_runtime_behavior",
+                title="Preserve evidence behavior",
+                summary="Use bounded evidence.",
+            ),
+        ),
+        max_candidates=1,
+    )
+
+    result = await TraceReflectiveLLMMutator(mutate_text=mutate).propose(request)
+
+    assert result.candidates == ()
+    failure = result.diagnostics["candidate_materialization_failures"][0]
+    assert failure["code"] == "candidate_file_path_invalid"
+    assert failure["stage"] == "candidate_semantic_validation"
+    assert failure["field_path"] == "files[].path"
+    assert failure["representation"] == "full_content"
 
 
 @pytest.mark.asyncio
