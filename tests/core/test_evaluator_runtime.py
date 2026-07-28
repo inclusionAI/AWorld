@@ -97,10 +97,19 @@ def _write_verified_evidence_bundle(
 
 
 @pytest.fixture(autouse=True)
-def _reset_eval_registry_state(monkeypatch: pytest.MonkeyPatch) -> None:
+def _reset_eval_registry_state(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
     monkeypatch.setattr(substrate_module, "_EVAL_SUITE_REGISTRY", {})
     monkeypatch.setattr(substrate_module, "_LOADED_EVAL_MANIFEST_PATHS", set())
     monkeypatch.setattr(substrate_module, "_DECLARED_EVAL_SUITE_IDS_BY_WORKSPACE", {})
+    monkeypatch.setattr(
+        evaluator_runtime_module,
+        "_VERIFIED_EVIDENCE_SNAPSHOT_ROOT",
+        tmp_path / "evaluator-private-snapshots",
+        raising=False,
+    )
     substrate_module.register_eval_suite(
         "app-evaluator",
         lambda target: substrate_module.get_builtin_eval_suite("app-evaluator"),
@@ -1198,7 +1207,7 @@ def test_trajectory_prompt_uses_bundle_first_compaction_for_large_replay_payload
                         "artifact_path": str(tmp_path / "source.txt"),
                         "extraction_method": "bounded_extract",
                         "bounded_evidence": {
-                            "claim_support": "compact verified evidence",
+                            "bounded_excerpt": "compact verified evidence",
                         },
                     }
                 ],
@@ -1268,6 +1277,8 @@ def test_trajectory_prompt_uses_bundle_first_compaction_for_large_replay_payload
     assert trajectory["evidence_bundle"]["manifest"]["fingerprint"] == (
         manifest_fingerprint
     )
+    snapshot_manifest_path = trajectory["evidence_bundle"]["manifest"]["path"]
+    assert snapshot_manifest_path != str(manifest_path)
     assert "Self-evolve replay evidence requirements" not in trajectory["question"]
     assert trajectory["system_prompt_excerpt"] == ""
     assert len(evidence) <= 3
@@ -1291,7 +1302,7 @@ def test_trajectory_prompt_uses_bundle_first_compaction_for_large_replay_payload
     } >= {
         ("extracted_trajectory_json", str(extracted_path)),
         ("canonical_evidence_bundle", str(bundle_path)),
-        ("evidence_manifest", str(manifest_path)),
+        ("evidence_manifest", snapshot_manifest_path),
         ("source_artifact", str(tmp_path / "source.txt")),
     }
     manifest_artifact = next(
@@ -1310,7 +1321,8 @@ def test_trajectory_prompt_uses_bundle_first_compaction_for_large_replay_payload
     assert evidence_digest["canonical_bundle_valid"] is True
     assert evidence_digest["entry_count"] == 1
     assert evidence_digest["manifest"] == {
-        "path": str(manifest_path),
+        "path": snapshot_manifest_path,
+        "source_path": str(manifest_path),
         "present": True,
         "readable": True,
         "regular_file": True,
@@ -1320,13 +1332,14 @@ def test_trajectory_prompt_uses_bundle_first_compaction_for_large_replay_payload
         "size_bytes": len(manifest_payload),
         "fingerprint": manifest_fingerprint,
         "validation_errors": [],
+        "content_addressed": True,
     }
     assert evidence_digest["entries"] == [
         {
             "source_id": "source-1",
             "artifact_path": str(tmp_path / "source.txt"),
             "extraction_method": "bounded_extract",
-            "evidence": {"claim_support": "compact verified evidence"},
+            "evidence": {"bounded_excerpt": "compact verified evidence"},
         }
     ]
     assert evidence_digest["artifact_read_available"] is True
@@ -1359,13 +1372,24 @@ def test_load_prompt_evidence_bundle_revalidates_manifest_file(
     assert bundle["valid"] is True
     assert bundle["format"] == "aworld.self_evolve.evidence_bundle"
     assert bundle["version"] == 1
-    assert bundle["manifest"]["path"] == str(manifest_path)
     assert bundle["manifest"]["present"] is True
     assert bundle["manifest"]["readable"] is True
     assert bundle["manifest"]["regular_file"] is True
     assert bundle["manifest"]["valid"] is True
     assert bundle["manifest"]["fingerprint"] == manifest_fingerprint
     assert bundle["manifest"]["validation_errors"] == []
+    assert bundle["manifest"]["source_path"] == str(manifest_path)
+    snapshot_path = Path(bundle["manifest"]["path"])
+    assert snapshot_path != manifest_path
+    assert snapshot_path.read_bytes() == manifest_path.read_bytes()
+    assert snapshot_path.name == (
+        "evidence-manifest-"
+        + manifest_fingerprint.removeprefix("sha256:")
+        + ".jsonl"
+    )
+    assert snapshot_path.stat().st_mode & 0o777 == 0o400
+    assert snapshot_path.parent.stat().st_mode & 0o777 == 0o700
+    assert bundle["manifest"]["content_addressed"] is True
 
 
 def test_load_prompt_evidence_bundle_fails_closed_when_manifest_is_missing(
@@ -1585,6 +1609,101 @@ def test_load_prompt_evidence_bundle_validates_bundle_and_manifest_entry_schema(
     )
 
 
+@pytest.mark.parametrize(
+    "mutation",
+    ["artifact_path", "metadata", "bounded_evidence"],
+)
+def test_load_prompt_evidence_bundle_binds_complete_canonical_manifest_record(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    bundle_path = tmp_path / "evidence_bundle.json"
+    source_path = tmp_path / "source.txt"
+    source_path.write_text("verified source", encoding="utf-8")
+    replacement_path = tmp_path / "replacement.txt"
+    replacement_path.write_text("replacement source", encoding="utf-8")
+    entries = [
+        {
+            "source_id": "artifact-source",
+            "artifact_path": str(source_path),
+            "extraction_method": "bounded_extract",
+            "bounded_evidence": {"bounded_excerpt": "verified source"},
+        },
+        {
+            "source_id": "metadata-source",
+            "evidence_type": "metadata",
+            "extraction_method": "structured_result",
+            "metadata": {"status": "verified", "count": 3},
+            "bounded_evidence": {"bounded_excerpt": "verified metadata"},
+        },
+    ]
+    _write_verified_evidence_bundle(bundle_path, entries)
+    persisted = json.loads(bundle_path.read_text(encoding="utf-8"))
+    if mutation == "artifact_path":
+        persisted["entries"][0]["artifact_path"] = str(replacement_path)
+    elif mutation == "metadata":
+        persisted["entries"][1]["metadata"]["status"] = "forged"
+    else:
+        persisted["entries"][0]["bounded_evidence"]["bounded_excerpt"] = (
+            "forged excerpt"
+        )
+    bundle_path.write_text(json.dumps(persisted), encoding="utf-8")
+
+    bundle = _load_prompt_evidence_bundle(str(bundle_path))
+
+    assert bundle["valid"] is False
+    assert any(
+        error.startswith("manifest_bundle_entry_content_mismatch:")
+        for error in bundle["manifest"]["validation_errors"]
+    )
+
+
+def test_load_prompt_evidence_bundle_accepts_framework_archived_artifact_path(
+    tmp_path: Path,
+) -> None:
+    bundle_dir = tmp_path / "artifacts"
+    bundle_dir.mkdir()
+    workspace_source = tmp_path / "workspace" / "data" / "source.txt"
+    workspace_source.parent.mkdir(parents=True)
+    workspace_source.write_text("archived verified source", encoding="utf-8")
+    archive_dir = bundle_dir / "workspace_evidence"
+    archive_dir.mkdir()
+    archive_prefix = hashlib.sha256(
+        str(workspace_source.resolve()).encode("utf-8")
+    ).hexdigest()[:12]
+    archived_path = archive_dir / (
+        f"{archive_prefix}__data__source.txt"
+    )
+    archived_path.write_text("archived verified source", encoding="utf-8")
+    bundle_path = bundle_dir / "evidence_bundle.json"
+    _write_verified_evidence_bundle(
+        bundle_path,
+        [
+            {
+                "source_id": "archived-source",
+                "artifact_path": str(archived_path),
+                "extraction_method": "bounded_extract",
+                "bounded_evidence": {
+                    "bounded_excerpt": "archived verified source"
+                },
+            }
+        ],
+        manifest_entries=[
+            {
+                "source_id": "archived-source",
+                "artifact_path": str(workspace_source),
+                "extraction_method": "bounded_extract",
+                "bounded_excerpt": "archived verified source",
+            }
+        ],
+    )
+
+    bundle = _load_prompt_evidence_bundle(str(bundle_path))
+
+    assert bundle["valid"] is True
+    assert bundle["entries"][0]["artifact_path"] == str(archived_path)
+
+
 def test_load_prompt_evidence_bundle_detects_manifest_toctou(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -1629,7 +1748,10 @@ def test_load_prompt_evidence_bundle_detects_manifest_toctou(
 def test_artifact_index_never_marks_unavailable_manifest_valid(
     tmp_path: Path,
 ) -> None:
-    missing_manifest = tmp_path / "evidence_manifest.jsonl"
+    missing_manifest = (
+        evaluator_runtime_module._VERIFIED_EVIDENCE_SNAPSHOT_ROOT
+        / ("evidence-manifest-" + ("0" * 64) + ".jsonl")
+    )
     index = _artifact_backed_evidence_index(
         runtime_context={},
         target={},
@@ -1650,6 +1772,7 @@ def test_artifact_index_never_marks_unavailable_manifest_valid(
                 "invalid_entry_count": 0,
                 "size_bytes": 128,
                 "fingerprint": "sha256:" + ("0" * 64),
+                "content_addressed": True,
             },
         },
         evidence_summary={"canonical_bundle_valid": True},
@@ -1663,6 +1786,217 @@ def test_artifact_index_never_marks_unavailable_manifest_valid(
     assert manifest_artifact["available"] is False
     assert manifest_artifact["valid"] is False
     assert manifest_artifact["readable"] is False
+
+
+@pytest.mark.parametrize("mutation", ["replace", "delete"])
+def test_manifest_artifact_reads_verified_snapshot_after_source_mutation(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    source_path = tmp_path / "source.txt"
+    source_path.write_text("verified source evidence", encoding="utf-8")
+    bundle_path = tmp_path / "evidence_bundle.json"
+    manifest_path, _ = _write_verified_evidence_bundle(
+        bundle_path,
+        [
+            {
+                "source_id": "source-1",
+                "artifact_path": str(source_path),
+                "extraction_method": "bounded_extract",
+                "bounded_evidence": {
+                    "bounded_excerpt": "verified source evidence"
+                },
+            }
+        ],
+    )
+    verified_manifest_bytes = manifest_path.read_bytes()
+    prompt_text = _build_trajectory_prompt(
+        {"input": "question"},
+        {
+            "case_id": "case-1",
+            "answer": "answer",
+            "trajectory": [],
+            "artifacts": {"outcome": {"extracted_path": None}},
+            "evidence_bundle_path": str(bundle_path),
+        },
+        suite=None,
+    )
+    prompt = json.loads(prompt_text)
+    manifest_artifact = next(
+        artifact
+        for artifact in prompt["artifact_backed_evidence"]["artifacts"]
+        if artifact["kind"] == "evidence_manifest"
+    )
+    snapshot_path = manifest_artifact["path"]
+    assert snapshot_path != str(manifest_path)
+    if mutation == "replace":
+        manifest_path.write_text(
+            '{"source_id":"substituted","extraction_method":"forged"}\n',
+            encoding="utf-8",
+        )
+    else:
+        manifest_path.unlink()
+
+    read_results = substrate_module._resolve_artifact_read_requests(
+        prompt_text,
+        [{"path": snapshot_path, "max_chars": 20_000}],
+    )
+
+    assert read_results[0]["status"] == "ok"
+    assert read_results[0]["content"].encode("utf-8") == verified_manifest_bytes
+    assert "substituted" not in read_results[0]["content"]
+
+
+def test_manifest_artifact_read_fails_closed_when_snapshot_is_tampered(
+    tmp_path: Path,
+) -> None:
+    bundle_path = tmp_path / "evidence_bundle.json"
+    _write_verified_evidence_bundle(
+        bundle_path,
+        [
+            {
+                "source_id": "snapshot-tamper",
+                "artifact_path": str(tmp_path / "source.txt"),
+                "extraction_method": "bounded_extract",
+                "bounded_evidence": {"bounded_excerpt": "verified evidence"},
+            }
+        ],
+    )
+    prompt_text = _build_trajectory_prompt(
+        {"input": "question"},
+        {
+            "case_id": "case-1",
+            "answer": "answer",
+            "trajectory": [],
+            "artifacts": {"outcome": {"extracted_path": None}},
+            "evidence_bundle_path": str(bundle_path),
+        },
+        suite=None,
+    )
+    prompt = json.loads(prompt_text)
+    manifest_artifact = next(
+        artifact
+        for artifact in prompt["artifact_backed_evidence"]["artifacts"]
+        if artifact["kind"] == "evidence_manifest"
+    )
+    snapshot_path = Path(manifest_artifact["path"])
+    snapshot_path.chmod(0o600)
+    snapshot_path.write_text("substituted snapshot\n", encoding="utf-8")
+
+    read_results = substrate_module._resolve_artifact_read_requests(
+        prompt_text,
+        [{"path": str(snapshot_path), "max_chars": 20_000}],
+    )
+
+    assert read_results[0]["status"] == "denied"
+    assert read_results[0]["reason"] == "artifact_integrity_mismatch"
+    assert "content" not in read_results[0]
+
+
+def test_manifest_artifact_read_rejects_snapshot_symlink(
+    tmp_path: Path,
+) -> None:
+    bundle_path = tmp_path / "evidence_bundle.json"
+    manifest_path, _ = _write_verified_evidence_bundle(
+        bundle_path,
+        [
+            {
+                "source_id": "snapshot-symlink",
+                "artifact_path": str(tmp_path / "source.txt"),
+                "extraction_method": "bounded_extract",
+                "bounded_evidence": {"bounded_excerpt": "verified evidence"},
+            }
+        ],
+    )
+    prompt_text = _build_trajectory_prompt(
+        {"input": "question"},
+        {
+            "case_id": "case-1",
+            "answer": "answer",
+            "trajectory": [],
+            "artifacts": {"outcome": {"extracted_path": None}},
+            "evidence_bundle_path": str(bundle_path),
+        },
+        suite=None,
+    )
+    prompt = json.loads(prompt_text)
+    snapshot_path = Path(
+        next(
+            artifact
+            for artifact in prompt["artifact_backed_evidence"]["artifacts"]
+            if artifact["kind"] == "evidence_manifest"
+        )["path"]
+    )
+    snapshot_path.unlink()
+    snapshot_path.symlink_to(manifest_path)
+
+    read_results = substrate_module._resolve_artifact_read_requests(
+        prompt_text,
+        [{"path": str(snapshot_path), "max_chars": 20_000}],
+    )
+
+    assert read_results[0]["status"] == "denied"
+    assert read_results[0]["reason"] == "artifact_not_regular_file"
+
+
+def test_manifest_artifact_read_detects_snapshot_toctou(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    bundle_path = tmp_path / "evidence_bundle.json"
+    _write_verified_evidence_bundle(
+        bundle_path,
+        [
+            {
+                "source_id": "snapshot-toctou",
+                "artifact_path": str(tmp_path / "source.txt"),
+                "extraction_method": "bounded_extract",
+                "bounded_evidence": {"bounded_excerpt": "verified evidence"},
+            }
+        ],
+    )
+    prompt_text = _build_trajectory_prompt(
+        {"input": "question"},
+        {
+            "case_id": "case-1",
+            "answer": "answer",
+            "trajectory": [],
+            "artifacts": {"outcome": {"extracted_path": None}},
+            "evidence_bundle_path": str(bundle_path),
+        },
+        suite=None,
+    )
+    prompt = json.loads(prompt_text)
+    snapshot_path = Path(
+        next(
+            artifact
+            for artifact in prompt["artifact_backed_evidence"]["artifacts"]
+            if artifact["kind"] == "evidence_manifest"
+        )["path"]
+    )
+    real_lstat = os.lstat
+
+    def changed_lstat(path: object):
+        stat_result = real_lstat(path)
+        if Path(path) != snapshot_path:
+            return stat_result
+        return SimpleNamespace(
+            st_mode=stat_result.st_mode,
+            st_dev=stat_result.st_dev,
+            st_ino=stat_result.st_ino + 1,
+            st_size=stat_result.st_size,
+            st_mtime_ns=stat_result.st_mtime_ns,
+        )
+
+    monkeypatch.setattr(substrate_module.os, "lstat", changed_lstat)
+
+    read_results = substrate_module._resolve_artifact_read_requests(
+        prompt_text,
+        [{"path": str(snapshot_path), "max_chars": 20_000}],
+    )
+
+    assert read_results[0]["status"] == "denied"
+    assert read_results[0]["reason"] == "artifact_changed_during_read"
 
 
 def test_trajectory_prompt_artifact_index_lists_all_bundle_source_artifacts(

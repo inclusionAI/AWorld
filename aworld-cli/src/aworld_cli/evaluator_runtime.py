@@ -7,7 +7,10 @@ import importlib
 import inspect
 import json
 import os
+import re
+import secrets
 import stat
+import tempfile
 import time
 from pathlib import Path
 from typing import Any, Mapping
@@ -72,6 +75,14 @@ _MAX_PROMPT_EVIDENCE_MANIFEST_BYTES = 1024 * 1024
 _MAX_PROMPT_EVIDENCE_MANIFEST_ENTRIES = 256
 _PROMPT_EVIDENCE_BUNDLE_FORMAT = "aworld.self_evolve.evidence_bundle"
 _PROMPT_EVIDENCE_BUNDLE_VERSION = 1
+_VERIFIED_EVIDENCE_SNAPSHOT_ROOT = (
+    Path(tempfile.gettempdir())
+    / (
+        "aworld-evaluator-verified-evidence-"
+        f"{getattr(os, 'getuid', lambda: 0)()}-{os.getpid()}-"
+        f"{secrets.token_hex(8)}"
+    )
+)
 _PROMPT_EVIDENCE_MANIFEST_PAYLOAD_KEYS = (
     "excerpt",
     "excerpts",
@@ -87,6 +98,9 @@ _PROMPT_EVIDENCE_MANIFEST_PAYLOAD_KEYS = (
     "summary",
     "structured_summary",
 )
+_PROMPT_EVIDENCE_MANIFEST_PAYLOAD_ALIASES = {
+    "bounded_excerpt_fields": "bounded_excerpts",
+}
 _DEFAULT_ARTIFACT_READ_ROUNDS = 2
 _CANONICAL_BUNDLE_ARTIFACT_READ_ROUNDS = 3
 _DEFAULT_ARTIFACT_READ_TOTAL_CHARS = 80000
@@ -1097,28 +1111,13 @@ def _artifact_backed_evidence_index(
     manifest_was_valid = False
     if isinstance(evidence_bundle, Mapping):
         manifest = evidence_bundle.get("manifest")
-        bundle_path_value = evidence_bundle.get("path")
-        artifact_entries = (
-            evidence_bundle.get("artifact_entries")
-            if isinstance(evidence_bundle.get("artifact_entries"), list)
-            else evidence_bundle.get("entries")
-        )
         manifest_was_valid = (
             isinstance(manifest, Mapping)
             and manifest.get("valid") is True
-            and isinstance(bundle_path_value, str)
-            and isinstance(artifact_entries, list)
         )
         if manifest_was_valid:
-            manifest_for_index = _validate_prompt_evidence_manifest(
-                manifest,
-                bundle_path=Path(bundle_path_value).expanduser(),
-                declared_manifest_path=manifest.get("path"),
-                expected_entries=[
-                    entry
-                    for entry in artifact_entries
-                    if isinstance(entry, Mapping)
-                ],
+            manifest_for_index = _validate_verified_manifest_snapshot(
+                manifest
             )
             if manifest_for_index.get("valid") is not True:
                 if isinstance(manifest, dict):
@@ -1136,9 +1135,7 @@ def _artifact_backed_evidence_index(
     )
     if manifest_was_valid and isinstance(manifest_for_index, Mapping):
         manifest_path = manifest_for_index.get("path")
-        if (
-            _is_path_under_trusted_roots(manifest_path, trusted_roots)
-        ):
+        if _is_verified_snapshot_path(manifest_path):
             add_artifact(
                 "evidence_manifest",
                 manifest_path,
@@ -1151,6 +1148,16 @@ def _artifact_backed_evidence_index(
                 size_bytes=manifest_for_index.get("size_bytes"),
                 fingerprint=manifest_for_index.get("fingerprint"),
                 validation_errors=manifest_for_index.get("validation_errors"),
+                source_path=manifest_for_index.get("source_path"),
+                content_addressed=True,
+                integrity={
+                    "algorithm": "sha256",
+                    "fingerprint": manifest_for_index.get("fingerprint"),
+                    "size_bytes": manifest_for_index.get("size_bytes"),
+                    "max_bytes": _MAX_PROMPT_EVIDENCE_MANIFEST_BYTES,
+                    "mode": 0o400,
+                    "required": True,
+                },
             )
     add_artifact("report_output", runtime_context.get("report_output_path"))
 
@@ -1519,25 +1526,425 @@ def _validate_prompt_evidence_manifest(
     if len(expected_entries) != len(records):
         add_error("manifest_bundle_entry_count_mismatch")
     else:
-        expected_identities = [
-            (
-                str(entry.get("source_id") or ""),
-                str(entry.get("extraction_method") or ""),
+        for index, (manifest_entry, bundle_entry) in enumerate(
+            zip(records, expected_entries)
+        ):
+            canonical_entry, canonical_error = (
+                _canonical_prompt_evidence_manifest_entry(
+                    manifest_entry,
+                    bundle_entry=bundle_entry,
+                    bundle_path=bundle_path,
+                )
             )
-            for entry in expected_entries
-        ]
-        manifest_identities = [
-            (
-                str(entry.get("source_id") or ""),
-                str(entry.get("extraction_method") or ""),
-            )
-            for entry in records
-        ]
-        if manifest_identities != expected_identities:
-            add_error("manifest_bundle_entry_identity_mismatch")
+            if (
+                canonical_error is not None
+                or not _json_values_equal(
+                    canonical_entry,
+                    dict(bundle_entry),
+                )
+            ):
+                add_error(
+                    f"manifest_bundle_entry_content_mismatch:{index}"
+                    + (
+                        f":{canonical_error}"
+                        if canonical_error is not None
+                        else ""
+                    )
+                )
     result["invalid_entry_count"] = len(record_errors)
     result["valid"] = not errors and bool(records)
+    if result["valid"] is True:
+        snapshot_path, snapshot_error = _materialize_verified_manifest_snapshot(
+            manifest_bytes,
+            fingerprint=actual_fingerprint,
+        )
+        if snapshot_error is not None or snapshot_path is None:
+            add_error(
+                snapshot_error or "manifest_snapshot_materialization_failed"
+            )
+            result["valid"] = False
+        else:
+            result["source_path"] = result["path"]
+            result["path"] = str(snapshot_path)
+            result["content_addressed"] = True
     return result
+
+
+def _canonical_prompt_evidence_manifest_entry(
+    manifest_entry: Mapping[str, Any],
+    *,
+    bundle_entry: Mapping[str, Any],
+    bundle_path: Path,
+) -> tuple[dict[str, Any], str | None]:
+    bounded_evidence: dict[str, Any] = {}
+    for key in _PROMPT_EVIDENCE_MANIFEST_PAYLOAD_KEYS:
+        if key in manifest_entry:
+            bounded_evidence[key] = manifest_entry[key]
+    for alias, canonical_key in (
+        _PROMPT_EVIDENCE_MANIFEST_PAYLOAD_ALIASES.items()
+    ):
+        if canonical_key not in bounded_evidence and alias in manifest_entry:
+            bounded_evidence[canonical_key] = manifest_entry[alias]
+
+    evidence_type = str(
+        manifest_entry.get("evidence_type") or ""
+    ).strip().lower()
+    if evidence_type == "file":
+        evidence_type = "artifact"
+    if not evidence_type:
+        evidence_type = (
+            "metadata"
+            if (
+                not str(manifest_entry.get("artifact_path") or "").strip()
+                and isinstance(manifest_entry.get("metadata"), Mapping)
+            )
+            else "artifact"
+        )
+    canonical: dict[str, Any] = {
+        "source_id": str(manifest_entry.get("source_id") or ""),
+        "extraction_method": str(
+            manifest_entry.get("extraction_method") or ""
+        ),
+        "bounded_evidence": bounded_evidence,
+    }
+    if evidence_type == "metadata":
+        metadata = manifest_entry.get("metadata")
+        canonical["evidence_type"] = "metadata"
+        canonical["metadata"] = (
+            dict(metadata)
+            if isinstance(metadata, Mapping) and metadata
+            else dict(bounded_evidence)
+        )
+    elif evidence_type == "artifact":
+        bundle_artifact_path = bundle_entry.get("artifact_path")
+        if not _prompt_manifest_artifact_path_matches_bundle(
+            manifest_entry.get("artifact_path"),
+            bundle_artifact_path,
+            bundle_path=bundle_path,
+        ):
+            return canonical, "artifact_path_mismatch"
+        canonical["artifact_path"] = str(bundle_artifact_path)
+        if not bounded_evidence:
+            synthetic = _prompt_synthetic_artifact_excerpt(
+                Path(str(bundle_artifact_path)).expanduser()
+            )
+            if synthetic is not None:
+                bounded_evidence["bounded_excerpt"] = synthetic["text"]
+                bounded_evidence["source"] = "artifact_preview"
+                bounded_evidence["truncated"] = synthetic["truncated"]
+    else:
+        return canonical, "unsupported_evidence_type"
+    fields_used = manifest_entry.get("fields_used")
+    if fields_used and "fields_used" not in bounded_evidence:
+        bounded_evidence["fields_used"] = fields_used
+    return canonical, None
+
+
+def _prompt_manifest_artifact_path_matches_bundle(
+    manifest_path_value: object,
+    bundle_path_value: object,
+    *,
+    bundle_path: Path,
+) -> bool:
+    if not isinstance(manifest_path_value, str) or not manifest_path_value.strip():
+        return False
+    if not isinstance(bundle_path_value, str) or not bundle_path_value.strip():
+        return False
+    manifest_path = Path(manifest_path_value).expanduser()
+    if not manifest_path.is_absolute():
+        manifest_path = bundle_path.parent / manifest_path
+    bundle_artifact_path = Path(bundle_path_value).expanduser()
+    if not bundle_artifact_path.is_absolute():
+        bundle_artifact_path = bundle_path.parent / bundle_artifact_path
+    manifest_resolved = manifest_path.resolve(strict=False)
+    bundle_resolved = bundle_artifact_path.resolve(strict=False)
+    if manifest_resolved == bundle_resolved:
+        return True
+    archive_root = (bundle_path.parent / "workspace_evidence").resolve(
+        strict=False
+    )
+    if bundle_resolved.parent != archive_root:
+        return False
+    archive_prefix = (
+        hashlib.sha256(str(manifest_resolved).encode("utf-8")).hexdigest()[:12]
+        + "__"
+    )
+    path_parts = [
+        part
+        for part in manifest_resolved.parts
+        if part not in {manifest_resolved.anchor, os.sep}
+    ]
+    valid_archive_names = {
+        archive_prefix
+        + "__".join(
+            _safe_prompt_artifact_path_part(part)
+            for part in path_parts[start:]
+        )
+        for start in range(len(path_parts))
+    }
+    return bundle_resolved.name in valid_archive_names
+
+
+def _safe_prompt_artifact_path_part(value: str) -> str:
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "_", value).strip("._")
+    return safe or "artifact"
+
+
+def _json_values_equal(left: object, right: object) -> bool:
+    try:
+        return json.dumps(
+            left,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ) == json.dumps(
+            right,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+    except (TypeError, ValueError):
+        return False
+
+
+def _prompt_synthetic_artifact_excerpt(
+    artifact_path: Path,
+) -> dict[str, Any] | None:
+    try:
+        with artifact_path.open(
+            "r",
+            encoding="utf-8",
+            errors="replace",
+        ) as stream:
+            raw = stream.read(4001)
+    except OSError:
+        return None
+    text = raw.strip()
+    if not text:
+        return None
+    truncated = len(text) > 4000
+    return {
+        "text": text[:4000] if truncated else text,
+        "truncated": truncated,
+    }
+
+
+def _materialize_verified_manifest_snapshot(
+    manifest_bytes: bytes,
+    *,
+    fingerprint: str,
+) -> tuple[Path | None, str | None]:
+    digest = fingerprint.removeprefix("sha256:")
+    if not _is_sha256_fingerprint(fingerprint):
+        return None, "manifest_snapshot_fingerprint_invalid"
+    root = _VERIFIED_EVIDENCE_SNAPSHOT_ROOT
+    try:
+        root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        root_stat = os.lstat(root)
+        if not stat.S_ISDIR(root_stat.st_mode):
+            return None, "manifest_snapshot_root_not_directory"
+        getuid = getattr(os, "getuid", None)
+        if callable(getuid) and root_stat.st_uid != getuid():
+            return None, "manifest_snapshot_root_owner_mismatch"
+        if stat.S_IMODE(root_stat.st_mode) != 0o700:
+            os.chmod(root, 0o700)
+            root_stat = os.lstat(root)
+            if stat.S_IMODE(root_stat.st_mode) != 0o700:
+                return None, "manifest_snapshot_root_permissions_invalid"
+    except OSError:
+        return None, "manifest_snapshot_root_unavailable"
+
+    snapshot_path = root / f"evidence-manifest-{digest}.jsonl"
+    existing_bytes, existing_error = _read_verified_snapshot_bytes(
+        snapshot_path,
+        expected_size=len(manifest_bytes),
+        expected_fingerprint=fingerprint,
+    )
+    if existing_error is None:
+        return snapshot_path, None
+    if existing_error != "snapshot_missing":
+        return None, "manifest_snapshot_existing_object_invalid"
+
+    temporary_path = root / (
+        f".evidence-manifest-{digest}-{os.getpid()}-{time.time_ns()}.tmp"
+    )
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0)
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    descriptor: int | None = None
+    cleanup_failed = False
+    try:
+        descriptor = os.open(temporary_path, flags, 0o600)
+        view = memoryview(manifest_bytes)
+        written = 0
+        while written < len(view):
+            write_count = os.write(descriptor, view[written:])
+            if write_count <= 0:
+                raise OSError("zero-byte manifest snapshot write")
+            written += write_count
+        os.fchmod(descriptor, 0o400)
+        os.fsync(descriptor)
+        os.close(descriptor)
+        descriptor = None
+        try:
+            os.link(
+                temporary_path,
+                snapshot_path,
+                follow_symlinks=False,
+            )
+        except FileExistsError:
+            existing_bytes, existing_error = _read_verified_snapshot_bytes(
+                snapshot_path,
+                expected_size=len(manifest_bytes),
+                expected_fingerprint=fingerprint,
+            )
+            if existing_error is not None:
+                return None, "manifest_snapshot_existing_object_invalid"
+        directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+        if hasattr(os, "O_NOFOLLOW"):
+            directory_flags |= os.O_NOFOLLOW
+        directory_descriptor = os.open(root, directory_flags)
+        try:
+            os.fsync(directory_descriptor)
+        finally:
+            os.close(directory_descriptor)
+    except OSError:
+        return None, "manifest_snapshot_write_failed"
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        try:
+            temporary_path.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError:
+            cleanup_failed = True
+
+    if cleanup_failed:
+        return None, "manifest_snapshot_cleanup_failed"
+
+    snapshot_bytes, snapshot_error = _read_verified_snapshot_bytes(
+        snapshot_path,
+        expected_size=len(manifest_bytes),
+        expected_fingerprint=fingerprint,
+    )
+    if snapshot_error is not None or snapshot_bytes != manifest_bytes:
+        return None, "manifest_snapshot_verification_failed"
+    return snapshot_path, None
+
+
+def _read_verified_snapshot_bytes(
+    path: Path,
+    *,
+    expected_size: int,
+    expected_fingerprint: str,
+) -> tuple[bytes | None, str | None]:
+    try:
+        path_stat_before = os.lstat(path)
+    except FileNotFoundError:
+        return None, "snapshot_missing"
+    except OSError:
+        return None, "snapshot_unreadable"
+    if not stat.S_ISREG(path_stat_before.st_mode):
+        return None, "snapshot_not_regular_file"
+    if stat.S_IMODE(path_stat_before.st_mode) != 0o400:
+        return None, "snapshot_permissions_invalid"
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    descriptor: int | None = None
+    try:
+        descriptor = os.open(path, flags)
+        file_stat_before = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(file_stat_before.st_mode)
+            or file_stat_before.st_size > _MAX_PROMPT_EVIDENCE_MANIFEST_BYTES
+        ):
+            return None, "snapshot_size_invalid"
+        with os.fdopen(descriptor, "rb", closefd=False) as stream:
+            content = stream.read(_MAX_PROMPT_EVIDENCE_MANIFEST_BYTES + 1)
+        file_stat_after = os.fstat(descriptor)
+    except OSError:
+        return None, "snapshot_unreadable"
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+    try:
+        path_stat_after = os.lstat(path)
+    except OSError:
+        return None, "snapshot_changed_during_read"
+    if (
+        _stat_identity(path_stat_before) != _stat_identity(file_stat_before)
+        or _stat_identity(file_stat_before) != _stat_identity(file_stat_after)
+        or _stat_identity(file_stat_after) != _stat_identity(path_stat_after)
+        or file_stat_before.st_size != file_stat_after.st_size
+        or file_stat_before.st_mtime_ns != file_stat_after.st_mtime_ns
+    ):
+        return None, "snapshot_changed_during_read"
+    if len(content) != expected_size:
+        return None, "snapshot_size_mismatch"
+    actual_fingerprint = "sha256:" + hashlib.sha256(content).hexdigest()
+    if actual_fingerprint != expected_fingerprint:
+        return None, "snapshot_integrity_mismatch"
+    return content, None
+
+
+def _validate_verified_manifest_snapshot(
+    value: Mapping[str, Any],
+) -> dict[str, Any]:
+    result = dict(value)
+    errors = [
+        str(item)
+        for item in value.get("validation_errors") or []
+        if str(item).strip()
+    ]
+    result["validation_errors"] = errors
+
+    def add_error(reason: str) -> None:
+        if reason not in errors:
+            errors.append(reason)
+
+    if value.get("content_addressed") is not True:
+        add_error("manifest_snapshot_not_content_addressed")
+    snapshot_path_value = value.get("path")
+    if not _is_verified_snapshot_path(snapshot_path_value):
+        add_error("manifest_snapshot_path_untrusted")
+    expected_size = value.get("size_bytes")
+    if not isinstance(expected_size, int) or isinstance(expected_size, bool):
+        add_error("manifest_snapshot_size_invalid")
+        expected_size = -1
+    expected_fingerprint = value.get("fingerprint")
+    if not _is_sha256_fingerprint(expected_fingerprint):
+        add_error("manifest_snapshot_fingerprint_invalid")
+        expected_fingerprint = ""
+    snapshot_content: bytes | None = None
+    if not errors and isinstance(snapshot_path_value, str):
+        snapshot_content, snapshot_error = _read_verified_snapshot_bytes(
+            Path(snapshot_path_value).expanduser(),
+            expected_size=expected_size,
+            expected_fingerprint=expected_fingerprint,
+        )
+        if snapshot_error is not None:
+            add_error(f"manifest_{snapshot_error}")
+    result["present"] = snapshot_content is not None
+    result["readable"] = snapshot_content is not None
+    result["regular_file"] = snapshot_content is not None
+    result["valid"] = not errors and snapshot_content is not None
+    return result
+
+
+def _is_verified_snapshot_path(value: object) -> bool:
+    if not isinstance(value, str) or not value.strip():
+        return False
+    root = Path(
+        os.path.abspath(os.path.normpath(str(_VERIFIED_EVIDENCE_SNAPSHOT_ROOT)))
+    )
+    path = Path(os.path.abspath(os.path.normpath(str(Path(value).expanduser()))))
+    try:
+        path.relative_to(root)
+    except ValueError:
+        return False
+    return path.parent == root
 
 
 def _stat_identity(value: object) -> tuple[object, object]:

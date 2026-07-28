@@ -9,6 +9,7 @@ import math
 import inspect
 import os
 import re
+import stat
 import tempfile
 import time
 import uuid
@@ -67,6 +68,7 @@ _DEFAULT_JUDGE_ARTIFACT_READ_CHARS = 4000
 _MAX_JUDGE_ARTIFACT_READ_CHARS = 20000
 _DEFAULT_JUDGE_ARTIFACT_READ_TOTAL_CHARS = 80000
 _MAX_JUDGE_ARTIFACT_READ_TOTAL_CHARS = 160000
+_MAX_JUDGE_INTEGRITY_BOUND_ARTIFACT_BYTES = 4 * 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -1987,7 +1989,14 @@ def _elapsed_monotonic_ms(started_at: float) -> float:
     return (time.monotonic() - started_at) * 1000
 
 
-def _allowed_artifact_paths(prompt: JudgePrompt) -> dict[str, str]:
+def _artifact_lookup_key(path_value: str) -> str:
+    expanded = Path(path_value).expanduser()
+    return os.path.abspath(os.path.normpath(str(expanded)))
+
+
+def _allowed_artifact_records(
+    prompt: JudgePrompt,
+) -> dict[str, dict[str, Any]]:
     try:
         payload = json.loads(_prompt_text(prompt))
     except (TypeError, json.JSONDecodeError):
@@ -2005,16 +2014,28 @@ def _allowed_artifact_paths(prompt: JudgePrompt) -> dict[str, str]:
             return {}
         if read_policy.get("mutation_allowed") is True:
             return {}
-    allowed: dict[str, str] = {}
+    allowed: dict[str, dict[str, Any]] = {}
     for artifact in artifact_backed.get("artifacts") or []:
         if not isinstance(artifact, Mapping):
+            continue
+        if artifact.get("available") is False:
             continue
         path_value = artifact.get("path")
         if not isinstance(path_value, str) or not path_value.strip():
             continue
         expanded = Path(path_value).expanduser()
-        allowed[str(expanded.resolve(strict=False))] = str(expanded)
+        allowed[_artifact_lookup_key(str(expanded))] = {
+            **dict(artifact),
+            "path": str(expanded),
+        }
     return allowed
+
+
+def _allowed_artifact_paths(prompt: JudgePrompt) -> dict[str, str]:
+    return {
+        key: str(record["path"])
+        for key, record in _allowed_artifact_records(prompt).items()
+    }
 
 
 def _artifact_read_policy(prompt: JudgePrompt) -> _ArtifactReadPolicy:
@@ -2095,7 +2116,7 @@ def _successful_artifact_ranges(
             continue
         if end <= start:
             continue
-        resolved = str(Path(path_value).expanduser().resolve(strict=False))
+        resolved = _artifact_lookup_key(path_value)
         ranges.setdefault(resolved, []).append((start, end))
     return ranges
 
@@ -2149,7 +2170,7 @@ def _requests_need_unread_projection(
             or not isinstance(total_chars, int)
         ):
             continue
-        resolved = str(Path(path_value).expanduser().resolve(strict=False))
+        resolved = _artifact_lookup_key(path_value)
         total_chars_by_path[resolved] = max(
             total_chars,
             total_chars_by_path.get(resolved, 0),
@@ -2159,7 +2180,7 @@ def _requests_need_unread_projection(
         path_value = request.get("path")
         if not isinstance(path_value, str) or not path_value.strip():
             continue
-        resolved = str(Path(path_value).expanduser().resolve(strict=False))
+        resolved = _artifact_lookup_key(path_value)
         canonical_allowed = allowed_paths.get(resolved)
         if canonical_allowed is None:
             continue
@@ -2225,6 +2246,109 @@ def _read_text_window(
     return "".join(chunks), total_chars
 
 
+class _ArtifactIntegrityError(RuntimeError):
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
+def _read_integrity_bound_text_window(
+    path: Path,
+    *,
+    start: int,
+    max_chars: int,
+    integrity: Mapping[str, Any],
+) -> tuple[str, int]:
+    if integrity.get("required") is not True:
+        raise _ArtifactIntegrityError("artifact_integrity_contract_invalid")
+    if integrity.get("algorithm") != "sha256":
+        raise _ArtifactIntegrityError("artifact_integrity_contract_invalid")
+    fingerprint = integrity.get("fingerprint")
+    if not isinstance(fingerprint, str) or not fingerprint.startswith("sha256:"):
+        raise _ArtifactIntegrityError("artifact_integrity_contract_invalid")
+    digest = fingerprint.removeprefix("sha256:")
+    if len(digest) != 64 or any(
+        character not in "0123456789abcdef" for character in digest
+    ):
+        raise _ArtifactIntegrityError("artifact_integrity_contract_invalid")
+    expected_size = integrity.get("size_bytes")
+    if (
+        not isinstance(expected_size, int)
+        or isinstance(expected_size, bool)
+        or expected_size < 0
+    ):
+        raise _ArtifactIntegrityError("artifact_integrity_contract_invalid")
+    max_bytes = _bounded_int(
+        integrity.get("max_bytes"),
+        default=_MAX_JUDGE_INTEGRITY_BOUND_ARTIFACT_BYTES,
+        minimum=1,
+        maximum=_MAX_JUDGE_INTEGRITY_BOUND_ARTIFACT_BYTES,
+    )
+    expected_mode = integrity.get("mode")
+    if (
+        not isinstance(expected_mode, int)
+        or isinstance(expected_mode, bool)
+        or expected_mode < 0
+    ):
+        raise _ArtifactIntegrityError("artifact_integrity_contract_invalid")
+    try:
+        path_stat_before = os.lstat(path)
+    except FileNotFoundError as exc:
+        raise _ArtifactIntegrityError("artifact_missing") from exc
+    except OSError as exc:
+        raise _ArtifactIntegrityError("artifact_unreadable") from exc
+    if not stat.S_ISREG(path_stat_before.st_mode):
+        raise _ArtifactIntegrityError("artifact_not_regular_file")
+    if stat.S_IMODE(path_stat_before.st_mode) != expected_mode:
+        raise _ArtifactIntegrityError("artifact_integrity_mismatch")
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    descriptor: int | None = None
+    try:
+        descriptor = os.open(path, flags)
+        file_stat_before = os.fstat(descriptor)
+        if not stat.S_ISREG(file_stat_before.st_mode):
+            raise _ArtifactIntegrityError("artifact_not_regular_file")
+        if (
+            file_stat_before.st_size > max_bytes
+            or file_stat_before.st_size != expected_size
+        ):
+            raise _ArtifactIntegrityError("artifact_integrity_mismatch")
+        with os.fdopen(descriptor, "rb", closefd=False) as stream:
+            content = stream.read(max_bytes + 1)
+        file_stat_after = os.fstat(descriptor)
+    except _ArtifactIntegrityError:
+        raise
+    except OSError as exc:
+        raise _ArtifactIntegrityError("artifact_unreadable") from exc
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+    try:
+        path_stat_after = os.lstat(path)
+    except OSError as exc:
+        raise _ArtifactIntegrityError("artifact_changed_during_read") from exc
+    identities = (
+        (path_stat_before.st_dev, path_stat_before.st_ino),
+        (file_stat_before.st_dev, file_stat_before.st_ino),
+        (file_stat_after.st_dev, file_stat_after.st_ino),
+        (path_stat_after.st_dev, path_stat_after.st_ino),
+    )
+    if (
+        len(set(identities)) != 1
+        or file_stat_before.st_size != file_stat_after.st_size
+        or file_stat_before.st_mtime_ns != file_stat_after.st_mtime_ns
+    ):
+        raise _ArtifactIntegrityError("artifact_changed_during_read")
+    if len(content) != expected_size:
+        raise _ArtifactIntegrityError("artifact_integrity_mismatch")
+    if "sha256:" + hashlib.sha256(content).hexdigest() != fingerprint:
+        raise _ArtifactIntegrityError("artifact_integrity_mismatch")
+    text = content.decode("utf-8", errors="replace")
+    return text[start : start + max_chars], len(text)
+
+
 def _resolve_artifact_read_requests(
     prompt: JudgePrompt,
     read_requests: list[dict[str, Any]],
@@ -2234,7 +2358,7 @@ def _resolve_artifact_read_requests(
 ) -> list[dict[str, Any]]:
     policy = policy or _artifact_read_policy(prompt)
     prior_results = list(prior_results or [])
-    allowed_paths = _allowed_artifact_paths(prompt)
+    allowed_records = _allowed_artifact_records(prompt)
     prior_ranges = _successful_artifact_ranges(prior_results)
     used_chars = _artifact_read_chars(prior_results)
     results: list[dict[str, Any]] = []
@@ -2248,16 +2372,15 @@ def _resolve_artifact_read_requests(
             result.update({"status": "denied", "reason": "missing_path"})
             results.append(result)
             continue
-        requested_path = Path(path_value).expanduser()
-        resolved_requested = str(requested_path.resolve(strict=False))
-        canonical_allowed = allowed_paths.get(resolved_requested)
-        if canonical_allowed is None:
+        resolved_requested = _artifact_lookup_key(path_value)
+        allowed_record = allowed_records.get(resolved_requested)
+        if allowed_record is None:
             result.update(
                 {
                     "status": "denied",
                     "reason": "path_not_in_artifact_index",
-                    "artifact_index_present": bool(allowed_paths),
-                    "allowed_path_count": len(allowed_paths),
+                    "artifact_index_present": bool(allowed_records),
+                    "allowed_path_count": len(allowed_records),
                     "requested_path_fingerprint": hashlib.sha256(
                         resolved_requested.encode("utf-8")
                     ).hexdigest()[:16],
@@ -2265,6 +2388,7 @@ def _resolve_artifact_read_requests(
             )
             results.append(result)
             continue
+        canonical_allowed = str(allowed_record["path"])
         existing_ranges = prior_ranges.get(resolved_requested, [])
         requested_start = _bounded_int(
             request.get("start"),
@@ -2317,11 +2441,24 @@ def _resolve_artifact_read_requests(
             results.append(result)
             continue
         try:
-            content, total_chars = _read_text_window(
-                Path(canonical_allowed),
-                start=start,
-                max_chars=max_chars,
-            )
+            integrity = allowed_record.get("integrity")
+            if isinstance(integrity, Mapping):
+                content, total_chars = _read_integrity_bound_text_window(
+                    Path(canonical_allowed),
+                    start=start,
+                    max_chars=max_chars,
+                    integrity=integrity,
+                )
+            else:
+                content, total_chars = _read_text_window(
+                    Path(canonical_allowed),
+                    start=start,
+                    max_chars=max_chars,
+                )
+        except _ArtifactIntegrityError as exc:
+            result.update({"status": "denied", "reason": exc.reason})
+            results.append(result)
+            continue
         except OSError as exc:
             result.update({"status": "error", "reason": exc.__class__.__name__, "message": str(exc)})
             results.append(result)
