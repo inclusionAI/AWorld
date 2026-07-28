@@ -13,7 +13,10 @@ from aworld.self_evolve.failure_events import (
     ReplayFailureObservation,
     aggregate_replay_failure_observations,
 )
-from aworld.self_evolve.sanitization import public_diagnostic_projection
+from aworld.self_evolve.sanitization import (
+    public_diagnostic_projection,
+    sanitize_source_text,
+)
 from aworld.self_evolve.schema_diagnostics import SchemaFieldRepairConstraint
 
 
@@ -39,6 +42,22 @@ def _large_private_failure() -> AggregatedReplayFailure:
         for index in range(130)
     )
     return aggregate_replay_failure_observations(observations)[0]
+
+
+def test_source_sanitizer_redacts_short_explicit_auth_credentials() -> None:
+    source = (
+        "Authorization: Bearer abc\n"
+        "Basic YTo=\n"
+        "Document HTTP basic auth and Bearer token authentication.\n"
+    )
+
+    sanitized = sanitize_source_text(source)
+
+    assert "abc" not in sanitized
+    assert "YTo=" not in sanitized
+    assert sanitized.count("<REDACTED_SECRET>") == 2
+    assert "HTTP basic auth" in sanitized
+    assert "Bearer token authentication" in sanitized
 
 
 def test_public_projection_preserves_large_typed_aggregate_integrity() -> None:

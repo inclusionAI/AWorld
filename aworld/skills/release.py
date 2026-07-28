@@ -2,13 +2,19 @@ from __future__ import annotations
 
 import hashlib
 import re
+from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
 import yaml
 
-from aworld.skills.structure import validate_skill_markdown_structure
+from aworld.secret_detection import contains_sensitive_literal
+from aworld.skills.structure import (
+    rebind_skill_structural_edit_intent,
+    validate_skill_markdown_structure,
+)
+from aworld.skills.structure_types import SkillStructuralEditIntent
 
 
 BLOCKED_SELF_EVOLVE_RELEASE_STATES = frozenset({"draft", "candidate", "rejected", "disabled"})
@@ -20,9 +26,6 @@ INTERNAL_RELEASE_PATTERNS = (
     re.compile(r"\bB[1-4]_[A-Za-z0-9_]+\b"),
     re.compile(r"\b(evidence_quality|score_improvement|held_out_verification|judge_only_signal|global_regression_benchmark)\b", re.IGNORECASE),
     re.compile(r"\b(harness_diagnostic|gate|evaluator rubric|evidence ids?)\b", re.IGNORECASE),
-    re.compile(r"(?i)\b(secret|token|api[_-]?key|password|authorization|cookie)\s*[:=]"),
-    re.compile(r"(?i)\b(bearer|basic)\s+[A-Za-z0-9._~+/\-]+=*"),
-    re.compile(r"sk-[A-Za-z0-9_-]{12,}"),
     re.compile(r"(?<![\w.-])/(?:Users|private|var|tmp|home)/[^\s,;:'\")\]}]+"),
     re.compile(r"(?i)\b(ignore|disregard) (all )?(previous|prior|above) (instructions|messages)\b"),
     re.compile(r"(?i)\b(system prompt|developer message)\b"),
@@ -93,7 +96,8 @@ def normalize_verified_skill_release(
     run_id: str,
     candidate_id: str,
     original_content: str | None = None,
-    structural_edit_intent: Mapping[str, Any] | None = None,
+    structural_edit_intent: SkillStructuralEditIntent | None = None,
+    require_exact_deletion_intent: bool = False,
 ) -> tuple[str, Mapping[str, Any]]:
     """Return verified release content plus equivalence metrics.
 
@@ -107,6 +111,7 @@ def normalize_verified_skill_release(
         content,
         original_content=original_content,
         edit_intent=structural_edit_intent,
+        require_exact_deletion_intent=require_exact_deletion_intent,
     )
     marked = mark_skill_content_verified(
         content,
@@ -116,14 +121,37 @@ def normalize_verified_skill_release(
     normalized = _remove_internal_release_lines(marked)
     pre_constraints = _runtime_constraint_lines(content)
     normalized_constraints = _runtime_constraint_lines(normalized)
+    content_preservation_passed = _non_internal_body_lines_preserved(
+        content,
+        normalized,
+    )
+    normalized_edit_intent = structural_edit_intent
+    if (
+        structural_edit_intent is not None
+        and isinstance(original_content, str)
+        and content_preservation_passed
+    ):
+        try:
+            normalized_edit_intent = (
+                rebind_skill_structural_edit_intent(
+                    structural_edit_intent,
+                    original_content=original_content,
+                    previous_candidate_content=content,
+                    candidate_content=normalized,
+                )
+            )
+        except ValueError:
+            normalized_edit_intent = None
     normalized_structure = validate_skill_markdown_structure(
         normalized,
         original_content=original_content,
-        edit_intent=structural_edit_intent,
+        edit_intent=normalized_edit_intent,
+        require_exact_deletion_intent=require_exact_deletion_intent,
     )
     equivalence_passed = (
         pre_structure.passed
         and normalized_structure.passed
+        and content_preservation_passed
         and bool(pre_constraints)
         and all(
             constraint in normalized_constraints
@@ -139,6 +167,9 @@ def normalize_verified_skill_release(
         "normalization_equivalence_passed": equivalence_passed,
         "structural_validation_passed": (
             pre_structure.passed and normalized_structure.passed
+        ),
+        "normalization_content_preservation_passed": (
+            content_preservation_passed
         ),
         "structural_failure_code": (
             None
@@ -226,7 +257,33 @@ def _is_internal_release_line(line: str) -> bool:
     stripped = line.strip()
     if not stripped:
         return False
-    return any(pattern.search(stripped) for pattern in INTERNAL_RELEASE_PATTERNS)
+    return contains_sensitive_literal(stripped) or any(
+        pattern.search(stripped)
+        for pattern in INTERNAL_RELEASE_PATTERNS
+    )
+
+
+def _non_internal_body_lines_preserved(
+    original: str,
+    normalized: str,
+) -> bool:
+    original_lines = Counter(_non_internal_body_lines(original))
+    normalized_lines = Counter(_non_internal_body_lines(normalized))
+    return all(
+        normalized_lines.get(line, 0) >= count
+        for line, count in original_lines.items()
+    )
+
+
+def _non_internal_body_lines(content: str) -> tuple[str, ...]:
+    lines = content.splitlines()
+    _, body_start = _extract_front_matter(lines)
+    body_lines = lines[body_start:] if body_start > 0 else lines
+    return tuple(
+        line.rstrip()
+        for line in body_lines
+        if line.strip() and not _is_internal_release_line(line)
+    )
 
 
 def _removed_internal_line_count(original: str, normalized: str) -> int:

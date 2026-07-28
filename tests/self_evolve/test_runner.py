@@ -6579,7 +6579,6 @@ async def test_runner_rejects_apply_when_release_normalization_removes_runtime_c
 @pytest.mark.asyncio
 async def test_apply_rejects_skill_target_drift_before_release_write(
     tmp_path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
     skill_path.parent.mkdir(parents=True)
@@ -6592,18 +6591,13 @@ async def test_apply_rejects_skill_target_drift_before_release_write(
     )
     skill_path.write_text(original, encoding="utf-8")
     target = SkillTextTarget(skill_path, allow_auto_apply=True)
-    reads = iter((original, drifted))
-    monkeypatch.setattr(
-        target,
-        "load_current_content",
-        lambda: next(reads),
-    )
+    evaluated_fingerprint = target.fingerprint_current_content()
     candidate = CandidateVariant(
         candidate_id="candidate-drift",
         target=target.identity,
         content=candidate_content,
         rationale="bounded update",
-        target_fingerprint="sha256:base",
+        target_fingerprint=evaluated_fingerprint,
     )
     runner = SelfEvolveRunner(
         store=FilesystemSelfEvolveStore(tmp_path),
@@ -6617,6 +6611,7 @@ async def test_apply_rejects_skill_target_drift_before_release_write(
         ),
     )
 
+    skill_path.write_text(drifted, encoding="utf-8")
     result = await runner._apply_auto_verified(
         "run-target-drift",
         target,
@@ -6624,9 +6619,60 @@ async def test_apply_rejects_skill_target_drift_before_release_write(
     )
 
     assert result["status"] == "rejected"
-    assert result["metrics"]["code"] == "skill_target_drift"
+    assert result["metrics"]["code"] == "target_snapshot_stale"
+    assert result["metrics"]["failure_class"] == "infrastructure"
+    assert result["metrics"]["failure_owner"] == "framework"
     assert result["metrics"]["repairable"] is False
+    assert result["backup_path"] is None
+    assert skill_path.read_text(encoding="utf-8") == drifted
+
+
+@pytest.mark.asyncio
+async def test_apply_rejects_stale_skill_package_file_before_backup(
+    tmp_path,
+) -> None:
+    skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    original = "---\nname: demo\n---\n# Demo\n\nOriginal guidance.\n"
+    candidate_content = (
+        "---\nname: demo\n---\n# Demo\n\nUpdated bounded guidance.\n"
+    )
+    runtime_path = skill_path.parent / "replay" / "runtime.py"
+    runtime_path.parent.mkdir()
+    skill_path.write_text(original, encoding="utf-8")
+    runtime_path.write_text("VALUE = 'evaluated'\n", encoding="utf-8")
+    target = SkillTextTarget(skill_path, allow_auto_apply=True)
+    candidate = CandidateVariant(
+        candidate_id="candidate-package-drift",
+        target=target.identity,
+        content=candidate_content,
+        rationale="bounded update",
+        target_fingerprint=target.fingerprint_current_content(),
+    )
+    runner = SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=_FixedCandidateOptimizer(
+            candidate,
+            source_run_id="source-run",
+        ),
+        post_apply_evaluator=lambda item: EvaluationSummary(
+            variant_id=item.candidate_id,
+            metrics={"post_apply_passed": True},
+        ),
+    )
+
+    runtime_path.write_text("VALUE = 'concurrent-edit'\n", encoding="utf-8")
+    result = await runner._apply_auto_verified(
+        "run-target-package-drift",
+        target,
+        candidate,
+    )
+
+    assert result["status"] == "rejected"
+    assert result["metrics"]["code"] == "target_snapshot_stale"
+    assert result["backup_path"] is None
     assert skill_path.read_text(encoding="utf-8") == original
+    assert "concurrent-edit" in runtime_path.read_text(encoding="utf-8")
 
 
 @pytest.mark.asyncio
@@ -6724,7 +6770,9 @@ async def test_runner_refines_candidates_across_iterations_with_validation_feedb
     )
 
     assert result.run.status.value == "succeeded"
-    assert result.selected_candidate is good_candidate
+    assert result.selected_candidate is not None
+    assert result.selected_candidate.candidate_id == good_candidate.candidate_id
+    assert result.selected_candidate.target_fingerprint != "fingerprint"
     assert len(optimizer.requests) == 2
     assert optimizer.requests[0].validation_feedback == ()
     assert optimizer.requests[1].validation_feedback
@@ -7654,7 +7702,9 @@ async def test_runner_evaluates_candidate_population_until_one_passes(tmp_path) 
 
     assert result.run.status.value == "succeeded"
     assert optimizer.requests[0].max_candidates == 2
-    assert result.selected_candidate is strong_candidate
+    assert result.selected_candidate is not None
+    assert result.selected_candidate.candidate_id == strong_candidate.candidate_id
+    assert result.selected_candidate.target_fingerprint != "fingerprint"
     assert backend.candidate_ids.count("candidate-weak") == 2
     assert backend.candidate_ids.count("candidate-strong") == 2
     report = json.loads((store.run_path("run-population") / "report.json").read_text(encoding="utf-8"))
@@ -11302,7 +11352,9 @@ async def test_runner_uses_prior_rejected_candidate_feedback_across_runs(tmp_pat
     )
 
     assert result.run.status.value == "succeeded"
-    assert result.selected_candidate is fresh_candidate
+    assert result.selected_candidate is not None
+    assert result.selected_candidate.candidate_id == fresh_candidate.candidate_id
+    assert result.selected_candidate.target_fingerprint != "fingerprint"
     assert len(optimizer.requests) == 2
     assert optimizer.requests[0].prior_feedback
     assert optimizer.requests[0].prior_feedback[0].variant_id == "candidate-dup"

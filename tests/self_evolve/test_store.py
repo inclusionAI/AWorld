@@ -23,6 +23,8 @@ from aworld.self_evolve.types import (
     SelfEvolveRun,
     SelfEvolveRunStatus,
     SelfEvolveTargetRef,
+    SkillStructuralEditAction,
+    SkillStructuralEditIntent,
 )
 
 
@@ -202,6 +204,22 @@ def test_store_persists_candidate_report_recipe_and_lineage(tmp_path) -> None:
         rationale="Clarify failed browser login guidance.",
         parent_candidate_ids=("base",),
         target_fingerprint="sha256:old",
+        structural_edit_intent=SkillStructuralEditIntent(
+            schema_version="aworld.skill.edit_intent.v2",
+            authority="framework",
+            authorization="sha256:authorization",
+            reason="candidate_protocol.patch_intent",
+            base_content_fingerprint="sha256:base",
+            candidate_content_fingerprint="sha256:candidate",
+            actions=(
+                SkillStructuralEditAction(
+                    action="replace_section",
+                    section_path=("demo",),
+                    base_section_fingerprint="sha256:old-section",
+                    result_section_fingerprint="sha256:new-section",
+                ),
+            ),
+        ),
     )
     report = {
         "run_id": run.run_id,
@@ -239,6 +257,11 @@ def test_store_persists_candidate_report_recipe_and_lineage(tmp_path) -> None:
     assert "candidate_id: cand-1" in candidate_artifact
     assert "# Demo\n\nUpdated skill text.\n" in candidate_artifact
     assert _read_json(content_path.with_suffix(".json"))["rationale"] == candidate.rationale
+    persisted_intent = _read_json(content_path.with_suffix(".json"))[
+        "structural_edit_intent"
+    ]
+    assert persisted_intent["authority"] == "framework"
+    assert persisted_intent["actions"][0]["section_path"] == ["demo"]
     assert _read_json(report_path) == report
     assert _read_json(recipe_path)["held_out_case_ids"] == ["case-3"]
     assert _read_json(lineage_path)["optimizer_name"] == "llm-mutator"

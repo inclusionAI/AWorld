@@ -7,6 +7,7 @@ import pytest
 from aworld.self_evolve.candidate_package import (
     candidate_content_semantic_fingerprint,
     candidate_package_fingerprint,
+    candidate_package_payload,
     candidate_semantic_package_fingerprint,
     validate_candidate_files,
 )
@@ -37,6 +38,9 @@ def _candidate(*, files: tuple[CandidateFileDelta, ...] = ()) -> CandidateVarian
 
 def test_text_only_candidate_keeps_legacy_shape() -> None:
     assert _candidate().files == ()
+    assert "structural_edit_intent" not in candidate_package_payload(
+        _candidate()
+    )
 
 
 @pytest.mark.parametrize(

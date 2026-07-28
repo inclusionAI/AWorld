@@ -11,7 +11,11 @@ from aworld.self_evolve.candidate_errors import (
     CandidateMaterializationCode,
     CandidateMaterializationError,
 )
-from aworld.self_evolve.types import CandidateFileDelta, CandidateVariant
+from aworld.self_evolve.types import (
+    CandidateFileDelta,
+    CandidateVariant,
+    to_json_dict,
+)
 
 
 MAX_CANDIDATE_FILE_COUNT = 32
@@ -95,7 +99,7 @@ def validate_candidate_files(
 
 def candidate_package_payload(candidate: CandidateVariant) -> dict[str, Any]:
     files = validate_candidate_files(candidate.files)
-    return {
+    payload = {
         "target": {
             "target_type": candidate.target.target_type,
             "target_id": candidate.target.target_id,
@@ -112,6 +116,11 @@ def candidate_package_payload(candidate: CandidateVariant) -> dict[str, Any]:
             for item in files
         ],
     }
+    if candidate.structural_edit_intent is not None:
+        payload["structural_edit_intent"] = to_json_dict(
+            candidate.structural_edit_intent
+        )
+    return payload
 
 
 def candidate_package_fingerprint(candidate: CandidateVariant) -> str:

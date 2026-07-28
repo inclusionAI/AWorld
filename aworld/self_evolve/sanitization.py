@@ -6,40 +6,15 @@ import re
 from pathlib import Path
 from typing import Any, Mapping
 
+from aworld.secret_detection import (
+    AUTHORIZATION_OPAQUE_CREDENTIAL_PATTERN,
+    AUTHORIZATION_SCHEME_CREDENTIAL_PATTERN,
+    AUTH_DESCRIPTION_TERMS,
+    AUTH_SCHEME_CREDENTIAL_PATTERN,
+    SECRET_PATTERNS,
+    SK_SECRET_PATTERN,
+)
 
-_AUTH_DESCRIPTION_TERMS = (
-    r"auth(?:entication|orization)?|credentials?|header|http|jwt|"
-    r"password|scheme|token|username"
-)
-_AUTH_SCHEME_CREDENTIAL_PATTERN = re.compile(
-    r"(?i)\b(?:bearer|basic)\s+"
-    rf"(?!(?:{_AUTH_DESCRIPTION_TERMS})\b)"
-    r"[A-Za-z0-9._~+/\-]{4,}=*"
-)
-_AUTHORIZATION_SCHEME_CREDENTIAL_PATTERN = re.compile(
-    r"(?i)\bauthorization\s*[:=]\s*"
-    r"(?:bearer|basic)\s+"
-    rf"(?!(?:{_AUTH_DESCRIPTION_TERMS})\b)"
-    r"\S{4,}"
-)
-_AUTHORIZATION_OPAQUE_CREDENTIAL_PATTERN = re.compile(
-    r"(?i)\bauthorization\s*[:=]\s*"
-    r"(?!(?:bearer|basic)\b)"
-    rf"(?!(?:{_AUTH_DESCRIPTION_TERMS})\b)"
-    r"\S{4,}"
-)
-_NAMED_SECRET_PATTERN = re.compile(
-    r"(?i)(secret|token|api[_-]?key|password|cookie)"
-    r"\s*[:=]\s*(?:bearer|basic)?\s*\S+"
-)
-_SK_SECRET_PATTERN = re.compile(r"sk-[A-Za-z0-9_-]{12,}")
-_SECRET_PATTERNS = (
-    _AUTH_SCHEME_CREDENTIAL_PATTERN,
-    _AUTHORIZATION_SCHEME_CREDENTIAL_PATTERN,
-    _AUTHORIZATION_OPAQUE_CREDENTIAL_PATTERN,
-    _NAMED_SECRET_PATTERN,
-    _SK_SECRET_PATTERN,
-)
 _SOURCE_QUOTED_SECRET_PATTERN = re.compile(
     r"(?i)(\b(?:secret|token|api[_-]?key|password|authorization|cookie)"
     r"\s*[:=]\s*)([\"'])([^\n\"']*)([\"'])"
@@ -92,7 +67,7 @@ _REPAIR_CONFORMANCE_PUBLIC_SCHEMA_VERSION = (
 
 def sanitize_text(value: Any, *, max_chars: int | None = None) -> str:
     text = str(value or "")
-    for pattern in _SECRET_PATTERNS:
+    for pattern in SECRET_PATTERNS:
         text = pattern.sub("<REDACTED_SECRET>", text)
     for pattern in _LOCAL_PATH_PATTERNS:
         text = pattern.sub("<LOCAL_PATH>", text)
@@ -114,16 +89,16 @@ def sanitize_source_text(value: Any, *, max_chars: int | None = None) -> str:
     """
 
     text = str(value or "")
-    text = _AUTH_SCHEME_CREDENTIAL_PATTERN.sub("<REDACTED_SECRET>", text)
-    text = _AUTHORIZATION_SCHEME_CREDENTIAL_PATTERN.sub(
+    text = AUTH_SCHEME_CREDENTIAL_PATTERN.sub("<REDACTED_SECRET>", text)
+    text = AUTHORIZATION_SCHEME_CREDENTIAL_PATTERN.sub(
         "<REDACTED_SECRET>",
         text,
     )
-    text = _AUTHORIZATION_OPAQUE_CREDENTIAL_PATTERN.sub(
+    text = AUTHORIZATION_OPAQUE_CREDENTIAL_PATTERN.sub(
         "<REDACTED_SECRET>",
         text,
     )
-    text = _SK_SECRET_PATTERN.sub("<REDACTED_SECRET>", text)
+    text = SK_SECRET_PATTERN.sub("<REDACTED_SECRET>", text)
     text = _SOURCE_QUOTED_SECRET_PATTERN.sub(
         _redact_source_quoted_secret,
         text,
@@ -144,7 +119,7 @@ def _redact_source_quoted_secret(match: re.Match[str]) -> str:
     if (
         "authorization" in prefix.casefold()
         and re.fullmatch(
-            rf"(?i)(?:basic|bearer)\s+(?:{_AUTH_DESCRIPTION_TERMS})(?:\s+\w+)*",
+            rf"(?i)(?:basic|bearer)\s+(?:{AUTH_DESCRIPTION_TERMS})(?:\s+\w+)*",
             value.strip(),
         )
     ):

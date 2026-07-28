@@ -491,7 +491,7 @@ async def test_llm_mutator_inherits_primary_content_for_files_only_delta() -> No
 
 
 @pytest.mark.asyncio
-async def test_llm_mutator_preserves_focused_skill_content_for_file_delta() -> None:
+async def test_llm_mutator_preserves_authoritative_content_for_file_delta() -> None:
     prompts: list[str] = []
 
     async def mutate(prompt: str) -> dict:
@@ -548,7 +548,7 @@ async def test_llm_mutator_preserves_focused_skill_content_for_file_delta() -> N
 
     result = await TraceReflectiveLLMMutator(mutate_text=mutate).propose(request)
 
-    assert result.candidates[0].content == focused_content.rstrip()
+    assert result.candidates[0].content == "# Demo\n\nOld guidance.\n"
     assert "repair the target skill content" in prompts[0]
     assert "Do not change readiness, protocol, compiler, or runtime behavior" in (
         prompts[0]
@@ -1243,6 +1243,21 @@ async def test_trace_reflective_llm_mutator_materializes_patch_intent_candidate(
     assert "Use bounded evidence before final answers." in result.candidates[0].content
     assert "Old rule." not in result.candidates[0].content
     assert result.diagnostics["candidate_strategies"][0]["materialization"] == "patch_intent"
+    intent = result.candidates[0].structural_edit_intent
+    assert intent is not None
+    assert intent.authority == "framework"
+    assert intent.reason == "candidate_protocol.patch_intent"
+    assert intent.base_content_fingerprint.startswith("sha256:")
+    assert intent.candidate_content_fingerprint.startswith("sha256:")
+    assert intent.authorization.startswith("sha256:")
+    assert intent.actions[0].action == "replace_section"
+    assert intent.actions[0].section_path[-1] == "guidance"
+    assert (
+        result.diagnostics["candidate_strategies"][0][
+            "structural_edit_authorization"
+        ]
+        == intent.authorization
+    )
 
 
 @pytest.mark.asyncio
@@ -2523,7 +2538,7 @@ async def test_llm_mutator_accepts_runtime_delta_that_retains_high_baseline_cont
 
 
 @pytest.mark.asyncio
-async def test_llm_mutator_checks_focused_repair_against_focused_candidate() -> None:
+async def test_llm_mutator_rejects_full_repair_package_replacement_of_current() -> None:
     focused_content = (
         "# Demo\n\n"
         "Use the established bounded workflow and persist its verified result.\n"
@@ -2581,22 +2596,23 @@ async def test_llm_mutator_checks_focused_repair_against_focused_candidate() -> 
 
     result = await TraceReflectiveLLMMutator(mutate_text=mutate).propose(request)
 
-    assert result.diagnostics["filtered_high_baseline_regression_candidates"] == 0
+    assert result.diagnostics["filtered_high_baseline_regression_candidates"] == 1
     assert result.diagnostics["filtered_noop_candidates"] == 0
     assert result.diagnostics["filtered_duplicate_candidates"] == 0
     assert result.diagnostics["filtered_invalid_patch_candidates"] == 0
-    assert len(result.candidates) == 1
-    assert result.candidates[0].content == repaired_content
+    assert len(result.candidates) == 0
 
 
 @pytest.mark.asyncio
-async def test_llm_mutator_applies_replace_patch_to_focused_candidate_base() -> None:
+async def test_llm_mutator_applies_repair_patch_to_authoritative_current_base() -> None:
     focused_content = (
         "# Demo\n\n"
-        "Use the established bounded workflow.\n\n"
+        + ("Rejected historical candidate content. " * 260)
+        + "\n\n"
         "## Finalization\n\n"
-        "Keep collecting.\n"
+        "Keep collecting with a damaged truncated tail"
     )
+    assert len(focused_content) > 8_000
 
     async def mutate(prompt: str) -> dict:
         return {
@@ -2614,7 +2630,10 @@ async def test_llm_mutator_applies_replace_patch_to_focused_candidate_base() -> 
 
     request = OptimizerRequest(
         target=_target(),
-        current_content="# Demo\n\nOld guidance without that section.\n",
+        current_content=(
+            "# Demo\n\nAuthoritative stable guidance.\n\n"
+            "## Finalization\n\nOriginal bounded finalization.\n"
+        ),
         target_fingerprint="sha256:old",
         trace_packs=(_trace_pack(),),
         validation_feedback=(
@@ -2654,7 +2673,11 @@ async def test_llm_mutator_applies_replace_patch_to_focused_candidate_base() -> 
     assert "Persist the verified result and return immediately." in (
         result.candidates[0].content
     )
-    assert "Keep collecting." not in result.candidates[0].content
+    assert "Authoritative stable guidance." in result.candidates[0].content
+    assert "Rejected historical candidate content." not in (
+        result.candidates[0].content
+    )
+    assert "damaged truncated tail" not in result.candidates[0].content
     assert result.candidates[0].files[0].path == "replay/runtime.py"
 
 

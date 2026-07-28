@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from aworld.self_evolve.patch_intent import apply_skill_patch_intent
 from aworld.skills.release import normalize_verified_skill_release
+from aworld.skills.structure import build_skill_structural_edit_intent
 
 
 def test_normalize_verified_skill_release_preserves_runtime_constraints() -> None:
@@ -93,3 +95,67 @@ def test_normalize_verified_skill_release_rejects_unclosed_fence_after_normaliza
 
     assert metrics["normalization_equivalence_passed"] is False
     assert metrics["structural_failure_code"] == "skill_code_fence_unclosed"
+
+
+def test_normalize_verified_skill_release_preserves_basic_auth_documentation() -> None:
+    content = (
+        "---\nname: demo\n---\n"
+        "# Demo\n\n"
+        "Use the credential command only with user-provided values.\n\n"
+        "```bash\n"
+        "agent-browser set credentials user pass   # HTTP basic auth\n"
+        "```\n"
+    )
+
+    normalized, metrics = normalize_verified_skill_release(
+        content,
+        run_id="run-auth-docs",
+        candidate_id="candidate-auth-docs",
+    )
+
+    assert metrics["normalization_equivalence_passed"] is True
+    assert metrics["normalization_content_preservation_passed"] is True
+    assert "# HTTP basic auth" in normalized
+    assert metrics["removed_internal_line_count"] == 0
+
+
+def test_normalize_verified_skill_release_rebinds_exact_patch_intent() -> None:
+    original = (
+        "---\nname: demo\n---\n"
+        "# Demo\n\n"
+        "## Debugging\n\n"
+        "Inspect the session, preserve the trace, compare the response with "
+        "the artifact, classify the failure, and record the bounded recovery "
+        "action before retrying.\n"
+    )
+    patch_intent = {
+        "operations": [
+            {
+                "op": "replace_section",
+                "heading": "Debugging",
+                "content": (
+                    "Persist one bounded diagnostic artifact before retrying."
+                ),
+            }
+        ]
+    }
+    candidate = apply_skill_patch_intent(original, patch_intent)
+    structural_intent = build_skill_structural_edit_intent(
+        original_content=original,
+        candidate_content=candidate,
+        patch_intent=patch_intent,
+    )
+
+    normalized, metrics = normalize_verified_skill_release(
+        candidate,
+        run_id="run-patch",
+        candidate_id="candidate-patch",
+        original_content=original,
+        structural_edit_intent=structural_intent,
+        require_exact_deletion_intent=True,
+    )
+
+    assert metrics["normalization_equivalence_passed"] is True
+    assert metrics["structural_validation_passed"] is True
+    assert "release_state: verified" in normalized
+    assert "Persist one bounded diagnostic artifact" in normalized

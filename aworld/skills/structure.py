@@ -4,10 +4,15 @@ import hashlib
 import json
 import re
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Mapping, Sequence
 
 import yaml
+
+from aworld.skills.structure_types import (
+    SkillStructuralEditAction,
+    SkillStructuralEditIntent,
+)
 
 
 SKILL_STRUCTURE_SCHEMA_VERSION = "aworld.skill.structure.v1"
@@ -21,6 +26,10 @@ MAX_UNDECLARED_SECTION_WEIGHT_RATIO = 0.45
 MAX_UNDECLARED_COMMAND_DELETION_RATIO = 0.50
 MAX_UNDECLARED_ATOM_DELETION_RATIO = 0.65
 MAX_UNDECLARED_FENCE_DELETION_RATIO = 0.50
+MIN_NONTRIVIAL_FENCE_LINES = 2
+MIN_NONTRIVIAL_FENCE_CHARS = 48
+MIN_COMMAND_DENSE_SECTION_COMMANDS = 4
+MIN_STRUCTURAL_ANCHOR_RETENTION_RATIO = 0.60
 
 _FRONTMATTER_BOUNDARY = "---"
 _HEADING_RE = re.compile(
@@ -60,8 +69,19 @@ class SkillSectionInventory:
     path: tuple[str, ...]
     level: int
     body_chars: int
+    content_fingerprint: str
     command_signatures: tuple[str, ...]
+    command_fingerprints: tuple[str, ...]
     substantive_atom_fingerprints: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class SkillFenceInventory:
+    language: str
+    section_path: tuple[str, ...]
+    content_chars: int
+    line_fingerprints: tuple[str, ...]
+    command_fingerprints: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -70,6 +90,7 @@ class SkillMarkdownInventory:
     sections: tuple[SkillSectionInventory, ...]
     command_signatures: tuple[str, ...]
     fence_languages: tuple[str, ...]
+    fences: tuple[SkillFenceInventory, ...]
     substantive_atom_fingerprints: tuple[str, ...]
     body_chars: int
 
@@ -93,25 +114,43 @@ class _Heading:
 
 
 @dataclass(frozen=True)
+class _StructuralLine:
+    kind: str
+    value: str
+    line_index: int
+
+
+@dataclass(frozen=True)
+class _EllipsisOccurrence:
+    kind: str
+    prefix: str
+    line_index: int
+
+
+@dataclass(frozen=True)
 class _Inspection:
     inventory: SkillMarkdownInventory | None
     code: str | None = None
     reason: str | None = None
     field_path: str | None = None
     line: int | None = None
+    structural_lines: tuple[_StructuralLine, ...] = ()
+    ellipsis_occurrences: tuple[_EllipsisOccurrence, ...] = ()
 
 
 def validate_skill_markdown_structure(
     candidate_content: str,
     *,
     original_content: str | None = None,
-    edit_intent: Mapping[str, Any] | None = None,
+    edit_intent: SkillStructuralEditIntent | None = None,
+    require_exact_deletion_intent: bool = False,
 ) -> SkillStructureValidation:
     """Validate standalone Markdown and bounded preservation of published structure."""
 
     authoritative_edit_intent = _authoritative_edit_intent(
         edit_intent,
         original_content=original_content,
+        candidate_content=candidate_content,
     )
     original_inspection = (
         inspect_skill_markdown(original_content)
@@ -152,6 +191,23 @@ def validate_skill_markdown_structure(
             edit_intent=authoritative_edit_intent,
         )
 
+    truncated_ellipsis = _deleted_base_prefix_truncation(
+        original_inspection,
+        candidate_inspection,
+    )
+    if truncated_ellipsis is not None:
+        return _failed_validation(
+            "skill_truncation_marker",
+            "skill candidate contains an ellipsis-truncated published line",
+            "content",
+            contract_fingerprint=contract_fingerprint,
+            details={
+                "line": truncated_ellipsis.line_index + 1,
+                "line_kind": truncated_ellipsis.kind,
+                "edit_mode": _edit_mode(authoritative_edit_intent),
+            },
+        )
+
     original_name = original_inventory.front_matter.get("name")
     candidate_name = candidate_inventory.front_matter.get("name")
     if (
@@ -169,14 +225,56 @@ def validate_skill_markdown_structure(
             },
         )
 
-    declared_rewrites = _declared_section_titles(
+    declared_rewrites = _declared_section_paths(
         authoritative_edit_intent,
-        "rewritten_sections",
+        action="replace_section",
     )
-    declared_removals = _declared_section_titles(
-        authoritative_edit_intent,
-        "removed_sections",
+    protected_edit_sections = declared_rewrites
+
+    missing_fence_anchor = _missing_fence_anchor(
+        original_inventory,
+        candidate_inventory,
+        declared_sections=protected_edit_sections,
     )
+    if missing_fence_anchor is not None:
+        return _failed_validation(
+            "skill_fenced_block_deleted",
+            "an undeclared non-trivial fenced block lost its structural anchor",
+            "code_fences",
+            contract_fingerprint=contract_fingerprint,
+            details={
+                "language": missing_fence_anchor.language,
+                "section_path": [
+                    _bounded_title(item)
+                    for item in missing_fence_anchor.section_path
+                ],
+                "line_count": len(missing_fence_anchor.line_fingerprints),
+                "command_count": len(
+                    missing_fence_anchor.command_fingerprints
+                ),
+                "edit_mode": _edit_mode(authoritative_edit_intent),
+            },
+        )
+
+    missing_command_section = _missing_command_dense_section_anchor(
+        original_inventory,
+        candidate_inventory,
+        declared_sections=protected_edit_sections,
+    )
+    if missing_command_section is not None:
+        return _failed_validation(
+            "skill_command_dense_section_deleted",
+            "an undeclared command-dense section lost its structural anchor",
+            "sections[].commands",
+            contract_fingerprint=contract_fingerprint,
+            details={
+                "section": _bounded_title(missing_command_section.title),
+                "command_count": len(
+                    missing_command_section.command_signatures
+                ),
+                "edit_mode": _edit_mode(authoritative_edit_intent),
+            },
+        )
     candidate_by_title: dict[str, list[SkillSectionInventory]] = {}
     for section in candidate_inventory.sections:
         candidate_by_title.setdefault(section.title, []).append(section)
@@ -186,12 +284,45 @@ def validate_skill_markdown_structure(
         if section.level >= 2
         and section.title not in candidate_by_title
     )
+    if require_exact_deletion_intent:
+        strict_missing_sections = _missing_section_anchors(
+            tuple(
+                section
+                for section in original_inventory.sections
+                if section.level >= 2
+                and not _section_declared(
+                    section,
+                    protected_edit_sections,
+                )
+            ),
+            candidate_inventory.sections,
+        )
+        if strict_missing_sections:
+            return _failed_validation(
+                "skill_existing_sections_deleted",
+                "auto-verified release requires an exact content-addressed intent for section deletion",
+                "sections",
+                contract_fingerprint=contract_fingerprint,
+                details={
+                    "missing_section_count": len(
+                        strict_missing_sections
+                    ),
+                    "missing_sections": [
+                        _bounded_title(item.title)
+                        for item in strict_missing_sections[:16]
+                    ],
+                    "edit_mode": _edit_mode(
+                        authoritative_edit_intent
+                    ),
+                    "exact_deletion_intent_required": True,
+                },
+            )
 
     for section in original_inventory.sections:
         if (
             section.level < 2
             or section.body_chars < MIN_PROTECTED_SECTION_CHARS
-            or _section_declared(section, declared_rewrites | declared_removals)
+            or _section_declared(section, protected_edit_sections)
         ):
             continue
         matches = candidate_by_title.get(section.title, ())
@@ -225,8 +356,7 @@ def validate_skill_markdown_structure(
             section.body_chars >= MIN_PROTECTED_SECTION_CHARS
             or section.command_signatures
         )
-        and not _section_declared(section, declared_removals)
-        and not _section_declared(section, declared_rewrites)
+        and not _section_declared(section, protected_edit_sections)
     )
     original_titles = {
         section.title for section in original_inventory.sections
@@ -268,7 +398,8 @@ def validate_skill_markdown_structure(
         missing_weight / protected_weight if protected_weight else 0.0
     )
     if missing_sections and (
-        len(missing_sections) > allowed_missing_count
+        require_exact_deletion_intent
+        or len(missing_sections) > allowed_missing_count
         or missing_weight_ratio > MAX_UNDECLARED_SECTION_WEIGHT_RATIO
     ):
         return _failed_validation(
@@ -285,6 +416,9 @@ def validate_skill_markdown_structure(
                     for item in missing_sections[:16]
                 ],
                 "edit_mode": _edit_mode(authoritative_edit_intent),
+                "exact_deletion_intent_required": (
+                    require_exact_deletion_intent
+                ),
             },
         )
 
@@ -408,19 +542,58 @@ def inspect_skill_markdown(content: str) -> _Inspection:
     heading_stack: list[_Heading] = []
     commands: list[str] = []
     fence_languages: list[str] = []
+    fences: list[SkillFenceInventory] = []
     commands_by_heading: dict[int, list[str]] = {}
-    open_fence: tuple[str, int, str, int] | None = None
+    command_fingerprints_by_heading: dict[int, list[str]] = {}
+    structural_lines: list[_StructuralLine] = []
+    ellipsis_occurrences: list[_EllipsisOccurrence] = []
+    open_fence: tuple[
+        str,
+        int,
+        str,
+        int,
+        tuple[str, ...],
+        list[str],
+        list[str],
+    ] | None = None
     for line_index, line in enumerate(lines[body_start:], start=body_start):
         if open_fence is not None:
-            marker, marker_length, language, opening_line = open_fence
+            (
+                marker,
+                marker_length,
+                language,
+                opening_line,
+                section_path,
+                fence_line_fingerprints,
+                fence_command_fingerprints,
+            ) = open_fence
             if _is_fence_close(line, marker=marker, minimum=marker_length):
+                fences.append(
+                    SkillFenceInventory(
+                        language=language or "plain",
+                        section_path=section_path,
+                        content_chars=sum(
+                            len(item) for item in fence_line_fingerprints
+                        ),
+                        line_fingerprints=tuple(
+                            _identity_fingerprint(item)
+                            for item in fence_line_fingerprints[
+                                :MAX_STRUCTURAL_COMMANDS
+                            ]
+                        ),
+                        command_fingerprints=tuple(
+                            fence_command_fingerprints[
+                                :MAX_STRUCTURAL_COMMANDS
+                            ]
+                        ),
+                    )
+                )
                 open_fence = None
                 continue
             placeholder = _placeholder_kind(
                 line,
                 in_fence=True,
                 fence_language=language,
-                is_heading=False,
             )
             if placeholder is not None:
                 return _Inspection(
@@ -430,15 +603,38 @@ def inspect_skill_markdown(content: str) -> _Inspection:
                     "content",
                     line=line_index + 1,
                 )
+            normalized_fence_line = _normalize_structural_line(line)
+            if normalized_fence_line:
+                fence_line_fingerprints.append(normalized_fence_line)
             if language in _SHELL_FENCE_LANGUAGES:
                 signature = _command_signature(line)
                 if signature is not None:
                     commands.append(signature)
+                    command_fingerprint = _command_fingerprint(line)
+                    fence_command_fingerprints.append(command_fingerprint)
+                    structural_lines.append(
+                        _StructuralLine(
+                            kind="command",
+                            value=_normalize_command_line(line),
+                            line_index=line_index,
+                        )
+                    )
+                    occurrence = _ellipsis_occurrence(
+                        line,
+                        kind="command",
+                        line_index=line_index,
+                    )
+                    if occurrence is not None:
+                        ellipsis_occurrences.append(occurrence)
                     if headings:
                         commands_by_heading.setdefault(
                             headings[-1].line_index,
                             [],
                         ).append(signature)
+                        command_fingerprints_by_heading.setdefault(
+                            headings[-1].line_index,
+                            [],
+                        ).append(command_fingerprint)
             continue
 
         fence_match = _FENCE_OPEN_RE.match(line)
@@ -461,6 +657,9 @@ def inspect_skill_markdown(content: str) -> _Inspection:
                 len(marker_text),
                 language,
                 line_index,
+                headings[-1].path if headings else (),
+                [],
+                [],
             )
             continue
 
@@ -470,7 +669,6 @@ def inspect_skill_markdown(content: str) -> _Inspection:
             line,
             in_fence=False,
             fence_language="",
-            is_heading=is_heading,
         )
         if placeholder is not None:
             return _Inspection(
@@ -505,16 +703,51 @@ def inspect_skill_markdown(content: str) -> _Inspection:
             )
             headings.append(heading)
             heading_stack.append(heading)
+            structural_lines.append(
+                _StructuralLine(
+                    kind="heading",
+                    value=_normalize_heading_line(line),
+                    line_index=line_index,
+                )
+            )
+            occurrence = _ellipsis_occurrence(
+                line,
+                kind="heading",
+                line_index=line_index,
+            )
+            if occurrence is not None:
+                ellipsis_occurrences.append(occurrence)
             continue
+        normalized_prose = _normalize_structural_line(line)
+        if normalized_prose:
+            structural_lines.append(
+                _StructuralLine(
+                    kind="prose",
+                    value=normalized_prose,
+                    line_index=line_index,
+                )
+            )
+            occurrence = _ellipsis_occurrence(
+                line,
+                kind="prose",
+                line_index=line_index,
+            )
+            if occurrence is not None:
+                ellipsis_occurrences.append(occurrence)
         for inline in _INLINE_CODE_RE.findall(line):
             signature = _command_signature(inline, require_command_signal=True)
             if signature is not None:
                 commands.append(signature)
+                command_fingerprint = _command_fingerprint(inline)
                 if headings:
                     commands_by_heading.setdefault(
                         headings[-1].line_index,
                         [],
                     ).append(signature)
+                    command_fingerprints_by_heading.setdefault(
+                        headings[-1].line_index,
+                        [],
+                    ).append(command_fingerprint)
 
     if open_fence is not None:
         return _Inspection(
@@ -542,7 +775,10 @@ def inspect_skill_markdown(content: str) -> _Inspection:
             )
         )
         section_commands = tuple(
-            dict.fromkeys(commands_by_heading.get(heading.line_index, ()))
+            commands_by_heading.get(heading.line_index, ())
+        )[:MAX_STRUCTURAL_COMMANDS]
+        section_command_fingerprints = tuple(
+            command_fingerprints_by_heading.get(heading.line_index, ())
         )[:MAX_STRUCTURAL_COMMANDS]
         section_atoms = _substantive_atom_fingerprints(section_lines)
         sections.append(
@@ -551,7 +787,14 @@ def inspect_skill_markdown(content: str) -> _Inspection:
                 path=heading.path,
                 level=heading.level,
                 body_chars=body_chars,
+                content_fingerprint=_content_fingerprint(
+                    "\n".join(
+                        item.rstrip()
+                        for item in lines[heading.line_index:end]
+                    )
+                ),
                 command_signatures=section_commands,
+                command_fingerprints=section_command_fingerprints,
                 substantive_atom_fingerprints=section_atoms,
             )
         )
@@ -562,18 +805,23 @@ def inspect_skill_markdown(content: str) -> _Inspection:
             :MAX_STRUCTURAL_COMMANDS
         ],
         fence_languages=tuple(fence_languages)[:MAX_STRUCTURAL_SECTIONS],
+        fences=tuple(fences)[:MAX_STRUCTURAL_SECTIONS],
         substantive_atom_fingerprints=_substantive_atom_fingerprints(
             lines[body_start:]
         ),
         body_chars=len("\n".join(lines[body_start:])),
     )
-    return _Inspection(inventory)
+    return _Inspection(
+        inventory,
+        structural_lines=tuple(structural_lines),
+        ellipsis_occurrences=tuple(ellipsis_occurrences),
+    )
 
 
 def skill_structure_contract_fingerprint(
     original_inventory: SkillMarkdownInventory | None,
     *,
-    edit_intent: Mapping[str, Any] | None = None,
+    edit_intent: SkillStructuralEditIntent | None = None,
 ) -> str:
     payload = {
         "schema_version": SKILL_STRUCTURE_SCHEMA_VERSION,
@@ -595,6 +843,12 @@ def skill_structure_contract_fingerprint(
             "max_fence_deletion_ratio": (
                 MAX_UNDECLARED_FENCE_DELETION_RATIO
             ),
+            "min_structural_anchor_retention_ratio": (
+                MIN_STRUCTURAL_ANCHOR_RETENTION_RATIO
+            ),
+            "min_command_dense_section_commands": (
+                MIN_COMMAND_DENSE_SECTION_COMMANDS
+            ),
         },
         "original": (
             {
@@ -605,7 +859,11 @@ def skill_structure_contract_fingerprint(
                         "path": list(item.path),
                         "level": item.level,
                         "body_chars": item.body_chars,
+                        "content_fingerprint": item.content_fingerprint,
                         "commands": list(item.command_signatures),
+                        "command_fingerprints": list(
+                            item.command_fingerprints
+                        ),
                         "substantive_atoms": list(
                             item.substantive_atom_fingerprints
                         ),
@@ -614,6 +872,16 @@ def skill_structure_contract_fingerprint(
                 ],
                 "commands": list(original_inventory.command_signatures),
                 "fences": list(original_inventory.fence_languages),
+                "fence_anchors": [
+                    {
+                        "language": item.language,
+                        "section_path": list(item.section_path),
+                        "content_chars": item.content_chars,
+                        "lines": list(item.line_fingerprints),
+                        "commands": list(item.command_fingerprints),
+                    }
+                    for item in original_inventory.fences
+                ],
                 "substantive_atoms": list(
                     original_inventory.substantive_atom_fingerprints
                 ),
@@ -630,6 +898,152 @@ def skill_structure_contract_fingerprint(
         separators=(",", ":"),
     ).encode("utf-8")
     return "sha256:" + hashlib.sha256(encoded).hexdigest()
+
+
+def build_skill_structural_edit_intent(
+    *,
+    original_content: str,
+    candidate_content: str,
+    patch_intent: Mapping[str, Any],
+) -> SkillStructuralEditIntent:
+    """Bind framework-materialized patch actions to exact base/result sections."""
+
+    original = inspect_skill_markdown(original_content).inventory
+    candidate = inspect_skill_markdown(candidate_content).inventory
+    operations = patch_intent.get("operations")
+    if (
+        original is None
+        or candidate is None
+        or not isinstance(operations, list)
+        or not operations
+    ):
+        raise ValueError(
+            "structural edit intent requires valid materialized skill markdown"
+        )
+    actions: list[SkillStructuralEditAction] = []
+    consumed_result_indexes: set[int] = set()
+    for operation in operations:
+        if not isinstance(operation, Mapping):
+            raise ValueError("structural edit operation must be an object")
+        action = str(operation.get("op") or "")
+        heading = operation.get("heading")
+        if (
+            action not in {"replace_section", "append_section"}
+            or not isinstance(heading, str)
+        ):
+            raise ValueError("structural edit operation is invalid")
+        title = _normalize_heading(heading.lstrip("#").strip())
+        if action == "replace_section":
+            base_section = next(
+                (item for item in original.sections if item.title == title),
+                None,
+            )
+            if base_section is None:
+                raise ValueError("structural edit base section is missing")
+            result_index, result_section = next(
+                (
+                    (index, item)
+                    for index, item in enumerate(candidate.sections)
+                    if index not in consumed_result_indexes
+                    and item.path == base_section.path
+                ),
+                (None, None),
+            )
+            if result_section is None or result_index is None:
+                raise ValueError("structural edit result section is missing")
+            consumed_result_indexes.add(result_index)
+            section_path = base_section.path
+            base_section_fingerprint = base_section.content_fingerprint
+        else:
+            result_index, result_section = next(
+                (
+                    (index, item)
+                    for index, item in reversed(
+                        tuple(enumerate(candidate.sections))
+                    )
+                    if index not in consumed_result_indexes
+                    and item.title == title
+                ),
+                (None, None),
+            )
+            if result_section is None or result_index is None:
+                raise ValueError("appended structural edit section is missing")
+            consumed_result_indexes.add(result_index)
+            section_path = result_section.path
+            base_section_fingerprint = None
+        actions.append(
+            SkillStructuralEditAction(
+                action=action,
+                section_path=section_path,
+                base_section_fingerprint=base_section_fingerprint,
+                result_section_fingerprint=(
+                    result_section.content_fingerprint
+                ),
+            )
+        )
+    intent = SkillStructuralEditIntent(
+        schema_version="aworld.skill.edit_intent.v2",
+        authority="framework",
+        authorization="",
+        reason="candidate_protocol.patch_intent",
+        base_content_fingerprint=_content_fingerprint(original_content),
+        candidate_content_fingerprint=_content_fingerprint(
+            candidate_content
+        ),
+        actions=tuple(actions),
+    )
+    return replace(
+        intent,
+        authorization=_edit_intent_authorization(intent),
+    )
+
+
+def rebind_skill_structural_edit_intent(
+    edit_intent: SkillStructuralEditIntent,
+    *,
+    original_content: str,
+    previous_candidate_content: str,
+    candidate_content: str,
+) -> SkillStructuralEditIntent:
+    """Rebind an exact intent across a structure-preserving release transform."""
+
+    authoritative = _authoritative_edit_intent(
+        edit_intent,
+        original_content=original_content,
+        candidate_content=previous_candidate_content,
+    )
+    candidate_inventory = inspect_skill_markdown(
+        candidate_content
+    ).inventory
+    if authoritative is None or candidate_inventory is None:
+        raise ValueError("structural edit intent cannot be rebound")
+    for action in authoritative.actions:
+        if not any(
+            section.path == action.section_path
+            and section.content_fingerprint
+            == action.result_section_fingerprint
+            for section in candidate_inventory.sections
+        ):
+            raise ValueError(
+                "release transform changed an authorized section"
+            )
+    rebound = SkillStructuralEditIntent(
+        schema_version=authoritative.schema_version,
+        authority=authoritative.authority,
+        authorization="",
+        reason=authoritative.reason,
+        base_content_fingerprint=(
+            authoritative.base_content_fingerprint
+        ),
+        candidate_content_fingerprint=_content_fingerprint(
+            candidate_content
+        ),
+        actions=authoritative.actions,
+    )
+    return replace(
+        rebound,
+        authorization=_edit_intent_authorization(rebound),
+    )
 
 
 def _parse_front_matter(
@@ -722,15 +1136,12 @@ def _placeholder_kind(
     *,
     in_fence: bool,
     fence_language: str,
-    is_heading: bool,
 ) -> str | None:
     stripped = line.strip()
     if not stripped:
         return None
     if any(marker in stripped for marker in _INTERNAL_PLACEHOLDERS):
         return "internal_redaction_placeholder"
-    if "…" in stripped:
-        return "unicode_ellipsis"
     if _TEXTUAL_OMISSION_RE.search(stripped):
         return "textual_omission"
     if _ARRAY_ELLIPSIS_RE.fullmatch(stripped):
@@ -741,8 +1152,6 @@ def _placeholder_kind(
         ):
             return None
         return "standalone_ellipsis"
-    if is_heading and stripped.endswith("..."):
-        return "heading_ellipsis"
     if (
         in_fence
         and fence_language in _SHELL_FENCE_LANGUAGES
@@ -798,34 +1207,256 @@ def _command_signature(
     return " ".join(semantic_tokens)[:160]
 
 
-def _declared_section_titles(
-    edit_intent: Mapping[str, Any] | None,
-    key: str,
-) -> set[str]:
-    if not isinstance(edit_intent, Mapping):
-        return set()
-    raw = edit_intent.get(key)
-    if not isinstance(raw, (list, tuple)):
+def _normalize_structural_line(value: str) -> str:
+    return " ".join(value.strip().casefold().split())[:2_000]
+
+
+def _normalize_heading_line(value: str) -> str:
+    stripped = value.strip().lstrip("#").strip()
+    stripped = re.sub(r"\s+#+\s*$", "", stripped)
+    return _normalize_structural_line(stripped)
+
+
+def _normalize_command_line(value: str) -> str:
+    stripped = re.sub(r"^[>$]\s*", "", value.strip())
+    return _normalize_structural_line(stripped)
+
+
+def _command_fingerprint(value: str) -> str:
+    return _identity_fingerprint(_normalize_command_line(value))
+
+
+def _ellipsis_occurrence(
+    line: str,
+    *,
+    kind: str,
+    line_index: int,
+) -> _EllipsisOccurrence | None:
+    value = (
+        _normalize_heading_line(line)
+        if kind == "heading"
+        else _normalize_command_line(line)
+        if kind == "command"
+        else _normalize_structural_line(line)
+    )
+    positions = [
+        index
+        for marker in ("…", "...")
+        if (index := value.find(marker)) >= 0
+    ]
+    if not positions:
+        return None
+    position = min(positions)
+    marker_length = 1 if value[position] == "…" else 3
+    if value[position + marker_length :].strip():
+        return None
+    if (
+        kind == "prose"
+        and value[:position].count("`") % 2 == 1
+        and "`" in value[position + marker_length :]
+    ):
+        return None
+    prefix = value[:position].rstrip(" `")
+    if len(prefix) < 4:
+        return None
+    return _EllipsisOccurrence(
+        kind=kind,
+        prefix=prefix,
+        line_index=line_index,
+    )
+
+
+def _deleted_base_prefix_truncation(
+    original: _Inspection | None,
+    candidate: _Inspection,
+) -> _EllipsisOccurrence | None:
+    if original is None:
+        return None
+    candidate_values = {
+        (item.kind, item.value)
+        for item in candidate.structural_lines
+    }
+    for occurrence in candidate.ellipsis_occurrences:
+        for base_line in original.structural_lines:
+            if base_line.kind != occurrence.kind:
+                continue
+            if not base_line.value.startswith(occurrence.prefix):
+                continue
+            if (
+                base_line.value == occurrence.prefix
+                and occurrence.kind != "command"
+            ):
+                continue
+            if (base_line.kind, base_line.value) in candidate_values:
+                continue
+            return occurrence
+    return None
+
+
+def _counter_retention_ratio(
+    original: Sequence[str],
+    candidate: Sequence[str],
+) -> float:
+    original_counter = Counter(original)
+    candidate_counter = Counter(candidate)
+    retained = sum(
+        min(count, candidate_counter.get(item, 0))
+        for item, count in original_counter.items()
+    )
+    return retained / len(original) if original else 1.0
+
+
+def _nontrivial_fence(fence: SkillFenceInventory) -> bool:
+    return (
+        len(fence.line_fingerprints) >= MIN_NONTRIVIAL_FENCE_LINES
+        or fence.content_chars >= MIN_NONTRIVIAL_FENCE_CHARS
+        or len(fence.command_fingerprints) >= 2
+    )
+
+
+def _missing_fence_anchor(
+    original: SkillMarkdownInventory,
+    candidate: SkillMarkdownInventory,
+    *,
+    declared_sections: set[tuple[str, ...]],
+) -> SkillFenceInventory | None:
+    candidates = list(candidate.fences)
+    for fence in original.fences:
+        if (
+            not _nontrivial_fence(fence)
+            or fence.section_path in declared_sections
+        ):
+            continue
+        matched_index = next(
+            (
+                index
+                for index, item in enumerate(candidates)
+                if item.language == fence.language
+                and _counter_retention_ratio(
+                    fence.line_fingerprints,
+                    item.line_fingerprints,
+                )
+                >= MIN_STRUCTURAL_ANCHOR_RETENTION_RATIO
+                and (
+                    not fence.command_fingerprints
+                    or _counter_retention_ratio(
+                        fence.command_fingerprints,
+                        item.command_fingerprints,
+                    )
+                    >= MIN_STRUCTURAL_ANCHOR_RETENTION_RATIO
+                )
+            ),
+            None,
+        )
+        if matched_index is None:
+            return fence
+        candidates.pop(matched_index)
+    return None
+
+
+def _missing_command_dense_section_anchor(
+    original: SkillMarkdownInventory,
+    candidate: SkillMarkdownInventory,
+    *,
+    declared_sections: set[tuple[str, ...]],
+) -> SkillSectionInventory | None:
+    candidates = list(candidate.sections)
+    for section in original.sections:
+        if (
+            len(section.command_fingerprints)
+            < MIN_COMMAND_DENSE_SECTION_COMMANDS
+            or section.path in declared_sections
+        ):
+            continue
+        matched_index = next(
+            (
+                index
+                for index, item in enumerate(candidates)
+                if _counter_retention_ratio(
+                    section.command_fingerprints,
+                    item.command_fingerprints,
+                )
+                >= MIN_STRUCTURAL_ANCHOR_RETENTION_RATIO
+            ),
+            None,
+        )
+        if matched_index is None:
+            return section
+        candidates.pop(matched_index)
+    return None
+
+
+def _declared_section_paths(
+    edit_intent: SkillStructuralEditIntent | None,
+    *,
+    action: str,
+) -> set[tuple[str, ...]]:
+    if edit_intent is None:
         return set()
     return {
-        normalized
-        for item in raw[:32]
-        if isinstance(item, str)
-        and (normalized := _normalize_heading(item))
+        item.section_path
+        for item in edit_intent.actions
+        if item.action == action
     }
 
 
 def _section_declared(
     section: SkillSectionInventory,
-    declared_titles: set[str],
+    declared_paths: set[tuple[str, ...]],
 ) -> bool:
-    return bool(declared_titles.intersection(section.path))
+    return section.path in declared_paths
+
+
+def _missing_section_anchors(
+    original_sections: Sequence[SkillSectionInventory],
+    candidate_sections: Sequence[SkillSectionInventory],
+) -> tuple[SkillSectionInventory, ...]:
+    candidate_by_title = {
+        item.title for item in candidate_sections
+    }
+    original_titles = {
+        item.title for item in original_sections
+    }
+    unmatched_candidates = [
+        item
+        for item in candidate_sections
+        if item.level >= 2 and item.title not in original_titles
+    ]
+    missing: list[SkillSectionInventory] = []
+    for section in original_sections:
+        if section.title in candidate_by_title:
+            continue
+        matched_index = next(
+            (
+                index
+                for index, item in enumerate(unmatched_candidates)
+                if _section_content_preserved_after_rename(
+                    section,
+                    (item,),
+                )
+            ),
+            None,
+        )
+        if matched_index is None:
+            missing.append(section)
+        else:
+            unmatched_candidates.pop(matched_index)
+    return tuple(missing)
 
 
 def _section_content_preserved_after_rename(
     original: SkillSectionInventory,
     candidates: Sequence[SkillSectionInventory],
 ) -> bool:
+    if original.command_fingerprints and any(
+        _counter_retention_ratio(
+            original.command_fingerprints,
+            candidate.command_fingerprints,
+        )
+        >= MIN_STRUCTURAL_ANCHOR_RETENTION_RATIO
+        for candidate in candidates
+    ):
+        return True
     original_commands = set(original.command_signatures)
     if original_commands and any(
         original_commands.issubset(set(candidate.command_signatures))
@@ -893,89 +1524,148 @@ def _substantive_atom_fingerprints(
 
 
 def _authoritative_edit_intent(
-    edit_intent: Mapping[str, Any] | None,
+    edit_intent: SkillStructuralEditIntent | None,
     *,
     original_content: str | None,
-) -> Mapping[str, Any] | None:
+    candidate_content: str,
+) -> SkillStructuralEditIntent | None:
     """Accept deletion/rewrite authority only from the framework patch boundary."""
 
     if (
-        not isinstance(edit_intent, Mapping)
+        not isinstance(edit_intent, SkillStructuralEditIntent)
         or not isinstance(original_content, str)
-        or edit_intent.get("schema_version")
-        != "aworld.skill.edit_intent.v1"
-        or edit_intent.get("mode") != "patch_intent"
-        or edit_intent.get("framework_anchor")
-        != "candidate_protocol.patch_intent"
-        or edit_intent.get("base_content_fingerprint")
+        or edit_intent.schema_version
+        != "aworld.skill.edit_intent.v2"
+        or edit_intent.authority != "framework"
+        or edit_intent.reason != "candidate_protocol.patch_intent"
+        or edit_intent.base_content_fingerprint
         != _content_fingerprint(original_content)
+        or edit_intent.candidate_content_fingerprint
+        != _content_fingerprint(candidate_content)
+        or edit_intent.authorization
+        != _edit_intent_authorization(edit_intent)
+        or not edit_intent.actions
+        or len(edit_intent.actions) > 32
     ):
         return None
-    for key in (
-        "rewritten_sections",
-        "removed_sections",
-        "added_sections",
-    ):
-        value = edit_intent.get(key, ())
+    original_inventory = inspect_skill_markdown(original_content).inventory
+    candidate_inventory = inspect_skill_markdown(candidate_content).inventory
+    if original_inventory is None or candidate_inventory is None:
+        return None
+    for action in edit_intent.actions:
         if (
-            not isinstance(value, (list, tuple))
-            or len(value) > 32
+            action.action not in {"replace_section", "append_section"}
+            or not action.section_path
+            or len(action.section_path) > 6
             or any(
                 not isinstance(item, str)
-                or not item.strip()
-                or len(item) > 240
-                for item in value
+                or not item
+                or len(item) > 160
+                for item in action.section_path
             )
         ):
             return None
-    return {
-        "schema_version": "aworld.skill.edit_intent.v1",
-        "mode": "patch_intent",
-        "base_content_fingerprint": _content_fingerprint(
-            original_content
-        ),
-        "framework_anchor": "candidate_protocol.patch_intent",
-        "rewritten_sections": list(
-            edit_intent.get("rewritten_sections", ())
-        ),
-        "removed_sections": list(
-            edit_intent.get("removed_sections", ())
-        ),
-        "added_sections": list(
-            edit_intent.get("added_sections", ())
-        ),
-    }
+        result_section = next(
+            (
+                item
+                for item in candidate_inventory.sections
+                if item.path == action.section_path
+                and item.content_fingerprint
+                == action.result_section_fingerprint
+            ),
+            None,
+        )
+        if result_section is None:
+            return None
+        if action.action == "replace_section":
+            base_section = next(
+                (
+                    item
+                    for item in original_inventory.sections
+                    if item.path == action.section_path
+                    and item.content_fingerprint
+                    == action.base_section_fingerprint
+                ),
+                None,
+            )
+            if base_section is None:
+                return None
+        elif action.base_section_fingerprint is not None:
+            return None
+    return edit_intent
 
 
 def _bounded_edit_intent(
-    edit_intent: Mapping[str, Any] | None,
+    edit_intent: SkillStructuralEditIntent | None,
 ) -> Mapping[str, Any]:
+    if edit_intent is None:
+        return {"mode": "full_content", "actions": []}
     return {
-        "mode": _edit_mode(edit_intent),
-        "rewritten_sections": sorted(
-            _declared_section_titles(edit_intent, "rewritten_sections")
-        ),
-        "removed_sections": sorted(
-            _declared_section_titles(edit_intent, "removed_sections")
-        ),
-        "added_sections": sorted(
-            _declared_section_titles(edit_intent, "added_sections")
-        ),
+        "mode": "patch_intent",
+        "authorization": edit_intent.authorization,
+        "actions": [
+            {
+                "action": item.action,
+                "section_path": list(item.section_path),
+                "base_section_fingerprint": (
+                    item.base_section_fingerprint
+                ),
+                "result_section_fingerprint": (
+                    item.result_section_fingerprint
+                ),
+            }
+            for item in edit_intent.actions
+        ],
     }
 
 
-def _edit_mode(edit_intent: Mapping[str, Any] | None) -> str:
-    if not isinstance(edit_intent, Mapping):
-        return "full_content"
-    mode = str(edit_intent.get("mode") or "").strip()
-    return mode if mode in {"full_content", "patch_intent"} else "full_content"
+def _edit_intent_authorization(
+    edit_intent: SkillStructuralEditIntent,
+) -> str:
+    payload = {
+        "schema_version": edit_intent.schema_version,
+        "authority": edit_intent.authority,
+        "reason": edit_intent.reason,
+        "base_content_fingerprint": (
+            edit_intent.base_content_fingerprint
+        ),
+        "candidate_content_fingerprint": (
+            edit_intent.candidate_content_fingerprint
+        ),
+        "actions": [
+            {
+                "action": item.action,
+                "section_path": list(item.section_path),
+                "base_section_fingerprint": (
+                    item.base_section_fingerprint
+                ),
+                "result_section_fingerprint": (
+                    item.result_section_fingerprint
+                ),
+            }
+            for item in edit_intent.actions
+        ],
+    }
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return "sha256:" + hashlib.sha256(encoded).hexdigest()
+
+
+def _edit_mode(
+    edit_intent: SkillStructuralEditIntent | None,
+) -> str:
+    return "patch_intent" if edit_intent is not None else "full_content"
 
 
 def _passed_validation(
     candidate: SkillMarkdownInventory,
     *,
     contract_fingerprint: str,
-    edit_intent: Mapping[str, Any] | None,
+    edit_intent: SkillStructuralEditIntent | None,
     original_inventory: SkillMarkdownInventory | None = None,
     missing_section_count: int = 0,
 ) -> SkillStructureValidation:

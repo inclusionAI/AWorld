@@ -45,6 +45,8 @@ from aworld.self_evolve.repair_conformance import (
 )
 from aworld.self_evolve.sanitization import sanitize_text
 from aworld.self_evolve.types import CandidateFileDelta, CandidateVariant, OptimizerLineage
+from aworld.skills.structure import build_skill_structural_edit_intent
+from aworld.skills.structure_types import SkillStructuralEditIntent
 
 
 MutateTextCallable = Callable[[str], Any]
@@ -197,6 +199,14 @@ class TraceReflectiveLLMMutator:
                 )
                 if inherited_file_count:
                     materialization = f"{materialization}+repair_focus_overlay"
+                if _violates_transport_completion_invariant(content):
+                    content = _append_transport_completion_invariant(content)
+                    repaired_transport_completion_violation_count += 1
+                structural_edit_intent = _candidate_structural_edit_intent(
+                    output,
+                    base_content=request.current_content,
+                    candidate_content=content,
+                )
             except ValueError as exc:
                 filtered_invalid_patch_count += 1
                 semantic_error = _candidate_semantic_error(
@@ -222,9 +232,6 @@ class TraceReflectiveLLMMutator:
                 candidate_index=index,
                 addressed_signal_ids=addressed_signal_ids,
             )
-            if _violates_transport_completion_invariant(content):
-                content = _append_transport_completion_invariant(content)
-                repaired_transport_completion_violation_count += 1
             if content == request.current_content and not files:
                 filtered_noop_count += 1
                 continue
@@ -235,6 +242,7 @@ class TraceReflectiveLLMMutator:
                 rationale=rationale,
                 target_fingerprint=request.target_fingerprint,
                 files=files,
+                structural_edit_intent=structural_edit_intent,
             )
             content_fingerprint = candidate_package_fingerprint(candidate)
             semantic_package_fingerprint = (
@@ -243,16 +251,9 @@ class TraceReflectiveLLMMutator:
             if semantic_package_fingerprint in seen_content_fingerprints:
                 filtered_duplicate_count += 1
                 continue
-            regression_base_content = (
-                _repair_focus_content(
-                    request,
-                    candidate_index=index,
-                )
-                or request.current_content
-            )
             if require_targeted_delta and _is_weak_high_baseline_regression_candidate(
                 content,
-                current_content=regression_base_content,
+                current_content=request.current_content,
                 request=request,
             ):
                 filtered_high_baseline_regression_count += 1
@@ -272,6 +273,7 @@ class TraceReflectiveLLMMutator:
                 rationale=rationale,
                 target_fingerprint=request.target_fingerprint,
                 files=files,
+                structural_edit_intent=structural_edit_intent,
             )
             candidates.append(candidate)
             context = request.evolution_context or compile_evolution_context(request)
@@ -292,11 +294,10 @@ class TraceReflectiveLLMMutator:
                 {
                     "candidate_id": candidate_id,
                     "materialization": materialization,
-                    "structural_edit_intent": (
-                        _candidate_structural_edit_intent(
-                            output,
-                            base_content=request.current_content,
-                        )
+                    "structural_edit_authorization": (
+                        candidate.structural_edit_intent.authorization
+                        if candidate.structural_edit_intent is not None
+                        else None
                     ),
                     **strategy_record,
                 }
@@ -994,48 +995,35 @@ def _candidate_structural_edit_intent(
     output: Any,
     *,
     base_content: str,
-) -> dict[str, object]:
-    base_fingerprint = "sha256:" + hashlib.sha256(
-        base_content.encode("utf-8")
-    ).hexdigest()
+    candidate_content: str,
+) -> SkillStructuralEditIntent | None:
+    payload = output
+    if isinstance(payload, Mapping):
+        expected_output = payload.get("expected_output")
+        if isinstance(expected_output, Mapping):
+            normalized = dict(expected_output)
+            for key, value in payload.items():
+                if key != "expected_output":
+                    normalized.setdefault(key, value)
+            payload = normalized
     patch_intent = (
-        output.get("patch_intent")
-        if isinstance(output, Mapping)
+        payload.get("patch_intent")
+        if isinstance(payload, Mapping)
         else None
     )
     if not isinstance(patch_intent, Mapping):
-        return {
-            "schema_version": "aworld.skill.edit_intent.v1",
-            "mode": "full_content",
-            "base_content_fingerprint": base_fingerprint,
-            "framework_anchor": "candidate_protocol.full_content",
-            "rewritten_sections": [],
-            "removed_sections": [],
-            "added_sections": [],
-        }
-    rewritten: list[str] = []
-    added: list[str] = []
-    operations = patch_intent.get("operations")
-    if isinstance(operations, list):
-        for operation in operations[:32]:
-            if not isinstance(operation, Mapping):
-                continue
-            heading = operation.get("heading")
-            if not isinstance(heading, str) or not heading.strip():
-                continue
-            if operation.get("op") == "replace_section":
-                rewritten.append(heading)
-            elif operation.get("op") == "append_section":
-                added.append(heading)
-    return {
-        "schema_version": "aworld.skill.edit_intent.v1",
-        "mode": "patch_intent",
-        "base_content_fingerprint": base_fingerprint,
-        "framework_anchor": "candidate_protocol.patch_intent",
-        "rewritten_sections": list(dict.fromkeys(rewritten)),
-        "removed_sections": [],
-        "added_sections": list(dict.fromkeys(added)),
-    }
+        return None
+    try:
+        return build_skill_structural_edit_intent(
+            original_content=base_content,
+            candidate_content=candidate_content,
+            patch_intent=patch_intent,
+        )
+    except ValueError:
+        # Non-Markdown target adapters can still use patch materialization.
+        # Skill local gates fail closed before auto-apply when the typed,
+        # content-addressed authorization cannot be constructed.
+        return None
 
 
 def _population_strategy(
@@ -1136,11 +1124,11 @@ def _materialize_mutator_output(
     request: OptimizerRequest,
     candidate_index: int = 0,
 ) -> tuple[str, str, str, tuple[CandidateFileDelta, ...]]:
-    repair_base_content = _repair_focus_content(
-        request,
-        candidate_index=candidate_index,
-    )
-    base_content = repair_base_content or request.current_content
+    # The evaluated target snapshot is the only authoritative patch base.
+    # Historical repair packages are bounded prompt evidence and file overlays;
+    # their content may be truncated or rejected and must never replace the
+    # current target snapshot during materialization.
+    base_content = request.current_content
     if isinstance(output, Mapping):
         # Some structured-output providers return the schema payload under an
         # ``expected_output`` envelope even though the prompt requests the
@@ -1210,24 +1198,6 @@ def _materialize_mutator_output(
             field_path=CandidateFailureField.FILES,
         )
     return content, rationale, materialization, files
-
-
-def _repair_focus_content(
-    request: OptimizerRequest,
-    *,
-    candidate_index: int,
-) -> str | None:
-    context = request.evolution_context or compile_evolution_context(request)
-    repair_focus = context.repair_focus_for_candidate(
-        candidate_index=candidate_index
-    )
-    package = (
-        repair_focus.get("repair_candidate_package")
-        if isinstance(repair_focus, Mapping)
-        else None
-    )
-    content = package.get("content") if isinstance(package, Mapping) else None
-    return content if isinstance(content, str) and content.strip() else None
 
 
 def _candidate_id(

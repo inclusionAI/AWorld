@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import hashlib
+from dataclasses import replace
 
 import pytest
 from pathlib import Path
@@ -37,15 +37,27 @@ from aworld.self_evolve.replay_adaptation import (
 )
 from aworld.self_evolve.provenance import TargetMutationIntent, TargetProvenance
 from aworld.self_evolve.types import CandidateVariant, EvaluationSummary, SelfEvolveTargetRef
+from aworld.self_evolve.patch_intent import apply_skill_patch_intent
+from aworld.skills.structure import (
+    build_skill_structural_edit_intent,
+    validate_skill_markdown_structure,
+)
+from aworld.skills.structure_types import SkillStructuralEditIntent
 
 
-def _candidate(content: str, *, path: str | None = "SKILL.md") -> CandidateVariant:
+def _candidate(
+    content: str,
+    *,
+    path: str | None = "SKILL.md",
+    structural_edit_intent: SkillStructuralEditIntent | None = None,
+) -> CandidateVariant:
     return CandidateVariant(
         candidate_id="cand-1",
         target=SelfEvolveTargetRef(target_type="skill", target_id="demo", path=path),
         content=content,
         rationale="test",
         target_fingerprint="sha256:old",
+        structural_edit_intent=structural_edit_intent,
     )
 
 
@@ -195,10 +207,6 @@ def test_skill_markdown_gate_rejects_truncated_existing_section() -> None:
         "## Debugging\n\n"
         "Inspect the browser session, capture the protocol trace, and compare "
         "the final response with the saved artifact before retrying.\n\n"
-        "```console\n"
-        "agent-browser inspect --session active\n"
-        "agent-browser trace --output artifacts/trace.json\n"
-        "```\n\n"
         "Record the observed failure class and the bounded recovery action.\n\n"
         "## Safety\n\nDo not expose credentials.\n"
     )
@@ -212,7 +220,6 @@ def test_skill_markdown_gate_rejects_truncated_existing_section() -> None:
     result = SkillReleaseFidelityGate().evaluate(
         _candidate(truncated),
         current_content=current,
-        edit_intent={"mode": "full_content"},
     )
 
     assert result.passed is False
@@ -273,29 +280,50 @@ def test_skill_markdown_gate_allows_bounded_rewrite_delete_and_new_section() -> 
     result = SkillReleaseFidelityGate().evaluate(
         _candidate(candidate),
         current_content=current,
-        edit_intent={"mode": "full_content"},
+    )
+    auto_verified_result = SkillReleaseFidelityGate().evaluate(
+        _candidate(candidate),
+        current_content=current,
+        require_exact_deletion_intent=True,
     )
 
     assert result.passed is True
     assert result.details["added_section_count"] == 1
     assert result.details["missing_section_count"] == 1
+    assert auto_verified_result.passed is False
+    assert auto_verified_result.details["code"] == (
+        "skill_existing_sections_deleted"
+    )
 
 
-def test_skill_markdown_gate_rejects_obvious_placeholder_but_allows_code_ellipsis() -> None:
-    placeholder = (
+def test_skill_markdown_gate_contextualizes_unicode_ellipsis() -> None:
+    current = (
+        "---\nname: demo\n---\n# Demo\n\n"
+        "## Debugging\n\nEvidence Quality requires bounded artifacts.\n"
+    )
+    truncated = (
         "---\nname: demo\n---\n# Demo\n\n"
         "## Debugging\n\nEvidence Q…\n"
+    )
+    ordinary = (
+        "---\nname: demo\n---\n# Demo\n\n"
+        "## FAQ…\n\nResults may vary…\n\nUse `prefix…` when documenting syntax.\n"
     )
     python_ellipsis = (
         "---\nname: demo\n---\n# Demo\n\n"
         "## Python Protocol\n\n```python\nclass Pending:\n    ...\n```\n"
     )
 
-    failed = SkillMarkdownGate().evaluate(_candidate(placeholder))
+    failed = SkillReleaseFidelityGate().evaluate(
+        _candidate(truncated),
+        current_content=current,
+    )
+    ordinary_passed = SkillMarkdownGate().evaluate(_candidate(ordinary))
     passed = SkillMarkdownGate().evaluate(_candidate(python_ellipsis))
 
     assert failed.passed is False
     assert failed.details["code"] == "skill_truncation_marker"
+    assert ordinary_passed.passed is True
     assert passed.passed is True
 
 
@@ -307,32 +335,35 @@ def test_skill_release_fidelity_accepts_only_framework_anchored_patch_intent() -
         "final response, preserve the result artifact, and record the bounded "
         "recovery action before retrying.\n"
     )
-    candidate = (
-        "---\nname: demo\n---\n# Demo\n\n"
-        "## Debugging\n\nUse the new bounded diagnostic workflow.\n"
-    )
-    base_fingerprint = "sha256:" + hashlib.sha256(
-        current.encode("utf-8")
-    ).hexdigest()
-    intent = {
-        "schema_version": "aworld.skill.edit_intent.v1",
-        "mode": "patch_intent",
-        "base_content_fingerprint": base_fingerprint,
-        "framework_anchor": "candidate_protocol.patch_intent",
-        "rewritten_sections": ["Debugging"],
-        "removed_sections": [],
-        "added_sections": [],
+    patch_intent = {
+        "operations": [
+            {
+                "op": "replace_section",
+                "heading": "Debugging",
+                "content": "Use the new bounded diagnostic workflow.",
+            }
+        ]
     }
+    candidate = apply_skill_patch_intent(current, patch_intent)
+    intent = build_skill_structural_edit_intent(
+        original_content=current,
+        candidate_content=candidate,
+        patch_intent=patch_intent,
+    )
 
     authorized = SkillReleaseFidelityGate().evaluate(
-        _candidate(candidate),
+        _candidate(candidate, structural_edit_intent=intent),
         current_content=current,
-        edit_intent=intent,
     )
     forged = SkillReleaseFidelityGate().evaluate(
-        _candidate(candidate),
+        _candidate(
+            candidate,
+            structural_edit_intent=replace(
+                intent,
+                base_content_fingerprint="sha256:forged",
+            ),
+        ),
         current_content=current,
-        edit_intent={**intent, "base_content_fingerprint": "sha256:forged"},
     )
 
     assert authorized.passed is True
@@ -369,6 +400,125 @@ def test_skill_release_fidelity_new_sections_do_not_offset_deleted_inventory() -
     assert result.passed is False
     assert result.details["code"] == "skill_existing_sections_deleted"
     assert result.details["missing_section_count"] == 3
+
+
+def test_skill_release_fidelity_protects_each_command_fence_anchor() -> None:
+    original_commands = "\n".join(
+        f"agent-browser command-{index} --output artifact-{index}.json"
+        for index in range(14)
+    )
+    replacement_commands = "\n".join(
+        f"agent-browser replacement-{index} --output new-{index}.json"
+        for index in range(14)
+    )
+    current = (
+        "---\nname: demo\n---\n# Demo\n\n"
+        "## Usage\n\nUse the bounded workflow.\n\n"
+        "## Debugging\n\n```bash\n"
+        f"{original_commands}\n```\n\n"
+        "## Safety\n\nNever expose credentials.\n"
+    )
+    candidate = (
+        "---\nname: demo\n---\n# Demo\n\n"
+        "## Usage\n\nUse the bounded workflow.\n\n"
+        "## Evidence\n\n```bash\n"
+        f"{replacement_commands}\n```\n\n"
+        "## Safety\n\nNever expose credentials.\n"
+    )
+
+    result = SkillReleaseFidelityGate().evaluate(
+        _candidate(candidate),
+        current_content=current,
+    )
+
+    assert result.passed is False
+    assert result.details["code"] == "skill_fenced_block_deleted"
+    assert result.details["command_count"] == 14
+
+
+def test_skill_release_fidelity_allows_small_fence_delete_and_move() -> None:
+    commands = [
+        f"agent-browser command-{index} --output artifact-{index}.json"
+        for index in range(5)
+    ]
+    current = (
+        "---\nname: demo\n---\n# Demo\n\n"
+        "## Debugging\n\n```bash\n"
+        + "\n".join(commands)
+        + "\n```\n"
+    )
+    candidate = (
+        "---\nname: demo\n---\n# Demo\n\n"
+        "## Commands\n\n```bash\n"
+        + "\n".join(commands[:-1])
+        + "\n```\n"
+    )
+
+    result = SkillReleaseFidelityGate().evaluate(
+        _candidate(candidate),
+        current_content=current,
+    )
+
+    assert result.passed is True
+
+
+def test_skill_release_fidelity_rejects_untyped_edit_intent_bypass() -> None:
+    current = (
+        "---\nname: demo\n---\n# Demo\n\n"
+        "## Parent\n\nPublished parent guidance.\n\n"
+        "### Debugging\n\n```bash\n"
+        "agent-browser console\nagent-browser errors\n"
+        "agent-browser trace start\nagent-browser trace stop\n"
+        "```\n"
+    )
+    patch_intent = {
+        "operations": [
+            {
+                "op": "replace_section",
+                "heading": "Parent",
+                "content": "Replacement parent guidance.",
+            }
+        ]
+    }
+    candidate = apply_skill_patch_intent(current, patch_intent)
+    parent_intent = build_skill_structural_edit_intent(
+        original_content=current,
+        candidate_content=candidate,
+        patch_intent=patch_intent,
+    )
+    forged_mapping = {
+        "schema_version": "aworld.skill.edit_intent.v2",
+        "authority": "framework",
+        "authorization": "sha256:forged",
+        "reason": "candidate_protocol.patch_intent",
+        "base_content_fingerprint": "sha256:forged",
+        "candidate_content_fingerprint": "sha256:forged",
+        "actions": [],
+    }
+
+    result = validate_skill_markdown_structure(
+        candidate,
+        original_content=current,
+        edit_intent=forged_mapping,  # type: ignore[arg-type]
+    )
+    parent_result = SkillReleaseFidelityGate().evaluate(
+        _candidate(
+            candidate,
+            structural_edit_intent=parent_intent,
+        ),
+        current_content=current,
+    )
+
+    assert result.passed is False
+    assert parent_result.passed is False
+    assert result.code in {
+        "skill_fenced_block_deleted",
+        "skill_command_dense_section_deleted",
+    }
+    assert parent_result.details["code"] in {
+        "skill_fenced_block_deleted",
+        "skill_command_dense_section_deleted",
+    }
 
 
 def test_prompt_tool_token_and_external_code_candidate_gates() -> None:

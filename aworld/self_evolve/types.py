@@ -4,6 +4,11 @@ from dataclasses import dataclass, fields, is_dataclass
 from enum import Enum
 from typing import Any, Mapping
 
+from aworld.skills.structure_types import (
+    SkillStructuralEditAction,
+    SkillStructuralEditIntent,
+)
+
 
 class SelfEvolveRunStatus(str, Enum):
     PENDING = "pending"
@@ -52,6 +57,7 @@ class CandidateVariant:
     parent_candidate_ids: tuple[str, ...] = ()
     target_fingerprint: str | None = None
     files: tuple[CandidateFileDelta, ...] = ()
+    structural_edit_intent: SkillStructuralEditIntent | None = None
 
 
 @dataclass(frozen=True)

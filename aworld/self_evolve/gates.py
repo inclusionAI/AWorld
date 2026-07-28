@@ -229,12 +229,15 @@ class SkillReleaseFidelityGate:
         candidate: CandidateVariant,
         *,
         current_content: str,
-        edit_intent: Mapping[str, Any] | None = None,
+        require_exact_deletion_intent: bool = False,
     ) -> GateResult:
         validation = validate_skill_markdown_structure(
             candidate.content,
             original_content=current_content,
-            edit_intent=edit_intent,
+            edit_intent=candidate.structural_edit_intent,
+            require_exact_deletion_intent=(
+                require_exact_deletion_intent
+            ),
         )
         details = {
             **dict(validation.details),

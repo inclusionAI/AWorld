@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from typing import Any, Mapping
 
+from aworld.secret_detection import contains_sensitive_literal
 from aworld.self_evolve.candidate_errors import (
     CandidateFailureField,
     CandidateMaterializationCode,
@@ -12,17 +13,6 @@ from aworld.self_evolve.candidate_errors import (
 
 _PROTECTED_REFERENCE_PATTERNS = (
     re.compile(r"(?<![\w.-])/(?:Users|private|var|tmp|home)/[^\s,;:'\")\]}]+"),
-    re.compile(
-        r"(?ix)\b(?:secret|token|api[_-]?key|password|cookie)\b"
-        r"\s*(?:=|:)\s*"
-        r"(?![\"']?(?:<|\$\{|\[|your[-_]|example[-_]|placeholder|redacted|dummy|test[-_]))"
-        r"[\"']?[a-z0-9+/_.-]{8,}"
-    ),
-    re.compile(
-        r"(?ix)\bauthorization\s*:\s*bearer\s+"
-        r"(?![\"']?(?:<|\$\{|\[|your[-_]|example[-_]|placeholder|redacted|dummy|test[-_]))"
-        r"[\"']?[a-z0-9_~+/.-]{8,}"
-    ),
     re.compile(r"(?i)\b(ignore|disregard) (all )?(previous|prior|above) (instructions|messages)\b"),
 )
 
@@ -203,7 +193,10 @@ def _required_text(
 
 
 def _reject_protected_references(value: str) -> None:
-    if any(pattern.search(value) for pattern in _PROTECTED_REFERENCE_PATTERNS):
+    if contains_sensitive_literal(value) or any(
+        pattern.search(value)
+        for pattern in _PROTECTED_REFERENCE_PATTERNS
+    ):
         raise CandidateMaterializationError(
             CandidateMaterializationCode.PATCH_CONTENT_PROTECTED_REFERENCE,
             "patch intent contains a protected reference",
