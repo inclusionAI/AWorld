@@ -6085,7 +6085,20 @@ async def test_aworld_cli_replay_executor_writes_canonical_evidence_bundle(
     assert result.metrics["evidence_bundle_valid"] is True
     assert result.metrics["evidence_bundle_entry_count"] == 1
     assert result.metrics["evidence_bundle_path"] == str(bundle_path)
+    assert result.metrics["evidence_manifest_readable"] is True
+    assert result.metrics["evidence_manifest_size_bytes"] > 0
+    assert result.metrics["evidence_manifest_fingerprint"].startswith("sha256:")
     assert bundle["format"] == "aworld.self_evolve.evidence_bundle"
+    assert bundle["manifest"] == {
+        "path": str(tmp_path / "artifacts" / "evidence_manifest.jsonl"),
+        "present": True,
+        "readable": True,
+        "valid": True,
+        "entry_count": 1,
+        "invalid_entry_count": 0,
+        "size_bytes": result.metrics["evidence_manifest_size_bytes"],
+        "fingerprint": result.metrics["evidence_manifest_fingerprint"],
+    }
     assert bundle["entries"][0]["source_id"] == "source-1"
     assert bundle["entries"][0]["artifact_path"] == str(evidence_path)
     assert bundle["entries"][0]["bounded_evidence"]["bounded_excerpt"] == (
@@ -6274,6 +6287,73 @@ def test_replay_evidence_manifest_rejects_oversized_metadata(tmp_path: Path) -> 
     )
 
     assert reason == "metadata exceeds bounded evidence limit"
+
+
+def test_replay_evidence_manifest_rejects_oversized_manifest_file(
+    tmp_path: Path,
+) -> None:
+    artifact_dir = tmp_path / "artifacts"
+    artifact_dir.mkdir()
+    manifest = artifact_dir / "evidence_manifest.jsonl"
+    manifest.write_bytes(b"x" * (1024 * 1024 + 1))
+
+    metrics = _evidence_manifest_metrics(
+        artifact_dir=artifact_dir,
+        evidence_manifest=manifest,
+        workspace_root=tmp_path,
+    )
+    bundle = json.loads(
+        (artifact_dir / "evidence_bundle.json").read_text(encoding="utf-8")
+    )
+
+    assert metrics["evidence_manifest_present"] is True
+    assert metrics["evidence_manifest_readable"] is True
+    assert metrics["evidence_manifest_valid"] is False
+    assert metrics["evidence_manifest_invalid_entry_count"] == 1
+    assert "byte limit" in metrics["evidence_manifest_invalid_reasons"][0]
+    assert bundle["valid"] is False
+    assert bundle["manifest"]["size_bytes"] == 1024 * 1024 + 1
+    assert bundle["manifest"]["valid"] is False
+
+
+def test_replay_evidence_manifest_rejects_excessive_entry_count(
+    tmp_path: Path,
+) -> None:
+    artifact_dir = tmp_path / "artifacts"
+    artifact_dir.mkdir()
+    manifest = artifact_dir / "evidence_manifest.jsonl"
+    manifest.write_text(
+        "\n".join(
+            json.dumps(
+                {
+                    "source_id": f"source-{index}",
+                    "evidence_type": "metadata",
+                    "extraction_method": "bounded structured synthesis",
+                    "bounded_excerpt": {"index": index},
+                }
+            )
+            for index in range(257)
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    metrics = _evidence_manifest_metrics(
+        artifact_dir=artifact_dir,
+        evidence_manifest=manifest,
+        workspace_root=tmp_path,
+    )
+    bundle = json.loads(
+        (artifact_dir / "evidence_bundle.json").read_text(encoding="utf-8")
+    )
+
+    assert metrics["evidence_manifest_valid"] is False
+    assert metrics["evidence_manifest_entry_count"] == 256
+    assert metrics["evidence_manifest_invalid_entry_count"] == 1
+    assert "entry limit" in metrics["evidence_manifest_invalid_reasons"][0]
+    assert len(bundle["entries"]) == 256
+    assert bundle["manifest"]["entry_count"] == 256
+    assert bundle["manifest"]["valid"] is False
 
 
 @pytest.mark.asyncio
@@ -6632,9 +6712,80 @@ def test_replay_aggregate_metrics_include_bundle_validity() -> None:
 
     assert aggregate.metrics["evidence_bundle_valid"] is True
     assert aggregate.metrics["evidence_bundle_valid_values"] == [True, True]
+    assert aggregate.metrics["evidence_bundle_valid_coverage_count"] == 2
     assert aggregate.metrics["evidence_bundle_entry_count"] == 3.0
     assert aggregate.metrics["evidence_bundle_entry_count_values"] == [2.0, 4.0]
+    assert aggregate.metrics["evidence_bundle_entry_count_min"] == 2.0
+    assert aggregate.metrics["evidence_bundle_entry_count_coverage_count"] == 2
     assert aggregate.metrics["evidence_bundle_path"] == "/tmp/bundle-2.json"
+
+
+def test_replay_aggregate_evidence_metrics_fail_closed_on_missing_repetition() -> None:
+    from aworld.self_evolve.replay import _aggregate_variant_results
+
+    results = [
+        ReplayVariantResult(
+            variant_id="cand-1",
+            status="succeeded",
+            trajectory=[{"action": {"content": "answer 1"}}],
+            metrics={
+                "evidence_strategy_passed": True,
+                "evidence_manifest_present": True,
+                "evidence_manifest_readable": True,
+                "evidence_manifest_valid": True,
+                "evidence_manifest_entry_count": 2,
+                "evidence_bundle_present": True,
+                "evidence_bundle_valid": True,
+                "evidence_bundle_entry_count": 2,
+            },
+        ),
+        ReplayVariantResult(
+            variant_id="cand-2",
+            status="succeeded",
+            trajectory=[{"action": {"content": "answer 2"}}],
+            metrics={
+                "evidence_strategy_passed": True,
+                "evidence_manifest_present": True,
+                "evidence_manifest_readable": True,
+                "evidence_manifest_valid": True,
+                "evidence_manifest_entry_count": 4,
+                "evidence_bundle_present": True,
+                "evidence_bundle_valid": True,
+                "evidence_bundle_entry_count": 4,
+            },
+        ),
+        ReplayVariantResult(
+            variant_id="cand-3",
+            status="succeeded",
+            trajectory=[{"action": {"content": "answer 3"}}],
+            metrics={
+                "evidence_manifest_present": False,
+                "evidence_manifest_readable": False,
+                "evidence_manifest_valid": False,
+                "evidence_manifest_entry_count": 0,
+            },
+        ),
+    ]
+
+    aggregate = _aggregate_variant_results(
+        base_variant_id="candidate",
+        results=results,
+        artifact_dir=Path("/tmp/self-evolve-replay-aggregate-missing"),
+    )
+
+    assert aggregate.metrics["evidence_manifest_valid"] is False
+    assert aggregate.metrics["evidence_manifest_valid_values"] == [True, True, False]
+    assert aggregate.metrics["evidence_manifest_valid_coverage_count"] == 3
+    assert aggregate.metrics["evidence_bundle_valid"] is False
+    assert aggregate.metrics["evidence_bundle_valid_values"] == [True, True, False]
+    assert aggregate.metrics["evidence_bundle_valid_coverage_count"] == 2
+    assert aggregate.metrics["evidence_bundle_entry_count_values"] == [2.0, 4.0, 0.0]
+    assert aggregate.metrics["evidence_bundle_entry_count_min"] == 0.0
+    assert aggregate.metrics["evidence_bundle_entry_count_coverage_count"] == 2
+    assert aggregate.metrics["evidence_strategy_passed"] is False
+    assert aggregate.metrics["evidence_strategy_passed_values"] == [True, True, False]
+    assert aggregate.metrics["evidence_strategy_passed_coverage_count"] == 2
+    assert aggregate.metrics["evidence_strategy_passed_coverage"] == pytest.approx(2 / 3)
 
 
 @pytest.mark.asyncio

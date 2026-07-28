@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -1112,6 +1113,20 @@ def test_trajectory_prompt_preserves_non_file_evidence_metadata_in_digest(
 def test_trajectory_prompt_uses_bundle_first_compaction_for_large_replay_payload(
     tmp_path: Path,
 ) -> None:
+    manifest_path = tmp_path / "evidence_manifest.jsonl"
+    manifest_payload = (
+        json.dumps(
+            {
+                "source_id": "source-1",
+                "artifact_path": str(tmp_path / "source.txt"),
+                "extraction_method": "bounded_extract",
+                "bounded_excerpt": "compact verified evidence",
+            }
+        )
+        + "\n"
+    ).encode("utf-8")
+    manifest_path.write_bytes(manifest_payload)
+    manifest_fingerprint = "sha256:" + hashlib.sha256(manifest_payload).hexdigest()
     bundle_path = tmp_path / "evidence_bundle.json"
     bundle_path.write_text(
         json.dumps(
@@ -1119,6 +1134,17 @@ def test_trajectory_prompt_uses_bundle_first_compaction_for_large_replay_payload
                 "format": "aworld.self_evolve.evidence_bundle",
                 "version": 1,
                 "valid": True,
+                "manifest_path": str(manifest_path),
+                "manifest": {
+                    "path": str(manifest_path),
+                    "present": True,
+                    "readable": True,
+                    "valid": True,
+                    "entry_count": 1,
+                    "invalid_entry_count": 0,
+                    "size_bytes": len(manifest_payload),
+                    "fingerprint": manifest_fingerprint,
+                },
                 "entries": [
                     {
                         "source_id": "source-1",
@@ -1192,6 +1218,9 @@ def test_trajectory_prompt_uses_bundle_first_compaction_for_large_replay_payload
     assert prompt["evidence_summary"]["bundle_first"] is True
     assert prompt["evidence_summary"]["raw_evidence_content_suppressed"] is True
     assert trajectory["evidence_bundle"]["valid"] is True
+    assert trajectory["evidence_bundle"]["manifest"]["fingerprint"] == (
+        manifest_fingerprint
+    )
     assert "Self-evolve replay evidence requirements" not in trajectory["question"]
     assert trajectory["system_prompt_excerpt"] == ""
     assert len(evidence) <= 3
@@ -1215,13 +1244,34 @@ def test_trajectory_prompt_uses_bundle_first_compaction_for_large_replay_payload
     } >= {
         ("extracted_trajectory_json", str(extracted_path)),
         ("canonical_evidence_bundle", str(bundle_path)),
+        ("evidence_manifest", str(manifest_path)),
         ("source_artifact", str(tmp_path / "source.txt")),
     }
+    manifest_artifact = next(
+        artifact
+        for artifact in artifact_backed["artifacts"]
+        if artifact["kind"] == "evidence_manifest"
+    )
+    assert manifest_artifact["available"] is True
+    assert manifest_artifact["readable"] is True
+    assert manifest_artifact["valid"] is True
+    assert manifest_artifact["entry_count"] == 1
+    assert manifest_artifact["fingerprint"] == manifest_fingerprint
     evidence_digest = prompt["evidence_digest"]
     assert prompt["evaluation_runtime_contract"]["primary_evaluation_input"] == "evidence_digest"
     assert evidence_digest["mode"] == "judge_ready_evidence_digest"
     assert evidence_digest["canonical_bundle_valid"] is True
     assert evidence_digest["entry_count"] == 1
+    assert evidence_digest["manifest"] == {
+        "path": str(manifest_path),
+        "present": True,
+        "readable": True,
+        "valid": True,
+        "entry_count": 1,
+        "invalid_entry_count": 0,
+        "size_bytes": len(manifest_payload),
+        "fingerprint": manifest_fingerprint,
+    }
     assert evidence_digest["entries"] == [
         {
             "source_id": "source-1",
@@ -1307,6 +1357,8 @@ def test_trajectory_prompt_artifact_index_rejects_bundle_paths_outside_trusted_r
     untrusted_source = tmp_path / "outside" / "secret.txt"
     untrusted_source.parent.mkdir()
     untrusted_source.write_text("secret evidence", encoding="utf-8")
+    untrusted_manifest = untrusted_source.parent / "evidence_manifest.jsonl"
+    untrusted_manifest.write_text("{}\n", encoding="utf-8")
     bundle_path = trusted_dir / "evidence_bundle.json"
     bundle_path.write_text(
         json.dumps(
@@ -1314,6 +1366,16 @@ def test_trajectory_prompt_artifact_index_rejects_bundle_paths_outside_trusted_r
                 "format": "aworld.self_evolve.evidence_bundle",
                 "version": 1,
                 "valid": True,
+                "manifest": {
+                    "path": str(untrusted_manifest),
+                    "present": True,
+                    "readable": True,
+                    "valid": True,
+                    "entry_count": 1,
+                    "invalid_entry_count": 0,
+                    "size_bytes": untrusted_manifest.stat().st_size,
+                    "fingerprint": "sha256:untrusted",
+                },
                 "entries": [
                     {
                         "source_id": "trusted",
@@ -1364,6 +1426,10 @@ def test_trajectory_prompt_artifact_index_rejects_bundle_paths_outside_trusted_r
     }
     assert str(trusted_source) in source_artifact_paths
     assert str(untrusted_source) not in source_artifact_paths
+    assert all(
+        artifact["kind"] != "evidence_manifest"
+        for artifact in prompt["artifact_backed_evidence"]["artifacts"]
+    )
 
 
 def test_trajectory_prompt_compacts_noisy_evidence_without_losing_quality_signals() -> None:

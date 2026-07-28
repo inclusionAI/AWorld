@@ -63,6 +63,8 @@ _MAX_BUNDLE_FIRST_STEP_COUNT = 8
 _MAX_BUNDLE_FIRST_STEP_TEXT_CHARS = 180
 _MAX_EVIDENCE_DIGEST_ENTRIES = 8
 _MAX_EVIDENCE_DIGEST_VALUE_CHARS = 1200
+_MAX_PROMPT_EVIDENCE_BUNDLE_BYTES = 4 * 1024 * 1024
+_MAX_PROMPT_EVIDENCE_BUNDLE_ENTRIES = 256
 _DEFAULT_ARTIFACT_READ_ROUNDS = 2
 _CANONICAL_BUNDLE_ARTIFACT_READ_ROUNDS = 3
 _DEFAULT_ARTIFACT_READ_TOTAL_CHARS = 80000
@@ -832,7 +834,7 @@ def _evidence_digest(
 
     artifacts = artifact_backed_evidence.get("artifacts")
     artifact_read_available = bool(artifacts) if isinstance(artifacts, list) else False
-    return {
+    digest = {
         "mode": "judge_ready_evidence_digest",
         "canonical_bundle_valid": bundle_valid,
         "entry_count": len(entries),
@@ -840,6 +842,10 @@ def _evidence_digest(
         "entries": entries,
         "fallback_artifact_index": "artifact_backed_evidence.artifacts",
     }
+    manifest = evidence_bundle.get("manifest")
+    if isinstance(manifest, Mapping) and manifest:
+        digest["manifest"] = dict(manifest)
+    return digest
 
 
 def _evidence_digest_bundle_entry(entry: Mapping[str, Any]) -> dict[str, Any]:
@@ -1056,6 +1062,26 @@ def _artifact_backed_evidence_index(
         valid=bool(evidence_bundle.get("valid")) if isinstance(evidence_bundle, Mapping) else False,
         entry_count=evidence_bundle.get("entry_count") if isinstance(evidence_bundle, Mapping) else None,
     )
+    if isinstance(evidence_bundle, Mapping):
+        manifest = evidence_bundle.get("manifest")
+        if (
+            isinstance(manifest, Mapping)
+            and manifest.get("present") is True
+            and manifest.get("readable") is True
+            and manifest.get("valid") is True
+            and _is_path_under_trusted_roots(manifest.get("path"), trusted_roots)
+        ):
+            add_artifact(
+                "evidence_manifest",
+                manifest.get("path"),
+                present=True,
+                readable=True,
+                valid=True,
+                entry_count=manifest.get("entry_count"),
+                invalid_entry_count=manifest.get("invalid_entry_count"),
+                size_bytes=manifest.get("size_bytes"),
+                fingerprint=manifest.get("fingerprint"),
+            )
     add_artifact("report_output", runtime_context.get("report_output_path"))
 
     if isinstance(evidence_bundle, Mapping):
@@ -1155,8 +1181,15 @@ def _load_prompt_evidence_bundle(value: object) -> dict[str, Any]:
         return {}
     path = Path(value).expanduser()
     try:
-        bundle = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+        bundle_size = path.stat().st_size
+        if bundle_size > _MAX_PROMPT_EVIDENCE_BUNDLE_BYTES:
+            raise ValueError("evidence bundle exceeds bounded read limit")
+        with path.open("rb") as stream:
+            bundle_bytes = stream.read(_MAX_PROMPT_EVIDENCE_BUNDLE_BYTES + 1)
+        if len(bundle_bytes) > _MAX_PROMPT_EVIDENCE_BUNDLE_BYTES:
+            raise ValueError("evidence bundle exceeds bounded read limit")
+        bundle = json.loads(bundle_bytes.decode("utf-8"))
+    except (OSError, UnicodeDecodeError, ValueError):
         return {
             "path": str(path),
             "valid": False,
@@ -1170,11 +1203,21 @@ def _load_prompt_evidence_bundle(value: object) -> dict[str, Any]:
             "entry_count": 0,
             "entries": [],
         }
-    raw_entries = [
-        entry
-        for entry in bundle.get("entries") or []
-        if isinstance(entry, Mapping)
-    ]
+    raw_entry_values = bundle.get("entries")
+    entries_declared_valid = isinstance(raw_entry_values, list)
+    all_raw_entries = (
+        [
+            entry
+            for entry in raw_entry_values or []
+            if isinstance(entry, Mapping)
+        ]
+        if entries_declared_valid
+        else []
+    )
+    entry_limit_exceeded = (
+        len(all_raw_entries) > _MAX_PROMPT_EVIDENCE_BUNDLE_ENTRIES
+    )
+    raw_entries = all_raw_entries[:_MAX_PROMPT_EVIDENCE_BUNDLE_ENTRIES]
     entries = [
         _compact_prompt_bundle_entry(entry)
         for entry in raw_entries
@@ -1183,15 +1226,68 @@ def _load_prompt_evidence_bundle(value: object) -> dict[str, Any]:
         _prompt_bundle_artifact_entry(entry)
         for entry in raw_entries
     ]
+    manifest = _compact_prompt_evidence_manifest(
+        bundle.get("manifest"),
+        fallback_path=bundle.get("manifest_path"),
+    )
+    manifest_declared = isinstance(bundle.get("manifest"), Mapping)
+    declared_manifest_valid = (
+        not manifest_declared
+        or (
+            manifest.get("present") is True
+            and manifest.get("readable") is True
+            and manifest.get("valid") is True
+        )
+    )
     return {
         "path": str(path),
         "format": str(bundle.get("format") or ""),
         "version": bundle.get("version"),
-        "valid": bool(bundle.get("valid")) and bool(entries),
+        "valid": (
+            bool(bundle.get("valid"))
+            and bool(entries)
+            and entries_declared_valid
+            and not entry_limit_exceeded
+            and declared_manifest_valid
+        ),
         "entry_count": len(entries),
         "entries": entries[:5],
         "artifact_entries": artifact_entries,
+        "manifest": manifest,
     }
+
+
+def _compact_prompt_evidence_manifest(
+    value: object,
+    *,
+    fallback_path: object = None,
+) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        return (
+            {"path": str(fallback_path)}
+            if isinstance(fallback_path, str) and fallback_path.strip()
+            else {}
+        )
+    manifest: dict[str, Any] = {}
+    path = value.get("path")
+    if isinstance(path, str) and path.strip():
+        manifest["path"] = path
+    elif isinstance(fallback_path, str) and fallback_path.strip():
+        manifest["path"] = fallback_path
+    for key in ("present", "readable", "valid"):
+        if isinstance(value.get(key), bool):
+            manifest[key] = value[key]
+    for key in ("entry_count", "invalid_entry_count", "size_bytes"):
+        count = value.get(key)
+        if isinstance(count, int) and not isinstance(count, bool) and count >= 0:
+            manifest[key] = count
+    fingerprint = value.get("fingerprint")
+    if isinstance(fingerprint, str) and fingerprint.strip():
+        manifest["fingerprint"] = _compact_text(
+            fingerprint,
+            _MAX_EVIDENCE_DIGEST_VALUE_CHARS,
+        )
+    return manifest
 
 
 def _prompt_bundle_artifact_entry(entry: Mapping[str, Any]) -> dict[str, Any]:
