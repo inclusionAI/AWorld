@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import builtins
+import hashlib
 import importlib
 import inspect
 import json
+import os
+import stat
 import time
 from pathlib import Path
 from typing import Any, Mapping
@@ -65,6 +68,25 @@ _MAX_EVIDENCE_DIGEST_ENTRIES = 8
 _MAX_EVIDENCE_DIGEST_VALUE_CHARS = 1200
 _MAX_PROMPT_EVIDENCE_BUNDLE_BYTES = 4 * 1024 * 1024
 _MAX_PROMPT_EVIDENCE_BUNDLE_ENTRIES = 256
+_MAX_PROMPT_EVIDENCE_MANIFEST_BYTES = 1024 * 1024
+_MAX_PROMPT_EVIDENCE_MANIFEST_ENTRIES = 256
+_PROMPT_EVIDENCE_BUNDLE_FORMAT = "aworld.self_evolve.evidence_bundle"
+_PROMPT_EVIDENCE_BUNDLE_VERSION = 1
+_PROMPT_EVIDENCE_MANIFEST_PAYLOAD_KEYS = (
+    "excerpt",
+    "excerpts",
+    "bounded_excerpt",
+    "bounded_excerpts",
+    "field_list",
+    "fields",
+    "fields_extracted",
+    "key_fields",
+    "selected_fields",
+    "claims_supported",
+    "claims_supported_by",
+    "summary",
+    "structured_summary",
+)
 _DEFAULT_ARTIFACT_READ_ROUNDS = 2
 _CANONICAL_BUNDLE_ARTIFACT_READ_ROUNDS = 3
 _DEFAULT_ARTIFACT_READ_TOTAL_CHARS = 80000
@@ -669,9 +691,12 @@ def _build_trajectory_prompt(case_input: dict, target: dict, suite) -> str:
         case_value = case_input.get("input") or case_input.get("query") or case_input.get("prompt")
         if not extracted_payload.get("question") and case_value is not None:
             extracted_payload["question"] = str(case_value)
-    evidence_bundle = _load_prompt_evidence_bundle(
-        extracted_payload.get("evidence_bundle_path") or target.get("evidence_bundle_path")
+    evidence_bundle_path = (
+        extracted_payload.get("evidence_bundle_path")
+        or target.get("evidence_bundle_path")
     )
+    extracted_payload.pop("evidence_bundle", None)
+    evidence_bundle = _load_prompt_evidence_bundle(evidence_bundle_path)
     if evidence_bundle:
         extracted_payload["evidence_bundle"] = evidence_bundle
     runtime_context = _trajectory_runtime_context(
@@ -1037,16 +1062,28 @@ def _artifact_backed_evidence_index(
         if key in seen:
             return
         seen.add(key)
+        artifact_path = Path(path).expanduser()
+        try:
+            artifact_stat = os.lstat(artifact_path)
+            available = stat.S_ISREG(artifact_stat.st_mode)
+        except OSError:
+            artifact_stat = None
+            available = False
         artifact = {
             "kind": kind,
             "path": path,
-            "available": Path(path).expanduser().exists(),
+            "available": available,
         }
-        try:
-            artifact["size_bytes"] = Path(path).expanduser().stat().st_size
-        except OSError:
-            pass
+        if artifact_stat is not None:
+            artifact["size_bytes"] = artifact_stat.st_size
         artifact.update({k: v for k, v in metadata.items() if v not in (None, "")})
+        if not available:
+            if artifact.get("present") is True:
+                artifact["present"] = False
+            if artifact.get("valid") is True:
+                artifact["valid"] = False
+            if artifact.get("readable") is True:
+                artifact["readable"] = False
         artifacts.append(artifact)
 
     def add_source_artifact(path_value: object, **metadata: Any) -> None:
@@ -1056,31 +1093,64 @@ def _artifact_backed_evidence_index(
 
     add_artifact("trajectory_log", runtime_context.get("trajectory_log_path"))
     add_artifact("extracted_trajectory_json", str(extracted_path) if extracted_path else None)
+    manifest_for_index: Mapping[str, Any] | None = None
+    manifest_was_valid = False
+    if isinstance(evidence_bundle, Mapping):
+        manifest = evidence_bundle.get("manifest")
+        bundle_path_value = evidence_bundle.get("path")
+        artifact_entries = (
+            evidence_bundle.get("artifact_entries")
+            if isinstance(evidence_bundle.get("artifact_entries"), list)
+            else evidence_bundle.get("entries")
+        )
+        manifest_was_valid = (
+            isinstance(manifest, Mapping)
+            and manifest.get("valid") is True
+            and isinstance(bundle_path_value, str)
+            and isinstance(artifact_entries, list)
+        )
+        if manifest_was_valid:
+            manifest_for_index = _validate_prompt_evidence_manifest(
+                manifest,
+                bundle_path=Path(bundle_path_value).expanduser(),
+                declared_manifest_path=manifest.get("path"),
+                expected_entries=[
+                    entry
+                    for entry in artifact_entries
+                    if isinstance(entry, Mapping)
+                ],
+            )
+            if manifest_for_index.get("valid") is not True:
+                if isinstance(manifest, dict):
+                    manifest.clear()
+                    manifest.update(manifest_for_index)
+                if isinstance(evidence_bundle, dict):
+                    evidence_bundle["valid"] = False
+                if isinstance(evidence_summary, dict):
+                    evidence_summary["canonical_bundle_valid"] = False
     add_artifact(
         "canonical_evidence_bundle",
         evidence_bundle.get("path") if isinstance(evidence_bundle, Mapping) else None,
         valid=bool(evidence_bundle.get("valid")) if isinstance(evidence_bundle, Mapping) else False,
         entry_count=evidence_bundle.get("entry_count") if isinstance(evidence_bundle, Mapping) else None,
     )
-    if isinstance(evidence_bundle, Mapping):
-        manifest = evidence_bundle.get("manifest")
+    if manifest_was_valid and isinstance(manifest_for_index, Mapping):
+        manifest_path = manifest_for_index.get("path")
         if (
-            isinstance(manifest, Mapping)
-            and manifest.get("present") is True
-            and manifest.get("readable") is True
-            and manifest.get("valid") is True
-            and _is_path_under_trusted_roots(manifest.get("path"), trusted_roots)
+            _is_path_under_trusted_roots(manifest_path, trusted_roots)
         ):
             add_artifact(
                 "evidence_manifest",
-                manifest.get("path"),
-                present=True,
-                readable=True,
-                valid=True,
-                entry_count=manifest.get("entry_count"),
-                invalid_entry_count=manifest.get("invalid_entry_count"),
-                size_bytes=manifest.get("size_bytes"),
-                fingerprint=manifest.get("fingerprint"),
+                manifest_path,
+                present=manifest_for_index.get("present"),
+                readable=manifest_for_index.get("readable"),
+                regular_file=manifest_for_index.get("regular_file"),
+                valid=manifest_for_index.get("valid"),
+                entry_count=manifest_for_index.get("entry_count"),
+                invalid_entry_count=manifest_for_index.get("invalid_entry_count"),
+                size_bytes=manifest_for_index.get("size_bytes"),
+                fingerprint=manifest_for_index.get("fingerprint"),
+                validation_errors=manifest_for_index.get("validation_errors"),
             )
     add_artifact("report_output", runtime_context.get("report_output_path"))
 
@@ -1203,8 +1273,15 @@ def _load_prompt_evidence_bundle(value: object) -> dict[str, Any]:
             "entry_count": 0,
             "entries": [],
         }
+    validation_errors: list[str] = []
+    if bundle.get("format") != _PROMPT_EVIDENCE_BUNDLE_FORMAT:
+        validation_errors.append("bundle_format_mismatch")
+    if bundle.get("version") != _PROMPT_EVIDENCE_BUNDLE_VERSION:
+        validation_errors.append("bundle_version_mismatch")
     raw_entry_values = bundle.get("entries")
     entries_declared_valid = isinstance(raw_entry_values, list)
+    if not entries_declared_valid:
+        validation_errors.append("bundle_entries_not_list")
     all_raw_entries = (
         [
             entry
@@ -1214,10 +1291,22 @@ def _load_prompt_evidence_bundle(value: object) -> dict[str, Any]:
         if entries_declared_valid
         else []
     )
+    if entries_declared_valid and len(all_raw_entries) != len(raw_entry_values):
+        validation_errors.append("bundle_entry_not_object")
+    if entries_declared_valid and not raw_entry_values:
+        validation_errors.append("bundle_entries_empty")
     entry_limit_exceeded = (
         len(all_raw_entries) > _MAX_PROMPT_EVIDENCE_BUNDLE_ENTRIES
     )
+    if entry_limit_exceeded:
+        validation_errors.append("bundle_entry_limit_exceeded")
     raw_entries = all_raw_entries[:_MAX_PROMPT_EVIDENCE_BUNDLE_ENTRIES]
+    for index, entry in enumerate(raw_entries):
+        entry_error = _prompt_evidence_bundle_entry_error(entry)
+        if entry_error is not None:
+            validation_errors.append(
+                f"bundle_entry_schema_invalid:{index}:{entry_error}"
+            )
     entries = [
         _compact_prompt_bundle_entry(entry)
         for entry in raw_entries
@@ -1226,35 +1315,310 @@ def _load_prompt_evidence_bundle(value: object) -> dict[str, Any]:
         _prompt_bundle_artifact_entry(entry)
         for entry in raw_entries
     ]
-    manifest = _compact_prompt_evidence_manifest(
+    manifest = _validate_prompt_evidence_manifest(
         bundle.get("manifest"),
-        fallback_path=bundle.get("manifest_path"),
+        bundle_path=path,
+        declared_manifest_path=bundle.get("manifest_path"),
+        expected_entries=all_raw_entries,
     )
-    manifest_declared = isinstance(bundle.get("manifest"), Mapping)
-    declared_manifest_valid = (
-        not manifest_declared
-        or (
-            manifest.get("present") is True
-            and manifest.get("readable") is True
-            and manifest.get("valid") is True
-        )
-    )
+    if manifest.get("valid") is not True:
+        validation_errors.append("manifest_validation_failed")
     return {
         "path": str(path),
         "format": str(bundle.get("format") or ""),
         "version": bundle.get("version"),
         "valid": (
-            bool(bundle.get("valid"))
+            bundle.get("valid") is True
             and bool(entries)
             and entries_declared_valid
             and not entry_limit_exceeded
-            and declared_manifest_valid
+            and not validation_errors
+            and manifest.get("valid") is True
         ),
         "entry_count": len(entries),
         "entries": entries[:5],
         "artifact_entries": artifact_entries,
         "manifest": manifest,
+        "validation_errors": validation_errors,
     }
+
+
+def _prompt_evidence_bundle_entry_error(entry: Mapping[str, Any]) -> str | None:
+    if not str(entry.get("source_id") or "").strip():
+        return "missing_source_id"
+    if not str(entry.get("extraction_method") or "").strip():
+        return "missing_extraction_method"
+    bounded_evidence = entry.get("bounded_evidence")
+    if not isinstance(bounded_evidence, Mapping) or not bounded_evidence:
+        return "missing_bounded_evidence"
+    if str(entry.get("evidence_type") or "").strip().lower() == "metadata":
+        metadata = entry.get("metadata")
+        if not isinstance(metadata, Mapping) or not metadata:
+            return "missing_metadata"
+        return None
+    if not str(entry.get("artifact_path") or "").strip():
+        return "missing_artifact_path"
+    return None
+
+
+def _validate_prompt_evidence_manifest(
+    value: object,
+    *,
+    bundle_path: Path,
+    declared_manifest_path: object,
+    expected_entries: list[Mapping[str, Any]],
+) -> dict[str, Any]:
+    claimed = _compact_prompt_evidence_manifest(
+        value,
+        fallback_path=declared_manifest_path,
+    )
+    result: dict[str, Any] = {
+        "path": str(claimed.get("path") or ""),
+        "present": False,
+        "readable": False,
+        "regular_file": False,
+        "valid": False,
+        "entry_count": 0,
+        "invalid_entry_count": 0,
+        "size_bytes": 0,
+        "validation_errors": [],
+    }
+    errors: list[str] = result["validation_errors"]
+
+    def add_error(reason: str) -> None:
+        if reason not in errors:
+            errors.append(reason)
+
+    if not isinstance(value, Mapping):
+        add_error("manifest_metadata_missing")
+    manifest_path_value = claimed.get("path")
+    if not isinstance(manifest_path_value, str) or not manifest_path_value.strip():
+        add_error("manifest_path_missing")
+        return result
+    manifest_path = Path(manifest_path_value).expanduser()
+    if not manifest_path.is_absolute():
+        manifest_path = bundle_path.parent / manifest_path
+    result["path"] = str(manifest_path)
+
+    if isinstance(declared_manifest_path, str) and declared_manifest_path.strip():
+        declared_path = Path(declared_manifest_path).expanduser()
+        if not declared_path.is_absolute():
+            declared_path = bundle_path.parent / declared_path
+        if declared_path.resolve(strict=False) != manifest_path.resolve(strict=False):
+            add_error("manifest_path_mismatch")
+    else:
+        add_error("manifest_path_declaration_missing")
+
+    trusted_root = bundle_path.parent.resolve(strict=False)
+    if not _is_path_under_trusted_roots(str(manifest_path), [trusted_root]):
+        add_error("manifest_path_untrusted")
+        return result
+
+    for key in ("present", "readable", "valid"):
+        if claimed.get(key) is not True:
+            add_error(f"manifest_metadata_{key}_false")
+    if claimed.get("invalid_entry_count") != 0:
+        add_error("manifest_metadata_invalid_entries")
+
+    try:
+        path_stat_before = os.lstat(manifest_path)
+    except FileNotFoundError:
+        add_error("manifest_missing")
+        return result
+    except OSError:
+        add_error("manifest_unreadable")
+        return result
+    result["present"] = True
+    result["regular_file"] = stat.S_ISREG(path_stat_before.st_mode)
+    if result["regular_file"] is not True:
+        add_error("manifest_not_regular_file")
+        return result
+
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    manifest_bytes: bytes | None = None
+    file_stat_before = None
+    file_stat_after = None
+    try:
+        descriptor = os.open(manifest_path, flags)
+        try:
+            file_stat_before = os.fstat(descriptor)
+            if not stat.S_ISREG(file_stat_before.st_mode):
+                add_error("manifest_not_regular_file")
+            elif file_stat_before.st_size > _MAX_PROMPT_EVIDENCE_MANIFEST_BYTES:
+                result["readable"] = True
+                result["size_bytes"] = file_stat_before.st_size
+                add_error("manifest_size_limit_exceeded")
+            else:
+                with os.fdopen(descriptor, "rb", closefd=False) as stream:
+                    manifest_bytes = stream.read(
+                        _MAX_PROMPT_EVIDENCE_MANIFEST_BYTES + 1
+                    )
+                result["readable"] = True
+                result["size_bytes"] = len(manifest_bytes)
+                if len(manifest_bytes) > _MAX_PROMPT_EVIDENCE_MANIFEST_BYTES:
+                    add_error("manifest_size_limit_exceeded")
+            file_stat_after = os.fstat(descriptor)
+        finally:
+            os.close(descriptor)
+    except FileNotFoundError:
+        add_error("manifest_missing")
+        return result
+    except OSError:
+        add_error("manifest_unreadable")
+        return result
+
+    try:
+        path_stat_after = os.lstat(manifest_path)
+    except OSError:
+        add_error("manifest_path_changed_during_read")
+        path_stat_after = None
+    if (
+        file_stat_before is not None
+        and file_stat_after is not None
+        and (
+            _stat_identity(path_stat_before) != _stat_identity(file_stat_before)
+            or _stat_identity(file_stat_before) != _stat_identity(file_stat_after)
+            or (
+                path_stat_after is not None
+                and _stat_identity(file_stat_after) != _stat_identity(path_stat_after)
+            )
+            or file_stat_before.st_size != file_stat_after.st_size
+            or file_stat_before.st_mtime_ns != file_stat_after.st_mtime_ns
+        )
+    ):
+        add_error("manifest_path_changed_during_read")
+
+    if manifest_bytes is None:
+        result["invalid_entry_count"] = len(errors)
+        return result
+
+    actual_fingerprint = (
+        "sha256:" + hashlib.sha256(manifest_bytes).hexdigest()
+    )
+    result["fingerprint"] = actual_fingerprint
+    if claimed.get("size_bytes") != len(manifest_bytes):
+        add_error("manifest_size_mismatch")
+    claimed_fingerprint = claimed.get("fingerprint")
+    if not _is_sha256_fingerprint(claimed_fingerprint):
+        add_error("manifest_fingerprint_invalid")
+    elif claimed_fingerprint != actual_fingerprint:
+        add_error("manifest_fingerprint_mismatch")
+
+    records, record_errors, entry_limit_exceeded = (
+        _decode_prompt_evidence_manifest_records(manifest_bytes)
+    )
+    for error in record_errors:
+        add_error(error)
+    if entry_limit_exceeded:
+        add_error("manifest_entry_limit_exceeded")
+    result["entry_count"] = len(records)
+    if claimed.get("entry_count") != len(records):
+        add_error("manifest_entry_count_mismatch")
+    if len(expected_entries) != len(records):
+        add_error("manifest_bundle_entry_count_mismatch")
+    else:
+        expected_identities = [
+            (
+                str(entry.get("source_id") or ""),
+                str(entry.get("extraction_method") or ""),
+            )
+            for entry in expected_entries
+        ]
+        manifest_identities = [
+            (
+                str(entry.get("source_id") or ""),
+                str(entry.get("extraction_method") or ""),
+            )
+            for entry in records
+        ]
+        if manifest_identities != expected_identities:
+            add_error("manifest_bundle_entry_identity_mismatch")
+    result["invalid_entry_count"] = len(record_errors)
+    result["valid"] = not errors and bool(records)
+    return result
+
+
+def _stat_identity(value: object) -> tuple[object, object]:
+    return (getattr(value, "st_dev", None), getattr(value, "st_ino", None))
+
+
+def _is_sha256_fingerprint(value: object) -> bool:
+    if not isinstance(value, str) or not value.startswith("sha256:"):
+        return False
+    digest = value.removeprefix("sha256:")
+    return len(digest) == 64 and all(
+        character in "0123456789abcdef" for character in digest
+    )
+
+
+def _decode_prompt_evidence_manifest_records(
+    manifest_bytes: bytes,
+) -> tuple[list[Mapping[str, Any]], list[str], bool]:
+    text = manifest_bytes.decode("utf-8", errors="replace")
+    decoder = json.JSONDecoder()
+    records: list[Mapping[str, Any]] = []
+    errors: list[str] = []
+    cursor = 0
+    decoded_entry_count = 0
+    entry_limit_exceeded = False
+    while cursor < len(text):
+        while cursor < len(text) and text[cursor].isspace():
+            cursor += 1
+        if cursor >= len(text):
+            break
+        if decoded_entry_count >= _MAX_PROMPT_EVIDENCE_MANIFEST_ENTRIES:
+            entry_limit_exceeded = True
+            break
+        line_number = text.count("\n", 0, cursor) + 1
+        try:
+            value, end = decoder.raw_decode(text, cursor)
+        except json.JSONDecodeError:
+            errors.append(f"manifest_json_invalid:{line_number}")
+            break
+        decoded_entry_count += 1
+        if not isinstance(value, Mapping):
+            errors.append(f"manifest_entry_not_object:{line_number}")
+        else:
+            entry_error = _prompt_evidence_manifest_entry_error(value)
+            if entry_error is not None:
+                errors.append(
+                    f"manifest_entry_schema_invalid:{line_number}:{entry_error}"
+                )
+            records.append(value)
+        cursor = end
+    return records, errors, entry_limit_exceeded
+
+
+def _prompt_evidence_manifest_entry_error(
+    entry: Mapping[str, Any],
+) -> str | None:
+    if not str(entry.get("source_id") or "").strip():
+        return "missing_source_id"
+    if not str(entry.get("extraction_method") or "").strip():
+        return "missing_extraction_method"
+    evidence_type = str(entry.get("evidence_type") or "").strip().lower()
+    if evidence_type == "metadata" or (
+        not str(entry.get("artifact_path") or "").strip()
+        and isinstance(entry.get("metadata"), Mapping)
+    ):
+        metadata = entry.get("metadata")
+        has_bounded_payload = any(
+            key in entry
+            for key in _PROMPT_EVIDENCE_MANIFEST_PAYLOAD_KEYS
+        )
+        if (
+            (not isinstance(metadata, Mapping) or not metadata)
+            and not has_bounded_payload
+        ):
+            return "missing_metadata"
+        return None
+    if evidence_type not in ("", "file", "artifact"):
+        return "unsupported_evidence_type"
+    if not str(entry.get("artifact_path") or "").strip():
+        return "missing_artifact_path"
+    return None
 
 
 def _compact_prompt_evidence_manifest(
@@ -1274,7 +1638,7 @@ def _compact_prompt_evidence_manifest(
         manifest["path"] = path
     elif isinstance(fallback_path, str) and fallback_path.strip():
         manifest["path"] = fallback_path
-    for key in ("present", "readable", "valid"):
+    for key in ("present", "readable", "regular_file", "valid"):
         if isinstance(value.get(key), bool):
             manifest[key] = value[key]
     for key in ("entry_count", "invalid_entry_count", "size_bytes"):
@@ -1287,6 +1651,13 @@ def _compact_prompt_evidence_manifest(
             fingerprint,
             _MAX_EVIDENCE_DIGEST_VALUE_CHARS,
         )
+    validation_errors = value.get("validation_errors")
+    if isinstance(validation_errors, list):
+        manifest["validation_errors"] = [
+            str(item)
+            for item in validation_errors[:8]
+            if str(item).strip()
+        ]
     return manifest
 
 

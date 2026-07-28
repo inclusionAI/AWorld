@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import os
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -12,14 +13,17 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "aworld-cli" / "src"))
 
 import aworld.evaluations.substrate as substrate_module
+import aworld_cli.evaluator_runtime as evaluator_runtime_module
 from aworld.config.conf import ModelConfig
 from aworld.evaluations.manifests import get_declared_eval_suite_schema
 from aworld.evaluations.report import EvaluatorReport
 from aworld_cli.evaluator_runtime import (
     _CliAgentRuntimeHarness,
+    _artifact_backed_evidence_index,
     _build_source_suite,
     _build_source_prompt,
     _build_trajectory_prompt,
+    _load_prompt_evidence_bundle,
     available_evaluator_suites,
     evaluator_exit_code,
     get_declared_evaluator_suite_schema,
@@ -33,6 +37,63 @@ from aworld_cli.evaluator_rendering import render_evaluator_summary
 
 def _write_answer_source(path: Path) -> None:
     path.write_text('{"id":"case-1","input":"question","answer":"existing"}\n', encoding="utf-8")
+
+
+def _write_verified_evidence_bundle(
+    bundle_path: Path,
+    entries: list[dict[str, object]],
+    *,
+    manifest_path: Path | None = None,
+    manifest_entries: list[dict[str, object]] | None = None,
+) -> tuple[Path, str]:
+    manifest_path = manifest_path or bundle_path.with_name("evidence_manifest.jsonl")
+    if manifest_entries is None:
+        manifest_entries = []
+        for entry in entries:
+            manifest_entry: dict[str, object] = {
+                "source_id": entry["source_id"],
+                "extraction_method": entry["extraction_method"],
+            }
+            if entry.get("evidence_type") == "metadata":
+                manifest_entry["evidence_type"] = "metadata"
+                manifest_entry["metadata"] = entry["metadata"]
+            else:
+                manifest_entry["artifact_path"] = entry["artifact_path"]
+            bounded_evidence = entry.get("bounded_evidence")
+            if isinstance(bounded_evidence, dict):
+                manifest_entry.update(bounded_evidence)
+            manifest_entries.append(manifest_entry)
+    manifest_payload = (
+        "".join(
+            json.dumps(entry, ensure_ascii=False, separators=(",", ":")) + "\n"
+            for entry in manifest_entries
+        )
+    ).encode("utf-8")
+    manifest_path.write_bytes(manifest_payload)
+    manifest_fingerprint = "sha256:" + hashlib.sha256(manifest_payload).hexdigest()
+    bundle_path.write_text(
+        json.dumps(
+            {
+                "format": "aworld.self_evolve.evidence_bundle",
+                "version": 1,
+                "valid": True,
+                "manifest_path": str(manifest_path),
+                "manifest": {
+                    "path": str(manifest_path),
+                    "present": True,
+                    "readable": True,
+                    "valid": True,
+                    "entry_count": len(manifest_entries),
+                    "invalid_entry_count": 0,
+                    "size_bytes": len(manifest_payload),
+                    "fingerprint": manifest_fingerprint,
+                },
+                "entries": entries,
+            }
+        ),
+        encoding="utf-8",
+    )
+    return manifest_path, manifest_fingerprint
 
 
 @pytest.fixture(autouse=True)
@@ -993,25 +1054,18 @@ def test_build_trajectory_prompt_includes_runtime_context_from_source_target() -
 
 def test_trajectory_prompt_includes_canonical_evidence_bundle(tmp_path: Path) -> None:
     bundle_path = tmp_path / "evidence_bundle.json"
-    bundle_path.write_text(
-        json.dumps(
+    _write_verified_evidence_bundle(
+        bundle_path,
+        [
             {
-                "format": "aworld.self_evolve.evidence_bundle",
-                "version": 1,
-                "valid": True,
-                "entries": [
-                    {
-                        "source_id": "source-1",
-                        "artifact_path": str(tmp_path / "source.txt"),
-                        "extraction_method": "bounded_extract",
-                        "bounded_evidence": {
-                            "bounded_excerpt": "short verified evidence",
-                        },
-                    }
-                ],
+                "source_id": "source-1",
+                "artifact_path": str(tmp_path / "source.txt"),
+                "extraction_method": "bounded_extract",
+                "bounded_evidence": {
+                    "bounded_excerpt": "short verified evidence",
+                },
             }
-        ),
-        encoding="utf-8",
+        ],
     )
 
     prompt = json.loads(
@@ -1057,30 +1111,23 @@ def test_trajectory_prompt_preserves_non_file_evidence_metadata_in_digest(
     tmp_path: Path,
 ) -> None:
     bundle_path = tmp_path / "evidence_bundle.json"
-    bundle_path.write_text(
-        json.dumps(
+    _write_verified_evidence_bundle(
+        bundle_path,
+        [
             {
-                "format": "aworld.self_evolve.evidence_bundle",
-                "version": 1,
-                "valid": True,
-                "entries": [
-                    {
-                        "source_id": "scheduled_notification",
-                        "evidence_type": "metadata",
-                        "extraction_method": "scheduler_response",
-                        "metadata": {
-                            "operation": "schedule_notification",
-                            "reference_id": "job-123",
-                            "status": "scheduled",
-                        },
-                        "bounded_evidence": {
-                            "bounded_excerpt": "Notification job job-123 was scheduled."
-                        },
-                    }
-                ],
+                "source_id": "scheduled_notification",
+                "evidence_type": "metadata",
+                "extraction_method": "scheduler_response",
+                "metadata": {
+                    "operation": "schedule_notification",
+                    "reference_id": "job-123",
+                    "status": "scheduled",
+                },
+                "bounded_evidence": {
+                    "bounded_excerpt": "Notification job job-123 was scheduled."
+                },
             }
-        ),
-        encoding="utf-8",
+        ],
     )
 
     prompt = json.loads(
@@ -1266,11 +1313,13 @@ def test_trajectory_prompt_uses_bundle_first_compaction_for_large_replay_payload
         "path": str(manifest_path),
         "present": True,
         "readable": True,
+        "regular_file": True,
         "valid": True,
         "entry_count": 1,
         "invalid_entry_count": 0,
         "size_bytes": len(manifest_payload),
         "fingerprint": manifest_fingerprint,
+        "validation_errors": [],
     }
     assert evidence_digest["entries"] == [
         {
@@ -1285,6 +1334,335 @@ def test_trajectory_prompt_uses_bundle_first_compaction_for_large_replay_payload
     assert prompt["evaluation_runtime_contract"]["may_use_read_only_artifact_access"] is True
     assert prompt["evaluation_runtime_contract"]["do_not_call_external_tools"] is True
     assert len(json.dumps(prompt, ensure_ascii=False)) < 30000
+
+
+def test_load_prompt_evidence_bundle_revalidates_manifest_file(
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / "source.txt"
+    source_path.write_text("verified evidence", encoding="utf-8")
+    bundle_path = tmp_path / "evidence_bundle.json"
+    manifest_path, manifest_fingerprint = _write_verified_evidence_bundle(
+        bundle_path,
+        [
+            {
+                "source_id": "source-1",
+                "artifact_path": str(source_path),
+                "extraction_method": "bounded_extract",
+                "bounded_evidence": {"bounded_excerpt": "verified evidence"},
+            }
+        ],
+    )
+
+    bundle = _load_prompt_evidence_bundle(str(bundle_path))
+
+    assert bundle["valid"] is True
+    assert bundle["format"] == "aworld.self_evolve.evidence_bundle"
+    assert bundle["version"] == 1
+    assert bundle["manifest"]["path"] == str(manifest_path)
+    assert bundle["manifest"]["present"] is True
+    assert bundle["manifest"]["readable"] is True
+    assert bundle["manifest"]["regular_file"] is True
+    assert bundle["manifest"]["valid"] is True
+    assert bundle["manifest"]["fingerprint"] == manifest_fingerprint
+    assert bundle["manifest"]["validation_errors"] == []
+
+
+def test_load_prompt_evidence_bundle_fails_closed_when_manifest_is_missing(
+    tmp_path: Path,
+) -> None:
+    bundle_path = tmp_path / "evidence_bundle.json"
+    manifest_path, _ = _write_verified_evidence_bundle(
+        bundle_path,
+        [
+            {
+                "source_id": "source-1",
+                "artifact_path": str(tmp_path / "source.txt"),
+                "extraction_method": "bounded_extract",
+                "bounded_evidence": {"bounded_excerpt": "verified evidence"},
+            }
+        ],
+    )
+    manifest_path.unlink()
+
+    bundle = _load_prompt_evidence_bundle(str(bundle_path))
+
+    assert bundle["valid"] is False
+    assert bundle["manifest"]["present"] is False
+    assert bundle["manifest"]["readable"] is False
+    assert bundle["manifest"]["valid"] is False
+    assert "manifest_missing" in bundle["manifest"]["validation_errors"]
+
+
+def test_load_prompt_evidence_bundle_fails_closed_when_manifest_is_replaced(
+    tmp_path: Path,
+) -> None:
+    bundle_path = tmp_path / "evidence_bundle.json"
+    manifest_path, expected_fingerprint = _write_verified_evidence_bundle(
+        bundle_path,
+        [
+            {
+                "source_id": "source-1",
+                "artifact_path": str(tmp_path / "source.txt"),
+                "extraction_method": "bounded_extract",
+                "bounded_evidence": {"bounded_excerpt": "verified evidence"},
+            }
+        ],
+    )
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "source_id": "replacement",
+                "artifact_path": str(tmp_path / "source.txt"),
+                "extraction_method": "bounded_extract",
+                "bounded_excerpt": "substituted evidence",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    bundle = _load_prompt_evidence_bundle(str(bundle_path))
+
+    assert bundle["valid"] is False
+    assert bundle["manifest"]["valid"] is False
+    assert bundle["manifest"]["fingerprint"] != expected_fingerprint
+    assert "manifest_size_mismatch" in bundle["manifest"]["validation_errors"]
+    assert "manifest_fingerprint_mismatch" in bundle["manifest"]["validation_errors"]
+
+
+def test_load_prompt_evidence_bundle_rejects_manifest_symlink(
+    tmp_path: Path,
+) -> None:
+    bundle_path = tmp_path / "evidence_bundle.json"
+    manifest_path, _ = _write_verified_evidence_bundle(
+        bundle_path,
+        [
+            {
+                "source_id": "source-1",
+                "artifact_path": str(tmp_path / "source.txt"),
+                "extraction_method": "bounded_extract",
+                "bounded_evidence": {"bounded_excerpt": "verified evidence"},
+            }
+        ],
+    )
+    manifest_payload = manifest_path.read_bytes()
+    manifest_target = tmp_path / "manifest-target.jsonl"
+    manifest_target.write_bytes(manifest_payload)
+    manifest_path.unlink()
+    manifest_path.symlink_to(manifest_target)
+
+    bundle = _load_prompt_evidence_bundle(str(bundle_path))
+
+    assert bundle["valid"] is False
+    assert bundle["manifest"]["present"] is True
+    assert bundle["manifest"]["regular_file"] is False
+    assert bundle["manifest"]["valid"] is False
+    assert "manifest_not_regular_file" in bundle["manifest"]["validation_errors"]
+
+
+def test_load_prompt_evidence_bundle_fails_closed_on_manifest_size_limit(
+    tmp_path: Path,
+) -> None:
+    bundle_path = tmp_path / "evidence_bundle.json"
+    manifest_path, _ = _write_verified_evidence_bundle(
+        bundle_path,
+        [
+            {
+                "source_id": "source-1",
+                "artifact_path": str(tmp_path / "source.txt"),
+                "extraction_method": "bounded_extract",
+                "bounded_evidence": {"bounded_excerpt": "verified evidence"},
+            }
+        ],
+    )
+    oversized_payload = b"x" * (1024 * 1024 + 1)
+    manifest_path.write_bytes(oversized_payload)
+    persisted = json.loads(bundle_path.read_text(encoding="utf-8"))
+    persisted["manifest"]["size_bytes"] = len(oversized_payload)
+    persisted["manifest"]["fingerprint"] = (
+        "sha256:" + hashlib.sha256(oversized_payload).hexdigest()
+    )
+    bundle_path.write_text(json.dumps(persisted), encoding="utf-8")
+
+    bundle = _load_prompt_evidence_bundle(str(bundle_path))
+
+    assert bundle["valid"] is False
+    assert bundle["manifest"]["valid"] is False
+    assert "manifest_size_limit_exceeded" in bundle["manifest"]["validation_errors"]
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "error"),
+    [
+        ("format", "unknown.bundle", "bundle_format_mismatch"),
+        ("version", 2, "bundle_version_mismatch"),
+    ],
+)
+def test_load_prompt_evidence_bundle_validates_format_and_version(
+    tmp_path: Path,
+    field: str,
+    value: object,
+    error: str,
+) -> None:
+    bundle_path = tmp_path / "evidence_bundle.json"
+    _write_verified_evidence_bundle(
+        bundle_path,
+        [
+            {
+                "source_id": "source-1",
+                "artifact_path": str(tmp_path / "source.txt"),
+                "extraction_method": "bounded_extract",
+                "bounded_evidence": {"bounded_excerpt": "verified evidence"},
+            }
+        ],
+    )
+    persisted = json.loads(bundle_path.read_text(encoding="utf-8"))
+    persisted[field] = value
+    bundle_path.write_text(json.dumps(persisted), encoding="utf-8")
+
+    bundle = _load_prompt_evidence_bundle(str(bundle_path))
+
+    assert bundle["valid"] is False
+    assert error in bundle["validation_errors"]
+
+
+def test_load_prompt_evidence_bundle_fails_closed_on_entry_limit(
+    tmp_path: Path,
+) -> None:
+    bundle_path = tmp_path / "evidence_bundle.json"
+    entries = [
+        {
+            "source_id": f"source-{index}",
+            "artifact_path": str(tmp_path / f"source-{index}.txt"),
+            "extraction_method": "bounded_extract",
+            "bounded_evidence": {"bounded_excerpt": f"evidence {index}"},
+        }
+        for index in range(257)
+    ]
+    _write_verified_evidence_bundle(bundle_path, entries)
+
+    bundle = _load_prompt_evidence_bundle(str(bundle_path))
+
+    assert bundle["valid"] is False
+    assert bundle["entry_count"] == 256
+    assert "bundle_entry_limit_exceeded" in bundle["validation_errors"]
+    assert "manifest_entry_limit_exceeded" in bundle["manifest"]["validation_errors"]
+
+
+def test_load_prompt_evidence_bundle_validates_bundle_and_manifest_entry_schema(
+    tmp_path: Path,
+) -> None:
+    bundle_path = tmp_path / "evidence_bundle.json"
+    manifest_path, _ = _write_verified_evidence_bundle(
+        bundle_path,
+        [
+            {
+                "source_id": "source-1",
+                "artifact_path": str(tmp_path / "source.txt"),
+                "extraction_method": "bounded_extract",
+                "bounded_evidence": {"bounded_excerpt": "verified evidence"},
+            }
+        ],
+    )
+    invalid_manifest = b'{"source_id":"","extraction_method":"bounded_extract"}\n'
+    manifest_path.write_bytes(invalid_manifest)
+    persisted = json.loads(bundle_path.read_text(encoding="utf-8"))
+    persisted["entries"].append("not-an-object")
+    persisted["manifest"]["size_bytes"] = len(invalid_manifest)
+    persisted["manifest"]["fingerprint"] = (
+        "sha256:" + hashlib.sha256(invalid_manifest).hexdigest()
+    )
+    bundle_path.write_text(json.dumps(persisted), encoding="utf-8")
+
+    bundle = _load_prompt_evidence_bundle(str(bundle_path))
+
+    assert bundle["valid"] is False
+    assert "bundle_entry_not_object" in bundle["validation_errors"]
+    assert any(
+        error.startswith("manifest_entry_schema_invalid:")
+        for error in bundle["manifest"]["validation_errors"]
+    )
+
+
+def test_load_prompt_evidence_bundle_detects_manifest_toctou(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    bundle_path = tmp_path / "evidence_bundle.json"
+    manifest_path, _ = _write_verified_evidence_bundle(
+        bundle_path,
+        [
+            {
+                "source_id": "source-1",
+                "artifact_path": str(tmp_path / "source.txt"),
+                "extraction_method": "bounded_extract",
+                "bounded_evidence": {"bounded_excerpt": "verified evidence"},
+            }
+        ],
+    )
+    real_lstat = os.lstat
+
+    def replaced_lstat(path: object):
+        stat_result = real_lstat(path)
+        if Path(path) != manifest_path:
+            return stat_result
+        return SimpleNamespace(
+            st_mode=stat_result.st_mode,
+            st_dev=stat_result.st_dev,
+            st_ino=stat_result.st_ino + 1,
+            st_size=stat_result.st_size,
+            st_mtime_ns=stat_result.st_mtime_ns,
+        )
+
+    monkeypatch.setattr(evaluator_runtime_module.os, "lstat", replaced_lstat)
+
+    bundle = _load_prompt_evidence_bundle(str(bundle_path))
+
+    assert bundle["valid"] is False
+    assert bundle["manifest"]["valid"] is False
+    assert "manifest_path_changed_during_read" in (
+        bundle["manifest"]["validation_errors"]
+    )
+
+
+def test_artifact_index_never_marks_unavailable_manifest_valid(
+    tmp_path: Path,
+) -> None:
+    missing_manifest = tmp_path / "evidence_manifest.jsonl"
+    index = _artifact_backed_evidence_index(
+        runtime_context={},
+        target={},
+        extracted_path=None,
+        extracted_payload={},
+        evidence_bundle={
+            "path": str(tmp_path / "evidence_bundle.json"),
+            "valid": True,
+            "entry_count": 1,
+            "entries": [],
+            "manifest": {
+                "path": str(missing_manifest),
+                "present": True,
+                "readable": True,
+                "regular_file": True,
+                "valid": True,
+                "entry_count": 1,
+                "invalid_entry_count": 0,
+                "size_bytes": 128,
+                "fingerprint": "sha256:" + ("0" * 64),
+            },
+        },
+        evidence_summary={"canonical_bundle_valid": True},
+    )
+
+    manifest_artifact = next(
+        artifact
+        for artifact in index["artifacts"]
+        if artifact["kind"] == "evidence_manifest"
+    )
+    assert manifest_artifact["available"] is False
+    assert manifest_artifact["valid"] is False
+    assert manifest_artifact["readable"] is False
 
 
 def test_trajectory_prompt_artifact_index_lists_all_bundle_source_artifacts(
@@ -1305,17 +1683,7 @@ def test_trajectory_prompt_artifact_index_lists_all_bundle_source_artifacts(
             }
         )
     bundle_path = tmp_path / "evidence_bundle.json"
-    bundle_path.write_text(
-        json.dumps(
-            {
-                "format": "aworld.self_evolve.evidence_bundle",
-                "version": 1,
-                "valid": True,
-                "entries": entries,
-            }
-        ),
-        encoding="utf-8",
-    )
+    _write_verified_evidence_bundle(bundle_path, entries)
 
     prompt = json.loads(
         _build_trajectory_prompt(
@@ -1344,6 +1712,7 @@ def test_trajectory_prompt_artifact_index_lists_all_bundle_source_artifacts(
     }
     assert len(prompt_entries) == 5
     assert source_artifact_paths == expected_paths
+    assert prompt["extracted_trajectory"]["evidence_bundle"]["valid"] is True
     assert prompt["evidence_summary"]["canonical_bundle_entry_count"] == 7
 
 
