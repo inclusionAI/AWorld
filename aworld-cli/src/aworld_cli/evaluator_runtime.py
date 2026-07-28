@@ -2100,28 +2100,7 @@ def _cleanup_verified_evidence_session(
                 os.close(directory_descriptor)
         with _ACTIVE_VERIFIED_EVIDENCE_SESSIONS_LOCK:
             _ACTIVE_VERIFIED_EVIDENCE_SESSIONS.pop(session_id, None)
-        _remove_empty_verified_evidence_snapshot_root()
     return True
-
-
-def _remove_empty_verified_evidence_snapshot_root() -> None:
-    with _VERIFIED_EVIDENCE_SNAPSHOT_ROOT_LOCK:
-        root = _VERIFIED_EVIDENCE_SNAPSHOT_ROOT
-        try:
-            root_stat = os.lstat(root)
-            getuid = getattr(os, "getuid", None)
-            if (
-                not stat.S_ISDIR(root_stat.st_mode)
-                or stat.S_IMODE(root_stat.st_mode) != 0o700
-                or (
-                    callable(getuid)
-                    and root_stat.st_uid != getuid()
-                )
-            ):
-                return
-            os.rmdir(root)
-        except OSError:
-            return
 
 
 def _verified_evidence_pid_is_alive(pid: int) -> bool:
@@ -2178,7 +2157,6 @@ def _reclaim_stale_verified_evidence_sessions() -> None:
         now_ns=now_ns,
         stale_age_ns=stale_age_ns,
     )
-    _remove_empty_verified_evidence_snapshot_root()
 
 
 def _reclaim_stale_legacy_verified_evidence_roots(

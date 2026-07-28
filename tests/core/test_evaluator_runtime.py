@@ -4,6 +4,7 @@ import asyncio
 import base64
 import hashlib
 import json
+import multiprocessing
 import os
 import sys
 from pathlib import Path
@@ -137,6 +138,70 @@ def _verified_evidence_prompt_builder(
         )
 
     return build
+
+
+def _assert_verified_snapshot_root_is_empty() -> None:
+    root = evaluator_runtime_module._VERIFIED_EVIDENCE_SNAPSHOT_ROOT
+    assert root.is_dir()
+    assert root.stat().st_mode & 0o777 == 0o700
+    assert list(root.iterdir()) == []
+
+
+def _snapshot_session_stress_worker(
+    snapshot_root: str,
+    parent_session_root: str,
+    iterations: int,
+    start_event,
+    result_queue,
+) -> None:
+    try:
+        evaluator_runtime_module._VERIFIED_EVIDENCE_SNAPSHOT_ROOT = Path(
+            snapshot_root
+        )
+        evaluator_runtime_module._cleanup_all_verified_evidence_sessions()
+        if not Path(parent_session_root).is_dir():
+            raise RuntimeError("child cleanup removed the parent session")
+        evaluator_runtime_module._ACTIVE_VERIFIED_EVIDENCE_SESSIONS = {}
+        evaluator_runtime_module._VERIFIED_EVIDENCE_STALE_RECLAIMED = False
+        substrate_module._PRIVATE_ARTIFACT_SESSION_CLEANUPS = {}
+        manifest_bytes = (
+            f'{{"worker_pid":{os.getpid()},"verified":true}}\n'
+        ).encode("utf-8")
+        fingerprint = (
+            "sha256:" + hashlib.sha256(manifest_bytes).hexdigest()
+        )
+        if not start_event.wait(timeout=15):
+            raise RuntimeError("stress workers did not receive start signal")
+        for index in range(iterations):
+            snapshot_path, session, error = (
+                evaluator_runtime_module._materialize_verified_manifest_snapshot(
+                    manifest_bytes,
+                    fingerprint=fingerprint,
+                )
+            )
+            if (
+                error is not None
+                or snapshot_path is None
+                or session is None
+            ):
+                raise RuntimeError(
+                    f"iteration {index}: {error or 'missing snapshot'}"
+                )
+            session_id = session["session_id"]
+            if not substrate_module.cleanup_evaluation_private_artifact_session(
+                session_id
+            ):
+                raise RuntimeError(
+                    f"iteration {index}: session cleanup failed"
+                )
+            if snapshot_path.parent.exists():
+                raise RuntimeError(
+                    f"iteration {index}: session root remains"
+                )
+        result_queue.put(None)
+    except BaseException as exc:
+        result_queue.put(f"{type(exc).__name__}: {exc}")
+        raise
 
 
 @pytest.fixture(autouse=True)
@@ -2110,10 +2175,7 @@ async def test_evaluator_cleans_private_snapshot_session_after_judge(
 
     assert observed_root is not None
     assert observed_root.exists() is False
-    assert (
-        evaluator_runtime_module._VERIFIED_EVIDENCE_SNAPSHOT_ROOT.exists()
-        is False
-    )
+    _assert_verified_snapshot_root_is_empty()
 
 
 @pytest.mark.asyncio
@@ -2153,10 +2215,54 @@ async def test_evaluator_cleans_private_snapshot_session_after_judge_exception(
 
     assert observed_root is not None
     assert observed_root.exists() is False
-    assert (
-        evaluator_runtime_module._VERIFIED_EVIDENCE_SNAPSHOT_ROOT.exists()
-        is False
+    _assert_verified_snapshot_root_is_empty()
+
+
+@pytest.mark.asyncio
+async def test_evaluator_cleans_snapshot_when_prompt_builder_raises(
+    tmp_path: Path,
+) -> None:
+    observed_root: Path | None = None
+    build_prompt = _verified_evidence_prompt_builder(
+        tmp_path / "prompt-builder-exception",
+        source_id="prompt-builder-exception",
     )
+
+    def failing_prompt_builder(case_input, target, suite):
+        nonlocal observed_root
+        prompt = build_prompt(case_input, target, suite)
+        payload = json.loads(prompt)
+        manifest_artifact = next(
+            artifact
+            for artifact in payload["artifact_backed_evidence"]["artifacts"]
+            if artifact["kind"] == "evidence_manifest"
+        )
+        observed_root = Path(manifest_artifact["path"]).parent
+        assert observed_root.exists()
+        raise RuntimeError("prompt builder failed")
+
+    backend = substrate_module.AgentJudgeBackend(
+        backend_id="prompt-builder-cleanup-test",
+        system_prompt="judge",
+        executor=lambda prompt, system_prompt: {
+            "score": 80.0,
+            "verdict": "Pass",
+        },
+        prompt_builder=failing_prompt_builder,
+    )
+
+    with pytest.raises(RuntimeError, match="prompt builder failed"):
+        await backend.execute(
+            {"input": "question"},
+            {"answer": "answer"},
+            substrate_module.EvalSuiteDef(suite_id="cleanup-suite"),
+        )
+
+    assert observed_root is not None
+    assert observed_root.exists() is False
+    assert evaluator_runtime_module._ACTIVE_VERIFIED_EVIDENCE_SESSIONS == {}
+    assert substrate_module._PRIVATE_ARTIFACT_SESSION_CLEANUPS == {}
+    _assert_verified_snapshot_root_is_empty()
 
 
 @pytest.mark.asyncio
@@ -2222,10 +2328,7 @@ async def test_concurrent_evaluators_only_cleanup_their_own_snapshot_session(
     release_second.set()
     await second_task
     assert observed_roots["second"].exists() is False
-    assert (
-        evaluator_runtime_module._VERIFIED_EVIDENCE_SNAPSHOT_ROOT.exists()
-        is False
-    )
+    _assert_verified_snapshot_root_is_empty()
 
 
 def test_atexit_cleanup_removes_active_verified_snapshot_sessions(
@@ -2252,10 +2355,7 @@ def test_atexit_cleanup_removes_active_verified_snapshot_sessions(
 
     assert session_root.exists() is False
     assert evaluator_runtime_module._ACTIVE_VERIFIED_EVIDENCE_SESSIONS == {}
-    assert (
-        evaluator_runtime_module._VERIFIED_EVIDENCE_SNAPSHOT_ROOT.exists()
-        is False
-    )
+    _assert_verified_snapshot_root_is_empty()
 
 
 def test_atexit_cleanup_does_not_remove_another_process_session(
@@ -2294,6 +2394,72 @@ def test_atexit_cleanup_does_not_remove_another_process_session(
     )
     evaluator_runtime_module._cleanup_all_verified_evidence_sessions()
     assert session_root.exists() is False
+
+
+@pytest.mark.skipif(
+    "fork" not in multiprocessing.get_all_start_methods(),
+    reason="requires multiprocessing fork semantics",
+)
+def test_snapshot_sessions_are_stable_across_fork_workers() -> None:
+    context = multiprocessing.get_context("fork")
+    start_event = context.Event()
+    result_queue = context.Queue()
+    snapshot_root = str(
+        evaluator_runtime_module._VERIFIED_EVIDENCE_SNAPSHOT_ROOT
+    )
+    parent_manifest_bytes = b'{"parent_session":true}\n'
+    parent_fingerprint = (
+        "sha256:" + hashlib.sha256(parent_manifest_bytes).hexdigest()
+    )
+    parent_snapshot, parent_session, parent_error = (
+        evaluator_runtime_module._materialize_verified_manifest_snapshot(
+            parent_manifest_bytes,
+            fingerprint=parent_fingerprint,
+        )
+    )
+    assert parent_error is None
+    assert parent_snapshot is not None
+    assert parent_session is not None
+    parent_session_root = str(parent_snapshot.parent)
+    workers = [
+        context.Process(
+            target=_snapshot_session_stress_worker,
+            args=(
+                snapshot_root,
+                parent_session_root,
+                500,
+                start_event,
+                result_queue,
+            ),
+        )
+        for _ in range(8)
+    ]
+    for worker in workers:
+        worker.start()
+    start_event.set()
+    try:
+        for worker in workers:
+            worker.join(timeout=180)
+        errors = [result_queue.get(timeout=10) for _ in workers]
+        assert errors == [None] * len(workers)
+        assert all(worker.exitcode == 0 for worker in workers)
+        assert Path(parent_session_root).is_dir()
+        assert (
+            substrate_module.cleanup_evaluation_private_artifact_session(
+                parent_session["session_id"]
+            )
+        )
+        _assert_verified_snapshot_root_is_empty()
+    finally:
+        for worker in workers:
+            if worker.is_alive():
+                worker.terminate()
+            worker.join(timeout=10)
+        substrate_module.cleanup_evaluation_private_artifact_session(
+            parent_session["session_id"]
+        )
+        result_queue.close()
+        result_queue.join_thread()
 
 
 def test_next_startup_reclaims_only_proven_stale_dead_pid_session(
@@ -2381,10 +2547,7 @@ def test_next_startup_reclaims_only_proven_stale_dead_pid_session(
     assert replacement_session_root.exists()
     evaluator_runtime_module._cleanup_all_verified_evidence_sessions()
     assert replacement_session_root.exists() is False
-    assert (
-        evaluator_runtime_module._VERIFIED_EVIDENCE_SNAPSHOT_ROOT.exists()
-        is False
-    )
+    _assert_verified_snapshot_root_is_empty()
 
 
 def test_next_startup_reclaims_only_proven_legacy_snapshot_roots(
@@ -2475,10 +2638,7 @@ def test_next_startup_reclaims_only_proven_legacy_snapshot_roots(
     assert fresh_root.exists()
     assert permissive_root.exists()
     assert corrupt_root.exists()
-    assert (
-        evaluator_runtime_module._VERIFIED_EVIDENCE_SNAPSHOT_ROOT.exists()
-        is False
-    )
+    _assert_verified_snapshot_root_is_empty()
 
 
 def test_trajectory_prompt_artifact_index_lists_all_bundle_source_artifacts(

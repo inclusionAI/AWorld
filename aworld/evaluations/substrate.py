@@ -14,6 +14,7 @@ import tempfile
 import threading
 import time
 import uuid
+from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -75,6 +76,12 @@ _PRIVATE_ARTIFACT_SESSION_VERSION = 1
 _PRIVATE_ARTIFACT_SESSION_ID_PATTERN = re.compile(r"^[0-9a-f]{32}$")
 _PRIVATE_ARTIFACT_SESSION_CLEANUPS: dict[str, Callable[[], None]] = {}
 _PRIVATE_ARTIFACT_SESSION_CLEANUPS_LOCK = threading.Lock()
+_PRIVATE_ARTIFACT_SESSION_SCOPE: ContextVar[list[str] | None] = (
+    ContextVar(
+        "evaluation_private_artifact_session_scope",
+        default=None,
+    )
+)
 
 
 @dataclass(frozen=True)
@@ -435,14 +442,29 @@ class AgentJudgeBackend:
         return bool(model_name and api_key)
 
     async def execute(self, case_input: dict[str, Any], target: dict[str, Any], suite: "EvalSuiteDef") -> JudgeExecution:
-        if not self.is_available():
-            raise RuntimeError(f"judge backend '{self.backend_id}' is not available")
-        prompt_builder = self.prompt_builder or _build_default_judge_prompt
-        prompt = prompt_builder(case_input, target, suite)
+        owned_session_ids: list[str] = []
+        scope_token = _PRIVATE_ARTIFACT_SESSION_SCOPE.set(
+            owned_session_ids
+        )
+        prompt: JudgePrompt | None = None
         try:
+            if not self.is_available():
+                raise RuntimeError(
+                    f"judge backend '{self.backend_id}' is not available"
+                )
+            prompt_builder = (
+                self.prompt_builder or _build_default_judge_prompt
+            )
+            prompt = prompt_builder(case_input, target, suite)
             return await self._execute_prompt(prompt, suite)
         finally:
-            _cleanup_prompt_private_artifact_session(prompt)
+            try:
+                if prompt is not None:
+                    _cleanup_prompt_private_artifact_session(prompt)
+                for session_id in reversed(tuple(owned_session_ids)):
+                    cleanup_evaluation_private_artifact_session(session_id)
+            finally:
+                _PRIVATE_ARTIFACT_SESSION_SCOPE.reset(scope_token)
 
     async def _execute_prompt(
         self,
@@ -2017,6 +2039,9 @@ def register_evaluation_private_artifact_session(
         if session_id in _PRIVATE_ARTIFACT_SESSION_CLEANUPS:
             raise ValueError("private artifact session is already registered")
         _PRIVATE_ARTIFACT_SESSION_CLEANUPS[session_id] = cleanup
+    owned_session_ids = _PRIVATE_ARTIFACT_SESSION_SCOPE.get()
+    if owned_session_ids is not None:
+        owned_session_ids.append(session_id)
 
 
 def cleanup_evaluation_private_artifact_session(session_id: str) -> bool:
