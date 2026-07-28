@@ -80,6 +80,8 @@ from aworld.self_evolve.types import CandidateVariant, DatasetRecipe, SelfEvolve
 _EVIDENCE_RETRY_LIMIT = 1
 _SYNTHETIC_EVIDENCE_EXCERPT_CHARS = 4000
 _MAX_METADATA_EVIDENCE_CHARS = 16_384
+_MAX_EVIDENCE_MANIFEST_BYTES = 1024 * 1024
+_MAX_EVIDENCE_MANIFEST_ENTRIES = 256
 _REPLAY_SERVICE_PROTOCOL_TRACE_NAME = "protocol_trace.jsonl"
 _MAX_REPLAY_SERVICE_PROTOCOL_TRACE_BYTES = 64 * 1024
 _MAX_REPLAY_SERVICE_PROTOCOL_TRACE_EXCERPT_CHARS = 4_000
@@ -103,6 +105,21 @@ _REPLAY_PROVENANCE_METRIC_KEYS = (
     "service_endpoint",
     "service_startup_status",
     "service_cleanup_status",
+    "evidence_manifest_fingerprint",
+)
+_EVIDENCE_COVERAGE_BOOL_METRIC_KEYS = (
+    "evidence_strategy_passed",
+    "evidence_manifest_present",
+    "evidence_manifest_readable",
+    "evidence_manifest_valid",
+    "evidence_bundle_present",
+    "evidence_bundle_valid",
+)
+_EVIDENCE_COVERAGE_NUMERIC_METRIC_KEYS = (
+    "evidence_manifest_entry_count",
+    "evidence_manifest_invalid_entry_count",
+    "evidence_manifest_size_bytes",
+    "evidence_bundle_entry_count",
 )
 
 _PER_MEMBER_REPETITION_SEMANTICS = "per_member_v3"
@@ -6212,24 +6229,103 @@ def _evidence_manifest_metrics(
 ) -> dict[str, Any]:
     if evidence_manifest is None:
         return {}
+    manifest_present = evidence_manifest.exists()
     metrics: dict[str, Any] = {
         "evidence_manifest_path": str(evidence_manifest),
-        "evidence_manifest_present": evidence_manifest.exists(),
+        "evidence_manifest_present": manifest_present,
+        "evidence_manifest_readable": False,
         "evidence_manifest_valid": False,
         "evidence_manifest_entry_count": 0,
     }
-    if not evidence_manifest.exists():
+    if not manifest_present:
         return metrics
     entries: list[Mapping[str, Any]] = []
     invalid_reasons: list[str] = []
     archived_entry_count = 0
-    manifest_text = evidence_manifest.read_text(
-        encoding="utf-8",
-        errors="replace",
-    )
+    manifest_metadata: dict[str, Any] = {
+        "path": str(evidence_manifest),
+        "present": True,
+        "readable": False,
+        "valid": False,
+        "entry_count": 0,
+        "invalid_entry_count": 0,
+    }
+    try:
+        manifest_size = evidence_manifest.stat().st_size
+    except OSError as exc:
+        invalid_reasons.append(f"manifest is not readable: {exc.__class__.__name__}")
+        return _finalize_evidence_manifest_metrics(
+            metrics=metrics,
+            artifact_dir=artifact_dir,
+            evidence_manifest=evidence_manifest,
+            entries=entries,
+            invalid_reasons=invalid_reasons,
+            manifest_metadata=manifest_metadata,
+        )
+    metrics["evidence_manifest_readable"] = True
+    metrics["evidence_manifest_size_bytes"] = manifest_size
+    manifest_metadata["readable"] = True
+    manifest_metadata["size_bytes"] = manifest_size
+    if manifest_size > _MAX_EVIDENCE_MANIFEST_BYTES:
+        invalid_reasons.append(
+            "manifest exceeds "
+            f"{_MAX_EVIDENCE_MANIFEST_BYTES} byte limit"
+        )
+        return _finalize_evidence_manifest_metrics(
+            metrics=metrics,
+            artifact_dir=artifact_dir,
+            evidence_manifest=evidence_manifest,
+            entries=entries,
+            invalid_reasons=invalid_reasons,
+            manifest_metadata=manifest_metadata,
+        )
+    try:
+        with evidence_manifest.open("rb") as stream:
+            manifest_bytes = stream.read(_MAX_EVIDENCE_MANIFEST_BYTES + 1)
+    except OSError as exc:
+        metrics["evidence_manifest_readable"] = False
+        manifest_metadata["readable"] = False
+        invalid_reasons.append(f"manifest is not readable: {exc.__class__.__name__}")
+        return _finalize_evidence_manifest_metrics(
+            metrics=metrics,
+            artifact_dir=artifact_dir,
+            evidence_manifest=evidence_manifest,
+            entries=entries,
+            invalid_reasons=invalid_reasons,
+            manifest_metadata=manifest_metadata,
+        )
+    if len(manifest_bytes) > _MAX_EVIDENCE_MANIFEST_BYTES:
+        metrics["evidence_manifest_size_bytes"] = len(manifest_bytes)
+        manifest_metadata["size_bytes"] = len(manifest_bytes)
+        invalid_reasons.append(
+            "manifest exceeds "
+            f"{_MAX_EVIDENCE_MANIFEST_BYTES} byte limit"
+        )
+        return _finalize_evidence_manifest_metrics(
+            metrics=metrics,
+            artifact_dir=artifact_dir,
+            evidence_manifest=evidence_manifest,
+            entries=entries,
+            invalid_reasons=invalid_reasons,
+            manifest_metadata=manifest_metadata,
+        )
+    metrics["evidence_manifest_size_bytes"] = len(manifest_bytes)
+    manifest_metadata["size_bytes"] = len(manifest_bytes)
+    manifest_fingerprint = f"sha256:{hashlib.sha256(manifest_bytes).hexdigest()}"
+    metrics["evidence_manifest_fingerprint"] = manifest_fingerprint
+    manifest_metadata["fingerprint"] = manifest_fingerprint
+    manifest_text = manifest_bytes.decode("utf-8", errors="replace")
+    decoded_entry_count = 0
     for line_number, entry, decode_error in _decode_evidence_manifest_stream(
         manifest_text
     ):
+        if decoded_entry_count >= _MAX_EVIDENCE_MANIFEST_ENTRIES:
+            invalid_reasons.append(
+                "manifest exceeds "
+                f"{_MAX_EVIDENCE_MANIFEST_ENTRIES} entry limit"
+            )
+            break
+        decoded_entry_count += 1
         if decode_error is not None:
             invalid_reasons.append(f"line {line_number}: {decode_error}")
             continue
@@ -6252,19 +6348,42 @@ def _evidence_manifest_metrics(
             invalid_reasons.append(f"line {line_number}: {reason}")
             continue
         entries.append(_canonical_evidence_entry(entry, artifact_dir=artifact_dir))
-    metrics["evidence_manifest_entry_count"] = len(entries)
-    metrics["evidence_manifest_valid"] = bool(entries)
     if archived_entry_count:
         metrics["evidence_manifest_archived_entry_count"] = archived_entry_count
+    return _finalize_evidence_manifest_metrics(
+        metrics=metrics,
+        artifact_dir=artifact_dir,
+        evidence_manifest=evidence_manifest,
+        entries=entries,
+        invalid_reasons=invalid_reasons,
+        manifest_metadata=manifest_metadata,
+    )
+
+
+def _finalize_evidence_manifest_metrics(
+    *,
+    metrics: dict[str, Any],
+    artifact_dir: Path | None,
+    evidence_manifest: Path,
+    entries: list[Mapping[str, Any]],
+    invalid_reasons: list[str],
+    manifest_metadata: dict[str, Any],
+) -> dict[str, Any]:
+    manifest_valid = bool(entries) and not invalid_reasons
+    metrics["evidence_manifest_entry_count"] = len(entries)
+    metrics["evidence_manifest_valid"] = manifest_valid
+    manifest_metadata["valid"] = manifest_valid
+    manifest_metadata["entry_count"] = len(entries)
+    manifest_metadata["invalid_entry_count"] = len(invalid_reasons)
     if invalid_reasons:
         metrics["evidence_manifest_invalid_entry_count"] = len(invalid_reasons)
-    if invalid_reasons:
         metrics["evidence_manifest_invalid_reasons"] = invalid_reasons
     bundle_metrics = _write_evidence_bundle(
         artifact_dir=artifact_dir,
         evidence_manifest=evidence_manifest,
         entries=entries,
         invalid_reasons=invalid_reasons,
+        manifest_metadata=manifest_metadata,
     )
     metrics.update(bundle_metrics)
     return metrics
@@ -6317,6 +6436,7 @@ def _write_evidence_bundle(
     evidence_manifest: Path,
     entries: list[Mapping[str, Any]],
     invalid_reasons: list[str],
+    manifest_metadata: Mapping[str, Any],
 ) -> dict[str, Any]:
     if artifact_dir is None:
         return {}
@@ -6325,6 +6445,7 @@ def _write_evidence_bundle(
         "format": "aworld.self_evolve.evidence_bundle",
         "version": 1,
         "manifest_path": str(evidence_manifest),
+        "manifest": dict(manifest_metadata),
         "valid": bool(entries) and not invalid_reasons,
         "entries": entries,
     }
@@ -6517,7 +6638,8 @@ def _safe_artifact_path_part(value: str) -> str:
 
 def _synthetic_bounded_artifact_excerpt(artifact_path: Path) -> dict[str, Any] | None:
     try:
-        raw = artifact_path.read_text(encoding="utf-8", errors="replace")
+        with artifact_path.open("r", encoding="utf-8", errors="replace") as stream:
+            raw = stream.read(_SYNTHETIC_EVIDENCE_EXCERPT_CHARS + 1)
     except OSError:
         return None
     text = raw.strip()
@@ -6813,8 +6935,6 @@ def _aggregate_variant_results(
     numeric_metrics: dict[str, list[float]] = {}
     evidence_compaction_signals: list[str] = []
     evidence_compacted_values: list[bool] = []
-    evidence_strategy_passed_values: list[bool] = []
-    evidence_bundle_valid_values: list[bool] = []
     latest_evidence_bundle_path: str | None = None
     provenance_values: dict[str, list[str]] = {
         key: [] for key in _REPLAY_PROVENANCE_METRIC_KEYS
@@ -6825,10 +6945,10 @@ def _aggregate_variant_results(
                 provenance_values[key].append(value)
             elif key == "evidence_compacted" and isinstance(value, bool):
                 evidence_compacted_values.append(value)
-            elif key == "evidence_strategy_passed" and isinstance(value, bool):
-                evidence_strategy_passed_values.append(value)
-            elif key == "evidence_bundle_valid" and isinstance(value, bool):
-                evidence_bundle_valid_values.append(value)
+            elif key in _EVIDENCE_COVERAGE_BOOL_METRIC_KEYS:
+                continue
+            elif key in _EVIDENCE_COVERAGE_NUMERIC_METRIC_KEYS:
+                continue
             elif key == "evidence_bundle_path" and isinstance(value, str) and value.strip():
                 latest_evidence_bundle_path = value
             elif key == "evidence_compaction_signals" and isinstance(value, list):
@@ -6854,11 +6974,45 @@ def _aggregate_variant_results(
         metrics["repetition_failures"] = repetition_failures
     if evidence_compacted_values:
         metrics["evidence_compacted"] = any(evidence_compacted_values)
-    if evidence_strategy_passed_values:
-        metrics["evidence_strategy_passed"] = all(evidence_strategy_passed_values)
-    if evidence_bundle_valid_values:
-        metrics["evidence_bundle_valid"] = all(evidence_bundle_valid_values)
-        metrics["evidence_bundle_valid_values"] = evidence_bundle_valid_values
+    for key in _EVIDENCE_COVERAGE_BOOL_METRIC_KEYS:
+        coverage_count = sum(
+            isinstance(result.metrics.get(key), bool)
+            for result in results
+        )
+        if not coverage_count:
+            continue
+        values = [result.metrics.get(key) is True for result in results]
+        metrics[key] = all(values)
+        metrics[f"{key}_values"] = values
+        metrics[f"{key}_coverage_count"] = coverage_count
+        metrics[f"{key}_coverage"] = coverage_count / len(results)
+    for key in _EVIDENCE_COVERAGE_NUMERIC_METRIC_KEYS:
+        coverage_count = sum(
+            isinstance(result.metrics.get(key), (int, float))
+            and not isinstance(result.metrics.get(key), bool)
+            for result in results
+        )
+        if not coverage_count:
+            continue
+        values = [
+            (
+                float(result.metrics[key])
+                if isinstance(result.metrics.get(key), (int, float))
+                and not isinstance(result.metrics.get(key), bool)
+                else 0.0
+            )
+            for result in results
+        ]
+        metrics[key] = (
+            max(values)
+            if key == "evidence_manifest_invalid_entry_count"
+            else sum(values) / len(values)
+        )
+        metrics[f"{key}_values"] = values
+        metrics[f"{key}_min"] = min(values)
+        metrics[f"{key}_max"] = max(values)
+        metrics[f"{key}_coverage_count"] = coverage_count
+        metrics[f"{key}_coverage"] = coverage_count / len(results)
     if latest_evidence_bundle_path:
         metrics["evidence_bundle_path"] = latest_evidence_bundle_path
     if evidence_compaction_signals:

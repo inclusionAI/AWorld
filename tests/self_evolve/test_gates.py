@@ -1,7 +1,10 @@
 from __future__ import annotations
 
-import pytest
+import time
+from dataclasses import replace
 from pathlib import Path
+
+import pytest
 
 from aworld.self_evolve.evaluation import CandidateConfidenceDecision, ReplayCostEstimate
 from aworld.self_evolve.gates import (
@@ -21,6 +24,7 @@ from aworld.self_evolve.gates import (
     ReplayAdaptationGate,
     ScoreImprovementGate,
     SkillMarkdownGate,
+    SkillReleaseFidelityGate,
     StoppingConditionGate,
     StoppingConditionState,
     TokenLimitGate,
@@ -34,15 +38,29 @@ from aworld.self_evolve.replay_adaptation import (
 )
 from aworld.self_evolve.provenance import TargetMutationIntent, TargetProvenance
 from aworld.self_evolve.types import CandidateVariant, EvaluationSummary, SelfEvolveTargetRef
+from aworld.self_evolve.patch_intent import apply_skill_patch_intent
+from aworld.skills.structure import (
+    MAX_SKILL_MARKDOWN_CHARS,
+    MAX_STRUCTURAL_ATOMS,
+    build_skill_structural_edit_intent,
+    validate_skill_markdown_structure,
+)
+from aworld.skills.structure_types import SkillStructuralEditIntent
 
 
-def _candidate(content: str, *, path: str | None = "SKILL.md") -> CandidateVariant:
+def _candidate(
+    content: str,
+    *,
+    path: str | None = "SKILL.md",
+    structural_edit_intent: SkillStructuralEditIntent | None = None,
+) -> CandidateVariant:
     return CandidateVariant(
         candidate_id="cand-1",
         target=SelfEvolveTargetRef(target_type="skill", target_id="demo", path=path),
         content=content,
         rationale="test",
         target_fingerprint="sha256:old",
+        structural_edit_intent=structural_edit_intent,
     )
 
 
@@ -183,6 +201,473 @@ def test_noop_and_skill_markdown_gates_reject_bad_candidates() -> None:
     ).passed is True
     assert MalformedCandidateGate().evaluate(_candidate("")).passed is False
     assert MalformedCandidateGate().evaluate(_candidate("Updated guidance.")).passed is True
+
+
+def test_skill_markdown_gate_rejects_truncated_existing_section() -> None:
+    current = (
+        "---\nname: demo\n---\n# Demo\n\n"
+        "## Usage\n\nUse the normal workflow and preserve its output.\n\n"
+        "## Debugging\n\n"
+        "Inspect the browser session, capture the protocol trace, and compare "
+        "the final response with the saved artifact before retrying.\n\n"
+        "Record the observed failure class and the bounded recovery action.\n\n"
+        "## Safety\n\nDo not expose credentials.\n"
+    )
+    truncated = (
+        "---\nname: demo\n---\n# Demo\n\n"
+        "## Usage\n\nUse the normal workflow and preserve its output.\n\n"
+        "## Debugging\n\nShort replacement.\n\n"
+        "## Safety\n\nDo not expose credentials.\n"
+    )
+
+    result = SkillReleaseFidelityGate().evaluate(
+        _candidate(truncated),
+        current_content=current,
+    )
+
+    assert result.passed is False
+    assert result.details["code"] == "skill_section_content_truncated"
+    assert result.details["field_path"] == "sections[].content"
+
+
+def test_skill_markdown_gate_rejects_unclosed_and_accepts_repaired_fence() -> None:
+    unclosed = (
+        "---\nname: demo\n---\n# Demo\n\n"
+        "## Commands\n\n```bash\nagent-browser open https://example.test\n"
+    )
+    repaired = unclosed + "```\n"
+
+    failed = SkillMarkdownGate().evaluate(_candidate(unclosed))
+    passed = SkillMarkdownGate().evaluate(_candidate(repaired))
+
+    assert failed.passed is False
+    assert failed.details["code"] == "skill_code_fence_unclosed"
+    assert passed.passed is True
+
+
+def test_skill_markdown_gate_rejects_invalid_yaml_and_published_name_change() -> None:
+    invalid_yaml = "---\nname: [broken\n---\n# Demo\n"
+    current = "---\nname: demo\n---\n# Demo\n\nPublished guidance.\n"
+    renamed = "---\nname: other\n---\n# Demo\n\nPublished guidance.\n"
+
+    malformed = SkillMarkdownGate().evaluate(_candidate(invalid_yaml))
+    identity_change = SkillReleaseFidelityGate().evaluate(
+        _candidate(renamed),
+        current_content=current,
+    )
+
+    assert malformed.passed is False
+    assert malformed.details["code"] == "skill_frontmatter_invalid"
+    assert identity_change.passed is False
+    assert identity_change.details["code"] == (
+        "skill_frontmatter_identity_changed"
+    )
+
+
+def test_skill_markdown_gate_allows_bounded_rewrite_delete_and_new_section() -> None:
+    current = (
+        "---\nname: demo\n---\n# Demo\n\n"
+        "## Setup\n\nInstall the runtime and verify the local profile.\n\n"
+        "## Usage\n\nOpen the requested page and persist the result artifact.\n\n"
+        "## Legacy Note\n\nThis short compatibility note is now obsolete.\n\n"
+        "## Safety\n\nNever expose credentials or private browser state.\n"
+    )
+    candidate = (
+        "---\nname: demo\n---\n# Demo\n\n"
+        "## Setup\n\nVerify the local profile before starting the runtime.\n\n"
+        "## Usage\n\nPersist the result artifact after opening the requested page.\n\n"
+        "## Safety\n\nNever expose credentials or private browser state.\n\n"
+        "## Recovery\n\nRetry once with a bounded diagnostic artifact.\n"
+    )
+
+    result = SkillReleaseFidelityGate().evaluate(
+        _candidate(candidate),
+        current_content=current,
+    )
+    auto_verified_result = SkillReleaseFidelityGate().evaluate(
+        _candidate(candidate),
+        current_content=current,
+        require_exact_deletion_intent=True,
+    )
+
+    assert result.passed is True
+    assert result.details["added_section_count"] == 1
+    assert result.details["missing_section_count"] == 1
+    assert auto_verified_result.passed is False
+    assert auto_verified_result.details["code"] == (
+        "skill_existing_sections_deleted"
+    )
+
+
+def test_auto_verified_section_anchors_bind_duplicate_titles_to_parent_paths() -> None:
+    current = (
+        "---\nname: demo\n---\n# Demo\n\n"
+        "## A\n\n### Notes\n\nA-specific note.\n\n"
+        "## B\n\n### Notes\n\nB-specific note.\n"
+    )
+    candidate = (
+        "---\nname: demo\n---\n# Demo\n\n"
+        "## A\n\n### Notes\n\nA-specific note.\n\n"
+        "## B\n\nB guidance remains.\n"
+    )
+
+    result = SkillReleaseFidelityGate().evaluate(
+        _candidate(candidate),
+        current_content=current,
+        require_exact_deletion_intent=True,
+    )
+
+    assert result.passed is False
+    assert result.details["code"] == "skill_existing_sections_deleted"
+    assert result.details["missing_sections"] == ["notes"]
+
+
+def test_auto_verified_section_anchors_allow_reordered_duplicate_titles() -> None:
+    current = (
+        "---\nname: demo\n---\n# Demo\n\n"
+        "## A\n\n### Notes\n\nA-specific note.\n\n"
+        "## B\n\n### Notes\n\nB-specific note.\n"
+    )
+    candidate = (
+        "---\nname: demo\n---\n# Demo\n\n"
+        "## B\n\n### Notes\n\nB-specific note.\n\n"
+        "## A\n\n### Notes\n\nA-specific note.\n"
+    )
+
+    result = SkillReleaseFidelityGate().evaluate(
+        _candidate(candidate),
+        current_content=current,
+        require_exact_deletion_intent=True,
+    )
+
+    assert result.passed is True
+
+
+def test_auto_verified_section_anchors_allow_exact_content_move() -> None:
+    current = (
+        "---\nname: demo\n---\n# Demo\n\n"
+        "## A\n\nA guidance.\n\n"
+        "### Notes\n\nMove this exact note.\n\n"
+        "## B\n\nB guidance.\n"
+    )
+    candidate = (
+        "---\nname: demo\n---\n# Demo\n\n"
+        "## A\n\nA guidance remains.\n\n"
+        "## B\n\nB guidance.\n\n"
+        "### Notes\n\nMove this exact note.\n"
+    )
+
+    result = SkillReleaseFidelityGate().evaluate(
+        _candidate(candidate),
+        current_content=current,
+        require_exact_deletion_intent=True,
+    )
+
+    assert result.passed is True
+
+
+def test_auto_verified_section_anchors_preserve_identical_duplicate_multiset() -> None:
+    current = (
+        "---\nname: demo\n---\n# Demo\n\n"
+        "## Parent\n\n"
+        "### Notes\n\nIdentical note.\n\n"
+        "### Notes\n\nIdentical note.\n"
+    )
+    candidate = (
+        "---\nname: demo\n---\n# Demo\n\n"
+        "## Parent\n\n"
+        "### Notes\n\nIdentical note.\n"
+    )
+
+    result = SkillReleaseFidelityGate().evaluate(
+        _candidate(candidate),
+        current_content=current,
+        require_exact_deletion_intent=True,
+    )
+
+    assert result.passed is False
+    assert result.details["code"] == "skill_existing_sections_deleted"
+    assert result.details["missing_sections"] == ["notes"]
+
+
+def test_skill_markdown_gate_contextualizes_unicode_ellipsis() -> None:
+    current = (
+        "---\nname: demo\n---\n# Demo\n\n"
+        "## Debugging\n\nEvidence Quality requires bounded artifacts.\n"
+    )
+    truncated = (
+        "---\nname: demo\n---\n# Demo\n\n"
+        "## Debugging\n\nEvidence Q…\n"
+    )
+    ordinary = (
+        "---\nname: demo\n---\n# Demo\n\n"
+        "## FAQ…\n\nResults may vary…\n\nUse `prefix…` when documenting syntax.\n"
+    )
+    python_ellipsis = (
+        "---\nname: demo\n---\n# Demo\n\n"
+        "## Python Protocol\n\n```python\nclass Pending:\n    ...\n```\n"
+    )
+
+    failed = SkillReleaseFidelityGate().evaluate(
+        _candidate(truncated),
+        current_content=current,
+    )
+    ordinary_passed = SkillMarkdownGate().evaluate(_candidate(ordinary))
+    passed = SkillMarkdownGate().evaluate(_candidate(python_ellipsis))
+
+    assert failed.passed is False
+    assert failed.details["code"] == "skill_truncation_marker"
+    assert ordinary_passed.passed is True
+    assert passed.passed is True
+
+
+def test_skill_ellipsis_context_index_scales_for_large_distinct_prefix_sets() -> None:
+    original_lines = "\n".join(
+        f"base-{index:05d} complete"
+        for index in range(10_000)
+    )
+    candidate_lines = "\n".join(
+        f"miss-{index:05d}…"
+        for index in range(10_000)
+    )
+    original = (
+        "---\nname: demo\n---\n# Demo\n\n## Data\n\n"
+        f"{original_lines}\n"
+    )
+    candidate = (
+        "---\nname: demo\n---\n# Demo\n\n## Data\n\n"
+        f"{candidate_lines}\n"
+    )
+
+    started = time.perf_counter()
+    result = validate_skill_markdown_structure(
+        candidate,
+        original_content=original,
+    )
+    elapsed = time.perf_counter() - started
+
+    assert result.code != "skill_truncation_marker"
+    assert elapsed < 3.0
+
+
+def test_skill_structure_rejects_oversized_input_before_parsing() -> None:
+    oversized = (
+        "---\nname: demo\n---\n# Demo\n"
+        + "x" * MAX_SKILL_MARKDOWN_CHARS
+    )
+
+    result = validate_skill_markdown_structure(oversized)
+
+    assert result.passed is False
+    assert result.code == "skill_content_size_limit_exceeded"
+    assert result.details["max_chars"] == MAX_SKILL_MARKDOWN_CHARS
+
+
+def test_skill_structure_rejects_excess_structural_atoms_before_parsing() -> None:
+    excessive_lines = (
+        "---\nname: demo\n---\n# Demo\n"
+        + "x\n" * MAX_STRUCTURAL_ATOMS
+    )
+
+    result = validate_skill_markdown_structure(excessive_lines)
+
+    assert result.passed is False
+    assert result.code == "skill_structural_atom_limit_exceeded"
+    assert result.details["max_structural_atoms"] == MAX_STRUCTURAL_ATOMS
+
+
+def test_skill_release_fidelity_accepts_only_framework_anchored_patch_intent() -> None:
+    current = (
+        "---\nname: demo\n---\n# Demo\n\n"
+        "## Debugging\n\n"
+        "Inspect the browser session, capture the protocol trace, compare the "
+        "final response, preserve the result artifact, and record the bounded "
+        "recovery action before retrying.\n"
+    )
+    patch_intent = {
+        "operations": [
+            {
+                "op": "replace_section",
+                "heading": "Debugging",
+                "content": "Use the new bounded diagnostic workflow.",
+            }
+        ]
+    }
+    candidate = apply_skill_patch_intent(current, patch_intent)
+    intent = build_skill_structural_edit_intent(
+        original_content=current,
+        candidate_content=candidate,
+        patch_intent=patch_intent,
+    )
+
+    authorized = SkillReleaseFidelityGate().evaluate(
+        _candidate(candidate, structural_edit_intent=intent),
+        current_content=current,
+    )
+    forged = SkillReleaseFidelityGate().evaluate(
+        _candidate(
+            candidate,
+            structural_edit_intent=replace(
+                intent,
+                base_content_fingerprint="sha256:forged",
+            ),
+        ),
+        current_content=current,
+    )
+
+    assert authorized.passed is True
+    assert authorized.details["edit_mode"] == "patch_intent"
+    assert forged.passed is False
+    assert forged.details["code"] == "skill_section_content_truncated"
+
+
+def test_skill_release_fidelity_new_sections_do_not_offset_deleted_inventory() -> None:
+    substantive = (
+        "Preserve this published workflow, its command behavior, its artifact "
+        "contract, and its bounded recovery semantics across every retry."
+    )
+    current = (
+        "---\nname: demo\n---\n# Demo\n\n"
+        f"## Setup\n\n{substantive}\n\n"
+        f"## Usage\n\n{substantive}\n\n"
+        f"## Debugging\n\n{substantive}\n\n"
+        f"## Safety\n\n{substantive}\n"
+    )
+    candidate = (
+        "---\nname: demo\n---\n# Demo\n\n"
+        f"## Setup\n\n{substantive}\n\n"
+        "## New One\n\nReplacement material with enough length to look complete.\n\n"
+        "## New Two\n\nReplacement material with enough length to look complete.\n\n"
+        "## New Three\n\nReplacement material with enough length to look complete.\n"
+    )
+
+    result = SkillReleaseFidelityGate().evaluate(
+        _candidate(candidate),
+        current_content=current,
+    )
+
+    assert result.passed is False
+    assert result.details["code"] == "skill_existing_sections_deleted"
+    assert result.details["missing_section_count"] == 3
+
+
+def test_skill_release_fidelity_protects_each_command_fence_anchor() -> None:
+    original_commands = "\n".join(
+        f"agent-browser command-{index} --output artifact-{index}.json"
+        for index in range(14)
+    )
+    replacement_commands = "\n".join(
+        f"agent-browser replacement-{index} --output new-{index}.json"
+        for index in range(14)
+    )
+    current = (
+        "---\nname: demo\n---\n# Demo\n\n"
+        "## Usage\n\nUse the bounded workflow.\n\n"
+        "## Debugging\n\n```bash\n"
+        f"{original_commands}\n```\n\n"
+        "## Safety\n\nNever expose credentials.\n"
+    )
+    candidate = (
+        "---\nname: demo\n---\n# Demo\n\n"
+        "## Usage\n\nUse the bounded workflow.\n\n"
+        "## Evidence\n\n```bash\n"
+        f"{replacement_commands}\n```\n\n"
+        "## Safety\n\nNever expose credentials.\n"
+    )
+
+    result = SkillReleaseFidelityGate().evaluate(
+        _candidate(candidate),
+        current_content=current,
+    )
+
+    assert result.passed is False
+    assert result.details["code"] == "skill_fenced_block_deleted"
+    assert result.details["command_count"] == 14
+
+
+def test_skill_release_fidelity_allows_small_fence_delete_and_move() -> None:
+    commands = [
+        f"agent-browser command-{index} --output artifact-{index}.json"
+        for index in range(5)
+    ]
+    current = (
+        "---\nname: demo\n---\n# Demo\n\n"
+        "## Debugging\n\n```bash\n"
+        + "\n".join(commands)
+        + "\n```\n"
+    )
+    candidate = (
+        "---\nname: demo\n---\n# Demo\n\n"
+        "## Commands\n\n```bash\n"
+        + "\n".join(commands[:-1])
+        + "\n```\n"
+    )
+
+    result = SkillReleaseFidelityGate().evaluate(
+        _candidate(candidate),
+        current_content=current,
+    )
+
+    assert result.passed is True
+
+
+def test_skill_release_fidelity_rejects_untyped_edit_intent_bypass() -> None:
+    current = (
+        "---\nname: demo\n---\n# Demo\n\n"
+        "## Parent\n\nPublished parent guidance.\n\n"
+        "### Debugging\n\n```bash\n"
+        "agent-browser console\nagent-browser errors\n"
+        "agent-browser trace start\nagent-browser trace stop\n"
+        "```\n"
+    )
+    patch_intent = {
+        "operations": [
+            {
+                "op": "replace_section",
+                "heading": "Parent",
+                "content": "Replacement parent guidance.",
+            }
+        ]
+    }
+    candidate = apply_skill_patch_intent(current, patch_intent)
+    parent_intent = build_skill_structural_edit_intent(
+        original_content=current,
+        candidate_content=candidate,
+        patch_intent=patch_intent,
+    )
+    forged_mapping = {
+        "schema_version": "aworld.skill.edit_intent.v2",
+        "authority": "framework",
+        "authorization": "sha256:forged",
+        "reason": "candidate_protocol.patch_intent",
+        "base_content_fingerprint": "sha256:forged",
+        "candidate_content_fingerprint": "sha256:forged",
+        "actions": [],
+    }
+
+    result = validate_skill_markdown_structure(
+        candidate,
+        original_content=current,
+        edit_intent=forged_mapping,  # type: ignore[arg-type]
+    )
+    parent_result = SkillReleaseFidelityGate().evaluate(
+        _candidate(
+            candidate,
+            structural_edit_intent=parent_intent,
+        ),
+        current_content=current,
+    )
+
+    assert result.passed is False
+    assert parent_result.passed is False
+    assert result.code in {
+        "skill_fenced_block_deleted",
+        "skill_command_dense_section_deleted",
+    }
+    assert parent_result.details["code"] in {
+        "skill_fenced_block_deleted",
+        "skill_command_dense_section_deleted",
+    }
 
 
 def test_prompt_tool_token_and_external_code_candidate_gates() -> None:

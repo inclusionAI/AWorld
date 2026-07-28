@@ -34,7 +34,11 @@ from aworld.self_evolve.datasets import (
     build_dataset_from_source,
 )
 from aworld.self_evolve.optimizers.llm_mutator import TraceReflectiveLLMMutator
-from aworld.self_evolve.optimizers.base import OptimizerRequest, OptimizerResult
+from aworld.self_evolve.optimizers.base import (
+    CandidateSemanticValidationError,
+    OptimizerRequest,
+    OptimizerResult,
+)
 from aworld.self_evolve.failure_events import (
     FailureEventSource,
     FailureOwner,
@@ -45,6 +49,7 @@ from aworld.self_evolve.failure_events import (
     ReplayFailureObservation,
     aggregate_replay_failure_observations,
 )
+from aworld.self_evolve.gates import SkillReleaseFidelityGate
 from aworld.self_evolve.replay import (
     CandidateReplayMemberResult,
     CandidateReplayRequest,
@@ -78,6 +83,8 @@ from aworld.self_evolve.runner import (
     _default_post_apply_evaluator,
     _candidate_generation_limit,
     _candidate_generation_actual_usage,
+    _candidate_materialization_failure_events,
+    _candidate_mutation_repair_prompt,
     _configured_budget_usage,
     _feedback_from_report,
     _trajectory_group_rank_key,
@@ -88,6 +95,7 @@ from aworld.self_evolve.runner import (
     _judge_actual_token_usage,
     _load_target_provenance,
     _load_target_selection_report,
+    _merge_artifact_retention_reports,
     _merge_validation_feedback,
     _parse_candidate_mutation_model_output,
     _population_report,
@@ -501,6 +509,150 @@ def test_feedback_from_report_joins_selected_candidate_held_out_judge_metrics(
     assert feedback[0].metrics["repair_candidate_package"]["candidate_id"] == (
         candidate_id
     )
+
+
+def test_skill_release_fidelity_failure_enters_typed_repair_frontier() -> None:
+    current = (
+        "---\nname: demo\n---\n# Demo\n\n"
+        "## Debugging\n\n"
+        "Inspect the session, preserve a protocol trace, compare the final "
+        "response, and record the bounded recovery action before retrying.\n\n"
+        "```console\nagent-browser inspect --session active\n```\n"
+    )
+    candidate = CandidateVariant(
+        candidate_id="candidate-structure",
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo"),
+        content=(
+            "---\nname: demo\n---\n# Demo\n\n"
+            "## Debugging\n\nShort.\n"
+        ),
+        rationale="candidate",
+    )
+    raw_gate = SkillReleaseFidelityGate().evaluate(
+        candidate,
+        current_content=current,
+    )
+
+    gate = _with_typed_gate_failure_event(raw_gate)
+    metrics = runner_module._typed_gate_feedback_metrics((gate,))
+    feedback = EvaluationSummary(
+        variant_id=candidate.candidate_id,
+        dataset_split="validation",
+        metrics=metrics,
+    )
+    frontiers = runner_module._typed_repair_frontiers((feedback,))
+
+    assert gate.details["code"] == "skill_section_content_truncated"
+    assert gate.details["failure_class"] == "candidate"
+    assert metrics["causal_failure_events"][0]["owner"] == "candidate"
+    assert metrics["causal_failure_events"][0]["stage"] == (
+        "candidate_generation"
+    )
+    assert len(
+        metrics["causal_failure_events"][0]["contract_identity_digest"]
+    ) == 64
+    assert len(frontiers) == 1
+    assert frontiers[0].repairable is True
+    assert frontiers[0].semantic_key == metrics["causal_failure_events"][0][
+        "semantic_key"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_local_skill_fidelity_gate_feeds_next_generation_frontier(
+    tmp_path,
+) -> None:
+    skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    original = (
+        "---\nname: demo\n---\n# Demo\n\n"
+        "## Debugging\n\n"
+        "Inspect the session, preserve a protocol trace, compare the final "
+        "response with the result artifact, classify the failure, and record "
+        "the bounded recovery action before retrying.\n\n"
+        "```console\nagent-browser inspect --session active\n```\n"
+    )
+    skill_path.write_text(original, encoding="utf-8")
+    trajectory = [
+        {
+            "meta": {"step": 1, "agent_id": "agent", "pre_agent": "runner"},
+            "state": {"input": {"content": "Improve debugging guidance."}},
+            "action": {"content": "The prior attempt truncated guidance."},
+            "reward": {"status": "failed"},
+        }
+    ]
+    dataset = build_dataset_from_source(
+        SelfEvolveEvalSourceConfig(kind="current_trajectory"),
+        current_trajectory=trajectory,
+        task_id="skill-fidelity-feedback",
+    )
+    target_ref = SelfEvolveTargetRef(
+        target_type="skill",
+        target_id="demo",
+        path=str(skill_path),
+    )
+
+    class IteratingOptimizer:
+        def __init__(self) -> None:
+            self.requests: list[OptimizerRequest] = []
+
+        async def propose(self, request: OptimizerRequest) -> OptimizerResult:
+            self.requests.append(request)
+            if len(self.requests) == 1:
+                content = (
+                    "---\nname: demo\n---\n# Demo\n\n"
+                    "## Debugging\n\nShort.\n"
+                )
+            else:
+                content = original + "\n## Recovery\n\nRetry once with evidence.\n"
+            return OptimizerResult(
+                candidates=(
+                    CandidateVariant(
+                        candidate_id=f"candidate-{len(self.requests)}",
+                        target=target_ref,
+                        content=content,
+                        rationale="bounded structural repair",
+                        target_fingerprint=request.target_fingerprint,
+                    ),
+                )
+            )
+
+    optimizer = IteratingOptimizer()
+    store = FilesystemSelfEvolveStore(tmp_path)
+    result = await SelfEvolveRunner(
+        store=store,
+        optimizer=optimizer,
+        max_iterations=2,
+    ).run_explicit_target(
+        run_id="run-skill-fidelity-feedback",
+        target=SkillTextTarget(skill_path),
+        dataset=dataset,
+        trace_packs=(
+            build_trace_pack(
+                trajectory,
+                source_kind="current_trajectory",
+                task_id="skill-fidelity-feedback",
+            ),
+        ),
+        apply_policy="proposal",
+    )
+
+    assert result.run.status is SelfEvolveRunStatus.SUCCEEDED
+    assert len(optimizer.requests) == 2
+    feedback = optimizer.requests[1].validation_feedback[0]
+    assert "skill_release_fidelity" in feedback.metrics["failed_gates"]
+    assert feedback.metrics["causal_failure_events"][0]["code"] == (
+        "skill_section_content_truncated"
+    )
+    report = json.loads(
+        (
+            store.run_path("run-skill-fidelity-feedback")
+            / "report.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert report["population"]["scheduler_decisions"][1][
+        "reason_code"
+    ] == "focused_repair_with_diversity"
 
 
 def test_framework_evidence_projection_failure_does_not_create_candidate_repair_package() -> None:
@@ -1394,6 +1546,13 @@ def _write_terminal_run_with_raw_artifacts(root: Path, run_id: str, timestamp: f
     replay_file = run_dir / "replay" / "cand-1" / "result.json"
     replay_file.parent.mkdir(parents=True)
     replay_file.write_text("{}\n", encoding="utf-8")
+    (replay_file.parent / "execution_request.json").write_text(
+        "{}\n",
+        encoding="utf-8",
+    )
+    replay_workspace = replay_file.parent / "workspace" / "source.py"
+    replay_workspace.parent.mkdir(parents=True)
+    replay_workspace.write_text("# source\n", encoding="utf-8")
     overlay_file = run_dir / "overlays" / "cand-1" / "skills" / "demo" / "SKILL.md"
     overlay_file.parent.mkdir(parents=True)
     overlay_file.write_text("# Demo\n", encoding="utf-8")
@@ -2177,6 +2336,54 @@ def test_candidate_gate_results_never_omit_unresolved_trust_gate(tmp_path) -> No
     assert trust_results[0].passed is False
 
 
+def test_candidate_gate_results_short_circuit_structure_after_token_limit(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    def fail_expensive_gate(*args, **kwargs):
+        pytest.fail("structural gates must not run after token-limit failure")
+
+    monkeypatch.setattr(
+        runner_module.SkillMarkdownGate,
+        "evaluate",
+        fail_expensive_gate,
+    )
+    monkeypatch.setattr(
+        runner_module.SkillReleaseFidelityGate,
+        "evaluate",
+        fail_expensive_gate,
+    )
+    candidate = CandidateVariant(
+        candidate_id="candidate-oversized",
+        target=SelfEvolveTargetRef(
+            target_type="skill",
+            target_id="demo",
+            path=str(tmp_path / "SKILL.md"),
+        ),
+        content="---\nname: demo\n---\n# Demo\n" + "x" * 100,
+        rationale="oversized",
+    )
+
+    results = _candidate_gate_results(
+        candidate,
+        current_content="---\nname: demo\n---\n# Old\n",
+        workspace_root=tmp_path,
+        max_chars=32,
+        target_provenance=None,
+    )
+
+    token_limit = next(
+        result for result in results
+        if result.gate_name == "token_limit"
+    )
+    assert token_limit.passed is False
+    assert not any(
+        result.gate_name in {
+            "skill_markdown",
+            "skill_release_fidelity",
+        }
+        for result in results
+    )
 def test_candidate_gate_results_require_named_generated_mutation_policy(tmp_path) -> None:
     target = SelfEvolveTargetRef(
         target_type="skill",
@@ -3296,6 +3503,12 @@ async def test_candidate_materialization_failure_retries_as_typed_feedback(
     assert optimizer.requests[1].validation_feedback[0].metrics[
         "candidate_materialization_invalid_count"
     ] == 1
+    causal_events = optimizer.requests[1].validation_feedback[0].metrics[
+        "causal_failure_events"
+    ]
+    assert causal_events[0]["code"] == "candidate_materialization_invalid"
+    assert causal_events[0]["stage"] == "candidate_generation"
+    assert causal_events[0]["owner"] == "candidate"
     report = json.loads(
         (
             tmp_path
@@ -3307,6 +3520,78 @@ async def test_candidate_materialization_failure_retries_as_typed_feedback(
     )
     assert report["iterations"][0]["status"] == "materialization_invalid"
     assert report["iterations"][1]["status"] == "accepted"
+    assert report["population"]["scheduler_decisions"][1]["reason_code"] == (
+        "focused_repair_with_diversity"
+    )
+    assert report["population"]["scheduler_decisions"][1]["slots"][0][
+        "role"
+    ] == "focused_repair"
+
+
+def test_candidate_repair_prompt_preserves_typed_semantic_diagnostic() -> None:
+    error = CandidateSemanticValidationError(
+        "unexposed_improvement_signal_ids",
+        "candidate addressed an improvement signal that was not exposed",
+        field_path="addressed_improvement_signal_ids",
+        representation="candidate_package",
+        allowed_improvement_signal_ids=("signal-visible",),
+    )
+
+    prompt = _candidate_mutation_repair_prompt('{"content":"valid"}', error)
+    payload = json.loads(prompt.split("\n", 1)[1])
+    diagnostic = payload["diagnostics"][0]
+
+    assert diagnostic["code"] == "unexposed_improvement_signal_ids"
+    assert diagnostic["stage"] == "candidate_semantic_validation"
+    assert diagnostic["field_path"] == "addressed_improvement_signal_ids"
+    assert diagnostic["contract_fingerprint"] == error.contract_fingerprint
+    assert diagnostic["representation"] == "candidate_package"
+
+
+def test_candidate_materialization_frontier_identity_is_typed_and_stable() -> None:
+    failures = (
+        {
+            "code": "candidate_materialization_invalid",
+            "field_path": "files[0].path",
+            "representation": "files_only",
+            "reason": "first free-form reason",
+            "contract_fingerprint": "first free-form contract prose",
+        },
+        {
+            "code": "candidate_materialization_invalid",
+            "field_path": "files[7].path",
+            "representation": "files_only",
+            "reason": "different free-form reason",
+            "contract_fingerprint": "different free-form contract prose",
+        },
+        {
+            "code": "candidate_materialization_invalid",
+            "field_path": "files[0].content",
+            "representation": "files_only",
+            "reason": "another reason",
+        },
+        {
+            "code": "candidate_materialization_invalid",
+            "field_path": "files[3].path",
+            "representation": "full_content",
+            "reason": "representation differs",
+        },
+    )
+
+    events = _candidate_materialization_failure_events(failures)
+
+    assert len(events) == 3
+    assert len({event["semantic_key"] for event in events}) == 3
+    assert events[0]["diagnostics"] == {
+        "field_path": "files[].path",
+        "representation": "files_only",
+    }
+    assert events[0]["requirement_id"] == (
+        "candidate-materialization/files_only/files[].path"
+    )
+    assert events[0]["contract_fingerprint"] is None
+    assert events[0]["semantic_key"] != events[1]["semantic_key"]
+    assert events[0]["semantic_key"] != events[2]["semantic_key"]
 
 
 @pytest.mark.asyncio
@@ -3466,7 +3751,10 @@ async def test_proposal_no_candidate_is_rejected_not_succeeded(tmp_path) -> None
 
 
 @pytest.mark.asyncio
-async def test_runner_records_terminal_artifact_retention_cleanup(tmp_path) -> None:
+async def test_runner_records_terminal_artifact_retention_cleanup(
+    tmp_path,
+    monkeypatch,
+) -> None:
     skill_path = tmp_path / "aworld-skills" / "demo" / "SKILL.md"
     skill_path.parent.mkdir(parents=True)
     skill_path.write_text("---\nname: demo\n---\n# Demo\n", encoding="utf-8")
@@ -3496,6 +3784,35 @@ async def test_runner_records_terminal_artifact_retention_cleanup(tmp_path) -> N
         source_kind="current_trajectory",
         task_id="task-1",
     )
+    original_cleanup = runner_module.cleanup_self_evolve_artifacts
+    current_run_observations: list[tuple[str, bool]] = []
+
+    def observe_cleanup(*args, **kwargs):
+        current_run = artifact_root / "run-current"
+        run_path = current_run / "run.json"
+        if run_path.is_file():
+            status = json.loads(run_path.read_text(encoding="utf-8"))["status"]
+            current_run_observations.append(
+                (status, (current_run / ".active.json").exists())
+            )
+            if status in {"succeeded", "failed", "rejected"}:
+                replay_root = current_run / "replay" / "terminal"
+                replay_root.mkdir(parents=True, exist_ok=True)
+                (replay_root / "result.json").write_text("{}\n", encoding="utf-8")
+                (replay_root / "execution_request.json").write_text(
+                    "{}\n",
+                    encoding="utf-8",
+                )
+                raw_path = replay_root / "workspace" / "source.py"
+                raw_path.parent.mkdir(parents=True, exist_ok=True)
+                raw_path.write_text("# source\n", encoding="utf-8")
+        return original_cleanup(*args, **kwargs)
+
+    monkeypatch.setattr(
+        runner_module,
+        "cleanup_self_evolve_artifacts",
+        observe_cleanup,
+    )
 
     await SelfEvolveRunner(
         store=FilesystemSelfEvolveStore(tmp_path),
@@ -3514,12 +3831,117 @@ async def test_runner_records_terminal_artifact_retention_cleanup(tmp_path) -> N
     )
     cleanup = report["artifact_retention"]
     assert cleanup["removed_run_count"] >= 1
-    assert any("run-old-0/replay" in path for path in cleanup["removed_paths"])
+    assert any(
+        "run-old-0/replay/cand-1/workspace" in path
+        for path in cleanup["removed_paths"]
+    )
     assert "run-old-0" not in cleanup["protected_run_ids"]
-    assert not (artifact_root / "run-old-0" / "replay").exists()
+    assert (artifact_root / "run-old-0" / "replay" / "cand-1" / "result.json").exists()
+    assert not (
+        artifact_root / "run-old-0" / "replay" / "cand-1" / "workspace"
+    ).exists()
     assert not (artifact_root / "run-old-0" / "overlays").exists()
     assert (artifact_root / "run-old-0" / "report.json").exists()
     assert (artifact_root / "run-current" / "run.json").exists()
+    assert current_run_observations[-1] == ("rejected", False)
+    assert (
+        artifact_root / "run-current" / "replay" / "terminal" / "result.json"
+    ).exists()
+    assert not (
+        artifact_root / "run-current" / "replay" / "terminal" / "workspace"
+    ).exists()
+    assert any(
+        "run-current/replay/terminal/workspace" in path
+        for path in cleanup["removed_paths"]
+    )
+    assert not (
+        artifact_root / "run-current" / "artifact_retention_transactions"
+    ).exists()
+
+
+def test_artifact_retention_merge_preserves_ingestion_cleanup_telemetry() -> None:
+    merged = _merge_artifact_retention_reports(
+        {
+            "status": "completed",
+            "policy": {"keep_latest_runs": 2},
+            "removed_ingestion_ids": ["ingestion-old"],
+            "protected_ingestion_ids": ["ingestion-startup"],
+        },
+        {
+            "status": "completed",
+            "policy": {"keep_latest_runs": 2},
+            "removed_ingestion_ids": ["ingestion-new", "ingestion-old"],
+            "protected_ingestion_ids": ["ingestion-current"],
+        },
+    )
+
+    assert merged["removed_ingestion_ids"] == [
+        "ingestion-new",
+        "ingestion-old",
+    ]
+    assert merged["protected_ingestion_ids"] == ["ingestion-current"]
+
+
+def test_artifact_retention_transaction_recovers_after_final_report_crash(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    store = FilesystemSelfEvolveStore(tmp_path)
+    run_id = "run-retention-crash"
+    run_dir = store.run_path(run_id)
+    _write_terminal_run_with_raw_artifacts(
+        store.artifact_root,
+        run_id,
+        1_000.0,
+    )
+    completed_run = SelfEvolveRun(
+        run_id=run_id,
+        target=SelfEvolveTargetRef(target_type="skill", target_id="generic"),
+        status=SelfEvolveRunStatus.REJECTED,
+    )
+    report = {
+        "run_id": run_id,
+        "status": SelfEvolveRunStatus.REJECTED.value,
+    }
+    original_write_report = store.write_report
+    write_count = 0
+
+    def crash_before_second_report_write(owner_run_id, payload):
+        nonlocal write_count
+        write_count += 1
+        if write_count == 2:
+            raise RuntimeError("simulated crash before retention report commit")
+        return original_write_report(owner_run_id, payload)
+
+    monkeypatch.setattr(store, "write_report", crash_before_second_report_write)
+
+    with pytest.raises(RuntimeError, match="simulated crash"):
+        runner_module._finalize_run_report(
+            store,
+            run_id,
+            report=report,
+            completed_run=completed_run,
+        )
+
+    assert not (run_dir / "replay" / "cand-1" / "workspace").exists()
+    persisted_before_recovery = json.loads(
+        (run_dir / "report.json").read_text(encoding="utf-8")
+    )
+    assert "artifact_retention" not in persisted_before_recovery
+    transaction_dir = run_dir / "artifact_retention_transactions"
+    assert any(transaction_dir.glob("*.json"))
+
+    monkeypatch.setattr(store, "write_report", original_write_report)
+    runner_module._recover_artifact_retention_transactions(store)
+
+    recovered = json.loads((run_dir / "report.json").read_text(encoding="utf-8"))
+    retention = recovered["artifact_retention"]
+    assert retention["status"] == "completed"
+    assert any(
+        "run-retention-crash/replay/cand-1/workspace" in path
+        for path in retention["removed_paths"]
+    )
+    assert not transaction_dir.exists()
 
 
 @pytest.mark.asyncio
@@ -6203,6 +6625,105 @@ async def test_runner_rejects_apply_when_release_normalization_removes_runtime_c
 
 
 @pytest.mark.asyncio
+async def test_apply_rejects_skill_target_drift_before_release_write(
+    tmp_path,
+) -> None:
+    skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    original = "---\nname: demo\n---\n# Demo\n\nOriginal guidance.\n"
+    candidate_content = (
+        "---\nname: demo\n---\n# Demo\n\nUpdated bounded guidance.\n"
+    )
+    drifted = (
+        "---\nname: demo\n---\n# Demo\n\nConcurrent external edit.\n"
+    )
+    skill_path.write_text(original, encoding="utf-8")
+    target = SkillTextTarget(skill_path, allow_auto_apply=True)
+    evaluated_fingerprint = target.fingerprint_current_content()
+    candidate = CandidateVariant(
+        candidate_id="candidate-drift",
+        target=target.identity,
+        content=candidate_content,
+        rationale="bounded update",
+        target_fingerprint=evaluated_fingerprint,
+    )
+    runner = SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=_FixedCandidateOptimizer(
+            candidate,
+            source_run_id="source-run",
+        ),
+        post_apply_evaluator=lambda item: EvaluationSummary(
+            variant_id=item.candidate_id,
+            metrics={"post_apply_passed": True},
+        ),
+    )
+
+    skill_path.write_text(drifted, encoding="utf-8")
+    result = await runner._apply_auto_verified(
+        "run-target-drift",
+        target,
+        candidate,
+    )
+
+    assert result["status"] == "rejected"
+    assert result["metrics"]["code"] == "target_snapshot_stale"
+    assert result["metrics"]["failure_class"] == "infrastructure"
+    assert result["metrics"]["failure_owner"] == "framework"
+    assert result["metrics"]["repairable"] is False
+    assert result["backup_path"] is None
+    assert skill_path.read_text(encoding="utf-8") == drifted
+
+
+@pytest.mark.asyncio
+async def test_apply_rejects_stale_skill_package_file_before_backup(
+    tmp_path,
+) -> None:
+    skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    original = "---\nname: demo\n---\n# Demo\n\nOriginal guidance.\n"
+    candidate_content = (
+        "---\nname: demo\n---\n# Demo\n\nUpdated bounded guidance.\n"
+    )
+    runtime_path = skill_path.parent / "replay" / "runtime.py"
+    runtime_path.parent.mkdir()
+    skill_path.write_text(original, encoding="utf-8")
+    runtime_path.write_text("VALUE = 'evaluated'\n", encoding="utf-8")
+    target = SkillTextTarget(skill_path, allow_auto_apply=True)
+    candidate = CandidateVariant(
+        candidate_id="candidate-package-drift",
+        target=target.identity,
+        content=candidate_content,
+        rationale="bounded update",
+        target_fingerprint=target.fingerprint_current_content(),
+    )
+    runner = SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=_FixedCandidateOptimizer(
+            candidate,
+            source_run_id="source-run",
+        ),
+        post_apply_evaluator=lambda item: EvaluationSummary(
+            variant_id=item.candidate_id,
+            metrics={"post_apply_passed": True},
+        ),
+    )
+
+    runtime_path.write_text("VALUE = 'concurrent-edit'\n", encoding="utf-8")
+    result = await runner._apply_auto_verified(
+        "run-target-package-drift",
+        target,
+        candidate,
+    )
+
+    assert result["status"] == "rejected"
+    assert result["metrics"]["code"] == "target_snapshot_stale"
+    assert result["backup_path"] is None
+    assert skill_path.read_text(encoding="utf-8") == original
+    assert "concurrent-edit" in runtime_path.read_text(encoding="utf-8")
+
+
+@pytest.mark.asyncio
 async def test_runner_refines_candidates_across_iterations_with_validation_feedback(tmp_path) -> None:
     skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
     skill_path.parent.mkdir(parents=True)
@@ -6297,7 +6818,9 @@ async def test_runner_refines_candidates_across_iterations_with_validation_feedb
     )
 
     assert result.run.status.value == "succeeded"
-    assert result.selected_candidate is good_candidate
+    assert result.selected_candidate is not None
+    assert result.selected_candidate.candidate_id == good_candidate.candidate_id
+    assert result.selected_candidate.target_fingerprint != "fingerprint"
     assert len(optimizer.requests) == 2
     assert optimizer.requests[0].validation_feedback == ()
     assert optimizer.requests[1].validation_feedback
@@ -7227,7 +7750,9 @@ async def test_runner_evaluates_candidate_population_until_one_passes(tmp_path) 
 
     assert result.run.status.value == "succeeded"
     assert optimizer.requests[0].max_candidates == 2
-    assert result.selected_candidate is strong_candidate
+    assert result.selected_candidate is not None
+    assert result.selected_candidate.candidate_id == strong_candidate.candidate_id
+    assert result.selected_candidate.target_fingerprint != "fingerprint"
     assert backend.candidate_ids.count("candidate-weak") == 2
     assert backend.candidate_ids.count("candidate-strong") == 2
     report = json.loads((store.run_path("run-population") / "report.json").read_text(encoding="utf-8"))
@@ -10875,7 +11400,9 @@ async def test_runner_uses_prior_rejected_candidate_feedback_across_runs(tmp_pat
     )
 
     assert result.run.status.value == "succeeded"
-    assert result.selected_candidate is fresh_candidate
+    assert result.selected_candidate is not None
+    assert result.selected_candidate.candidate_id == fresh_candidate.candidate_id
+    assert result.selected_candidate.target_fingerprint != "fingerprint"
     assert len(optimizer.requests) == 2
     assert optimizer.requests[0].prior_feedback
     assert optimizer.requests[0].prior_feedback[0].variant_id == "candidate-dup"
@@ -12531,8 +13058,18 @@ async def test_runner_auto_verified_uses_candidate_replay_dataset_for_evaluation
     assert replay_backend.requests
     assert replay_backend.requests[0].baseline_repetitions == 2
     assert replay_backend.requests[0].candidate_repetitions == 3
-    assert Path(replay_backend.requests[0].overlay_skill_root, "demo", "SKILL.md").read_text(encoding="utf-8") == candidate_content
-    assert Path(replay_backend.requests[0].overlay_skill_root, "helper", "SKILL.md").exists()
+    candidate_record = json.loads(
+        (
+            tmp_path
+            / ".aworld"
+            / "self_evolve"
+            / "run-replay-eval"
+            / "candidates"
+            / f"{replay_backend.requests[0].candidate_id}.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert candidate_record["content"] == candidate_content
+    assert not Path(replay_backend.requests[0].overlay_skill_root).exists()
     assert all(
         request.dataset.cases[0].metadata["variant_trajectories"]
         for request in evaluation_backend.requests
@@ -14607,11 +15144,17 @@ def test_inferred_new_skill_policy_controls_draft_retention_and_publication(
     assert replay_backend.requests[0].baseline_repetitions == 2
     assert replay_backend.requests[0].candidate_repetitions == 3
     assert replay_backend.requests[0].baseline_skill_root is None
-    assert Path(
-        replay_backend.requests[0].overlay_skill_root,
-        "generated-capability",
-        "SKILL.md",
-    ).exists()
+    candidate_record_path = (
+        tmp_path
+        / ".aworld"
+        / "self_evolve"
+        / report_summary["run_id"]
+        / "candidates"
+        / f"{replay_backend.requests[0].candidate_id}.json"
+    )
+    candidate_record = json.loads(candidate_record_path.read_text(encoding="utf-8"))
+    assert candidate_record["target"]["target_id"] == "generated-capability"
+    assert not Path(replay_backend.requests[0].overlay_skill_root).exists()
     assert skill_path.read_text(encoding="utf-8") == original_content
     assert [request.dataset_split for request in evaluation_backend.requests] == [
         "validation",
@@ -14719,6 +15262,9 @@ def test_auto_verified_inferred_existing_target_blocks_low_confidence_auto_apply
         target=None,
         apply_policy="auto_verified",
         infer_target=True,
+        total_run_token_budget=12_345,
+        max_run_cost_usd=Decimal("4.5"),
+        max_run_wall_seconds=Decimal("67"),
     )
 
     assert report_summary["status"] == "rejected"
@@ -14733,6 +15279,16 @@ def test_auto_verified_inferred_existing_target_blocks_low_confidence_auto_apply
     assert report["target_selection"]["diagnostics"]["blocked_selected_target"][
         "target_id"
     ] == "agent-browser"
+    budget_ledger = RunBudgetLedger.from_dict(report["budget"]["ledger"])
+    assert budget_ledger.ceilings == BudgetCeilings(
+        total_tokens=12_345,
+        total_cost_usd=Decimal("4.5"),
+        wall_seconds=Decimal("67"),
+    )
+    assert budget_ledger.total_spent() == BudgetUsage()
+    assert report["budget"]["decisions"] == []
+    assert report["budget"]["debits"] == []
+    assert report["budget"]["releases"] == []
 
 
 def test_inferred_new_skill_disabled_policy_rejects_before_draft_materialization(

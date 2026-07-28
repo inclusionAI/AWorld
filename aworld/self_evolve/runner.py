@@ -67,12 +67,17 @@ from aworld.self_evolve.gates import (
     ReplayAdaptationGate,
     ScoreImprovementGate,
     SkillMarkdownGate,
+    SkillReleaseFidelityGate,
     StoppingConditionGate,
     StoppingConditionState,
     TokenLimitGate,
     TrustProvenanceGate,
 )
-from aworld.self_evolve.lifecycle import cleanup_self_evolve_artifacts
+from aworld.self_evolve.lifecycle import (
+    acknowledge_self_evolve_retention_transactions,
+    cleanup_self_evolve_artifacts,
+    read_self_evolve_retention_transactions,
+)
 from aworld.self_evolve.ingestion import (
     DEFAULT_INGESTION_REGISTRY,
     AgenticDatasetIngestor,
@@ -135,9 +140,17 @@ from aworld.self_evolve.candidate_package import (
     candidate_package_fingerprint,
     candidate_semantic_package_fingerprint,
 )
+from aworld.self_evolve.candidate_errors import (
+    candidate_materialization_requirement_id,
+    normalize_candidate_contract_fingerprint,
+    normalize_candidate_failure_field,
+    normalize_candidate_materialization_code,
+    normalize_candidate_representation,
+)
 from aworld.self_evolve.candidate_protocol import (
     CANDIDATE_OUTPUT_CONTRACT,
     CandidateProtocolError,
+    build_candidate_output_contract,
     merge_candidate_repair_output,
     normalize_candidate_output,
 )
@@ -172,6 +185,7 @@ from aworld.self_evolve.concurrency import (
 )
 from aworld.self_evolve.optimizers.base import (
     CandidateOptimizer,
+    CandidateSemanticValidationError,
     CandidateSourceDisposition,
     CandidateSourceKind,
     OptimizerRequest,
@@ -264,7 +278,12 @@ from aworld.self_evolve.sanitization import (
     sanitize_text,
 )
 from aworld.self_evolve.store import FilesystemSelfEvolveStore
-from aworld.self_evolve.targets import DraftSkillTextTarget, SelfEvolveTarget, SkillTextTarget
+from aworld.self_evolve.targets import (
+    DraftSkillTextTarget,
+    SelfEvolveTarget,
+    SkillTextTarget,
+    TargetSnapshotStaleError,
+)
 from aworld.self_evolve.trace_pack import TracePack, build_trace_pack
 from aworld.self_evolve.types import (
     CandidateFileDelta,
@@ -276,6 +295,8 @@ from aworld.self_evolve.types import (
     SelfEvolveRun,
     SelfEvolveRunStatus,
     SelfEvolveTargetRef,
+    SkillStructuralEditAction,
+    SkillStructuralEditIntent,
     to_json_dict,
 )
 from aworld.skills.compat_provider import build_compat_registry
@@ -1245,54 +1266,120 @@ def _candidate_materialization_failures(
     for item in raw_failures[:16]:
         if not isinstance(item, Mapping):
             continue
-        failures.append(
-            {
-                "code": sanitize_text(
-                    item.get("code") or "candidate_materialization_invalid",
-                    max_chars=96,
-                ),
-                "stage": "candidate_generation",
-                "failure_class": "candidate",
-                "repairable": item.get("repairable") is not False,
-                "candidate_index": _non_negative_int(item.get("candidate_index")),
-                "representation": sanitize_text(
-                    item.get("representation") or "candidate_package",
-                    max_chars=80,
-                ),
-                "reason": sanitize_text(item.get("reason"), max_chars=240),
-            }
+        code = normalize_candidate_materialization_code(
+            item.get("code")
+        ).value
+        representation = normalize_candidate_representation(
+            item.get("representation")
+        ).value
+        field_path = normalize_candidate_failure_field(
+            item.get("field_path")
+        ).value
+        raw_stage = str(item.get("stage") or "").strip()
+        failure = {
+            "code": code,
+            "stage": (
+                raw_stage
+                if raw_stage
+                in {
+                    "candidate_generation",
+                    "candidate_protocol",
+                    "candidate_semantic_validation",
+                }
+                else "candidate_generation"
+            ),
+            "failure_class": "candidate",
+            "repairable": item.get("repairable") is not False,
+            "candidate_index": _non_negative_int(item.get("candidate_index")),
+            "representation": representation,
+            "field_path": field_path,
+            "reason": sanitize_text(item.get("reason"), max_chars=240),
+        }
+        contract_fingerprint = normalize_candidate_contract_fingerprint(
+            item.get("contract_fingerprint")
         )
+        if contract_fingerprint is not None:
+            failure["contract_fingerprint"] = contract_fingerprint
+        raw_allowed_ids = item.get("allowed_improvement_signal_ids")
+        if isinstance(raw_allowed_ids, (list, tuple)):
+            failure["allowed_improvement_signal_ids"] = [
+                sanitize_text(value, max_chars=512)
+                for value in raw_allowed_ids[:256]
+                if isinstance(value, str) and value
+            ]
+        failures.append(failure)
     return tuple(failures)
+
+
+def _candidate_materialization_failure_event(
+    failure: Mapping[str, object],
+) -> dict[str, object]:
+    code = normalize_candidate_materialization_code(
+        failure.get("code")
+    ).value
+    field_path = normalize_candidate_failure_field(
+        failure.get("field_path")
+    ).value
+    representation = normalize_candidate_representation(
+        failure.get("representation")
+    ).value
+    contract_fingerprint = normalize_candidate_contract_fingerprint(
+        failure.get("contract_fingerprint")
+    )
+    event = ReplayFailureEvent(
+        code=code,
+        owner=FailureOwner.CANDIDATE,
+        stage=FailureStage.CANDIDATE_GENERATION,
+        scope=FailureScope.CANDIDATE,
+        repairable=failure.get("repairable") is not False,
+        category="candidate_generation",
+        summary="candidate package could not be materialized",
+        diagnostics={
+            "field_path": field_path,
+            "representation": representation,
+        },
+        requirement_id=candidate_materialization_requirement_id(
+            representation=representation,
+            field_path=field_path,
+        ),
+        contract_fingerprint=(
+            contract_fingerprint
+        ),
+    )
+    return event.to_dict()
+
+
+def _candidate_materialization_failure_events(
+    failures: Iterable[Mapping[str, object]],
+) -> tuple[dict[str, object], ...]:
+    events: list[dict[str, object]] = []
+    seen_semantic_keys: set[str] = set()
+    for failure in failures:
+        event = _candidate_materialization_failure_event(failure)
+        semantic_key = str(event["semantic_key"])
+        if semantic_key in seen_semantic_keys:
+            continue
+        seen_semantic_keys.add(semantic_key)
+        events.append(event)
+    return tuple(events)
+
+
+def _candidate_generation_failure_events(
+    optimizer_diagnostics: Iterable[Mapping[str, object]],
+) -> tuple[dict[str, object], ...]:
+    failures: list[dict[str, object]] = []
+    for item in _optimizer_iteration_diagnostics(optimizer_diagnostics):
+        failures.extend(_candidate_materialization_failures(item))
+    if not failures:
+        return ()
+    return _candidate_materialization_failure_events(failures)
 
 
 def _candidate_generation_failure_event(
     optimizer_diagnostics: Iterable[Mapping[str, object]],
 ) -> dict[str, object] | None:
-    failures: list[dict[str, object]] = []
-    for item in _optimizer_iteration_diagnostics(optimizer_diagnostics):
-        failures.extend(_candidate_materialization_failures(item))
-    if not failures:
-        return None
-    representations = sorted(
-        {
-            str(item.get("representation") or "candidate_package")
-            for item in failures
-        }
-    )
-    event = ReplayFailureEvent(
-        code="candidate_materialization_invalid",
-        owner=FailureOwner.CANDIDATE,
-        stage=FailureStage.CANDIDATE_GENERATION,
-        scope=FailureScope.CANDIDATE,
-        repairable=True,
-        category="candidate_generation",
-        summary="candidate package could not be materialized",
-        diagnostics={
-            "failure_count": len(failures),
-            "representations": representations,
-        },
-    )
-    return event.to_dict()
+    events = _candidate_generation_failure_events(optimizer_diagnostics)
+    return events[0] if events else None
 
 
 def _retryable_candidate_generation_failure(
@@ -1579,6 +1666,8 @@ def _rejection_attribution(
 
 
 _CANDIDATE_REPAIRABLE_GATE_STAGES = {
+    "skill_markdown": FailureStage.CANDIDATE_GENERATION,
+    "skill_release_fidelity": FailureStage.CANDIDATE_GENERATION,
     "score_improvement": FailureStage.EVALUATION,
     "cost_latency_regression": FailureStage.EVALUATION,
     "replay_stability_margin": FailureStage.EVALUATION,
@@ -1658,7 +1747,13 @@ def _with_typed_gate_failure_event(gate: GateResult) -> GateResult:
         summary=gate.reason,
         diagnostics={
             "gate_name": gate.gate_name,
+            "field_path": details.get("field_path"),
         },
+        contract_fingerprint=(
+            str(details["contract_fingerprint"])
+            if isinstance(details.get("contract_fingerprint"), str)
+            else None
+        ),
     ).to_dict()
     details.update(
         {
@@ -2275,19 +2370,19 @@ class SelfEvolveRunner:
                     stages={},
                 ),
             }
-            report["artifact_retention"] = _artifact_retention_report(
-                self.store,
-                run_id,
-                previous=startup_artifact_retention,
-            )
-            self.store.write_report(run_id, report)
             completed_run = SelfEvolveRun(
                 run_id=run_id,
                 target=target.identity,
                 status=SelfEvolveRunStatus.REJECTED,
                 gate_results=(stopping_result,),
             )
-            self.store.create_run(completed_run)
+            _finalize_run_report(
+                self.store,
+                run_id,
+                report=report,
+                completed_run=completed_run,
+                previous_artifact_retention=startup_artifact_retention,
+            )
             _emit_progress(
                 self.progress_callback,
                 "completed",
@@ -2519,6 +2614,22 @@ class SelfEvolveRunner:
                 )
                 infrastructure_blocked = True
                 break
+            if (
+                optimizer_result.source_disposition.kind
+                is CandidateSourceKind.GENERATED
+            ):
+                optimizer_result = replace(
+                    optimizer_result,
+                    candidates=tuple(
+                        replace(
+                            candidate,
+                            target_fingerprint=(
+                                optimizer_request.target_fingerprint
+                            ),
+                        )
+                        for candidate in optimizer_result.candidates
+                    ),
+                )
             optimizer_result = _with_versioned_semantic_lineage(
                 optimizer_result,
                 target_fingerprint=optimizer_request.target_fingerprint,
@@ -2941,6 +3052,11 @@ class SelfEvolveRunner:
                     materialization_failures
                 )
                 if protocol_invalid_count or materialization_invalid_count:
+                    causal_failure_events = (
+                        _candidate_materialization_failure_events(
+                            materialization_failures
+                        )
+                    )
                     failed_gate = (
                         "candidate_materialization"
                         if materialization_invalid_count
@@ -2971,6 +3087,9 @@ class SelfEvolveRunner:
                                     ),
                                     "candidate_validation_diagnostics": list(
                                         materialization_failures
+                                    ),
+                                    "causal_failure_events": list(
+                                        causal_failure_events
                                     ),
                                 },
                             ),
@@ -3103,26 +3222,28 @@ class SelfEvolveRunner:
                 attempt_key = attempt_key_by_candidate_id.get(
                     candidate.candidate_id
                 )
+                raw_local_results = _candidate_gate_results(
+                    candidate,
+                    current_content=current_content,
+                    workspace_root=self.store.workspace_root,
+                    max_chars=self.max_run_tokens,
+                    target_provenance=target_provenance,
+                    target_provenance_unresolved_reason=(
+                        target_provenance_unresolved_reason
+                    ),
+                    allow_generated_target_mutation=(
+                        self.allow_generated_target_mutation
+                    ),
+                    allow_external_target_mutation=(
+                        self.allow_external_target_mutation
+                    ),
+                    target_intent=self._active_target_intent,
+                    inferred_new_skill_policy=self.inferred_new_skill_policy,
+                    apply_policy=apply_policy,
+                )
                 local_results = tuple(
-                    _candidate_gate_results(
-                        candidate,
-                        current_content=current_content,
-                        workspace_root=self.store.workspace_root,
-                        max_chars=self.max_run_tokens,
-                        target_provenance=target_provenance,
-                        target_provenance_unresolved_reason=(
-                            target_provenance_unresolved_reason
-                        ),
-                        allow_generated_target_mutation=(
-                            self.allow_generated_target_mutation
-                        ),
-                        allow_external_target_mutation=(
-                            self.allow_external_target_mutation
-                        ),
-                        target_intent=self._active_target_intent,
-                        inferred_new_skill_policy=self.inferred_new_skill_policy,
-                        apply_policy=apply_policy,
-                    )
+                    _with_typed_gate_failure_event(gate)
+                    for gate in raw_local_results
                 )
                 local_gate_results_by_candidate[candidate.candidate_id] = local_results
                 if attempt_key is None:
@@ -3140,15 +3261,23 @@ class SelfEvolveRunner:
                 if not failed_local:
                     locally_valid_candidates.append(candidate)
                     continue
-                local_feedback = EvaluationSummary(
-                    variant_id=candidate.candidate_id,
-                    dataset_split="validation",
-                    metrics={
-                        "failed_gates": [gate.gate_name for gate in failed_local],
+                local_feedback_metrics = _typed_gate_feedback_metrics(
+                    failed_local
+                )
+                local_feedback_metrics.update(
+                    {
+                        "failed_gates": [
+                            gate.gate_name for gate in failed_local
+                        ],
                         "candidate_status": "rejected",
                         "failure_class": "candidate",
                         "repairable": True,
-                    },
+                    }
+                )
+                local_feedback = EvaluationSummary(
+                    variant_id=candidate.candidate_id,
+                    dataset_split="validation",
+                    metrics=local_feedback_metrics,
                 )
                 local_gate_feedback.append(local_feedback)
                 iteration_states.append(
@@ -3462,8 +3591,13 @@ class SelfEvolveRunner:
                 == raw_generation_attempt_count
                 and not all_candidates
             )
+            candidate_generation_failure_events = (
+                _candidate_generation_failure_events(optimizer_diagnostics)
+            )
             candidate_generation_failure_event = (
-                _candidate_generation_failure_event(optimizer_diagnostics)
+                candidate_generation_failure_events[0]
+                if candidate_generation_failure_events
+                else None
             )
             candidate_generation_details: dict[str, object] = {
                 "generated_candidate_count": len(all_candidates),
@@ -3473,11 +3607,11 @@ class SelfEvolveRunner:
                 candidate_generation_details.update(
                     {
                         "failure_class": "candidate",
-                        "code": "candidate_materialization_invalid",
+                        "code": candidate_generation_failure_event["code"],
                         "failure_event": candidate_generation_failure_event,
-                        "causal_failure_events": [
-                            candidate_generation_failure_event
-                        ],
+                        "causal_failure_events": list(
+                            candidate_generation_failure_events
+                        ),
                     }
                 )
             gate_results.append(
@@ -3923,13 +4057,6 @@ class SelfEvolveRunner:
         report["content_quality_diagnostics"] = build_content_quality_diagnostics(
             content_quality_metrics
         )
-        report["artifact_retention"] = _artifact_retention_report(
-            self.store,
-            run_id,
-            previous=startup_artifact_retention,
-        )
-        self.store.write_report(run_id, report)
-
         completed_run = SelfEvolveRun(
             run_id=run_id,
             target=target.identity,
@@ -3940,7 +4067,13 @@ class SelfEvolveRunner:
             metrics=tuple(item for item in (baseline_summary, candidate_summary) if item is not None),
             gate_results=tuple(gate_results),
         )
-        self.store.create_run(completed_run)
+        _finalize_run_report(
+            self.store,
+            run_id,
+            report=report,
+            completed_run=completed_run,
+            previous_artifact_retention=startup_artifact_retention,
+        )
         _emit_progress(
             self.progress_callback,
             "completed",
@@ -6391,6 +6524,54 @@ class SelfEvolveRunner:
     ) -> dict[str, object]:
         if self.post_apply_evaluator is None:
             raise ValueError("auto_verified apply policy requires post_apply_evaluator")
+        evaluated_target_fingerprint = candidate.target_fingerprint
+        try:
+            apply_target_fingerprint = target.fingerprint_current_content()
+        except Exception as exc:
+            return {
+                "status": "rejected",
+                "metrics": {
+                    "post_apply_passed": False,
+                    "release_state": "rejected",
+                    "code": "target_snapshot_unavailable",
+                    "failure_class": "infrastructure",
+                    "failure_owner": "framework",
+                    "failure_scope": "shared_run",
+                    "repairable": False,
+                    "error_type": type(exc).__name__,
+                },
+                "dataset_split": "post_apply",
+                "backup_path": None,
+                "journal_path": None,
+                "release_state": "rejected",
+            }
+        if (
+            not evaluated_target_fingerprint
+            or apply_target_fingerprint
+            != evaluated_target_fingerprint
+        ):
+            return {
+                "status": "rejected",
+                "metrics": {
+                    "post_apply_passed": False,
+                    "release_state": "rejected",
+                    "code": "target_snapshot_stale",
+                    "failure_class": "infrastructure",
+                    "failure_owner": "framework",
+                    "failure_scope": "shared_run",
+                    "repairable": False,
+                    "evaluated_target_fingerprint": (
+                        evaluated_target_fingerprint
+                    ),
+                    "apply_target_fingerprint": (
+                        apply_target_fingerprint
+                    ),
+                },
+                "dataset_split": "post_apply",
+                "backup_path": None,
+                "journal_path": None,
+                "release_state": "rejected",
+            }
         original_content = target.load_current_content()
         backup_path, journal_path = self.store.write_apply_backup(
             run_id,
@@ -6424,6 +6605,11 @@ class SelfEvolveRunner:
                 candidate.content,
                 run_id=run_id,
                 candidate_id=candidate.candidate_id,
+                original_content=original_content,
+                structural_edit_intent=(
+                    candidate.structural_edit_intent
+                ),
+                require_exact_deletion_intent=True,
             )
             normalization_metrics = _with_release_lesson_mapping(
                 normalization_metrics,
@@ -6455,6 +6641,46 @@ class SelfEvolveRunner:
                 content=normalized_content,
             )
         try:
+            latest_target_fingerprint = (
+                target.fingerprint_current_content()
+            )
+        except Exception as exc:
+            latest_target_fingerprint = None
+            fingerprint_error_type = type(exc).__name__
+        else:
+            fingerprint_error_type = None
+        if latest_target_fingerprint != evaluated_target_fingerprint:
+            drift_metrics = {
+                "post_apply_passed": False,
+                "release_state": "rejected",
+                "code": "target_snapshot_stale",
+                "failure_class": "infrastructure",
+                "failure_owner": "framework",
+                "failure_scope": "shared_run",
+                "repairable": False,
+                "evaluated_target_fingerprint": (
+                    evaluated_target_fingerprint
+                ),
+                "apply_target_fingerprint": (
+                    latest_target_fingerprint
+                ),
+                "fingerprint_error_type": fingerprint_error_type,
+                **dict(normalization_metrics),
+            }
+            self.store.update_apply_journal(
+                journal_path,
+                status="rejected",
+                details=drift_metrics,
+            )
+            return {
+                "status": "rejected",
+                "metrics": drift_metrics,
+                "dataset_split": "post_apply",
+                "backup_path": str(backup_path),
+                "journal_path": str(journal_path),
+                "release_state": "rejected",
+            }
+        try:
             if (
                 applied_candidate.target.target_type == "skill"
                 and hasattr(target, "apply_candidate_variant")
@@ -6463,9 +6689,45 @@ class SelfEvolveRunner:
                     applied_candidate,
                     expected_package_fingerprint=expected_package_fingerprint,
                     verified_content=candidate.content,
+                    expected_target_fingerprint=(
+                        evaluated_target_fingerprint
+                    ),
                 )
             else:
+                if (
+                    target.fingerprint_current_content()
+                    != evaluated_target_fingerprint
+                ):
+                    raise TargetSnapshotStaleError(
+                        "target snapshot changed before candidate mutation"
+                    )
                 target.apply_candidate(applied_candidate.content)
+        except TargetSnapshotStaleError:
+            drift_metrics = {
+                "post_apply_passed": False,
+                "release_state": "rejected",
+                "code": "target_snapshot_stale",
+                "failure_class": "infrastructure",
+                "failure_owner": "framework",
+                "failure_scope": "shared_run",
+                "repairable": False,
+                "evaluated_target_fingerprint": (
+                    evaluated_target_fingerprint
+                ),
+            }
+            self.store.update_apply_journal(
+                journal_path,
+                status="rejected",
+                details=drift_metrics,
+            )
+            return {
+                "status": "rejected",
+                "metrics": drift_metrics,
+                "dataset_split": "post_apply",
+                "backup_path": str(backup_path),
+                "journal_path": str(journal_path),
+                "release_state": "rejected",
+            }
         except Exception as exc:
             self.store.update_apply_journal(
                 journal_path,
@@ -7632,6 +7894,12 @@ def optimize_from_cli_request(
             progress_callback=progress_callback,
             concurrency_policy=effective_concurrency_policy,
         )
+    pre_execution_budget_report = _empty_run_budget_report(
+        max_run_tokens=max_run_tokens,
+        total_run_token_budget=total_run_token_budget,
+        max_run_cost_usd=max_run_cost_usd,
+        max_run_wall_seconds=max_run_wall_seconds,
+    )
     _validate_eval_source_request(
         dataset=dataset,
         from_session=from_session,
@@ -8007,6 +8275,7 @@ def optimize_from_cli_request(
                 dataset=built_dataset,
                 target_selection_report=target_selection_report,
                 apply_policy=apply_policy,
+                budget_report=pre_execution_budget_report,
             )
         target_selection_decision = _infer_target_from_trace_packs(
             trace_packs,
@@ -8043,6 +8312,7 @@ def optimize_from_cli_request(
                 dataset=built_dataset,
                 target_selection_report=target_selection_report,
                 apply_policy=apply_policy,
+                budget_report=pre_execution_budget_report,
             )
         if not _campaign_target_matches(
             target_selection_report.selected_target,
@@ -8059,6 +8329,7 @@ def optimize_from_cli_request(
                 dataset=built_dataset,
                 target_selection_report=target_selection_decision.report,
                 apply_policy=apply_policy,
+                budget_report=pre_execution_budget_report,
             )
         if (
             target_selection_decision.target_intent
@@ -8077,6 +8348,7 @@ def optimize_from_cli_request(
                 dataset=built_dataset,
                 target_selection_report=target_selection_report,
                 apply_policy=apply_policy,
+                budget_report=pre_execution_budget_report,
             )
         if (
             target_selection_decision.target_intent
@@ -8098,6 +8370,7 @@ def optimize_from_cli_request(
                     dataset=built_dataset,
                     target_selection_report=target_selection_report,
                     apply_policy=apply_policy,
+                    budget_report=pre_execution_budget_report,
                 )
         if not target_selection_decision.provenance_resolution.resolved:
             target_selection_decision = _blocked_inferred_target_selection_decision(
@@ -8112,6 +8385,7 @@ def optimize_from_cli_request(
                 dataset=built_dataset,
                 target_selection_report=target_selection_report,
                 apply_policy=apply_policy,
+                budget_report=pre_execution_budget_report,
             )
         if apply_policy == "auto_verified" and not _inferred_target_admitted_for_auto_apply(
             target_selection_decision
@@ -8125,6 +8399,7 @@ def optimize_from_cli_request(
                 dataset=built_dataset,
                 target_selection_report=target_selection_report,
                 apply_policy=apply_policy,
+                budget_report=pre_execution_budget_report,
             )
         try:
             target_adapter = _target_from_ref(
@@ -8145,6 +8420,7 @@ def optimize_from_cli_request(
                 target_provenance=target_provenance,
                 apply_policy=apply_policy,
                 reason=str(exc),
+                budget_report=pre_execution_budget_report,
             )
     else:
         if not target:
@@ -8235,12 +8511,18 @@ def optimize_from_cli_request(
         else None
     )
 
-    async def _cli_candidate_population(prompts, max_concurrency):
+    async def _cli_candidate_population(
+        prompts,
+        max_concurrency,
+        *,
+        validate_output=None,
+    ):
         if candidate_population_executor is None:
             raise RuntimeError("candidate population executor is not configured")
         return await candidate_population_executor.run(
             prompts,
             max_concurrency=max_concurrency,
+            validate_output=validate_output,
         )
 
     if apply_policy == "auto_verified" and evaluation_backend is None:
@@ -8459,7 +8741,13 @@ def _candidate_mutation_repair_prompt(
 ) -> str:
     diagnostic = (
         error.to_diagnostic()
-        if isinstance(error, CandidateProtocolError)
+        if isinstance(
+            error,
+            (
+                CandidateProtocolError,
+                CandidateSemanticValidationError,
+            ),
+        )
         else {
             "code": "candidate_protocol_invalid",
             "stage": "candidate_protocol",
@@ -8467,16 +8755,34 @@ def _candidate_mutation_repair_prompt(
             "repairable": True,
         }
     )
+    allowed_signal_ids = getattr(
+        error,
+        "allowed_improvement_signal_ids",
+        (),
+    )
+    candidate_schema = (
+        build_candidate_output_contract(tuple(allowed_signal_ids))
+        if isinstance(allowed_signal_ids, (list, tuple))
+        else dict(CANDIDATE_OUTPUT_CONTRACT)
+    )
     payload = {
-        "candidate_schema": dict(CANDIDATE_OUTPUT_CONTRACT),
+        "candidate_schema": candidate_schema,
         "diagnostics": [diagnostic],
         # Candidate packages commonly contain complete compiler/runtime sources.
         # Preserve a bounded full package when possible so representation repair
         # does not reconstruct missing file tails from a small prefix.
         "invalid_response": sanitize_text(invalid_output, max_chars=64_000),
     }
-    return (
+    repair_instruction = (
         "Repair representation only using the supplied schema and diagnostic. "
+        if isinstance(error, CandidateProtocolError)
+        else (
+            "Repair candidate contract conformance using the supplied schema and "
+            "diagnostic. Preserve valid package fields outside the diagnosed repair "
+            "field. "
+        )
+    )
+    return repair_instruction + (
         "Do not invent new task evidence. Return exactly one candidate JSON object.\n"
         + json.dumps(payload, ensure_ascii=False, sort_keys=True)
     )
@@ -8682,12 +8988,43 @@ def _stable_json_fingerprint(value: Any) -> str:
     return "sha256:" + hashlib.sha256(encoded).hexdigest()
 
 
+def _finalize_run_report(
+    store: FilesystemSelfEvolveStore,
+    run_id: str,
+    *,
+    report: dict[str, Any],
+    completed_run: SelfEvolveRun,
+    previous_artifact_retention: Mapping[str, object] | None = None,
+) -> Path:
+    """Persist terminal state before reclaiming artifacts from the completed run."""
+
+    store.write_report(run_id, report)
+    store.create_run(completed_run)
+    report["artifact_retention"] = _artifact_retention_report(
+        store,
+        run_id,
+        previous=previous_artifact_retention,
+    )
+    report_path = store.write_report(run_id, report)
+    _acknowledge_reported_artifact_retention(store, run_id, report)
+    return report_path
+
+
 def _artifact_retention_report(
     store: FilesystemSelfEvolveStore,
     run_id: str,
     *,
     previous: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
+    recovered = _recover_artifact_retention_transactions(store)
+    recovered_current = recovered.get(run_id)
+    effective_previous = previous
+    if recovered_current is not None:
+        effective_previous = (
+            _merge_artifact_retention_reports(previous, recovered_current)
+            if previous is not None
+            else recovered_current
+        )
     try:
         cleanup: dict[str, object] = cleanup_self_evolve_artifacts(
             store.workspace_root,
@@ -8699,16 +9036,79 @@ def _artifact_retention_report(
             "status": "failed",
             "error": str(exc),
         }
-        if previous is None:
+        if effective_previous is None:
             return current
-        return _merge_artifact_retention_reports(previous, current)
+        return _merge_artifact_retention_reports(effective_previous, current)
     current: dict[str, object] = {
         "status": "completed",
         **cleanup,
     }
-    if previous is None:
+    if effective_previous is None:
         return current
-    return _merge_artifact_retention_reports(previous, current)
+    return _merge_artifact_retention_reports(effective_previous, current)
+
+
+def _recover_artifact_retention_transactions(
+    store: FilesystemSelfEvolveStore,
+) -> dict[str, dict[str, object]]:
+    transactions = read_self_evolve_retention_transactions(
+        store.workspace_root,
+        artifact_root=store.artifact_root,
+    )
+    recovered_by_run: dict[str, dict[str, object]] = {}
+    for transaction in transactions:
+        owner_run_id = transaction.get("run_id")
+        transaction_id = transaction.get("transaction_id")
+        recovered_result = transaction.get("result")
+        if (
+            not isinstance(owner_run_id, str)
+            or not isinstance(transaction_id, str)
+            or not isinstance(recovered_result, Mapping)
+        ):
+            raise ValueError("artifact retention transaction projection is invalid")
+        try:
+            report = store.read_report(owner_run_id)
+        except FileNotFoundError:
+            continue
+        existing = report.get("artifact_retention")
+        merged_retention = (
+            _merge_artifact_retention_reports(existing, recovered_result)
+            if isinstance(existing, Mapping)
+            else dict(recovered_result)
+        )
+        report["artifact_retention"] = merged_retention
+        store.write_report(owner_run_id, report)
+        acknowledge_self_evolve_retention_transactions(
+            store.workspace_root,
+            artifact_root=store.artifact_root,
+            run_id=owner_run_id,
+            transaction_ids=(transaction_id,),
+        )
+        recovered_by_run[owner_run_id] = merged_retention
+    return recovered_by_run
+
+
+def _acknowledge_reported_artifact_retention(
+    store: FilesystemSelfEvolveStore,
+    run_id: str,
+    report: Mapping[str, object],
+) -> None:
+    retention = report.get("artifact_retention")
+    if not isinstance(retention, Mapping):
+        return
+    transaction_ids = tuple(
+        value
+        for value in _retention_sequence(retention.get("transaction_ids"))
+        if isinstance(value, str) and value
+    )
+    if not transaction_ids:
+        return
+    acknowledge_self_evolve_retention_transactions(
+        store.workspace_root,
+        artifact_root=store.artifact_root,
+        run_id=run_id,
+        transaction_ids=transaction_ids,
+    )
 
 
 def _merge_artifact_retention_reports(
@@ -8744,6 +9144,49 @@ def _merge_artifact_retention_reports(
             if isinstance(value, str) and value
         }
     )
+    archived_run_ids = sorted(
+        {
+            str(value)
+            for report in (previous, current)
+            for value in _retention_sequence(report.get("archived_run_ids"))
+            if isinstance(value, str) and value
+        }
+    )
+    removed_ingestion_ids = sorted(
+        {
+            str(value)
+            for report in (previous, current)
+            for value in _retention_sequence(report.get("removed_ingestion_ids"))
+            if isinstance(value, str) and value
+        }
+    )
+    protected_ingestion_ids = sorted(
+        {
+            str(value)
+            for value in _retention_sequence(
+                final_state.get("protected_ingestion_ids")
+            )
+            if isinstance(value, str) and value
+        }
+    )
+    transaction_ids = sorted(
+        {
+            str(value)
+            for report in (previous, current)
+            for value in _retention_sequence(report.get("transaction_ids"))
+            if isinstance(value, str) and value
+        }
+    )
+    uncertain_removed_paths = sorted(
+        {
+            str(value)
+            for report in (previous, current)
+            for value in _retention_sequence(
+                report.get("uncertain_removed_paths")
+            )
+            if isinstance(value, str) and value
+        }
+    )
     statuses = tuple(report.get("status") for report in (previous, current))
     merged: dict[str, object] = {
         "status": (
@@ -8752,11 +9195,17 @@ def _merge_artifact_retention_reports(
         "policy": current.get("policy", previous.get("policy", {})),
         "removed_run_count": len(removed_run_ids),
         "removed_run_ids": removed_run_ids,
+        "archived_run_ids": archived_run_ids,
         "removed_path_count": len(removed_paths),
         "removed_paths": removed_paths,
         "skipped_runs": skipped_runs,
         "protected_run_ids": protected_run_ids,
+        "removed_ingestion_ids": removed_ingestion_ids,
+        "protected_ingestion_ids": protected_ingestion_ids,
+        "transaction_ids": transaction_ids,
     }
+    if uncertain_removed_paths:
+        merged["uncertain_removed_paths"] = uncertain_removed_paths
     errors = [
         report.get("error")
         for report in (previous, current)
@@ -9121,7 +9570,55 @@ def _load_candidate_variant(path: Path) -> CandidateVariant:
             for item in payload.get("files", ())
             if isinstance(item, Mapping)
         ),
+        structural_edit_intent=_load_structural_edit_intent(
+            payload.get("structural_edit_intent")
+        ),
     )
+
+
+def _load_structural_edit_intent(
+    value: Any,
+) -> SkillStructuralEditIntent | None:
+    if not isinstance(value, Mapping):
+        return None
+    actions = value.get("actions")
+    if not isinstance(actions, list):
+        return None
+    try:
+        return SkillStructuralEditIntent(
+            schema_version=str(value.get("schema_version") or ""),
+            authority=str(value.get("authority") or ""),
+            authorization=str(value.get("authorization") or ""),
+            reason=str(value.get("reason") or ""),
+            base_content_fingerprint=str(
+                value.get("base_content_fingerprint") or ""
+            ),
+            candidate_content_fingerprint=str(
+                value.get("candidate_content_fingerprint") or ""
+            ),
+            actions=tuple(
+                SkillStructuralEditAction(
+                    action=str(item.get("action") or ""),
+                    section_path=tuple(
+                        str(part)
+                        for part in item.get("section_path", ())
+                        if isinstance(part, str)
+                    ),
+                    base_section_fingerprint=(
+                        str(item.get("base_section_fingerprint"))
+                        if item.get("base_section_fingerprint") is not None
+                        else None
+                    ),
+                    result_section_fingerprint=str(
+                        item.get("result_section_fingerprint") or ""
+                    ),
+                )
+                for item in actions
+                if isinstance(item, Mapping)
+            ),
+        )
+    except (TypeError, ValueError):
+        return None
 
 
 def _source_config_from_stored_dataset_recipe(
@@ -13649,6 +14146,25 @@ def _release_normalization_report(post_apply: Mapping[str, object]) -> dict[str,
             else []
         ),
         "removed_internal_line_count": metrics.get("removed_internal_line_count"),
+        "structural_validation_passed": metrics.get(
+            "structural_validation_passed"
+        ),
+        "structural_failure_code": metrics.get(
+            "structural_failure_code"
+        ),
+        "structural_failure_field_path": metrics.get(
+            "structural_failure_field_path"
+        ),
+        "normalization_structural_intent_rebind_passed": metrics.get(
+            "normalization_structural_intent_rebind_passed"
+        ),
+        "failure_class": metrics.get("failure_class"),
+        "failure_owner": metrics.get("failure_owner"),
+        "failure_scope": metrics.get("failure_scope"),
+        "repairable": metrics.get("repairable"),
+        "structural_contract_fingerprint": metrics.get(
+            "structural_contract_fingerprint"
+        ),
         "status": post_apply.get("status"),
     }
 
@@ -14865,16 +15381,31 @@ def _candidate_gate_results(
     inferred_new_skill_policy: InferredNewSkillPolicy | str = InferredNewSkillPolicy.AUTO_VERIFIED,
     apply_policy: str = "proposal",
 ) -> list[GateResult]:
+    token_limit_result = TokenLimitGate(max_chars=max_chars).evaluate(
+        candidate
+    )
     results = [
         NoopCandidateGate().evaluate(current_content=current_content, candidate=candidate),
         MalformedCandidateGate().evaluate(candidate),
         CandidatePackageGate().evaluate(candidate),
-        TokenLimitGate(max_chars=max_chars).evaluate(candidate),
+        token_limit_result,
         ProtectedPathGate(workspace_root=workspace_root).evaluate(candidate),
         ExternalCodeEvolutionGate().evaluate(candidate),
     ]
-    if candidate.target.target_type == "skill":
+    if (
+        candidate.target.target_type == "skill"
+        and token_limit_result.passed
+    ):
         results.append(SkillMarkdownGate().evaluate(candidate))
+        results.append(
+            SkillReleaseFidelityGate().evaluate(
+                candidate,
+                current_content=current_content,
+                require_exact_deletion_intent=(
+                    apply_policy == "auto_verified"
+                ),
+            )
+        )
     results.append(
         TrustProvenanceGate(
             allow_generated=allow_generated_target_mutation,
@@ -15689,6 +16220,32 @@ def _blocked_low_confidence_target_selection_report(
     )
 
 
+def _empty_run_budget_report(
+    *,
+    max_run_tokens: int,
+    total_run_token_budget: int | None,
+    max_run_cost_usd: float | Decimal | None,
+    max_run_wall_seconds: float | Decimal | None,
+) -> dict[str, object]:
+    """Build typed zero-usage telemetry for runs rejected before execution."""
+
+    effective_token_budget = (
+        max_run_tokens
+        if total_run_token_budget is None
+        else total_run_token_budget
+    )
+    return _RunBudgetContext(
+        ledger=RunBudgetLedger(
+            BudgetCeilings(
+                total_tokens=effective_token_budget,
+                total_cost_usd=max_run_cost_usd,
+                wall_seconds=max_run_wall_seconds,
+            )
+        ),
+        cold_start_by_stage={},
+    ).to_dict()
+
+
 def _persist_no_target_cli_result(
     *,
     store: FilesystemSelfEvolveStore,
@@ -15696,6 +16253,7 @@ def _persist_no_target_cli_result(
     dataset: SelfEvolveDataset,
     target_selection_report: TargetSelectionReport,
     apply_policy: str,
+    budget_report: Mapping[str, object],
 ) -> Mapping[str, Any]:
     target = SelfEvolveTargetRef(target_type="no_target", target_id="no_target")
     run = SelfEvolveRun(run_id=run_id, target=target, status=SelfEvolveRunStatus.REJECTED)
@@ -15714,9 +16272,11 @@ def _persist_no_target_cli_result(
         "selected_candidate_id": None,
         "status": run.status.value,
         "target_selection": to_json_dict(target_selection_report),
+        "budget": dict(budget_report),
     }
     report["artifact_retention"] = _artifact_retention_report(store, run_id)
     report_path = store.write_report(run_id, report)
+    _acknowledge_reported_artifact_retention(store, run_id, report)
     summary = {
         "report_path": str(report_path),
         "target_selection_path": str(target_selection_path),
@@ -15737,6 +16297,7 @@ def _persist_unsupported_target_cli_result(
     target_provenance: TargetProvenance | None,
     apply_policy: str,
     reason: str,
+    budget_report: Mapping[str, object],
 ) -> Mapping[str, Any]:
     if target_selection_report.selected_target is None:
         return _persist_no_target_cli_result(
@@ -15745,6 +16306,7 @@ def _persist_unsupported_target_cli_result(
             dataset=dataset,
             target_selection_report=target_selection_report,
             apply_policy=apply_policy,
+            budget_report=budget_report,
         )
 
     target = target_selection_report.selected_target
@@ -15784,9 +16346,11 @@ def _persist_unsupported_target_cli_result(
             "target_ref": _target_ref_text(target),
             "reason": reason,
         },
+        "budget": dict(budget_report),
     }
     report["artifact_retention"] = _artifact_retention_report(store, run_id)
     report_path = store.write_report(run_id, report)
+    _acknowledge_reported_artifact_retention(store, run_id, report)
     summary = {
         "report_path": str(report_path),
         "target_selection_path": str(target_selection_path),

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from collections.abc import Mapping
@@ -18,8 +19,10 @@ MAX_SURROUNDING_PROSE_CHARS = 4_000
 MAX_RATIONALE_CHARS = 8_000
 LARGE_TARGET_CONTENT_CHARS = 16_000
 MIN_FULL_REPLACEMENT_RETENTION_RATIO = 0.8
+MAX_EXPOSED_IMPROVEMENT_SIGNAL_IDS = 256
 
-CANDIDATE_OUTPUT_CONTRACT: Mapping[str, object] = {
+
+_CANDIDATE_OUTPUT_TEMPLATE: Mapping[str, object] = {
     "schema_version": CANDIDATE_SCHEMA_VERSION,
     "content": (
         "optional complete primary target content for a deliberate full rewrite; "
@@ -42,12 +45,10 @@ CANDIDATE_OUTPUT_CONTRACT: Mapping[str, object] = {
         ]
     },
     "rationale": "bounded explanation of the reusable behavior delta",
-    "addressed_improvement_signal_ids": [
-        (
-            "optional IDs of exposed self-improvement signals materially "
-            "addressed by this candidate"
-        )
-    ],
+    # An empty array is always a valid optional-subset example. Request-specific
+    # allowed values are carried separately so the example itself can never
+    # teach the model an invalid placeholder ID.
+    "addressed_improvement_signal_ids": [],
     "files": [
         {
             "path": "replay/<relative-path>",
@@ -57,6 +58,64 @@ CANDIDATE_OUTPUT_CONTRACT: Mapping[str, object] = {
         }
     ],
 }
+
+
+def build_candidate_output_contract(
+    exposed_improvement_signal_ids: tuple[str, ...] | list[str],
+) -> dict[str, object]:
+    """Build a fresh, bounded output contract for one optimizer request."""
+
+    raw_signal_ids = tuple(exposed_improvement_signal_ids)
+    if (
+        len(raw_signal_ids) > MAX_EXPOSED_IMPROVEMENT_SIGNAL_IDS
+        or any(
+            not isinstance(item, str)
+            or not item
+            or len(item) > 512
+            for item in raw_signal_ids
+        )
+    ):
+        raise ValueError("exposed improvement signal IDs are invalid or unbounded")
+    signal_ids = tuple(dict.fromkeys(raw_signal_ids))
+    contract = {
+        key: (
+            [dict(item) for item in value]
+            if key == "files" and isinstance(value, list)
+            else dict(value)
+            if isinstance(value, Mapping)
+            else value
+        )
+        for key, value in _CANDIDATE_OUTPUT_TEMPLATE.items()
+    }
+    contract["addressed_improvement_signal_ids"] = []
+    contract["field_constraints"] = {
+        "addressed_improvement_signal_ids": {
+            "type": "array",
+            "selection": "optional_subset",
+            "unique_items": True,
+            "allowed_values": list(signal_ids),
+            "must_be_empty": not signal_ids,
+        }
+    }
+    return contract
+
+
+def candidate_output_contract_fingerprint(
+    exposed_improvement_signal_ids: tuple[str, ...] | list[str],
+) -> str:
+    payload = build_candidate_output_contract(exposed_improvement_signal_ids)
+    digest = hashlib.sha256(
+        json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    return f"sha256:{digest}"
+
+
+CANDIDATE_OUTPUT_CONTRACT: Mapping[str, object] = build_candidate_output_contract(())
 
 _CANDIDATE_FIELDS = frozenset(
     {
@@ -149,9 +208,19 @@ def merge_candidate_repair_output(
     runs on the merged object immediately afterwards.
     """
 
-    del error
     initial = _candidate_payload_fields(_decode_single_json_object(invalid_output))
     repaired = _candidate_payload_fields(_decode_single_json_object(repaired_output))
+    if getattr(error, "field_path", None) == (
+        "addressed_improvement_signal_ids"
+    ):
+        repaired = {
+            key: value
+            for key, value in repaired.items()
+            if key in {
+                "schema_version",
+                "addressed_improvement_signal_ids",
+            }
+        }
     merged = {**initial, **repaired}
     initial_files = initial.get("files")
     repaired_files = repaired.get("files")

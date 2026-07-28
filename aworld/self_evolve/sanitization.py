@@ -6,15 +6,11 @@ import re
 from pathlib import Path
 from typing import Any, Mapping
 
-
-_SECRET_PATTERNS = (
-    re.compile(r"(?i)(bearer|basic)\s+[A-Za-z0-9._~+/\-]+=*"),
-    re.compile(
-        r"(?i)(secret|token|api[_-]?key|password|authorization|cookie)"
-        r"\s*[:=]\s*(?:bearer|basic)?\s*\S+"
-    ),
-    re.compile(r"sk-[A-Za-z0-9_-]{12,}"),
+from aworld.secret_detection import (
+    authorization_value_contains_sensitive_literal,
+    redact_sensitive_literals,
 )
+
 _SOURCE_QUOTED_SECRET_PATTERN = re.compile(
     r"(?i)(\b(?:secret|token|api[_-]?key|password|authorization|cookie)"
     r"\s*[:=]\s*)([\"'])([^\n\"']*)([\"'])"
@@ -66,9 +62,7 @@ _REPAIR_CONFORMANCE_PUBLIC_SCHEMA_VERSION = (
 
 
 def sanitize_text(value: Any, *, max_chars: int | None = None) -> str:
-    text = str(value or "")
-    for pattern in _SECRET_PATTERNS:
-        text = pattern.sub("<REDACTED_SECRET>", text)
+    text = redact_sensitive_literals(value)
     for pattern in _LOCAL_PATH_PATTERNS:
         text = pattern.sub("<LOCAL_PATH>", text)
     for pattern in _UNTRUSTED_INSTRUCTION_PATTERNS:
@@ -88,14 +82,9 @@ def sanitize_source_text(value: Any, *, max_chars: int | None = None) -> str:
     ``token = match.group()`` that are required to repair the source.
     """
 
-    text = str(value or "")
-    text = _SECRET_PATTERNS[0].sub("<REDACTED_SECRET>", text)
-    text = _SECRET_PATTERNS[2].sub("<REDACTED_SECRET>", text)
+    text = redact_sensitive_literals(value, include_named=False)
     text = _SOURCE_QUOTED_SECRET_PATTERN.sub(
-        lambda match: (
-            f"{match.group(1)}{match.group(2)}"
-            f"<REDACTED_SECRET>{match.group(4)}"
-        ),
+        _redact_source_quoted_secret,
         text,
     )
     for pattern in _LOCAL_PATH_PATTERNS:
@@ -106,6 +95,20 @@ def sanitize_source_text(value: Any, *, max_chars: int | None = None) -> str:
     if max_chars is not None and len(text) > max_chars:
         return text[: max_chars - 1].rstrip() + "…"
     return text
+
+
+def _redact_source_quoted_secret(match: re.Match[str]) -> str:
+    prefix = match.group(1)
+    value = match.group(3)
+    if (
+        "authorization" in prefix.casefold()
+        and not authorization_value_contains_sensitive_literal(value)
+    ):
+        return match.group(0)
+    return (
+        f"{prefix}{match.group(2)}"
+        f"<REDACTED_SECRET>{match.group(4)}"
+    )
 
 
 def sanitize_metric_value(value: Any, *, max_chars: int = 240) -> Any:

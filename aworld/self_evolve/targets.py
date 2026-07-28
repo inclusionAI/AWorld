@@ -18,6 +18,10 @@ from aworld.self_evolve.store import FilesystemSelfEvolveStore
 from aworld.self_evolve.types import CandidateVariant, SelfEvolveTargetRef
 
 
+class TargetSnapshotStaleError(RuntimeError):
+    pass
+
+
 class SelfEvolveTarget(Protocol):
     @property
     def identity(self) -> SelfEvolveTargetRef:
@@ -103,10 +107,19 @@ class SkillTextTarget:
         *,
         expected_package_fingerprint: str | None = None,
         verified_content: str | None = None,
+        expected_target_fingerprint: str | None = None,
     ) -> None:
         if not self.allow_auto_apply:
             raise PermissionError(
                 f"target {self._target_id!r} is not allowlisted for auto apply"
+            )
+        if (
+            expected_target_fingerprint is not None
+            and self.fingerprint_current_content()
+            != expected_target_fingerprint
+        ):
+            raise TargetSnapshotStaleError(
+                "target package changed after candidate evaluation"
             )
         files = validate_candidate_files(candidate.files)
         self._prepare_package_rollback()
@@ -161,6 +174,14 @@ class SkillTextTarget:
                     raise ValueError(
                         "skill package changed after replay verification"
                     )
+            if (
+                expected_target_fingerprint is not None
+                and self.fingerprint_current_content()
+                != expected_target_fingerprint
+            ):
+                raise TargetSnapshotStaleError(
+                    "target package changed immediately before mutation"
+                )
             original_existed = root.exists()
             if original_existed:
                 atomic_exchange_paths(root, staging)

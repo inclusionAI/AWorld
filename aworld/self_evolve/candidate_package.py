@@ -6,7 +6,17 @@ import re
 from pathlib import PurePosixPath
 from typing import Any, Iterable
 
-from aworld.self_evolve.types import CandidateFileDelta, CandidateVariant
+from aworld.self_evolve.candidate_errors import (
+    CandidateFailureField,
+    CandidateMaterializationCode,
+    CandidateMaterializationError,
+)
+from aworld.self_evolve.types import (
+    CandidateFileDelta,
+    CandidateVariant,
+    to_json_dict,
+)
+from aworld.skills.structure_types import SkillStructuralEditIntent
 
 
 MAX_CANDIDATE_FILE_COUNT = 32
@@ -24,23 +34,47 @@ def validate_candidate_files(
     for item in files:
         path = _normalized_replay_path(item.path)
         if path in seen:
-            raise ValueError(f"duplicate candidate file path: {path}")
+            raise CandidateMaterializationError(
+                CandidateMaterializationCode.FILE_PATH_DUPLICATE,
+                f"duplicate candidate file path: {path}",
+                field_path=CandidateFailureField.FILE_PATH,
+            )
         seen.add(path)
         operation = str(item.operation or "upsert").strip().lower()
         if operation not in _OPERATIONS:
-            raise ValueError(f"unsupported candidate file operation: {operation}")
+            raise CandidateMaterializationError(
+                CandidateMaterializationCode.FILE_OPERATION_INVALID,
+                f"unsupported candidate file operation: {operation}",
+                field_path=CandidateFailureField.FILE_OPERATION,
+            )
         if operation == "upsert":
             if not isinstance(item.content, str):
-                raise ValueError(f"candidate file upsert requires text content: {path}")
+                raise CandidateMaterializationError(
+                    CandidateMaterializationCode.FILE_CONTENT_REQUIRED,
+                    f"candidate file upsert requires text content: {path}",
+                    field_path=CandidateFailureField.FILE_CONTENT,
+                )
             size = len(item.content.encode("utf-8"))
             if size > MAX_CANDIDATE_FILE_BYTES:
-                raise ValueError(f"candidate file exceeds byte limit: {path}")
+                raise CandidateMaterializationError(
+                    CandidateMaterializationCode.FILE_CONTENT_TOO_LARGE,
+                    f"candidate file exceeds byte limit: {path}",
+                    field_path=CandidateFailureField.FILE_CONTENT,
+                )
             total_bytes += size
         else:
             if item.content is not None:
-                raise ValueError(f"candidate file delete cannot include content: {path}")
+                raise CandidateMaterializationError(
+                    CandidateMaterializationCode.FILE_DELETE_CONTENT_INVALID,
+                    f"candidate file delete cannot include content: {path}",
+                    field_path=CandidateFailureField.FILE_CONTENT,
+                )
             if item.executable:
-                raise ValueError(f"candidate file delete cannot be executable: {path}")
+                raise CandidateMaterializationError(
+                    CandidateMaterializationCode.FILE_DELETE_EXECUTABLE_INVALID,
+                    f"candidate file delete cannot be executable: {path}",
+                    field_path=CandidateFailureField.FILE_EXECUTABLE,
+                )
         normalized.append(
             CandidateFileDelta(
                 path=path,
@@ -50,15 +84,23 @@ def validate_candidate_files(
             )
         )
     if len(normalized) > MAX_CANDIDATE_FILE_COUNT:
-        raise ValueError("candidate file count exceeds limit")
+        raise CandidateMaterializationError(
+            CandidateMaterializationCode.FILE_COUNT_EXCEEDED,
+            "candidate file count exceeds limit",
+            field_path=CandidateFailureField.FILES,
+        )
     if total_bytes > MAX_CANDIDATE_PACKAGE_BYTES:
-        raise ValueError("candidate package exceeds byte limit")
+        raise CandidateMaterializationError(
+            CandidateMaterializationCode.PACKAGE_BYTES_EXCEEDED,
+            "candidate package exceeds byte limit",
+            field_path=CandidateFailureField.FILES,
+        )
     return tuple(sorted(normalized, key=lambda item: item.path))
 
 
 def candidate_package_payload(candidate: CandidateVariant) -> dict[str, Any]:
     files = validate_candidate_files(candidate.files)
-    return {
+    payload = {
         "target": {
             "target_type": candidate.target.target_type,
             "target_id": candidate.target.target_id,
@@ -75,6 +117,11 @@ def candidate_package_payload(candidate: CandidateVariant) -> dict[str, Any]:
             for item in files
         ],
     }
+    if candidate.structural_edit_intent is not None:
+        payload["structural_edit_intent"] = to_json_dict(
+            candidate.structural_edit_intent
+        )
+    return payload
 
 
 def candidate_package_fingerprint(candidate: CandidateVariant) -> str:
@@ -117,7 +164,7 @@ def candidate_semantic_package_fingerprint(
 
     files = validate_candidate_files(candidate.files)
     payload = {
-        "schema_version": "aworld.self_evolve.candidate_semantic_package.v1",
+        "schema_version": "aworld.self_evolve.candidate_semantic_package.v2",
         "target": {
             "target_type": candidate.target.target_type,
             "target_id": candidate.target.target_id,
@@ -125,6 +172,11 @@ def candidate_semantic_package_fingerprint(
         "content_semantic_fingerprint": (
             content_semantic_fingerprint
             or candidate_content_semantic_fingerprint(candidate.content)
+        ),
+        "structural_edit_intent_fingerprint": (
+            _structural_edit_intent_fingerprint(
+                candidate.structural_edit_intent
+            )
         ),
         "files": [
             {
@@ -143,6 +195,43 @@ def candidate_semantic_package_fingerprint(
                 "executable": item.executable,
             }
             for item in files
+        ],
+    }
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return "sha256:" + hashlib.sha256(encoded).hexdigest()
+
+
+def _structural_edit_intent_fingerprint(
+    intent: SkillStructuralEditIntent | None,
+) -> str | None:
+    if intent is None:
+        return None
+    payload = {
+        "schema_version": intent.schema_version,
+        "authority": intent.authority,
+        "reason": intent.reason,
+        "authorization": intent.authorization,
+        "base_content_fingerprint": intent.base_content_fingerprint,
+        "candidate_content_fingerprint": (
+            intent.candidate_content_fingerprint
+        ),
+        "actions": [
+            {
+                "action": action.action,
+                "section_path": list(action.section_path),
+                "base_section_fingerprint": (
+                    action.base_section_fingerprint
+                ),
+                "result_section_fingerprint": (
+                    action.result_section_fingerprint
+                ),
+            }
+            for action in intent.actions
         ],
     }
     encoded = json.dumps(
@@ -175,10 +264,22 @@ def candidate_files_total_bytes(files: Iterable[CandidateFileDelta]) -> int:
 def _normalized_replay_path(raw_path: str) -> str:
     value = str(raw_path or "").strip()
     if not value or "\\" in value:
-        raise ValueError("candidate file path must be inside replay/")
+        raise CandidateMaterializationError(
+            CandidateMaterializationCode.FILE_PATH_INVALID,
+            "candidate file path must be inside replay/",
+            field_path=CandidateFailureField.FILE_PATH,
+        )
     path = PurePosixPath(value)
     if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
-        raise ValueError("candidate file path must be inside replay/")
+        raise CandidateMaterializationError(
+            CandidateMaterializationCode.FILE_PATH_INVALID,
+            "candidate file path must be inside replay/",
+            field_path=CandidateFailureField.FILE_PATH,
+        )
     if not path.parts or path.parts[0] != "replay" or len(path.parts) < 2:
-        raise ValueError("candidate file path must be inside replay/")
+        raise CandidateMaterializationError(
+            CandidateMaterializationCode.FILE_PATH_INVALID,
+            "candidate file path must be inside replay/",
+            field_path=CandidateFailureField.FILE_PATH,
+        )
     return path.as_posix()

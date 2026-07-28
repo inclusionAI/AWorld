@@ -4,6 +4,13 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, TYPE_CHECKING, Mapping, Protocol
 
+from aworld.self_evolve.candidate_protocol import (
+    MAX_EXPOSED_IMPROVEMENT_SIGNAL_IDS,
+    candidate_output_contract_fingerprint,
+)
+from aworld.self_evolve.candidate_errors import (
+    normalize_candidate_representation,
+)
 from aworld.self_evolve.datasets import EvalCase, SelfEvolveDataset
 from aworld.self_evolve.lessons import LessonRecord
 from aworld.self_evolve.trace_pack import TracePack
@@ -18,6 +25,57 @@ if TYPE_CHECKING:
     from aworld.self_evolve.evolution_context import EvolutionContext
     from aworld.self_evolve.replay_adaptation import ReplayCapabilityRequirement
     from aworld.self_evolve.repair_conformance import RepairConformanceContract
+
+
+MAX_PROMPT_TRAINABLE_CASES = 32
+MAX_PROMPT_IMPROVEMENT_SIGNALS_PER_CASE = 8
+
+
+class CandidateSemanticValidationError(ValueError):
+    """Bounded request-context failure eligible for same-slot repair."""
+
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        *,
+        field_path: str | None = None,
+        representation: str | None = None,
+        repairable: bool = True,
+        allowed_improvement_signal_ids: tuple[str, ...] = (),
+    ) -> None:
+        self.code = str(code)
+        self.field_path = field_path
+        self.representation = (
+            normalize_candidate_representation(representation).value
+            if representation is not None
+            else None
+        )
+        self.repairable = bool(repairable)
+        self.allowed_improvement_signal_ids = tuple(
+            allowed_improvement_signal_ids
+        )
+        self.contract_fingerprint = candidate_output_contract_fingerprint(
+            self.allowed_improvement_signal_ids
+        )
+        super().__init__(str(message)[:512])
+
+    def to_diagnostic(self) -> dict[str, object]:
+        diagnostic: dict[str, object] = {
+            "code": self.code,
+            "stage": "candidate_semantic_validation",
+            "failure_class": "candidate",
+            "repairable": self.repairable,
+            "contract_fingerprint": self.contract_fingerprint,
+            "allowed_improvement_signal_ids": list(
+                self.allowed_improvement_signal_ids
+            ),
+        }
+        if self.field_path is not None:
+            diagnostic["field_path"] = self.field_path
+        if self.representation is not None:
+            diagnostic["representation"] = self.representation
+        return diagnostic
 
 
 class CandidateSourceKind(str, Enum):
@@ -135,14 +193,18 @@ def exposed_improvement_signal_ids(
     request: OptimizerRequest,
 ) -> tuple[str, ...]:
     signal_ids: list[str] = []
-    for case in request.trainable_cases:
-        for signal in getattr(case, "self_improvement_signals", ()):
+    for case in request.trainable_cases[:MAX_PROMPT_TRAINABLE_CASES]:
+        for signal in getattr(case, "self_improvement_signals", ())[
+            :MAX_PROMPT_IMPROVEMENT_SIGNALS_PER_CASE
+        ]:
             if not isinstance(signal, Mapping):
                 continue
             signal_id = signal.get("signal_id")
             if isinstance(signal_id, str) and signal_id:
                 signal_ids.append(signal_id)
-    return tuple(dict.fromkeys(signal_ids))
+    return tuple(dict.fromkeys(signal_ids))[
+        :MAX_EXPOSED_IMPROVEMENT_SIGNAL_IDS
+    ]
 
 
 def declared_addressed_improvement_signal_ids(
@@ -169,11 +231,15 @@ def declared_addressed_improvement_signal_ids(
             "addressed improvement signal IDs must be a string array"
         )
     addressed = tuple(dict.fromkeys(raw_ids))
-    exposed = set(exposed_improvement_signal_ids(request))
+    exposed_ids = exposed_improvement_signal_ids(request)
+    exposed = set(exposed_ids)
     unknown = set(addressed) - exposed
     if unknown:
-        raise ValueError(
-            "candidate addressed an improvement signal that was not exposed"
+        raise CandidateSemanticValidationError(
+            "unexposed_improvement_signal_ids",
+            "candidate addressed an improvement signal that was not exposed",
+            field_path="addressed_improvement_signal_ids",
+            allowed_improvement_signal_ids=exposed_ids,
         )
     return addressed
 

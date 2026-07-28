@@ -1,10 +1,18 @@
 from __future__ import annotations
 
+import atexit
 import asyncio
 import builtins
+import hashlib
 import importlib
 import inspect
 import json
+import os
+import re
+import secrets
+import stat
+import tempfile
+import threading
 import time
 from pathlib import Path
 from typing import Any, Mapping
@@ -29,7 +37,9 @@ from aworld.evaluations.substrate import (
     JudgeBackend,
     JudgeSchemaDef,
     StateCheckGrader,
+    cleanup_evaluation_private_artifact_session,
     describe_eval_target,
+    register_evaluation_private_artifact_session,
     run_evaluation_flow,
 )
 from aworld.evaluations.runtime_composition import RolloutState, RolloutTurn, derive_standard_metrics
@@ -63,6 +73,55 @@ _MAX_BUNDLE_FIRST_STEP_COUNT = 8
 _MAX_BUNDLE_FIRST_STEP_TEXT_CHARS = 180
 _MAX_EVIDENCE_DIGEST_ENTRIES = 8
 _MAX_EVIDENCE_DIGEST_VALUE_CHARS = 1200
+_MAX_PROMPT_EVIDENCE_BUNDLE_BYTES = 4 * 1024 * 1024
+_MAX_PROMPT_EVIDENCE_BUNDLE_ENTRIES = 256
+_MAX_PROMPT_EVIDENCE_MANIFEST_BYTES = 1024 * 1024
+_MAX_PROMPT_EVIDENCE_MANIFEST_ENTRIES = 256
+_PROMPT_EVIDENCE_BUNDLE_FORMAT = "aworld.self_evolve.evidence_bundle"
+_PROMPT_EVIDENCE_BUNDLE_VERSION = 1
+_VERIFIED_EVIDENCE_SNAPSHOT_ROOT = (
+    Path(tempfile.gettempdir())
+    / (
+        "aworld-evaluator-verified-evidence-"
+        f"{getattr(os, 'getuid', lambda: 0)()}"
+    )
+)
+_VERIFIED_EVIDENCE_SESSION_FORMAT = (
+    "aworld.evaluator.verified_evidence_session"
+)
+_VERIFIED_EVIDENCE_SESSION_VERSION = 1
+_VERIFIED_EVIDENCE_SESSION_METADATA = ".session.json"
+_VERIFIED_EVIDENCE_SESSION_STALE_AGE_SECONDS = 60 * 60
+_VERIFIED_EVIDENCE_SESSION_NAME_PATTERN = re.compile(
+    r"^session-(?P<pid>[1-9][0-9]*)-(?P<created_ns>[0-9]{16,20})-"
+    r"(?P<session_id>[0-9a-f]{32})$"
+)
+_VERIFIED_EVIDENCE_LEGACY_ROOT_NAME_PATTERN = re.compile(
+    r"^aworld-evaluator-verified-evidence-(?P<uid>[0-9]+)-"
+    r"(?P<pid>[1-9][0-9]*)-(?P<token>[0-9a-f]{16})$"
+)
+_ACTIVE_VERIFIED_EVIDENCE_SESSIONS: dict[str, Path] = {}
+_ACTIVE_VERIFIED_EVIDENCE_SESSIONS_LOCK = threading.Lock()
+_VERIFIED_EVIDENCE_SNAPSHOT_ROOT_LOCK = threading.RLock()
+_VERIFIED_EVIDENCE_STALE_RECLAIMED = False
+_PROMPT_EVIDENCE_MANIFEST_PAYLOAD_KEYS = (
+    "excerpt",
+    "excerpts",
+    "bounded_excerpt",
+    "bounded_excerpts",
+    "field_list",
+    "fields",
+    "fields_extracted",
+    "key_fields",
+    "selected_fields",
+    "claims_supported",
+    "claims_supported_by",
+    "summary",
+    "structured_summary",
+)
+_PROMPT_EVIDENCE_MANIFEST_PAYLOAD_ALIASES = {
+    "bounded_excerpt_fields": "bounded_excerpts",
+}
 _DEFAULT_ARTIFACT_READ_ROUNDS = 2
 _CANONICAL_BUNDLE_ARTIFACT_READ_ROUNDS = 3
 _DEFAULT_ARTIFACT_READ_TOTAL_CHARS = 80000
@@ -667,9 +726,12 @@ def _build_trajectory_prompt(case_input: dict, target: dict, suite) -> str:
         case_value = case_input.get("input") or case_input.get("query") or case_input.get("prompt")
         if not extracted_payload.get("question") and case_value is not None:
             extracted_payload["question"] = str(case_value)
-    evidence_bundle = _load_prompt_evidence_bundle(
-        extracted_payload.get("evidence_bundle_path") or target.get("evidence_bundle_path")
+    evidence_bundle_path = (
+        extracted_payload.get("evidence_bundle_path")
+        or target.get("evidence_bundle_path")
     )
+    extracted_payload.pop("evidence_bundle", None)
+    evidence_bundle = _load_prompt_evidence_bundle(evidence_bundle_path)
     if evidence_bundle:
         extracted_payload["evidence_bundle"] = evidence_bundle
     runtime_context = _trajectory_runtime_context(
@@ -832,7 +894,7 @@ def _evidence_digest(
 
     artifacts = artifact_backed_evidence.get("artifacts")
     artifact_read_available = bool(artifacts) if isinstance(artifacts, list) else False
-    return {
+    digest = {
         "mode": "judge_ready_evidence_digest",
         "canonical_bundle_valid": bundle_valid,
         "entry_count": len(entries),
@@ -840,6 +902,10 @@ def _evidence_digest(
         "entries": entries,
         "fallback_artifact_index": "artifact_backed_evidence.artifacts",
     }
+    manifest = evidence_bundle.get("manifest")
+    if isinstance(manifest, Mapping) and manifest:
+        digest["manifest"] = dict(manifest)
+    return digest
 
 
 def _evidence_digest_bundle_entry(entry: Mapping[str, Any]) -> dict[str, Any]:
@@ -1031,16 +1097,28 @@ def _artifact_backed_evidence_index(
         if key in seen:
             return
         seen.add(key)
+        artifact_path = Path(path).expanduser()
+        try:
+            artifact_stat = os.lstat(artifact_path)
+            available = stat.S_ISREG(artifact_stat.st_mode)
+        except OSError:
+            artifact_stat = None
+            available = False
         artifact = {
             "kind": kind,
             "path": path,
-            "available": Path(path).expanduser().exists(),
+            "available": available,
         }
-        try:
-            artifact["size_bytes"] = Path(path).expanduser().stat().st_size
-        except OSError:
-            pass
+        if artifact_stat is not None:
+            artifact["size_bytes"] = artifact_stat.st_size
         artifact.update({k: v for k, v in metadata.items() if v not in (None, "")})
+        if not available:
+            if artifact.get("present") is True:
+                artifact["present"] = False
+            if artifact.get("valid") is True:
+                artifact["valid"] = False
+            if artifact.get("readable") is True:
+                artifact["readable"] = False
         artifacts.append(artifact)
 
     def add_source_artifact(path_value: object, **metadata: Any) -> None:
@@ -1050,12 +1128,71 @@ def _artifact_backed_evidence_index(
 
     add_artifact("trajectory_log", runtime_context.get("trajectory_log_path"))
     add_artifact("extracted_trajectory_json", str(extracted_path) if extracted_path else None)
+    manifest_for_index: Mapping[str, Any] | None = None
+    manifest_was_valid = False
+    if isinstance(evidence_bundle, Mapping):
+        manifest = evidence_bundle.get("manifest")
+        manifest_was_valid = (
+            isinstance(manifest, Mapping)
+            and manifest.get("valid") is True
+        )
+        if manifest_was_valid:
+            private_session_id = _verified_snapshot_session_id(
+                manifest.get("snapshot_session")
+            )
+            manifest_for_index = _validate_verified_manifest_snapshot(
+                manifest
+            )
+            if manifest_for_index.get("valid") is not True:
+                if private_session_id is not None:
+                    cleanup_evaluation_private_artifact_session(
+                        private_session_id
+                    )
+                if isinstance(manifest, dict):
+                    manifest.clear()
+                    manifest.update(manifest_for_index)
+                if isinstance(evidence_bundle, dict):
+                    evidence_bundle["valid"] = False
+                if isinstance(evidence_summary, dict):
+                    evidence_summary["canonical_bundle_valid"] = False
     add_artifact(
         "canonical_evidence_bundle",
         evidence_bundle.get("path") if isinstance(evidence_bundle, Mapping) else None,
         valid=bool(evidence_bundle.get("valid")) if isinstance(evidence_bundle, Mapping) else False,
         entry_count=evidence_bundle.get("entry_count") if isinstance(evidence_bundle, Mapping) else None,
     )
+    if manifest_was_valid and isinstance(manifest_for_index, Mapping):
+        manifest_path = manifest_for_index.get("path")
+        snapshot_session_id = _verified_snapshot_session_id(
+            manifest_for_index.get("snapshot_session")
+        )
+        if _is_verified_snapshot_path(
+            manifest_path,
+            session_id=snapshot_session_id,
+        ):
+            add_artifact(
+                "evidence_manifest",
+                manifest_path,
+                present=manifest_for_index.get("present"),
+                readable=manifest_for_index.get("readable"),
+                regular_file=manifest_for_index.get("regular_file"),
+                valid=manifest_for_index.get("valid"),
+                entry_count=manifest_for_index.get("entry_count"),
+                invalid_entry_count=manifest_for_index.get("invalid_entry_count"),
+                size_bytes=manifest_for_index.get("size_bytes"),
+                fingerprint=manifest_for_index.get("fingerprint"),
+                validation_errors=manifest_for_index.get("validation_errors"),
+                source_path=manifest_for_index.get("source_path"),
+                content_addressed=True,
+                integrity={
+                    "algorithm": "sha256",
+                    "fingerprint": manifest_for_index.get("fingerprint"),
+                    "size_bytes": manifest_for_index.get("size_bytes"),
+                    "max_bytes": _MAX_PROMPT_EVIDENCE_MANIFEST_BYTES,
+                    "mode": 0o400,
+                    "required": True,
+                },
+            )
     add_artifact("report_output", runtime_context.get("report_output_path"))
 
     if isinstance(evidence_bundle, Mapping):
@@ -1069,8 +1206,21 @@ def _artifact_backed_evidence_index(
             )
 
     canonical_bundle_valid = bool(evidence_summary.get("canonical_bundle_valid"))
+    private_artifact_session = (
+        manifest_for_index.get("snapshot_session")
+        if (
+            isinstance(manifest_for_index, Mapping)
+            and manifest_for_index.get("valid") is True
+            and isinstance(
+                manifest_for_index.get("snapshot_session"),
+                Mapping,
+            )
+        )
+        else {}
+    )
     return {
         "mode": "read_only_artifact_index",
+        "private_artifact_session": private_artifact_session,
         "prompt_payload_is_bounded": True,
         "read_policy": {
             "read_only": True,
@@ -1155,8 +1305,15 @@ def _load_prompt_evidence_bundle(value: object) -> dict[str, Any]:
         return {}
     path = Path(value).expanduser()
     try:
-        bundle = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+        bundle_size = path.stat().st_size
+        if bundle_size > _MAX_PROMPT_EVIDENCE_BUNDLE_BYTES:
+            raise ValueError("evidence bundle exceeds bounded read limit")
+        with path.open("rb") as stream:
+            bundle_bytes = stream.read(_MAX_PROMPT_EVIDENCE_BUNDLE_BYTES + 1)
+        if len(bundle_bytes) > _MAX_PROMPT_EVIDENCE_BUNDLE_BYTES:
+            raise ValueError("evidence bundle exceeds bounded read limit")
+        bundle = json.loads(bundle_bytes.decode("utf-8"))
+    except (OSError, UnicodeDecodeError, ValueError):
         return {
             "path": str(path),
             "valid": False,
@@ -1170,11 +1327,40 @@ def _load_prompt_evidence_bundle(value: object) -> dict[str, Any]:
             "entry_count": 0,
             "entries": [],
         }
-    raw_entries = [
-        entry
-        for entry in bundle.get("entries") or []
-        if isinstance(entry, Mapping)
-    ]
+    validation_errors: list[str] = []
+    if bundle.get("format") != _PROMPT_EVIDENCE_BUNDLE_FORMAT:
+        validation_errors.append("bundle_format_mismatch")
+    if bundle.get("version") != _PROMPT_EVIDENCE_BUNDLE_VERSION:
+        validation_errors.append("bundle_version_mismatch")
+    raw_entry_values = bundle.get("entries")
+    entries_declared_valid = isinstance(raw_entry_values, list)
+    if not entries_declared_valid:
+        validation_errors.append("bundle_entries_not_list")
+    all_raw_entries = (
+        [
+            entry
+            for entry in raw_entry_values or []
+            if isinstance(entry, Mapping)
+        ]
+        if entries_declared_valid
+        else []
+    )
+    if entries_declared_valid and len(all_raw_entries) != len(raw_entry_values):
+        validation_errors.append("bundle_entry_not_object")
+    if entries_declared_valid and not raw_entry_values:
+        validation_errors.append("bundle_entries_empty")
+    entry_limit_exceeded = (
+        len(all_raw_entries) > _MAX_PROMPT_EVIDENCE_BUNDLE_ENTRIES
+    )
+    if entry_limit_exceeded:
+        validation_errors.append("bundle_entry_limit_exceeded")
+    raw_entries = all_raw_entries[:_MAX_PROMPT_EVIDENCE_BUNDLE_ENTRIES]
+    for index, entry in enumerate(raw_entries):
+        entry_error = _prompt_evidence_bundle_entry_error(entry)
+        if entry_error is not None:
+            validation_errors.append(
+                f"bundle_entry_schema_invalid:{index}:{entry_error}"
+            )
     entries = [
         _compact_prompt_bundle_entry(entry)
         for entry in raw_entries
@@ -1183,15 +1369,1329 @@ def _load_prompt_evidence_bundle(value: object) -> dict[str, Any]:
         _prompt_bundle_artifact_entry(entry)
         for entry in raw_entries
     ]
+    manifest = _validate_prompt_evidence_manifest(
+        bundle.get("manifest"),
+        bundle_path=path,
+        declared_manifest_path=bundle.get("manifest_path"),
+        expected_entries=all_raw_entries,
+    )
+    if manifest.get("valid") is not True:
+        validation_errors.append("manifest_validation_failed")
     return {
         "path": str(path),
         "format": str(bundle.get("format") or ""),
         "version": bundle.get("version"),
-        "valid": bool(bundle.get("valid")) and bool(entries),
+        "valid": (
+            bundle.get("valid") is True
+            and bool(entries)
+            and entries_declared_valid
+            and not entry_limit_exceeded
+            and not validation_errors
+            and manifest.get("valid") is True
+        ),
         "entry_count": len(entries),
         "entries": entries[:5],
         "artifact_entries": artifact_entries,
+        "manifest": manifest,
+        "validation_errors": validation_errors,
     }
+
+
+def _prompt_evidence_bundle_entry_error(entry: Mapping[str, Any]) -> str | None:
+    if not str(entry.get("source_id") or "").strip():
+        return "missing_source_id"
+    if not str(entry.get("extraction_method") or "").strip():
+        return "missing_extraction_method"
+    bounded_evidence = entry.get("bounded_evidence")
+    if not isinstance(bounded_evidence, Mapping) or not bounded_evidence:
+        return "missing_bounded_evidence"
+    if str(entry.get("evidence_type") or "").strip().lower() == "metadata":
+        metadata = entry.get("metadata")
+        if not isinstance(metadata, Mapping) or not metadata:
+            return "missing_metadata"
+        return None
+    if not str(entry.get("artifact_path") or "").strip():
+        return "missing_artifact_path"
+    return None
+
+
+def _validate_prompt_evidence_manifest(
+    value: object,
+    *,
+    bundle_path: Path,
+    declared_manifest_path: object,
+    expected_entries: list[Mapping[str, Any]],
+) -> dict[str, Any]:
+    claimed = _compact_prompt_evidence_manifest(
+        value,
+        fallback_path=declared_manifest_path,
+    )
+    result: dict[str, Any] = {
+        "path": str(claimed.get("path") or ""),
+        "present": False,
+        "readable": False,
+        "regular_file": False,
+        "valid": False,
+        "entry_count": 0,
+        "invalid_entry_count": 0,
+        "size_bytes": 0,
+        "validation_errors": [],
+    }
+    errors: list[str] = result["validation_errors"]
+
+    def add_error(reason: str) -> None:
+        if reason not in errors:
+            errors.append(reason)
+
+    if not isinstance(value, Mapping):
+        add_error("manifest_metadata_missing")
+    manifest_path_value = claimed.get("path")
+    if not isinstance(manifest_path_value, str) or not manifest_path_value.strip():
+        add_error("manifest_path_missing")
+        return result
+    manifest_path = Path(manifest_path_value).expanduser()
+    if not manifest_path.is_absolute():
+        manifest_path = bundle_path.parent / manifest_path
+    result["path"] = str(manifest_path)
+
+    if isinstance(declared_manifest_path, str) and declared_manifest_path.strip():
+        declared_path = Path(declared_manifest_path).expanduser()
+        if not declared_path.is_absolute():
+            declared_path = bundle_path.parent / declared_path
+        if declared_path.resolve(strict=False) != manifest_path.resolve(strict=False):
+            add_error("manifest_path_mismatch")
+    else:
+        add_error("manifest_path_declaration_missing")
+
+    trusted_root = bundle_path.parent.resolve(strict=False)
+    if not _is_path_under_trusted_roots(str(manifest_path), [trusted_root]):
+        add_error("manifest_path_untrusted")
+        return result
+
+    for key in ("present", "readable", "valid"):
+        if claimed.get(key) is not True:
+            add_error(f"manifest_metadata_{key}_false")
+    if claimed.get("invalid_entry_count") != 0:
+        add_error("manifest_metadata_invalid_entries")
+
+    try:
+        path_stat_before = os.lstat(manifest_path)
+    except FileNotFoundError:
+        add_error("manifest_missing")
+        return result
+    except OSError:
+        add_error("manifest_unreadable")
+        return result
+    result["present"] = True
+    result["regular_file"] = stat.S_ISREG(path_stat_before.st_mode)
+    if result["regular_file"] is not True:
+        add_error("manifest_not_regular_file")
+        return result
+
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    manifest_bytes: bytes | None = None
+    file_stat_before = None
+    file_stat_after = None
+    try:
+        descriptor = os.open(manifest_path, flags)
+        try:
+            file_stat_before = os.fstat(descriptor)
+            if not stat.S_ISREG(file_stat_before.st_mode):
+                add_error("manifest_not_regular_file")
+            elif file_stat_before.st_size > _MAX_PROMPT_EVIDENCE_MANIFEST_BYTES:
+                result["readable"] = True
+                result["size_bytes"] = file_stat_before.st_size
+                add_error("manifest_size_limit_exceeded")
+            else:
+                with os.fdopen(descriptor, "rb", closefd=False) as stream:
+                    manifest_bytes = stream.read(
+                        _MAX_PROMPT_EVIDENCE_MANIFEST_BYTES + 1
+                    )
+                result["readable"] = True
+                result["size_bytes"] = len(manifest_bytes)
+                if len(manifest_bytes) > _MAX_PROMPT_EVIDENCE_MANIFEST_BYTES:
+                    add_error("manifest_size_limit_exceeded")
+            file_stat_after = os.fstat(descriptor)
+        finally:
+            os.close(descriptor)
+    except FileNotFoundError:
+        add_error("manifest_missing")
+        return result
+    except OSError:
+        add_error("manifest_unreadable")
+        return result
+
+    try:
+        path_stat_after = os.lstat(manifest_path)
+    except OSError:
+        add_error("manifest_path_changed_during_read")
+        path_stat_after = None
+    if (
+        file_stat_before is not None
+        and file_stat_after is not None
+        and (
+            _stat_identity(path_stat_before) != _stat_identity(file_stat_before)
+            or _stat_identity(file_stat_before) != _stat_identity(file_stat_after)
+            or (
+                path_stat_after is not None
+                and _stat_identity(file_stat_after) != _stat_identity(path_stat_after)
+            )
+            or file_stat_before.st_size != file_stat_after.st_size
+            or file_stat_before.st_mtime_ns != file_stat_after.st_mtime_ns
+        )
+    ):
+        add_error("manifest_path_changed_during_read")
+
+    if manifest_bytes is None:
+        result["invalid_entry_count"] = len(errors)
+        return result
+
+    actual_fingerprint = (
+        "sha256:" + hashlib.sha256(manifest_bytes).hexdigest()
+    )
+    result["fingerprint"] = actual_fingerprint
+    if claimed.get("size_bytes") != len(manifest_bytes):
+        add_error("manifest_size_mismatch")
+    claimed_fingerprint = claimed.get("fingerprint")
+    if not _is_sha256_fingerprint(claimed_fingerprint):
+        add_error("manifest_fingerprint_invalid")
+    elif claimed_fingerprint != actual_fingerprint:
+        add_error("manifest_fingerprint_mismatch")
+
+    records, record_errors, entry_limit_exceeded = (
+        _decode_prompt_evidence_manifest_records(manifest_bytes)
+    )
+    for error in record_errors:
+        add_error(error)
+    if entry_limit_exceeded:
+        add_error("manifest_entry_limit_exceeded")
+    result["entry_count"] = len(records)
+    if claimed.get("entry_count") != len(records):
+        add_error("manifest_entry_count_mismatch")
+    if len(expected_entries) != len(records):
+        add_error("manifest_bundle_entry_count_mismatch")
+    else:
+        for index, (manifest_entry, bundle_entry) in enumerate(
+            zip(records, expected_entries)
+        ):
+            canonical_entry, canonical_error = (
+                _canonical_prompt_evidence_manifest_entry(
+                    manifest_entry,
+                    bundle_entry=bundle_entry,
+                    bundle_path=bundle_path,
+                )
+            )
+            if (
+                canonical_error is not None
+                or not _json_values_equal(
+                    canonical_entry,
+                    dict(bundle_entry),
+                )
+            ):
+                add_error(
+                    f"manifest_bundle_entry_content_mismatch:{index}"
+                    + (
+                        f":{canonical_error}"
+                        if canonical_error is not None
+                        else ""
+                    )
+                )
+    result["invalid_entry_count"] = len(record_errors)
+    result["valid"] = not errors and bool(records)
+    if result["valid"] is True:
+        (
+            snapshot_path,
+            snapshot_session,
+            snapshot_error,
+        ) = _materialize_verified_manifest_snapshot(
+            manifest_bytes,
+            fingerprint=actual_fingerprint,
+        )
+        if (
+            snapshot_error is not None
+            or snapshot_path is None
+            or snapshot_session is None
+        ):
+            add_error(
+                snapshot_error or "manifest_snapshot_materialization_failed"
+            )
+            result["valid"] = False
+        else:
+            result["source_path"] = result["path"]
+            result["path"] = str(snapshot_path)
+            result["content_addressed"] = True
+            result["snapshot_session"] = snapshot_session
+    return result
+
+
+def _canonical_prompt_evidence_manifest_entry(
+    manifest_entry: Mapping[str, Any],
+    *,
+    bundle_entry: Mapping[str, Any],
+    bundle_path: Path,
+) -> tuple[dict[str, Any], str | None]:
+    bounded_evidence: dict[str, Any] = {}
+    for key in _PROMPT_EVIDENCE_MANIFEST_PAYLOAD_KEYS:
+        if key in manifest_entry:
+            bounded_evidence[key] = manifest_entry[key]
+    for alias, canonical_key in (
+        _PROMPT_EVIDENCE_MANIFEST_PAYLOAD_ALIASES.items()
+    ):
+        if canonical_key not in bounded_evidence and alias in manifest_entry:
+            bounded_evidence[canonical_key] = manifest_entry[alias]
+
+    evidence_type = str(
+        manifest_entry.get("evidence_type") or ""
+    ).strip().lower()
+    if evidence_type == "file":
+        evidence_type = "artifact"
+    if not evidence_type:
+        evidence_type = (
+            "metadata"
+            if (
+                not str(manifest_entry.get("artifact_path") or "").strip()
+                and isinstance(manifest_entry.get("metadata"), Mapping)
+            )
+            else "artifact"
+        )
+    canonical: dict[str, Any] = {
+        "source_id": str(manifest_entry.get("source_id") or ""),
+        "extraction_method": str(
+            manifest_entry.get("extraction_method") or ""
+        ),
+        "bounded_evidence": bounded_evidence,
+    }
+    if evidence_type == "metadata":
+        metadata = manifest_entry.get("metadata")
+        canonical["evidence_type"] = "metadata"
+        canonical["metadata"] = (
+            dict(metadata)
+            if isinstance(metadata, Mapping) and metadata
+            else dict(bounded_evidence)
+        )
+    elif evidence_type == "artifact":
+        bundle_artifact_path = bundle_entry.get("artifact_path")
+        if not _prompt_manifest_artifact_path_matches_bundle(
+            manifest_entry.get("artifact_path"),
+            bundle_artifact_path,
+            bundle_path=bundle_path,
+        ):
+            return canonical, "artifact_path_mismatch"
+        canonical["artifact_path"] = str(bundle_artifact_path)
+        if not bounded_evidence:
+            synthetic = _prompt_synthetic_artifact_excerpt(
+                Path(str(bundle_artifact_path)).expanduser()
+            )
+            if synthetic is not None:
+                bounded_evidence["bounded_excerpt"] = synthetic["text"]
+                bounded_evidence["source"] = "artifact_preview"
+                bounded_evidence["truncated"] = synthetic["truncated"]
+    else:
+        return canonical, "unsupported_evidence_type"
+    fields_used = manifest_entry.get("fields_used")
+    if fields_used and "fields_used" not in bounded_evidence:
+        bounded_evidence["fields_used"] = fields_used
+    return canonical, None
+
+
+def _prompt_manifest_artifact_path_matches_bundle(
+    manifest_path_value: object,
+    bundle_path_value: object,
+    *,
+    bundle_path: Path,
+) -> bool:
+    if not isinstance(manifest_path_value, str) or not manifest_path_value.strip():
+        return False
+    if not isinstance(bundle_path_value, str) or not bundle_path_value.strip():
+        return False
+    manifest_path = Path(manifest_path_value).expanduser()
+    if not manifest_path.is_absolute():
+        manifest_path = bundle_path.parent / manifest_path
+    bundle_artifact_path = Path(bundle_path_value).expanduser()
+    if not bundle_artifact_path.is_absolute():
+        bundle_artifact_path = bundle_path.parent / bundle_artifact_path
+    manifest_resolved = manifest_path.resolve(strict=False)
+    bundle_resolved = bundle_artifact_path.resolve(strict=False)
+    if manifest_resolved == bundle_resolved:
+        return True
+    archive_root = (bundle_path.parent / "workspace_evidence").resolve(
+        strict=False
+    )
+    if bundle_resolved.parent != archive_root:
+        return False
+    archive_prefix = (
+        hashlib.sha256(str(manifest_resolved).encode("utf-8")).hexdigest()[:12]
+        + "__"
+    )
+    path_parts = [
+        part
+        for part in manifest_resolved.parts
+        if part not in {manifest_resolved.anchor, os.sep}
+    ]
+    valid_archive_names = {
+        archive_prefix
+        + "__".join(
+            _safe_prompt_artifact_path_part(part)
+            for part in path_parts[start:]
+        )
+        for start in range(len(path_parts))
+    }
+    return bundle_resolved.name in valid_archive_names
+
+
+def _safe_prompt_artifact_path_part(value: str) -> str:
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "_", value).strip("._")
+    return safe or "artifact"
+
+
+def _json_values_equal(left: object, right: object) -> bool:
+    try:
+        return json.dumps(
+            left,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ) == json.dumps(
+            right,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+    except (TypeError, ValueError):
+        return False
+
+
+def _prompt_synthetic_artifact_excerpt(
+    artifact_path: Path,
+) -> dict[str, Any] | None:
+    try:
+        with artifact_path.open(
+            "r",
+            encoding="utf-8",
+            errors="replace",
+        ) as stream:
+            raw = stream.read(4001)
+    except OSError:
+        return None
+    text = raw.strip()
+    if not text:
+        return None
+    truncated = len(text) > 4000
+    return {
+        "text": text[:4000] if truncated else text,
+        "truncated": truncated,
+    }
+
+
+def _ensure_verified_evidence_snapshot_root() -> str | None:
+    with _VERIFIED_EVIDENCE_SNAPSHOT_ROOT_LOCK:
+        root = _VERIFIED_EVIDENCE_SNAPSHOT_ROOT
+        try:
+            root.mkdir(mode=0o700, parents=True, exist_ok=True)
+            root_stat = os.lstat(root)
+            if not stat.S_ISDIR(root_stat.st_mode):
+                return "manifest_snapshot_root_not_directory"
+            getuid = getattr(os, "getuid", None)
+            if callable(getuid) and root_stat.st_uid != getuid():
+                return "manifest_snapshot_root_owner_mismatch"
+            if stat.S_IMODE(root_stat.st_mode) != 0o700:
+                os.chmod(root, 0o700)
+                root_stat = os.lstat(root)
+                if stat.S_IMODE(root_stat.st_mode) != 0o700:
+                    return "manifest_snapshot_root_permissions_invalid"
+        except OSError:
+            return "manifest_snapshot_root_unavailable"
+    return None
+
+
+def _create_verified_evidence_session(
+) -> tuple[Path | None, dict[str, Any] | None, str | None]:
+    with _VERIFIED_EVIDENCE_SNAPSHOT_ROOT_LOCK:
+        root_error = _ensure_verified_evidence_snapshot_root()
+        if root_error is not None:
+            return None, None, root_error
+        _reclaim_stale_verified_evidence_sessions()
+        root_error = _ensure_verified_evidence_snapshot_root()
+        if root_error is not None:
+            return None, None, root_error
+        session_id = secrets.token_hex(16)
+        created_ns = time.time_ns()
+        pid = os.getpid()
+        session_name = f"session-{pid}-{created_ns}-{session_id}"
+        session_root = _VERIFIED_EVIDENCE_SNAPSHOT_ROOT / session_name
+        uid = getattr(os, "getuid", lambda: 0)()
+        metadata = {
+            "format": _VERIFIED_EVIDENCE_SESSION_FORMAT,
+            "version": _VERIFIED_EVIDENCE_SESSION_VERSION,
+            "session_id": session_id,
+            "pid": pid,
+            "uid": uid,
+            "created_ns": created_ns,
+            "session_name": session_name,
+        }
+        metadata_bytes = json.dumps(
+            metadata,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+        try:
+            session_root.mkdir(mode=0o700)
+            metadata_path = (
+                session_root / _VERIFIED_EVIDENCE_SESSION_METADATA
+            )
+            flags = (
+                os.O_WRONLY
+                | os.O_CREAT
+                | os.O_EXCL
+                | getattr(os, "O_CLOEXEC", 0)
+            )
+            if hasattr(os, "O_NOFOLLOW"):
+                flags |= os.O_NOFOLLOW
+            descriptor = os.open(metadata_path, flags, 0o400)
+            try:
+                written = 0
+                while written < len(metadata_bytes):
+                    write_count = os.write(
+                        descriptor,
+                        metadata_bytes[written:],
+                    )
+                    if write_count <= 0:
+                        raise OSError("zero-byte session metadata write")
+                    written += write_count
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+            directory_flags = (
+                os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+            )
+            if hasattr(os, "O_NOFOLLOW"):
+                directory_flags |= os.O_NOFOLLOW
+            directory_descriptor = os.open(
+                session_root,
+                directory_flags,
+            )
+            try:
+                os.fsync(directory_descriptor)
+            finally:
+                os.close(directory_descriptor)
+        except OSError:
+            _cleanup_verified_evidence_session(
+                session_id,
+                session_root,
+                allow_missing_metadata=True,
+                expected_creator_pid=pid,
+            )
+            return None, None, "manifest_snapshot_session_create_failed"
+        with _ACTIVE_VERIFIED_EVIDENCE_SESSIONS_LOCK:
+            _ACTIVE_VERIFIED_EVIDENCE_SESSIONS[session_id] = session_root
+    contract = {
+        "format": "aworld.evaluation.private_artifact_session",
+        "version": 1,
+        "session_id": session_id,
+    }
+    return session_root, contract, None
+
+
+def _read_verified_evidence_session_metadata(
+    session_root: Path,
+) -> dict[str, Any] | None:
+    metadata_path = session_root / _VERIFIED_EVIDENCE_SESSION_METADATA
+    try:
+        metadata_stat = os.lstat(metadata_path)
+        if not stat.S_ISREG(metadata_stat.st_mode):
+            return None
+        if stat.S_IMODE(metadata_stat.st_mode) != 0o400:
+            return None
+        getuid = getattr(os, "getuid", None)
+        if callable(getuid) and metadata_stat.st_uid != getuid():
+            return None
+        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        descriptor = os.open(metadata_path, flags)
+        try:
+            opened_stat = os.fstat(descriptor)
+            if _verified_evidence_stat_identity(opened_stat) != (
+                _verified_evidence_stat_identity(metadata_stat)
+            ) or opened_stat.st_size != metadata_stat.st_size:
+                return None
+            metadata_bytes = os.read(descriptor, 8193)
+        finally:
+            os.close(descriptor)
+        if len(metadata_bytes) > 8192:
+            return None
+        final_stat = os.lstat(metadata_path)
+        if _verified_evidence_stat_identity(final_stat) != (
+            _verified_evidence_stat_identity(metadata_stat)
+        ) or final_stat.st_size != metadata_stat.st_size:
+            return None
+        metadata = json.loads(metadata_bytes.decode("utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    return dict(metadata) if isinstance(metadata, Mapping) else None
+
+
+def _verified_evidence_stat_identity(
+    value: os.stat_result,
+) -> tuple[int, int, int, int]:
+    return (
+        value.st_dev,
+        value.st_ino,
+        value.st_mode,
+        value.st_uid,
+    )
+
+
+def _verified_evidence_session_metadata_matches(
+    session_root: Path,
+    metadata: Mapping[str, Any],
+    *,
+    session_id: str | None = None,
+) -> bool:
+    match = _VERIFIED_EVIDENCE_SESSION_NAME_PATTERN.fullmatch(
+        session_root.name
+    )
+    if match is None:
+        return False
+    try:
+        root_stat = os.lstat(session_root)
+    except OSError:
+        return False
+    if not stat.S_ISDIR(root_stat.st_mode):
+        return False
+    if stat.S_IMODE(root_stat.st_mode) != 0o700:
+        return False
+    getuid = getattr(os, "getuid", None)
+    current_uid = getuid() if callable(getuid) else 0
+    if callable(getuid) and root_stat.st_uid != current_uid:
+        return False
+    expected_session_id = match.group("session_id")
+    if session_id is not None and session_id != expected_session_id:
+        return False
+    return (
+        metadata.get("format") == _VERIFIED_EVIDENCE_SESSION_FORMAT
+        and type(metadata.get("version")) is int
+        and metadata.get("version") == _VERIFIED_EVIDENCE_SESSION_VERSION
+        and metadata.get("session_id") == expected_session_id
+        and type(metadata.get("pid")) is int
+        and metadata.get("pid") == int(match.group("pid"))
+        and type(metadata.get("uid")) is int
+        and metadata.get("uid") == current_uid
+        and type(metadata.get("created_ns")) is int
+        and metadata.get("created_ns") == int(match.group("created_ns"))
+        and metadata.get("session_name") == session_root.name
+    )
+
+
+def _cleanup_verified_evidence_session(
+    session_id: str,
+    session_root: Path,
+    *,
+    allow_missing_metadata: bool = False,
+    expected_creator_pid: int | None = None,
+) -> bool:
+    with _VERIFIED_EVIDENCE_SNAPSHOT_ROOT_LOCK:
+        base = Path(
+            os.path.abspath(
+                os.path.normpath(str(_VERIFIED_EVIDENCE_SNAPSHOT_ROOT))
+            )
+        )
+        root = Path(
+            os.path.abspath(
+                os.path.normpath(str(session_root.expanduser()))
+            )
+        )
+        if root.parent != base:
+            return False
+        match = _VERIFIED_EVIDENCE_SESSION_NAME_PATTERN.fullmatch(root.name)
+        if match is None or match.group("session_id") != session_id:
+            return False
+        if (
+            expected_creator_pid is not None
+            and int(match.group("pid")) != expected_creator_pid
+        ):
+            return False
+        try:
+            root_stat = os.lstat(root)
+        except FileNotFoundError:
+            root_stat = None
+        except OSError:
+            return False
+        if root_stat is not None:
+            getuid = getattr(os, "getuid", None)
+            if (
+                not stat.S_ISDIR(root_stat.st_mode)
+                or stat.S_IMODE(root_stat.st_mode) != 0o700
+                or (
+                    callable(getuid)
+                    and root_stat.st_uid != getuid()
+                )
+            ):
+                return False
+            metadata = _read_verified_evidence_session_metadata(root)
+            if metadata is None:
+                if not allow_missing_metadata:
+                    return False
+            elif not _verified_evidence_session_metadata_matches(
+                root,
+                metadata,
+                session_id=session_id,
+            ):
+                return False
+        try:
+            directory_descriptor: int | None = None
+            if root_stat is not None:
+                directory_flags = (
+                    os.O_RDONLY
+                    | getattr(os, "O_DIRECTORY", 0)
+                    | getattr(os, "O_CLOEXEC", 0)
+                )
+                if hasattr(os, "O_NOFOLLOW"):
+                    directory_flags |= os.O_NOFOLLOW
+                directory_descriptor = os.open(root, directory_flags)
+                opened_root_stat = os.fstat(directory_descriptor)
+                if _verified_evidence_stat_identity(opened_root_stat) != (
+                    _verified_evidence_stat_identity(root_stat)
+                ):
+                    os.close(directory_descriptor)
+                    directory_descriptor = None
+                    return False
+                entries = list(os.scandir(directory_descriptor))
+            else:
+                entries = []
+            for entry in entries:
+                entry_stat = entry.stat(follow_symlinks=False)
+                if not stat.S_ISREG(entry_stat.st_mode):
+                    return False
+                if entry.name == _VERIFIED_EVIDENCE_SESSION_METADATA:
+                    continue
+                if re.fullmatch(
+                    r"evidence-manifest-[0-9a-f]{64}\.jsonl",
+                    entry.name,
+                ):
+                    continue
+                if re.fullmatch(
+                    r"\.evidence-manifest-[0-9a-f]{64}-[0-9]+-[0-9]+\.tmp",
+                    entry.name,
+                ):
+                    continue
+                return False
+            for entry in entries:
+                os.unlink(entry.name, dir_fd=directory_descriptor)
+            if directory_descriptor is not None:
+                os.close(directory_descriptor)
+                directory_descriptor = None
+            if root_stat is not None:
+                final_root_stat = os.lstat(root)
+                if _verified_evidence_stat_identity(final_root_stat) != (
+                    _verified_evidence_stat_identity(root_stat)
+                ):
+                    return False
+                os.rmdir(root)
+        except FileNotFoundError:
+            pass
+        except OSError:
+            return False
+        finally:
+            if directory_descriptor is not None:
+                os.close(directory_descriptor)
+        with _ACTIVE_VERIFIED_EVIDENCE_SESSIONS_LOCK:
+            _ACTIVE_VERIFIED_EVIDENCE_SESSIONS.pop(session_id, None)
+    return True
+
+
+def _verified_evidence_pid_is_alive(pid: int) -> bool:
+    if pid == os.getpid():
+        return True
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return True
+    return True
+
+
+def _reclaim_stale_verified_evidence_sessions() -> None:
+    global _VERIFIED_EVIDENCE_STALE_RECLAIMED
+    with _ACTIVE_VERIFIED_EVIDENCE_SESSIONS_LOCK:
+        if _VERIFIED_EVIDENCE_STALE_RECLAIMED:
+            return
+        _VERIFIED_EVIDENCE_STALE_RECLAIMED = True
+    root_error = _ensure_verified_evidence_snapshot_root()
+    if root_error is not None:
+        return
+    try:
+        candidates = list(_VERIFIED_EVIDENCE_SNAPSHOT_ROOT.iterdir())
+    except OSError:
+        return
+    now_ns = time.time_ns()
+    stale_age_ns = int(
+        _VERIFIED_EVIDENCE_SESSION_STALE_AGE_SECONDS * 1_000_000_000
+    )
+    for candidate in candidates:
+        metadata = _read_verified_evidence_session_metadata(candidate)
+        if metadata is None:
+            continue
+        if not _verified_evidence_session_metadata_matches(
+            candidate,
+            metadata,
+        ):
+            continue
+        created_ns = int(metadata["created_ns"])
+        pid = int(metadata["pid"])
+        if now_ns - created_ns < stale_age_ns:
+            continue
+        if _verified_evidence_pid_is_alive(pid):
+            continue
+        _cleanup_verified_evidence_session(
+            str(metadata["session_id"]),
+            candidate,
+        )
+    _reclaim_stale_legacy_verified_evidence_roots(
+        now_ns=now_ns,
+        stale_age_ns=stale_age_ns,
+    )
+
+
+def _reclaim_stale_legacy_verified_evidence_roots(
+    *,
+    now_ns: int,
+    stale_age_ns: int,
+) -> None:
+    legacy_parent = _VERIFIED_EVIDENCE_SNAPSHOT_ROOT.parent
+    try:
+        candidates = list(legacy_parent.iterdir())
+    except OSError:
+        return
+    getuid = getattr(os, "getuid", None)
+    current_uid = getuid() if callable(getuid) else 0
+    for candidate in candidates:
+        match = _VERIFIED_EVIDENCE_LEGACY_ROOT_NAME_PATTERN.fullmatch(
+            candidate.name
+        )
+        if match is None or int(match.group("uid")) != current_uid:
+            continue
+        pid = int(match.group("pid"))
+        if _verified_evidence_pid_is_alive(pid):
+            continue
+        try:
+            root_stat = os.lstat(candidate)
+        except OSError:
+            continue
+        if (
+            not stat.S_ISDIR(root_stat.st_mode)
+            or stat.S_IMODE(root_stat.st_mode) != 0o700
+            or (
+                callable(getuid)
+                and root_stat.st_uid != current_uid
+            )
+            or now_ns - root_stat.st_mtime_ns < stale_age_ns
+        ):
+            continue
+        _cleanup_stale_legacy_verified_evidence_root(
+            candidate,
+            root_stat=root_stat,
+            now_ns=now_ns,
+            stale_age_ns=stale_age_ns,
+            current_uid=current_uid,
+        )
+
+
+def _cleanup_stale_legacy_verified_evidence_root(
+    root: Path,
+    *,
+    root_stat: os.stat_result,
+    now_ns: int,
+    stale_age_ns: int,
+    current_uid: int,
+) -> bool:
+    try:
+        entries = list(os.scandir(root))
+    except OSError:
+        return False
+    entry_identities: dict[str, tuple[int, int, int, int]] = {}
+    for entry in entries:
+        match = re.fullmatch(
+            r"evidence-manifest-(?P<digest>[0-9a-f]{64})\.jsonl",
+            entry.name,
+        )
+        if match is None:
+            return False
+        try:
+            entry_stat = entry.stat(follow_symlinks=False)
+        except OSError:
+            return False
+        if (
+            not stat.S_ISREG(entry_stat.st_mode)
+            or stat.S_IMODE(entry_stat.st_mode) != 0o400
+            or entry_stat.st_uid != current_uid
+            or now_ns - entry_stat.st_mtime_ns < stale_age_ns
+        ):
+            return False
+        _, snapshot_error = _read_verified_snapshot_bytes(
+            Path(entry.path),
+            expected_size=entry_stat.st_size,
+            expected_fingerprint=f"sha256:{match.group('digest')}",
+        )
+        if snapshot_error is not None:
+            return False
+        entry_identities[entry.name] = _verified_evidence_stat_identity(
+            entry_stat
+        )
+
+    directory_descriptor: int | None = None
+    try:
+        directory_flags = (
+            os.O_RDONLY
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_CLOEXEC", 0)
+        )
+        if hasattr(os, "O_NOFOLLOW"):
+            directory_flags |= os.O_NOFOLLOW
+        directory_descriptor = os.open(root, directory_flags)
+        opened_root_stat = os.fstat(directory_descriptor)
+        if _verified_evidence_stat_identity(opened_root_stat) != (
+            _verified_evidence_stat_identity(root_stat)
+        ):
+            return False
+        final_entries = list(os.scandir(directory_descriptor))
+        if {entry.name for entry in final_entries} != set(entry_identities):
+            return False
+        for entry in final_entries:
+            entry_stat = entry.stat(follow_symlinks=False)
+            if _verified_evidence_stat_identity(entry_stat) != (
+                entry_identities[entry.name]
+            ):
+                return False
+        for entry in final_entries:
+            os.unlink(entry.name, dir_fd=directory_descriptor)
+        os.close(directory_descriptor)
+        directory_descriptor = None
+        final_root_stat = os.lstat(root)
+        if _verified_evidence_stat_identity(final_root_stat) != (
+            _verified_evidence_stat_identity(root_stat)
+        ):
+            return False
+        os.rmdir(root)
+    except OSError:
+        return False
+    finally:
+        if directory_descriptor is not None:
+            os.close(directory_descriptor)
+    return True
+
+
+def _cleanup_all_verified_evidence_sessions() -> None:
+    with _ACTIVE_VERIFIED_EVIDENCE_SESSIONS_LOCK:
+        sessions = list(_ACTIVE_VERIFIED_EVIDENCE_SESSIONS.items())
+    for session_id, session_root in sessions:
+        _cleanup_verified_evidence_session(
+            session_id,
+            session_root,
+            expected_creator_pid=os.getpid(),
+        )
+
+
+atexit.register(_cleanup_all_verified_evidence_sessions)
+
+
+def _materialize_verified_manifest_snapshot(
+    manifest_bytes: bytes,
+    *,
+    fingerprint: str,
+) -> tuple[Path | None, dict[str, Any] | None, str | None]:
+    digest = fingerprint.removeprefix("sha256:")
+    if not _is_sha256_fingerprint(fingerprint):
+        return None, None, "manifest_snapshot_fingerprint_invalid"
+    root, session_contract, session_error = (
+        _create_verified_evidence_session()
+    )
+    if session_error is not None or root is None or session_contract is None:
+        return None, None, (
+            session_error or "manifest_snapshot_session_create_failed"
+        )
+    session_id = str(session_contract["session_id"])
+
+    def fail(reason: str) -> tuple[None, None, str]:
+        _cleanup_verified_evidence_session(
+            session_id,
+            root,
+            expected_creator_pid=os.getpid(),
+        )
+        return None, None, reason
+
+    snapshot_path = root / f"evidence-manifest-{digest}.jsonl"
+    existing_bytes, existing_error = _read_verified_snapshot_bytes(
+        snapshot_path,
+        expected_size=len(manifest_bytes),
+        expected_fingerprint=fingerprint,
+    )
+    if existing_error is None:
+        return snapshot_path, session_contract, None
+    if existing_error != "snapshot_missing":
+        return fail("manifest_snapshot_existing_object_invalid")
+
+    temporary_path = root / (
+        f".evidence-manifest-{digest}-{os.getpid()}-{time.time_ns()}.tmp"
+    )
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0)
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    descriptor: int | None = None
+    cleanup_failed = False
+    try:
+        descriptor = os.open(temporary_path, flags, 0o600)
+        view = memoryview(manifest_bytes)
+        written = 0
+        while written < len(view):
+            write_count = os.write(descriptor, view[written:])
+            if write_count <= 0:
+                raise OSError("zero-byte manifest snapshot write")
+            written += write_count
+        os.fchmod(descriptor, 0o400)
+        os.fsync(descriptor)
+        os.close(descriptor)
+        descriptor = None
+        try:
+            os.link(
+                temporary_path,
+                snapshot_path,
+                follow_symlinks=False,
+            )
+        except FileExistsError:
+            existing_bytes, existing_error = _read_verified_snapshot_bytes(
+                snapshot_path,
+                expected_size=len(manifest_bytes),
+                expected_fingerprint=fingerprint,
+            )
+            if existing_error is not None:
+                return fail("manifest_snapshot_existing_object_invalid")
+        directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+        if hasattr(os, "O_NOFOLLOW"):
+            directory_flags |= os.O_NOFOLLOW
+        directory_descriptor = os.open(root, directory_flags)
+        try:
+            os.fsync(directory_descriptor)
+        finally:
+            os.close(directory_descriptor)
+    except OSError:
+        return fail("manifest_snapshot_write_failed")
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        try:
+            temporary_path.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError:
+            cleanup_failed = True
+
+    if cleanup_failed:
+        return fail("manifest_snapshot_cleanup_failed")
+
+    snapshot_bytes, snapshot_error = _read_verified_snapshot_bytes(
+        snapshot_path,
+        expected_size=len(manifest_bytes),
+        expected_fingerprint=fingerprint,
+    )
+    if snapshot_error is not None or snapshot_bytes != manifest_bytes:
+        return fail("manifest_snapshot_verification_failed")
+
+    def cleanup_session() -> None:
+        if not _cleanup_verified_evidence_session(
+            session_id,
+            root,
+            expected_creator_pid=os.getpid(),
+        ):
+            raise RuntimeError("verified evidence session cleanup failed")
+
+    try:
+        register_evaluation_private_artifact_session(
+            session_id,
+            cleanup_session,
+        )
+    except (TypeError, ValueError):
+        return fail("manifest_snapshot_session_register_failed")
+    return snapshot_path, session_contract, None
+
+
+def _read_verified_snapshot_bytes(
+    path: Path,
+    *,
+    expected_size: int,
+    expected_fingerprint: str,
+) -> tuple[bytes | None, str | None]:
+    try:
+        path_stat_before = os.lstat(path)
+    except FileNotFoundError:
+        return None, "snapshot_missing"
+    except OSError:
+        return None, "snapshot_unreadable"
+    if not stat.S_ISREG(path_stat_before.st_mode):
+        return None, "snapshot_not_regular_file"
+    if stat.S_IMODE(path_stat_before.st_mode) != 0o400:
+        return None, "snapshot_permissions_invalid"
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    descriptor: int | None = None
+    try:
+        descriptor = os.open(path, flags)
+        file_stat_before = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(file_stat_before.st_mode)
+            or file_stat_before.st_size > _MAX_PROMPT_EVIDENCE_MANIFEST_BYTES
+        ):
+            return None, "snapshot_size_invalid"
+        with os.fdopen(descriptor, "rb", closefd=False) as stream:
+            content = stream.read(_MAX_PROMPT_EVIDENCE_MANIFEST_BYTES + 1)
+        file_stat_after = os.fstat(descriptor)
+    except OSError:
+        return None, "snapshot_unreadable"
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+    try:
+        path_stat_after = os.lstat(path)
+    except OSError:
+        return None, "snapshot_changed_during_read"
+    if (
+        _stat_identity(path_stat_before) != _stat_identity(file_stat_before)
+        or _stat_identity(file_stat_before) != _stat_identity(file_stat_after)
+        or _stat_identity(file_stat_after) != _stat_identity(path_stat_after)
+        or file_stat_before.st_size != file_stat_after.st_size
+        or file_stat_before.st_mtime_ns != file_stat_after.st_mtime_ns
+    ):
+        return None, "snapshot_changed_during_read"
+    if len(content) != expected_size:
+        return None, "snapshot_size_mismatch"
+    actual_fingerprint = "sha256:" + hashlib.sha256(content).hexdigest()
+    if actual_fingerprint != expected_fingerprint:
+        return None, "snapshot_integrity_mismatch"
+    return content, None
+
+
+def _validate_verified_manifest_snapshot(
+    value: Mapping[str, Any],
+) -> dict[str, Any]:
+    result = dict(value)
+    errors = [
+        str(item)
+        for item in value.get("validation_errors") or []
+        if str(item).strip()
+    ]
+    result["validation_errors"] = errors
+
+    def add_error(reason: str) -> None:
+        if reason not in errors:
+            errors.append(reason)
+
+    if value.get("content_addressed") is not True:
+        add_error("manifest_snapshot_not_content_addressed")
+    snapshot_session = value.get("snapshot_session")
+    session_id = _verified_snapshot_session_id(snapshot_session)
+    if session_id is None:
+        add_error("manifest_snapshot_session_invalid")
+    snapshot_path_value = value.get("path")
+    if not _is_verified_snapshot_path(
+        snapshot_path_value,
+        session_id=session_id,
+    ):
+        add_error("manifest_snapshot_path_untrusted")
+    expected_size = value.get("size_bytes")
+    if not isinstance(expected_size, int) or isinstance(expected_size, bool):
+        add_error("manifest_snapshot_size_invalid")
+        expected_size = -1
+    expected_fingerprint = value.get("fingerprint")
+    if not _is_sha256_fingerprint(expected_fingerprint):
+        add_error("manifest_snapshot_fingerprint_invalid")
+        expected_fingerprint = ""
+    snapshot_content: bytes | None = None
+    if not errors and isinstance(snapshot_path_value, str):
+        snapshot_content, snapshot_error = _read_verified_snapshot_bytes(
+            Path(snapshot_path_value).expanduser(),
+            expected_size=expected_size,
+            expected_fingerprint=expected_fingerprint,
+        )
+        if snapshot_error is not None:
+            add_error(f"manifest_{snapshot_error}")
+    result["present"] = snapshot_content is not None
+    result["readable"] = snapshot_content is not None
+    result["regular_file"] = snapshot_content is not None
+    result["valid"] = not errors and snapshot_content is not None
+    return result
+
+
+def _verified_snapshot_session_id(value: object) -> str | None:
+    if not isinstance(value, Mapping):
+        return None
+    if value.get("format") != "aworld.evaluation.private_artifact_session":
+        return None
+    if value.get("version") != 1:
+        return None
+    session_id = value.get("session_id")
+    if (
+        not isinstance(session_id, str)
+        or re.fullmatch(r"[0-9a-f]{32}", session_id) is None
+    ):
+        return None
+    return session_id
+
+
+def _is_verified_snapshot_path(
+    value: object,
+    *,
+    session_id: str | None = None,
+) -> bool:
+    if not isinstance(value, str) or not value.strip():
+        return False
+    root = Path(
+        os.path.abspath(os.path.normpath(str(_VERIFIED_EVIDENCE_SNAPSHOT_ROOT)))
+    )
+    path = Path(os.path.abspath(os.path.normpath(str(Path(value).expanduser()))))
+    if path.parent.parent != root:
+        return False
+    session_match = _VERIFIED_EVIDENCE_SESSION_NAME_PATTERN.fullmatch(
+        path.parent.name
+    )
+    if session_match is None:
+        return False
+    if (
+        session_id is not None
+        and session_match.group("session_id") != session_id
+    ):
+        return False
+    return re.fullmatch(
+        r"evidence-manifest-[0-9a-f]{64}\.jsonl",
+        path.name,
+    ) is not None
+
+
+def _stat_identity(value: object) -> tuple[object, object]:
+    return (getattr(value, "st_dev", None), getattr(value, "st_ino", None))
+
+
+def _is_sha256_fingerprint(value: object) -> bool:
+    if not isinstance(value, str) or not value.startswith("sha256:"):
+        return False
+    digest = value.removeprefix("sha256:")
+    return len(digest) == 64 and all(
+        character in "0123456789abcdef" for character in digest
+    )
+
+
+def _decode_prompt_evidence_manifest_records(
+    manifest_bytes: bytes,
+) -> tuple[list[Mapping[str, Any]], list[str], bool]:
+    text = manifest_bytes.decode("utf-8", errors="replace")
+    decoder = json.JSONDecoder()
+    records: list[Mapping[str, Any]] = []
+    errors: list[str] = []
+    cursor = 0
+    decoded_entry_count = 0
+    entry_limit_exceeded = False
+    while cursor < len(text):
+        while cursor < len(text) and text[cursor].isspace():
+            cursor += 1
+        if cursor >= len(text):
+            break
+        if decoded_entry_count >= _MAX_PROMPT_EVIDENCE_MANIFEST_ENTRIES:
+            entry_limit_exceeded = True
+            break
+        line_number = text.count("\n", 0, cursor) + 1
+        try:
+            value, end = decoder.raw_decode(text, cursor)
+        except json.JSONDecodeError:
+            errors.append(f"manifest_json_invalid:{line_number}")
+            break
+        decoded_entry_count += 1
+        if not isinstance(value, Mapping):
+            errors.append(f"manifest_entry_not_object:{line_number}")
+        else:
+            entry_error = _prompt_evidence_manifest_entry_error(value)
+            if entry_error is not None:
+                errors.append(
+                    f"manifest_entry_schema_invalid:{line_number}:{entry_error}"
+                )
+            records.append(value)
+        cursor = end
+    return records, errors, entry_limit_exceeded
+
+
+def _prompt_evidence_manifest_entry_error(
+    entry: Mapping[str, Any],
+) -> str | None:
+    if not str(entry.get("source_id") or "").strip():
+        return "missing_source_id"
+    if not str(entry.get("extraction_method") or "").strip():
+        return "missing_extraction_method"
+    evidence_type = str(entry.get("evidence_type") or "").strip().lower()
+    if evidence_type == "metadata" or (
+        not str(entry.get("artifact_path") or "").strip()
+        and isinstance(entry.get("metadata"), Mapping)
+    ):
+        metadata = entry.get("metadata")
+        has_bounded_payload = any(
+            key in entry
+            for key in _PROMPT_EVIDENCE_MANIFEST_PAYLOAD_KEYS
+        )
+        if (
+            (not isinstance(metadata, Mapping) or not metadata)
+            and not has_bounded_payload
+        ):
+            return "missing_metadata"
+        return None
+    if evidence_type not in ("", "file", "artifact"):
+        return "unsupported_evidence_type"
+    if not str(entry.get("artifact_path") or "").strip():
+        return "missing_artifact_path"
+    return None
+
+
+def _compact_prompt_evidence_manifest(
+    value: object,
+    *,
+    fallback_path: object = None,
+) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        return (
+            {"path": str(fallback_path)}
+            if isinstance(fallback_path, str) and fallback_path.strip()
+            else {}
+        )
+    manifest: dict[str, Any] = {}
+    path = value.get("path")
+    if isinstance(path, str) and path.strip():
+        manifest["path"] = path
+    elif isinstance(fallback_path, str) and fallback_path.strip():
+        manifest["path"] = fallback_path
+    for key in ("present", "readable", "regular_file", "valid"):
+        if isinstance(value.get(key), bool):
+            manifest[key] = value[key]
+    for key in ("entry_count", "invalid_entry_count", "size_bytes"):
+        count = value.get(key)
+        if isinstance(count, int) and not isinstance(count, bool) and count >= 0:
+            manifest[key] = count
+    fingerprint = value.get("fingerprint")
+    if isinstance(fingerprint, str) and fingerprint.strip():
+        manifest["fingerprint"] = _compact_text(
+            fingerprint,
+            _MAX_EVIDENCE_DIGEST_VALUE_CHARS,
+        )
+    validation_errors = value.get("validation_errors")
+    if isinstance(validation_errors, list):
+        manifest["validation_errors"] = [
+            str(item)
+            for item in validation_errors[:8]
+            if str(item).strip()
+        ]
+    return manifest
 
 
 def _prompt_bundle_artifact_entry(entry: Mapping[str, Any]) -> dict[str, Any]:

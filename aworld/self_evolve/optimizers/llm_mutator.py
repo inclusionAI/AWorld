@@ -16,6 +16,12 @@ from aworld.self_evolve.candidate_package import (
 from aworld.self_evolve.candidate_generation import (
     CandidateGenerationInfrastructureError,
 )
+from aworld.self_evolve.candidate_errors import (
+    CandidateFailureField,
+    CandidateMaterializationCode,
+    CandidateMaterializationError,
+    CandidateRepresentation,
+)
 from aworld.self_evolve.concurrency import (
     CandidatePopulationResult,
     SelfEvolveConcurrencyPolicy,
@@ -26,6 +32,7 @@ from aworld.self_evolve.evolution_context import (
 )
 from aworld.self_evolve.feedback import normalize_feedback_summary
 from aworld.self_evolve.optimizers.base import (
+    CandidateSemanticValidationError,
     OptimizerRequest,
     OptimizerResult,
     declared_addressed_improvement_signal_ids,
@@ -38,13 +45,12 @@ from aworld.self_evolve.repair_conformance import (
 )
 from aworld.self_evolve.sanitization import sanitize_text
 from aworld.self_evolve.types import CandidateFileDelta, CandidateVariant, OptimizerLineage
+from aworld.skills.structure import build_skill_structural_edit_intent
+from aworld.skills.structure_types import SkillStructuralEditIntent
 
 
 MutateTextCallable = Callable[[str], Any]
-CandidatePopulationCallable = Callable[
-    [Sequence[str], int],
-    Awaitable[CandidatePopulationResult],
-]
+CandidatePopulationCallable = Callable[..., Awaitable[CandidatePopulationResult]]
 
 
 class TraceReflectiveLLMMutator:
@@ -99,11 +105,19 @@ class TraceReflectiveLLMMutator:
                 _build_mutation_prompt(request, candidate_index=index)
                 for index in range(request.max_candidates)
             )
-            population = await self.population_callable(
-                prompts,
-                self.concurrency_policy.effective_limit(
+            population = await _run_candidate_population(
+                self.population_callable,
+                prompts=prompts,
+                max_concurrency=self.concurrency_policy.effective_limit(
                     "candidate_generation",
                     item_count=len(prompts),
+                ),
+                validate_output=lambda index, output: (
+                    _validate_mutator_output_context(
+                        output,
+                        request=request,
+                        candidate_index=index,
+                    )
                 ),
             )
             population_diagnostics = dict(population.diagnostics)
@@ -113,7 +127,24 @@ class TraceReflectiveLLMMutator:
                 elif slot.status == "failed" and candidate_generation_failure is None:
                     candidate_generation_failure = dict(slot.failure or {})
                 elif slot.status == "protocol_invalid":
-                    candidate_protocol_invalid_count += 1
+                    failure = dict(slot.failure or {})
+                    if (
+                        failure.get("stage")
+                        == "candidate_semantic_validation"
+                    ):
+                        filtered_invalid_patch_count += 1
+                        candidate_materialization_failures.append(
+                            {
+                                **failure,
+                                "candidate_index": slot.index,
+                                "representation": (
+                                    failure.get("representation")
+                                    or CandidateRepresentation.CANDIDATE_PACKAGE.value
+                                ),
+                            }
+                        )
+                    else:
+                        candidate_protocol_invalid_count += 1
         else:
             statuses = ["discarded"] * request.max_candidates
             failure_cutoff: int | None = None
@@ -168,20 +199,29 @@ class TraceReflectiveLLMMutator:
                 )
                 if inherited_file_count:
                     materialization = f"{materialization}+repair_focus_overlay"
+                if _violates_transport_completion_invariant(content):
+                    content = _append_transport_completion_invariant(content)
+                    repaired_transport_completion_violation_count += 1
+                structural_edit_intent = _candidate_structural_edit_intent(
+                    output,
+                    base_content=request.current_content,
+                    candidate_content=content,
+                )
             except ValueError as exc:
                 filtered_invalid_patch_count += 1
+                semantic_error = _candidate_semantic_error(
+                    exc,
+                    output=output,
+                    request=request,
+                )
+                diagnostic = semantic_error.to_diagnostic()
                 candidate_materialization_failures.append(
                     {
-                        "code": "candidate_materialization_invalid",
-                        "stage": "candidate_generation",
-                        "failure_class": "candidate",
-                        "repairable": True,
+                        **diagnostic,
                         "candidate_index": index,
                         "representation": (
-                            "patch_intent"
-                            if isinstance(output, Mapping)
-                            and isinstance(output.get("patch_intent"), Mapping)
-                            else "candidate_package"
+                            diagnostic.get("representation")
+                            or _candidate_output_representation(output).value
                         ),
                         "reason": sanitize_text(str(exc), max_chars=240),
                     }
@@ -192,9 +232,6 @@ class TraceReflectiveLLMMutator:
                 candidate_index=index,
                 addressed_signal_ids=addressed_signal_ids,
             )
-            if _violates_transport_completion_invariant(content):
-                content = _append_transport_completion_invariant(content)
-                repaired_transport_completion_violation_count += 1
             if content == request.current_content and not files:
                 filtered_noop_count += 1
                 continue
@@ -205,6 +242,7 @@ class TraceReflectiveLLMMutator:
                 rationale=rationale,
                 target_fingerprint=request.target_fingerprint,
                 files=files,
+                structural_edit_intent=structural_edit_intent,
             )
             content_fingerprint = candidate_package_fingerprint(candidate)
             semantic_package_fingerprint = (
@@ -213,16 +251,9 @@ class TraceReflectiveLLMMutator:
             if semantic_package_fingerprint in seen_content_fingerprints:
                 filtered_duplicate_count += 1
                 continue
-            regression_base_content = (
-                _repair_focus_content(
-                    request,
-                    candidate_index=index,
-                )
-                or request.current_content
-            )
             if require_targeted_delta and _is_weak_high_baseline_regression_candidate(
                 content,
-                current_content=regression_base_content,
+                current_content=request.current_content,
                 request=request,
             ):
                 filtered_high_baseline_regression_count += 1
@@ -242,6 +273,7 @@ class TraceReflectiveLLMMutator:
                 rationale=rationale,
                 target_fingerprint=request.target_fingerprint,
                 files=files,
+                structural_edit_intent=structural_edit_intent,
             )
             candidates.append(candidate)
             context = request.evolution_context or compile_evolution_context(request)
@@ -262,6 +294,11 @@ class TraceReflectiveLLMMutator:
                 {
                     "candidate_id": candidate_id,
                     "materialization": materialization,
+                    "structural_edit_authorization": (
+                        candidate.structural_edit_intent.authorization
+                        if candidate.structural_edit_intent is not None
+                        else None
+                    ),
                     **strategy_record,
                 }
             )
@@ -314,6 +351,36 @@ class TraceReflectiveLLMMutator:
             diagnostics=diagnostics,
             private_context=private_repair_contracts,
         )
+
+
+async def _run_candidate_population(
+    population_callable: CandidatePopulationCallable,
+    *,
+    prompts: Sequence[str],
+    max_concurrency: int,
+    validate_output: Callable[
+        [int, Mapping[str, Any]],
+        Mapping[str, Any],
+    ],
+) -> CandidatePopulationResult:
+    """Pass contextual validation when supported, preserving legacy callables."""
+
+    try:
+        parameters = inspect.signature(population_callable).parameters.values()
+    except (TypeError, ValueError):
+        parameters = ()
+    accepts_contextual_validation = any(
+        parameter.name == "validate_output"
+        or parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters
+    )
+    if accepts_contextual_validation:
+        return await population_callable(
+            prompts,
+            max_concurrency,
+            validate_output=validate_output,
+        )
+    return await population_callable(prompts, max_concurrency)
 
 
 def _build_mutation_prompt(request: OptimizerRequest, *, candidate_index: int) -> str:
@@ -741,6 +808,80 @@ def _focused_repair_prompt_instructions(
     return instructions
 
 
+def _validate_mutator_output_context(
+    output: Mapping[str, Any],
+    *,
+    request: OptimizerRequest,
+    candidate_index: int,
+) -> Mapping[str, Any]:
+    """Validate request-bound semantics while same-slot repair is available."""
+
+    try:
+        _, _, _, files = _materialize_mutator_output(
+            output,
+            request=request,
+            candidate_index=candidate_index,
+        )
+        declared_addressed_improvement_signal_ids(request, output)
+        _overlay_repair_focus_files(
+            request,
+            candidate_index=candidate_index,
+            candidate_files=files,
+        )
+    except CandidateSemanticValidationError:
+        raise
+    except CandidateMaterializationError as exc:
+        raise _candidate_semantic_error(
+            exc,
+            output=output,
+            request=request,
+        ) from exc
+    except ValueError as exc:
+        raise _candidate_semantic_error(
+            exc,
+            output=output,
+            request=request,
+        ) from exc
+    return output
+
+
+def _candidate_output_representation(output: Any) -> CandidateRepresentation:
+    if not isinstance(output, Mapping):
+        return CandidateRepresentation.FULL_CONTENT
+    if isinstance(output.get("patch_intent"), Mapping):
+        return CandidateRepresentation.PATCH_INTENT
+    if isinstance(output.get("content"), str) and output.get("content"):
+        return CandidateRepresentation.FULL_CONTENT
+    raw_files = output.get("files")
+    if isinstance(raw_files, (list, tuple)) and raw_files:
+        return CandidateRepresentation.FILES_ONLY
+    return CandidateRepresentation.CANDIDATE_PACKAGE
+
+
+def _candidate_semantic_error(
+    error: ValueError,
+    *,
+    output: Any,
+    request: OptimizerRequest,
+) -> CandidateSemanticValidationError:
+    if isinstance(error, CandidateSemanticValidationError):
+        return error
+    if isinstance(error, CandidateMaterializationError):
+        code = error.code.value
+        field_path = error.field_path.value
+    else:
+        code = CandidateMaterializationCode.INVALID.value
+        field_path = CandidateFailureField.CANDIDATE.value
+    return CandidateSemanticValidationError(
+        code,
+        str(error),
+        field_path=field_path,
+        representation=_candidate_output_representation(output).value,
+        repairable=True,
+        allowed_improvement_signal_ids=exposed_improvement_signal_ids(request),
+    )
+
+
 def _overlay_repair_focus_files(
     request: OptimizerRequest,
     *,
@@ -850,6 +991,41 @@ def _candidate_strategy_record(
     return record
 
 
+def _candidate_structural_edit_intent(
+    output: Any,
+    *,
+    base_content: str,
+    candidate_content: str,
+) -> SkillStructuralEditIntent | None:
+    payload = output
+    if isinstance(payload, Mapping):
+        expected_output = payload.get("expected_output")
+        if isinstance(expected_output, Mapping):
+            normalized = dict(expected_output)
+            for key, value in payload.items():
+                if key != "expected_output":
+                    normalized.setdefault(key, value)
+            payload = normalized
+    patch_intent = (
+        payload.get("patch_intent")
+        if isinstance(payload, Mapping)
+        else None
+    )
+    if not isinstance(patch_intent, Mapping):
+        return None
+    try:
+        return build_skill_structural_edit_intent(
+            original_content=base_content,
+            candidate_content=candidate_content,
+            patch_intent=patch_intent,
+        )
+    except ValueError:
+        # Non-Markdown target adapters can still use patch materialization.
+        # Skill local gates fail closed before auto-apply when the typed,
+        # content-addressed authorization cannot be constructed.
+        return None
+
+
 def _population_strategy(
     request: OptimizerRequest,
     candidate_index: int,
@@ -948,11 +1124,11 @@ def _materialize_mutator_output(
     request: OptimizerRequest,
     candidate_index: int = 0,
 ) -> tuple[str, str, str, tuple[CandidateFileDelta, ...]]:
-    repair_base_content = _repair_focus_content(
-        request,
-        candidate_index=candidate_index,
-    )
-    base_content = repair_base_content or request.current_content
+    # The evaluated target snapshot is the only authoritative patch base.
+    # Historical repair packages are bounded prompt evidence and file overlays;
+    # their content may be truncated or rejected and must never replace the
+    # current target snapshot during materialization.
+    base_content = request.current_content
     if isinstance(output, Mapping):
         # Some structured-output providers return the schema payload under an
         # ``expected_output`` envelope even though the prompt requests the
@@ -988,13 +1164,19 @@ def _materialize_mutator_output(
             content = base_content
             materialization = "files_only"
         else:
-            raise ValueError(
-                "mutator output must include content, patch_intent, or package files"
+            raise CandidateMaterializationError(
+                CandidateMaterializationCode.CONTENT_REQUIRED,
+                "mutator output must include content, patch_intent, or package files",
+                field_path=CandidateFailureField.CONTENT,
             )
     if not isinstance(rationale, str):
         rationale = ""
     if not isinstance(raw_files, (list, tuple)):
-        raise ValueError("mutator files must be a list")
+        raise CandidateMaterializationError(
+            CandidateMaterializationCode.FILES_TYPE_INVALID,
+            "mutator files must be a list",
+            field_path=CandidateFailureField.FILES,
+        )
     files = validate_candidate_files(
         CandidateFileDelta(
             path=str(item.get("path") or ""),
@@ -1010,26 +1192,12 @@ def _materialize_mutator_output(
         if isinstance(item, Mapping)
     )
     if materialization == "files_only" and not files:
-        raise ValueError("files-only mutator output must include a valid file delta")
+        raise CandidateMaterializationError(
+            CandidateMaterializationCode.FILES_ONLY_DELTA_REQUIRED,
+            "files-only mutator output must include a valid file delta",
+            field_path=CandidateFailureField.FILES,
+        )
     return content, rationale, materialization, files
-
-
-def _repair_focus_content(
-    request: OptimizerRequest,
-    *,
-    candidate_index: int,
-) -> str | None:
-    context = request.evolution_context or compile_evolution_context(request)
-    repair_focus = context.repair_focus_for_candidate(
-        candidate_index=candidate_index
-    )
-    package = (
-        repair_focus.get("repair_candidate_package")
-        if isinstance(repair_focus, Mapping)
-        else None
-    )
-    content = package.get("content") if isinstance(package, Mapping) else None
-    return content if isinstance(content, str) and content.strip() else None
 
 
 def _candidate_id(

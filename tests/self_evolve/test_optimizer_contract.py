@@ -14,6 +14,7 @@ from aworld.self_evolve.lessons import LessonRecord
 from aworld.self_evolve.optimizers.base import OptimizerRequest
 from aworld.self_evolve.optimizers.dspy_adapter import DSPyGEPAOptimizer, DSPyMIPROOptimizer
 from aworld.self_evolve.optimizers.llm_mutator import TraceReflectiveLLMMutator
+from aworld.self_evolve.patch_intent import apply_skill_patch_intent
 from aworld.self_evolve.replay_adaptation import ReplayCapabilityRequirement
 from aworld.self_evolve.trace_pack import build_trace_pack
 from aworld.self_evolve.types import (
@@ -272,6 +273,51 @@ async def test_optimizer_rejects_addressing_an_unexposed_signal() -> None:
 
     assert result.candidates == ()
     assert result.diagnostics["filtered_invalid_patch_candidates"] == 1
+    assert result.diagnostics["candidate_materialization_failures"][0][
+        "code"
+    ] == "unexposed_improvement_signal_ids"
+    assert result.diagnostics["candidate_materialization_failures"][0][
+        "field_path"
+    ] == "addressed_improvement_signal_ids"
+
+
+@pytest.mark.asyncio
+async def test_prompt_contract_validator_and_lineage_share_visible_signal_ids() -> None:
+    prompts: list[str] = []
+
+    async def mutate(prompt: str) -> dict:
+        prompts.append(prompt)
+        return {"content": "# Demo\n\nBounded reusable improvement.\n"}
+
+    cases = tuple(
+        EvalCase(
+            case_id=f"train-{index}",
+            input="web task",
+            self_improvement_signals=(
+                {"signal_id": f"signal-{index}"},
+            ),
+        )
+        for index in range(33)
+    )
+    request = OptimizerRequest(
+        target=_target(),
+        current_content="# Demo\n\nOld guidance.\n",
+        target_fingerprint="sha256:old",
+        trace_packs=(_trace_pack(),),
+        trainable_cases=cases,
+    )
+
+    result = await TraceReflectiveLLMMutator(
+        mutate_text=mutate,
+    ).propose(request)
+
+    payload = _prompt_payload(prompts[0])
+    allowed = payload["expected_output"]["field_constraints"][
+        "addressed_improvement_signal_ids"
+    ]["allowed_values"]
+    assert len(payload["trainable_cases"]) == 32
+    assert allowed == [f"signal-{index}" for index in range(32)]
+    assert list(result.lineage[0].exposed_improvement_signal_ids) == allowed
 
 
 @pytest.mark.asyncio
@@ -446,7 +492,7 @@ async def test_llm_mutator_inherits_primary_content_for_files_only_delta() -> No
 
 
 @pytest.mark.asyncio
-async def test_llm_mutator_preserves_focused_skill_content_for_file_delta() -> None:
+async def test_llm_mutator_preserves_authoritative_content_for_file_delta() -> None:
     prompts: list[str] = []
 
     async def mutate(prompt: str) -> dict:
@@ -503,7 +549,7 @@ async def test_llm_mutator_preserves_focused_skill_content_for_file_delta() -> N
 
     result = await TraceReflectiveLLMMutator(mutate_text=mutate).propose(request)
 
-    assert result.candidates[0].content == focused_content.rstrip()
+    assert result.candidates[0].content == "# Demo\n\nOld guidance.\n"
     assert "repair the target skill content" in prompts[0]
     assert "Do not change readiness, protocol, compiler, or runtime behavior" in (
         prompts[0]
@@ -1198,6 +1244,21 @@ async def test_trace_reflective_llm_mutator_materializes_patch_intent_candidate(
     assert "Use bounded evidence before final answers." in result.candidates[0].content
     assert "Old rule." not in result.candidates[0].content
     assert result.diagnostics["candidate_strategies"][0]["materialization"] == "patch_intent"
+    intent = result.candidates[0].structural_edit_intent
+    assert intent is not None
+    assert intent.authority == "framework"
+    assert intent.reason == "candidate_protocol.patch_intent"
+    assert intent.base_content_fingerprint.startswith("sha256:")
+    assert intent.candidate_content_fingerprint.startswith("sha256:")
+    assert intent.authorization.startswith("sha256:")
+    assert intent.actions[0].action == "replace_section"
+    assert intent.actions[0].section_path[-1] == "guidance"
+    assert (
+        result.diagnostics["candidate_strategies"][0][
+            "structural_edit_authorization"
+        ]
+        == intent.authorization
+    )
 
 
 @pytest.mark.asyncio
@@ -1236,17 +1297,56 @@ async def test_trace_reflective_llm_mutator_rejects_invalid_patch_intent_before_
 
     assert result.candidates == ()
     assert result.diagnostics["filtered_invalid_patch_candidates"] == 1
-    assert result.diagnostics["candidate_materialization_failures"] == [
-        {
-            "code": "candidate_materialization_invalid",
-            "stage": "candidate_generation",
-            "failure_class": "candidate",
-            "repairable": True,
-            "candidate_index": 0,
-            "representation": "patch_intent",
-            "reason": "patch intent contains a protected reference",
+    failure = result.diagnostics["candidate_materialization_failures"][0]
+    assert failure == {
+        "code": "patch_content_protected_reference",
+        "stage": "candidate_semantic_validation",
+        "failure_class": "candidate",
+        "repairable": True,
+        "field_path": "patch_intent.operations[].content",
+        "contract_fingerprint": failure["contract_fingerprint"],
+        "allowed_improvement_signal_ids": [],
+        "candidate_index": 0,
+        "representation": "patch_intent",
+        "reason": "patch intent contains a protected reference",
+    }
+    assert failure["contract_fingerprint"].startswith("sha256:")
+
+
+@pytest.mark.asyncio
+async def test_trace_reflective_llm_mutator_types_candidate_file_path_failure() -> None:
+    async def mutate(prompt: str) -> dict:
+        del prompt
+        return {
+            "content": "# Demo\n\nKeep the reusable workflow.\n",
+            "rationale": "Invalid package path.",
+            "files": [{"path": "../escape.py", "content": "bad"}],
         }
-    ]
+
+    request = OptimizerRequest(
+        target=_target(),
+        current_content="---\nname: demo\n---\n# Demo\n",
+        target_fingerprint="sha256:old",
+        trace_packs=(_trace_pack(),),
+        lesson_records=(
+            LessonRecord(
+                lesson_id="lesson-evidence",
+                lesson_type="required_runtime_behavior",
+                title="Preserve evidence behavior",
+                summary="Use bounded evidence.",
+            ),
+        ),
+        max_candidates=1,
+    )
+
+    result = await TraceReflectiveLLMMutator(mutate_text=mutate).propose(request)
+
+    assert result.candidates == ()
+    failure = result.diagnostics["candidate_materialization_failures"][0]
+    assert failure["code"] == "candidate_file_path_invalid"
+    assert failure["stage"] == "candidate_semantic_validation"
+    assert failure["field_path"] == "files[].path"
+    assert failure["representation"] == "full_content"
 
 
 @pytest.mark.asyncio
@@ -2292,6 +2392,57 @@ async def test_llm_mutator_filters_duplicate_content_across_population() -> None
 
 
 @pytest.mark.asyncio
+async def test_llm_mutator_keeps_typed_intent_after_same_content_untyped_frontier() -> None:
+    current = (
+        "---\nname: demo-skill\n---\n# Demo\n\n"
+        "## Usage\n\nKeep the original workflow.\n"
+    )
+    patch_intent = {
+        "operations": [
+            {
+                "op": "replace_section",
+                "heading": "Usage",
+                "content": "Use the verified bounded workflow.",
+            }
+        ]
+    }
+    candidate_content = apply_skill_patch_intent(
+        current,
+        patch_intent,
+    )
+    outputs = [
+        {
+            "content": candidate_content,
+            "rationale": "Untrusted full-content frontier.",
+        },
+        {
+            "patch_intent": patch_intent,
+            "rationale": "Framework-authorized patch frontier.",
+        },
+    ]
+
+    async def mutate(prompt: str) -> dict:
+        return outputs.pop(0)
+
+    result = await TraceReflectiveLLMMutator(
+        mutate_text=mutate
+    ).propose(
+        OptimizerRequest(
+            target=_target(),
+            current_content=current,
+            target_fingerprint="sha256:old",
+            trace_packs=(_trace_pack(),),
+            max_candidates=2,
+        )
+    )
+
+    assert len(result.candidates) == 2
+    assert result.candidates[0].structural_edit_intent is None
+    assert result.candidates[1].structural_edit_intent is not None
+    assert result.diagnostics["filtered_duplicate_candidates"] == 0
+
+
+@pytest.mark.asyncio
 async def test_llm_mutator_filters_weak_high_baseline_regression_candidate() -> None:
     async def mutate(prompt: str) -> dict:
         return {
@@ -2439,7 +2590,7 @@ async def test_llm_mutator_accepts_runtime_delta_that_retains_high_baseline_cont
 
 
 @pytest.mark.asyncio
-async def test_llm_mutator_checks_focused_repair_against_focused_candidate() -> None:
+async def test_llm_mutator_rejects_full_repair_package_replacement_of_current() -> None:
     focused_content = (
         "# Demo\n\n"
         "Use the established bounded workflow and persist its verified result.\n"
@@ -2497,22 +2648,23 @@ async def test_llm_mutator_checks_focused_repair_against_focused_candidate() -> 
 
     result = await TraceReflectiveLLMMutator(mutate_text=mutate).propose(request)
 
-    assert result.diagnostics["filtered_high_baseline_regression_candidates"] == 0
+    assert result.diagnostics["filtered_high_baseline_regression_candidates"] == 1
     assert result.diagnostics["filtered_noop_candidates"] == 0
     assert result.diagnostics["filtered_duplicate_candidates"] == 0
     assert result.diagnostics["filtered_invalid_patch_candidates"] == 0
-    assert len(result.candidates) == 1
-    assert result.candidates[0].content == repaired_content
+    assert len(result.candidates) == 0
 
 
 @pytest.mark.asyncio
-async def test_llm_mutator_applies_replace_patch_to_focused_candidate_base() -> None:
+async def test_llm_mutator_applies_repair_patch_to_authoritative_current_base() -> None:
     focused_content = (
         "# Demo\n\n"
-        "Use the established bounded workflow.\n\n"
+        + ("Rejected historical candidate content. " * 260)
+        + "\n\n"
         "## Finalization\n\n"
-        "Keep collecting.\n"
+        "Keep collecting with a damaged truncated tail"
     )
+    assert len(focused_content) > 8_000
 
     async def mutate(prompt: str) -> dict:
         return {
@@ -2530,7 +2682,10 @@ async def test_llm_mutator_applies_replace_patch_to_focused_candidate_base() -> 
 
     request = OptimizerRequest(
         target=_target(),
-        current_content="# Demo\n\nOld guidance without that section.\n",
+        current_content=(
+            "# Demo\n\nAuthoritative stable guidance.\n\n"
+            "## Finalization\n\nOriginal bounded finalization.\n"
+        ),
         target_fingerprint="sha256:old",
         trace_packs=(_trace_pack(),),
         validation_feedback=(
@@ -2570,7 +2725,11 @@ async def test_llm_mutator_applies_replace_patch_to_focused_candidate_base() -> 
     assert "Persist the verified result and return immediately." in (
         result.candidates[0].content
     )
-    assert "Keep collecting." not in result.candidates[0].content
+    assert "Authoritative stable guidance." in result.candidates[0].content
+    assert "Rejected historical candidate content." not in (
+        result.candidates[0].content
+    )
+    assert "damaged truncated tail" not in result.candidates[0].content
     assert result.candidates[0].files[0].path == "replay/runtime.py"
 
 
