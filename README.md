@@ -2,6 +2,8 @@
 
 # AWorld: The Agent Harness for Your World
 
+[![MCP Toplist](https://mcptoplist.com/badge/mcp.so%2FAWorld%2FinclusionAI.svg)](https://mcptoplist.com/server/mcp.so%2FAWorld%2FinclusionAI)
+
 </div>
 
 <h4 align="center">
