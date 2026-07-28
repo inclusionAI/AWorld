@@ -21,6 +21,7 @@ _MAX_TEXT_CHARS = 240
 _MAX_LIST_ITEMS = 3
 _MAX_REPAIR_PACKAGE_CHARS = 64_000
 _MAX_REPAIR_FILE_CHARS = 32_000
+_MAX_MIXED_REPAIR_TARGET_CHARS = 32_000
 
 _SCALAR_METRIC_KEYS = {
     "lesson_id",
@@ -173,7 +174,20 @@ def _repair_candidate_package_summary(value: Any) -> dict[str, Any] | None:
     raw_files = value.get("files")
     if not isinstance(raw_files, list):
         return None
+    raw_content = value.get("content")
+    bounded_target_content: str | None = None
     remaining_chars = _MAX_REPAIR_PACKAGE_CHARS
+    if isinstance(raw_content, str) and raw_content.strip():
+        target_limit = (
+            _MAX_REPAIR_PACKAGE_CHARS
+            if not raw_files
+            else _MAX_MIXED_REPAIR_TARGET_CHARS
+        )
+        bounded_target_content = sanitize_source_text(
+            raw_content,
+            max_chars=target_limit,
+        )
+        remaining_chars -= len(bounded_target_content)
     files: list[dict[str, Any]] = []
     for raw_file in raw_files[:8]:
         if not isinstance(raw_file, Mapping):
@@ -193,15 +207,12 @@ def _repair_candidate_package_summary(value: Any) -> dict[str, Any] | None:
             item["content"] = bounded_content
             remaining_chars -= len(bounded_content)
         files.append(item)
-    raw_content = value.get("content")
-    bounded_target_content = (
-        sanitize_source_text(raw_content, max_chars=8_000)
-        if isinstance(raw_content, str) and raw_content.strip()
-        else None
-    )
     # Target-only candidates are a complete, valid package. Dropping an empty
     # replay-file set loses the deepest judge-scored repair frontier and allows
     # unrelated lower-level runtime failures to take over subsequent mutation.
+    # Preserve the complete target whenever it fits the package budget: repairs
+    # commonly live near the end of a skill, so a fixed prefix silently removes
+    # the exact judge-scored delta that the next cycle must refine.
     if not files and bounded_target_content is None:
         return None
     package = {

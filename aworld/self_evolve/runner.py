@@ -1450,6 +1450,9 @@ def _replay_adaptation_exception_details(
             },
             "required_compile_result_contract": {
                 "schema_version": REPLAY_CAPABILITY_RESULT_SCHEMA_VERSION,
+                "capability_identity": (
+                    "copy request.capability_id exactly into result.capability_id"
+                ),
                 "service_transport_values": list(
                     REPLAY_CAPABILITY_SUPPORTED_SERVICE_TRANSPORTS
                 ),
@@ -11331,10 +11334,24 @@ def _stored_repair_candidate_package(
     if payload.get("candidate_id") != candidate_id:
         return None
     raw_files = payload.get("files")
-    if not isinstance(raw_files, list) or not raw_files:
+    if not isinstance(raw_files, list):
         return None
 
+    raw_content = payload.get("content")
+    has_target_content = isinstance(raw_content, str) and bool(
+        raw_content.strip()
+    )
+    bounded_target_content = (
+        _bounded_repair_candidate_target_content(
+            raw_content,
+            has_files=bool(raw_files),
+        )
+        if has_target_content
+        else None
+    )
     remaining_chars = _MAX_REPAIR_CANDIDATE_PACKAGE_CHARS
+    if bounded_target_content is not None:
+        remaining_chars -= len(bounded_target_content)
     files: list[dict[str, object]] = []
     for item in raw_files[:8]:
         if not isinstance(item, Mapping):
@@ -11361,16 +11378,17 @@ def _stored_repair_candidate_package(
             file_payload["content"] = sanitized_content
             remaining_chars -= len(sanitized_content)
         files.append(file_payload)
-    if not files:
+    if raw_files and not files:
+        return None
+    if not files and not has_target_content:
         return None
     package = {
         "candidate_id": sanitize_text(candidate_id, max_chars=160),
         "rationale": sanitize_text(payload.get("rationale"), max_chars=1_000),
         "files": files,
     }
-    raw_content = payload.get("content")
-    if isinstance(raw_content, str) and raw_content.strip():
-        package["content"] = sanitize_source_text(raw_content, max_chars=8_000)
+    if bounded_target_content is not None:
+        package["content"] = bounded_target_content
     return package
 
 
@@ -13912,7 +13930,23 @@ def _diagnostic_interaction_progress(value: Any) -> int:
 
 _MAX_REPAIR_CANDIDATE_PACKAGE_CHARS = 64_000
 _MAX_REPAIR_CANDIDATE_FILE_CHARS = 32_000
+_MAX_MIXED_REPAIR_TARGET_CHARS = 32_000
 _MAX_HISTORICAL_REPAIR_CANDIDATES = 8
+
+
+def _bounded_repair_candidate_target_content(
+    content: str,
+    *,
+    has_files: bool,
+) -> str:
+    """Keep the judge-scored target delta intact whenever it fits the budget."""
+
+    limit = (
+        _MAX_MIXED_REPAIR_TARGET_CHARS
+        if has_files
+        else _MAX_REPAIR_CANDIDATE_PACKAGE_CHARS
+    )
+    return sanitize_source_text(content, max_chars=limit)
 
 
 def _repair_candidate_package_feedback(
@@ -13926,7 +13960,12 @@ def _repair_candidate_package_feedback(
         for gate in failed_gate_items
     ):
         return None
+    target_content = _bounded_repair_candidate_target_content(
+        candidate.content,
+        has_files=bool(candidate.files),
+    )
     remaining_chars = _MAX_REPAIR_CANDIDATE_PACKAGE_CHARS
+    remaining_chars -= len(target_content)
     files: list[dict[str, object]] = []
     for item in candidate.files[:8]:
         file_payload: dict[str, object] = {
@@ -13946,7 +13985,7 @@ def _repair_candidate_package_feedback(
     return {
         "candidate_id": sanitize_text(candidate.candidate_id, max_chars=160),
         "rationale": sanitize_text(candidate.rationale, max_chars=1_000),
-        "content": sanitize_source_text(candidate.content, max_chars=8_000),
+        "content": target_content,
         "files": files,
     }
 
