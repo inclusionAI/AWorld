@@ -26,6 +26,7 @@ from aworld.self_evolve.evolution_context import (
 )
 from aworld.self_evolve.feedback import normalize_feedback_summary
 from aworld.self_evolve.optimizers.base import (
+    CandidateSemanticValidationError,
     OptimizerRequest,
     OptimizerResult,
     declared_addressed_improvement_signal_ids,
@@ -41,10 +42,7 @@ from aworld.self_evolve.types import CandidateFileDelta, CandidateVariant, Optim
 
 
 MutateTextCallable = Callable[[str], Any]
-CandidatePopulationCallable = Callable[
-    [Sequence[str], int],
-    Awaitable[CandidatePopulationResult],
-]
+CandidatePopulationCallable = Callable[..., Awaitable[CandidatePopulationResult]]
 
 
 class TraceReflectiveLLMMutator:
@@ -99,11 +97,19 @@ class TraceReflectiveLLMMutator:
                 _build_mutation_prompt(request, candidate_index=index)
                 for index in range(request.max_candidates)
             )
-            population = await self.population_callable(
-                prompts,
-                self.concurrency_policy.effective_limit(
+            population = await _run_candidate_population(
+                self.population_callable,
+                prompts=prompts,
+                max_concurrency=self.concurrency_policy.effective_limit(
                     "candidate_generation",
                     item_count=len(prompts),
+                ),
+                validate_output=lambda index, output: (
+                    _validate_mutator_output_context(
+                        output,
+                        request=request,
+                        candidate_index=index,
+                    )
                 ),
             )
             population_diagnostics = dict(population.diagnostics)
@@ -113,7 +119,21 @@ class TraceReflectiveLLMMutator:
                 elif slot.status == "failed" and candidate_generation_failure is None:
                     candidate_generation_failure = dict(slot.failure or {})
                 elif slot.status == "protocol_invalid":
-                    candidate_protocol_invalid_count += 1
+                    failure = dict(slot.failure or {})
+                    if (
+                        failure.get("stage")
+                        == "candidate_semantic_validation"
+                    ):
+                        filtered_invalid_patch_count += 1
+                        candidate_materialization_failures.append(
+                            {
+                                **failure,
+                                "candidate_index": slot.index,
+                                "representation": "candidate_package",
+                            }
+                        )
+                    else:
+                        candidate_protocol_invalid_count += 1
         else:
             statuses = ["discarded"] * request.max_candidates
             failure_cutoff: int | None = None
@@ -170,12 +190,19 @@ class TraceReflectiveLLMMutator:
                     materialization = f"{materialization}+repair_focus_overlay"
             except ValueError as exc:
                 filtered_invalid_patch_count += 1
-                candidate_materialization_failures.append(
-                    {
+                diagnostic = (
+                    exc.to_diagnostic()
+                    if isinstance(exc, CandidateSemanticValidationError)
+                    else {
                         "code": "candidate_materialization_invalid",
                         "stage": "candidate_generation",
                         "failure_class": "candidate",
                         "repairable": True,
+                    }
+                )
+                candidate_materialization_failures.append(
+                    {
+                        **diagnostic,
                         "candidate_index": index,
                         "representation": (
                             "patch_intent"
@@ -314,6 +341,36 @@ class TraceReflectiveLLMMutator:
             diagnostics=diagnostics,
             private_context=private_repair_contracts,
         )
+
+
+async def _run_candidate_population(
+    population_callable: CandidatePopulationCallable,
+    *,
+    prompts: Sequence[str],
+    max_concurrency: int,
+    validate_output: Callable[
+        [int, Mapping[str, Any]],
+        Mapping[str, Any],
+    ],
+) -> CandidatePopulationResult:
+    """Pass contextual validation when supported, preserving legacy callables."""
+
+    try:
+        parameters = inspect.signature(population_callable).parameters.values()
+    except (TypeError, ValueError):
+        parameters = ()
+    accepts_contextual_validation = any(
+        parameter.name == "validate_output"
+        or parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters
+    )
+    if accepts_contextual_validation:
+        return await population_callable(
+            prompts,
+            max_concurrency,
+            validate_output=validate_output,
+        )
+    return await population_callable(prompts, max_concurrency)
 
 
 def _build_mutation_prompt(request: OptimizerRequest, *, candidate_index: int) -> str:
@@ -739,6 +796,40 @@ def _focused_repair_prompt_instructions(
         "when candidate-owned files implement the reusable behavior delta.\n"
     )
     return instructions
+
+
+def _validate_mutator_output_context(
+    output: Mapping[str, Any],
+    *,
+    request: OptimizerRequest,
+    candidate_index: int,
+) -> Mapping[str, Any]:
+    """Validate request-bound semantics while same-slot repair is available."""
+
+    try:
+        _, _, _, files = _materialize_mutator_output(
+            output,
+            request=request,
+            candidate_index=candidate_index,
+        )
+        declared_addressed_improvement_signal_ids(request, output)
+        _overlay_repair_focus_files(
+            request,
+            candidate_index=candidate_index,
+            candidate_files=files,
+        )
+    except CandidateSemanticValidationError:
+        raise
+    except ValueError as exc:
+        raise CandidateSemanticValidationError(
+            "candidate_materialization_invalid",
+            str(exc),
+            repairable=True,
+            allowed_improvement_signal_ids=(
+                exposed_improvement_signal_ids(request)
+            ),
+        ) from exc
+    return output
 
 
 def _overlay_repair_focus_files(

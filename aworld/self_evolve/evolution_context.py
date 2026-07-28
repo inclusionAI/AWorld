@@ -5,7 +5,9 @@ import json
 from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
-from aworld.self_evolve.candidate_protocol import CANDIDATE_OUTPUT_CONTRACT
+from aworld.self_evolve.candidate_protocol import (
+    build_candidate_output_contract,
+)
 from aworld.self_evolve.capability_contracts import (
     discover_applicable_capability_contracts,
 )
@@ -15,7 +17,12 @@ from aworld.self_evolve.evidence_diagnostics import (
     merge_evidence_repair_constraints,
 )
 from aworld.self_evolve.lessons import aggregate_lesson_records
-from aworld.self_evolve.optimizers.base import OptimizerRequest
+from aworld.self_evolve.optimizers.base import (
+    MAX_PROMPT_IMPROVEMENT_SIGNALS_PER_CASE,
+    MAX_PROMPT_TRAINABLE_CASES,
+    OptimizerRequest,
+    exposed_improvement_signal_ids,
+)
 from aworld.self_evolve.repair_conformance import (
     compile_repair_conformance_contract,
     merge_repair_conformance_constraint_context,
@@ -33,7 +40,7 @@ from aworld.self_evolve.sanitization import (
 
 
 EVOLUTION_CONTEXT_SCHEMA_VERSION = "aworld.self_evolve.evolution_context.v1"
-MAX_CONTEXT_CASES = 32
+MAX_CONTEXT_CASES = MAX_PROMPT_TRAINABLE_CASES
 MAX_CONTEXT_TRACE_PACKS = 32
 MAX_CONTEXT_FEEDBACK_ITEMS = 24
 MAX_CONTEXT_LESSONS = 32
@@ -804,7 +811,9 @@ def compile_evolution_context(request: OptimizerRequest) -> EvolutionContext:
             "do_not_use_reserved_evaluation_evidence_for_generation",
             "do_not_embed_dataset_specific_identifiers",
         ),
-        expected_output=CANDIDATE_OUTPUT_CONTRACT,
+        expected_output=build_candidate_output_contract(
+            exposed_improvement_signal_ids(request)
+        ),
     )
 
 
@@ -981,7 +990,7 @@ def _trainable_case_payloads(
         signals = getattr(case, "self_improvement_signals", ())
         if signals:
             payload["self_improvement_signals"] = sanitize_metric_value(
-                signals,
+                signals[:MAX_PROMPT_IMPROVEMENT_SIGNALS_PER_CASE],
                 max_chars=12_000,
             )
         payloads.append(payload)

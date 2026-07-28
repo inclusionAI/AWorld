@@ -266,6 +266,10 @@ CandidateAgentFactory = Callable[[int], CandidateTaskAgent]
 CandidateOutputParser = Callable[[str], Mapping[str, Any]]
 CandidateRepairPromptBuilder = Callable[[str, ValueError], str]
 CandidateRepairOutputMerger = Callable[[str, str, ValueError], str]
+CandidateOutputValidator = Callable[
+    [int, Mapping[str, Any]],
+    Mapping[str, Any],
+]
 
 
 class AWorldCandidatePopulationExecutor:
@@ -293,6 +297,7 @@ class AWorldCandidatePopulationExecutor:
         prompts: Sequence[str],
         *,
         max_concurrency: int,
+        validate_output: CandidateOutputValidator | None = None,
     ) -> CandidatePopulationResult:
         started_at = time.monotonic()
         if not prompts:
@@ -369,7 +374,12 @@ class AWorldCandidatePopulationExecutor:
                 failure_cutoff = _minimum_index(failure_cutoff, result.index)
                 continue
             try:
-                outputs[result.index] = self._parse_output(raw_output)
+                parsed_output = self._parse_output(raw_output)
+                outputs[result.index] = (
+                    validate_output(result.index, parsed_output)
+                    if validate_output is not None
+                    else parsed_output
+                )
             except ValueError as exc:
                 diagnostic = _candidate_protocol_diagnostic(exc)
                 if diagnostic.get("repairable") is False:
@@ -435,7 +445,12 @@ class AWorldCandidatePopulationExecutor:
                             raw_output,
                             initial_error,
                         )
-                    outputs[index] = self._parse_output(raw_output)
+                    parsed_output = self._parse_output(raw_output)
+                    outputs[index] = (
+                        validate_output(index, parsed_output)
+                        if validate_output is not None
+                        else parsed_output
+                    )
                     successful_repair_indexes.add(index)
                 except ValueError as exc:
                     protocol_failures[index] = _candidate_protocol_diagnostic(exc)

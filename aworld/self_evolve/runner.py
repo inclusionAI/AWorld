@@ -138,6 +138,7 @@ from aworld.self_evolve.candidate_package import (
 from aworld.self_evolve.candidate_protocol import (
     CANDIDATE_OUTPUT_CONTRACT,
     CandidateProtocolError,
+    build_candidate_output_contract,
     merge_candidate_repair_output,
     normalize_candidate_output,
 )
@@ -1245,54 +1246,103 @@ def _candidate_materialization_failures(
     for item in raw_failures[:16]:
         if not isinstance(item, Mapping):
             continue
-        failures.append(
-            {
-                "code": sanitize_text(
-                    item.get("code") or "candidate_materialization_invalid",
-                    max_chars=96,
-                ),
-                "stage": "candidate_generation",
-                "failure_class": "candidate",
-                "repairable": item.get("repairable") is not False,
-                "candidate_index": _non_negative_int(item.get("candidate_index")),
-                "representation": sanitize_text(
-                    item.get("representation") or "candidate_package",
-                    max_chars=80,
-                ),
-                "reason": sanitize_text(item.get("reason"), max_chars=240),
-            }
-        )
+        failure = {
+            "code": sanitize_text(
+                item.get("code") or "candidate_materialization_invalid",
+                max_chars=96,
+            ),
+            "stage": "candidate_generation",
+            "failure_class": "candidate",
+            "repairable": item.get("repairable") is not False,
+            "candidate_index": _non_negative_int(item.get("candidate_index")),
+            "representation": sanitize_text(
+                item.get("representation") or "candidate_package",
+                max_chars=80,
+            ),
+            "reason": sanitize_text(item.get("reason"), max_chars=240),
+        }
+        field_path = item.get("field_path")
+        if isinstance(field_path, str) and field_path:
+            failure["field_path"] = sanitize_text(field_path, max_chars=160)
+        contract_fingerprint = item.get("contract_fingerprint")
+        if isinstance(contract_fingerprint, str) and contract_fingerprint:
+            failure["contract_fingerprint"] = sanitize_text(
+                contract_fingerprint,
+                max_chars=160,
+            )
+        raw_allowed_ids = item.get("allowed_improvement_signal_ids")
+        if isinstance(raw_allowed_ids, (list, tuple)):
+            failure["allowed_improvement_signal_ids"] = [
+                sanitize_text(value, max_chars=512)
+                for value in raw_allowed_ids[:256]
+                if isinstance(value, str) and value
+            ]
+        failures.append(failure)
     return tuple(failures)
+
+
+def _candidate_materialization_failure_event(
+    failure: Mapping[str, object],
+) -> dict[str, object]:
+    raw_code = str(
+        failure.get("code") or "candidate_materialization_invalid"
+    )
+    code = re.sub(r"[^a-z0-9_]+", "_", raw_code.casefold()).strip("_")
+    code = code[:96] or "candidate_materialization_invalid"
+    contract_fingerprint = failure.get("contract_fingerprint")
+    event = ReplayFailureEvent(
+        code=code,
+        owner=FailureOwner.CANDIDATE,
+        stage=FailureStage.CANDIDATE_GENERATION,
+        scope=FailureScope.CANDIDATE,
+        repairable=failure.get("repairable") is not False,
+        category="candidate_generation",
+        summary="candidate package could not be materialized",
+        diagnostics={
+            "field_path": failure.get("field_path"),
+            "representation": failure.get("representation"),
+        },
+        contract_fingerprint=(
+            str(contract_fingerprint)
+            if isinstance(contract_fingerprint, str)
+            and contract_fingerprint
+            else None
+        ),
+    )
+    return event.to_dict()
+
+
+def _candidate_materialization_failure_events(
+    failures: Iterable[Mapping[str, object]],
+) -> tuple[dict[str, object], ...]:
+    events: list[dict[str, object]] = []
+    seen_semantic_keys: set[str] = set()
+    for failure in failures:
+        event = _candidate_materialization_failure_event(failure)
+        semantic_key = str(event["semantic_key"])
+        if semantic_key in seen_semantic_keys:
+            continue
+        seen_semantic_keys.add(semantic_key)
+        events.append(event)
+    return tuple(events)
+
+
+def _candidate_generation_failure_events(
+    optimizer_diagnostics: Iterable[Mapping[str, object]],
+) -> tuple[dict[str, object], ...]:
+    failures: list[dict[str, object]] = []
+    for item in _optimizer_iteration_diagnostics(optimizer_diagnostics):
+        failures.extend(_candidate_materialization_failures(item))
+    if not failures:
+        return ()
+    return _candidate_materialization_failure_events(failures)
 
 
 def _candidate_generation_failure_event(
     optimizer_diagnostics: Iterable[Mapping[str, object]],
 ) -> dict[str, object] | None:
-    failures: list[dict[str, object]] = []
-    for item in _optimizer_iteration_diagnostics(optimizer_diagnostics):
-        failures.extend(_candidate_materialization_failures(item))
-    if not failures:
-        return None
-    representations = sorted(
-        {
-            str(item.get("representation") or "candidate_package")
-            for item in failures
-        }
-    )
-    event = ReplayFailureEvent(
-        code="candidate_materialization_invalid",
-        owner=FailureOwner.CANDIDATE,
-        stage=FailureStage.CANDIDATE_GENERATION,
-        scope=FailureScope.CANDIDATE,
-        repairable=True,
-        category="candidate_generation",
-        summary="candidate package could not be materialized",
-        diagnostics={
-            "failure_count": len(failures),
-            "representations": representations,
-        },
-    )
-    return event.to_dict()
+    events = _candidate_generation_failure_events(optimizer_diagnostics)
+    return events[0] if events else None
 
 
 def _retryable_candidate_generation_failure(
@@ -2941,6 +2991,11 @@ class SelfEvolveRunner:
                     materialization_failures
                 )
                 if protocol_invalid_count or materialization_invalid_count:
+                    causal_failure_events = (
+                        _candidate_materialization_failure_events(
+                            materialization_failures
+                        )
+                    )
                     failed_gate = (
                         "candidate_materialization"
                         if materialization_invalid_count
@@ -2971,6 +3026,9 @@ class SelfEvolveRunner:
                                     ),
                                     "candidate_validation_diagnostics": list(
                                         materialization_failures
+                                    ),
+                                    "causal_failure_events": list(
+                                        causal_failure_events
                                     ),
                                 },
                             ),
@@ -3462,8 +3520,13 @@ class SelfEvolveRunner:
                 == raw_generation_attempt_count
                 and not all_candidates
             )
+            candidate_generation_failure_events = (
+                _candidate_generation_failure_events(optimizer_diagnostics)
+            )
             candidate_generation_failure_event = (
-                _candidate_generation_failure_event(optimizer_diagnostics)
+                candidate_generation_failure_events[0]
+                if candidate_generation_failure_events
+                else None
             )
             candidate_generation_details: dict[str, object] = {
                 "generated_candidate_count": len(all_candidates),
@@ -3473,11 +3536,11 @@ class SelfEvolveRunner:
                 candidate_generation_details.update(
                     {
                         "failure_class": "candidate",
-                        "code": "candidate_materialization_invalid",
+                        "code": candidate_generation_failure_event["code"],
                         "failure_event": candidate_generation_failure_event,
-                        "causal_failure_events": [
-                            candidate_generation_failure_event
-                        ],
+                        "causal_failure_events": list(
+                            candidate_generation_failure_events
+                        ),
                     }
                 )
             gate_results.append(
@@ -8249,12 +8312,18 @@ def optimize_from_cli_request(
         else None
     )
 
-    async def _cli_candidate_population(prompts, max_concurrency):
+    async def _cli_candidate_population(
+        prompts,
+        max_concurrency,
+        *,
+        validate_output=None,
+    ):
         if candidate_population_executor is None:
             raise RuntimeError("candidate population executor is not configured")
         return await candidate_population_executor.run(
             prompts,
             max_concurrency=max_concurrency,
+            validate_output=validate_output,
         )
 
     if apply_policy == "auto_verified" and evaluation_backend is None:
@@ -8481,16 +8550,34 @@ def _candidate_mutation_repair_prompt(
             "repairable": True,
         }
     )
+    allowed_signal_ids = getattr(
+        error,
+        "allowed_improvement_signal_ids",
+        (),
+    )
+    candidate_schema = (
+        build_candidate_output_contract(tuple(allowed_signal_ids))
+        if isinstance(allowed_signal_ids, (list, tuple))
+        else dict(CANDIDATE_OUTPUT_CONTRACT)
+    )
     payload = {
-        "candidate_schema": dict(CANDIDATE_OUTPUT_CONTRACT),
+        "candidate_schema": candidate_schema,
         "diagnostics": [diagnostic],
         # Candidate packages commonly contain complete compiler/runtime sources.
         # Preserve a bounded full package when possible so representation repair
         # does not reconstruct missing file tails from a small prefix.
         "invalid_response": sanitize_text(invalid_output, max_chars=64_000),
     }
-    return (
+    repair_instruction = (
         "Repair representation only using the supplied schema and diagnostic. "
+        if isinstance(error, CandidateProtocolError)
+        else (
+            "Repair candidate contract conformance using the supplied schema and "
+            "diagnostic. Preserve valid package fields outside the diagnosed repair "
+            "field. "
+        )
+    )
+    return repair_instruction + (
         "Do not invent new task evidence. Return exactly one candidate JSON object.\n"
         + json.dumps(payload, ensure_ascii=False, sort_keys=True)
     )

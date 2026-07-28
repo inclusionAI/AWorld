@@ -3296,6 +3296,12 @@ async def test_candidate_materialization_failure_retries_as_typed_feedback(
     assert optimizer.requests[1].validation_feedback[0].metrics[
         "candidate_materialization_invalid_count"
     ] == 1
+    causal_events = optimizer.requests[1].validation_feedback[0].metrics[
+        "causal_failure_events"
+    ]
+    assert causal_events[0]["code"] == "candidate_materialization_invalid"
+    assert causal_events[0]["stage"] == "candidate_generation"
+    assert causal_events[0]["owner"] == "candidate"
     report = json.loads(
         (
             tmp_path
@@ -3307,6 +3313,12 @@ async def test_candidate_materialization_failure_retries_as_typed_feedback(
     )
     assert report["iterations"][0]["status"] == "materialization_invalid"
     assert report["iterations"][1]["status"] == "accepted"
+    assert report["population"]["scheduler_decisions"][1]["reason_code"] == (
+        "focused_repair_with_diversity"
+    )
+    assert report["population"]["scheduler_decisions"][1]["slots"][0][
+        "role"
+    ] == "focused_repair"
 
 
 @pytest.mark.asyncio

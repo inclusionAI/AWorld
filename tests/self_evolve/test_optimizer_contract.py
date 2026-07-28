@@ -272,6 +272,51 @@ async def test_optimizer_rejects_addressing_an_unexposed_signal() -> None:
 
     assert result.candidates == ()
     assert result.diagnostics["filtered_invalid_patch_candidates"] == 1
+    assert result.diagnostics["candidate_materialization_failures"][0][
+        "code"
+    ] == "unexposed_improvement_signal_ids"
+    assert result.diagnostics["candidate_materialization_failures"][0][
+        "field_path"
+    ] == "addressed_improvement_signal_ids"
+
+
+@pytest.mark.asyncio
+async def test_prompt_contract_validator_and_lineage_share_visible_signal_ids() -> None:
+    prompts: list[str] = []
+
+    async def mutate(prompt: str) -> dict:
+        prompts.append(prompt)
+        return {"content": "# Demo\n\nBounded reusable improvement.\n"}
+
+    cases = tuple(
+        EvalCase(
+            case_id=f"train-{index}",
+            input="web task",
+            self_improvement_signals=(
+                {"signal_id": f"signal-{index}"},
+            ),
+        )
+        for index in range(33)
+    )
+    request = OptimizerRequest(
+        target=_target(),
+        current_content="# Demo\n\nOld guidance.\n",
+        target_fingerprint="sha256:old",
+        trace_packs=(_trace_pack(),),
+        trainable_cases=cases,
+    )
+
+    result = await TraceReflectiveLLMMutator(
+        mutate_text=mutate,
+    ).propose(request)
+
+    payload = _prompt_payload(prompts[0])
+    allowed = payload["expected_output"]["field_constraints"][
+        "addressed_improvement_signal_ids"
+    ]["allowed_values"]
+    assert len(payload["trainable_cases"]) == 32
+    assert allowed == [f"signal-{index}" for index in range(32)]
+    assert list(result.lineage[0].exposed_improvement_signal_ids) == allowed
 
 
 @pytest.mark.asyncio

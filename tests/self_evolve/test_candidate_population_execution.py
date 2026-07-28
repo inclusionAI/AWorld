@@ -22,6 +22,9 @@ from aworld.self_evolve.concurrency import (
 )
 from aworld.self_evolve.datasets import EvalCase
 from aworld.self_evolve.optimizers.base import OptimizerRequest
+from aworld.self_evolve.optimizers.base import (
+    CandidateSemanticValidationError,
+)
 from aworld.self_evolve.optimizers.llm_mutator import TraceReflectiveLLMMutator
 from aworld.self_evolve.types import SelfEvolveTargetRef
 
@@ -292,6 +295,132 @@ async def test_representation_repair_preserves_valid_initial_candidate_files() -
             "executable": False,
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_contextual_semantic_repair_preserves_valid_candidate_package() -> None:
+    async def run_task(task: Task):
+        if task.id.endswith("-repair"):
+            answer = json.dumps(
+                {
+                    "addressed_improvement_signal_ids": [],
+                }
+            )
+        else:
+            answer = json.dumps(
+                {
+                    "content": "# Demo\n\nUse the reusable workflow.\n",
+                    "rationale": "preserve the valid package",
+                    "addressed_improvement_signal_ids": ["signal-unexposed"],
+                    "files": [
+                        {
+                            "path": "replay/runtime.py",
+                            "operation": "upsert",
+                            "content": "def respond():\n    return {'ok': True}\n",
+                        }
+                    ],
+                }
+            )
+        return {task.id: TaskResponse(id=task.id, success=True, answer=answer)}
+
+    def validate_output(index: int, output):
+        del index
+        if output.get("addressed_improvement_signal_ids"):
+            raise CandidateSemanticValidationError(
+                "unexposed_improvement_signal_ids",
+                "candidate addressed an improvement signal that was not exposed",
+                field_path="addressed_improvement_signal_ids",
+                allowed_improvement_signal_ids=(),
+            )
+        return output
+
+    executor = AWorldCandidatePopulationExecutor(
+        agent_factory=_FakeCandidateAgent,
+        parse_output=lambda raw: normalize_candidate_output(
+            raw,
+            current_content="# Demo\n\nOld guidance.\n",
+        ),
+        repair_prompt_builder=lambda invalid, error: f"repair: {error}",
+        repair_output_merger=merge_candidate_repair_output,
+        task_batch_executor=DeterministicTaskBatchExecutor(run_task=run_task),
+    )
+
+    population = await executor.run(
+        ("generate",),
+        max_concurrency=1,
+        validate_output=validate_output,
+    )
+
+    assert population.slots[0].status == "succeeded"
+    assert population.slots[0].repaired is True
+    assert population.slots[0].output == {
+        "schema_version": "aworld.self_evolve.candidate.v1",
+        "content": "# Demo\n\nUse the reusable workflow.\n",
+        "rationale": "preserve the valid package",
+        "addressed_improvement_signal_ids": [],
+        "files": [
+            {
+                "path": "replay/runtime.py",
+                "operation": "upsert",
+                "content": "def respond():\n    return {'ok': True}\n",
+                "executable": False,
+            }
+        ],
+    }
+    assert population.diagnostics["repair_attempt_count"] == 1
+    assert population.diagnostics["repair_success_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_llm_mutator_routes_unexposed_signal_through_same_slot_repair() -> None:
+    async def run_task(task: Task):
+        answer = (
+            json.dumps({"addressed_improvement_signal_ids": []})
+            if task.id.endswith("-repair")
+            else json.dumps(
+                {
+                    "content": "# Demo\n\nUse the reusable workflow.\n",
+                    "rationale": "repair only the contextual signal claim",
+                    "addressed_improvement_signal_ids": ["signal-unexposed"],
+                }
+            )
+        )
+        return {task.id: TaskResponse(id=task.id, success=True, answer=answer)}
+
+    executor = AWorldCandidatePopulationExecutor(
+        agent_factory=_FakeCandidateAgent,
+        parse_output=lambda raw: normalize_candidate_output(
+            raw,
+            current_content="# Demo\n\nOld guidance.\n",
+        ),
+        repair_prompt_builder=lambda invalid, error: f"repair: {error}",
+        repair_output_merger=merge_candidate_repair_output,
+        task_batch_executor=DeterministicTaskBatchExecutor(run_task=run_task),
+    )
+
+    async def contextual_population(
+        prompts,
+        max_concurrency,
+        *,
+        validate_output=None,
+    ):
+        return await executor.run(
+            prompts,
+            max_concurrency=max_concurrency,
+            validate_output=validate_output,
+        )
+
+    result = await TraceReflectiveLLMMutator(
+        mutate_text=lambda prompt: None,
+        population_callable=contextual_population,
+    ).propose(_request(max_candidates=1))
+
+    assert len(result.candidates) == 1
+    assert result.lineage[0].addressed_improvement_signal_ids == ()
+    assert result.diagnostics["candidate_materialization_failures"] == []
+    assert result.diagnostics["candidate_population_execution"][
+        "repair_attempt_count"
+    ] == 1
 
 
 @pytest.mark.asyncio

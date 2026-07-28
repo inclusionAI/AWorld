@@ -7,12 +7,36 @@ import pytest
 from aworld.self_evolve.candidate_protocol import (
     CANDIDATE_SCHEMA_VERSION,
     CandidateProtocolError,
+    build_candidate_output_contract,
     normalize_candidate_output,
 )
 
 
 CURRENT_CONTENT = "# Demo\n\nExisting guidance.\n"
 SKILL_CONTENT = "---\nname: demo\ndescription: demo skill\n---\n\n# Demo\n"
+
+
+def test_candidate_output_contract_uses_an_empty_valid_signal_template() -> None:
+    without_signals = build_candidate_output_contract(())
+    with_signals = build_candidate_output_contract(("signal-1", "signal-2"))
+
+    assert without_signals["addressed_improvement_signal_ids"] == []
+    assert without_signals["field_constraints"][
+        "addressed_improvement_signal_ids"
+    ] == {
+        "type": "array",
+        "selection": "optional_subset",
+        "unique_items": True,
+        "allowed_values": [],
+        "must_be_empty": True,
+    }
+    assert with_signals["addressed_improvement_signal_ids"] == []
+    assert with_signals["field_constraints"][
+        "addressed_improvement_signal_ids"
+    ]["allowed_values"] == ["signal-1", "signal-2"]
+    assert with_signals["field_constraints"][
+        "addressed_improvement_signal_ids"
+    ]["must_be_empty"] is False
 
 
 def test_normalizes_canonical_top_level_candidate() -> None:
