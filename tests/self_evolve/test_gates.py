@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import time
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
-from pathlib import Path
 
 from aworld.self_evolve.evaluation import CandidateConfidenceDecision, ReplayCostEstimate
 from aworld.self_evolve.gates import (
@@ -39,6 +40,8 @@ from aworld.self_evolve.provenance import TargetMutationIntent, TargetProvenance
 from aworld.self_evolve.types import CandidateVariant, EvaluationSummary, SelfEvolveTargetRef
 from aworld.self_evolve.patch_intent import apply_skill_patch_intent
 from aworld.skills.structure import (
+    MAX_SKILL_MARKDOWN_CHARS,
+    MAX_STRUCTURAL_ATOMS,
     build_skill_structural_edit_intent,
     validate_skill_markdown_structure,
 )
@@ -416,6 +419,61 @@ def test_skill_markdown_gate_contextualizes_unicode_ellipsis() -> None:
     assert failed.details["code"] == "skill_truncation_marker"
     assert ordinary_passed.passed is True
     assert passed.passed is True
+
+
+def test_skill_ellipsis_context_index_scales_for_large_distinct_prefix_sets() -> None:
+    original_lines = "\n".join(
+        f"base-{index:05d} complete"
+        for index in range(10_000)
+    )
+    candidate_lines = "\n".join(
+        f"miss-{index:05d}…"
+        for index in range(10_000)
+    )
+    original = (
+        "---\nname: demo\n---\n# Demo\n\n## Data\n\n"
+        f"{original_lines}\n"
+    )
+    candidate = (
+        "---\nname: demo\n---\n# Demo\n\n## Data\n\n"
+        f"{candidate_lines}\n"
+    )
+
+    started = time.perf_counter()
+    result = validate_skill_markdown_structure(
+        candidate,
+        original_content=original,
+    )
+    elapsed = time.perf_counter() - started
+
+    assert result.code != "skill_truncation_marker"
+    assert elapsed < 3.0
+
+
+def test_skill_structure_rejects_oversized_input_before_parsing() -> None:
+    oversized = (
+        "---\nname: demo\n---\n# Demo\n"
+        + "x" * MAX_SKILL_MARKDOWN_CHARS
+    )
+
+    result = validate_skill_markdown_structure(oversized)
+
+    assert result.passed is False
+    assert result.code == "skill_content_size_limit_exceeded"
+    assert result.details["max_chars"] == MAX_SKILL_MARKDOWN_CHARS
+
+
+def test_skill_structure_rejects_excess_structural_atoms_before_parsing() -> None:
+    excessive_lines = (
+        "---\nname: demo\n---\n# Demo\n"
+        + "x\n" * MAX_STRUCTURAL_ATOMS
+    )
+
+    result = validate_skill_markdown_structure(excessive_lines)
+
+    assert result.passed is False
+    assert result.code == "skill_structural_atom_limit_exceeded"
+    assert result.details["max_structural_atoms"] == MAX_STRUCTURAL_ATOMS
 
 
 def test_skill_release_fidelity_accepts_only_framework_anchored_patch_intent() -> None:

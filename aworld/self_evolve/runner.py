@@ -15381,15 +15381,21 @@ def _candidate_gate_results(
     inferred_new_skill_policy: InferredNewSkillPolicy | str = InferredNewSkillPolicy.AUTO_VERIFIED,
     apply_policy: str = "proposal",
 ) -> list[GateResult]:
+    token_limit_result = TokenLimitGate(max_chars=max_chars).evaluate(
+        candidate
+    )
     results = [
         NoopCandidateGate().evaluate(current_content=current_content, candidate=candidate),
         MalformedCandidateGate().evaluate(candidate),
         CandidatePackageGate().evaluate(candidate),
-        TokenLimitGate(max_chars=max_chars).evaluate(candidate),
+        token_limit_result,
         ProtectedPathGate(workspace_root=workspace_root).evaluate(candidate),
         ExternalCodeEvolutionGate().evaluate(candidate),
     ]
-    if candidate.target.target_type == "skill":
+    if (
+        candidate.target.target_type == "skill"
+        and token_limit_result.passed
+    ):
         results.append(SkillMarkdownGate().evaluate(candidate))
         results.append(
             SkillReleaseFidelityGate().evaluate(

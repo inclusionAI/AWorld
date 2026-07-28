@@ -7,12 +7,8 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from aworld.secret_detection import (
-    AUTHORIZATION_OPAQUE_CREDENTIAL_PATTERN,
-    AUTHORIZATION_SCHEME_CREDENTIAL_PATTERN,
-    AUTH_DESCRIPTION_TERMS,
-    AUTH_SCHEME_CREDENTIAL_PATTERN,
-    SECRET_PATTERNS,
-    SK_SECRET_PATTERN,
+    authorization_value_contains_sensitive_literal,
+    redact_sensitive_literals,
 )
 
 _SOURCE_QUOTED_SECRET_PATTERN = re.compile(
@@ -66,9 +62,7 @@ _REPAIR_CONFORMANCE_PUBLIC_SCHEMA_VERSION = (
 
 
 def sanitize_text(value: Any, *, max_chars: int | None = None) -> str:
-    text = str(value or "")
-    for pattern in SECRET_PATTERNS:
-        text = pattern.sub("<REDACTED_SECRET>", text)
+    text = redact_sensitive_literals(value)
     for pattern in _LOCAL_PATH_PATTERNS:
         text = pattern.sub("<LOCAL_PATH>", text)
     for pattern in _UNTRUSTED_INSTRUCTION_PATTERNS:
@@ -88,17 +82,7 @@ def sanitize_source_text(value: Any, *, max_chars: int | None = None) -> str:
     ``token = match.group()`` that are required to repair the source.
     """
 
-    text = str(value or "")
-    text = AUTH_SCHEME_CREDENTIAL_PATTERN.sub("<REDACTED_SECRET>", text)
-    text = AUTHORIZATION_SCHEME_CREDENTIAL_PATTERN.sub(
-        "<REDACTED_SECRET>",
-        text,
-    )
-    text = AUTHORIZATION_OPAQUE_CREDENTIAL_PATTERN.sub(
-        "<REDACTED_SECRET>",
-        text,
-    )
-    text = SK_SECRET_PATTERN.sub("<REDACTED_SECRET>", text)
+    text = redact_sensitive_literals(value, include_named=False)
     text = _SOURCE_QUOTED_SECRET_PATTERN.sub(
         _redact_source_quoted_secret,
         text,
@@ -118,10 +102,7 @@ def _redact_source_quoted_secret(match: re.Match[str]) -> str:
     value = match.group(3)
     if (
         "authorization" in prefix.casefold()
-        and re.fullmatch(
-            rf"(?i)(?:basic|bearer)\s+(?:{AUTH_DESCRIPTION_TERMS})(?:\s+\w+)*",
-            value.strip(),
-        )
+        and not authorization_value_contains_sensitive_literal(value)
     ):
         return match.group(0)
     return (

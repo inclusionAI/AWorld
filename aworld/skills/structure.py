@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from bisect import bisect_left
 from collections import Counter
 from dataclasses import dataclass, replace
 from typing import Any, Mapping, Sequence
@@ -18,6 +19,9 @@ from aworld.skills.structure_types import (
 SKILL_STRUCTURE_SCHEMA_VERSION = "aworld.skill.structure.v1"
 MAX_STRUCTURAL_SECTIONS = 256
 MAX_STRUCTURAL_COMMANDS = 256
+MAX_SKILL_MARKDOWN_CHARS = 512 * 1024
+MAX_SKILL_MARKDOWN_LINES = 20_000
+MAX_STRUCTURAL_ATOMS = 20_000
 MIN_PROTECTED_SECTION_CHARS = 120
 MIN_SECTION_RETAINED_CHARS = 48
 MIN_SECTION_RETENTION_RATIO = 0.25
@@ -147,6 +151,27 @@ def validate_skill_markdown_structure(
     require_exact_deletion_intent: bool = False,
 ) -> SkillStructureValidation:
     """Validate standalone Markdown and bounded preservation of published structure."""
+
+    bounded_failure = _bounded_content_failure(
+        candidate_content,
+        field_path="content",
+    )
+    if bounded_failure is None and isinstance(original_content, str):
+        bounded_failure = _bounded_content_failure(
+            original_content,
+            field_path="original_content",
+        )
+    if bounded_failure is not None:
+        code, reason, field_path, details = bounded_failure
+        return _failed_validation(
+            code,
+            reason,
+            field_path,
+            contract_fingerprint=skill_structure_contract_fingerprint(
+                None,
+            ),
+            details=details,
+        )
 
     authoritative_edit_intent = _authoritative_edit_intent(
         edit_intent,
@@ -533,6 +558,18 @@ def inspect_skill_markdown(content: str) -> _Inspection:
             "skill candidate content must be non-empty",
             "content",
         )
+    bounded_failure = _bounded_content_failure(
+        content,
+        field_path="content",
+    )
+    if bounded_failure is not None:
+        code, reason, field_path, _ = bounded_failure
+        return _Inspection(
+            None,
+            code,
+            reason,
+            field_path,
+        )
     lines = content.splitlines()
     front_matter, body_start, error = _parse_front_matter(lines)
     if error is not None:
@@ -823,6 +860,43 @@ def inspect_skill_markdown(content: str) -> _Inspection:
         structural_lines=tuple(structural_lines),
         ellipsis_occurrences=tuple(ellipsis_occurrences),
     )
+
+
+def _bounded_content_failure(
+    content: Any,
+    *,
+    field_path: str,
+) -> tuple[str, str, str, Mapping[str, Any]] | None:
+    if not isinstance(content, str):
+        return None
+    actual_chars = len(content)
+    if actual_chars > MAX_SKILL_MARKDOWN_CHARS:
+        return (
+            "skill_content_size_limit_exceeded",
+            "skill markdown exceeds the structural validation size limit",
+            field_path,
+            {
+                "actual_chars": actual_chars,
+                "max_chars": MAX_SKILL_MARKDOWN_CHARS,
+            },
+        )
+    actual_lines = content.count("\n") + 1
+    max_lines = min(
+        MAX_SKILL_MARKDOWN_LINES,
+        MAX_STRUCTURAL_ATOMS,
+    )
+    if actual_lines > max_lines:
+        return (
+            "skill_structural_atom_limit_exceeded",
+            "skill markdown exceeds the structural atom limit",
+            field_path,
+            {
+                "actual_lines": actual_lines,
+                "max_lines": max_lines,
+                "max_structural_atoms": MAX_STRUCTURAL_ATOMS,
+            },
+        )
+    return None
 
 
 def skill_structure_contract_fingerprint(
@@ -1284,20 +1358,41 @@ def _deleted_base_prefix_truncation(
         (item.kind, item.value)
         for item in candidate.structural_lines
     }
+    deleted_base_values: dict[str, tuple[str, ...]] = {}
+    base_kinds = {
+        item.kind for item in original.structural_lines
+    }
+    for kind in base_kinds:
+        deleted_base_values[kind] = tuple(
+            sorted(
+                {
+                    item.value
+                    for item in original.structural_lines
+                    if item.kind == kind
+                    and (kind, item.value) not in candidate_values
+                }
+            )
+        )
     for occurrence in candidate.ellipsis_occurrences:
-        for base_line in original.structural_lines:
-            if base_line.kind != occurrence.kind:
-                continue
-            if not base_line.value.startswith(occurrence.prefix):
-                continue
+        values = deleted_base_values.get(occurrence.kind, ())
+        index = bisect_left(values, occurrence.prefix)
+        if index >= len(values):
+            continue
+        value = values[index]
+        if not value.startswith(occurrence.prefix):
+            continue
+        if (
+            value == occurrence.prefix
+            and occurrence.kind != "command"
+        ):
+            index += 1
             if (
-                base_line.value == occurrence.prefix
-                and occurrence.kind != "command"
+                index >= len(values)
+                or not values[index].startswith(occurrence.prefix)
             ):
                 continue
-            if (base_line.kind, base_line.value) in candidate_values:
-                continue
             return occurrence
+        return occurrence
     return None
 
 

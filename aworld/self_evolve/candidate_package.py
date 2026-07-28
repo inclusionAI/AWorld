@@ -16,6 +16,7 @@ from aworld.self_evolve.types import (
     CandidateVariant,
     to_json_dict,
 )
+from aworld.skills.structure_types import SkillStructuralEditIntent
 
 
 MAX_CANDIDATE_FILE_COUNT = 32
@@ -163,7 +164,7 @@ def candidate_semantic_package_fingerprint(
 
     files = validate_candidate_files(candidate.files)
     payload = {
-        "schema_version": "aworld.self_evolve.candidate_semantic_package.v1",
+        "schema_version": "aworld.self_evolve.candidate_semantic_package.v2",
         "target": {
             "target_type": candidate.target.target_type,
             "target_id": candidate.target.target_id,
@@ -171,6 +172,11 @@ def candidate_semantic_package_fingerprint(
         "content_semantic_fingerprint": (
             content_semantic_fingerprint
             or candidate_content_semantic_fingerprint(candidate.content)
+        ),
+        "structural_edit_intent_fingerprint": (
+            _structural_edit_intent_fingerprint(
+                candidate.structural_edit_intent
+            )
         ),
         "files": [
             {
@@ -189,6 +195,43 @@ def candidate_semantic_package_fingerprint(
                 "executable": item.executable,
             }
             for item in files
+        ],
+    }
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return "sha256:" + hashlib.sha256(encoded).hexdigest()
+
+
+def _structural_edit_intent_fingerprint(
+    intent: SkillStructuralEditIntent | None,
+) -> str | None:
+    if intent is None:
+        return None
+    payload = {
+        "schema_version": intent.schema_version,
+        "authority": intent.authority,
+        "reason": intent.reason,
+        "authorization": intent.authorization,
+        "base_content_fingerprint": intent.base_content_fingerprint,
+        "candidate_content_fingerprint": (
+            intent.candidate_content_fingerprint
+        ),
+        "actions": [
+            {
+                "action": action.action,
+                "section_path": list(action.section_path),
+                "base_section_fingerprint": (
+                    action.base_section_fingerprint
+                ),
+                "result_section_fingerprint": (
+                    action.result_section_fingerprint
+                ),
+            }
+            for action in intent.actions
         ],
     }
     encoded = json.dumps(

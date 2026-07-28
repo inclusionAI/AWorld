@@ -299,12 +299,13 @@ def _non_internal_body_lines_preserved(
     original: str,
     normalized: str,
 ) -> bool:
-    original_lines = Counter(_non_internal_body_lines(original))
-    normalized_lines = Counter(_non_internal_body_lines(normalized))
-    return all(
-        normalized_lines.get(line, 0) >= count
-        for line, count in original_lines.items()
+    expected_normalized_lines = Counter(
+        _non_internal_body_lines(original)
     )
+    actual_normalized_lines = Counter(
+        _all_nonempty_body_lines(normalized)
+    )
+    return actual_normalized_lines == expected_normalized_lines
 
 
 def _non_internal_body_lines(content: str) -> tuple[str, ...]:
@@ -315,6 +316,17 @@ def _non_internal_body_lines(content: str) -> tuple[str, ...]:
         line.rstrip()
         for line in body_lines
         if line.strip() and not _is_internal_release_line(line)
+    )
+
+
+def _all_nonempty_body_lines(content: str) -> tuple[str, ...]:
+    lines = content.splitlines()
+    _, body_start = _extract_front_matter(lines)
+    body_lines = lines[body_start:] if body_start > 0 else lines
+    return tuple(
+        line.rstrip()
+        for line in body_lines
+        if line.strip()
     )
 
 

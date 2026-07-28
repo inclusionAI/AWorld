@@ -2336,6 +2336,54 @@ def test_candidate_gate_results_never_omit_unresolved_trust_gate(tmp_path) -> No
     assert trust_results[0].passed is False
 
 
+def test_candidate_gate_results_short_circuit_structure_after_token_limit(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    def fail_expensive_gate(*args, **kwargs):
+        pytest.fail("structural gates must not run after token-limit failure")
+
+    monkeypatch.setattr(
+        runner_module.SkillMarkdownGate,
+        "evaluate",
+        fail_expensive_gate,
+    )
+    monkeypatch.setattr(
+        runner_module.SkillReleaseFidelityGate,
+        "evaluate",
+        fail_expensive_gate,
+    )
+    candidate = CandidateVariant(
+        candidate_id="candidate-oversized",
+        target=SelfEvolveTargetRef(
+            target_type="skill",
+            target_id="demo",
+            path=str(tmp_path / "SKILL.md"),
+        ),
+        content="---\nname: demo\n---\n# Demo\n" + "x" * 100,
+        rationale="oversized",
+    )
+
+    results = _candidate_gate_results(
+        candidate,
+        current_content="---\nname: demo\n---\n# Old\n",
+        workspace_root=tmp_path,
+        max_chars=32,
+        target_provenance=None,
+    )
+
+    token_limit = next(
+        result for result in results
+        if result.gate_name == "token_limit"
+    )
+    assert token_limit.passed is False
+    assert not any(
+        result.gate_name in {
+            "skill_markdown",
+            "skill_release_fidelity",
+        }
+        for result in results
+    )
 def test_candidate_gate_results_require_named_generated_mutation_policy(tmp_path) -> None:
     target = SelfEvolveTargetRef(
         target_type="skill",

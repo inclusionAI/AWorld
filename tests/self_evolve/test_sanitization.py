@@ -18,6 +18,7 @@ from aworld.self_evolve.sanitization import (
     sanitize_source_text,
 )
 from aworld.self_evolve.schema_diagnostics import SchemaFieldRepairConstraint
+from aworld.self_evolve.sanitization import sanitize_text
 
 
 def _large_private_failure() -> AggregatedReplayFailure:
@@ -58,6 +59,19 @@ def test_source_sanitizer_redacts_short_explicit_auth_credentials() -> None:
     assert sanitized.count("<REDACTED_SECRET>") == 2
     assert "HTTP basic auth" in sanitized
     assert "Bearer token authentication" in sanitized
+
+
+def test_secret_sanitizer_distinguishes_auth_syntax_from_documentation() -> None:
+    documentation = (
+        "Bearer syntax uses one scheme token.\n"
+        "Basic example values should remain placeholders.\n"
+        "Basic format is base64(username:password).\n"
+    )
+
+    sanitized = sanitize_text(documentation)
+
+    assert sanitized == documentation.strip()
+    assert "<REDACTED_SECRET>" not in sanitized
 
 
 def test_public_projection_preserves_large_typed_aggregate_integrity() -> None:

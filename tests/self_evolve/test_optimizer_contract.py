@@ -14,6 +14,7 @@ from aworld.self_evolve.lessons import LessonRecord
 from aworld.self_evolve.optimizers.base import OptimizerRequest
 from aworld.self_evolve.optimizers.dspy_adapter import DSPyGEPAOptimizer, DSPyMIPROOptimizer
 from aworld.self_evolve.optimizers.llm_mutator import TraceReflectiveLLMMutator
+from aworld.self_evolve.patch_intent import apply_skill_patch_intent
 from aworld.self_evolve.replay_adaptation import ReplayCapabilityRequirement
 from aworld.self_evolve.trace_pack import build_trace_pack
 from aworld.self_evolve.types import (
@@ -2388,6 +2389,57 @@ async def test_llm_mutator_filters_duplicate_content_across_population() -> None
 
     assert len(result.candidates) == 1
     assert result.diagnostics["filtered_duplicate_candidates"] == 2
+
+
+@pytest.mark.asyncio
+async def test_llm_mutator_keeps_typed_intent_after_same_content_untyped_frontier() -> None:
+    current = (
+        "---\nname: demo-skill\n---\n# Demo\n\n"
+        "## Usage\n\nKeep the original workflow.\n"
+    )
+    patch_intent = {
+        "operations": [
+            {
+                "op": "replace_section",
+                "heading": "Usage",
+                "content": "Use the verified bounded workflow.",
+            }
+        ]
+    }
+    candidate_content = apply_skill_patch_intent(
+        current,
+        patch_intent,
+    )
+    outputs = [
+        {
+            "content": candidate_content,
+            "rationale": "Untrusted full-content frontier.",
+        },
+        {
+            "patch_intent": patch_intent,
+            "rationale": "Framework-authorized patch frontier.",
+        },
+    ]
+
+    async def mutate(prompt: str) -> dict:
+        return outputs.pop(0)
+
+    result = await TraceReflectiveLLMMutator(
+        mutate_text=mutate
+    ).propose(
+        OptimizerRequest(
+            target=_target(),
+            current_content=current,
+            target_fingerprint="sha256:old",
+            trace_packs=(_trace_pack(),),
+            max_candidates=2,
+        )
+    )
+
+    assert len(result.candidates) == 2
+    assert result.candidates[0].structural_edit_intent is None
+    assert result.candidates[1].structural_edit_intent is not None
+    assert result.diagnostics["filtered_duplicate_candidates"] == 0
 
 
 @pytest.mark.asyncio

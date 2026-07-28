@@ -11,11 +11,13 @@ from aworld.self_evolve.candidate_package import (
     candidate_semantic_package_fingerprint,
     validate_candidate_files,
 )
+from aworld.self_evolve.patch_intent import apply_skill_patch_intent
 from aworld.self_evolve.types import (
     CandidateFileDelta,
     CandidateVariant,
     SelfEvolveTargetRef,
 )
+from aworld.skills.structure import build_skill_structural_edit_intent
 
 
 TARGET = SelfEvolveTargetRef(
@@ -128,6 +130,42 @@ def test_candidate_semantic_package_identity_covers_candidate_owned_files() -> N
     assert candidate_semantic_package_fingerprint(
         first
     ) != candidate_semantic_package_fingerprint(second)
+
+
+def test_candidate_semantic_package_identity_covers_structural_authorization() -> None:
+    original = (
+        "---\nname: demo-skill\n---\n# Demo\n\n"
+        "## Usage\n\nKeep the original workflow.\n"
+    )
+    patch_intent = {
+        "operations": [
+            {
+                "op": "replace_section",
+                "heading": "Usage",
+                "content": "Use the verified bounded workflow.",
+            }
+        ]
+    }
+    content = apply_skill_patch_intent(original, patch_intent)
+    intent = build_skill_structural_edit_intent(
+        original_content=original,
+        candidate_content=content,
+        patch_intent=patch_intent,
+    )
+    untyped = replace(_candidate(), content=content)
+    typed = replace(untyped, structural_edit_intent=intent)
+    equivalent_typed = replace(
+        typed,
+        candidate_id="candidate-equivalent",
+        rationale="equivalent authorization",
+    )
+
+    assert candidate_semantic_package_fingerprint(
+        untyped
+    ) != candidate_semantic_package_fingerprint(typed)
+    assert candidate_semantic_package_fingerprint(
+        typed
+    ) == candidate_semantic_package_fingerprint(equivalent_typed)
 
 
 def test_candidate_semantic_package_normalizes_target_content_not_file_code() -> None:

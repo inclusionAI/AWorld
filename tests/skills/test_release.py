@@ -119,6 +119,29 @@ def test_normalize_verified_skill_release_preserves_basic_auth_documentation() -
     assert metrics["removed_internal_line_count"] == 0
 
 
+def test_normalize_verified_skill_release_preserves_auth_syntax_prose() -> None:
+    content = (
+        "---\nname: demo\n---\n"
+        "# Demo\n\n"
+        "Bearer syntax uses a scheme followed by a caller-provided value.\n"
+        "Basic example values must never be copied from documentation.\n"
+        "Basic format is base64(username:password).\n"
+    )
+
+    normalized, metrics = normalize_verified_skill_release(
+        content,
+        run_id="run-auth-syntax",
+        candidate_id="candidate-auth-syntax",
+    )
+
+    assert metrics["normalization_equivalence_passed"] is True
+    assert metrics["normalization_content_preservation_passed"] is True
+    assert "Bearer syntax" in normalized
+    assert "Basic example" in normalized
+    assert "Basic format" in normalized
+    assert metrics["removed_internal_line_count"] == 0
+
+
 def test_normalize_verified_skill_release_rebinds_exact_patch_intent() -> None:
     original = (
         "---\nname: demo\n---\n"
