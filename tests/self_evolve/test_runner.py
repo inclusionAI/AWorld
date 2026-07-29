@@ -1823,6 +1823,103 @@ def test_replay_confidence_counts_comparable_baseline_task_failures() -> None:
     assert gate.details["incomparable_pair_count"] == 0
 
 
+def test_replay_confidence_preserves_physical_framework_failure_ownership() -> None:
+    dataset = SelfEvolveDataset(
+        cases=(EvalCase(case_id="task-a", input="task A"),),
+        recipe=DatasetRecipe(
+            source={"kind": "test", "case_count": 1},
+            split_seed="seed",
+            splits={"train": ["task-a"], "validation": [], "held_out": []},
+        ),
+    )
+    request = CandidateReplayRequest(
+        run_id="run-framework-capture-failure",
+        task_id="task-a",
+        workspace_root="/tmp/workspace",
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo"),
+        candidate_id="candidate-1",
+        overlay_skill_root="/tmp/overlay",
+        task_input="task A",
+        baseline_repetitions=2,
+        candidate_repetitions=3,
+    )
+    succeeded = ReplayVariantResult(
+        variant_id="successful-repetition",
+        status=ReplayExecutionStatus.SUCCEEDED,
+        trajectory=[{"action": {"content": "completed"}}],
+    )
+    capture_failure = ReplayVariantResult(
+        variant_id="capture-failure",
+        status=ReplayExecutionStatus.FAILED,
+        trajectory=[],
+        failure=ReplayFailureEvent(
+            code="trajectory_capture_unavailable",
+            owner=FailureOwner.FRAMEWORK,
+            stage=FailureStage.EVALUATION,
+            scope=FailureScope.MEMBER,
+            repairable=True,
+            summary="trajectory capture was unavailable",
+        ),
+    )
+    baseline = replace(
+        succeeded,
+        variant_id="baseline",
+        metrics={
+            "repetition_count": 2,
+            "successful_repetition_count": 2,
+            "failed_repetition_count": 0,
+        },
+        repetition_results=(succeeded, succeeded),
+    )
+    candidate = replace(
+        succeeded,
+        variant_id="candidate-1",
+        metrics={
+            "repetition_count": 3,
+            "successful_repetition_count": 2,
+            "failed_repetition_count": 1,
+        },
+        repetition_results=(succeeded, succeeded, capture_failure),
+    )
+    replay = _CandidateReplayResult(
+        request=request,
+        baseline=baseline,
+        candidate=replace(candidate, repetition_results=()),
+        member_results=(
+            CandidateReplayMemberResult(
+                case_id="task-a",
+                request=request,
+                baseline=baseline,
+                candidate=candidate,
+            ),
+        ),
+    )
+
+    gate = _replay_confidence_gate(
+        replay,
+        dataset=dataset,
+        apply_policy="auto_verified",
+    )
+    typed_gate = _with_typed_gate_failure_event(gate)
+    feedback = runner_module._typed_gate_feedback_metrics((typed_gate,))
+
+    assert gate is not None
+    assert gate.passed is False
+    assert gate.reason == (
+        "replay confidence is unavailable because system-owned repetitions failed"
+    )
+    assert gate.details["failure_owner"] == "framework"
+    assert gate.details["failure_scope"] == "member"
+    assert gate.details["framework_owned_failure_count"] == 1
+    assert gate.details["candidate_owned_failure_count"] == 0
+    assert typed_gate.details["failure_event"]["code"] == (
+        "trajectory_capture_unavailable"
+    )
+    assert typed_gate.details["failure_event"]["owner"] == "framework"
+    assert feedback["failure_class"] == "framework"
+    assert "candidate_validation_diagnostics" not in feedback
+
+
 def test_replay_confidence_rejects_infrastructure_failure_pair() -> None:
     dataset = SelfEvolveDataset(
         cases=(
@@ -4632,6 +4729,120 @@ def test_replay_gate_adds_candidate_recovery_cause_without_rewriting_task_timeou
     assert details["failure_class"] == "candidate"
     assert details["repairable"] is True
     assert details["recovery_trace"]["candidate_success_rate"] == 0.0
+
+
+def test_replay_gate_does_not_blame_candidate_for_framework_capture_repetition(
+    tmp_path: Path,
+) -> None:
+    target = SelfEvolveTargetRef(target_type="skill", target_id="recovery")
+    request = CandidateReplayRequest(
+        run_id="run-framework-recovery",
+        task_id="case-framework-recovery",
+        workspace_root=str(tmp_path),
+        target=target,
+        candidate_id="candidate-recovery",
+        overlay_skill_root=str(tmp_path / "overlay"),
+        task_input="recover this task",
+        baseline_repetitions=3,
+        candidate_repetitions=3,
+    )
+    task_failure = ReplayVariantResult(
+        variant_id="baseline-failure",
+        status=ReplayExecutionStatus.FAILED,
+        trajectory=[],
+        failure=ReplayFailureEvent(
+            code="task_rollout_timeout",
+            owner=FailureOwner.TASK,
+            stage=FailureStage.TASK_ROLLOUT,
+            scope=FailureScope.MEMBER,
+            repairable=False,
+            summary="baseline task timed out",
+        ),
+    )
+    capture_failure = ReplayVariantResult(
+        variant_id="candidate-capture-failure",
+        status=ReplayExecutionStatus.FAILED,
+        trajectory=[],
+        failure=ReplayFailureEvent(
+            code="trajectory_capture_unavailable",
+            owner=FailureOwner.FRAMEWORK,
+            stage=FailureStage.EVALUATION,
+            scope=FailureScope.MEMBER,
+            repairable=True,
+            summary="trajectory capture was unavailable",
+        ),
+    )
+    candidate_success = ReplayVariantResult(
+        variant_id="candidate-success",
+        status=ReplayExecutionStatus.SUCCEEDED,
+        trajectory=[{"action": {"content": "completed"}}],
+    )
+    baseline = replace(
+        task_failure,
+        variant_id="baseline",
+        metrics={
+            "repetition_count": 3,
+            "successful_repetition_count": 0,
+            "failed_repetition_count": 3,
+        },
+        repetition_results=(task_failure, task_failure, task_failure),
+    )
+    candidate = replace(
+        candidate_success,
+        variant_id="candidate-recovery",
+        metrics={
+            "repetition_count": 3,
+            "successful_repetition_count": 2,
+            "failed_repetition_count": 1,
+        },
+        repetition_results=(
+            candidate_success,
+            candidate_success,
+            capture_failure,
+        ),
+    )
+    replay_result = _CandidateReplayResult(
+        request=request,
+        baseline=baseline,
+        candidate=candidate,
+        member_results=(
+            CandidateReplayMemberResult(
+                case_id="case-framework-recovery",
+                request=request,
+                baseline=baseline,
+                candidate=candidate,
+            ),
+        ),
+    )
+    dataset = SelfEvolveDataset(
+        cases=(
+            EvalCase(
+                case_id="case-framework-recovery",
+                input="recover this task",
+            ),
+        ),
+        recipe=DatasetRecipe(
+            source={"kind": "trajectory_log"},
+            split_seed="recovery",
+            splits={"train": ["case-framework-recovery"]},
+            trainable_case_ids=("case-framework-recovery",),
+        ),
+    )
+
+    details = _replay_gate_details(replay_result, dataset=dataset)
+
+    events = details["causal_failure_events"]
+    assert any(
+        event["code"] == "trajectory_capture_unavailable"
+        and event["owner"] == "framework"
+        for event in events
+    )
+    assert not any(
+        event["code"] == "candidate_recovery_incomplete" for event in events
+    )
+    assert details["recovery_trace"]["candidate_success_rate"] == pytest.approx(
+        2 / 3
+    )
 
 
 def test_replay_gate_attributes_unobserved_candidate_intervention_to_framework(

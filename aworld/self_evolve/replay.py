@@ -716,8 +716,13 @@ def candidate_replay_pair_coverage(
         candidate = member.candidate
         member_blocked = False
         for variant in (baseline, candidate):
-            if variant.status is ReplayExecutionStatus.FAILED and variant.failure is not None:
-                owner_counts[variant.failure.owner] += 1
+            physical_results = variant.repetition_results or (variant,)
+            for physical_result in physical_results:
+                if (
+                    physical_result.status is ReplayExecutionStatus.FAILED
+                    and physical_result.failure is not None
+                ):
+                    owner_counts[physical_result.failure.owner] += 1
             if variant.status is ReplayExecutionStatus.BLOCKED:
                 blocked_variant_count += 1
                 member_blocked = True
@@ -2622,15 +2627,24 @@ class AWorldCliCandidateReplayBackend:
                 artifact_dir=attempt_dir,
             )
             attempts.append(result)
-            if not _is_evidence_quality_failure(result):
+            evidence_failure = _is_evidence_quality_failure(result)
+            framework_capture_failure = (
+                _is_retryable_framework_capture_failure(result)
+            )
+            if not evidence_failure and not framework_capture_failure:
                 return _merge_replay_attempt_metrics(
                     result,
                     attempts=attempts,
                     canonical_variant_id=variant_id,
                 )
             if attempt_index <= _EVIDENCE_RETRY_LIMIT:
+                retry_event = (
+                    "self_evolve.replay.evidence_retry"
+                    if evidence_failure
+                    else "self_evolve.replay.framework_capture_retry"
+                )
                 logger.info(
-                    "self_evolve.replay.evidence_retry "
+                    f"{retry_event} "
                     f"run_id={request.run_id} task_id={request.task_id} "
                     f"variant_id={variant_id} attempt={attempt_index + 1}"
                 )
@@ -2891,6 +2905,7 @@ class AWorldCliCandidateReplayBackend:
                 "code": "trajectory_capture_unavailable",
                 "outcome": "framework_failure",
                 "failure_stage": "evaluation",
+                "repairable": True,
                 "reason": "trajectory_capture_unavailable",
                 "detail": "replay executor succeeded but did not return trajectory evidence",
             }
@@ -6132,7 +6147,13 @@ def _extract_trajectory_from_stdout(stdout: str) -> list[Mapping[str, Any]]:
 
 
 def _extract_trajectory_payload_from_stdout(stdout: str) -> dict[str, Any]:
-    for line in reversed(stdout.splitlines()):
+    # ``aworld-cli --emit-trajectory`` is a JSONL protocol framed by the ASCII
+    # LF byte. Do not use ``str.splitlines()`` here: it also treats Unicode
+    # separators such as U+0085 as record boundaries. Those code points can
+    # legitimately occur inside a JSON string (and frequently appear in
+    # mojibake from browser output), which used to split a valid multi-megabyte
+    # trajectory object and silently report capture as unavailable.
+    for line in reversed(stdout.split("\n")):
         line = line.strip()
         if not line:
             continue
@@ -6787,6 +6808,19 @@ def _is_evidence_quality_failure(result: ReplayVariantResult) -> bool:
     )
 
 
+def _is_retryable_framework_capture_failure(
+    result: ReplayVariantResult,
+) -> bool:
+    failure = result.failure
+    return (
+        isinstance(failure, ReplayFailureEvent)
+        and failure.owner is FailureOwner.FRAMEWORK
+        and failure.stage is FailureStage.EVALUATION
+        and failure.code == "trajectory_capture_unavailable"
+        and failure.repairable
+    )
+
+
 def _merge_replay_attempt_metrics(
     result: ReplayVariantResult,
     *,
@@ -6812,7 +6846,14 @@ def _merge_replay_attempt_metrics(
     metrics = {
         **dict(result.metrics),
         "replay_attempt_count": len(attempts),
-        "evidence_retry_count": len(attempts) - 1,
+        "evidence_retry_count": sum(
+            _is_evidence_quality_failure(attempt)
+            for attempt in attempts[:-1]
+        ),
+        "framework_capture_retry_count": sum(
+            _is_retryable_framework_capture_failure(attempt)
+            for attempt in attempts[:-1]
+        ),
     }
     if retry_failures:
         metrics["retry_failures"] = retry_failures
