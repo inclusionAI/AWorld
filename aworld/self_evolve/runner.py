@@ -119,6 +119,7 @@ from aworld.self_evolve.failure_events import (
     FailureOwner,
     FailureScope,
     FailureStage,
+    ReplayExecutionStatus,
     ReplayFailureEvent,
 )
 from aworld.self_evolve.evidence_diagnostics import (
@@ -11771,10 +11772,23 @@ def _replay_gate_details(
                 "repair_target_selection_or_replay_context_before_candidate"
             ]
         details["recovery_trace"] = recovery_trace
+        candidate_system_failures = tuple(
+            event
+            for member in normalized.members
+            for event in _system_owned_repetition_failures(
+                member.candidate
+            )
+        )
         recovery_failure = (
-            _candidate_recovery_failure_event(recovery_trace)
-            if intervention_observed
-            else _candidate_intervention_unobserved_failure_event(recovery_trace)
+            None
+            if candidate_system_failures
+            else (
+                _candidate_recovery_failure_event(recovery_trace)
+                if intervention_observed
+                else _candidate_intervention_unobserved_failure_event(
+                    recovery_trace
+                )
+            )
         )
         if recovery_failure is not None:
             raw_events = details.get("causal_failure_events")
@@ -12491,9 +12505,14 @@ def _replay_confidence_gate(
 ) -> GateResult | None:
     if replay_result is None or apply_policy != "auto_verified":
         return None
+    normalized = normalize_replay_members(
+        dataset=dataset,
+        replay_result=replay_result,
+    )
     coverage = candidate_replay_pair_coverage(
         dataset=dataset,
         replay_result=replay_result,
+        normalized=normalized,
     )
     if coverage["candidate_executed_count"] == 0:
         return None
@@ -12539,6 +12558,58 @@ def _replay_confidence_gate(
         and isinstance(candidate_successful_repetitions, (int, float))
         and int(candidate_successful_repetitions) < 3
     ):
+        candidate_variants = tuple(
+            member.candidate for member in normalized.members
+        ) or (replay_result.candidate,)
+        system_failures = _system_owned_repetition_failures(
+            *candidate_variants
+        )
+        if system_failures:
+            failure_owner = (
+                FailureOwner.INFRASTRUCTURE
+                if any(
+                    event.owner is FailureOwner.INFRASTRUCTURE
+                    for event in system_failures
+                )
+                else FailureOwner.FRAMEWORK
+            )
+            failure_scope = (
+                FailureScope.SHARED_RUN
+                if failure_owner is FailureOwner.INFRASTRUCTURE
+                else FailureScope.MEMBER
+            )
+            event_payloads = [event.to_dict() for event in system_failures]
+            return GateResult(
+                gate_name="replay_confidence",
+                passed=False,
+                reason=(
+                    "replay confidence is unavailable because system-owned "
+                    "repetitions failed"
+                ),
+                details={
+                    **base_details,
+                    "candidate_repetition_count": int(candidate_repetitions),
+                    "candidate_successful_repetition_count": int(
+                        candidate_successful_repetitions
+                    ),
+                    "candidate_failed_repetition_count": (
+                        int(candidate_failed_repetitions)
+                        if isinstance(
+                            candidate_failed_repetitions,
+                            (int, float),
+                        )
+                        else None
+                    ),
+                    "failure_class": failure_owner.value,
+                    "failure_owner": failure_owner.value,
+                    "failure_scope": failure_scope.value,
+                    "repairable": any(
+                        event.repairable for event in system_failures
+                    ),
+                    "failure_event": event_payloads[0],
+                    "causal_failure_events": event_payloads,
+                },
+            )
         return GateResult(
             gate_name="replay_confidence",
             passed=False,
@@ -12559,6 +12630,20 @@ def _replay_confidence_gate(
         passed=True,
         reason="replay comparison has sufficient confidence for policy",
         details=base_details,
+    )
+
+
+def _system_owned_repetition_failures(
+    *variants: ReplayVariantResult,
+) -> tuple[ReplayFailureEvent, ...]:
+    return tuple(
+        result.failure
+        for variant in variants
+        for result in (variant.repetition_results or (variant,))
+        if result.status is ReplayExecutionStatus.FAILED
+        and isinstance(result.failure, ReplayFailureEvent)
+        and result.failure.owner
+        in {FailureOwner.FRAMEWORK, FailureOwner.INFRASTRUCTURE}
     )
 
 

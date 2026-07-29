@@ -45,6 +45,7 @@ from aworld.self_evolve.replay import (
     _invalid_evidence_manifest_entry_reason,
     _infer_baseline_skill_root_from_target,
     _evidence_manifest_metrics,
+    _extract_trajectory_payload_from_stdout,
     _has_authoritative_per_member_repetitions,
     _member_artifact_name,
     _member_baseline_replay_dir,
@@ -168,6 +169,110 @@ def test_unknown_legacy_failure_never_gains_shared_run_scope() -> None:
     assert event.scope is FailureScope.CANDIDATE
     assert event.source is FailureEventSource.LEGACY_UNKNOWN
     assert event.code == "legacy_unclassified_failure"
+
+
+def test_trajectory_stdout_parser_preserves_unicode_separators_in_large_json() -> None:
+    trajectory = [
+        {
+            "action": {
+                "content": (
+                    ("browser output " * 90_000)
+                    + "mojibake\u0085content\u2028still in the same JSON record"
+                )
+            }
+        }
+    ]
+    payload = {
+        "trajectory": trajectory,
+        "trajectory_capture_mode": "task_response",
+    }
+    stdout = "diagnostic output\n" + json.dumps(payload, ensure_ascii=False) + "\n"
+
+    assert len(stdout.splitlines()) > len(stdout.split("\n"))
+    assert _extract_trajectory_payload_from_stdout(stdout) == payload
+
+
+def test_pair_coverage_counts_framework_failure_in_physical_repetition(
+    tmp_path: Path,
+) -> None:
+    dataset = SelfEvolveDataset(
+        cases=(EvalCase(case_id="task-1", input="Replay this task"),),
+        recipe=DatasetRecipe(
+            source={"kind": "test"},
+            split_seed="seed",
+            splits={"train": ["task-1"], "validation": [], "held_out": []},
+        ),
+    )
+    candidate = _candidate("---\nname: demo\n---\n# Demo\n")
+    request = build_replay_request(
+        run_id="run-physical-failure-attribution",
+        workspace_root=tmp_path,
+        target=candidate.target,
+        candidate=candidate,
+        overlay_skill_root=tmp_path / "overlay",
+        dataset=dataset,
+        baseline_repetitions=2,
+        candidate_repetitions=3,
+    )
+    succeeded = ReplayVariantResult(
+        variant_id="candidate-success",
+        status=ReplayExecutionStatus.SUCCEEDED,
+        trajectory=[{"action": {"content": "completed"}}],
+    )
+    capture_failure = ReplayVariantResult(
+        variant_id="candidate-capture-failure",
+        status=ReplayExecutionStatus.FAILED,
+        trajectory=[],
+        failure=ReplayFailureEvent(
+            code="trajectory_capture_unavailable",
+            owner=FailureOwner.FRAMEWORK,
+            stage=FailureStage.EVALUATION,
+            scope=FailureScope.MEMBER,
+            repairable=True,
+            summary="trajectory capture was unavailable",
+        ),
+    )
+    baseline = replace(
+        succeeded,
+        variant_id="baseline",
+        metrics={
+            "repetition_count": 2,
+            "successful_repetition_count": 2,
+            "failed_repetition_count": 0,
+        },
+        repetition_results=(succeeded, succeeded),
+    )
+    candidate_result = replace(
+        succeeded,
+        variant_id=candidate.candidate_id,
+        metrics={
+            "repetition_count": 3,
+            "successful_repetition_count": 2,
+            "failed_repetition_count": 1,
+        },
+        repetition_results=(succeeded, succeeded, capture_failure),
+    )
+    replay_result = CandidateReplayResult(
+        request=request,
+        baseline=baseline,
+        candidate=candidate_result,
+        member_results=(
+            CandidateReplayMemberResult(
+                case_id="task-1",
+                request=request,
+                baseline=baseline,
+                candidate=candidate_result,
+            ),
+        ),
+    )
+
+    coverage = candidate_replay_pair_coverage(
+        dataset=dataset,
+        replay_result=replay_result,
+    )
+
+    assert coverage["framework_owned_failure_count"] == 1
+    assert coverage["candidate_owned_failure_count"] == 0
 
 
 def test_non_native_failure_event_cannot_claim_shared_run_scope() -> None:
@@ -5305,6 +5410,70 @@ async def test_aworld_cli_candidate_replay_backend_fails_when_evidence_retries_s
     assert result.candidate.metrics["evidence_compaction_signals"] == [
         "tool_output_compacted"
     ]
+
+
+@pytest.mark.asyncio
+async def test_aworld_cli_candidate_replay_backend_retries_framework_capture_failure(
+    tmp_path: Path,
+) -> None:
+    candidate_calls: list[str] = []
+
+    async def fake_executor(request):
+        if request.variant_id == "cand-1":
+            candidate_calls.append(request.variant_id)
+            return ReplayExecutionResult(
+                status="succeeded",
+                trajectory=[],
+            )
+        if request.variant_id.startswith("cand-1__evidence_retry_"):
+            candidate_calls.append(request.variant_id)
+        return ReplayExecutionResult(
+            status="succeeded",
+            trajectory=[
+                {
+                    "state": {"input": request.task_input},
+                    "action": {"content": "captured"},
+                    "reward": {"status": "ok"},
+                }
+            ],
+        )
+
+    request = CandidateReplayRequest(
+        run_id="run-framework-capture-retry",
+        task_id="task-1",
+        workspace_root=str(tmp_path),
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo"),
+        candidate_id="cand-1",
+        overlay_skill_root=str(tmp_path / "overlay-skills"),
+        task_input="Replay this task",
+        baseline_repetitions=1,
+        candidate_repetitions=1,
+    )
+    dataset = SelfEvolveDataset(
+        cases=(EvalCase(case_id="task-1", input="Replay this task"),),
+        recipe=DatasetRecipe(
+            source={"kind": "test"},
+            split_seed="seed",
+            splits={"train": ["task-1"], "validation": [], "held_out": []},
+        ),
+    )
+
+    result = await AWorldCliCandidateReplayBackend(
+        executor=fake_executor
+    ).replay_candidate(
+        request,
+        candidate=_candidate(
+            "---\nname: demo\n---\n# Demo\n",
+            candidate_id="cand-1",
+        ),
+        dataset=dataset,
+    )
+
+    assert result.candidate.succeeded is True
+    assert candidate_calls == ["cand-1", "cand-1__evidence_retry_2"]
+    assert result.candidate.metrics["replay_attempt_count"] == 2.0
+    assert result.candidate.metrics["framework_capture_retry_count"] == 1.0
+    assert result.candidate.metrics["evidence_retry_count"] == 0.0
 
 
 @pytest.mark.asyncio
