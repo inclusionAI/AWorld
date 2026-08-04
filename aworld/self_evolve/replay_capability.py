@@ -160,13 +160,18 @@ class ReplayCapabilityError(RuntimeError):
 def _raise_schema_field_error(
     message: str,
     violations: Sequence[SchemaFieldViolation],
+    *,
+    extra_details: Mapping[str, object] | None = None,
 ) -> NoReturn:
     if not violations:
         raise ValueError("schema field error requires at least one violation")
+    details = schema_field_diagnostic_details(violations)
+    if extra_details:
+        details.update(dict(extra_details))
     raise ReplayCapabilityError(
         message,
         code="schema_field_validation_failed",
-        details=schema_field_diagnostic_details(violations),
+        details=details,
     )
 
 
@@ -986,7 +991,10 @@ def _verify_recorded_response_indexes_and_runtime_bindings(
             raise ReplayCapabilityError(
                 "skill runtime entrypoint must be readable UTF-8 source"
             ) from exc
-        if not _runtime_consumes_recorded_response_index(source):
+        source_behavior_proof = recorded_response_index_source_behavior_proof(
+            source
+        )
+        if source_behavior_proof.get("proven") is not True:
             _raise_schema_field_error(
                 "skill runtime with recorded responses must consume "
                 f"{REPLAY_RESPONSE_INDEX_ENV} as a JSON sidecar file path, "
@@ -1019,6 +1027,9 @@ def _verify_recorded_response_indexes_and_runtime_bindings(
                         ),
                     ),
                 ),
+                extra_details={
+                    "source_behavior_proofs": [source_behavior_proof],
+                },
             )
 
 
@@ -1033,43 +1044,308 @@ def _runtime_consumes_recorded_response_index(source: str) -> bool:
     the protocol probe.
     """
 
+    return recorded_response_index_source_behavior_proof(source).get(
+        "proven"
+    ) is True
+
+
+def recorded_response_index_source_behavior_proof(
+    source: str,
+) -> dict[str, object]:
+    """Return a bounded proof graph for the response-index source contract.
+
+    The result deliberately describes language-level operations and broken
+    propagation edges, never source excerpts or fixture payloads. It is safe to
+    pass through candidate repair feedback and gives a generator executable
+    evidence about *why* a data-flow claim was not proved.
+    """
+
+    required_operations = (
+        "read_environment_binding_as_path",
+        "bind_environment_path_to_json_file_reader",
+        "access_records_array",
+        "project_record_value_field_directly",
+    )
     try:
         tree = ast.parse(source)
-    except SyntaxError:
-        return False
+    except SyntaxError as exc:
+        operation_status = {
+            operation: False for operation in required_operations
+        }
+        topology = {
+            "operation_status": operation_status,
+            "unsupported_boundary_kinds": ["syntax_error"],
+        }
+        return {
+            "schema_version": "aworld.self_evolve.source_behavior_proof.v1",
+            "analyzer": "python_ast_bounded_dataflow",
+            "predicate": (
+                "environment.AWORLD_REPLAY_RESPONSE_INDEX.consumer"
+            ),
+            "expected_behavior": REPLAY_RESPONSE_INDEX_CONSUMER,
+            "proven": False,
+            "proof_fingerprint": _source_behavior_proof_fingerprint(topology),
+            "operation_status": operation_status,
+            "missing_operations": list(required_operations),
+            "unsupported_boundaries": [
+                {
+                    "kind": "syntax_error",
+                    "line": max(1, int(exc.lineno or 1)),
+                }
+            ],
+            "repair_guidance": [
+                "make the required source branch parseable before proving data flow"
+            ],
+        }
 
-    accessed_keys: set[object] = set()
+    accessed_keys = _runtime_accessed_key_locations(tree)
+    function_scopes = _runtime_function_scopes(tree)
+    reader_parameters = _runtime_file_reader_parameter_summaries(function_scopes)
+    named_scopes = _runtime_named_lexical_scopes(tree)
+    environment_sources: list[dict[str, object]] = []
+    file_readers: list[dict[str, object]] = []
+    unsupported_boundaries: list[dict[str, object]] = []
+    reader_binding_proven = False
+    for scope_name, scope_nodes in named_scopes:
+        reader_binding_proven = reader_binding_proven or (
+            _scope_reads_response_index_file(
+                scope_nodes,
+                reader_parameters=reader_parameters,
+                function_scopes=function_scopes,
+            )
+        )
+        environment_sources.extend(
+            _runtime_environment_source_locations(scope_name, scope_nodes)
+        )
+        file_readers.extend(
+            _runtime_file_reader_locations(scope_name, scope_nodes)
+        )
+        unsupported_boundaries.extend(
+            _runtime_attribute_storage_boundaries(scope_name, scope_nodes)
+        )
+
+    operation_status = {
+        "read_environment_binding_as_path": bool(environment_sources),
+        "bind_environment_path_to_json_file_reader": reader_binding_proven,
+        "access_records_array": bool(accessed_keys.get("records")),
+        "project_record_value_field_directly": bool(accessed_keys.get("value")),
+    }
+    missing_operations = [
+        operation
+        for operation in required_operations
+        if not operation_status[operation]
+    ]
+    proven = not missing_operations
+    boundary_kinds = sorted(
+        {
+            str(item.get("kind") or "unknown")
+            for item in unsupported_boundaries
+        }
+    )
+    environment_scope_names = {
+        str(item["scope"]) for item in environment_sources
+    }
+    reader_scope_names = {str(item["scope"]) for item in file_readers}
+    topology = {
+        "operation_status": operation_status,
+        "unsupported_boundary_kinds": boundary_kinds,
+        "environment_source_scope_count": len(environment_scope_names),
+        "file_reader_scope_count": len(reader_scope_names),
+        "source_reader_scope_overlap": bool(
+            environment_scope_names & reader_scope_names
+        ),
+    }
+    guidance: list[str] = []
+    if not operation_status["read_environment_binding_as_path"]:
+        guidance.append(
+            "read the framework environment binding in the runtime source branch"
+        )
+    if not reader_binding_proven:
+        guidance.append(
+            "keep the environment-derived path and JSON file reader in one lexical scope or pass it only through explicit function parameters"
+        )
+    if unsupported_boundaries:
+        guidance.append(
+            "replace attribute or container state propagation with local assignments or explicit function arguments"
+        )
+    if not operation_status["access_records_array"]:
+        guidance.append("access the sidecar records field explicitly")
+    if not operation_status["project_record_value_field_directly"]:
+        guidance.append("project each record value field explicitly")
+    return {
+        "schema_version": "aworld.self_evolve.source_behavior_proof.v1",
+        "analyzer": "python_ast_bounded_dataflow",
+        "predicate": "environment.AWORLD_REPLAY_RESPONSE_INDEX.consumer",
+        "expected_behavior": REPLAY_RESPONSE_INDEX_CONSUMER,
+        "proven": proven,
+        "proof_fingerprint": _source_behavior_proof_fingerprint(topology),
+        "operation_status": operation_status,
+        "missing_operations": missing_operations,
+        "environment_sources": environment_sources[:16],
+        "file_readers": file_readers[:16],
+        "key_accesses": {
+            key: values[:16]
+            for key, values in sorted(accessed_keys.items())
+            if key in {"records", "value"}
+        },
+        "unsupported_boundaries": unsupported_boundaries[:16],
+        "repair_guidance": guidance[:8],
+    }
+
+
+def _source_behavior_proof_fingerprint(topology: Mapping[str, object]) -> str:
+    encoded = json.dumps(
+        topology,
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return "sha256:" + hashlib.sha256(encoded).hexdigest()
+
+
+def _runtime_accessed_key_locations(
+    tree: ast.Module,
+) -> dict[str, list[dict[str, object]]]:
+    locations: dict[str, list[dict[str, object]]] = {}
     for node in ast.walk(tree):
-        if isinstance(node, ast.Subscript):
-            key_node = node.slice
-            if isinstance(key_node, ast.Constant):
-                accessed_keys.add(key_node.value)
+        key: object | None = None
+        access_kind: str | None = None
+        if isinstance(node, ast.Subscript) and isinstance(node.slice, ast.Constant):
+            key = node.slice.value
+            access_kind = "subscript"
         elif (
             isinstance(node, ast.Call)
             and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "get"
             and node.args
             and isinstance(node.args[0], ast.Constant)
         ):
             key = node.args[0].value
-            if node.func.attr == "get":
-                accessed_keys.add(key)
-    # The framework index builder only emits records whose projected values
-    # are non-empty. Runtimes may still inspect the ``non_empty`` metadata, but
-    # requiring that exact spelling would reject an equivalent bounded
-    # records/value projection before the precise protocol probe can verify it.
-    if not {"records", "value"}.issubset(accessed_keys):
-        return False
-
-    function_scopes = _runtime_function_scopes(tree)
-    reader_parameters = _runtime_file_reader_parameter_summaries(function_scopes)
-    return any(
-        _scope_reads_response_index_file(
-            scope_nodes,
-            reader_parameters=reader_parameters,
-            function_scopes=function_scopes,
+            access_kind = "mapping_get"
+        if not isinstance(key, str) or access_kind is None:
+            continue
+        locations.setdefault(key, []).append(
+            {
+                "line": max(1, int(getattr(node, "lineno", 1))),
+                "access_kind": access_kind,
+            }
         )
-        for scope_nodes in _runtime_lexical_scopes(tree)
+    return locations
+
+
+def _runtime_named_lexical_scopes(
+    tree: ast.Module,
+) -> tuple[tuple[str, tuple[ast.AST, ...]], ...]:
+    scopes: list[tuple[str, tuple[ast.AST, ...]]] = []
+    module_nodes = _collect_runtime_scope_nodes(tree.body)
+    if module_nodes:
+        scopes.append(("<module>", module_nodes))
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            function_nodes = _collect_runtime_scope_nodes(node.body)
+            if function_nodes:
+                scopes.append((node.name, function_nodes))
+    return tuple(scopes)
+
+
+def _runtime_environment_source_locations(
+    scope_name: str,
+    nodes: Sequence[ast.AST],
+) -> list[dict[str, object]]:
+    locations: list[dict[str, object]] = []
+    seen_lines: set[int] = set()
+    for node in nodes:
+        if not isinstance(node, (ast.Call, ast.Subscript)):
+            continue
+        if not _expression_depends_on_response_index(
+            node,
+            set(),
+            include_environment_binding=True,
+        ):
+            continue
+        line = max(1, int(getattr(node, "lineno", 1)))
+        if line in seen_lines:
+            continue
+        seen_lines.add(line)
+        locations.append({"scope": scope_name, "line": line})
+    return locations
+
+
+def _runtime_file_reader_locations(
+    scope_name: str,
+    nodes: Sequence[ast.AST],
+) -> list[dict[str, object]]:
+    locations: list[dict[str, object]] = []
+    for node in nodes:
+        if not isinstance(node, ast.Call):
+            continue
+        reader_kind: str | None = None
+        argument: ast.AST | None = None
+        if isinstance(node.func, ast.Name) and node.func.id == "open":
+            reader_kind = "open"
+            argument = node.args[0] if node.args else None
+        elif isinstance(node.func, ast.Attribute) and node.func.attr in {
+            "open",
+            "read_bytes",
+            "read_text",
+        }:
+            reader_kind = node.func.attr
+            argument = node.func.value
+        if reader_kind is None:
+            continue
+        locations.append(
+            {
+                "scope": scope_name,
+                "line": max(1, int(getattr(node, "lineno", 1))),
+                "reader_kind": reader_kind,
+                "argument_kind": (
+                    type(argument).__name__ if argument is not None else "missing"
+                ),
+            }
+        )
+    return locations
+
+
+def _runtime_attribute_storage_boundaries(
+    scope_name: str,
+    nodes: Sequence[ast.AST],
+) -> list[dict[str, object]]:
+    bound_names = _runtime_scope_tainted_names(
+        nodes,
+        initial_bound_names=set(),
+        include_environment_binding=True,
     )
+    boundaries: list[dict[str, object]] = []
+    for node in nodes:
+        if not isinstance(node, (ast.Assign, ast.AnnAssign, ast.NamedExpr)):
+            continue
+        value = node.value
+        if not _expression_depends_on_response_index(
+            value,
+            bound_names,
+            include_environment_binding=True,
+        ):
+            continue
+        raw_targets: Sequence[ast.AST] = (
+            node.targets if isinstance(node, ast.Assign) else (node.target,)
+        )
+        for target in raw_targets:
+            for nested in ast.walk(target):
+                if not isinstance(nested, (ast.Attribute, ast.Subscript)):
+                    continue
+                boundaries.append(
+                    {
+                        "kind": (
+                            "attribute_storage"
+                            if isinstance(nested, ast.Attribute)
+                            else "container_storage"
+                        ),
+                        "scope": scope_name,
+                        "line": max(1, int(getattr(nested, "lineno", 1))),
+                    }
+                )
+                break
+    return boundaries
 
 
 def _runtime_lexical_scopes(tree: ast.Module) -> tuple[tuple[ast.AST, ...], ...]:
@@ -1212,38 +1488,11 @@ def _scope_taint_reaches_file_reader(
 ) -> bool:
     """Propagate one bounded source through assignments and local calls."""
 
-    bound_names = set(initial_bound_names)
-    assignments: list[tuple[tuple[str, ...], ast.AST]] = []
-    for node in nodes:
-        if isinstance(node, (ast.Assign, ast.AnnAssign, ast.NamedExpr)):
-            value = node.value
-            raw_targets: Sequence[ast.AST]
-            if isinstance(node, ast.Assign):
-                raw_targets = node.targets
-            else:
-                raw_targets = (node.target,)
-            target_names = tuple(
-                name
-                for target in raw_targets
-                for name in _assigned_runtime_names(target)
-            )
-            if target_names:
-                assignments.append((target_names, value))
-
-    changed = True
-    while changed:
-        changed = False
-        for target_names, value in assignments:
-            if not _expression_depends_on_response_index(
-                value,
-                bound_names,
-                include_environment_binding=include_environment_binding,
-            ):
-                continue
-            for name in target_names:
-                if name not in bound_names:
-                    bound_names.add(name)
-                    changed = True
+    bound_names = _runtime_scope_tainted_names(
+        nodes,
+        initial_bound_names=initial_bound_names,
+        include_environment_binding=include_environment_binding,
+    )
 
     for node in nodes:
         if not isinstance(node, ast.Call):
@@ -1279,6 +1528,49 @@ def _scope_taint_reaches_file_reader(
             ):
                 return True
     return False
+
+
+def _runtime_scope_tainted_names(
+    nodes: Sequence[ast.AST],
+    *,
+    initial_bound_names: set[str],
+    include_environment_binding: bool,
+) -> set[str]:
+    """Return local names transitively derived from one bounded source."""
+
+    bound_names = set(initial_bound_names)
+    assignments: list[tuple[tuple[str, ...], ast.AST]] = []
+    for node in nodes:
+        if isinstance(node, (ast.Assign, ast.AnnAssign, ast.NamedExpr)):
+            value = node.value
+            raw_targets: Sequence[ast.AST]
+            if isinstance(node, ast.Assign):
+                raw_targets = node.targets
+            else:
+                raw_targets = (node.target,)
+            target_names = tuple(
+                name
+                for target in raw_targets
+                for name in _assigned_runtime_names(target)
+            )
+            if target_names:
+                assignments.append((target_names, value))
+
+    changed = True
+    while changed:
+        changed = False
+        for target_names, value in assignments:
+            if not _expression_depends_on_response_index(
+                value,
+                bound_names,
+                include_environment_binding=include_environment_binding,
+            ):
+                continue
+            for name in target_names:
+                if name not in bound_names:
+                    bound_names.add(name)
+                    changed = True
+    return bound_names
 
 
 def _runtime_called_function_name(function: ast.AST) -> str | None:

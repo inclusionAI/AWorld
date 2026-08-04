@@ -1869,6 +1869,86 @@ def test_runtime_schema_constraint_recomputes_runtime_required_branch() -> None:
     assert contract.required_branch_paths == ("replay/runtime.py",)
 
 
+def _response_index_source_behavior_contract() -> RepairConformanceContract:
+    return RepairConformanceContract(
+        focus_candidate_id="candidate-failed",
+        failure_codes=("invalid_replay_capability_compile",),
+        interaction_progress=0,
+        base_file_fingerprints={"replay/runtime.py": "sha256:base"},
+        required_branch_paths=("replay/runtime.py",),
+        base_branch_fingerprints={},
+        schema_field_constraints=(
+            SchemaFieldRepairConstraint(
+                schema_layer="runtime",
+                field_path=(
+                    "environment.AWORLD_REPLAY_RESPONSE_INDEX.consumer"
+                ),
+                rule="enum",
+                expected=("json_sidecar_record_value_projector",),
+                value_domain="source_behavior",
+                required_operations=(
+                    "read_environment_binding_as_path",
+                    "bind_environment_path_to_json_file_reader",
+                    "access_records_array",
+                    "project_record_value_field_directly",
+                ),
+            ),
+        ),
+    )
+
+
+def test_source_behavior_conformance_reports_broken_proof_edge() -> None:
+    result = evaluate_candidate_source_conformance(
+        _candidate(
+            runtime_source=(
+                "import json, os\n"
+                "class Runtime:\n"
+                "    path = None\n"
+                "def respond(path):\n"
+                "    with open(path) as stream:\n"
+                "        index = json.load(stream)\n"
+                "    return index['records'][0]['value']\n"
+                "def main():\n"
+                "    path = os.getenv('AWORLD_REPLAY_RESPONSE_INDEX')\n"
+                "    Runtime.path = path\n"
+                "    return respond(Runtime.path)\n"
+            )
+        ),
+        _response_index_source_behavior_contract(),
+    )
+
+    assert result.passed is False
+    assert result.code == "source_behavior_proof_failed"
+    assert result.details["missing_operations"] == [
+        "bind_environment_path_to_json_file_reader"
+    ]
+    assert result.details["unsupported_boundary_kinds"] == [
+        "attribute_storage"
+    ]
+    assert result.details["source_behavior_proofs"][0]["path"] == (
+        "replay/runtime.py"
+    )
+
+
+def test_source_behavior_conformance_accepts_explicit_local_dataflow() -> None:
+    result = evaluate_candidate_source_conformance(
+        _candidate(
+            runtime_source=(
+                "import json, os\n"
+                "def respond():\n"
+                "    path = os.getenv('AWORLD_REPLAY_RESPONSE_INDEX')\n"
+                "    with open(path) as stream:\n"
+                "        index = json.load(stream)\n"
+                "    return index['records'][0]['value']\n"
+            )
+        ),
+        _response_index_source_behavior_contract(),
+    )
+
+    assert result.passed is True
+    assert result.code == "repair_branch_changed"
+
+
 def test_constraint_context_merges_multi_member_schema_and_fixture_rules() -> None:
     inherited_fixture = FixtureDerivedProbeConstraint(
         requirement_id="member-a-requirement",

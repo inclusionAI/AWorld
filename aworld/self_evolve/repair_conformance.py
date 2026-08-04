@@ -11,8 +11,10 @@ from typing import Any, Iterable, Mapping, Sequence
 from aworld.self_evolve.replay_capability import (
     FrozenReplayCapability,
     REPLAY_CAPABILITY_SCHEMA_VERSION,
+    REPLAY_RESPONSE_INDEX_CONSUMER,
     ReplayProtocolProbe,
     ReplayServiceSpec,
+    recorded_response_index_source_behavior_proof,
 )
 from aworld.self_evolve.sanitization import sanitize_path_ref, sanitize_text
 from aworld.self_evolve.schema_diagnostics import SchemaFieldRepairConstraint
@@ -1123,6 +1125,12 @@ def evaluate_candidate_source_conformance(
     if changed_branch_slices or changed_selector_slices or (
         not contract.base_branch_fingerprints and changed_file_paths
     ):
+        source_behavior_failure = _source_behavior_constraint_failure(
+            candidate_sources,
+            contract=contract,
+        )
+        if source_behavior_failure is not None:
+            return source_behavior_failure
         selector_alignment_failure = (
             _compiler_runtime_selector_alignment_failure(
                 changed_file_paths=changed_file_paths,
@@ -1247,6 +1255,91 @@ def evaluate_candidate_source_conformance(
             "observed_candidate_paths": sorted(candidate_sources)[:32],
         },
     )
+
+
+def _source_behavior_constraint_failure(
+    candidate_sources: Mapping[str, str],
+    *,
+    contract: RepairConformanceContract,
+) -> RepairConformanceResult | None:
+    """Run registered static proofs before expensive capability compilation."""
+
+    constraints = tuple(
+        constraint
+        for constraint in contract.schema_field_constraints
+        if constraint.value_domain == "source_behavior"
+    )
+    for constraint in constraints:
+        analyzer = _source_behavior_analyzer(constraint)
+        if analyzer is None:
+            continue
+        proofs: list[dict[str, object]] = []
+        for path in contract.required_branch_paths:
+            source = candidate_sources.get(path)
+            if not isinstance(source, str) or not source.strip():
+                continue
+            proof = dict(analyzer(source))
+            proof["path"] = path
+            proofs.append(proof)
+        if any(proof.get("proven") is True for proof in proofs):
+            continue
+        missing_operations = sorted(
+            {
+                str(operation)
+                for proof in proofs
+                for operation in proof.get("missing_operations", ())
+                if isinstance(operation, str) and operation
+            }
+        )
+        boundary_kinds = sorted(
+            {
+                str(boundary.get("kind") or "")
+                for proof in proofs
+                for boundary in proof.get("unsupported_boundaries", ())
+                if isinstance(boundary, Mapping) and boundary.get("kind")
+            }
+        )
+        return RepairConformanceResult(
+            passed=False,
+            code="source_behavior_proof_failed",
+            reason=(
+                "candidate source does not prove every required source-behavior "
+                "operation through supported local or explicit-parameter data flow"
+            ),
+            details={
+                "focus_candidate_id": contract.focus_candidate_id,
+                "schema_field_constraints": [constraint.to_dict()],
+                "source_behavior_proofs": proofs[:16],
+                "proof_fingerprints": [
+                    proof["proof_fingerprint"]
+                    for proof in proofs
+                    if isinstance(proof.get("proof_fingerprint"), str)
+                ],
+                "missing_operations": missing_operations,
+                "unsupported_boundary_kinds": boundary_kinds,
+                "required_change": (
+                    "repair every false operation_status item; replace unsupported "
+                    "state propagation with local assignments or explicit function "
+                    "parameters, then preserve direct records/value projection"
+                ),
+            },
+        )
+    return None
+
+
+def _source_behavior_analyzer(
+    constraint: SchemaFieldRepairConstraint,
+):
+    """Resolve an analyzer by typed predicate identity, not diagnostic prose."""
+
+    if (
+        constraint.schema_layer == "runtime"
+        and constraint.field_path
+        == "environment.AWORLD_REPLAY_RESPONSE_INDEX.consumer"
+        and REPLAY_RESPONSE_INDEX_CONSUMER in constraint.expected
+    ):
+        return recorded_response_index_source_behavior_proof
+    return None
 
 
 def _operation_response_correlation_failure(

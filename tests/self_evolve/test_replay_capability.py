@@ -621,6 +621,12 @@ def test_skill_runtime_with_recorded_responses_must_consume_response_index(
     assert error.value.details["schema_field_violations"][0]["actual_type"] == (
         "string"
     )
+    proof = error.value.details["source_behavior_proofs"][0]
+    assert proof["proven"] is False
+    assert "bind_environment_path_to_json_file_reader" in proof[
+        "missing_operations"
+    ]
+    assert proof["proof_fingerprint"].startswith("sha256:")
 
 
 @pytest.mark.parametrize(
@@ -716,6 +722,65 @@ def test_response_index_source_behavior_requires_bound_file_reader_dataflow(
         replay_capability_module._runtime_consumes_recorded_response_index(source)
         is accepted
     )
+
+
+def test_response_index_source_behavior_reports_unsupported_state_boundary() -> None:
+    source = (
+        "import json, os\n"
+        "class Runtime:\n"
+        "    response_index_path = None\n"
+        "def build_response(path):\n"
+        "    with open(path, encoding='utf-8') as stream:\n"
+        "        index = json.load(stream)\n"
+        "    return index.get('records', [])[0].get('value')\n"
+        "def main():\n"
+        "    local_path = os.environ.get('AWORLD_REPLAY_RESPONSE_INDEX')\n"
+        "    Runtime.response_index_path = local_path\n"
+        "    return build_response(Runtime.response_index_path)\n"
+    )
+
+    proof = replay_capability_module.recorded_response_index_source_behavior_proof(
+        source
+    )
+
+    assert proof["proven"] is False
+    assert proof["operation_status"] == {
+        "read_environment_binding_as_path": True,
+        "bind_environment_path_to_json_file_reader": False,
+        "access_records_array": True,
+        "project_record_value_field_directly": True,
+    }
+    assert proof["unsupported_boundaries"] == [
+        {"kind": "attribute_storage", "scope": "main", "line": 10}
+    ]
+
+
+def test_response_index_source_behavior_fingerprint_is_topology_stable() -> None:
+    def source(class_name: str, local_name: str) -> str:
+        return (
+            "import json, os\n"
+            f"class {class_name}:\n"
+            "    path = None\n"
+            "def respond(path):\n"
+            "    with open(path) as stream:\n"
+            "        index = json.load(stream)\n"
+            "    return index['records'][0]['value']\n"
+            "def main():\n"
+            f"    {local_name} = os.getenv('AWORLD_REPLAY_RESPONSE_INDEX')\n"
+            f"    {class_name}.path = {local_name}\n"
+            f"    return respond({class_name}.path)\n"
+        )
+
+    first = replay_capability_module.recorded_response_index_source_behavior_proof(
+        source("Runtime", "index_path")
+    )
+    renamed = replay_capability_module.recorded_response_index_source_behavior_proof(
+        source("Handler", "sidecar_path")
+    )
+
+    assert first["proven"] is False
+    assert renamed["proven"] is False
+    assert first["proof_fingerprint"] == renamed["proof_fingerprint"]
 
 
 @pytest.mark.replay_sandbox

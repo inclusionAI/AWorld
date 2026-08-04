@@ -43,6 +43,7 @@ class CandidateSemanticValidationError(ValueError):
         representation: str | None = None,
         repairable: bool = True,
         allowed_improvement_signal_ids: tuple[str, ...] = (),
+        details: Mapping[str, object] | None = None,
     ) -> None:
         self.code = str(code)
         self.field_path = field_path
@@ -55,6 +56,7 @@ class CandidateSemanticValidationError(ValueError):
         self.allowed_improvement_signal_ids = tuple(
             allowed_improvement_signal_ids
         )
+        self.details = dict(details or {})
         self.contract_fingerprint = candidate_output_contract_fingerprint(
             self.allowed_improvement_signal_ids
         )
@@ -75,6 +77,8 @@ class CandidateSemanticValidationError(ValueError):
             diagnostic["field_path"] = self.field_path
         if self.representation is not None:
             diagnostic["representation"] = self.representation
+        if self.details:
+            diagnostic["details"] = dict(self.details)
         return diagnostic
 
 

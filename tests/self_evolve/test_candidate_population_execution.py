@@ -26,7 +26,7 @@ from aworld.self_evolve.optimizers.base import (
     CandidateSemanticValidationError,
 )
 from aworld.self_evolve.optimizers.llm_mutator import TraceReflectiveLLMMutator
-from aworld.self_evolve.types import SelfEvolveTargetRef
+from aworld.self_evolve.types import EvaluationSummary, SelfEvolveTargetRef
 
 
 def _request(max_candidates: int = 4) -> OptimizerRequest:
@@ -421,6 +421,187 @@ async def test_llm_mutator_routes_unexposed_signal_through_same_slot_repair() ->
     assert result.diagnostics["candidate_population_execution"][
         "repair_attempt_count"
     ] == 1
+
+
+@pytest.mark.asyncio
+async def test_llm_mutator_repairs_source_behavior_proof_in_same_slot() -> None:
+    base_runtime = (
+        "import json, os\n"
+        "class Runtime:\n"
+        "    path = None\n"
+        "def respond(path):\n"
+        "    with open(path) as stream:\n"
+        "        index = json.load(stream)\n"
+        "    return index['records'][0]['value']\n"
+        "def main():\n"
+        "    path = os.getenv('AWORLD_REPLAY_RESPONSE_INDEX')\n"
+        "    Runtime.path = path\n"
+        "    return respond(Runtime.path)\n"
+    )
+    invalid_runtime = base_runtime.replace("Runtime", "Handler")
+    valid_runtime = (
+        "import json, os\n"
+        "def respond():\n"
+        "    path = os.getenv('AWORLD_REPLAY_RESPONSE_INDEX')\n"
+        "    with open(path) as stream:\n"
+        "        index = json.load(stream)\n"
+        "    return index['records'][0]['value']\n"
+    )
+    constraint = {
+        "schema_layer": "runtime",
+        "field_path": "environment.AWORLD_REPLAY_RESPONSE_INDEX.consumer",
+        "rule": "enum",
+        "expected": ["json_sidecar_record_value_projector"],
+        "value_domain": "source_behavior",
+        "required_operations": [
+            "read_environment_binding_as_path",
+            "bind_environment_path_to_json_file_reader",
+            "access_records_array",
+            "project_record_value_field_directly",
+        ],
+    }
+    feedback = EvaluationSummary(
+        variant_id="candidate-failed",
+        dataset_split="validation",
+        metrics={
+            "failed_gates": ["candidate_repair_conformance"],
+            "failure_class": "candidate",
+            "repairable": True,
+            "repair_candidate_package": {
+                "candidate_id": "candidate-failed",
+                "content": "# Demo\n\nUse the reusable workflow.\n",
+                "files": [
+                    {
+                        "path": "replay/capability.json",
+                        "operation": "upsert",
+                        "content": json.dumps(
+                            {
+                                "schema_version": (
+                                    "aworld.skill.replay_capability.v1"
+                                ),
+                                "capability_id": "generic.replay",
+                                "protocol": "aworld.replay.subprocess.v1",
+                                "entrypoint": "replay/compiler.py",
+                                "handles": ["local_endpoint"],
+                                "runtime_files": ["replay/runtime.py"],
+                            }
+                        ),
+                    },
+                    {
+                        "path": "replay/compiler.py",
+                        "operation": "upsert",
+                        "content": "def compile_request():\n    return None\n",
+                    },
+                    {
+                        "path": "replay/runtime.py",
+                        "operation": "upsert",
+                        "content": base_runtime,
+                    },
+                ],
+            },
+            "candidate_validation_diagnostics": [
+                {
+                    "code": "invalid_replay_capability_compile",
+                    "capability_error_code": "schema_field_validation_failed",
+                    "schema_field_constraints": [constraint],
+                }
+            ],
+        },
+    )
+    request = OptimizerRequest(
+        target=SelfEvolveTargetRef(
+            target_type="skill",
+            target_id="demo",
+            path="/tmp/demo/SKILL.md",
+        ),
+        current_content="# Demo\n\nOld guidance.\n",
+        target_fingerprint="sha256:old",
+        trace_packs=(),
+        validation_feedback=(feedback,),
+        trainable_cases=(EvalCase(case_id="train-1", input="task"),),
+        max_candidates=1,
+    )
+    repair_diagnostics: list[dict[str, object]] = []
+
+    async def run_task(task: Task):
+        output = {
+            "addressed_improvement_signal_ids": [],
+            "files": [
+                {
+                    "path": "replay/runtime.py",
+                    "operation": "upsert",
+                    "content": (
+                        valid_runtime
+                        if task.id.endswith("-repair")
+                        else invalid_runtime
+                    ),
+                }
+            ],
+        }
+        if not task.id.endswith("-repair"):
+            output.update(
+                {
+                    "content": "# Demo\n\nUse the reusable workflow.\n",
+                    "rationale": "repair response index consumption",
+                }
+            )
+        return {
+            task.id: TaskResponse(
+                id=task.id,
+                success=True,
+                answer=json.dumps(output),
+            )
+        }
+
+    def repair_prompt_builder(invalid_output: str, error: ValueError) -> str:
+        del invalid_output
+        assert isinstance(error, CandidateSemanticValidationError)
+        repair_diagnostics.append(error.to_diagnostic())
+        return "repair the typed source behavior proof"
+
+    executor = AWorldCandidatePopulationExecutor(
+        agent_factory=_FakeCandidateAgent,
+        parse_output=lambda raw: normalize_candidate_output(
+            raw,
+            current_content=request.current_content,
+        ),
+        repair_prompt_builder=repair_prompt_builder,
+        repair_output_merger=merge_candidate_repair_output,
+        task_batch_executor=DeterministicTaskBatchExecutor(run_task=run_task),
+    )
+
+    async def contextual_population(
+        prompts,
+        max_concurrency,
+        *,
+        validate_output=None,
+    ):
+        return await executor.run(
+            prompts,
+            max_concurrency=max_concurrency,
+            validate_output=validate_output,
+        )
+
+    result = await TraceReflectiveLLMMutator(
+        mutate_text=lambda prompt: None,
+        population_callable=contextual_population,
+    ).propose(request)
+
+    assert len(result.candidates) == 1
+    runtime_file = next(
+        item
+        for item in result.candidates[0].files
+        if item.path == "replay/runtime.py"
+    )
+    assert runtime_file.content == valid_runtime
+    assert result.diagnostics["candidate_population_execution"][
+        "repair_success_count"
+    ] == 1
+    proof_failure = repair_diagnostics[0]["details"]["repair_conformance"]
+    assert proof_failure["code"] == "source_behavior_proof_failed"
+    assert proof_failure["details"]["missing_operations"] == [
+        "bind_environment_path_to_json_file_reader"
+    ]
 
 
 @pytest.mark.asyncio
