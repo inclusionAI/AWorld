@@ -1958,6 +1958,105 @@ def test_replay_confidence_preserves_physical_framework_failure_ownership() -> N
     assert "candidate_validation_diagnostics" not in feedback
 
 
+def test_replay_confidence_attributes_partial_startup_failures_to_infrastructure() -> None:
+    dataset = SelfEvolveDataset(
+        cases=(EvalCase(case_id="task-a", input="task A"),),
+        recipe=DatasetRecipe(
+            source={"kind": "test", "case_count": 1},
+            split_seed="seed",
+            splits={"train": ["task-a"], "validation": [], "held_out": []},
+        ),
+    )
+    request = CandidateReplayRequest(
+        run_id="run-service-readiness-failure",
+        task_id="task-a",
+        workspace_root="/tmp/workspace",
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo"),
+        candidate_id="candidate-1",
+        overlay_skill_root="/tmp/overlay",
+        task_input="task A",
+        baseline_repetitions=2,
+        candidate_repetitions=3,
+    )
+    succeeded = ReplayVariantResult(
+        variant_id="successful-repetition",
+        status=ReplayExecutionStatus.SUCCEEDED,
+        trajectory=[{"action": {"content": "completed"}}],
+    )
+    startup_failure = ReplayVariantResult(
+        variant_id="startup-failure",
+        status=ReplayExecutionStatus.FAILED,
+        trajectory=[],
+        failure=ReplayFailureEvent(
+            code="replay_service_startup_timeout",
+            owner=FailureOwner.INFRASTRUCTURE,
+            stage=FailureStage.CAPABILITY_PREFLIGHT,
+            scope=FailureScope.SHARED_RUN,
+            repairable=True,
+            summary="replay service readiness timed out",
+        ),
+    )
+    baseline = replace(
+        succeeded,
+        variant_id="baseline",
+        metrics={
+            "repetition_count": 2,
+            "successful_repetition_count": 1,
+            "failed_repetition_count": 1,
+        },
+        repetition_results=(startup_failure, succeeded),
+    )
+    candidate = replace(
+        succeeded,
+        variant_id="candidate-1",
+        metrics={
+            "repetition_count": 3,
+            "successful_repetition_count": 1,
+            "failed_repetition_count": 2,
+        },
+        repetition_results=(startup_failure, startup_failure, succeeded),
+    )
+    replay = _CandidateReplayResult(
+        request=request,
+        baseline=baseline,
+        candidate=replace(candidate, repetition_results=()),
+        member_results=(
+            CandidateReplayMemberResult(
+                case_id="task-a",
+                request=request,
+                baseline=baseline,
+                candidate=candidate,
+            ),
+        ),
+    )
+
+    gate = _replay_confidence_gate(
+        replay,
+        dataset=dataset,
+        apply_policy="verified_only",
+    )
+    replay_details = _replay_gate_details(
+        replay,
+        dataset=dataset,
+    )
+
+    assert gate is not None
+    assert gate.passed is False
+    assert gate.reason == (
+        "replay confidence is unavailable because system-owned repetitions failed"
+    )
+    assert gate.details["failure_owner"] == "infrastructure"
+    assert gate.details["failure_scope"] == "shared_run"
+    assert gate.details["infrastructure_failure_count"] == 3
+    assert gate.details["infrastructure_owned_failure_count"] == 3
+    assert gate.details["candidate_owned_failure_count"] == 0
+    assert replay_details.get("failure_class") != "candidate"
+    assert all(
+        event["owner"] != "candidate"
+        for event in replay_details["causal_failure_events"]
+    )
+
+
 def test_replay_confidence_rejects_infrastructure_failure_pair() -> None:
     dataset = SelfEvolveDataset(
         cases=(
