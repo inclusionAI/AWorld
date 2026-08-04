@@ -8,6 +8,8 @@ from aworld.self_evolve.candidate_package import (
     candidate_content_semantic_fingerprint,
     candidate_package_fingerprint,
     candidate_package_payload,
+    candidate_package_reference_report,
+    candidate_package_referenced_paths,
     candidate_semantic_package_fingerprint,
     validate_candidate_files,
 )
@@ -76,6 +78,82 @@ def test_candidate_package_requires_upsert_content() -> None:
         validate_candidate_files(
             (CandidateFileDelta(path="replay/compiler.py", content=None),)
         )
+
+
+def test_candidate_package_extracts_only_relative_replay_file_references() -> None:
+    content = (
+        "Run `python3 replay/probe.py` and read "
+        "[the fixture](./replay/fixtures/sample.json). "
+        "Ignore `/tmp/replay/not-a-package-file.py` and directories `replay/` "
+        "and `replay/fixtures/`."
+    )
+
+    assert candidate_package_referenced_paths(content) == (
+        "replay/fixtures/sample.json",
+        "replay/probe.py",
+    )
+
+
+def test_candidate_package_reference_report_accepts_inventory_or_file_delta() -> None:
+    candidate = replace(
+        _candidate(),
+        content=(
+            SKILL
+            + "Run `python3 replay/probe.py` with "
+            "`replay/fixtures/sample.json`.\n"
+        ),
+        files=(
+            CandidateFileDelta(
+                path="replay/fixtures/sample.json",
+                content='{"ok": true}\n',
+            ),
+        ),
+    )
+
+    report = candidate_package_reference_report(
+        candidate,
+        existing_paths=("SKILL.md", "replay/probe.py"),
+    )
+
+    assert report["closed"] is True
+    assert report["existing_referenced_paths"] == ["replay/probe.py"]
+    assert report["candidate_owned_referenced_paths"] == [
+        "replay/fixtures/sample.json"
+    ]
+
+
+def test_materialized_candidate_package_requires_every_declared_file(
+    tmp_path,
+) -> None:
+    candidate = _candidate(
+        files=(
+            CandidateFileDelta(
+                path="replay/runtime.py",
+                content="print('runtime')\n",
+            ),
+        )
+    )
+
+    missing = candidate_package_reference_report(
+        candidate,
+        package_root=tmp_path,
+    )
+
+    assert missing["closed"] is False
+    assert missing["references_closed"] is True
+    assert missing["missing_candidate_file_paths"] == ["replay/runtime.py"]
+
+    runtime = tmp_path / "replay" / "runtime.py"
+    runtime.parent.mkdir()
+    runtime.write_text("print('runtime')\n", encoding="utf-8")
+
+    complete = candidate_package_reference_report(
+        candidate,
+        package_root=tmp_path,
+    )
+
+    assert complete["closed"] is True
+    assert complete["materialized_file_deltas_closed"] is True
 
 
 def test_candidate_package_fingerprint_includes_replay_files() -> None:

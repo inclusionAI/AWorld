@@ -25,6 +25,7 @@ from aworld.self_evolve.runtime_health import (
 )
 from aworld.self_evolve.candidate_package import (
     candidate_files_total_bytes,
+    candidate_package_reference_report,
     validate_candidate_files,
 )
 from aworld.skills.structure import validate_skill_markdown_structure
@@ -325,11 +326,27 @@ class CandidatePackageGate:
                 passed=False,
                 reason=str(exc),
             )
+        reference_report = candidate_package_reference_report(candidate)
+        if not reference_report["closed"]:
+            return GateResult(
+                gate_name="candidate_package",
+                passed=False,
+                reason="candidate skill references files missing from its release package",
+                details={
+                    "code": "candidate_package_reference_missing",
+                    "failure_class": "candidate",
+                    "failure_owner": "candidate",
+                    "failure_scope": "candidate",
+                    "repairable": True,
+                    "file_count": len(files),
+                    **reference_report,
+                },
+            )
         return GateResult(
             gate_name="candidate_package",
             passed=True,
             reason="candidate package file deltas are valid",
-            details={"file_count": len(files)},
+            details={"file_count": len(files), **reference_report},
         )
 
 

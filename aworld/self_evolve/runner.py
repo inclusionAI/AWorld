@@ -139,6 +139,7 @@ from aworld.self_evolve.lessons import LessonRecord, extract_lesson_records
 from aworld.self_evolve.candidate_package import (
     candidate_content_semantic_fingerprint,
     candidate_package_fingerprint,
+    candidate_package_reference_report,
     candidate_semantic_package_fingerprint,
 )
 from aworld.self_evolve.candidate_errors import (
@@ -1670,6 +1671,7 @@ def _rejection_attribution(
 
 
 _CANDIDATE_REPAIRABLE_GATE_STAGES = {
+    "candidate_package": FailureStage.CANDIDATE_GENERATION,
     "skill_markdown": FailureStage.CANDIDATE_GENERATION,
     "skill_release_fidelity": FailureStage.CANDIDATE_GENERATION,
     "score_improvement": FailureStage.EVALUATION,
@@ -8877,6 +8879,10 @@ def _default_post_apply_evaluator(
             if target_path is not None and target_path.exists()
             else False
         )
+        package_references = candidate_package_reference_report(
+            candidate,
+            package_root=(target_path.parent if target_path is not None else None),
+        )
 
         if target_path is not None:
             registry = build_compat_registry(target_path.parent.parent)
@@ -8903,6 +8909,7 @@ def _default_post_apply_evaluator(
             and runtime_skill_found
             and loaded_from_real_path
             and runtime_content_matches
+            and package_references["closed"]
         )
         return EvaluationSummary(
             variant_id=candidate.candidate_id,
@@ -8915,6 +8922,7 @@ def _default_post_apply_evaluator(
                 "runtime_skill_found": runtime_skill_found,
                 "loaded_from_real_path": loaded_from_real_path,
                 "runtime_content_matches": runtime_content_matches,
+                "candidate_package_references": package_references,
                 "loaded_skill_path": loaded_skill_path,
                 "expected_skill_path": str(target_path) if target_path is not None else None,
             },

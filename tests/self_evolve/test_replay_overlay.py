@@ -2241,6 +2241,33 @@ def test_candidate_overlay_applies_replay_package_on_copy_of_target_skill(
     assert (replay_root / "obsolete.py").read_text(encoding="utf-8") == "old\n"
 
 
+def test_candidate_overlay_rejects_missing_skill_package_dependency(
+    tmp_path: Path,
+) -> None:
+    skills_root = tmp_path / "skills"
+    skill_path = skills_root / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("# Original\n", encoding="utf-8")
+    candidate = CandidateVariant(
+        candidate_id="cand-missing-package-file",
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo"),
+        content="# Candidate\n\nRun `python3 replay/missing_probe.py`.\n",
+        rationale="add a replay probe",
+        target_fingerprint="sha256:old",
+    )
+
+    with pytest.raises(ValueError, match="missing referenced files"):
+        create_candidate_skill_overlay(
+            workspace_root=tmp_path,
+            run_id="run-missing-package-file",
+            candidate=candidate,
+            target_skill_path=skill_path,
+            baseline_skill_roots=(skills_root,),
+        )
+
+    assert skill_path.read_text(encoding="utf-8") == "# Original\n"
+
+
 def test_cleanup_self_evolve_overlays_retains_latest_runs(tmp_path: Path) -> None:
     root = tmp_path / ".aworld" / "self_evolve"
     old_overlay = root / "run-old" / "overlays" / "cand-1" / "skills"

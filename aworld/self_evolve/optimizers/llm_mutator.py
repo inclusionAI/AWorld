@@ -10,6 +10,7 @@ from typing import Any, Awaitable, Callable, Mapping, Sequence
 from aworld.self_evolve.candidate_package import (
     candidate_content_semantic_fingerprint,
     candidate_package_fingerprint,
+    candidate_package_reference_report,
     candidate_semantic_package_fingerprint,
     validate_candidate_files,
 )
@@ -503,6 +504,11 @@ def _build_mutation_prompt(request: OptimizerRequest, *, candidate_index: int) -
         "resource names, claim text, filenames, URLs, or identifiers from trajectory "
         "evidence. "
         "Replay files must accompany a reusable target behavior delta, not replace it. "
+        "Treat SKILL.md and every candidate-owned file as one atomic release package. "
+        "Include every added or changed package file in files. Every concrete replay/... "
+        "path named by content or patch_intent must already exist in "
+        "target_package_inventory or be supplied as an upsert in files; never describe "
+        "a file that is absent from the candidate package. "
         "Return the value of expected_output as exactly one JSON object, without a wrapper; "
         "use at most one of content or patch_intent, and omit both only when candidate-owned "
         "files implement the reusable delta.\n"
@@ -858,6 +864,11 @@ def _focused_repair_prompt_instructions(
             "for this failure. "
         )
     instructions += (
+        "Treat SKILL.md and every candidate-owned file as one atomic release package. "
+        "Include every added or changed package file in files. Every concrete replay/... "
+        "path named by content or patch_intent must already exist in "
+        "target_package_inventory or be supplied as an upsert in files; never describe "
+        "a file that is absent from the candidate package. "
         "Return the value of expected_output as exactly one JSON object without a "
         "wrapper. Use at most one of content or patch_intent; both may be omitted "
         "when candidate-owned files implement the reusable behavior delta.\n"
@@ -874,17 +885,43 @@ def _validate_mutator_output_context(
     """Validate request-bound semantics while same-slot repair is available."""
 
     try:
-        _, _, _, files = _materialize_mutator_output(
+        content, _, _, files = _materialize_mutator_output(
             output,
             request=request,
             candidate_index=candidate_index,
         )
         declared_addressed_improvement_signal_ids(request, output)
-        _overlay_repair_focus_files(
+        files, _ = _overlay_repair_focus_files(
             request,
             candidate_index=candidate_index,
             candidate_files=files,
         )
+        files, _ = _preserve_existing_replay_package_for_target_delta(
+            request,
+            candidate_index=candidate_index,
+            candidate_files=files,
+        )
+        reference_report = candidate_package_reference_report(
+            CandidateVariant(
+                candidate_id="pending",
+                target=request.target,
+                content=content,
+                rationale="candidate package validation",
+                target_fingerprint=request.target_fingerprint,
+                files=files,
+            ),
+            existing_paths=request.target_package_inventory,
+        )
+        if not reference_report["closed"]:
+            missing = ", ".join(
+                reference_report["missing_referenced_paths"]
+            )
+            raise CandidateMaterializationError(
+                CandidateMaterializationCode.PACKAGE_REFERENCE_MISSING,
+                "candidate package is missing files referenced by skill content: "
+                + missing,
+                field_path=CandidateFailureField.FILES,
+            )
     except CandidateSemanticValidationError:
         raise
     except CandidateMaterializationError as exc:
@@ -1006,34 +1043,17 @@ def _preserve_existing_replay_package_for_target_delta(
     candidate_index: int,
     candidate_files: tuple[CandidateFileDelta, ...],
 ) -> tuple[tuple[CandidateFileDelta, ...], int]:
-    """Keep target-behavior exploration separate from replay capability authoring."""
+    """Preserve authorized candidate files as part of the atomic release package.
 
-    if not candidate_files:
-        return candidate_files, 0
-    context = request.evolution_context or compile_evolution_context(request)
-    if isinstance(
-        context.repair_focus_for_candidate(candidate_index=candidate_index),
-        Mapping,
-    ):
-        return candidate_files, 0
-    if (
-        _population_strategy(request, candidate_index)["name"]
-        == "missing_capability_completion"
-    ):
-        return candidate_files, 0
-    inventory = {
-        str(path).strip().replace("\\", "/")
-        for path in request.target_package_inventory
-    }
-    if "replay/capability.json" not in inventory:
-        return candidate_files, 0
+    ``_overlay_repair_focus_files`` is the authorization boundary. Once a file
+    survives it, silently dropping that file would make replay verify a different
+    package from the one the mutator proposed and can leave published Markdown
+    with unresolved dependencies. Keep the legacy return shape for diagnostic
+    compatibility; the discarded count is now always zero.
+    """
 
-    retained = tuple(
-        item
-        for item in candidate_files
-        if not item.path.replace("\\", "/").startswith("replay/")
-    )
-    return retained, len(candidate_files) - len(retained)
+    del request, candidate_index
+    return candidate_files, 0
 
 
 def _has_lesson_backed_delta_signal(request: OptimizerRequest) -> bool:
