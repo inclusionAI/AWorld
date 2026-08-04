@@ -78,6 +78,7 @@ from aworld.self_evolve.schema_diagnostics import (
 from aworld.self_evolve.types import CandidateVariant, DatasetRecipe, SelfEvolveTargetRef, to_json_dict
 
 _EVIDENCE_RETRY_LIMIT = 1
+_SERVICE_STARTUP_RETRY_LIMIT = 1
 _SYNTHETIC_EVIDENCE_EXCERPT_CHARS = 4000
 _MAX_METADATA_EVIDENCE_CHARS = 16_384
 _MAX_EVIDENCE_MANIFEST_BYTES = 1024 * 1024
@@ -723,6 +724,11 @@ def candidate_replay_pair_coverage(
                     and physical_result.failure is not None
                 ):
                     owner_counts[physical_result.failure.owner] += 1
+                    if physical_result.failure.owner in {
+                        FailureOwner.INFRASTRUCTURE,
+                        FailureOwner.FRAMEWORK,
+                    }:
+                        infrastructure_failure_count += 1
             if variant.status is ReplayExecutionStatus.BLOCKED:
                 blocked_variant_count += 1
                 member_blocked = True
@@ -732,11 +738,6 @@ def candidate_replay_pair_coverage(
             blocked_member_count += 1
         if baseline.status is ReplayExecutionStatus.FAILED:
             baseline_execution_failure_count += 1
-            if baseline.failure is not None and baseline.failure.owner in {
-                FailureOwner.INFRASTRUCTURE,
-                FailureOwner.FRAMEWORK,
-            }:
-                infrastructure_failure_count += 1
         if candidate.status is ReplayExecutionStatus.FAILED:
             candidate_execution_failure_count += 1
             candidate_failure_count += 1
@@ -2609,7 +2610,11 @@ class AWorldCliCandidateReplayBackend:
         artifact_dir: Path,
     ) -> ReplayVariantResult:
         attempts: list[ReplayVariantResult] = []
-        for attempt_index in range(1, _EVIDENCE_RETRY_LIMIT + 2):
+        retry_attempt_limit = max(
+            _EVIDENCE_RETRY_LIMIT,
+            _SERVICE_STARTUP_RETRY_LIMIT,
+        )
+        for attempt_index in range(1, retry_attempt_limit + 2):
             attempt_variant_id = (
                 variant_id
                 if attempt_index == 1
@@ -2631,17 +2636,33 @@ class AWorldCliCandidateReplayBackend:
             framework_capture_failure = (
                 _is_retryable_framework_capture_failure(result)
             )
-            if not evidence_failure and not framework_capture_failure:
+            service_startup_failure = (
+                _is_retryable_replay_service_startup_failure(result)
+            )
+            if (
+                not evidence_failure
+                and not framework_capture_failure
+                and not service_startup_failure
+            ):
                 return _merge_replay_attempt_metrics(
                     result,
                     attempts=attempts,
                     canonical_variant_id=variant_id,
                 )
-            if attempt_index <= _EVIDENCE_RETRY_LIMIT:
+            retry_limit = (
+                _SERVICE_STARTUP_RETRY_LIMIT
+                if service_startup_failure
+                else _EVIDENCE_RETRY_LIMIT
+            )
+            if attempt_index <= retry_limit:
                 retry_event = (
                     "self_evolve.replay.evidence_retry"
                     if evidence_failure
-                    else "self_evolve.replay.framework_capture_retry"
+                    else (
+                        "self_evolve.replay.framework_capture_retry"
+                        if framework_capture_failure
+                        else "self_evolve.replay.service_startup_retry"
+                    )
                 )
                 logger.info(
                     f"{retry_event} "
@@ -2734,35 +2755,21 @@ class AWorldCliCandidateReplayBackend:
                 task_input = _replace_replay_endpoints(task_input, endpoint_urls)
                 environment.update(service_session.environment)
             except Exception as exc:
-                has_candidate_runtime = any(
-                    service.transport == "skill_runtime"
-                    for service in replay_capability.services
+                service_failure_details = _replay_service_start_failure_details(
+                    exc,
+                    replay_capability=replay_capability,
                 )
-                service_failure_details: dict[str, Any] = {
-                    "type": type(exc).__name__,
-                    "reason": str(exc),
-                    "outcome": (
-                        "candidate_failure"
-                        if has_candidate_runtime
-                        and isinstance(
-                            exc,
-                            (
-                                ReplayServiceProtocolError,
-                                RuntimeError,
-                                TimeoutError,
-                                ValueError,
-                            ),
-                        )
-                        else "infrastructure_failure"
-                    ),
-                }
                 fixture_summaries = _replay_capability_fixture_summaries(
                     replay_capability
                 )
                 if fixture_summaries:
-                    service_failure_details["diagnostics"] = {
+                    diagnostics = dict(
+                        service_failure_details.get("diagnostics") or {}
+                    )
+                    diagnostics.update({
                         "replay_fixture_summaries": fixture_summaries,
-                    }
+                    })
+                    service_failure_details["diagnostics"] = diagnostics
                 service_failure = service_failure_details
         execution_request = ReplayExecutionRequest(
             variant_id=variant_id,
@@ -4271,6 +4278,9 @@ async def _start_replay_services(
                     kind=service.readiness.kind,
                     path=service.readiness.path,
                     timeout_seconds=service.readiness.timeout_seconds,
+                    phase="startup",
+                    service_id=service.service_id,
+                    transport=service.transport,
                     validate_advertised_websockets=(
                         service.transport == "skill_runtime"
                     ),
@@ -4344,6 +4354,9 @@ async def _start_replay_services(
                         kind=protocol_probe.kind,
                         path=protocol_probe.path,
                         timeout_seconds=protocol_probe.timeout_seconds,
+                        phase="protocol_probe",
+                        service_id=service.service_id,
+                        transport=service.transport,
                         validate_advertised_websockets=(
                             protocol_probe.validate_advertised_websockets
                         ),
@@ -4366,6 +4379,16 @@ async def _start_replay_services(
                     _validate_replay_service_protocol_trace(protocol_trace)
                     _reset_replay_service_protocol_trace(protocol_trace)
             except Exception as exc:
+                if isinstance(exc, ReplayServiceProtocolError):
+                    exc = ReplayServiceProtocolError(
+                        str(exc),
+                        code=exc.code,
+                        details={
+                            **exc.details,
+                            "service_id": service.service_id,
+                            "transport": service.transport,
+                        },
+                    )
                 raise _replay_service_failure_with_stderr(
                     exc,
                     stderr_path=stderr_path,
@@ -4970,6 +4993,25 @@ def _replay_service_failure_with_stderr(
             code=exc.code,
             details=exc.details,
         )
+    if isinstance(exc, ReplayServiceReadinessTimeout):
+        return ReplayServiceReadinessTimeout(
+            message,
+            phase=exc.phase,
+            timeout_seconds=exc.timeout_seconds,
+            service_id=exc.service_id,
+            transport=exc.transport,
+            last_error_type=exc.last_error_type,
+            last_error_errno=exc.last_error_errno,
+            process_returncode=exc.process_returncode,
+        )
+    if isinstance(exc, ReplayServiceProcessExitedError):
+        return ReplayServiceProcessExitedError(
+            message,
+            phase=exc.phase,
+            service_id=exc.service_id,
+            transport=exc.transport,
+            process_returncode=exc.process_returncode,
+        )
     if isinstance(exc, TimeoutError):
         return TimeoutError(message)
     if isinstance(exc, RuntimeError):
@@ -5023,6 +5065,158 @@ def _reserve_loopback_port() -> int:
         return int(probe.getsockname()[1])
 
 
+class ReplayServiceReadinessTimeout(TimeoutError):
+    """Typed readiness timeout whose phase determines causal ownership."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        phase: str,
+        timeout_seconds: float,
+        service_id: str | None,
+        transport: str | None,
+        last_error_type: str | None,
+        last_error_errno: int | None,
+        process_returncode: int | None,
+    ) -> None:
+        super().__init__(message)
+        self.phase = phase
+        self.timeout_seconds = timeout_seconds
+        self.service_id = service_id
+        self.transport = transport
+        self.last_error_type = last_error_type
+        self.last_error_errno = last_error_errno
+        self.process_returncode = process_returncode
+
+    def diagnostics(self) -> dict[str, Any]:
+        return {
+            key: value
+            for key, value in {
+                "phase": self.phase,
+                "timeout_seconds": self.timeout_seconds,
+                "service_id": self.service_id,
+                "transport": self.transport,
+                "last_error_type": self.last_error_type,
+                "last_error_errno": self.last_error_errno,
+                "process_returncode": self.process_returncode,
+            }.items()
+            if value is not None
+        }
+
+
+class ReplayServiceProcessExitedError(RuntimeError):
+    """Typed early service exit with enough context for causal ownership."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        phase: str,
+        service_id: str | None,
+        transport: str | None,
+        process_returncode: int | None,
+    ) -> None:
+        super().__init__(message)
+        self.phase = phase
+        self.service_id = service_id
+        self.transport = transport
+        self.process_returncode = process_returncode
+
+    def diagnostics(self) -> dict[str, Any]:
+        return {
+            key: value
+            for key, value in {
+                "phase": self.phase,
+                "service_id": self.service_id,
+                "transport": self.transport,
+                "process_returncode": self.process_returncode,
+            }.items()
+            if value is not None
+        }
+
+
+def _replay_service_start_failure_details(
+    exc: Exception,
+    *,
+    replay_capability: FrozenReplayCapability,
+) -> dict[str, Any]:
+    has_candidate_runtime = any(
+        service.transport == "skill_runtime"
+        for service in replay_capability.services
+    )
+    diagnostics: dict[str, Any] = {}
+    if isinstance(exc, ReplayServiceReadinessTimeout):
+        diagnostics.update(exc.diagnostics())
+        candidate_owned = (
+            exc.phase == "protocol_probe"
+            and exc.transport == "skill_runtime"
+        )
+        code = (
+            "replay_service_protocol_probe_timeout"
+            if candidate_owned
+            else "replay_service_startup_timeout"
+        )
+        category = (
+            "replay_service_protocol"
+            if candidate_owned
+            else "replay_service_startup"
+        )
+        repairable = True
+    elif isinstance(exc, ReplayServiceProtocolError):
+        transport = exc.details.get("transport")
+        candidate_owned = (
+            transport == "skill_runtime"
+            if isinstance(transport, str)
+            else has_candidate_runtime
+        )
+        code = exc.code or "replay_service_protocol_error"
+        category = "replay_service_protocol"
+        repairable = True
+        diagnostics.update(exc.details)
+    elif isinstance(exc, ReplayServiceProcessExitedError):
+        diagnostics.update(exc.diagnostics())
+        candidate_owned = exc.transport == "skill_runtime"
+        code = (
+            "replay_service_candidate_runtime_exited"
+            if candidate_owned
+            else "replay_service_startup_process_exited"
+        )
+        category = "replay_service_startup"
+        repairable = True
+    elif isinstance(exc, TimeoutError):
+        # Untyped timeouts cannot prove a candidate defect. Keep them on the
+        # system side so prose or exception inheritance cannot stop a campaign.
+        candidate_owned = False
+        code = "replay_service_startup_timeout"
+        category = "replay_service_startup"
+        repairable = True
+    else:
+        # Generic exceptions do not carry executable evidence that candidate
+        # content caused the failure. Candidate ownership is reserved for the
+        # typed protocol and runtime-exit events above.
+        candidate_owned = False
+        code = "replay_service_infrastructure_failed"
+        category = "replay_service_preflight"
+        repairable = False
+    details: dict[str, Any] = {
+        "type": type(exc).__name__,
+        "code": code,
+        "reason": str(exc),
+        "outcome": (
+            "candidate_failure"
+            if candidate_owned
+            else "infrastructure_failure"
+        ),
+        "failure_stage": FailureStage.CAPABILITY_PREFLIGHT.value,
+        "repairable": repairable,
+        "category": category,
+    }
+    if diagnostics:
+        details["diagnostics"] = diagnostics
+    return details
+
+
 async def _wait_for_replay_service(
     process: subprocess.Popen[Any],
     *,
@@ -5031,6 +5225,9 @@ async def _wait_for_replay_service(
     kind: str,
     path: str,
     timeout_seconds: float,
+    phase: str = "startup",
+    service_id: str | None = None,
+    transport: str | None = None,
     validate_advertised_websockets: bool = False,
     request_text: str | None = None,
     response_contains: str | None = None,
@@ -5042,8 +5239,12 @@ async def _wait_for_replay_service(
     last_error: OSError | None = None
     while time.monotonic() < deadline:
         if process.poll() is not None:
-            raise RuntimeError(
-                f"replay service exited before readiness (exit={process.returncode})"
+            raise ReplayServiceProcessExitedError(
+                f"replay service exited before readiness (exit={process.returncode})",
+                phase=phase,
+                service_id=service_id,
+                transport=transport,
+                process_returncode=process.returncode,
             )
         try:
             await asyncio.to_thread(
@@ -5071,8 +5272,15 @@ async def _wait_for_replay_service(
             if isinstance(exc, ReplayServiceProtocolError):
                 raise
             await asyncio.sleep(0.02)
-    raise TimeoutError(
-        f"replay service readiness timed out after {timeout_seconds}s: {last_error}"
+    raise ReplayServiceReadinessTimeout(
+        f"replay service readiness timed out after {timeout_seconds}s: {last_error}",
+        phase=phase,
+        timeout_seconds=timeout_seconds,
+        service_id=service_id,
+        transport=transport,
+        last_error_type=(type(last_error).__name__ if last_error is not None else None),
+        last_error_errno=getattr(last_error, "errno", None),
+        process_returncode=process.poll(),
     )
 
 
@@ -6821,6 +7029,23 @@ def _is_retryable_framework_capture_failure(
     )
 
 
+def _is_retryable_replay_service_startup_failure(
+    result: ReplayVariantResult,
+) -> bool:
+    failure = result.failure
+    return (
+        isinstance(failure, ReplayFailureEvent)
+        and failure.owner is FailureOwner.INFRASTRUCTURE
+        and failure.stage is FailureStage.CAPABILITY_PREFLIGHT
+        and failure.scope is FailureScope.SHARED_RUN
+        and failure.code in {
+            "replay_service_startup_timeout",
+            "replay_service_startup_process_exited",
+        }
+        and failure.repairable
+    )
+
+
 def _merge_replay_attempt_metrics(
     result: ReplayVariantResult,
     *,
@@ -6852,6 +7077,10 @@ def _merge_replay_attempt_metrics(
         ),
         "framework_capture_retry_count": sum(
             _is_retryable_framework_capture_failure(attempt)
+            for attempt in attempts[:-1]
+        ),
+        "service_startup_retry_count": sum(
+            _is_retryable_replay_service_startup_failure(attempt)
             for attempt in attempts[:-1]
         ),
     }

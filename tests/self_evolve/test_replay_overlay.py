@@ -32,6 +32,8 @@ from aworld.self_evolve.replay import (
     CandidateReplayResult,
     ReplayExecutionRequest,
     ReplayExecutionResult,
+    ReplayServiceProcessExitedError,
+    ReplayServiceReadinessTimeout,
     ReplayServiceProtocolError,
     ReplayVariantResult,
     build_paired_replay_dataset,
@@ -45,6 +47,7 @@ from aworld.self_evolve.replay import (
     _invalid_evidence_manifest_entry_reason,
     _infer_baseline_skill_root_from_target,
     _evidence_manifest_metrics,
+    _execution_failure_event,
     _extract_trajectory_payload_from_stdout,
     _has_authoritative_per_member_repetitions,
     _member_artifact_name,
@@ -64,6 +67,7 @@ from aworld.self_evolve.replay import (
     replay_capability_fixture_leaf_values,
     replay_capability_fixture_response_leaf_values,
     _replay_service_failure_with_stderr,
+    _replay_service_start_failure_details,
     _stored_baseline_matches_request,
     _replay_failure_outcome,
     _run_replay_cli,
@@ -2975,6 +2979,130 @@ def test_candidate_owned_runtime_protocol_failure_is_not_infrastructure() -> Non
     assert _replay_failure_outcome(variant.failure) == "candidate_failure"
 
 
+def _frozen_skill_runtime_capability(tmp_path: Path) -> FrozenReplayCapability:
+    return FrozenReplayCapability(
+        capability_id="demo.replay",
+        capability_package_fingerprint="sha256:package",
+        request_fingerprint="sha256:request",
+        frozen_root=str(tmp_path / "frozen"),
+        handled_requirements=("req-1",),
+        unhandled_requirements=(),
+        evidence_refs={},
+        fixture_evidence_refs={},
+        fixtures=(),
+        runtime_files=(),
+        endpoint_replacements={},
+        services=(
+            ReplayServiceSpec(
+                service_id="service-0",
+                requirement_id="req-1",
+                transport="skill_runtime",
+                response_fixture="fixture.json",
+            ),
+        ),
+        deterministic=True,
+        fingerprint="sha256:frozen",
+        ready=True,
+    )
+
+
+def test_replay_service_startup_timeout_is_typed_as_retryable_infrastructure(
+    tmp_path: Path,
+) -> None:
+    timeout = ReplayServiceReadinessTimeout(
+        "replay service readiness timed out after 5.0s: connection refused",
+        phase="startup",
+        timeout_seconds=5.0,
+        service_id="service-0",
+        transport="skill_runtime",
+        last_error_type="ConnectionRefusedError",
+        last_error_errno=61,
+        process_returncode=None,
+    )
+
+    details = _replay_service_start_failure_details(
+        timeout,
+        replay_capability=_frozen_skill_runtime_capability(tmp_path),
+    )
+    event = _execution_failure_event(
+        details,
+        default_stage=FailureStage.TASK_ROLLOUT,
+        service_preflight=True,
+    )
+
+    assert details["outcome"] == "infrastructure_failure"
+    assert details["code"] == "replay_service_startup_timeout"
+    assert details["diagnostics"]["last_error_errno"] == 61
+    assert event.owner is FailureOwner.INFRASTRUCTURE
+    assert event.stage is FailureStage.CAPABILITY_PREFLIGHT
+    assert event.scope is FailureScope.SHARED_RUN
+    assert event.repairable is True
+
+
+def test_replay_service_protocol_probe_timeout_remains_candidate_owned(
+    tmp_path: Path,
+) -> None:
+    timeout = ReplayServiceReadinessTimeout(
+        "replay service protocol probe timed out",
+        phase="protocol_probe",
+        timeout_seconds=5.0,
+        service_id="service-0",
+        transport="skill_runtime",
+        last_error_type="TimeoutError",
+        last_error_errno=None,
+        process_returncode=None,
+    )
+
+    details = _replay_service_start_failure_details(
+        timeout,
+        replay_capability=_frozen_skill_runtime_capability(tmp_path),
+    )
+    event = _execution_failure_event(
+        details,
+        default_stage=FailureStage.TASK_ROLLOUT,
+        service_preflight=True,
+    )
+
+    assert details["outcome"] == "candidate_failure"
+    assert details["code"] == "replay_service_protocol_probe_timeout"
+    assert event.owner is FailureOwner.CANDIDATE
+    assert event.scope is FailureScope.CANDIDATE
+
+
+def test_replay_service_candidate_runtime_exit_has_explicit_candidate_ownership(
+    tmp_path: Path,
+) -> None:
+    exited = ReplayServiceProcessExitedError(
+        "replay service exited before readiness (exit=2)",
+        phase="startup",
+        service_id="service-0",
+        transport="skill_runtime",
+        process_returncode=2,
+    )
+
+    details = _replay_service_start_failure_details(
+        exited,
+        replay_capability=_frozen_skill_runtime_capability(tmp_path),
+    )
+
+    assert details["outcome"] == "candidate_failure"
+    assert details["code"] == "replay_service_candidate_runtime_exited"
+    assert details["diagnostics"]["process_returncode"] == 2
+
+
+def test_untyped_service_preflight_exception_cannot_claim_candidate_ownership(
+    tmp_path: Path,
+) -> None:
+    details = _replay_service_start_failure_details(
+        ValueError("frozen replay capability directories are missing"),
+        replay_capability=_frozen_skill_runtime_capability(tmp_path),
+    )
+
+    assert details["outcome"] == "infrastructure_failure"
+    assert details["code"] == "replay_service_infrastructure_failed"
+    assert details["repairable"] is False
+
+
 def test_replay_service_failure_includes_bounded_sanitized_runtime_stderr(
     tmp_path: Path,
 ) -> None:
@@ -5501,6 +5629,74 @@ async def test_aworld_cli_candidate_replay_backend_retries_framework_capture_fai
     assert result.candidate.metrics["replay_attempt_count"] == 2.0
     assert result.candidate.metrics["framework_capture_retry_count"] == 1.0
     assert result.candidate.metrics["evidence_retry_count"] == 0.0
+
+
+@pytest.mark.asyncio
+async def test_replay_variant_retries_transient_service_startup_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend = AWorldCliCandidateReplayBackend()
+    calls: list[str] = []
+    startup_failure = ReplayVariantResult(
+        variant_id="candidate-1",
+        status=ReplayExecutionStatus.FAILED,
+        trajectory=[],
+        failure=ReplayFailureEvent(
+            code="replay_service_startup_timeout",
+            owner=FailureOwner.INFRASTRUCTURE,
+            stage=FailureStage.CAPABILITY_PREFLIGHT,
+            scope=FailureScope.SHARED_RUN,
+            repairable=True,
+            summary="replay service readiness timed out",
+        ),
+    )
+    succeeded = ReplayVariantResult(
+        variant_id="candidate-1__evidence_retry_2",
+        status=ReplayExecutionStatus.SUCCEEDED,
+        trajectory=[{"action": {"content": "replayed"}}],
+        metrics={"service_startup_status": "ready"},
+    )
+
+    async def fake_run_variant(
+        request,
+        *,
+        variant_id: str,
+        skill_root: str | None,
+        artifact_dir: Path,
+    ) -> ReplayVariantResult:
+        del request, skill_root, artifact_dir
+        calls.append(variant_id)
+        return startup_failure if len(calls) == 1 else succeeded
+
+    monkeypatch.setattr(backend, "_run_variant", fake_run_variant)
+    request = CandidateReplayRequest(
+        run_id="run-service-startup-retry",
+        task_id="task-1",
+        workspace_root=str(tmp_path),
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo"),
+        candidate_id="candidate-1",
+        overlay_skill_root=str(tmp_path / "overlay"),
+        task_input="Replay this task",
+    )
+
+    result = await backend._run_variant_with_evidence_retries(
+        request,
+        variant_id="candidate-1",
+        skill_root=request.overlay_skill_root,
+        artifact_dir=tmp_path / "replay",
+    )
+
+    assert calls == ["candidate-1", "candidate-1__evidence_retry_2"]
+    assert result.succeeded is True
+    assert result.variant_id == "candidate-1"
+    assert result.metrics["service_startup_retry_count"] == 1
+    assert result.metrics["framework_capture_retry_count"] == 0
+    assert result.metrics["evidence_retry_count"] == 0
+    assert result.metrics["service_startup_status"] == "ready"
+    assert result.metrics["retry_failures"][0]["outcome"] == (
+        "infrastructure_failure"
+    )
 
 
 @pytest.mark.asyncio
