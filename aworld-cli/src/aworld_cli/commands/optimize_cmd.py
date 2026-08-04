@@ -21,6 +21,7 @@ def _usage() -> str:
   /optimize --from-source <file-or-directory> --source-ingestor <registered-name> --target <target>
   /optimize --frozen-ingestion-id <id> --semantic-evidence-approval <approval.json> --semantic-qualification-report <report.json> --apply auto_verified
   /optimize --from-trajectory <trajectory.log> --apply proposal [--target <target>]
+  /optimize --from-trajectory <trajectory.log> --apply verified_only --target <target> --judge-agent <agent.md>
   /optimize --from-trajectory <trajectory.log> --apply auto_verified --new-skill-policy auto_verified --judge-agent <agent.md>
   /optimize --from-trajectory <multi-task-trajectory.log> --include-prior-runs --apply proposal
   /optimize --from-trajectory-set <trajectory-set.json> --apply auto_verified --judge-agent <agent.md>
@@ -34,6 +35,7 @@ Examples:
   /optimize --from-source ~/Documents/domain-data --ingestion-only
   /optimize --frozen-ingestion-id <id> --semantic-evidence-approval ./approval.json --semantic-qualification-report ./qualification.json --apply auto_verified
   /optimize --from-trajectory ~/Documents/task.log --apply proposal
+  /optimize --from-trajectory ~/Documents/task.log --apply verified_only --target skill:media_comprehension --judge-agent ~/Documents/agent.md
   /optimize --from-trajectory ~/Documents/task.log --apply auto_verified --judge-agent ~/Documents/agent.md
   /optimize --from-trajectory-set ./trajectory-set.json --apply auto_verified --judge-agent ~/Documents/agent.md
   /optimize --from-run cli-123456789012 --rerun-evaluator --apply auto_verified --judge-agent ~/Documents/agent.md
@@ -120,6 +122,7 @@ class OptimizeCommand(Command):
             "/optimize --from-trajectory": "Run self-evolve from one or more AWorld trajectory log records",
             "/optimize --from-trajectory-set": "Run self-evolve from an advanced explicit trajectory-set file",
             "/optimize --apply auto_verified": "Run verified replay/evaluation before applying",
+            "/optimize --apply verified_only": "Verify in a run-owned isolated target without publishing",
             "/optimize --drain-pending": "Drain pending post-run self-evolve jobs",
         }
 
@@ -156,8 +159,14 @@ class OptimizeCommand(Command):
             )
             return f"Drained pending self-evolve jobs: {drained}"
 
-        if args.resume_campaign and args.apply not in {None, "auto_verified"}:
-            return "Optimize error: --resume-campaign requires --apply auto_verified"
+        if args.resume_campaign and args.apply not in {
+            None,
+            "auto_verified",
+            "verified_only",
+        }:
+            return (
+                "Optimize error: --resume-campaign requires a verified apply policy"
+            )
 
         try:
             runtime_registry_refresher = _runtime_registry_refresher(context.runtime)

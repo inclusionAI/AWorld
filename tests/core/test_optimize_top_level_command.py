@@ -426,7 +426,7 @@ def test_optimize_command_rejects_proposal_campaign_resume(
         )
 
     assert exc_info.value.code == 1
-    assert "--resume-campaign requires --apply auto_verified" in capsys.readouterr().out
+    assert "--resume-campaign requires a verified apply policy" in capsys.readouterr().out
 
 
 @pytest.mark.parametrize("target", ["skill:demo", "prompt:system", "tool:browser"])
@@ -798,6 +798,63 @@ def test_run_optimize_cli_uses_interactive_auto_verified_defaults(
     assert calls["baseline_replay_repetitions"] == 2
     assert calls["candidate_replay_repetitions"] == 3
     assert calls["iterations"] is None
+
+
+def test_run_optimize_cli_uses_verified_defaults_without_publish(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import aworld.self_evolve as self_evolve
+
+    calls = {}
+
+    def fake_optimize_from_cli_request(**kwargs):
+        calls.update(kwargs)
+        return {"report_path": str(tmp_path / "report.json")}
+
+    monkeypatch.setattr(
+        self_evolve,
+        "optimize_from_cli_request",
+        fake_optimize_from_cli_request,
+        raising=False,
+    )
+
+    run_optimize_cli(
+        agent=None,
+        task=None,
+        target="skill:demo",
+        dataset=None,
+        from_session=None,
+        from_trajectory="trajectory.log",
+        batch_config=None,
+        iterations=None,
+        max_improvement_cycles=1,
+        apply="verified_only",
+        infer_target=False,
+        workspace_root=str(tmp_path),
+        judge_agent="agent.md",
+    )
+
+    assert calls["apply_policy"] == "verified_only"
+    assert calls["replay_enabled"] is True
+    assert calls["judge_repetitions"] == 1
+    assert calls["baseline_replay_repetitions"] == 2
+    assert calls["candidate_replay_repetitions"] == 3
+
+
+def test_render_optimize_summary_exposes_verified_only_target() -> None:
+    summary = render_optimize_summary(
+        {
+            "status": "succeeded",
+            "release_state": "verified_only",
+            "published": False,
+            "verified_target_path": "/tmp/run/verified_targets/demo/SKILL.md",
+        }
+    )
+
+    assert "Release state: verified_only" in summary
+    assert "Published: no" in summary
+    assert "Verified target: /tmp/run/verified_targets/demo/SKILL.md" in summary
 
 
 def test_run_optimize_cli_can_forward_progress_callback(
