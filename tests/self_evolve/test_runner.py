@@ -949,6 +949,13 @@ def test_iteration_selection_does_not_treat_failed_replay_gate_as_deeper() -> No
     ("gate_name", "details", "owner", "scope", "stage"),
     [
         (
+            "candidate_package",
+            {"code": "candidate_package_reference_missing"},
+            "candidate",
+            "candidate",
+            "candidate_generation",
+        ),
+        (
             "evidence_quality",
             {"evidence_incomplete": True},
             "candidate",
@@ -14042,6 +14049,44 @@ def test_default_post_apply_evaluator_requires_runtime_loader_match(tmp_path) ->
     assert summary.metrics["content_matches_target_file"] is True
     assert summary.metrics["runtime_skill_found"] is False
     assert summary.metrics["evaluator_mode"] == "post_apply_runtime_loader"
+    assert summary.metrics["candidate_package_references"]["closed"] is True
+
+
+def test_default_post_apply_evaluator_rejects_missing_package_dependency(
+    tmp_path,
+) -> None:
+    skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    candidate_content = (
+        "---\nname: demo\n---\n# Demo\n\n"
+        "Run `python3 replay/missing_probe.py`.\n"
+    )
+    skill_path.write_text(candidate_content, encoding="utf-8")
+    target = SkillTextTarget(
+        skill_path,
+        target_id="demo",
+        allow_auto_apply=True,
+    )
+    candidate = CandidateVariant(
+        candidate_id="cand-missing-dependency",
+        target=target.identity,
+        content=candidate_content,
+        rationale="post-apply package closure",
+        files=(
+            CandidateFileDelta(
+                path="replay/missing_probe.py",
+                content="print('declared but not materialized')\n",
+            ),
+        ),
+    )
+
+    summary = _default_post_apply_evaluator(target)(candidate)
+
+    assert summary.metrics["post_apply_passed"] is False
+    assert summary.metrics["candidate_package_references"]["closed"] is False
+    assert summary.metrics["candidate_package_references"][
+        "missing_referenced_paths"
+    ] == ["replay/missing_probe.py"]
 
 
 @pytest.mark.asyncio

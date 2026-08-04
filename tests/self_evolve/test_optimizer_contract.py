@@ -11,9 +11,15 @@ from aworld.self_evolve.candidate_generation import (
 )
 from aworld.self_evolve.feedback import normalize_feedback_summary
 from aworld.self_evolve.lessons import LessonRecord
-from aworld.self_evolve.optimizers.base import OptimizerRequest
+from aworld.self_evolve.optimizers.base import (
+    CandidateSemanticValidationError,
+    OptimizerRequest,
+)
 from aworld.self_evolve.optimizers.dspy_adapter import DSPyGEPAOptimizer, DSPyMIPROOptimizer
-from aworld.self_evolve.optimizers.llm_mutator import TraceReflectiveLLMMutator
+from aworld.self_evolve.optimizers.llm_mutator import (
+    TraceReflectiveLLMMutator,
+    _validate_mutator_output_context,
+)
 from aworld.self_evolve.patch_intent import apply_skill_patch_intent
 from aworld.self_evolve.replay_adaptation import ReplayCapabilityRequirement
 from aworld.self_evolve.trace_pack import build_trace_pack
@@ -427,7 +433,7 @@ async def test_trace_reflective_llm_mutator_materializes_candidate_files() -> No
 
 
 @pytest.mark.asyncio
-async def test_minimal_target_delta_preserves_existing_replay_package() -> None:
+async def test_authorized_target_delta_preserves_candidate_release_files() -> None:
     async def mutate(prompt: str) -> dict:
         del prompt
         return {
@@ -464,8 +470,44 @@ async def test_minimal_target_delta_preserves_existing_replay_package() -> None:
     result = await TraceReflectiveLLMMutator(mutate_text=mutate).propose(request)
 
     assert len(result.candidates) == 1
-    assert result.candidates[0].files == ()
-    assert result.diagnostics["preserved_existing_replay_file_delta_count"] == 2
+    assert result.candidates[0].files == (
+        CandidateFileDelta(
+            path="replay/compiler.py",
+            content="raise RuntimeError('unverified rewrite')\n",
+        ),
+        CandidateFileDelta(
+            path="replay/runtime.py",
+            content="raise RuntimeError('unverified rewrite')\n",
+        ),
+    )
+    assert result.diagnostics["preserved_existing_replay_file_delta_count"] == 0
+
+
+def test_contextual_validation_rejects_unresolved_candidate_package_reference() -> None:
+    request = OptimizerRequest(
+        target=_target(),
+        current_content="# Demo\n\nOld guidance.\n",
+        target_fingerprint="sha256:old",
+        trace_packs=(_trace_pack(),),
+        target_package_inventory=("SKILL.md",),
+        max_candidates=1,
+    )
+    output = {
+        "content": (
+            "# Demo\n\nRun `python3 replay/fixture_replay_probe.py`.\n"
+        ),
+        "rationale": "add a reusable replay probe",
+    }
+
+    with pytest.raises(CandidateSemanticValidationError) as exc_info:
+        _validate_mutator_output_context(
+            output,
+            request=request,
+            candidate_index=0,
+        )
+
+    assert exc_info.value.code == "candidate_package_reference_missing"
+    assert exc_info.value.field_path == "files"
 
 
 @pytest.mark.asyncio

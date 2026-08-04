@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import Any, Iterable
 
 from aworld.self_evolve.candidate_errors import (
@@ -23,6 +23,11 @@ MAX_CANDIDATE_FILE_COUNT = 32
 MAX_CANDIDATE_FILE_BYTES = 256 * 1024
 MAX_CANDIDATE_PACKAGE_BYTES = 1024 * 1024
 _OPERATIONS = frozenset({"upsert", "delete"})
+_REPLAY_FILE_REFERENCE = re.compile(
+    r"(?<![A-Za-z0-9_./-])(?:\./)?"
+    r"(replay/(?:[A-Za-z0-9_.-]+/)*[A-Za-z0-9_.-]+)"
+    r"(?![A-Za-z0-9_./-])"
+)
 
 
 def validate_candidate_files(
@@ -259,6 +264,177 @@ def candidate_files_total_bytes(files: Iterable[CandidateFileDelta]) -> int:
         for item in validate_candidate_files(files)
         if item.operation == "upsert" and item.content is not None
     )
+
+
+def candidate_package_referenced_paths(content: str) -> tuple[str, ...]:
+    """Return concrete replay-package file paths named by skill Markdown.
+
+    Directory-only references such as ``replay/`` are intentionally excluded.
+    Every returned path uses the same normalized vocabulary as candidate file
+    deltas, so generation, verification, and release can share one closure
+    contract.
+    """
+
+    referenced: set[str] = set()
+    for match in _REPLAY_FILE_REFERENCE.finditer(str(content or "")):
+        raw_path = match.group(1).rstrip(".,;:")
+        try:
+            referenced.add(_normalized_replay_path(raw_path))
+        except CandidateMaterializationError:
+            continue
+    return tuple(sorted(referenced))
+
+
+def candidate_package_reference_report(
+    candidate: CandidateVariant,
+    *,
+    package_root: str | Path | None = None,
+    existing_paths: Iterable[str] = (),
+) -> dict[str, object]:
+    """Validate dependency closure and, when rooted, materialized file deltas."""
+
+    if candidate.target.target_type != "skill":
+        return {
+            "closed": True,
+            "references_closed": True,
+            "referenced_file_count": 0,
+            "referenced_paths": [],
+            "candidate_owned_referenced_paths": [],
+            "existing_referenced_paths": [],
+            "missing_referenced_paths": [],
+            "materialized_file_deltas_checked": False,
+            "materialized_file_delta_count": 0,
+            "materialized_file_deltas_closed": True,
+            "missing_candidate_file_paths": [],
+            "mismatched_candidate_file_paths": [],
+            "undeleted_candidate_file_paths": [],
+        }
+    referenced_paths = candidate_package_referenced_paths(candidate.content)
+    files = {
+        item.path: item for item in validate_candidate_files(candidate.files)
+    }
+    materialized_root = Path(package_root) if package_root is not None else None
+    missing_candidate_files: list[str] = []
+    mismatched_candidate_files: list[str] = []
+    undeleted_candidate_files: list[str] = []
+    if materialized_root is not None:
+        for relative_path, delta in files.items():
+            destination = materialized_root.joinpath(
+                *PurePosixPath(relative_path).parts
+            )
+            if delta.operation == "delete":
+                if destination.exists() or destination.is_symlink():
+                    undeleted_candidate_files.append(relative_path)
+                continue
+            if not _is_regular_package_file(
+                destination,
+                root=materialized_root,
+            ):
+                missing_candidate_files.append(relative_path)
+                continue
+            try:
+                materialized_content = destination.read_text(encoding="utf-8")
+                materialized_executable = bool(
+                    destination.stat().st_mode & 0o111
+                )
+            except OSError:
+                mismatched_candidate_files.append(relative_path)
+                continue
+            if (
+                materialized_content != (delta.content or "")
+                or materialized_executable != delta.executable
+            ):
+                mismatched_candidate_files.append(relative_path)
+    known_existing_paths = {
+        normalized
+        for raw_path in existing_paths
+        for normalized in (_known_replay_path(raw_path),)
+        if normalized is not None
+    }
+    root: Path | None = None
+    if materialized_root is not None:
+        root = materialized_root
+    elif candidate.target.path:
+        root = Path(candidate.target.path).expanduser().parent
+
+    missing: list[str] = []
+    candidate_owned: list[str] = []
+    existing: list[str] = []
+    for relative_path in referenced_paths:
+        delta = files.get(relative_path)
+        if delta is not None:
+            destination = (
+                materialized_root.joinpath(
+                    *PurePosixPath(relative_path).parts
+                )
+                if materialized_root is not None
+                else None
+            )
+            if delta.operation == "upsert" and (
+                destination is None
+                or _is_regular_package_file(destination, root=materialized_root)
+            ):
+                candidate_owned.append(relative_path)
+            else:
+                missing.append(relative_path)
+            continue
+        if materialized_root is None and relative_path in known_existing_paths:
+            existing.append(relative_path)
+            continue
+        destination = (
+            root.joinpath(*PurePosixPath(relative_path).parts)
+            if root is not None
+            else None
+        )
+        if destination is not None and _is_regular_package_file(
+            destination,
+            root=root,
+        ):
+            existing.append(relative_path)
+        else:
+            missing.append(relative_path)
+    materialized_file_deltas_closed = not (
+        missing_candidate_files
+        or mismatched_candidate_files
+        or undeleted_candidate_files
+    )
+    return {
+        "closed": not missing and materialized_file_deltas_closed,
+        "references_closed": not missing,
+        "referenced_file_count": len(referenced_paths),
+        "referenced_paths": list(referenced_paths),
+        "candidate_owned_referenced_paths": candidate_owned,
+        "existing_referenced_paths": existing,
+        "missing_referenced_paths": missing,
+        "materialized_file_deltas_checked": materialized_root is not None,
+        "materialized_file_delta_count": len(files),
+        "materialized_file_deltas_closed": materialized_file_deltas_closed,
+        "missing_candidate_file_paths": missing_candidate_files,
+        "mismatched_candidate_file_paths": mismatched_candidate_files,
+        "undeleted_candidate_file_paths": undeleted_candidate_files,
+    }
+
+
+def _known_replay_path(raw_path: str) -> str | None:
+    try:
+        return _normalized_replay_path(str(raw_path).strip().replace("\\", "/"))
+    except CandidateMaterializationError:
+        return None
+
+
+def _is_regular_package_file(path: Path, *, root: Path | None) -> bool:
+    if root is None or root.is_symlink():
+        return False
+    try:
+        relative = path.relative_to(root)
+    except ValueError:
+        return False
+    current = root
+    for part in relative.parts:
+        current = current / part
+        if current.is_symlink():
+            return False
+    return path.is_file()
 
 
 def _normalized_replay_path(raw_path: str) -> str:

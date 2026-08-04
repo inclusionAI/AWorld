@@ -9,6 +9,7 @@ import pytest
 from aworld.self_evolve.evaluation import CandidateConfidenceDecision, ReplayCostEstimate
 from aworld.self_evolve.gates import (
     BudgetGate,
+    CandidatePackageGate,
     CostLatencyRegressionGate,
     EvidenceQualityGate,
     ExternalCodeEvolutionGate,
@@ -37,7 +38,12 @@ from aworld.self_evolve.replay_adaptation import (
     ReplayDependency,
 )
 from aworld.self_evolve.provenance import TargetMutationIntent, TargetProvenance
-from aworld.self_evolve.types import CandidateVariant, EvaluationSummary, SelfEvolveTargetRef
+from aworld.self_evolve.types import (
+    CandidateFileDelta,
+    CandidateVariant,
+    EvaluationSummary,
+    SelfEvolveTargetRef,
+)
 from aworld.self_evolve.patch_intent import apply_skill_patch_intent
 from aworld.skills.structure import (
     MAX_SKILL_MARKDOWN_CHARS,
@@ -62,6 +68,49 @@ def _candidate(
         target_fingerprint="sha256:old",
         structural_edit_intent=structural_edit_intent,
     )
+
+
+def test_candidate_package_gate_requires_referenced_release_files(tmp_path) -> None:
+    skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("---\nname: demo\n---\n# Demo\n", encoding="utf-8")
+    content = (
+        "---\nname: demo\n---\n# Demo\n\n"
+        "Run `python3 replay/fixture_replay_probe.py`.\n"
+    )
+    missing = CandidateVariant(
+        candidate_id="cand-missing",
+        target=SelfEvolveTargetRef("skill", "demo", str(skill_path)),
+        content=content,
+        rationale="add a replay probe",
+    )
+
+    failed = CandidatePackageGate().evaluate(missing)
+
+    assert failed.passed is False
+    assert failed.details["code"] == "candidate_package_reference_missing"
+    assert failed.details["missing_referenced_paths"] == [
+        "replay/fixture_replay_probe.py"
+    ]
+
+    complete = replace(
+        missing,
+        candidate_id="cand-complete",
+        files=(
+            CandidateFileDelta(
+                path="replay/fixture_replay_probe.py",
+                content="print('ok')\n",
+            ),
+        ),
+    )
+
+    passed = CandidatePackageGate().evaluate(complete)
+
+    assert passed.passed is True
+    assert passed.details["closed"] is True
+    assert passed.details["candidate_owned_referenced_paths"] == [
+        "replay/fixture_replay_probe.py"
+    ]
 
 
 def test_replay_adaptation_gate_requires_deterministic_ready_cases() -> None:

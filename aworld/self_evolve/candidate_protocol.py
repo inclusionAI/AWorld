@@ -51,7 +51,11 @@ _CANDIDATE_OUTPUT_TEMPLATE: Mapping[str, object] = {
     "addressed_improvement_signal_ids": [],
     "files": [
         {
-            "path": "replay/<relative-path>",
+            "path": (
+                "replay/<relative-path>; every added or changed package file must "
+                "be included, and every concrete replay/... path named by content "
+                "must either exist in target_package_inventory or be upserted here"
+            ),
             "operation": "upsert or delete",
             "content": "UTF-8 text for upsert",
             "executable": False,
