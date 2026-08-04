@@ -4683,6 +4683,8 @@ class SelfEvolveRunner:
                     code="repair_target_path_missing",
                     reason="repair conformance requires a filesystem skill target",
                     details={},
+                    failure_class="framework",
+                    repairable=False,
                 ),
                 contract=contract,
             )
@@ -9032,6 +9034,23 @@ def _candidate_mutation_repair_prompt(
             "field. "
         )
     )
+    if isinstance(error, CandidateSemanticValidationError) and isinstance(
+        diagnostic.get("details"),
+        Mapping,
+    ):
+        repair_instruction += (
+            "The nested repair_conformance result is executable feedback: repair "
+            "every reported violation and missing operation in the submitted source. "
+            "Function names and line numbers are locations, not requirements; renaming "
+            "or moving the same invalid construct does not change its failure fingerprint. "
+        )
+        if error.code == "forbidden_fixture_probe_derivation":
+            repair_instruction += (
+                "For fixture probe assertions, select exactly one non-empty scalar "
+                "descendant from mapping values or sequence items. Never use mapping "
+                "keys, boolean metadata, or a concatenation of multiple scalars as "
+                "response_contains. Check bool before int/float and reject it. "
+            )
     return repair_instruction + (
         "Do not invent new task evidence. Return exactly one candidate JSON object.\n"
         + json.dumps(payload, ensure_ascii=False, sort_keys=True)
@@ -12483,12 +12502,16 @@ def _repair_conformance_gate(
     if not isinstance(public_result_details, Mapping):
         public_result_details = {}
     details = {
-        "failure_class": "candidate",
-        "repairable": not result.passed,
+        "failure_class": (
+            None if result.passed else result.failure_class
+        ),
+        "repairable": bool(not result.passed and result.repairable),
         "stage": "repair_conformance",
         "code": result.code,
         **dict(public_result_details),
     }
+    if result.failure_fingerprint is not None:
+        details["failure_fingerprint"] = result.failure_fingerprint
     if not result.passed:
         raw_causal_events = details.get("causal_failure_events")
         causal_events = (
@@ -12497,12 +12520,25 @@ def _repair_conformance_gate(
             else []
         )
         if not causal_events:
+            failure_owner = (
+                FailureOwner.FRAMEWORK
+                if result.failure_class == "framework"
+                else (
+                    FailureOwner.INFRASTRUCTURE
+                    if result.failure_class == "infrastructure"
+                    else FailureOwner.CANDIDATE
+                )
+            )
             failure_event = ReplayFailureEvent(
                 code=result.code,
-                owner=FailureOwner.CANDIDATE,
+                owner=failure_owner,
                 stage=FailureStage.CAPABILITY_PREFLIGHT,
-                scope=FailureScope.CANDIDATE,
-                repairable=True,
+                scope=(
+                    FailureScope.CANDIDATE
+                    if failure_owner is FailureOwner.CANDIDATE
+                    else FailureScope.SHARED_RUN
+                ),
+                repairable=result.repairable,
                 category="repair_conformance",
                 summary=result.reason,
                 diagnostics={
@@ -13321,6 +13357,7 @@ def _failure_signature_values(value: Any) -> list[tuple[str, str]]:
     selected_keys = {
         "code",
         "failure_class",
+        "failure_fingerprint",
         "proof_fingerprint",
         "reason",
         "repairable",

@@ -9,6 +9,7 @@ from aworld.self_evolve.repair_conformance import (
     ExactRepairProbe,
     FixtureDerivedProbeConstraint,
     RepairConformanceContract,
+    RepairConformanceResult,
     build_repair_conformance_probe_plan,
     compile_repair_conformance_contract,
     evaluate_candidate_source_conformance,
@@ -1036,6 +1037,64 @@ def test_source_conformance_rejects_fixture_probe_filter_or_hash_fallback() -> N
     )
 
 
+def test_source_conformance_rejects_combined_fixture_scalar_assertion() -> None:
+    base_runtime = "def respond(value):\n    return value\n"
+    contract = compile_repair_conformance_contract(
+        {
+            "repair_candidate_package": _package(base_runtime),
+            "candidate_validation_diagnostics": [
+                {
+                    "code": "invalid_replay_capability_compile",
+                    "capability_error_code": (
+                        "protocol_probe_not_fixture_derived"
+                    ),
+                    "fixture_probe_constraints": [
+                        {
+                            "requirement_id": "requirement-1",
+                            "kind": "http",
+                            "path": "/",
+                            "max_response_chars": 4096,
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+    assert contract is not None
+    combined = _candidate(
+        runtime_source=base_runtime,
+        compiler_source=(
+            "def select_bounded_response_value(root):\n"
+            "    scalars = collect_scalar_descendants(root)\n"
+            "    selected = scalars[:2]\n"
+            "    return ' | '.join(selected)\n"
+        ),
+    )
+
+    result = evaluate_candidate_source_conformance(combined, contract)
+
+    assert result.passed is False
+    assert result.code == "forbidden_fixture_probe_derivation"
+    assert result.details["violations"] == [
+        {
+            "path": "replay/compiler.py",
+            "function": "select_bounded_response_value",
+            "line": 4,
+            "construct": "multiple_fixture_scalars_combined",
+        }
+    ]
+
+    single = _candidate(
+        runtime_source=base_runtime,
+        compiler_source=(
+            "def select_bounded_response_value(root):\n"
+            "    scalars = collect_scalar_descendants(root)\n"
+            "    return scalars[0] if scalars else None\n"
+        ),
+    )
+    assert evaluate_candidate_source_conformance(single, contract).passed is True
+
+
 def test_source_conformance_requires_gateway_branch_after_outside_payload_failure() -> None:
     base_runtime = (
         "def handle(operation, value):\n"
@@ -1244,6 +1303,61 @@ def test_source_conformance_rejects_gateway_container_and_boolean_metadata() -> 
         "gateway_container_selected_instead_of_subtree",
         "boolean_metadata_not_excluded",
     }
+    diagnostic = result.to_dict()
+    assert diagnostic["failure_class"] == "candidate"
+    assert diagnostic["repairable"] is True
+    assert diagnostic["failure_fingerprint"].startswith("sha256:")
+
+
+def test_conformance_failure_fingerprint_ignores_names_and_lines() -> None:
+    first = RepairConformanceResult(
+        passed=False,
+        code="forbidden_fixture_probe_derivation",
+        reason="invalid fixture selector",
+        details={
+            "violations": [
+                {
+                    "construct": "boolean_metadata_not_excluded",
+                    "function": "select_fixture_value",
+                    "line": 12,
+                    "path": "replay/compiler.py",
+                }
+            ]
+        },
+    )
+    renamed = RepairConformanceResult(
+        passed=False,
+        code="forbidden_fixture_probe_derivation",
+        reason="same invalid fixture selector with renamed helper",
+        details={
+            "violations": [
+                {
+                    "construct": "boolean_metadata_not_excluded",
+                    "function": "collect_scalar_descendants",
+                    "line": 97,
+                    "path": "replay/compiler.py",
+                }
+            ]
+        },
+    )
+    different = RepairConformanceResult(
+        passed=False,
+        code="forbidden_fixture_probe_derivation",
+        reason="different invalid fixture selector",
+        details={
+            "violations": [
+                {
+                    "construct": "regex_scalar_filter",
+                    "function": "select_fixture_value",
+                    "line": 12,
+                    "path": "replay/compiler.py",
+                }
+            ]
+        },
+    )
+
+    assert first.failure_fingerprint == renamed.failure_fingerprint
+    assert first.failure_fingerprint != different.failure_fingerprint
 
 
 def test_source_conformance_accepts_explicit_boolean_guard() -> None:

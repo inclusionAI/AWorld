@@ -3850,6 +3850,42 @@ def test_candidate_repair_prompt_preserves_typed_semantic_diagnostic() -> None:
     assert diagnostic["representation"] == "candidate_package"
 
 
+def test_candidate_repair_prompt_explains_fixture_conformance_violation() -> None:
+    conformance = RepairConformanceResult(
+        passed=False,
+        code="forbidden_fixture_probe_derivation",
+        reason="candidate combines fixture metadata",
+        details={
+            "violations": [
+                {
+                    "construct": "boolean_metadata_not_excluded",
+                    "function": "select_fixture_value",
+                    "line": 20,
+                    "path": "replay/compiler.py",
+                }
+            ],
+            "required_change": "reject bool before int or float",
+        },
+    )
+    error = CandidateSemanticValidationError(
+        conformance.code,
+        conformance.reason,
+        field_path="files",
+        representation="candidate_package",
+        details={"repair_conformance": conformance.to_dict()},
+    )
+
+    prompt = _candidate_mutation_repair_prompt('{"files":[]}', error)
+    instruction, serialized = prompt.split("\n", 1)
+    diagnostic = json.loads(serialized)["diagnostics"][0]
+
+    assert "repair every reported violation" in instruction
+    assert "Never use mapping keys, boolean metadata" in instruction
+    assert diagnostic["details"]["repair_conformance"][
+        "failure_fingerprint"
+    ] == conformance.failure_fingerprint
+
+
 def test_candidate_materialization_frontier_identity_is_typed_and_stable() -> None:
     failures = (
         {

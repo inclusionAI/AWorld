@@ -765,7 +765,9 @@ def _focused_repair_prompt_instructions(
             "probe kind, and path, recursively decode that service's own declared "
             "fixture and select a deterministic non-empty scalar value from mapping "
             "values or sequence items. Emit only that scalar (or a bounded substring "
-            "within max_response_chars) as response_contains. Do not serialize a "
+            "within max_response_chars) as response_contains. Reject bool before "
+            "testing int or float. Do not use mapping keys and do not concatenate "
+            "multiple scalar descendants into one assertion. Do not serialize a "
             "metadata wrapper containing fixture hashes, byte counts, shapes, keys, "
             "or previews; those values are not descendants of the fixture payload. "
             "Use one generic selector for all listed constraints and all fixture "
@@ -962,7 +964,8 @@ def _validate_mutator_output_context(
             )
             if (
                 not conformance.passed
-                and conformance.code == "source_behavior_proof_failed"
+                and conformance.repairable
+                and conformance.failure_class == "candidate"
             ):
                 raise CandidateSemanticValidationError(
                     conformance.code,

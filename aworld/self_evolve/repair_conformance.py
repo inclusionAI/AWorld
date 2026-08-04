@@ -363,14 +363,140 @@ class RepairConformanceResult:
     code: str
     reason: str
     details: Mapping[str, object]
+    failure_class: str | None = "candidate"
+    repairable: bool = True
+
+    def __post_init__(self) -> None:
+        if self.passed:
+            object.__setattr__(self, "failure_class", None)
+            object.__setattr__(self, "repairable", False)
+            return
+        if self.failure_class not in {
+            "budget",
+            "candidate",
+            "framework",
+            "infrastructure",
+        }:
+            raise ValueError("failed repair conformance requires a failure class")
+
+    @property
+    def failure_fingerprint(self) -> str | None:
+        if self.passed:
+            return None
+        return repair_conformance_failure_fingerprint(self)
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        result: dict[str, object] = {
             "passed": self.passed,
             "code": self.code,
             "reason": self.reason,
             "details": dict(self.details),
+            "failure_class": (
+                None if self.passed else self.failure_class
+            ),
+            "repairable": bool(not self.passed and self.repairable),
         }
+        if self.failure_fingerprint is not None:
+            result["failure_fingerprint"] = self.failure_fingerprint
+        return result
+
+
+def repair_conformance_failure_fingerprint(
+    result: RepairConformanceResult,
+) -> str:
+    """Fingerprint a typed failure shape without names, lines, or payloads.
+
+    Candidate generators often produce the same invalid control/data-flow
+    topology with renamed helpers and shifted line numbers.  The repair
+    frontier must treat those variants as one failure while still separating
+    materially different constructs, affected package paths, and typed schema
+    constraints.
+    """
+
+    scalar_keys = {
+        "construct",
+        "field_path",
+        "kind",
+        "path",
+        "probe_kind",
+        "probe_path",
+        "reader_kind",
+        "rule",
+        "schema_layer",
+        "violation_code",
+    }
+    sequence_keys = {
+        "forbidden_operations",
+        "missing_gateway_keys",
+        "missing_operations",
+        "missing_payload_keys",
+        "removed_paths",
+        "required_changed_paths",
+        "required_operations",
+        "runtime_paths",
+        "unsupported_boundary_kinds",
+    }
+    atoms: set[tuple[str, str]] = set()
+    visited = 0
+
+    def visit(value: object) -> None:
+        nonlocal visited
+        if visited >= 2_048 or len(atoms) >= 256:
+            return
+        visited += 1
+        if isinstance(value, Mapping):
+            for raw_key, nested in value.items():
+                key = str(raw_key)
+                if key in scalar_keys and isinstance(
+                    nested,
+                    (str, int, float, bool),
+                ):
+                    atoms.add((key, str(nested)))
+                    continue
+                if key in sequence_keys and isinstance(nested, (list, tuple)):
+                    for item in nested:
+                        if isinstance(item, (str, int, float, bool)):
+                            atoms.add((key, str(item)))
+                    continue
+                if key == "schema_field_constraints" and isinstance(
+                    nested,
+                    (list, tuple),
+                ):
+                    for item in nested:
+                        if not isinstance(item, Mapping):
+                            continue
+                        encoded = json.dumps(
+                            dict(item),
+                            ensure_ascii=True,
+                            separators=(",", ":"),
+                            sort_keys=True,
+                            default=str,
+                        )
+                        atoms.add(
+                            (
+                                "schema_field_constraint",
+                                hashlib.sha256(encoded.encode("utf-8")).hexdigest(),
+                            )
+                        )
+                    continue
+                visit(nested)
+        elif isinstance(value, (list, tuple)):
+            for nested in value:
+                visit(nested)
+
+    visit(result.details)
+    shape = {
+        "code": result.code,
+        "failure_class": result.failure_class,
+        "atoms": sorted(atoms),
+    }
+    encoded = json.dumps(
+        shape,
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return "sha256:" + hashlib.sha256(encoded).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -1179,9 +1305,9 @@ def evaluate_candidate_source_conformance(
                 code="forbidden_fixture_probe_derivation",
                 reason=(
                     "the changed fixture-probe branch still filters recorded "
-                    "scalars by shape, derives an assertion from a hash, or skips "
-                    "nested sequence roots or payload selection during response-"
-                    "gateway reconstruction"
+                    "scalars by shape, combines multiple leaves, derives an assertion "
+                    "from a hash, or skips nested sequence roots or payload selection "
+                    "during response-gateway reconstruction"
                 ),
                 details={
                     "focus_candidate_id": contract.focus_candidate_id,
@@ -1190,8 +1316,9 @@ def evaluate_candidate_source_conformance(
                     "forbidden_derivations": [
                         "regex scalar filters",
                         "narrow scalar length filters",
-                        "fixture hash assertion fallbacks",
-                        "returning a non-mapping composite before traversing sequences",
+                    "fixture hash assertion fallbacks",
+                    "joining multiple fixture scalars into one probe assertion",
+                    "returning a non-mapping composite before traversing sequences",
                         "passing a gateway directly to a scalar selector before entering a payload key",
                         "falling through from a non-empty gateway branch into a parsed-root scalar fallback",
                     ],
@@ -1968,6 +2095,16 @@ def _fixture_probe_derivation_violations(
                         "construct": "boolean_metadata_not_excluded",
                     }
                 )
+            combined_scalars = _multiple_fixture_scalars_combined(function)
+            if combined_scalars is not None:
+                violations.append(
+                    {
+                        "path": path,
+                        "function": function.name,
+                        "line": int(combined_scalars.lineno),
+                        "construct": "multiple_fixture_scalars_combined",
+                    }
+                )
             direct_gateway_scalar = _direct_gateway_scalar_selection(function)
             if direct_gateway_scalar is not None:
                 violations.append(
@@ -2167,6 +2304,79 @@ def _boolean_metadata_not_excluded(
         ):
             scalar_subjects.pop(test.args[0].id, None)
     return next(iter(scalar_subjects.values()), None)
+
+
+def _multiple_fixture_scalars_combined(
+    function: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> ast.Call | None:
+    """Find probe assertions formed by joining multiple fixture leaves.
+
+    ``response_contains`` proves one scalar descendant of the recorded
+    payload. Joining two individually recorded values creates a new string
+    that need not occur anywhere in the fixture, even though each input was
+    fixture-derived. Keep the check bounded to selector-shaped functions and
+    collection-shaped join inputs so ordinary string normalization remains
+    valid.
+    """
+
+    assignments: dict[str, ast.AST] = {}
+    for node in ast.walk(function):
+        if not isinstance(node, (ast.Assign, ast.AnnAssign, ast.NamedExpr)):
+            continue
+        targets = node.targets if isinstance(node, ast.Assign) else (node.target,)
+        for target in targets:
+            if isinstance(target, ast.Name):
+                assignments[target.id] = node.value
+
+    def collection_source(value: ast.AST, *, depth: int = 0) -> bool:
+        if depth > 4:
+            return False
+        if isinstance(value, ast.Name):
+            assigned = assignments.get(value.id)
+            if assigned is not None:
+                return collection_source(assigned, depth=depth + 1)
+            normalized = value.id.casefold()
+            return any(
+                marker in normalized
+                for marker in ("leaves", "scalars", "selected", "values")
+            )
+        if isinstance(value, (ast.List, ast.Tuple, ast.Set, ast.ListComp, ast.SetComp)):
+            return True
+        if isinstance(value, ast.Subscript) and isinstance(value.slice, ast.Slice):
+            upper = value.slice.upper
+            return not (
+                isinstance(upper, ast.Constant)
+                and isinstance(upper.value, int)
+                and not isinstance(upper.value, bool)
+                and upper.value <= 1
+            )
+        if isinstance(value, ast.Call):
+            called_name = (
+                value.func.id
+                if isinstance(value.func, ast.Name)
+                else value.func.attr
+                if isinstance(value.func, ast.Attribute)
+                else None
+            )
+            return bool(
+                called_name
+                and any(
+                    marker in called_name.casefold()
+                    for marker in ("collect", "descendant", "leaves", "scalars")
+                )
+            )
+        return False
+
+    for call in ast.walk(function):
+        if (
+            isinstance(call, ast.Call)
+            and isinstance(call.func, ast.Attribute)
+            and call.func.attr == "join"
+            and call.args
+            and collection_source(call.args[0])
+        ):
+            return call
+    return None
 
 
 def _direct_gateway_scalar_selection(
@@ -2544,6 +2754,8 @@ def _fixture_probe_constraint_failure(
                 "evidence for conformance validation"
             ),
             details={"constraint_count": len(constraints)},
+            failure_class="framework",
+            repairable=False,
         )
 
     missing: list[dict[str, object]] = []
