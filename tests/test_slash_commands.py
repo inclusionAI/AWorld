@@ -903,7 +903,7 @@ class TestOptimizeCommand:
         )
 
         assert result == (
-            "Optimize error: --resume-campaign requires --apply auto_verified"
+            "Optimize error: --resume-campaign requires a verified apply policy"
         )
 
     @pytest.mark.asyncio

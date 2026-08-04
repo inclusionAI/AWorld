@@ -627,8 +627,13 @@ class SelfImprovementCampaignController:
             if explicit_legacy_tokens is not None
             else int(persistent.get("max_run_tokens", 500_000)) * max_cycles
         )
-        if str(persistent.get("apply_policy") or "proposal") != "auto_verified":
-            raise ValueError("self-improvement campaigns require apply_policy='auto_verified'")
+        if str(persistent.get("apply_policy") or "proposal") not in {
+            "auto_verified",
+            "verified_only",
+        }:
+            raise ValueError(
+                "self-improvement campaigns require a verified apply policy"
+            )
         if not _request_has_source(persistent):
             raise ValueError("a self-improvement campaign requires an eval source")
         request_fingerprint = _fingerprint(persistent)
@@ -1452,7 +1457,7 @@ def _campaign_report_quality(report: Mapping[str, Any]) -> tuple[object, ...]:
     ) if isinstance(gates, list) else 0
     return (
         str(report.get("status") or "") == "succeeded",
-        post_apply.get("release_state") == "verified",
+        post_apply.get("release_state") in {"verified", "verified_only"},
         isinstance(report.get("selected_candidate_id"), str),
         confidence.get("passed") is True,
         metrics.get("evidence_incomplete") is False,

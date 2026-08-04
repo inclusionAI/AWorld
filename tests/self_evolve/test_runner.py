@@ -346,6 +346,37 @@ def test_feedback_from_report_restores_latest_repairable_screening_package(
     }
 
 
+def test_feedback_from_verified_only_does_not_mark_candidate_as_published(
+    tmp_path: Path,
+) -> None:
+    report_path = tmp_path / "verified-only" / "report.json"
+    report = {
+        "run_id": "verified-only",
+        "apply_policy": "verified_only",
+        "post_apply": {
+            "status": "accepted",
+            "release_state": "verified_only",
+            "published": False,
+        },
+        "iterations": [
+            {
+                "candidate_id": "candidate-verified-only",
+                "status": "accepted",
+                "candidate_metrics": {"score": 1.0},
+            }
+        ],
+    }
+
+    feedback = _feedback_from_report(report, report_path=report_path)
+
+    historical = next(
+        item for item in feedback if item.variant_id == "candidate-verified-only"
+    )
+    assert historical.metrics["candidate_status"] == "accepted"
+    assert historical.metrics["publication_completed"] is False
+    assert historical.metrics["historical_release_state"] == "verified_only"
+
+
 def test_feedback_from_report_restores_selected_candidate_authoritative_failure(
     tmp_path: Path,
 ) -> None:
@@ -6793,9 +6824,15 @@ async def test_runner_auto_verified_applies_allowlisted_candidate_after_post_app
     }["verification"] == "passed"
     assert report["content_quality_diagnostics"]["blocking"] is False
     assert activated == ["demo"]
-    assert report["post_apply"]["activation"] == {"enabled": True, "skill_name": "demo"}
+    assert report["post_apply"]["activation"] == {
+        "enabled": True,
+        "skill_name": "demo",
+    }
     assert refreshed == [result.selected_candidate.candidate_id]
-    assert report["post_apply"]["refresh"] == {"refreshed": True, "strategy": "test-hook"}
+    assert report["post_apply"]["refresh"] == {
+        "refreshed": True,
+        "strategy": "test-hook",
+    }
     assert {gate["gate_name"] for gate in report["gate_results"]} >= {
         "score_improvement",
         "required_verification",
@@ -6803,12 +6840,88 @@ async def test_runner_auto_verified_applies_allowlisted_candidate_after_post_app
         "global_regression_benchmark",
     }
     apply_dir = store.run_path("run-auto-verified") / "apply"
-    assert (apply_dir / f"{result.selected_candidate.candidate_id}.backup.md").read_text(encoding="utf-8") == original_content
-    journal = json.loads((apply_dir / f"{result.selected_candidate.candidate_id}.journal.json").read_text(encoding="utf-8"))
+    assert (
+        apply_dir / f"{result.selected_candidate.candidate_id}.backup.md"
+    ).read_text(encoding="utf-8") == original_content
+    journal = json.loads(
+        (
+            apply_dir / f"{result.selected_candidate.candidate_id}.journal.json"
+        ).read_text(encoding="utf-8")
+    )
     assert journal["candidate_id"] == result.selected_candidate.candidate_id
     assert journal["status"] == "accepted"
     assert journal["target"]["target_id"] == "demo"
     assert journal["backup_path"].endswith(".backup.md")
+
+
+@pytest.mark.asyncio
+async def test_verified_only_applies_complete_package_to_isolated_registry(
+    tmp_path: Path,
+) -> None:
+    skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    helper_path = skill_path.parent / "replay" / "helper.py"
+    helper_path.parent.mkdir(parents=True)
+    original_content = (
+        "---\nname: demo\n---\n# Demo\n\n"
+        "Use [the helper](replay/helper.py).\n"
+    )
+    skill_path.write_text(original_content, encoding="utf-8")
+    helper_path.write_text("VALUE = 'old'\n", encoding="utf-8")
+    target = SkillTextTarget(skill_path, allow_auto_apply=False)
+    candidate = CandidateVariant(
+        candidate_id="candidate-verified-only",
+        target=target.identity,
+        content=(
+            "---\nname: demo\n---\n# Demo\n\n"
+            "Use [the helper](replay/helper.py) with verified guidance.\n"
+        ),
+        rationale="verify the complete package without publishing it",
+        target_fingerprint=target.fingerprint_current_content(),
+        files=(
+            CandidateFileDelta(
+                path="replay/helper.py",
+                content="VALUE = 'verified'\n",
+            ),
+        ),
+    )
+    runtime_activations: list[str] = []
+    runtime_refreshes: list[str] = []
+    runner = SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=_FixedCandidateOptimizer(
+            candidate=candidate,
+            source_run_id="source-run",
+        ),
+        runtime_skill_activator=lambda item: runtime_activations.append(
+            item.candidate_id
+        ),
+        runtime_registry_refresher=lambda item: runtime_refreshes.append(
+            item.candidate_id
+        ),
+    )
+
+    result = await runner._apply_verified_only(
+        "run-verified-only",
+        target,
+        candidate,
+    )
+
+    assert result["status"] == "accepted"
+    assert result["release_state"] == "verified_only"
+    assert result["published"] is False
+    assert result["source_target_unchanged"] is True
+    assert runtime_activations == []
+    assert runtime_refreshes == []
+    assert skill_path.read_text(encoding="utf-8") == original_content
+    assert helper_path.read_text(encoding="utf-8") == "VALUE = 'old'\n"
+    verified_skill_path = Path(result["verified_target_path"])
+    assert verified_skill_path.is_file()
+    assert "release_state: verified" in verified_skill_path.read_text(
+        encoding="utf-8"
+    )
+    assert (
+        verified_skill_path.parent / "replay" / "helper.py"
+    ).read_text(encoding="utf-8") == "VALUE = 'verified'\n"
 
 
 @pytest.mark.asyncio

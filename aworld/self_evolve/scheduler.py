@@ -319,7 +319,10 @@ def _run_framework_job(
         runtime_registry_refresher=runtime_registry_refresher,
     )
     apply_policy = _effective_background_apply_policy(config)
-    if apply_policy == "auto_verified" and config.max_improvement_cycles > 1:
+    if (
+        apply_policy in {"auto_verified", "verified_only"}
+        and config.max_improvement_cycles > 1
+    ):
         from aworld.self_evolve.campaign import run_self_improvement_campaign
 
         campaign_id = payload.get("campaign_id")

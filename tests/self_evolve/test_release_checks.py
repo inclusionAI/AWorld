@@ -96,6 +96,22 @@ def test_candidate_capability_failure_blocks_evidence_integrity() -> None:
     assert checklist["blocking_failed_checks"] == ["evidence_integrity"]
 
 
+def test_verified_only_keeps_release_failures_blocking() -> None:
+    checklist = build_release_checklist(
+        apply_policy="verified_only",
+        gate_results=[
+            {
+                "gate_name": "required_verification",
+                "passed": False,
+                "reason": "verification command failed",
+            }
+        ],
+    )
+
+    assert checklist["status"] == "blocked"
+    assert checklist["blocking_failed_checks"] == ["verification"]
+
+
 def test_content_quality_diagnostics_flags_supported_content_risks() -> None:
     diagnostics = build_content_quality_diagnostics(
         {

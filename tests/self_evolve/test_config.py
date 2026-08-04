@@ -56,6 +56,13 @@ def test_self_evolve_online_requires_auto_verified_apply_policy() -> None:
     assert config.requires_post_apply_reevaluation is True
 
 
+def test_self_evolve_offline_accepts_verified_only_apply_policy() -> None:
+    config = SelfEvolveConfig(mode="offline", apply_policy="verified_only")
+
+    assert config.apply_policy == "verified_only"
+    assert config.requires_post_apply_reevaluation is True
+
+
 def test_self_evolve_config_rejects_non_positive_campaign_cycles() -> None:
     with pytest.raises(ValidationError, match="max_improvement_cycles must be positive"):
         SelfEvolveConfig(max_improvement_cycles=0)

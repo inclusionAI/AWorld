@@ -411,6 +411,22 @@ def test_campaign_store_round_trip_and_rejects_invalid_cycle(tmp_path: Path) -> 
         controller.load(campaign.campaign_id)
 
 
+def test_campaign_accepts_verified_only_without_publishing(tmp_path: Path) -> None:
+    controller = SelfImprovementCampaignController(workspace_root=tmp_path)
+
+    campaign = controller.create(
+        {
+            "from_trajectory": "trajectory.log",
+            "apply_policy": "verified_only",
+            "infer_target": True,
+        },
+        max_cycles=3,
+    )
+
+    assert campaign.request["apply_policy"] == "verified_only"
+    assert campaign.max_cycles == 3
+
+
 def test_campaign_store_rejects_missing_referenced_run(tmp_path: Path) -> None:
     controller = SelfImprovementCampaignController(workspace_root=tmp_path)
     campaign = controller.create(

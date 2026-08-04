@@ -5,6 +5,7 @@ import hashlib
 import inspect
 import json
 import re
+import shutil
 import uuid
 from dataclasses import asdict, dataclass, field, replace
 from decimal import Decimal
@@ -309,6 +310,12 @@ _MAX_PROGRESS_REPAIR_EXTENSION_ITERATIONS = 6
 _MAX_CONSECUTIVE_DUPLICATE_POPULATION_STALLS = 1
 _SEMANTIC_DEDUP_IDENTITY_VERSION = "aworld.self_evolve.semantic_dedup.v2"
 _VERIFICATION_CONTRACT_VERSION = "aworld.self_evolve.verification_contract.v2"
+_VERIFIED_APPLY_POLICIES = frozenset({"auto_verified", "verified_only"})
+_SAFE_VERIFIED_TARGET_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
+
+
+def _is_verified_apply_policy(apply_policy: str) -> bool:
+    return apply_policy in _VERIFIED_APPLY_POLICIES
 
 
 @dataclass(frozen=True)
@@ -1208,7 +1215,7 @@ def _default_iteration_budget(
         if isinstance(explicit_iterations, bool) or explicit_iterations <= 0:
             raise ValueError("iterations must be positive")
         return explicit_iterations
-    return 10 if apply_policy == "auto_verified" else 1
+    return 10 if _is_verified_apply_policy(apply_policy) else 1
 
 
 _DEFAULT_CANDIDATE_SCREENING_TIMEOUT_SECONDS = 240
@@ -2170,7 +2177,7 @@ class SelfEvolveRunner:
         )
         scheduler_state = SchedulerState()
         scheduler_decisions: list[dict[str, object]] = []
-        if apply_policy not in {"proposal", "auto_verified"}:
+        if apply_policy not in {"proposal", "auto_verified", "verified_only"}:
             raise ValueError(f"unsupported apply policy: {apply_policy}")
         supplied_provenance = target_provenance
         supplied_decision = target_selection_decision
@@ -2437,6 +2444,7 @@ class SelfEvolveRunner:
             feedback.variant_id
             for feedback in prior_feedback
             if feedback.metrics.get("candidate_status") == "accepted"
+            and feedback.metrics.get("publication_completed") is True
         }
         current_run_attempted_candidate_ids: set[str] = set()
         (
@@ -3626,7 +3634,7 @@ class SelfEvolveRunner:
                         "candidate_generation_exhausted_by_semantic_dedup"
                         if semantic_dedup_exhausted
                         else "candidate_generation"
-                        if apply_policy == "auto_verified"
+                        if _is_verified_apply_policy(apply_policy)
                         else "no_candidate"
                     ),
                     passed=False,
@@ -3638,7 +3646,7 @@ class SelfEvolveRunner:
                         )
                         if semantic_dedup_exhausted
                         else "optimizer did not produce a replayable candidate"
-                        if apply_policy == "auto_verified"
+                        if _is_verified_apply_policy(apply_policy)
                         else "optimizer did not produce a candidate"
                     ),
                     details=(
@@ -3664,7 +3672,7 @@ class SelfEvolveRunner:
                         }
                         if semantic_dedup_exhausted
                         else candidate_generation_details
-                        if apply_policy == "auto_verified"
+                        if _is_verified_apply_policy(apply_policy)
                         else None
                     ),
                 )
@@ -3689,7 +3697,7 @@ class SelfEvolveRunner:
                 )
                 else _status_without_selected_candidate(optimizer_diagnostics)
             )
-        elif apply_policy == "auto_verified":
+        elif _is_verified_apply_policy(apply_policy):
             failed_gates = [gate for gate in gate_results if not gate.passed]
             if failed_gates:
                 final_status = (
@@ -3713,26 +3721,41 @@ class SelfEvolveRunner:
                     "reason": "new-skill policy permits verified draft evolution only",
                 }
             else:
-                post_apply = await self._apply_auto_verified(
-                    run_id,
-                    target,
-                    selected_candidate,
-                    expected_package_fingerprint=(
+                apply_kwargs = {
+                    "expected_package_fingerprint": (
                         replay_result.request.verified_candidate_package_fingerprint
                         if replay_result is not None
                         else None
                     ),
-                    addressed_lesson_ids=_lineage_addressed_lesson_ids(
+                    "addressed_lesson_ids": _lineage_addressed_lesson_ids(
                         optimizer_lineage_paths_by_candidate.get(
                             selected_candidate.candidate_id
                         )
                     ),
-                )
+                }
+                if apply_policy == "verified_only":
+                    post_apply = await self._apply_verified_only(
+                        run_id,
+                        target,
+                        selected_candidate,
+                        **apply_kwargs,
+                    )
+                else:
+                    post_apply = await self._apply_auto_verified(
+                        run_id,
+                        target,
+                        selected_candidate,
+                        **apply_kwargs,
+                    )
                 if post_apply["status"] != "accepted":
                     final_status = SelfEvolveRunStatus.REJECTED
 
         if inferred_draft_creation:
-            published = post_apply is not None and post_apply.get("status") == "accepted"
+            published = (
+                apply_policy == "auto_verified"
+                and post_apply is not None
+                and post_apply.get("status") == "accepted"
+            )
             draft_path = target.identity.path
             post_apply_metrics = (
                 post_apply.get("metrics")
@@ -3768,6 +3791,9 @@ class SelfEvolveRunner:
                     "status": (
                         "published"
                         if published
+                        else "verified_only"
+                        if post_apply is not None
+                        and post_apply.get("status") == "accepted"
                         else "draft_retained"
                         if selected_candidate is not None
                         else "not_selected"
@@ -3780,6 +3806,9 @@ class SelfEvolveRunner:
                     "reason": (
                         "verified skill was published"
                         if published
+                        else "candidate was verified in a run-owned isolated registry"
+                        if post_apply is not None
+                        and post_apply.get("status") == "accepted"
                         else "publication rolled back after registry refresh failure"
                         if registry_refresh_failed
                         else "candidate remains isolated in the run-owned draft"
@@ -3932,6 +3961,12 @@ class SelfEvolveRunner:
             report["target_selection"] = to_json_dict(target_selection_report)
         if post_apply is not None:
             report["post_apply"] = post_apply
+            report["release_state"] = post_apply.get("release_state")
+            report["published"] = post_apply.get("published") is True
+            if isinstance(post_apply.get("verified_target_path"), str):
+                report["verified_target_path"] = post_apply[
+                    "verified_target_path"
+                ]
             release_normalization = _release_normalization_report(post_apply)
             if release_normalization is not None:
                 report["release_normalization"] = release_normalization
@@ -4136,7 +4171,7 @@ class SelfEvolveRunner:
             capability_requirements=capability_requirements,
         )
         if (
-            apply_policy != "auto_verified"
+            not _is_verified_apply_policy(apply_policy)
             or (
                 len(conformance_candidates) == 1
                 and not capability_requirements
@@ -5382,7 +5417,7 @@ class SelfEvolveRunner:
 
         evaluation_dataset = replay_dataset or dataset
         replay_blocked_verified_apply = (
-            apply_policy == "auto_verified"
+            _is_verified_apply_policy(apply_policy)
             and self.replay_enabled
             and candidate.target.target_type == "skill"
             and replay_dataset is None
@@ -5398,7 +5433,7 @@ class SelfEvolveRunner:
         ):
             evaluation_variants = 2
             if (
-                apply_policy == "auto_verified"
+                _is_verified_apply_policy(apply_policy)
                 and not _can_reuse_single_case_replay_validation(evaluation_dataset)
             ):
                 evaluation_variants += 1
@@ -5549,7 +5584,7 @@ class SelfEvolveRunner:
                             quality_gates.append(replay_stability_gate)
                     if (
                         validation_health_gate.passed
-                        and apply_policy == "auto_verified"
+                        and _is_verified_apply_policy(apply_policy)
                     ):
                         if _can_reuse_single_case_replay_validation(evaluation_dataset):
                             logger.info(
@@ -5669,7 +5704,7 @@ class SelfEvolveRunner:
                             actual_source=judge_source,
                         )
         elif (
-            apply_policy == "auto_verified"
+            _is_verified_apply_policy(apply_policy)
             or source_disposition.requires_fresh_evaluation
         ):
             gate_results.append(
@@ -5720,7 +5755,7 @@ class SelfEvolveRunner:
                 )
             )
 
-        if apply_policy == "auto_verified":
+        if _is_verified_apply_policy(apply_policy):
             gate_results.append(
                 GateResult(
                     gate_name="auto_apply_target_type",
@@ -5757,10 +5792,10 @@ class SelfEvolveRunner:
                 )
                 or (
                     not source_disposition.requires_fresh_evaluation
-                    and apply_policy != "auto_verified"
+                    and not _is_verified_apply_policy(apply_policy)
                     and not proposal_blocked
                 )
-                or (apply_policy == "auto_verified" and not failed_gates)
+                or (_is_verified_apply_policy(apply_policy) and not failed_gates)
             )
             else "rejected"
         )
@@ -6181,7 +6216,7 @@ class SelfEvolveRunner:
             _candidate_requires_task_plane_intervention(selected_candidate)
         )
         if self.candidate_replay_backend is None:
-            if apply_policy != "auto_verified":
+            if not _is_verified_apply_policy(apply_policy):
                 return None, None, None
             return (
                 None,
@@ -6527,8 +6562,27 @@ class SelfEvolveRunner:
         candidate: CandidateVariant,
         expected_package_fingerprint: str | None = None,
         addressed_lesson_ids: tuple[str, ...] = (),
+        *,
+        post_apply_evaluator: Callable[[CandidateVariant], Any] | None = None,
+        runtime_skill_activator: Callable[[CandidateVariant], Any] | None = None,
+        runtime_registry_refresher: Callable[[CandidateVariant], Any] | None = None,
+        release_state: str = "verified",
+        published: bool = True,
     ) -> dict[str, object]:
-        if self.post_apply_evaluator is None:
+        effective_post_apply_evaluator = (
+            post_apply_evaluator or self.post_apply_evaluator
+        )
+        effective_runtime_skill_activator = (
+            runtime_skill_activator
+            if runtime_skill_activator is not None
+            else self.runtime_skill_activator
+        )
+        effective_runtime_registry_refresher = (
+            runtime_registry_refresher
+            if runtime_registry_refresher is not None
+            else self.runtime_registry_refresher
+        )
+        if effective_post_apply_evaluator is None:
             raise ValueError("auto_verified apply policy requires post_apply_evaluator")
         evaluated_target_fingerprint = candidate.target_fingerprint
         try:
@@ -6754,7 +6808,7 @@ class SelfEvolveRunner:
                 "journal_path": str(journal_path),
             }
         try:
-            summary = self.post_apply_evaluator(applied_candidate)
+            summary = effective_post_apply_evaluator(applied_candidate)
             if inspect.isawaitable(summary):
                 summary = await summary
             if not isinstance(summary, EvaluationSummary):
@@ -6783,9 +6837,11 @@ class SelfEvolveRunner:
             }
         if summary.metrics.get("post_apply_passed") is True:
             activation_result: Any = None
-            if self.runtime_skill_activator is not None:
+            if effective_runtime_skill_activator is not None:
                 try:
-                    activation_result = self.runtime_skill_activator(applied_candidate)
+                    activation_result = effective_runtime_skill_activator(
+                        applied_candidate
+                    )
                     if inspect.isawaitable(activation_result):
                         activation_result = await activation_result
                 except Exception as exc:
@@ -6814,9 +6870,11 @@ class SelfEvolveRunner:
                         "journal_path": str(journal_path),
                     }
             refresh_result: Any = None
-            if self.runtime_registry_refresher is not None:
+            if effective_runtime_registry_refresher is not None:
                 try:
-                    refresh_result = self.runtime_registry_refresher(applied_candidate)
+                    refresh_result = effective_runtime_registry_refresher(
+                        applied_candidate
+                    )
                     if inspect.isawaitable(refresh_result):
                         refresh_result = await refresh_result
                 except Exception as exc:
@@ -6850,7 +6908,8 @@ class SelfEvolveRunner:
                     status="accepted",
                     details={
                         "post_apply_passed": True,
-                        "release_state": "verified",
+                        "release_state": release_state,
+                        "published": published,
                     },
                 )
             except Exception:
@@ -6868,7 +6927,8 @@ class SelfEvolveRunner:
                 "dataset_split": summary.dataset_split,
                 "backup_path": str(backup_path),
                 "journal_path": str(journal_path),
-                "release_state": "verified",
+                "release_state": release_state,
+                "published": published,
             }
             if package_cleanup_error is not None:
                 result["package_cleanup_error"] = package_cleanup_error
@@ -6899,6 +6959,184 @@ class SelfEvolveRunner:
             "backup_path": str(backup_path),
             "journal_path": str(journal_path),
         }
+
+    async def _apply_verified_only(
+        self,
+        run_id: str,
+        target: SelfEvolveTarget,
+        candidate: CandidateVariant,
+        expected_package_fingerprint: str | None = None,
+        addressed_lesson_ids: tuple[str, ...] = (),
+    ) -> dict[str, object]:
+        """Apply a verified skill package to a run-owned shadow registry only."""
+        if target.identity.target_type != "skill":
+            return {
+                "status": "rejected",
+                "metrics": {
+                    "post_apply_passed": False,
+                    "release_state": "rejected",
+                    "code": "verified_only_target_type_unsupported",
+                    "failure_class": "candidate",
+                    "target_type": target.identity.target_type,
+                },
+                "dataset_split": "post_apply",
+                "backup_path": None,
+                "journal_path": None,
+                "release_state": "rejected",
+                "published": False,
+            }
+
+        try:
+            source_fingerprint_before = target.fingerprint_current_content()
+        except Exception as exc:
+            return {
+                "status": "rejected",
+                "metrics": {
+                    "post_apply_passed": False,
+                    "release_state": "rejected",
+                    "code": "target_snapshot_unavailable",
+                    "failure_class": "infrastructure",
+                    "error_type": type(exc).__name__,
+                },
+                "dataset_split": "post_apply",
+                "backup_path": None,
+                "journal_path": None,
+                "release_state": "rejected",
+                "published": False,
+            }
+
+        if _SAFE_VERIFIED_TARGET_ID.fullmatch(target.identity.target_id) is None:
+            return {
+                "status": "rejected",
+                "metrics": {
+                    "post_apply_passed": False,
+                    "release_state": "rejected",
+                    "code": "verified_target_id_unsafe",
+                    "failure_class": "candidate",
+                },
+                "dataset_split": "post_apply",
+                "backup_path": None,
+                "journal_path": None,
+                "release_state": "rejected",
+                "published": False,
+            }
+
+        isolated_registry_root = self.store.run_path(run_id) / "verified_targets"
+        isolated_package_root = (
+            isolated_registry_root / target.identity.target_id
+        )
+        isolated_skill_path = isolated_package_root / "SKILL.md"
+        if isolated_package_root.exists() or isolated_package_root.is_symlink():
+            return {
+                "status": "rejected",
+                "metrics": {
+                    "post_apply_passed": False,
+                    "release_state": "rejected",
+                    "code": "verified_target_collision",
+                    "failure_class": "infrastructure",
+                },
+                "dataset_split": "post_apply",
+                "backup_path": None,
+                "journal_path": None,
+                "release_state": "rejected",
+                "published": False,
+                "verified_target_path": str(isolated_skill_path),
+            }
+
+        source_skill_path = (
+            Path(target.identity.path).resolve()
+            if target.identity.path
+            else None
+        )
+        try:
+            isolated_registry_root.mkdir(parents=True, exist_ok=True)
+            if source_skill_path is not None and source_skill_path.is_file():
+                shutil.copytree(
+                    source_skill_path.parent,
+                    isolated_package_root,
+                    symlinks=True,
+                )
+            else:
+                isolated_package_root.mkdir(parents=True, exist_ok=False)
+                isolated_skill_path.write_text(
+                    target.load_current_content(),
+                    encoding="utf-8",
+                )
+        except Exception as exc:
+            return {
+                "status": "rejected",
+                "metrics": {
+                    "post_apply_passed": False,
+                    "release_state": "rejected",
+                    "code": "verified_target_materialization_failed",
+                    "failure_class": "infrastructure",
+                    "error_type": type(exc).__name__,
+                    "reason": str(exc),
+                },
+                "dataset_split": "post_apply",
+                "backup_path": None,
+                "journal_path": None,
+                "release_state": "rejected",
+                "published": False,
+                "verified_target_path": str(isolated_skill_path),
+            }
+
+        isolated_target = SkillTextTarget(
+            isolated_skill_path,
+            target_id=target.identity.target_id,
+            allow_auto_apply=True,
+        )
+        isolated_candidate = replace(
+            candidate,
+            target=isolated_target.identity,
+            target_fingerprint=isolated_target.fingerprint_current_content(),
+        )
+        result = await self._apply_auto_verified(
+            run_id,
+            isolated_target,
+            isolated_candidate,
+            expected_package_fingerprint=expected_package_fingerprint,
+            addressed_lesson_ids=addressed_lesson_ids,
+            post_apply_evaluator=_default_post_apply_evaluator(isolated_target),
+            runtime_skill_activator=lambda _candidate: {
+                "status": "skipped",
+                "reason": "verified_only does not mutate runtime skill state",
+            },
+            runtime_registry_refresher=_default_new_skill_registry_refresher(
+                isolated_target
+            ),
+            release_state="verified_only",
+            published=False,
+        )
+        try:
+            source_fingerprint_after = target.fingerprint_current_content()
+        except Exception:
+            source_fingerprint_after = None
+        source_unchanged = source_fingerprint_after == source_fingerprint_before
+        result.update(
+            {
+                "published": False,
+                "verified_target_path": str(isolated_skill_path),
+                "source_target_path": target.identity.path,
+                "source_target_fingerprint_before": source_fingerprint_before,
+                "source_target_fingerprint_after": source_fingerprint_after,
+                "source_target_unchanged": source_unchanged,
+            }
+        )
+        if not source_unchanged and result.get("status") == "accepted":
+            result["status"] = "rejected"
+            result["release_state"] = "rejected"
+            metrics = dict(result.get("metrics") or {})
+            metrics.update(
+                {
+                    "post_apply_passed": False,
+                    "release_state": "rejected",
+                    "code": "source_target_changed_during_verified_only",
+                    "failure_class": "infrastructure",
+                }
+            )
+            result["metrics"] = metrics
+        return result
 
 
 async def optimize_explicit_target(
@@ -7653,7 +7891,7 @@ def _ingestion_mode(
 ) -> IngestionMode:
     if ingestion_only:
         return IngestionMode.INGESTION_ONLY
-    if apply_policy == "auto_verified":
+    if _is_verified_apply_policy(apply_policy):
         return IngestionMode.AUTO_VERIFIED
     return IngestionMode.PROPOSAL
 
@@ -7862,7 +8100,7 @@ def optimize_from_cli_request(
 ) -> Mapping[str, Any]:
     effective_concurrency_policy = concurrency_policy or SelfEvolveConcurrencyPolicy()
     typed_new_skill_policy = InferredNewSkillPolicy(inferred_new_skill_policy)
-    if apply_policy not in {"proposal", "auto_verified"}:
+    if apply_policy not in {"proposal", "auto_verified", "verified_only"}:
         raise ValueError(f"unsupported apply policy: {apply_policy}")
     effective_iteration_budget = _default_iteration_budget(
         apply_policy=apply_policy,
@@ -8393,8 +8631,11 @@ def optimize_from_cli_request(
                 apply_policy=apply_policy,
                 budget_report=pre_execution_budget_report,
             )
-        if apply_policy == "auto_verified" and not _inferred_target_admitted_for_auto_apply(
-            target_selection_decision
+        if (
+            _is_verified_apply_policy(apply_policy)
+            and not _inferred_target_admitted_for_auto_apply(
+                target_selection_decision
+            )
         ):
             target_selection_report = _blocked_low_confidence_target_selection_report(
                 target_selection_report
@@ -8531,14 +8772,14 @@ def optimize_from_cli_request(
             validate_output=validate_output,
         )
 
-    if apply_policy == "auto_verified" and evaluation_backend is None:
+    if _is_verified_apply_policy(apply_policy) and evaluation_backend is None:
         evaluation_backend = _evaluation_backend_from_judge_config(
             judge_config,
             workspace_root=workspace_root,
             judge_repetitions=judge_repetitions,
             judge_timeout_seconds=judge_timeout_seconds,
         )
-    if apply_policy == "auto_verified" and post_apply_evaluator is None:
+    if _is_verified_apply_policy(apply_policy) and post_apply_evaluator is None:
         post_apply_evaluator = _default_post_apply_evaluator(target_adapter)
     if (
         apply_policy == "auto_verified"
@@ -8667,6 +8908,7 @@ def optimize_from_cli_request(
         target_provenance_path = run_path / "target_provenance.json"
 
     report_path = run_path / "report.json"
+    report = _load_json_mapping(report_path)
     selected_candidate_id = (
         result.selected_candidate.candidate_id
         if result.selected_candidate is not None
@@ -8676,13 +8918,15 @@ def optimize_from_cli_request(
         "report_path": str(report_path),
         "best_candidate_id": (
             selected_candidate_id
-            if result.run.status.value == "succeeded" and apply_policy == "auto_verified"
+            if result.run.status.value == "succeeded"
+            and _is_verified_apply_policy(apply_policy)
             else None
         ),
         "selected_candidate_id": selected_candidate_id,
         "run_id": result.run.run_id,
         "status": result.run.status.value,
     }
+    _add_post_apply_summary(summary, report)
     if ingestion_snapshot is not None:
         summary.update(
             {
@@ -9377,14 +9621,14 @@ def _rerun_evaluator_from_stored_run(
         if authoritative_resolution.resolved
         else None
     )
-    if apply_policy == "auto_verified" and evaluation_backend is None:
+    if _is_verified_apply_policy(apply_policy) and evaluation_backend is None:
         evaluation_backend = _evaluation_backend_from_judge_config(
             judge_config,
             workspace_root=workspace_root,
             judge_repetitions=judge_repetitions,
             judge_timeout_seconds=judge_timeout_seconds,
         )
-    if apply_policy == "auto_verified" and post_apply_evaluator is None:
+    if _is_verified_apply_policy(apply_policy) and post_apply_evaluator is None:
         post_apply_evaluator = _default_post_apply_evaluator(target_adapter)
 
     run_id = _rerun_cli_run_id(source_run_id, candidate.candidate_id)
@@ -9468,7 +9712,8 @@ def _rerun_evaluator_from_stored_run(
         "report_path": str(report_path),
         "best_candidate_id": (
             selected_candidate_id
-            if result.run.status.value == "succeeded" and apply_policy == "auto_verified"
+            if result.run.status.value == "succeeded"
+            and _is_verified_apply_policy(apply_policy)
             else None
         ),
         "selected_candidate_id": selected_candidate_id,
@@ -9477,6 +9722,7 @@ def _rerun_evaluator_from_stored_run(
         "source_run_id": source_run_id,
         "replay_path": str(replay_path),
     }
+    _add_post_apply_summary(summary, report)
     target_selection_path = run_path / "target_selection.json"
     if target_selection_path.exists():
         summary["target_selection_path"] = str(target_selection_path)
@@ -9490,6 +9736,20 @@ def _rerun_evaluator_from_stored_run(
     if isinstance(gate_results, list):
         summary["gate_results"] = gate_results
     return summary
+
+
+def _add_post_apply_summary(
+    summary: dict[str, Any],
+    report: Mapping[str, Any],
+) -> None:
+    post_apply = report.get("post_apply")
+    if not isinstance(post_apply, Mapping):
+        return
+    summary["release_state"] = post_apply.get("release_state")
+    summary["published"] = post_apply.get("published") is True
+    verified_target_path = post_apply.get("verified_target_path")
+    if isinstance(verified_target_path, str) and verified_target_path:
+        summary["verified_target_path"] = verified_target_path
 
 
 def _content_fingerprint(content: str) -> str:
@@ -10223,7 +10483,7 @@ def _duplicate_rejected_candidate_gate(
     rejected_candidate_ids: set[str],
     apply_policy: str,
 ) -> GateResult | None:
-    if apply_policy != "auto_verified":
+    if not _is_verified_apply_policy(apply_policy):
         return None
     duplicated = candidate.candidate_id in rejected_candidate_ids
     if not duplicated:
@@ -10246,7 +10506,7 @@ def _duplicate_accepted_candidate_gate(
     accepted_candidate_ids: set[str],
     apply_policy: str,
 ) -> GateResult | None:
-    if apply_policy != "auto_verified":
+    if not _is_verified_apply_policy(apply_policy):
         return None
     duplicated = candidate.candidate_id in accepted_candidate_ids
     if not duplicated:
@@ -10648,7 +10908,11 @@ def _persist_lineage_lifecycle(
             payload["post_apply_status"] = post_apply.get("status")
             payload["release_state"] = post_apply.get("release_state")
             if post_apply.get("status") == "accepted":
-                payload["lifecycle_status"] = "accepted"
+                payload["lifecycle_status"] = (
+                    "verified"
+                    if post_apply.get("release_state") == "verified_only"
+                    else "accepted"
+                )
         try:
             path.write_text(
                 json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2)
@@ -10997,6 +11261,27 @@ def _feedback_from_report(
                 continue
             metrics = _historical_feedback_metrics(iteration)
             metrics["candidate_status"] = str(iteration.get("status"))
+            post_apply = (
+                report.get("post_apply")
+                if isinstance(report.get("post_apply"), Mapping)
+                else {}
+            )
+            legacy_accepted_report = (
+                report.get("apply_policy") is None and not post_apply
+            )
+            metrics["publication_completed"] = (
+                legacy_accepted_report
+                or (
+                    report.get("apply_policy") == "auto_verified"
+                    and post_apply.get("status") == "accepted"
+                    and post_apply.get("release_state") == "verified"
+                    and post_apply.get("published") is not False
+                )
+            )
+            metrics["historical_apply_policy"] = report.get("apply_policy")
+            metrics["historical_release_state"] = post_apply.get(
+                "release_state"
+            )
             metrics["run_id"] = report.get("run_id")
             metrics["report_path"] = str(report_path)
             items.append(
@@ -12511,7 +12796,7 @@ def _replay_confidence_gate(
     dataset: SelfEvolveDataset,
     apply_policy: str,
 ) -> GateResult | None:
-    if replay_result is None or apply_policy != "auto_verified":
+    if replay_result is None or not _is_verified_apply_policy(apply_policy):
         return None
     normalized = normalize_replay_members(
         dataset=dataset,
@@ -15534,7 +15819,7 @@ def _candidate_gate_results(
                 candidate,
                 current_content=current_content,
                 require_exact_deletion_intent=(
-                    apply_policy == "auto_verified"
+                    _is_verified_apply_policy(apply_policy)
                 ),
             )
         )

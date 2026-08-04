@@ -4,7 +4,8 @@ from collections.abc import Mapping
 from typing import Any, Callable
 
 
-SUPPORTED_APPLY_POLICIES = {"proposal", "auto_verified"}
+SUPPORTED_APPLY_POLICIES = {"proposal", "auto_verified", "verified_only"}
+VERIFIED_APPLY_POLICIES = {"auto_verified", "verified_only"}
 SUPPORTED_NEW_SKILL_POLICIES = {"disabled", "draft_only", "auto_verified"}
 AUTO_VERIFIED_JUDGE_REPETITIONS = 1
 AUTO_VERIFIED_JUDGE_TIMEOUT_SECONDS = 120
@@ -127,13 +128,20 @@ class OptimizeTopLevelCommand:
         )
         parser.add_argument("--batch-config", type=str, dest="batch_config")
         parser.add_argument("--iterations", type=int)
-        parser.add_argument("--apply", type=str)
+        parser.add_argument(
+            "--apply",
+            type=str,
+            help=(
+                "proposal, verified_only (verify in an isolated target), or "
+                "auto_verified (verify and publish)"
+            ),
+        )
         parser.add_argument(
             "--max-improvement-cycles",
             type=int,
             default=3,
             dest="max_improvement_cycles",
-            help="Maximum bounded cross-run self-improvement cycles for auto_verified.",
+            help="Maximum bounded cross-run self-improvement cycles for verified policies.",
         )
         parser.add_argument(
             "--resume-campaign",
@@ -205,15 +213,21 @@ class OptimizeTopLevelCommand:
         resume_campaign = getattr(args, "resume_campaign", None)
         if (
             resume_campaign
-            and getattr(args, "apply", None) not in {None, "auto_verified"}
+            and getattr(args, "apply", None)
+            not in {None, "auto_verified", "verified_only"}
         ):
-            print("Optimize error: --resume-campaign requires --apply auto_verified")
+            print(
+                "Optimize error: --resume-campaign requires a verified apply policy"
+            )
             return 1
         apply_policy = getattr(args, "apply", None) or (
             "auto_verified" if resume_campaign else "proposal"
         )
         if apply_policy not in SUPPORTED_APPLY_POLICIES:
-            print("Optimize error: --apply must be one of proposal, auto_verified")
+            print(
+                "Optimize error: --apply must be one of proposal, "
+                "auto_verified, verified_only"
+            )
             return 0
         judge_selectors = [
             getattr(args, "judge_agent", None),
@@ -317,6 +331,9 @@ def render_optimize_summary(report: Any) -> str:
     ingestion_model_call_count = _read_report_value(
         report, "ingestion_model_call_count"
     )
+    release_state = _read_report_value(report, "release_state")
+    published = _read_report_value(report, "published")
+    verified_target_path = _read_report_value(report, "verified_target_path")
 
     lines = [
         (
@@ -367,6 +384,12 @@ def render_optimize_summary(report: Any) -> str:
             lines.append(f"Continue goal: /goal --from-campaign {campaign_id}")
     if report_path:
         lines.append(f"Report: {report_path}")
+    if release_state:
+        lines.append(f"Release state: {release_state}")
+    if published is not None:
+        lines.append(f"Published: {'yes' if published else 'no'}")
+    if verified_target_path:
+        lines.append(f"Verified target: {verified_target_path}")
     if target_selection_path:
         lines.append(f"Target selection: {target_selection_path}")
     if replay_path:
@@ -471,7 +494,7 @@ def run_optimize_cli(
     )
     import aworld.self_evolve as self_evolve
 
-    runtime_apply = "auto_verified" if resume_campaign else apply
+    runtime_apply = apply
     judge_repetitions = _auto_verified_default(
         runtime_apply,
         judge_repetitions,
@@ -544,7 +567,7 @@ def run_optimize_cli(
             judge_repetitions=judge_repetitions,
             judge_timeout_seconds=judge_timeout_seconds,
         ),
-        "replay_enabled": runtime_apply == "auto_verified",
+        "replay_enabled": runtime_apply in VERIFIED_APPLY_POLICIES,
         "runtime_registry_refresher": runtime_registry_refresher,
         "runtime_skill_activator": runtime_skill_activator
         or _default_runtime_skill_activator(),
@@ -558,7 +581,10 @@ def run_optimize_cli(
     }
     if not rerun_evaluator and not ingestion_only and (
         resume_campaign
-        or (runtime_apply == "auto_verified" and max_improvement_cycles > 1)
+        or (
+            runtime_apply in VERIFIED_APPLY_POLICIES
+            and max_improvement_cycles > 1
+        )
     ):
         return self_evolve.run_self_improvement_campaign(
             workspace_root=workspace_root,
@@ -664,7 +690,7 @@ def _auto_verified_default(
     value: int | None,
     default: int,
 ) -> int | None:
-    if value is not None or apply_policy != "auto_verified":
+    if value is not None or apply_policy not in VERIFIED_APPLY_POLICIES:
         return value
     return default
 

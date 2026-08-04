@@ -202,7 +202,7 @@ class SelfEvolveConfig(BaseConfig):
     """Disabled-by-default self-evolve configuration for harness optimization."""
 
     mode: Literal["off", "offline", "shadow", "online"] = "off"
-    apply_policy: Literal["proposal", "auto_verified"] = "proposal"
+    apply_policy: Literal["proposal", "auto_verified", "verified_only"] = "proposal"
     inferred_new_skill_policy: Literal[
         "disabled", "draft_only", "auto_verified"
     ] = "auto_verified"
@@ -265,8 +265,13 @@ class SelfEvolveConfig(BaseConfig):
     def validate_apply_policy(self) -> "SelfEvolveConfig":
         if self.mode == "online" and self.apply_policy != "auto_verified":
             raise ValueError("online self-evolve requires apply_policy='auto_verified'")
-        if self.apply_policy == "auto_verified" and not self.requires_post_apply_reevaluation:
-            raise ValueError("auto_verified self-evolve requires post-apply re-evaluation")
+        if (
+            self.apply_policy in {"auto_verified", "verified_only"}
+            and not self.requires_post_apply_reevaluation
+        ):
+            raise ValueError(
+                "verified self-evolve policies require post-apply re-evaluation"
+            )
         if self.replay_candidate_limit <= 0:
             raise ValueError("replay_candidate_limit must be positive")
         if self.baseline_replay_repetitions <= 0:
