@@ -25,7 +25,9 @@ from aworld.self_evolve.optimizers.base import OptimizerRequest
 from aworld.self_evolve.optimizers.base import (
     CandidateSemanticValidationError,
 )
+from aworld.self_evolve.optimizers import llm_mutator as llm_mutator_module
 from aworld.self_evolve.optimizers.llm_mutator import TraceReflectiveLLMMutator
+from aworld.self_evolve.repair_conformance import RepairConformanceResult
 from aworld.self_evolve.types import EvaluationSummary, SelfEvolveTargetRef
 
 
@@ -602,6 +604,166 @@ async def test_llm_mutator_repairs_source_behavior_proof_in_same_slot() -> None:
     assert proof_failure["details"]["missing_operations"] == [
         "bind_environment_path_to_json_file_reader"
     ]
+
+
+@pytest.mark.asyncio
+async def test_llm_mutator_repairs_any_candidate_owned_conformance_failure(
+    monkeypatch,
+) -> None:
+    feedback = EvaluationSummary(
+        variant_id="candidate-failed",
+        dataset_split="validation",
+        metrics={
+            "failed_gates": ["candidate_repair_conformance"],
+            "failure_class": "candidate",
+            "repairable": True,
+            "repair_candidate_package": {
+                "candidate_id": "candidate-failed",
+                "content": "# Demo\n\nUse the reusable workflow.\n",
+                "files": [
+                    {
+                        "path": "replay/runtime.py",
+                        "operation": "upsert",
+                        "content": "def select_fixture_value(value):\n    return value\n",
+                    }
+                ],
+            },
+            "candidate_validation_diagnostics": [
+                {
+                    "code": "implement_observed_endpoint_interactions",
+                    "observed_request_operations": ["records.query"],
+                }
+            ],
+        },
+    )
+    request = OptimizerRequest(
+        target=SelfEvolveTargetRef(
+            target_type="skill",
+            target_id="demo",
+            path="/tmp/demo/SKILL.md",
+        ),
+        current_content="# Demo\n\nOld guidance.\n",
+        target_fingerprint="sha256:old",
+        trace_packs=(),
+        validation_feedback=(feedback,),
+        trainable_cases=(EvalCase(case_id="train-1", input="task"),),
+        max_candidates=1,
+    )
+    repair_diagnostics: list[dict[str, object]] = []
+
+    def source_conformance(candidate, contract):
+        del contract
+        runtime = next(
+            item.content
+            for item in candidate.files
+            if item.path == "replay/runtime.py"
+        )
+        if "bool_guard" in runtime:
+            return RepairConformanceResult(
+                passed=True,
+                code="repair_branch_changed",
+                reason="candidate repaired the typed violation",
+                details={},
+            )
+        return RepairConformanceResult(
+            passed=False,
+            code="forbidden_fixture_probe_derivation",
+            reason="candidate includes boolean metadata in fixture output",
+            details={
+                "violations": [
+                    {
+                        "construct": "boolean_metadata_not_excluded",
+                        "function": "select_fixture_value",
+                        "line": 2,
+                        "path": "replay/runtime.py",
+                    }
+                ],
+                "required_change": "reject bool before int or float",
+            },
+        )
+
+    monkeypatch.setattr(
+        llm_mutator_module,
+        "evaluate_candidate_source_conformance",
+        source_conformance,
+    )
+
+    async def run_task(task: Task):
+        output = {
+            "addressed_improvement_signal_ids": [],
+            "files": [
+                {
+                    "path": "replay/runtime.py",
+                    "operation": "upsert",
+                    "content": (
+                        "def bool_guard(value):\n"
+                        "    return None if isinstance(value, bool) else value\n"
+                        if task.id.endswith("-repair")
+                        else (
+                            "def select_fixture_value(value):\n"
+                            "    return str(value)\n"
+                        )
+                    ),
+                }
+            ],
+        }
+        if not task.id.endswith("-repair"):
+            output.update(
+                {
+                    "content": "# Demo\n\nUse the reusable workflow.\n",
+                    "rationale": "repair fixture selection",
+                }
+            )
+        return {
+            task.id: TaskResponse(
+                id=task.id,
+                success=True,
+                answer=json.dumps(output),
+            )
+        }
+
+    def repair_prompt_builder(invalid_output: str, error: ValueError) -> str:
+        del invalid_output
+        assert isinstance(error, CandidateSemanticValidationError)
+        repair_diagnostics.append(error.to_diagnostic())
+        return "repair every typed conformance violation"
+
+    executor = AWorldCandidatePopulationExecutor(
+        agent_factory=_FakeCandidateAgent,
+        parse_output=lambda raw: normalize_candidate_output(
+            raw,
+            current_content=request.current_content,
+        ),
+        repair_prompt_builder=repair_prompt_builder,
+        repair_output_merger=merge_candidate_repair_output,
+        task_batch_executor=DeterministicTaskBatchExecutor(run_task=run_task),
+    )
+
+    async def contextual_population(
+        prompts,
+        max_concurrency,
+        *,
+        validate_output=None,
+    ):
+        return await executor.run(
+            prompts,
+            max_concurrency=max_concurrency,
+            validate_output=validate_output,
+        )
+
+    result = await TraceReflectiveLLMMutator(
+        mutate_text=lambda prompt: None,
+        population_callable=contextual_population,
+    ).propose(request)
+
+    assert len(result.candidates) == 1
+    assert result.diagnostics["candidate_population_execution"][
+        "repair_success_count"
+    ] == 1
+    conformance = repair_diagnostics[0]["details"]["repair_conformance"]
+    assert conformance["code"] == "forbidden_fixture_probe_derivation"
+    assert conformance["repairable"] is True
+    assert conformance["failure_fingerprint"].startswith("sha256:")
 
 
 @pytest.mark.asyncio
