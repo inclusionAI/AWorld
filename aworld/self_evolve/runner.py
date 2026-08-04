@@ -13321,6 +13321,7 @@ def _failure_signature_values(value: Any) -> list[tuple[str, str]]:
     selected_keys = {
         "code",
         "failure_class",
+        "proof_fingerprint",
         "reason",
         "repairable",
         "stage",

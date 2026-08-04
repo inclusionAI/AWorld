@@ -43,6 +43,7 @@ from aworld.self_evolve.patch_intent import apply_skill_patch_intent
 from aworld.self_evolve.repair_conformance import (
     RepairConformanceContract,
     compile_repair_conformance_contract,
+    evaluate_candidate_source_conformance,
 )
 from aworld.self_evolve.sanitization import sanitize_text
 from aworld.self_evolve.types import CandidateFileDelta, CandidateVariant, OptimizerLineage
@@ -581,6 +582,10 @@ def _focused_repair_prompt_instructions(
         sort_keys=True,
         default=str,
     ).lower()
+    requires_source_behavior_proof = any(
+        item.get("value_domain") == "source_behavior"
+        for item in schema_field_constraints
+    )
     instructions = (
         "Repair the focused candidate package using the machine-readable "
         "diagnostics and repair_conformance contract in this EvolutionContext. "
@@ -616,6 +621,21 @@ def _focused_repair_prompt_instructions(
             f"{json.dumps(capability_identity, ensure_ascii=True)}. Set the "
             "compile-result capability_id to request['capability_id'], which must equal "
             "exactly that value, and preserve the binding across later repair iterations. "
+        )
+    if requires_source_behavior_proof or (
+        "source_behavior_proof_failed" in feedback_text
+    ):
+        instructions += (
+            "For every source_behavior schema constraint, satisfy the typed "
+            "operation_status proof in the actual submitted source. Repair each "
+            "false operation and inspect missing_operations before finalizing. "
+            "The bounded analyzer follows local assignments and explicit function "
+            "parameters; it intentionally does not infer data flow through mutable "
+            "class attributes, instance attributes, globals, or container state. "
+            "When unsupported_boundaries are reported, carry the environment-derived "
+            "value through local variables or explicit parameters until the required "
+            "reader and projection operations occur. Do not claim a direct read in "
+            "the rationale unless that data-flow edge exists in the source. "
         )
     recovery_trace = (
         focused_feedback.get("recovery_trace")
@@ -901,15 +921,16 @@ def _validate_mutator_output_context(
             candidate_index=candidate_index,
             candidate_files=files,
         )
+        candidate = CandidateVariant(
+            candidate_id="pending",
+            target=request.target,
+            content=content,
+            rationale="candidate package validation",
+            target_fingerprint=request.target_fingerprint,
+            files=files,
+        )
         reference_report = candidate_package_reference_report(
-            CandidateVariant(
-                candidate_id="pending",
-                target=request.target,
-                content=content,
-                rationale="candidate package validation",
-                target_fingerprint=request.target_fingerprint,
-                files=files,
-            ),
+            candidate,
             existing_paths=request.target_package_inventory,
         )
         if not reference_report["closed"]:
@@ -922,6 +943,40 @@ def _validate_mutator_output_context(
                 + missing,
                 field_path=CandidateFailureField.FILES,
             )
+        context = request.evolution_context or compile_evolution_context(request)
+        repair_focus = context.repair_focus_for_candidate(
+            candidate_index=candidate_index
+        )
+        private_contract = (
+            None
+            if (
+                isinstance(repair_focus, Mapping)
+                and _repair_feedback_reached_judged_task_output(repair_focus)
+            )
+            else compile_repair_conformance_contract(repair_focus)
+        )
+        if private_contract is not None:
+            conformance = evaluate_candidate_source_conformance(
+                candidate,
+                private_contract,
+            )
+            if (
+                not conformance.passed
+                and conformance.code == "source_behavior_proof_failed"
+            ):
+                raise CandidateSemanticValidationError(
+                    conformance.code,
+                    conformance.reason,
+                    field_path=CandidateFailureField.FILES.value,
+                    representation=CandidateRepresentation.CANDIDATE_PACKAGE.value,
+                    repairable=True,
+                    allowed_improvement_signal_ids=(
+                        exposed_improvement_signal_ids(request)
+                    ),
+                    details={
+                        "repair_conformance": conformance.to_dict(),
+                    },
+                )
     except CandidateSemanticValidationError:
         raise
     except CandidateMaterializationError as exc:
