@@ -54,6 +54,7 @@ from aworld.self_evolve.replay import (
     CandidateReplayMemberResult,
     CandidateReplayRequest,
     CandidateReplayResult as _CandidateReplayResult,
+    ReplayServiceProtocolError,
     ReplayVariantResult,
     _distributed_member_repetitions,
     _member_artifact_name,
@@ -8825,6 +8826,115 @@ async def test_runner_population_disposition_uses_typed_failure_owner_and_scope(
 
     assert result.run.status.value == "rejected"
     assert replay_backend.candidate_ids == expected_candidate_ids
+
+
+@pytest.mark.asyncio
+async def test_candidate_capability_operational_preflight_blocks_paired_replay(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    replay_root = skill_path.parent / "replay"
+    replay_root.mkdir(parents=True)
+    skill_path.write_text("---\nname: demo\n---\n# Demo\n", encoding="utf-8")
+    (replay_root / "capability.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "aworld.skill.replay_capability.v1",
+                "capability_id": "demo-replay",
+                "protocol": "aworld.replay.subprocess.v1",
+                "entrypoint": "replay/compiler.py",
+                "handles": ["http_resource"],
+                "runtime_files": ["replay/runtime.py"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (replay_root / "compiler.py").write_text("pass\n", encoding="utf-8")
+    (replay_root / "runtime.py").write_text("pass\n", encoding="utf-8")
+    target = SkillTextTarget(skill_path, allow_auto_apply=True)
+    candidate = CandidateVariant(
+        candidate_id="candidate-invalid-runtime",
+        target=target.identity,
+        content=skill_path.read_text(encoding="utf-8") + "\nNew guidance.\n",
+        rationale="exercise runtime preflight",
+        target_fingerprint=target.fingerprint_current_content(),
+    )
+    requirement = ReplayCapabilityRequirement(
+        requirement_id="requirement-http",
+        kind="http_resource",
+        identifier="https://example.test/data",
+        case_ids=("case-1",),
+        evidence_refs=("evidence-1",),
+        status="runtime_required",
+    )
+    dataset = SelfEvolveDataset(
+        cases=(EvalCase(case_id="case-1", input="task"),),
+        recipe=DatasetRecipe(
+            source={"kind": "trajectory_set", "case_count": 1},
+            split_seed="seed",
+            splits={"train": ["case-1"], "validation": [], "held_out": []},
+            trainable_case_ids=("case-1",),
+        ),
+    )
+
+    class NoopOptimizer:
+        async def propose(self, request: OptimizerRequest) -> OptimizerResult:
+            return OptimizerResult(candidates=())
+
+    runner = SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=NoopOptimizer(),
+        replay_enabled=True,
+        candidate_replay_backend=object(),
+    )
+    capability = SimpleNamespace(
+        capability_id="demo-replay",
+        fingerprint="sha256:frozen",
+    )
+    monkeypatch.setattr(
+        runner,
+        "_prepare_replay_adaptation",
+        lambda **kwargs: (
+            (
+                SimpleNamespace(replay_capability=capability),
+                GateResult("replay_adaptation", True, "passed"),
+            )
+            if kwargs.get("capability_skill_root") is not None
+            else (
+                None,
+                GateResult("replay_adaptation", False, "candidate capability required"),
+            )
+        ),
+    )
+
+    async def fail_operational_preflight(*args, **kwargs):
+        raise ReplayServiceProtocolError(
+            "runtime trace is not bidirectional",
+            code="protocol_trace_schema_field_validation_failed",
+        )
+
+    monkeypatch.setattr(
+        runner_module,
+        "preflight_frozen_replay_capability",
+        fail_operational_preflight,
+    )
+
+    gates = await runner._validate_candidate_capabilities(
+        run_id="run-operational-preflight",
+        target=target,
+        dataset=dataset,
+        candidate=candidate,
+        requirements=(requirement,),
+    )
+
+    assert len(gates) == 1
+    gate = gates[0]
+    assert gate.gate_name == "candidate_capability_replay"
+    assert gate.passed is False
+    assert gate.details["failure_class"] == "candidate"
+    assert gate.details["code"] == "protocol_trace_schema_field_validation_failed"
+    assert gate.details["failure_event"]["owner"] == "candidate"
 
 
 @pytest.mark.asyncio

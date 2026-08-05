@@ -59,6 +59,7 @@ from aworld.self_evolve.replay_adaptation import (
 )
 from aworld.self_evolve.replay_capability import (
     FrozenReplayCapability,
+    build_replay_resource_limited_command,
     build_replay_sandboxed_command,
     FrozenReplayFile,
     ReplayProtocolProbe,
@@ -66,7 +67,6 @@ from aworld.self_evolve.replay_capability import (
     ReplayServiceSpec,
     replay_payload_contains_expected_value,
     replay_process_memory_bytes,
-    replay_process_resource_limiter,
     verify_frozen_replay_capability,
 )
 from aworld.self_evolve.sanitization import sanitize_text
@@ -1883,6 +1883,46 @@ def _reset_replay_service_protocol_trace(source: Path) -> None:
     source.write_text("", encoding="utf-8")
 
 
+def _normalize_replay_service_protocol_trace_record(
+    record: Mapping[str, Any],
+    *,
+    line_number: int,
+) -> dict[str, Any]:
+    """Normalize the bounded v0 trace aliases without inventing interactions.
+
+    Early skill runtimes used request/response, message_kind, and
+    top_level_fields. Those names carry the same summary semantics as the v1
+    fields, so they can be upgraded at the framework boundary. Missing traffic
+    cannot be upgraded: the caller still requires both inbound and outbound
+    records before a runtime is accepted.
+    """
+
+    normalized = dict(record)
+    raw_direction = str(normalized.get("direction") or "").strip().lower()
+    legacy = bool(
+        "message_kind" in normalized
+        or "top_level_fields" in normalized
+        or raw_direction in {"request", "response"}
+    )
+    if not legacy:
+        return normalized
+    if "kind" not in normalized and isinstance(
+        normalized.get("message_kind"), str
+    ):
+        normalized["kind"] = normalized["message_kind"]
+    if "fields" not in normalized and isinstance(
+        normalized.get("top_level_fields"), list
+    ):
+        normalized["fields"] = normalized["top_level_fields"]
+    normalized.setdefault("sequence", line_number)
+    normalized.setdefault("correlation", {})
+    if raw_direction == "request":
+        normalized["direction"] = "in"
+    elif raw_direction == "response":
+        normalized["direction"] = "out"
+    return normalized
+
+
 def _validate_replay_service_protocol_trace(trace_path: Path) -> None:
     """Validate the candidate-owned, protocol-neutral replay trace contract."""
 
@@ -1930,6 +1970,10 @@ def _validate_replay_service_protocol_trace(trace_path: Path) -> None:
             raise ReplayServiceProtocolError(
                 "skill runtime protocol_trace.jsonl records must be JSON objects"
             )
+        record = _normalize_replay_service_protocol_trace_record(
+            record,
+            line_number=line_number,
+        )
         required = {"direction", "sequence", "kind", "fields", "correlation"}
         missing = sorted(required.difference(record))
         if missing:
@@ -1952,6 +1996,32 @@ def _validate_replay_service_protocol_trace(trace_path: Path) -> None:
                 ),
             )
         type_violations: list[SchemaFieldViolation] = []
+        sequence = record.get("sequence")
+        if isinstance(sequence, bool) or not isinstance(sequence, int) or sequence < 0:
+            type_violations.append(
+                SchemaFieldViolation.create(
+                    SchemaFieldRepairConstraint(
+                        schema_layer="protocol_trace",
+                        field_path="records[*].sequence",
+                        rule="type",
+                        expected=("non_negative_integer",),
+                    ),
+                    sequence,
+                )
+            )
+        kind = record.get("kind")
+        if not isinstance(kind, str) or not kind.strip():
+            type_violations.append(
+                SchemaFieldViolation.create(
+                    SchemaFieldRepairConstraint(
+                        schema_layer="protocol_trace",
+                        field_path="records[*].kind",
+                        rule="type",
+                        expected=("non_empty_string",),
+                    ),
+                    kind,
+                )
+            )
         if not isinstance(record.get("fields"), list):
             type_violations.append(
                 SchemaFieldViolation.create(
@@ -1960,6 +2030,18 @@ def _validate_replay_service_protocol_trace(trace_path: Path) -> None:
                         field_path="records[*].fields",
                         rule="type",
                         expected=("array",),
+                    ),
+                    record.get("fields"),
+                )
+            )
+        elif any(not isinstance(item, str) for item in record["fields"]):
+            type_violations.append(
+                SchemaFieldViolation.create(
+                    SchemaFieldRepairConstraint(
+                        schema_layer="protocol_trace",
+                        field_path="records[*].fields[*]",
+                        rule="type",
+                        expected=("string",),
                     ),
                     record.get("fields"),
                 )
@@ -1978,15 +2060,22 @@ def _validate_replay_service_protocol_trace(trace_path: Path) -> None:
             )
         if type_violations:
             raise ReplayServiceProtocolError(
-                "skill runtime protocol_trace.jsonl fields must be a list and "
-                "correlation must be an object",
+                "skill runtime protocol_trace.jsonl summary fields have invalid types",
                 code="protocol_trace_schema_field_validation_failed",
                 details=schema_field_diagnostic_details(type_violations),
             )
         direction = str(record.get("direction") or "").strip().lower()
-        if direction in {"in", "inbound", "received", "receive", "recv"}:
+        if direction in {"in", "inbound", "received", "receive", "recv", "request"}:
             directions.add("in")
-        elif direction in {"out", "outbound", "emitted", "emit", "send", "sent"}:
+        elif direction in {
+            "out",
+            "outbound",
+            "emitted",
+            "emit",
+            "send",
+            "sent",
+            "response",
+        }:
             directions.add("out")
         else:
             raise ReplayServiceProtocolError(
@@ -2006,12 +2095,14 @@ def _validate_replay_service_protocol_trace(trace_path: Path) -> None:
                                     "received",
                                     "receive",
                                     "recv",
+                                    "request",
                                     "out",
                                     "outbound",
                                     "emitted",
                                     "emit",
                                     "send",
                                     "sent",
+                                    "response",
                                 ),
                             ),
                             record.get("direction"),
@@ -2027,7 +2118,21 @@ def _validate_replay_service_protocol_trace(trace_path: Path) -> None:
     if directions != {"in", "out"}:
         raise ReplayServiceProtocolError(
             "skill runtime protocol_trace.jsonl must record both received and "
-            "emitted interactions"
+            "emitted interactions",
+            code="protocol_trace_direction_coverage_failed",
+            details=schema_field_diagnostic_details(
+                (
+                    SchemaFieldViolation.create(
+                        SchemaFieldRepairConstraint(
+                            schema_layer="protocol_trace",
+                            field_path="records[*].direction",
+                            rule="contains_all",
+                            expected=("in", "out"),
+                        ),
+                        sorted(directions),
+                    ),
+                )
+            ),
         )
 
 
@@ -4216,6 +4321,12 @@ async def _start_replay_services(
                 writable_roots=(service_scratch,),
                 allow_loopback=True,
             )
+            command = build_replay_resource_limited_command(
+                command,
+                max_file_bytes=8 * 1024 * 1024,
+                max_memory_bytes=512 * 1024 * 1024,
+                cpu_seconds=600,
+            )
             service_environment = {
                 "PATH": os.environ.get("PATH", ""),
                 "PYTHONIOENCODING": "utf-8",
@@ -4249,11 +4360,6 @@ async def _start_replay_services(
                     stdout=stdout_handle,
                     stderr=stderr_handle,
                     start_new_session=True,
-                    preexec_fn=replay_process_resource_limiter(
-                        max_file_bytes=8 * 1024 * 1024,
-                        max_memory_bytes=512 * 1024 * 1024,
-                        cpu_seconds=600,
-                    ),
                 )
             except Exception:
                 stdout_handle.close()

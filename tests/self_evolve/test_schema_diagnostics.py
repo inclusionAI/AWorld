@@ -56,6 +56,16 @@ from aworld.self_evolve.schema_diagnostics import (
             "skill_runtime",
             "http_fixture",
         ),
+        (
+            SchemaFieldRepairConstraint(
+                schema_layer="protocol_trace",
+                field_path="records[*].direction",
+                rule="contains_all",
+                expected=("in", "out"),
+            ),
+            ["in", "out"],
+            ["out"],
+        ),
     ],
 )
 def test_schema_field_constraint_is_executable_and_round_trips(

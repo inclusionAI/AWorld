@@ -3427,11 +3427,48 @@ def test_replay_service_protocol_trace_contract_requires_bidirectional_records(
     with pytest.raises(
         ReplayServiceProtocolError,
         match="must record both received and emitted interactions",
-    ):
+    ) as error:
         _validate_replay_service_protocol_trace(trace)
 
+    assert error.value.code == "protocol_trace_direction_coverage_failed"
+    assert error.value.details["schema_field_constraints"] == [
+        {
+            "schema_layer": "protocol_trace",
+            "field_path": "records[*].direction",
+            "rule": "contains_all",
+            "expected": ["in", "out"],
+        }
+    ]
 
-def test_protocol_trace_missing_fields_emits_typed_multi_field_constraints(
+
+def test_protocol_trace_legacy_aliases_are_normalized_but_still_require_both_directions(
+    tmp_path: Path,
+) -> None:
+    trace = tmp_path / "protocol_trace.jsonl"
+    trace.write_text(
+        "\n".join(
+            json.dumps(item)
+            for item in (
+                {
+                    "direction": "request",
+                    "message_kind": "http",
+                    "top_level_fields": ["path"],
+                },
+                {
+                    "direction": "response",
+                    "message_kind": "http",
+                    "top_level_fields": ["status"],
+                },
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    _validate_replay_service_protocol_trace(trace)
+
+
+def test_protocol_trace_canonical_record_missing_fields_emits_typed_constraints(
     tmp_path: Path,
 ) -> None:
     trace = tmp_path / "protocol_trace.jsonl"
@@ -3440,8 +3477,6 @@ def test_protocol_trace_missing_fields_emits_typed_multi_field_constraints(
             {
                 "direction": "inbound",
                 "sequence": 1,
-                "message_kind": "request",
-                "top_level_fields": ["path"],
                 "correlation": {},
             }
         )
