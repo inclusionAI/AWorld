@@ -202,6 +202,64 @@ def _schema_field_violation(
     )
 
 
+def _absolute_path_violation(
+    *,
+    field_path: str,
+    value: Any,
+    occurrence_count: int = 1,
+) -> SchemaFieldViolation:
+    return _schema_field_violation(
+        schema_layer="compile_result",
+        field_path=field_path,
+        rule="starts_with",
+        expected=("/",),
+        value=value,
+        occurrence_count=occurrence_count,
+    )
+
+
+def _readiness_duplicate_violation(
+    value: Any,
+    *,
+    occurrence_count: int = 1,
+) -> SchemaFieldViolation:
+    return _schema_field_violation(
+        schema_layer="compile_result",
+        field_path="services[*].protocol_probes[*].path",
+        rule="enum",
+        expected=("fixture_derived_data_plane_probe",),
+        value=value,
+        occurrence_count=occurrence_count,
+        value_domain="source_behavior",
+        required_operations=(
+            "keep_readiness_in_readiness_field",
+            "declare_distinct_fixture_derived_data_plane_probe",
+        ),
+        forbidden_operations=(
+            "copy_readiness_endpoint_into_protocol_probes",
+        ),
+    )
+
+
+def _advertised_websocket_probe_violation() -> SchemaFieldViolation:
+    return _schema_field_violation(
+        schema_layer="compile_result",
+        field_path="services[*].protocol_probes",
+        rule="enum",
+        expected=("advertised_websocket_with_data_plane_probe",),
+        value="advertised_websocket_without_data_plane_probe",
+        value_domain="source_behavior",
+        required_operations=(
+            "declare_websocket_data_plane_probe",
+            "provide_websocket_request_text",
+            "provide_fixture_derived_websocket_response",
+        ),
+        forbidden_operations=(
+            "advertise_websocket_without_websocket_probe",
+        ),
+    )
+
+
 def fingerprint_skill_package(skill_root: str | Path) -> str:
     root = Path(skill_root).expanduser().resolve()
     if not root.is_dir():
@@ -2776,6 +2834,7 @@ def _validate_compile_result_service_schema(raw: Any) -> None:
         )
     violations: list[SchemaFieldViolation] = []
     first_invalid_transport: object | None = None
+    semantic_failure_codes: set[str] = set()
     for service in raw:
         if not isinstance(service, Mapping):
             violations.append(
@@ -2838,6 +2897,20 @@ def _validate_compile_result_service_schema(raw: Any) -> None:
                     value=readiness.get("kind"),
                 )
             )
+        elif (
+            "path" in readiness
+            and (
+                not isinstance(readiness.get("path"), str)
+                or not str(readiness.get("path")).startswith("/")
+            )
+        ):
+            violations.append(
+                _absolute_path_violation(
+                    field_path="services[*].readiness.path",
+                    value=readiness.get("path"),
+                )
+            )
+            semantic_failure_codes.add("readiness_path_invalid")
         raw_probes = service.get("protocol_probes")
         if raw_probes is None:
             continue
@@ -2876,6 +2949,32 @@ def _validate_compile_result_service_schema(raw: Any) -> None:
                             else REPLAY_CAPABILITY_SUPPORTED_PROTOCOL_PROBE_KINDS
                         ),
                         value=probe.get("kind"),
+                    )
+                )
+            probe_path = probe.get("path", "/")
+            if not isinstance(probe_path, str) or not probe_path.startswith("/"):
+                violations.append(
+                    _absolute_path_violation(
+                        field_path="services[*].protocol_probes[*].path",
+                        value=probe_path,
+                    )
+                )
+                semantic_failure_codes.add("protocol_probe_path_invalid")
+            validate_advertised = probe.get(
+                "validate_advertised_websockets",
+                False,
+            )
+            if not isinstance(validate_advertised, bool):
+                violations.append(
+                    _schema_field_violation(
+                        schema_layer="compile_result",
+                        field_path=(
+                            "services[*].protocol_probes[*]."
+                            "validate_advertised_websockets"
+                        ),
+                        rule="type",
+                        expected=("boolean",),
+                        value=validate_advertised,
                     )
                 )
             for field_name, max_chars in (
@@ -2921,6 +3020,59 @@ def _validate_compile_result_service_schema(raw: Any) -> None:
                             value=field_value,
                         )
                     )
+            if probe.get("kind") in {"tcp", "websocket"}:
+                for required_field in ("request_text", "response_contains"):
+                    if probe.get(required_field) is None:
+                        violations.append(
+                            _schema_field_violation(
+                                schema_layer="compile_result",
+                                field_path=(
+                                    "services[*].protocol_probes[*]."
+                                    + required_field
+                                ),
+                                rule="required",
+                                expected=(),
+                                value=None,
+                            )
+                        )
+        if service.get("transport") != "skill_runtime":
+            continue
+        probe_mappings = tuple(
+            probe for probe in raw_probes if isinstance(probe, Mapping)
+        )
+        if isinstance(readiness, Mapping):
+            readiness_kind = readiness.get("kind")
+            readiness_path = readiness.get("path", "/")
+            duplicates = tuple(
+                probe
+                for probe in probe_mappings
+                if probe.get("kind") == readiness_kind
+                and probe.get("path", "/") == readiness_path
+            )
+            if duplicates:
+                violations.append(
+                    _readiness_duplicate_violation(
+                        readiness_path,
+                        occurrence_count=len(duplicates),
+                    )
+                )
+                semantic_failure_codes.add(
+                    "protocol_probe_duplicates_readiness"
+                )
+        advertises_websocket = any(
+            probe.get("kind") == "http"
+            and probe.get("validate_advertised_websockets") is True
+            for probe in probe_mappings
+        )
+        has_websocket_data_plane = any(
+            probe.get("kind") == "websocket"
+            and bool(probe.get("request_text"))
+            and bool(probe.get("response_contains"))
+            for probe in probe_mappings
+        )
+        if advertises_websocket and not has_websocket_data_plane:
+            violations.append(_advertised_websocket_probe_violation())
+            semantic_failure_codes.add("advertised_websocket_probe_missing")
     if not violations:
         return
     message = "replay capability result violates schema field constraints"
@@ -2938,7 +3090,33 @@ def _validate_compile_result_service_schema(raw: Any) -> None:
             "protocol probe response_contains must be non-empty and at most "
             f"{REPLAY_CAPABILITY_MAX_RESPONSE_CONTAINS_CHARS} characters"
         )
-    _raise_schema_field_error(message, tuple(violations))
+    if len(semantic_failure_codes) == 1:
+        semantic_code = next(iter(semantic_failure_codes))
+        if semantic_code == "advertised_websocket_probe_missing":
+            message = (
+                "advertised WebSocket requires a websocket data-plane "
+                "protocol probe"
+            )
+        elif semantic_code == "protocol_probe_duplicates_readiness":
+            message = "protocol_probes must not duplicate readiness probes"
+        elif semantic_code == "protocol_probe_path_invalid":
+            message = "protocol probe path must start with /"
+        elif semantic_code == "readiness_path_invalid":
+            message = "HTTP readiness path must start with /"
+    else:
+        semantic_code = "compile_result_constraints_failed"
+    _raise_schema_field_error(
+        message,
+        tuple(violations),
+        extra_details=(
+            {
+                "code": semantic_code,
+                "constraint_failure_codes": sorted(semantic_failure_codes),
+            }
+            if semantic_failure_codes
+            else None
+        ),
+    )
 
 
 def _parse_services(
@@ -3016,7 +3194,19 @@ def _parse_services(
             )
         path = readiness_raw.get("path", "/")
         if not isinstance(path, str) or not path.startswith("/"):
-            raise ReplayCapabilityError("HTTP readiness path must start with /")
+            _raise_schema_field_error(
+                "HTTP readiness path must start with /",
+                (
+                    _absolute_path_violation(
+                        field_path="services[*].readiness.path",
+                        value=path,
+                    ),
+                ),
+                extra_details={
+                    "code": "readiness_path_invalid",
+                    "service_id": service_id,
+                },
+            )
         readiness = ReplayReadinessProbe(
             kind=kind,
             timeout_seconds=float(timeout),
@@ -3050,21 +3240,9 @@ def _parse_services(
                     "protocol_probes must not duplicate readiness probes: "
                     f"{service_id} kind={readiness.kind} path={readiness.path}",
                     (
-                        _schema_field_violation(
-                            schema_layer="compile_result",
-                            field_path="services[*].protocol_probes[*].path",
-                            rule="enum",
-                            expected=("fixture_derived_data_plane_probe",),
+                        _readiness_duplicate_violation(
                             value=readiness.path,
                             occurrence_count=len(duplicate_readiness_probes),
-                            value_domain="source_behavior",
-                            required_operations=(
-                                "keep_readiness_in_readiness_field",
-                                "declare_distinct_fixture_derived_data_plane_probe",
-                            ),
-                            forbidden_operations=(
-                                "copy_readiness_endpoint_into_protocol_probes",
-                            ),
                         ),
                     ),
                     extra_details={
@@ -3081,9 +3259,16 @@ def _parse_services(
                 item.kind == "websocket" and _is_data_plane_probe(item)
                 for item in protocol_probes
             ):
-                raise ReplayCapabilityError(
+                _raise_schema_field_error(
                     "advertised WebSocket requires a websocket data-plane protocol "
-                    f"probe: {service_id}"
+                    f"probe: {service_id}",
+                    (
+                        _advertised_websocket_probe_violation(),
+                    ),
+                    extra_details={
+                        "code": "advertised_websocket_probe_missing",
+                        "service_id": service_id,
+                    },
                 )
             fixture_bytes = _resolve_output_file(
                 output_root,
@@ -3208,7 +3393,20 @@ def _parse_protocol_probes(
             )
         path = value.get("path", "/")
         if not isinstance(path, str) or not path.startswith("/"):
-            raise ReplayCapabilityError("HTTP protocol probe path must start with /")
+            _raise_schema_field_error(
+                "HTTP protocol probe path must start with /",
+                (
+                    _absolute_path_violation(
+                        field_path="services[*].protocol_probes[*].path",
+                        value=path,
+                    ),
+                ),
+                extra_details={
+                    "code": "protocol_probe_path_invalid",
+                    "service_id": service_id,
+                    "probe_kind": kind,
+                },
+            )
         validate_links = value.get("validate_advertised_websockets", False)
         if not isinstance(validate_links, bool):
             raise ReplayCapabilityError(

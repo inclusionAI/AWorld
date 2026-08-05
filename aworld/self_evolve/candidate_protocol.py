@@ -39,7 +39,10 @@ _CANDIDATE_OUTPUT_TEMPLATE: Mapping[str, object] = {
         "operations": [
             {
                 "op": "replace_section or append_section",
-                "heading": "existing or new Markdown heading",
+                "heading": (
+                    "for replace_section, an exact existing Markdown heading; "
+                    "for a new heading, use append_section"
+                ),
                 "content": "replacement section body",
             }
         ]

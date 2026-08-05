@@ -1550,6 +1550,9 @@ def _schema_field_contract_fingerprint(
             "field_path": item.get("field_path"),
             "rule": item.get("rule"),
             "expected": item.get("expected"),
+            "value_domain": item.get("value_domain", "schema_value"),
+            "required_operations": item.get("required_operations", ()),
+            "forbidden_operations": item.get("forbidden_operations", ()),
         }
         for item in raw_constraints[:100]
         if isinstance(item, Mapping)
@@ -4734,6 +4737,13 @@ class SelfEvolveRunner:
             capability_error_code = str(
                 adaptation_details.get("capability_error_code") or ""
             ).strip()
+            repair_conformance = (
+                merge_repair_conformance_constraint_context(
+                    contract.to_public_dict(),
+                    adaptation_details,
+                )
+                or contract.to_public_dict()
+            )
             failure_event = ReplayFailureEvent(
                 code=(
                     capability_error_code
@@ -4753,7 +4763,7 @@ class SelfEvolveRunner:
                 repairable=candidate_owned,
                 category="repair_conformance",
                 contract_fingerprint=_schema_field_contract_fingerprint(
-                    adaptation_details
+                    repair_conformance
                 ),
                 summary=adaptation_gate.reason,
                 diagnostics={
@@ -4775,7 +4785,7 @@ class SelfEvolveRunner:
                     "stage": "repair_conformance_compile",
                     "code": "repair_capability_compile_failed",
                     "capability_error_code": capability_error_code or None,
-                    "repair_conformance": contract.to_public_dict(),
+                    "repair_conformance": repair_conformance,
                     "failure_event": failure_event.to_dict(),
                     "causal_failure_events": [failure_event.to_dict()],
                 },

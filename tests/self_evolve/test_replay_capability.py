@@ -25,6 +25,7 @@ from aworld.self_evolve.replay_capability import (
     replay_process_memory_bytes,
     verify_frozen_replay_capability,
 )
+from aworld.self_evolve.schema_diagnostics import SchemaFieldRepairConstraint
 
 
 def test_frozen_fixture_shape_fingerprint_ignores_recorded_scalar_values(
@@ -583,6 +584,134 @@ def test_skill_runtime_rejects_readiness_duplicate_protocol_probe(
 
 
 @pytest.mark.replay_sandbox
+def test_skill_runtime_aggregates_independent_protocol_repairs(
+    tmp_path: Path,
+) -> None:
+    skill = _write_capability_skill(tmp_path)
+    compiler_path = skill / "replay/compiler.py"
+    compiler_path.write_text(
+        compiler_path.read_text(encoding="utf-8").replace(
+            "'transport': 'http_fixture',",
+            (
+                "'transport': 'skill_runtime',\n"
+                "        'runtime_entrypoint': 'replay/runtime.py',\n"
+                "        'protocol_probes': [\n"
+                "            {\n"
+                "                'kind': 'http', 'path': '/ready',\n"
+                "                'response_contains': 'recorded fixture',\n"
+                "                'validate_advertised_websockets': True,\n"
+                "            },\n"
+                "            {\n"
+                "                'kind': 'http', 'path': '/',\n"
+                "                'response_contains': 'recorded fixture',\n"
+                "            },\n"
+                "        ],"
+            ),
+        ).replace(
+            "'readiness': {'kind': 'tcp', 'timeout_seconds': 2.0}",
+            (
+                "'readiness': {'kind': 'http', 'path': '/ready', "
+                "'timeout_seconds': 2.0}"
+            ),
+        ),
+        encoding="utf-8",
+    )
+    capability = discover_replay_capability(skill)
+    assert capability is not None
+
+    with pytest.raises(ReplayCapabilityError) as error:
+        compile_and_freeze_capability(
+            capability,
+            _request(skill),
+            tmp_path / "compile",
+        )
+
+    assert error.value.code == "schema_field_validation_failed"
+    assert error.value.details["code"] == "compile_result_constraints_failed"
+    assert error.value.details["constraint_failure_codes"] == [
+        "advertised_websocket_probe_missing",
+        "protocol_probe_duplicates_readiness",
+    ]
+    constraints = {
+        SchemaFieldRepairConstraint.from_dict(item)
+        for item in error.value.details["schema_field_constraints"]
+    }
+    assert constraints == {
+        SchemaFieldRepairConstraint(
+            schema_layer="compile_result",
+            field_path="services[*].protocol_probes[*].path",
+            rule="enum",
+            expected=("fixture_derived_data_plane_probe",),
+            value_domain="source_behavior",
+            required_operations=(
+                "keep_readiness_in_readiness_field",
+                "declare_distinct_fixture_derived_data_plane_probe",
+            ),
+            forbidden_operations=(
+                "copy_readiness_endpoint_into_protocol_probes",
+            ),
+        ),
+        SchemaFieldRepairConstraint(
+            schema_layer="compile_result",
+            field_path="services[*].protocol_probes",
+            rule="enum",
+            expected=("advertised_websocket_with_data_plane_probe",),
+            value_domain="source_behavior",
+            required_operations=(
+                "declare_websocket_data_plane_probe",
+                "provide_websocket_request_text",
+                "provide_fixture_derived_websocket_response",
+            ),
+            forbidden_operations=(
+                "advertise_websocket_without_websocket_probe",
+            ),
+        ),
+    }
+
+
+@pytest.mark.replay_sandbox
+def test_skill_runtime_types_relative_protocol_probe_path(
+    tmp_path: Path,
+) -> None:
+    skill = _write_capability_skill(tmp_path)
+    compiler_path = skill / "replay/compiler.py"
+    compiler_path.write_text(
+        compiler_path.read_text(encoding="utf-8").replace(
+            "'transport': 'http_fixture',",
+            (
+                "'transport': 'skill_runtime',\n"
+                "        'runtime_entrypoint': 'replay/runtime.py',\n"
+                "        'protocol_probes': [{\n"
+                "            'kind': 'http', 'path': 'task-plane',\n"
+                "            'response_contains': 'recorded fixture',\n"
+                "        }],"
+            ),
+        ),
+        encoding="utf-8",
+    )
+    capability = discover_replay_capability(skill)
+    assert capability is not None
+
+    with pytest.raises(ReplayCapabilityError) as error:
+        compile_and_freeze_capability(
+            capability,
+            _request(skill),
+            tmp_path / "compile",
+        )
+
+    assert error.value.code == "schema_field_validation_failed"
+    assert error.value.details["code"] == "protocol_probe_path_invalid"
+    assert error.value.details["schema_field_constraints"] == [
+        {
+            "schema_layer": "compile_result",
+            "field_path": "services[*].protocol_probes[*].path",
+            "rule": "starts_with",
+            "expected": ["/"],
+        }
+    ]
+
+
+@pytest.mark.replay_sandbox
 def test_skill_runtime_accepts_declared_websocket_data_plane_probe(
     tmp_path: Path,
 ) -> None:
@@ -954,12 +1083,32 @@ def test_skill_runtime_advertised_websocket_validation_requires_websocket_data_p
     with pytest.raises(
         ReplayCapabilityError,
         match="advertised WebSocket requires a websocket data-plane protocol probe",
-    ):
+    ) as error:
         compile_and_freeze_capability(
             capability,
             _request(skill),
             tmp_path / "compile",
         )
+
+    assert error.value.code == "schema_field_validation_failed"
+    assert error.value.details["code"] == "advertised_websocket_probe_missing"
+    assert error.value.details["schema_field_constraints"] == [
+        {
+            "schema_layer": "compile_result",
+            "field_path": "services[*].protocol_probes",
+            "rule": "enum",
+            "expected": ["advertised_websocket_with_data_plane_probe"],
+            "value_domain": "source_behavior",
+            "required_operations": [
+                "declare_websocket_data_plane_probe",
+                "provide_websocket_request_text",
+                "provide_fixture_derived_websocket_response",
+            ],
+            "forbidden_operations": [
+                "advertise_websocket_without_websocket_probe"
+            ],
+        }
+    ]
 
 
 @pytest.mark.replay_sandbox

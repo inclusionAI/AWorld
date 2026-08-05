@@ -806,7 +806,8 @@ def _focused_repair_prompt_instructions(
             "capability_contracts schema shape for field placement. enum rules permit "
             "only their expected values; type rules permit only their expected "
             "JSON types; contains_all requires every expected array member; required, "
-            "non_empty, unique, max_chars, and max_items rules retain their literal "
+            "non_empty, unique, starts_with, max_chars, and max_items rules retain "
+            "their literal "
             "schema meanings. Keep schema_layer "
             "boundaries intact: a valid manifest value is not automatically valid "
             "in a compile-result service field. Repair the compiler or manifest "
@@ -1325,8 +1326,27 @@ def _materialize_mutator_output(
         rationale = ""
         raw_files = ()
     if isinstance(patch_intent, Mapping):
-        content = apply_skill_patch_intent(base_content, patch_intent)
-        materialization = "patch_intent"
+        try:
+            content = apply_skill_patch_intent(base_content, patch_intent)
+            materialization = "patch_intent"
+        except CandidateMaterializationError as exc:
+            # A repair candidate can legitimately be a package-file-only delta.
+            # If its optional Markdown patch refers to a section that does not
+            # exist in the authoritative target snapshot, retain the snapshot
+            # and continue only when the response also carries candidate-owned
+            # files.  Other patch failures remain fail-closed, and downstream
+            # package/reference/conformance gates still validate the file delta.
+            has_file_delta = isinstance(raw_files, (list, tuple)) and any(
+                isinstance(item, Mapping) for item in raw_files
+            )
+            if (
+                exc.code is CandidateMaterializationCode.PATCH_SECTION_NOT_FOUND
+                and has_file_delta
+            ):
+                content = base_content
+                materialization = "files_only_patch_fallback"
+            else:
+                raise
     else:
         materialization = "full_content"
     if not isinstance(content, str) or not content:
@@ -1363,7 +1383,7 @@ def _materialize_mutator_output(
         for item in raw_files
         if isinstance(item, Mapping)
     )
-    if materialization == "files_only" and not files:
+    if materialization.startswith("files_only") and not files:
         raise CandidateMaterializationError(
             CandidateMaterializationCode.FILES_ONLY_DELTA_REQUIRED,
             "files-only mutator output must include a valid file delta",
