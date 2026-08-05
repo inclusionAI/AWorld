@@ -177,13 +177,15 @@ async def test_aworld_trajectory_evaluator_backend_counts_outer_process_timeouts
             ),
         )
     )
-    calls = 0
+    calls: list[dict] = []
 
     def eventually_available_run_evaluator_source(**kwargs):
-        nonlocal calls
-        calls += 1
-        if calls < 3:
-            raise subprocess.TimeoutExpired(cmd="trajectory-evaluator", timeout=630)
+        calls.append(kwargs)
+        if len(calls) < 3:
+            raise subprocess.TimeoutExpired(
+                cmd="trajectory-evaluator",
+                timeout=kwargs["judge_timeout_seconds"],
+            )
         return {
             "summary": {"trajectory-source-evaluator": {"score": {"mean": 84.0}}},
             "gate": {"status": "pass", "metric_name": "score", "value": 84.0},
@@ -195,6 +197,7 @@ async def test_aworld_trajectory_evaluator_backend_counts_outer_process_timeouts
         run_evaluator_source=eventually_available_run_evaluator_source,
         judge_repetitions=1,
         judge_failure_retries=2,
+        judge_timeout_seconds=600,
     )
 
     summary = await backend.evaluate_variant(
@@ -205,6 +208,12 @@ async def test_aworld_trajectory_evaluator_backend_counts_outer_process_timeouts
     assert summary.metrics["judge_success_count"] == 1
     assert summary.metrics["judge_failure_count"] == 2
     assert summary.metrics["judge_timeout_count"] == 2
+    assert [call["judge_timeout_seconds"] for call in calls] == [
+        600.0,
+        900.0,
+        1350.0,
+    ]
+    assert summary.metrics["judge_timeout_seconds_effective_max"] == 1350.0
     assert [
         failure["type"] for failure in summary.metrics["judge_failures"]
     ] == ["TimeoutExpired", "TimeoutExpired"]
