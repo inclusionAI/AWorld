@@ -513,6 +513,10 @@ class AWorldTrajectoryEvaluatorBackend:
             metrics["judge_attempt_count"] = len(reports) + len(failures)
             metrics["judge_success_count"] = len(reports)
             metrics["judge_failure_count"] = len(failures)
+            metrics["judge_timeout_count"] = (
+                _nonnegative_metric_count(metrics.get("judge_timeout_count"))
+                + _judge_failure_timeout_count(failures)
+            )
             metrics["judge_repetitions"] = self.judge_repetitions
             if failures:
                 metrics["judge_failures"] = failures
@@ -1763,9 +1767,42 @@ def _failed_aworld_evaluator_metrics(
         "judge_attempt_count": len(failures),
         "judge_success_count": 0,
         "judge_failure_count": len(failures),
+        "judge_timeout_count": _judge_failure_timeout_count(failures),
         "judge_repetitions": judge_repetitions,
         "judge_failures": list(failures),
     }
+
+
+def _judge_failure_timeout_count(
+    failures: list[Mapping[str, Any]],
+) -> int:
+    """Count outer evaluator-call timeouts from typed failure telemetry.
+
+    Judge reports can also contain per-model-call timeout diagnostics. Those
+    are aggregated separately. This helper covers failures raised by the
+    evaluator process itself, including ``subprocess.TimeoutExpired``.
+    """
+
+    timeout_types = {
+        "apitimeouterror",
+        "timeouterror",
+        "timeoutexpired",
+    }
+    return sum(
+        1
+        for failure in failures
+        if str(failure.get("type") or "")
+        .rsplit(".", 1)[-1]
+        .strip()
+        .casefold()
+        in timeout_types
+    )
+
+
+def _nonnegative_metric_count(value: Any) -> int:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return 0
+    return max(0, int(value))
 
 
 def _safe_path_component(value: str | None) -> str:

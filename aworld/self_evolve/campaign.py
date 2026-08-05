@@ -1143,6 +1143,122 @@ def derive_self_improvement_disposition(
         )
 
     events = _typed_failure_events(report)
+    terminal = report.get("terminal_cause")
+    attribution = report.get("rejection_attribution")
+    primary_failure: Mapping[str, Any] | None = None
+    if (
+        isinstance(terminal, Mapping)
+        and terminal.get("failure_class")
+        in {"infrastructure", "framework", "task"}
+    ):
+        primary_failure = terminal
+    elif (
+        isinstance(attribution, Mapping)
+        and attribution.get("failure_class")
+        in {"infrastructure", "framework", "task"}
+    ):
+        primary_failure = attribution
+
+    if primary_failure is not None:
+        primary_owner = str(primary_failure["failure_class"])
+        primary_code = str(primary_failure.get("code") or "")
+        primary_event = next(
+            (
+                item
+                for item in events
+                if item.get("owner") == primary_owner
+                and (not primary_code or item.get("code") == primary_code)
+            ),
+            None,
+        )
+        if primary_event is None and not primary_code:
+            primary_event = next(
+                (item for item in events if item.get("owner") == primary_owner),
+                None,
+            )
+        if primary_owner == "infrastructure":
+            retryable = (
+                primary_failure.get("retryable") is True
+                or (
+                    primary_event is not None
+                    and primary_event.get("repairable") is True
+                )
+            )
+            if primary_event is not None:
+                return _event_disposition(
+                    (
+                        SelfImprovementDispositionKind.RETRY_INFRASTRUCTURE
+                        if retryable
+                        else SelfImprovementDispositionKind.PAUSE_OPERATOR
+                    ),
+                    (
+                        "typed_infrastructure_failure"
+                        if retryable
+                        else "typed_infrastructure_failure_not_retryable"
+                    ),
+                    primary_event,
+                    delta,
+                )
+            return SelfImprovementDisposition(
+                kind=(
+                    SelfImprovementDispositionKind.RETRY_INFRASTRUCTURE
+                    if retryable
+                    else SelfImprovementDispositionKind.PAUSE_OPERATOR
+                ),
+                reason_code=(
+                    "typed_infrastructure_failure"
+                    if retryable
+                    else "typed_infrastructure_failure_not_retryable"
+                ),
+                owner="infrastructure",
+                stage=_optional_string(
+                    primary_failure.get("stage")
+                    or primary_failure.get("primary_gate")
+                ),
+                scope="shared_run",
+                repairable=retryable,
+                progress_delta_ids=delta,
+            )
+        if primary_owner == "framework":
+            if primary_event is not None:
+                return _event_disposition(
+                    SelfImprovementDispositionKind.HANDOFF_GOAL,
+                    "typed_framework_or_shared_blocker",
+                    primary_event,
+                    delta,
+                )
+            return SelfImprovementDisposition(
+                kind=SelfImprovementDispositionKind.HANDOFF_GOAL,
+                reason_code="typed_framework_or_shared_blocker",
+                owner="framework",
+                stage=_optional_string(
+                    primary_failure.get("stage")
+                    or primary_failure.get("primary_gate")
+                ),
+                scope="shared_run",
+                repairable=False,
+                progress_delta_ids=delta,
+            )
+        if primary_event is not None:
+            return _event_disposition(
+                SelfImprovementDispositionKind.PAUSE_OPERATOR,
+                "typed_task_failure_not_repairable",
+                primary_event,
+                delta,
+            )
+        return SelfImprovementDisposition(
+            kind=SelfImprovementDispositionKind.PAUSE_OPERATOR,
+            reason_code="typed_task_failure_not_repairable",
+            owner="task",
+            stage=_optional_string(
+                primary_failure.get("stage")
+                or primary_failure.get("primary_gate")
+            ),
+            scope="shared_run",
+            repairable=False,
+            progress_delta_ids=delta,
+        )
+
     candidate = next(
         (
             item
@@ -1166,7 +1282,6 @@ def derive_self_improvement_disposition(
             delta,
         )
 
-    terminal = report.get("terminal_cause")
     if (
         isinstance(terminal, Mapping)
         and terminal.get("failure_class") == "infrastructure"
@@ -1263,7 +1378,6 @@ def derive_self_improvement_disposition(
             delta,
         )
 
-    attribution = report.get("rejection_attribution")
     if isinstance(attribution, Mapping) and attribution.get("duplicate_only") is True:
         return SelfImprovementDisposition(
             kind=SelfImprovementDispositionKind.EXHAUSTED,

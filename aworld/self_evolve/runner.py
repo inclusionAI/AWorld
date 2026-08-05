@@ -1414,8 +1414,10 @@ def _infrastructure_prevented_comparable_evaluation(
     baseline_summary: EvaluationSummary | None,
     candidate_summary: EvaluationSummary | None,
 ) -> bool:
-    if baseline_summary is not None and candidate_summary is not None:
-        return False
+    # Failed evaluator calls are represented by synthetic summaries so the
+    # report remains structurally complete. Their presence does not mean the
+    # baseline/candidate pair was actually comparable.
+    del baseline_summary, candidate_summary
     gates = tuple(failed_gates)
     has_infrastructure_failure = any(
         isinstance(gate.details, Mapping)

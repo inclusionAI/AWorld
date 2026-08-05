@@ -365,6 +365,54 @@ def test_candidate_progress_precedes_concurrent_infrastructure_retry() -> None:
     assert disposition.kind is SelfImprovementDispositionKind.CONTINUE_CANDIDATE
 
 
+def test_terminal_infrastructure_attribution_precedes_historical_candidate_event() -> None:
+    report = _report(
+        _event(owner="candidate", constraint="payload.items[*].transport"),
+        _event(
+            code="evaluation_runtime_unhealthy",
+            owner="infrastructure",
+            scope="shared_run",
+            repairable=True,
+        ),
+    )
+    report["rejection_attribution"] = {
+        "code": "evaluation_runtime_unhealthy",
+        "failure_class": "infrastructure",
+        "primary_gate": "evaluation_runtime_health",
+    }
+
+    disposition = derive_self_improvement_disposition(report)
+
+    assert disposition.kind is SelfImprovementDispositionKind.RETRY_INFRASTRUCTURE
+    assert disposition.owner == "infrastructure"
+    assert disposition.reason_code == "typed_infrastructure_failure"
+
+
+def test_terminal_nonretryable_infrastructure_attribution_pauses_operator() -> None:
+    report = _report(
+        _event(owner="candidate", constraint="payload.items[*].transport"),
+        _event(
+            code="evaluation_runtime_unhealthy",
+            owner="infrastructure",
+            scope="shared_run",
+            repairable=False,
+        ),
+    )
+    report["rejection_attribution"] = {
+        "code": "evaluation_runtime_unhealthy",
+        "failure_class": "infrastructure",
+        "primary_gate": "evaluation_runtime_health",
+    }
+
+    disposition = derive_self_improvement_disposition(report)
+
+    assert disposition.kind is SelfImprovementDispositionKind.PAUSE_OPERATOR
+    assert disposition.owner == "infrastructure"
+    assert disposition.reason_code == (
+        "typed_infrastructure_failure_not_retryable"
+    )
+
+
 def test_non_repairable_candidate_failure_exhausts() -> None:
     disposition = derive_self_improvement_disposition(
         _report(_event(owner="candidate", repairable=False))

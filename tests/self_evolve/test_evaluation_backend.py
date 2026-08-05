@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import subprocess
 from dataclasses import dataclass
 
 import pytest
@@ -161,6 +162,52 @@ async def test_aworld_trajectory_evaluator_backend_retries_transient_judge_parse
     assert summary.metrics["judge_success_count"] == 1
     assert summary.metrics["judge_failure_count"] == 1
     assert summary.metrics["judge_failures"][0]["type"] == "ValueError"
+
+
+@pytest.mark.asyncio
+async def test_aworld_trajectory_evaluator_backend_counts_outer_process_timeouts(
+    tmp_path,
+) -> None:
+    dataset = _dataset(
+        (
+            EvalCase(
+                case_id="task-eval",
+                input={"content": "Recover the workflow."},
+                metadata={"baseline_trajectory": [{"action": {"content": "Recovered."}}]},
+            ),
+        )
+    )
+    calls = 0
+
+    def eventually_available_run_evaluator_source(**kwargs):
+        nonlocal calls
+        calls += 1
+        if calls < 3:
+            raise subprocess.TimeoutExpired(cmd="trajectory-evaluator", timeout=630)
+        return {
+            "summary": {"trajectory-source-evaluator": {"score": {"mean": 84.0}}},
+            "gate": {"status": "pass", "metric_name": "score", "value": 84.0},
+        }
+
+    backend = AWorldTrajectoryEvaluatorBackend(
+        workspace_root=tmp_path,
+        judge_agent_name="trajectory-judge",
+        run_evaluator_source=eventually_available_run_evaluator_source,
+        judge_repetitions=1,
+        judge_failure_retries=2,
+    )
+
+    summary = await backend.evaluate_variant(
+        EvaluationRequest(variant_id="baseline", candidate=None, dataset=dataset)
+    )
+
+    assert summary.metrics["judge_attempt_count"] == 3
+    assert summary.metrics["judge_success_count"] == 1
+    assert summary.metrics["judge_failure_count"] == 2
+    assert summary.metrics["judge_timeout_count"] == 2
+    assert [
+        failure["type"] for failure in summary.metrics["judge_failures"]
+    ] == ["TimeoutExpired", "TimeoutExpired"]
 
 
 @pytest.mark.asyncio
@@ -444,6 +491,7 @@ async def test_aworld_trajectory_evaluator_backend_times_out_hung_judge_call(tmp
     assert summary.metrics["judge_attempt_count"] == 1
     assert summary.metrics["judge_success_count"] == 0
     assert summary.metrics["judge_failure_count"] == 1
+    assert summary.metrics["judge_timeout_count"] == 1
     assert summary.metrics["judge_failures"][0]["type"] == "TimeoutError"
     assert "timed out after 0.01s" in summary.metrics["judge_failures"][0]["reason"]
 
