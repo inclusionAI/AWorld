@@ -216,6 +216,9 @@ from aworld.self_evolve.replay import (
     ReplayVariantResult,
     ReplayEvidenceDispositionKind,
     ReplayEvidenceReuseDisposition,
+    ReplayServiceProcessExitedError,
+    ReplayServiceProtocolError,
+    ReplayServiceReadinessTimeout,
     build_paired_replay_dataset,
     build_replay_request,
     candidate_replay_is_comparable,
@@ -5292,7 +5295,7 @@ class SelfEvolveRunner:
         capability_gates = (
             []
             if replay_evidence_reuse_backend is not None
-            else self._validate_candidate_capabilities(
+            else await self._validate_candidate_capabilities(
                 run_id=run_id,
                 target=target,
                 dataset=dataset,
@@ -5866,7 +5869,7 @@ class SelfEvolveRunner:
         )
         return state, report_item, feedback
 
-    def _validate_candidate_capabilities(
+    async def _validate_candidate_capabilities(
         self,
         *,
         run_id: str,
@@ -5887,6 +5890,9 @@ class SelfEvolveRunner:
             emit_progress=False,
         )
         if framework_gate.passed and framework_adaptation is not None:
+            # Framework-owned adapters provide the replay environment without
+            # executing candidate-owned capability code. Operational candidate
+            # preflight is only required when replay depends on that code.
             return []
         overlay = create_candidate_skill_overlay(
             workspace_root=self.store.workspace_root,
@@ -5928,6 +5934,219 @@ class SelfEvolveRunner:
                     },
                 )
             )
+        if any(not gate.passed for gate in gates):
+            return gates
+
+        replay_gate_index = next(
+            (
+                index
+                for index, gate in enumerate(gates)
+                if gate.gate_name == "candidate_capability_replay"
+            ),
+            None,
+        )
+        if replay_gate_index is None:
+            return gates
+
+        adaptation, adaptation_gate = self._prepare_replay_adaptation(
+            run_id=run_id,
+            dataset=dataset,
+            capability_skill_root=overlay.candidate_skill_path.parent,
+            candidate_package_fingerprint=candidate_package_fingerprint(candidate),
+            emit_progress=False,
+        )
+        if adaptation is None or not adaptation_gate.passed:
+            details = dict(adaptation_gate.details or {})
+            proven_shared = bool(
+                details.get("failure_owner")
+                in {
+                    FailureOwner.INFRASTRUCTURE.value,
+                    FailureOwner.FRAMEWORK.value,
+                }
+                and details.get("failure_scope") == FailureScope.SHARED_RUN.value
+                and details.get("failure_source")
+                == FailureEventSource.NATIVE.value
+            )
+            owner = (
+                FailureOwner.INFRASTRUCTURE
+                if proven_shared
+                else FailureOwner.CANDIDATE
+            )
+            event = ReplayFailureEvent(
+                code=str(
+                    details.get("capability_error_code")
+                    or details.get("code")
+                    or "candidate_capability_compile_failed"
+                ),
+                owner=owner,
+                stage=FailureStage.CAPABILITY_COMPILE,
+                scope=(
+                    FailureScope.SHARED_RUN
+                    if proven_shared
+                    else FailureScope.CANDIDATE
+                ),
+                repairable=not proven_shared,
+                category="candidate_capability_preflight",
+                summary=adaptation_gate.reason,
+                diagnostics={
+                    "gate_name": adaptation_gate.gate_name,
+                    "candidate_id": candidate.candidate_id,
+                },
+            )
+            gates[replay_gate_index] = GateResult(
+                gate_name="candidate_capability_replay",
+                passed=False,
+                reason=(
+                    "candidate replay capability could not be compiled for "
+                    "operational preflight"
+                ),
+                details={
+                    **details,
+                    "failure_class": (
+                        "infrastructure" if proven_shared else "candidate"
+                    ),
+                    "repairable": not proven_shared,
+                    "stage": "capability_compile",
+                    "code": "candidate_capability_compile_failed",
+                    "failure_event": event.to_dict(),
+                    "causal_failure_events": [event.to_dict()],
+                },
+            )
+            return gates
+
+        capability = adaptation.replay_capability
+        if capability is None:
+            event = ReplayFailureEvent(
+                code="candidate_replay_capability_missing_after_compile",
+                owner=FailureOwner.CANDIDATE,
+                stage=FailureStage.CAPABILITY_COMPILE,
+                scope=FailureScope.CANDIDATE,
+                repairable=True,
+                category="candidate_capability_preflight",
+                summary="candidate replay adaptation did not freeze a capability",
+            )
+            gates[replay_gate_index] = GateResult(
+                gate_name="candidate_capability_replay",
+                passed=False,
+                reason="candidate replay capability was not frozen",
+                details={
+                    "failure_class": "candidate",
+                    "repairable": True,
+                    "stage": "capability_compile",
+                    "code": event.code,
+                    "failure_event": event.to_dict(),
+                    "causal_failure_events": [event.to_dict()],
+                },
+            )
+            return gates
+
+        artifact_dir = (
+            self.store.run_path(run_id)
+            / "capability_preflight"
+            / _safe_artifact_name(candidate.candidate_id)
+        )
+        try:
+            await preflight_frozen_replay_capability(
+                capability,
+                artifact_dir=artifact_dir,
+            )
+        except Exception as exc:
+            candidate_owned = bool(
+                isinstance(exc, ReplayServiceProtocolError)
+                or (
+                    isinstance(
+                        exc,
+                        (
+                            ReplayServiceReadinessTimeout,
+                            ReplayServiceProcessExitedError,
+                        ),
+                    )
+                    and getattr(exc, "transport", None) == "skill_runtime"
+                )
+            )
+            raw_details = getattr(exc, "details", None)
+            diagnostic_details = (
+                dict(raw_details) if isinstance(raw_details, Mapping) else {}
+            )
+            diagnostics_method = getattr(exc, "diagnostics", None)
+            if callable(diagnostics_method):
+                runtime_diagnostics = diagnostics_method()
+                if isinstance(runtime_diagnostics, Mapping):
+                    diagnostic_details.update(runtime_diagnostics)
+            error_code = str(
+                getattr(exc, "code", None)
+                or "candidate_capability_operational_preflight_failed"
+            )
+            owner = (
+                FailureOwner.CANDIDATE
+                if candidate_owned
+                else FailureOwner.INFRASTRUCTURE
+            )
+            event = ReplayFailureEvent(
+                code=error_code,
+                owner=owner,
+                stage=FailureStage.CAPABILITY_PREFLIGHT,
+                scope=(
+                    FailureScope.CANDIDATE
+                    if candidate_owned
+                    else FailureScope.SHARED_RUN
+                ),
+                repairable=candidate_owned,
+                category="candidate_capability_preflight",
+                summary="candidate replay capability failed operational preflight",
+                diagnostics={
+                    "error_type": type(exc).__name__,
+                    "reason": sanitize_text(str(exc), max_chars=512),
+                    **diagnostic_details,
+                },
+                artifact_refs=(
+                    sanitize_path_ref(
+                        artifact_dir.relative_to(self.store.workspace_root).as_posix()
+                        if artifact_dir.is_relative_to(self.store.workspace_root)
+                        else artifact_dir.name
+                    ),
+                ),
+                capability_id=capability.capability_id,
+            )
+            gates[replay_gate_index] = GateResult(
+                gate_name="candidate_capability_replay",
+                passed=False,
+                reason="candidate replay capability failed operational preflight",
+                details={
+                    "capability_type": "replay",
+                    "failure_class": (
+                        "candidate" if candidate_owned else "infrastructure"
+                    ),
+                    "repairable": candidate_owned,
+                    "stage": "capability_preflight",
+                    "code": error_code,
+                    "error_type": type(exc).__name__,
+                    "artifact_root": str(artifact_dir),
+                    **diagnostic_details,
+                    "failure_event": event.to_dict(),
+                    "causal_failure_events": [event.to_dict()],
+                },
+            )
+            return gates
+
+        gates[replay_gate_index] = GateResult(
+            gate_name="candidate_capability_replay",
+            passed=True,
+            reason=(
+                "candidate package satisfies the replay capability contract and "
+                "operational preflight"
+            ),
+            details={
+                "capability_type": "replay",
+                "failure_class": None,
+                "repairable": False,
+                "diagnostics": [],
+                "operational_preflight": True,
+                "capability_id": capability.capability_id,
+                "frozen_capability_fingerprint": capability.fingerprint,
+                "artifact_root": str(artifact_dir),
+            },
+        )
         return gates
 
     def _prepare_replay_adaptation(

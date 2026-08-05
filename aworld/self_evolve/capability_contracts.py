@@ -482,9 +482,10 @@ class ReplayCapabilityContractProvider:
                     "the client supplied an additional routing envelope",
                     "write a bounded protocol_trace.jsonl under the supplied scratch "
                     "directory with one JSON object per line for each received request and "
-                    "emitted response or event; record direction, sequence, message kind, "
-                    "top-level field names, and opaque correlation or routing fields, but "
-                    "omit or redact payload bodies and credentials",
+                    "emitted response or event; use the exact v1 keys direction, sequence, "
+                    "kind, fields, and correlation from protocol_trace_schema; do not emit "
+                    "legacy message_kind or top_level_fields aliases; omit or redact payload "
+                    "bodies and credentials",
                     "if a protocol handler raises, emit a bounded sanitized terminal trace "
                     "or stderr diagnostic before closing the connection; do not silently "
                     "swallow the exception and leave the client with only an incomplete frame",
@@ -496,6 +497,36 @@ class ReplayCapabilityContractProvider:
                     "do not make outbound network connections",
                     "be ready according to the declared readiness probe",
                 ],
+                "protocol_trace_schema": {
+                    "path": "<scratch>/protocol_trace.jsonl",
+                    "format": "json_lines",
+                    "required_record_fields": [
+                        "direction",
+                        "sequence",
+                        "kind",
+                        "fields",
+                        "correlation",
+                    ],
+                    "record_shape": {
+                        "direction": {
+                            "type": "string",
+                            "inbound_examples": ["in", "inbound", "received"],
+                            "outbound_examples": ["out", "outbound", "emitted"],
+                        },
+                        "sequence": "non-negative integer",
+                        "kind": "non-empty protocol message kind string",
+                        "fields": "array of top-level field-name strings",
+                        "correlation": "object containing only opaque routing metadata",
+                    },
+                    "required_traffic": [
+                        "at least one inbound request record",
+                        "at least one outbound response or event record",
+                    ],
+                    "legacy_aliases_forbidden_for_new_candidates": [
+                        "message_kind",
+                        "top_level_fields",
+                    ],
+                },
                 "validation": {
                     "advertised_websocket_urls": (
                         "all ws:// URLs recursively exposed by HTTP readiness JSON "

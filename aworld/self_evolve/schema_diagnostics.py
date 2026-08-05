@@ -10,6 +10,7 @@ from typing import Any, Mapping, Sequence
 _SUPPORTED_RULES = frozenset(
     {
         "enum",
+        "contains_all",
         "max_chars",
         "max_items",
         "non_empty",
@@ -89,7 +90,10 @@ class SchemaFieldRepairConstraint:
             normalized_forbidden_operations
         ) > 32:
             raise ValueError("schema constraint declares too many operations")
-        if self.rule in {"enum", "type"} and not normalized_expected:
+        if (
+            self.rule in {"enum", "type", "contains_all"}
+            and not normalized_expected
+        ):
             raise ValueError("schema constraint rule requires expected values")
         if self.rule == "type" and not set(normalized_expected).issubset(
             _SUPPORTED_VALUE_TYPES
@@ -178,6 +182,11 @@ class SchemaFieldRepairConstraint:
                 return False
             canonical = [_canonical_schema_bytes(item) for item in value]
             return len(canonical) == len(set(canonical))
+        if self.rule == "contains_all":
+            if not isinstance(value, (list, tuple)):
+                return False
+            actual = {str(item) for item in value}
+            return set(self.expected).issubset(actual)
         if self.rule == "max_chars":
             return isinstance(value, str) and len(value) <= int(self.expected[0])
         if self.rule == "max_items":

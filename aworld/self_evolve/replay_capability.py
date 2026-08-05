@@ -719,6 +719,15 @@ class SubprocessReplayCapabilityExecutor:
                     writable_roots=(run_root,),
                     allow_loopback=False,
                 )
+                command = build_replay_resource_limited_command(
+                    command,
+                    max_file_bytes=max(
+                        self.max_output_chars,
+                        _MAX_FIXTURE_FILE_BYTES,
+                    ),
+                    max_memory_bytes=512 * 1024 * 1024,
+                    cpu_seconds=max(1, math.ceil(self.timeout_seconds)),
+                )
                 process = subprocess.Popen(
                     command,
                     cwd=run_root,
@@ -728,14 +737,6 @@ class SubprocessReplayCapabilityExecutor:
                     stdout=stdout_handle,
                     stderr=stderr_handle,
                     start_new_session=True,
-                    preexec_fn=replay_process_resource_limiter(
-                        max_file_bytes=max(
-                            self.max_output_chars,
-                            _MAX_FIXTURE_FILE_BYTES,
-                        ),
-                        max_memory_bytes=512 * 1024 * 1024,
-                        cpu_seconds=max(1, math.ceil(self.timeout_seconds)),
-                    ),
                 )
                 deadline = time.monotonic() + self.timeout_seconds
                 total_output_limit = _MAX_FIXTURE_TOTAL_BYTES + 4 * _MAX_JSON_BYTES
@@ -3714,6 +3715,80 @@ def replay_process_resource_limiter(
             )
 
     return limit
+
+
+_RESOURCE_LIMIT_EXEC_CODE = r"""
+import json
+import os
+import resource
+import sys
+
+limits = json.loads(sys.argv[1])
+command = json.loads(sys.argv[2])
+
+
+def finite(value):
+    return value not in (-1, resource.RLIM_INFINITY) and value > 0
+
+
+def apply_limit(kind, soft, hard=None):
+    current_soft, current_hard = resource.getrlimit(kind)
+    requested_hard = soft if hard is None else hard
+    effective_hard = requested_hard
+    if finite(current_hard):
+        effective_hard = min(effective_hard, current_hard)
+    effective_soft = min(soft, effective_hard)
+    resource.setrlimit(kind, (effective_soft, effective_hard))
+
+
+apply_limit(resource.RLIMIT_FSIZE, limits["file_bytes"])
+apply_limit(resource.RLIMIT_CPU, limits["cpu_seconds"], limits["cpu_seconds"] + 1)
+if sys.platform != "darwin" and hasattr(resource, "RLIMIT_AS"):
+    apply_limit(resource.RLIMIT_AS, limits["memory_bytes"])
+if hasattr(resource, "RLIMIT_NPROC"):
+    apply_limit(resource.RLIMIT_NPROC, 32)
+os.execv(command[0], command)
+"""
+
+
+def build_replay_resource_limited_command(
+    command: Sequence[str],
+    *,
+    max_file_bytes: int,
+    max_memory_bytes: int,
+    cpu_seconds: int,
+) -> list[str]:
+    """Apply child limits after exec instead of using ``preexec_fn``.
+
+    Python documents ``preexec_fn`` as unsafe in threaded processes. Replay
+    repetitions intentionally run concurrently, so a child can otherwise hang
+    between fork and exec while appearing alive to the readiness watchdog. A
+    tiny isolated Python launcher installs the same limits in the child and
+    immediately execs the already-sandboxed command.
+    """
+
+    if not command:
+        raise ValueError("resource-limited replay command cannot be empty")
+    if os.name != "posix":
+        return list(command)
+    limits = {
+        "file_bytes": max_file_bytes,
+        "memory_bytes": max_memory_bytes,
+        "cpu_seconds": cpu_seconds,
+    }
+    if any(not isinstance(value, int) or value <= 0 for value in limits.values()):
+        raise ValueError("replay resource limits must be positive integers")
+    resolved_command = list(command)
+    executable = Path(resolved_command[0]).expanduser().resolve()
+    resolved_command[0] = str(executable)
+    return [
+        sys.executable,
+        "-I",
+        "-c",
+        _RESOURCE_LIMIT_EXEC_CODE,
+        json.dumps(limits, sort_keys=True, separators=(",", ":")),
+        json.dumps(resolved_command, separators=(",", ":")),
+    ]
 
 
 def replay_process_memory_bytes(process_id: int) -> int:

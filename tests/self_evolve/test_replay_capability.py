@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -15,6 +16,7 @@ from aworld.self_evolve.replay_capability import (
     ReplayCapabilityCompileRequest,
     ReplayCapabilityError,
     _build_recorded_response_index,
+    build_replay_resource_limited_command,
     build_replay_sandboxed_command,
     compile_and_freeze_capability,
     discover_replay_capability,
@@ -528,10 +530,6 @@ def test_skill_runtime_rejects_readiness_duplicate_protocol_probe(
             (
                 "'transport': 'skill_runtime',\n"
                 "        'runtime_entrypoint': 'replay/runtime.py',\n"
-                "        'readiness': {\n"
-                "            'kind': 'http', 'path': '/health',\n"
-                "            'timeout_seconds': 2.0,\n"
-                "        },\n"
                 "        'protocol_probes': [\n"
                 "            {\n"
                 "                'kind': 'http', 'path': '/health',\n"
@@ -544,6 +542,12 @@ def test_skill_runtime_rejects_readiness_duplicate_protocol_probe(
                 "                'timeout_seconds': 2.0,\n"
                 "            },\n"
                 "        ],"
+            ),
+        ).replace(
+            "'readiness': {'kind': 'tcp', 'timeout_seconds': 2.0}",
+            (
+                "'readiness': {'kind': 'http', 'path': '/health', "
+                "'timeout_seconds': 2.0}"
             ),
         ),
         encoding="utf-8",
@@ -1784,6 +1788,18 @@ def test_platform_sandbox_fails_closed_by_default_when_unavailable(
             writable_roots=(tmp_path,),
             allow_loopback=False,
         )
+
+
+def test_resource_limited_command_applies_limits_after_exec() -> None:
+    command = build_replay_resource_limited_command(
+        [sys.executable, "-I", "-c", "raise SystemExit(0)"],
+        max_file_bytes=1024 * 1024,
+        max_memory_bytes=256 * 1024 * 1024,
+        cpu_seconds=5,
+    )
+
+    assert command[:3] == [sys.executable, "-I", "-c"]
+    assert subprocess.run(command, check=False, timeout=10).returncode == 0
 
 
 def test_replay_service_sandbox_does_not_allow_loopback_outbound(
