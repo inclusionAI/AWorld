@@ -824,6 +824,42 @@ def test_environment_fingerprint_drift_is_shared_infrastructure_failure() -> Non
     assert events[0]["code"] == "environment_fingerprint_drift"
 
 
+def test_synthetic_summaries_do_not_hide_incomparable_evaluation_runtime() -> None:
+    synthetic_failure = EvaluationSummary(
+        variant_id="candidate",
+        dataset_split="validation",
+        metrics={
+            "evaluation_agent_signal": False,
+            "judge_attempt_count": 3,
+            "judge_success_count": 0,
+            "judge_failure_count": 3,
+            "judge_timeout_count": 3,
+        },
+    )
+    baseline = EvaluationSummary(
+        variant_id="baseline",
+        dataset_split="validation",
+        metrics={"evaluation_agent_signal": True},
+    )
+    gate = GateResult(
+        gate_name="evaluation_runtime_health",
+        passed=False,
+        reason="evaluation runtime did not produce a usable judge signal",
+        details={
+            "failure_class": "infrastructure",
+            "failure_owner": "infrastructure",
+            "failure_scope": "shared_run",
+            "repairable": True,
+        },
+    )
+
+    assert runner_module._infrastructure_prevented_comparable_evaluation(
+        (gate,),
+        baseline_summary=baseline,
+        candidate_summary=synthetic_failure,
+    ) is True
+
+
 def test_iteration_selection_prefers_fewer_failed_gates_without_scores() -> None:
     target = SelfEvolveTargetRef(target_type="skill", target_id="demo")
     first = CandidateVariant(

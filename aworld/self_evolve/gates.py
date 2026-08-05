@@ -504,13 +504,15 @@ class EvaluationRuntimeHealthGate:
             "runtime_health": health.to_dict(),
         }
         if not passed:
+            retryable = health.retryable_infrastructure_failure
             details.update(
                 {
                     "failure_class": FailureOwner.INFRASTRUCTURE.value,
                     "failure_owner": FailureOwner.INFRASTRUCTURE.value,
                     "failure_scope": "shared_run",
                     "failure_source": "native",
-                    "repairable": False,
+                    "repairable": retryable,
+                    "retryable": retryable,
                     "code": "evaluation_runtime_unhealthy",
                 }
             )
