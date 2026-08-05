@@ -824,9 +824,15 @@ class SelfImprovementCampaignController:
             goal_handoff_path=None,
         )
         if disposition.continuable and next_cycle >= campaign.max_cycles:
+            limit_reason = (
+                "campaign_infrastructure_retry_budget_exhausted"
+                if disposition.kind
+                is SelfImprovementDispositionKind.RETRY_INFRASTRUCTURE
+                else "campaign_cycle_budget_exhausted"
+            )
             advanced = _limit_campaign(
                 advanced,
-                reason_code="campaign_cycle_budget_exhausted",
+                reason_code=limit_reason,
             )
             disposition = advanced.latest_disposition
             assert disposition is not None
@@ -1481,6 +1487,7 @@ def _status_for_disposition(
         if disposition.reason_code in {
             "campaign_cumulative_budget_exhausted",
             "campaign_cycle_budget_exhausted",
+            "campaign_infrastructure_retry_budget_exhausted",
             "campaign_usage_telemetry_missing",
         }:
             return SelfImprovementCampaignStatus.BUDGET_LIMITED

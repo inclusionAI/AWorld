@@ -737,6 +737,66 @@ def test_campaign_missing_usage_telemetry_stops_before_second_run(tmp_path: Path
     )
 
 
+def test_retryable_infrastructure_keeps_specific_budget_limit_reason(
+    tmp_path: Path,
+) -> None:
+    calls: list[dict] = []
+
+    def run_once(**request):
+        calls.append(request)
+        run_id = f"{request['campaign_id']}-cycle-{request['campaign_cycle']:03d}"
+        report = {
+            "run_id": run_id,
+            "status": "failed",
+            "budget": _budget(),
+            "terminal_cause": {
+                "code": "evaluation_runtime_unhealthy",
+                "failure_class": "infrastructure",
+                "retryable": True,
+                "stage": "evaluation_runtime_health",
+            },
+            "gate_results": [
+                {
+                    "gate_name": "evaluation_runtime_health",
+                    "passed": False,
+                    "details": {
+                        "causal_failure_events": [
+                            {
+                                "code": "evaluation_runtime_unhealthy",
+                                "owner": "infrastructure",
+                                "stage": "evaluation_runtime_health",
+                                "scope": "shared_run",
+                                "repairable": True,
+                            }
+                        ]
+                    },
+                }
+            ],
+        }
+        report_path = tmp_path / ".aworld" / "self_evolve" / run_id / "report.json"
+        report_path.parent.mkdir(parents=True)
+        report_path.write_text(json.dumps(report), encoding="utf-8")
+        return {"run_id": run_id, "status": "failed", "report_path": str(report_path)}
+
+    result = run_self_improvement_campaign(
+        workspace_root=tmp_path,
+        request={
+            "from_trajectory": "trajectory.log",
+            "apply_policy": "auto_verified",
+            "infer_target": True,
+        },
+        max_improvement_cycles=1,
+        run_once=run_once,
+    )
+
+    assert len(calls) == 1
+    assert result["campaign_status"] == "budget_limited"
+    assert result["self_improvement_disposition"]["reason_code"] == (
+        "campaign_infrastructure_retry_budget_exhausted"
+    )
+    assert result["self_improvement_disposition"]["owner"] == "infrastructure"
+
+
 def test_campaign_no_target_uses_zero_usage_and_pauses_for_operator(
     tmp_path: Path,
 ) -> None:

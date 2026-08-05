@@ -298,6 +298,8 @@ class AWorldTrajectoryEvaluatorBackend:
         judge_repetitions: int = 1,
         judge_failure_retries: int = 2,
         judge_timeout_seconds: float | None = 300.0,
+        judge_timeout_backoff: float = 1.5,
+        max_judge_timeout_multiplier: float = 3.0,
     ) -> None:
         selector_count = sum(
             bool(value)
@@ -318,9 +320,15 @@ class AWorldTrajectoryEvaluatorBackend:
             raise ValueError("judge_failure_retries must be non-negative")
         if judge_timeout_seconds is not None and judge_timeout_seconds <= 0:
             raise ValueError("judge_timeout_seconds must be positive")
+        if judge_timeout_backoff < 1.0:
+            raise ValueError("judge_timeout_backoff must be at least 1.0")
+        if max_judge_timeout_multiplier < 1.0:
+            raise ValueError("max_judge_timeout_multiplier must be at least 1.0")
         self.judge_repetitions = judge_repetitions
         self.judge_failure_retries = judge_failure_retries
         self.judge_timeout_seconds = judge_timeout_seconds
+        self.judge_timeout_backoff = judge_timeout_backoff
+        self.max_judge_timeout_multiplier = max_judge_timeout_multiplier
 
     @property
     def task_local_runtime(self) -> bool:
@@ -415,15 +423,21 @@ class AWorldTrajectoryEvaluatorBackend:
             f"max_attempts={max_attempts} namespace={request.artifact_namespace or '-'}"
         )
         for attempt_index in range(1, max_attempts + 1):
+            effective_timeout_seconds = self._effective_judge_timeout_seconds(
+                timeout_failure_count=_judge_failure_timeout_count(failures)
+            )
+            attempt_runner_kwargs = dict(runner_kwargs)
+            attempt_runner_kwargs["judge_timeout_seconds"] = effective_timeout_seconds
             logger.info(
                 "self_evolve.evaluator.attempt.start "
                 f"variant_id={request.variant_id} split={request.dataset_split} "
-                f"attempt={attempt_index}/{max_attempts}"
+                f"attempt={attempt_index}/{max_attempts} "
+                f"timeout_seconds={effective_timeout_seconds or '-'}"
             )
             try:
                 report = await self._run_evaluator_source_with_timeout(
                     runner,
-                    runner_kwargs=runner_kwargs,
+                    runner_kwargs=attempt_runner_kwargs,
                     log_path=runtime_log_path,
                 )
             except asyncio.TimeoutError as exc:
@@ -446,6 +460,7 @@ class AWorldTrajectoryEvaluatorBackend:
                     timeout_phase = diagnostics[-1].get("phase")
                     if isinstance(timeout_phase, str) and timeout_phase:
                         failure["timeout_phase"] = timeout_phase
+                failure["timeout_seconds"] = effective_timeout_seconds
                 failures.append(failure)
                 logger.info(
                     "self_evolve.evaluator.attempt.end "
@@ -466,6 +481,7 @@ class AWorldTrajectoryEvaluatorBackend:
                         "attempt": attempt_index,
                         "type": type(exc).__name__,
                         "reason": str(exc),
+                        "timeout_seconds": effective_timeout_seconds,
                     }
                 )
                 logger.info(
@@ -520,6 +536,15 @@ class AWorldTrajectoryEvaluatorBackend:
             metrics["judge_repetitions"] = self.judge_repetitions
             if failures:
                 metrics["judge_failures"] = failures
+            if self.judge_timeout_seconds is not None:
+                metrics["judge_timeout_seconds"] = self.judge_timeout_seconds
+                metrics["judge_timeout_seconds_effective_max"] = max(
+                    float(item.get("timeout_seconds") or 0.0)
+                    for item in (
+                        *failures,
+                        {"timeout_seconds": effective_timeout_seconds},
+                    )
+                )
             if fallback_model_profile is not None:
                 metrics["judge_model_profile_fallback"] = fallback_model_profile
         else:
@@ -563,7 +588,22 @@ class AWorldTrajectoryEvaluatorBackend:
         )
         if self.judge_timeout_seconds is None or self.run_evaluator_source is None:
             return await call
-        return await asyncio.wait_for(call, timeout=self.judge_timeout_seconds)
+        timeout = runner_kwargs.get("judge_timeout_seconds")
+        if not isinstance(timeout, (int, float)) or isinstance(timeout, bool):
+            timeout = self.judge_timeout_seconds
+        return await asyncio.wait_for(call, timeout=float(timeout))
+
+    def _effective_judge_timeout_seconds(
+        self,
+        *,
+        timeout_failure_count: int,
+    ) -> float | None:
+        if self.judge_timeout_seconds is None:
+            return None
+        base = float(self.judge_timeout_seconds)
+        multiplier = self.judge_timeout_backoff ** max(0, timeout_failure_count)
+        multiplier = min(multiplier, self.max_judge_timeout_multiplier)
+        return base * multiplier
 
     async def _run_evaluator_source(
         self,
