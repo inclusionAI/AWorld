@@ -517,6 +517,68 @@ def test_skill_runtime_rejects_readiness_only_protocol_probe(tmp_path: Path) -> 
 
 
 @pytest.mark.replay_sandbox
+def test_skill_runtime_rejects_readiness_duplicate_protocol_probe(
+    tmp_path: Path,
+) -> None:
+    skill = _write_capability_skill(tmp_path)
+    compiler_path = skill / "replay/compiler.py"
+    compiler_path.write_text(
+        compiler_path.read_text(encoding="utf-8").replace(
+            "'transport': 'http_fixture',",
+            (
+                "'transport': 'skill_runtime',\n"
+                "        'runtime_entrypoint': 'replay/runtime.py',\n"
+                "        'readiness': {\n"
+                "            'kind': 'http', 'path': '/health',\n"
+                "            'timeout_seconds': 2.0,\n"
+                "        },\n"
+                "        'protocol_probes': [\n"
+                "            {\n"
+                "                'kind': 'http', 'path': '/health',\n"
+                "                'response_contains': 'recorded fixture',\n"
+                "                'timeout_seconds': 2.0,\n"
+                "            },\n"
+                "            {\n"
+                "                'kind': 'http', 'path': '/',\n"
+                "                'response_contains': 'recorded fixture',\n"
+                "                'timeout_seconds': 2.0,\n"
+                "            },\n"
+                "        ],"
+            ),
+        ),
+        encoding="utf-8",
+    )
+    capability = discover_replay_capability(skill)
+    assert capability is not None
+
+    with pytest.raises(ReplayCapabilityError) as error:
+        compile_and_freeze_capability(
+            capability,
+            _request(skill),
+            tmp_path / "compile",
+        )
+
+    assert error.value.code == "schema_field_validation_failed"
+    assert error.value.details["code"] == "protocol_probe_duplicates_readiness"
+    assert error.value.details["schema_field_constraints"] == [
+        {
+            "schema_layer": "compile_result",
+            "field_path": "services[*].protocol_probes[*].path",
+            "rule": "enum",
+            "expected": ["fixture_derived_data_plane_probe"],
+            "value_domain": "source_behavior",
+            "required_operations": [
+                "keep_readiness_in_readiness_field",
+                "declare_distinct_fixture_derived_data_plane_probe",
+            ],
+            "forbidden_operations": [
+                "copy_readiness_endpoint_into_protocol_probes"
+            ],
+        }
+    ]
+
+
+@pytest.mark.replay_sandbox
 def test_skill_runtime_accepts_declared_websocket_data_plane_probe(
     tmp_path: Path,
 ) -> None:

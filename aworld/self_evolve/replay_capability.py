@@ -2994,6 +2994,33 @@ def _parse_services(
         runtime_entrypoint_raw = value.get("runtime_entrypoint")
         runtime_entrypoint: str | None = None
         protocol_probes: tuple[ReplayProtocolProbe, ...] = ()
+        readiness_raw = value.get("readiness", {})
+        if not isinstance(readiness_raw, dict):
+            raise ReplayCapabilityError(
+                f"replay service readiness must be an object: {service_id}"
+            )
+        kind = _required_string(readiness_raw, "kind", "readiness")
+        if kind not in _SUPPORTED_READINESS_KINDS:
+            raise ReplayCapabilityError(f"unsupported readiness kind: {kind}")
+        timeout = readiness_raw.get("timeout_seconds", 10.0)
+        if (
+            not isinstance(timeout, (int, float))
+            or isinstance(timeout, bool)
+            or timeout <= 0
+            or timeout > _MAX_READINESS_TIMEOUT_SECONDS
+        ):
+            raise ReplayCapabilityError(
+                "readiness timeout_seconds must be between 0 and "
+                f"{_MAX_READINESS_TIMEOUT_SECONDS}"
+            )
+        path = readiness_raw.get("path", "/")
+        if not isinstance(path, str) or not path.startswith("/"):
+            raise ReplayCapabilityError("HTTP readiness path must start with /")
+        readiness = ReplayReadinessProbe(
+            kind=kind,
+            timeout_seconds=float(timeout),
+            path=path,
+        )
         if transport == "skill_runtime":
             runtime_entrypoint = _normalize_runtime_entrypoint(
                 _required_string(value, "runtime_entrypoint", "service"),
@@ -3011,6 +3038,40 @@ def _parse_services(
                 raise ReplayCapabilityError(
                     "skill runtime service requires a data-plane protocol probe: "
                     f"{service_id}"
+                )
+            duplicate_readiness_probes = tuple(
+                probe
+                for probe in protocol_probes
+                if probe.kind == readiness.kind and probe.path == readiness.path
+            )
+            if duplicate_readiness_probes:
+                _raise_schema_field_error(
+                    "protocol_probes must not duplicate readiness probes: "
+                    f"{service_id} kind={readiness.kind} path={readiness.path}",
+                    (
+                        _schema_field_violation(
+                            schema_layer="compile_result",
+                            field_path="services[*].protocol_probes[*].path",
+                            rule="enum",
+                            expected=("fixture_derived_data_plane_probe",),
+                            value=readiness.path,
+                            occurrence_count=len(duplicate_readiness_probes),
+                            value_domain="source_behavior",
+                            required_operations=(
+                                "keep_readiness_in_readiness_field",
+                                "declare_distinct_fixture_derived_data_plane_probe",
+                            ),
+                            forbidden_operations=(
+                                "copy_readiness_endpoint_into_protocol_probes",
+                            ),
+                        ),
+                    ),
+                    extra_details={
+                        "code": "protocol_probe_duplicates_readiness",
+                        "service_id": service_id,
+                        "probe_kind": readiness.kind,
+                        "probe_path": readiness.path,
+                    },
                 )
             if any(
                 item.kind == "http" and item.validate_advertised_websockets
@@ -3059,28 +3120,6 @@ def _parse_services(
             raise ReplayCapabilityError(
                 "fixture service cannot declare a runtime entrypoint"
             )
-        readiness_raw = value.get("readiness", {})
-        if not isinstance(readiness_raw, dict):
-            raise ReplayCapabilityError(
-                f"replay service readiness must be an object: {service_id}"
-            )
-        kind = _required_string(readiness_raw, "kind", "readiness")
-        if kind not in _SUPPORTED_READINESS_KINDS:
-            raise ReplayCapabilityError(f"unsupported readiness kind: {kind}")
-        timeout = readiness_raw.get("timeout_seconds", 10.0)
-        if (
-            not isinstance(timeout, (int, float))
-            or isinstance(timeout, bool)
-            or timeout <= 0
-            or timeout > _MAX_READINESS_TIMEOUT_SECONDS
-        ):
-            raise ReplayCapabilityError(
-                "readiness timeout_seconds must be between 0 and "
-                f"{_MAX_READINESS_TIMEOUT_SECONDS}"
-            )
-        path = readiness_raw.get("path", "/")
-        if not isinstance(path, str) or not path.startswith("/"):
-            raise ReplayCapabilityError("HTTP readiness path must start with /")
         services.append(
             ReplayServiceSpec(
                 service_id=service_id,
@@ -3088,11 +3127,7 @@ def _parse_services(
                 transport=transport,
                 response_fixture=response_fixture,
                 runtime_entrypoint=runtime_entrypoint,
-                readiness=ReplayReadinessProbe(
-                    kind=kind,
-                    timeout_seconds=float(timeout),
-                    path=path,
-                ),
+                readiness=readiness,
                 protocol_probes=protocol_probes,
             )
         )
