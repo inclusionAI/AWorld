@@ -1499,6 +1499,23 @@ def test_candidate_replay_capability_preserves_schema_field_constraints() -> Non
     }
     assert runner_module._schema_field_contract_fingerprint(distinct) != fingerprint
 
+    distinct_source_operations = {
+        **details,
+        "schema_field_constraints": [
+            {
+                **constraint,
+                "value_domain": "source_behavior",
+                "required_operations": ["declare_websocket_data_plane_probe"],
+            }
+        ],
+    }
+    assert (
+        runner_module._schema_field_contract_fingerprint(
+            distinct_source_operations
+        )
+        != fingerprint
+    )
+
 
 def test_substantive_screening_failure_outranks_later_duplicate_attempt() -> None:
     candidate = CandidateVariant(
@@ -9834,6 +9851,120 @@ async def test_missing_candidate_capability_rejects_candidate_but_continues_popu
     assert screened == (candidates[1],)
     assert report is not None
     assert report["conformance"]["stopped_by_shared_infrastructure"] is False
+
+
+@pytest.mark.asyncio
+async def test_candidate_compile_failure_accumulates_latest_schema_constraint(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    skill_path = tmp_path / "skills" / "generic" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("# Generic\n", encoding="utf-8")
+    dataset = SelfEvolveDataset(
+        cases=(EvalCase(case_id="member-a", input="task"),),
+        recipe=DatasetRecipe(
+            source={"kind": "contract_matrix"},
+            split_seed="generic",
+            splits={"train": ["member-a"], "validation": [], "held_out": []},
+            trainable_case_ids=("member-a",),
+        ),
+    )
+    inherited = SchemaFieldRepairConstraint(
+        schema_layer="compile_result",
+        field_path="services[*].protocol_probes[*].path",
+        rule="enum",
+        expected=("fixture_derived_data_plane_probe",),
+        value_domain="source_behavior",
+        required_operations=("declare_distinct_fixture_derived_data_plane_probe",),
+    )
+    latest = SchemaFieldRepairConstraint(
+        schema_layer="compile_result",
+        field_path="services[*].protocol_probes",
+        rule="enum",
+        expected=("advertised_websocket_with_data_plane_probe",),
+        value_domain="source_behavior",
+        required_operations=("declare_websocket_data_plane_probe",),
+    )
+    contract = RepairConformanceContract(
+        focus_candidate_id="candidate-parent",
+        failure_codes=("schema_field_validation_failed",),
+        interaction_progress=0,
+        base_file_fingerprints={"replay/compiler.py": "sha256:base"},
+        required_branch_paths=("replay/compiler.py",),
+        base_branch_fingerprints={"replay/compiler.py": "sha256:branch"},
+        schema_field_constraints=(inherited,),
+    )
+    candidate = CandidateVariant(
+        candidate_id="candidate-repair",
+        target=SelfEvolveTargetRef(
+            target_type="skill", target_id="generic", path=str(skill_path)
+        ),
+        content="# Generic\n",
+        rationale="repair",
+    )
+
+    class NoopOptimizer:
+        async def propose(self, request: OptimizerRequest) -> OptimizerResult:
+            del request
+            return OptimizerResult(candidates=())
+
+    runner = SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=NoopOptimizer(),
+        replay_enabled=True,
+        candidate_replay_backend=object(),
+    )
+    monkeypatch.setattr(
+        runner_module,
+        "create_candidate_skill_overlay",
+        lambda **kwargs: SimpleNamespace(candidate_skill_path=skill_path),
+    )
+    adaptation_details = {
+        "failure_class": "candidate",
+        "repairable": True,
+        "code": "advertised_websocket_probe_missing",
+        "capability_error_code": "schema_field_validation_failed",
+        "schema_field_constraints": [latest.to_dict()],
+    }
+    monkeypatch.setattr(
+        runner,
+        "_prepare_replay_adaptation",
+        lambda **kwargs: (
+            None,
+            GateResult(
+                "replay_adaptation",
+                False,
+                "candidate capability compilation failed",
+                details=adaptation_details,
+            ),
+        ),
+    )
+
+    gate = await runner._preflight_candidate_repair_conformance(
+        run_id="run-typed-compile-repair",
+        target=SkillTextTarget(skill_path, allow_auto_apply=True),
+        dataset=dataset,
+        candidate=candidate,
+        contract=contract,
+    )
+
+    merged = {
+        SchemaFieldRepairConstraint.from_dict(item)
+        for item in gate.details["repair_conformance"][
+            "schema_field_constraints"
+        ]
+    }
+    assert merged == {inherited, latest}
+    assert gate.details["schema_field_constraints"] == [latest.to_dict()]
+    assert gate.details["capability_error_code"] == (
+        "schema_field_validation_failed"
+    )
+    assert gate.details["causal_failure_events"][0][
+        "contract_fingerprint"
+    ] == runner_module._schema_field_contract_fingerprint(
+        gate.details["repair_conformance"]
+    )
 
 
 @pytest.mark.asyncio

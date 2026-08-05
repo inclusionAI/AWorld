@@ -66,6 +66,16 @@ from aworld.self_evolve.schema_diagnostics import (
             ["in", "out"],
             ["out"],
         ),
+        (
+            SchemaFieldRepairConstraint(
+                schema_layer="compile_result",
+                field_path="services[*].protocol_probes[*].path",
+                rule="starts_with",
+                expected=("/",),
+            ),
+            "/task-plane",
+            "task-plane",
+        ),
     ],
 )
 def test_schema_field_constraint_is_executable_and_round_trips(

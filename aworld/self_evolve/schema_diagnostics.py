@@ -15,6 +15,7 @@ _SUPPORTED_RULES = frozenset(
         "max_items",
         "non_empty",
         "required",
+        "starts_with",
         "type",
         "unique",
     }
@@ -91,7 +92,7 @@ class SchemaFieldRepairConstraint:
         ) > 32:
             raise ValueError("schema constraint declares too many operations")
         if (
-            self.rule in {"enum", "type", "contains_all"}
+            self.rule in {"enum", "type", "contains_all", "starts_with"}
             and not normalized_expected
         ):
             raise ValueError("schema constraint rule requires expected values")
@@ -99,6 +100,8 @@ class SchemaFieldRepairConstraint:
             _SUPPORTED_VALUE_TYPES
         ):
             raise ValueError("schema constraint declares an unsupported value type")
+        if self.rule == "starts_with" and len(normalized_expected) != 1:
+            raise ValueError("schema constraint prefix is invalid")
         if self.rule in {"max_chars", "max_items"} and (
             len(normalized_expected) != 1
             or not normalized_expected[0].isdigit()
@@ -187,6 +190,12 @@ class SchemaFieldRepairConstraint:
                 return False
             actual = {str(item) for item in value}
             return set(self.expected).issubset(actual)
+        if self.rule == "starts_with":
+            return (
+                isinstance(value, str)
+                and len(self.expected) == 1
+                and value.startswith(self.expected[0])
+            )
         if self.rule == "max_chars":
             return isinstance(value, str) and len(value) <= int(self.expected[0])
         if self.rule == "max_items":

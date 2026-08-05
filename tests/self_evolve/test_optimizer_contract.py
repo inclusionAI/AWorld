@@ -1364,6 +1364,98 @@ async def test_trace_reflective_llm_mutator_materializes_patch_intent_candidate(
 
 
 @pytest.mark.asyncio
+async def test_trace_reflective_llm_mutator_falls_back_to_files_only_when_optional_patch_section_is_missing() -> None:
+    async def mutate(prompt: str) -> dict:
+        del prompt
+        return {
+            "patch_intent": {
+                "operations": [
+                    {
+                        "op": "replace_section",
+                        "heading": "Missing Optional Guidance",
+                        "content": "This section is not present in the target.",
+                    }
+                ]
+            },
+            "rationale": "Repair the candidate-owned replay implementation.",
+            "files": [
+                {
+                    "path": "replay/runtime.py",
+                    "content": "def main():\n    return 'repaired'\n",
+                }
+            ],
+        }
+
+    request = OptimizerRequest(
+        target=_target(),
+        current_content="---\nname: demo\n---\n# Demo\n\n## Guidance\n\nOld rule.\n",
+        target_fingerprint="sha256:old",
+        trace_packs=(_trace_pack(),),
+        replay_requirements=(_replay_requirement(),),
+        lesson_records=(
+            LessonRecord(
+                lesson_id="lesson-capability",
+                lesson_type="harness_diagnostic",
+                title="Repair replay capability",
+                summary="Repair the candidate-owned replay runtime.",
+            ),
+        ),
+        max_candidates=1,
+    )
+
+    result = await TraceReflectiveLLMMutator(mutate_text=mutate).propose(request)
+
+    assert len(result.candidates) == 1
+    assert result.candidates[0].content == request.current_content
+    assert result.candidates[0].files[0].path == "replay/runtime.py"
+    assert result.candidates[0].structural_edit_intent is None
+    assert result.diagnostics["candidate_strategies"][0]["materialization"] == (
+        "files_only_patch_fallback"
+    )
+
+
+@pytest.mark.asyncio
+async def test_trace_reflective_llm_mutator_keeps_missing_section_patch_fail_closed() -> None:
+    async def mutate(prompt: str) -> dict:
+        del prompt
+        return {
+            "patch_intent": {
+                "operations": [
+                    {
+                        "op": "replace_section",
+                        "heading": "Missing Required Guidance",
+                        "content": "No independent package delta is present.",
+                    }
+                ]
+            },
+            "rationale": "Attempt a target-only repair.",
+        }
+
+    request = OptimizerRequest(
+        target=_target(),
+        current_content="# Demo\n\n## Guidance\n\nOld rule.\n",
+        target_fingerprint="sha256:old",
+        trace_packs=(_trace_pack(),),
+        lesson_records=(
+            LessonRecord(
+                lesson_id="lesson-target",
+                lesson_type="required_runtime_behavior",
+                title="Repair target behavior",
+                summary="Update reusable target guidance.",
+            ),
+        ),
+        max_candidates=1,
+    )
+
+    result = await TraceReflectiveLLMMutator(mutate_text=mutate).propose(request)
+
+    assert result.candidates == ()
+    failure = result.diagnostics["candidate_materialization_failures"][0]
+    assert failure["code"] == "patch_section_not_found"
+    assert failure["representation"] == "patch_intent"
+
+
+@pytest.mark.asyncio
 async def test_trace_reflective_llm_mutator_rejects_invalid_patch_intent_before_candidate() -> None:
     async def mutate(prompt: str) -> dict:
         return {
