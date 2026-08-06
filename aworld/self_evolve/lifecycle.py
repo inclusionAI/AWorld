@@ -742,15 +742,23 @@ def _terminal_cleanup_candidates(
 
 
 def _replay_workspace_paths(run_dir: Path) -> Iterable[Path]:
-    replay_dir = run_dir / "replay"
-    if not replay_dir.is_dir() or replay_dir.is_symlink():
-        return
-    for request_path in replay_dir.rglob("execution_request.json"):
-        if request_path.is_symlink() or not request_path.is_file():
+    replay_roots = [run_dir / "replay"]
+    regression_dir = run_dir / "regression"
+    if regression_dir.is_dir() and not regression_dir.is_symlink():
+        replay_roots.extend(
+            path
+            for path in regression_dir.glob("*/replay")
+            if path.is_dir() and not path.is_symlink()
+        )
+    for replay_dir in replay_roots:
+        if not replay_dir.is_dir() or replay_dir.is_symlink():
             continue
-        workspace = request_path.parent / "workspace"
-        if workspace.exists() or workspace.is_symlink():
-            yield workspace
+        for request_path in replay_dir.rglob("execution_request.json"):
+            if request_path.is_symlink() or not request_path.is_file():
+                continue
+            workspace = request_path.parent / "workspace"
+            if workspace.exists() or workspace.is_symlink():
+                yield workspace
 
 
 def _replay_adaptation_workspace_seed_paths(run_dir: Path) -> Iterable[Path]:
@@ -967,6 +975,7 @@ def _is_age_gated_raw_path(path: Path, *, run_dir: Path, root: Path) -> bool:
             root / "evaluator" / run_dir.name,
         )
         or _is_controlled_descendant(path, run_dir / "replay")
+        or _is_controlled_descendant(path, run_dir / "regression")
         or _is_controlled_descendant(path, run_dir / "replay_adaptation")
     )
 

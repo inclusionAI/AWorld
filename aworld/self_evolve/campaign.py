@@ -1570,6 +1570,11 @@ def _campaign_report_quality(report: Mapping[str, Any]) -> tuple[object, ...]:
         if isinstance(report.get("post_apply"), Mapping)
         else {}
     )
+    regression_evidence = (
+        report.get("regression_evidence")
+        if isinstance(report.get("regression_evidence"), Mapping)
+        else {}
+    )
     gates = report.get("gate_results")
     failed_gate_count = sum(
         1
@@ -1583,7 +1588,7 @@ def _campaign_report_quality(report: Mapping[str, Any]) -> tuple[object, ...]:
         confidence.get("passed") is True,
         metrics.get("evidence_incomplete") is False,
         metrics.get("deterministic_signal") is True,
-        metrics.get("global_regression_passed") is True,
+        regression_evidence.get("passed") is True,
         _finite_metric(metrics.get("command_pass_rate")),
         -failed_gate_count,
         _finite_metric(metrics.get("score")),
@@ -1601,6 +1606,11 @@ def _candidate_quality_progress(
     groundedness = _finite_metric(raw_metrics.get("A1_groundedness"))
     command_pass_rate = _finite_metric(raw_metrics.get("command_pass_rate"))
     failed_repetition_count = raw_metrics.get("failed_repetition_count")
+    regression_evidence = (
+        report.get("regression_evidence")
+        if isinstance(report.get("regression_evidence"), Mapping)
+        else {}
+    )
     quality = CandidateQualityProgress(
         score_points=(
             max(0, math.floor(score))
@@ -1624,7 +1634,7 @@ def _candidate_quality_progress(
             raw_metrics.get("deterministic_signal")
         ),
         global_regression_passed=_optional_bool(
-            raw_metrics.get("global_regression_passed")
+            regression_evidence.get("passed")
         ),
         failed_repetition_count=(
             int(failed_repetition_count)

@@ -1039,6 +1039,79 @@ async def test_replay_lifecycle_v3_round_trip_materializes_blocked_members(
         member.candidate.blocked_by[0].event_id == cause_id
         for member in loaded.member_results
     )
+
+
+@pytest.mark.asyncio
+async def test_replay_artifact_namespace_isolated_under_run_root(
+    tmp_path: Path,
+) -> None:
+    dataset = SelfEvolveDataset(
+        cases=(EvalCase(case_id="regression-case", input="verify stability"),),
+        recipe=DatasetRecipe(
+            source={"kind": "jsonl"},
+            split_seed="seed",
+            splits={
+                "train": ["regression-case"],
+                "validation": [],
+                "held_out": [],
+            },
+        ),
+    )
+    candidate = _candidate(
+        "---\nname: demo\n---\n# Demo\n",
+        candidate_id="candidate-regression",
+    )
+
+    async def fake_executor(request: ReplayExecutionRequest) -> ReplayExecutionResult:
+        return ReplayExecutionResult(
+            status="succeeded",
+            trajectory=[{"action": {"content": request.variant_id}}],
+        )
+
+    request = build_replay_request(
+        run_id="run-regression-namespace",
+        workspace_root=tmp_path,
+        target=candidate.target,
+        candidate=candidate,
+        overlay_skill_root=tmp_path / "overlay",
+        dataset=dataset,
+        artifact_namespace="regression/suite-one",
+    )
+    await AWorldCliCandidateReplayBackend(executor=fake_executor).replay_candidate(
+        request,
+        candidate=candidate,
+        dataset=dataset,
+    )
+
+    replay_dir = (
+        tmp_path
+        / ".aworld"
+        / "self_evolve"
+        / request.run_id
+        / "regression"
+        / "suite-one"
+        / "replay"
+        / candidate.candidate_id
+    )
+    assert (replay_dir / "request.json").is_file()
+    assert not (
+        tmp_path
+        / ".aworld"
+        / "self_evolve"
+        / request.run_id
+        / "replay"
+        / candidate.candidate_id
+    ).exists()
+
+    unsafe_request = replace(request, artifact_namespace="../escape")
+    with pytest.raises(ValueError, match="invalid replay artifact namespace"):
+        await AWorldCliCandidateReplayBackend(
+            executor=fake_executor
+        ).replay_candidate(
+            unsafe_request,
+            candidate=candidate,
+            dataset=dataset,
+        )
     manifest = json.loads((replay_dir / "members" / "manifest.json").read_text())
     assert manifest["schema_version"] == "aworld.self_evolve.member_replay.v3"
     assert manifest["repetition_semantics"] == "per_member_v3"

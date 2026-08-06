@@ -5,12 +5,15 @@ from dataclasses import replace
 import pytest
 
 from aworld.self_evolve.candidate_package import (
+    CandidateMutationKind,
     candidate_content_semantic_fingerprint,
     candidate_package_fingerprint,
     candidate_package_payload,
     candidate_package_reference_report,
     candidate_package_referenced_paths,
     candidate_semantic_package_fingerprint,
+    candidate_target_behavior_fingerprint,
+    classify_candidate_mutation,
     validate_candidate_files,
 )
 from aworld.self_evolve.patch_intent import apply_skill_patch_intent
@@ -44,6 +47,71 @@ def test_text_only_candidate_keeps_legacy_shape() -> None:
     assert _candidate().files == ()
     assert "structural_edit_intent" not in candidate_package_payload(
         _candidate()
+    )
+
+
+def test_candidate_mutation_classifies_replay_files_as_support_only() -> None:
+    candidate = _candidate(
+        files=(
+            CandidateFileDelta(
+                path="replay/runtime.py",
+                content="print('ready')\n",
+            ),
+        )
+    )
+
+    classification = classify_candidate_mutation(
+        candidate,
+        current_content=SKILL,
+    )
+
+    assert classification.kind is CandidateMutationKind.EVALUATION_SUPPORT
+    assert classification.quality_evaluation_allowed is False
+    assert classification.support_file_paths == ("replay/runtime.py",)
+
+
+def test_candidate_mutation_requires_target_delta_for_composite_quality() -> None:
+    candidate = replace(
+        _candidate(
+            files=(
+                CandidateFileDelta(
+                    path="replay/runtime.py",
+                    content="print('ready')\n",
+                ),
+            )
+        ),
+        content=SKILL + "\nAlways verify the final task outcome.\n",
+    )
+
+    classification = classify_candidate_mutation(
+        candidate,
+        current_content=SKILL,
+    )
+
+    assert (
+        classification.kind
+        is CandidateMutationKind.TARGET_BEHAVIOR_WITH_SUPPORT
+    )
+    assert classification.quality_evaluation_allowed is True
+
+
+def test_target_behavior_fingerprint_ignores_release_bookkeeping() -> None:
+    released = (
+        "---\n"
+        "name: demo-skill\n"
+        "self_evolve:\n"
+        "  release_state: verified\n"
+        "  run_id: run-1\n"
+        "---\n"
+        "# Demo\n"
+    )
+
+    assert candidate_target_behavior_fingerprint(
+        released,
+        target_type="skill",
+    ) == candidate_target_behavior_fingerprint(
+        SKILL,
+        target_type="skill",
     )
 
 

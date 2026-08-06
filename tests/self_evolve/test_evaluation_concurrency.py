@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -116,6 +117,69 @@ async def test_unsafe_in_process_backend_is_serialized_by_resource_claim() -> No
     )
 
     assert max_active == 1
+
+
+@pytest.mark.asyncio
+async def test_exact_baseline_identity_is_reused_without_overwriting_artifacts() -> None:
+    calls: list[tuple[str, str | None]] = []
+
+    class Backend:
+        task_local_runtime = True
+
+        async def evaluate_variant(self, request):
+            calls.append(
+                (
+                    "candidate" if request.candidate is not None else "baseline",
+                    request.artifact_namespace,
+                )
+            )
+            return EvaluationSummary(
+                variant_id=request.variant_id,
+                dataset_split=request.dataset_split,
+                metrics={"score": 0.5 if request.candidate is None else 0.9},
+            )
+
+    backend = Backend()
+    cache: dict[str, EvaluationSummary] = {}
+    first_baseline, first_candidate = await evaluate_baseline_and_candidate(
+        backend,
+        dataset=_dataset(),
+        candidate=_candidate(),
+        artifact_namespace="run-1",
+        baseline_cache=cache,
+    )
+    second_baseline, second_candidate = await evaluate_baseline_and_candidate(
+        backend,
+        dataset=_dataset(),
+        candidate=replace(
+            _candidate(),
+            candidate_id="candidate-2",
+            content="# Candidate\n\nVerify completion.\n",
+        ),
+        artifact_namespace="run-1",
+        baseline_cache=cache,
+    )
+
+    assert [role for role, _ in calls] == [
+        "baseline",
+        "candidate",
+        "candidate",
+    ]
+    assert first_baseline.metrics["evaluation_fresh_execution"] is True
+    assert second_baseline.metrics["evaluation_fresh_execution"] is False
+    assert second_baseline.metrics["evaluation_reused"] is True
+    assert (
+        first_baseline.metrics["evaluation_execution_id"]
+        == second_baseline.metrics["evaluation_execution_id"]
+    )
+    assert (
+        first_baseline.metrics["evaluation_artifact_namespace"]
+        == second_baseline.metrics["evaluation_artifact_namespace"]
+    )
+    assert (
+        first_candidate.metrics["evaluation_artifact_namespace"]
+        != second_candidate.metrics["evaluation_artifact_namespace"]
+    )
 
 
 @pytest.mark.asyncio

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from copy import deepcopy
+from dataclasses import replace
 from decimal import Decimal
 
 import pytest
@@ -317,8 +318,10 @@ def test_observed_estimate_uses_robust_upper_value_not_single_outlier() -> None:
     "stage",
     (
         BudgetStage.CANDIDATE_GENERATION,
+        BudgetStage.CHALLENGER,
         BudgetStage.CONFORMANCE,
         BudgetStage.PAIRED_REPLAY,
+        BudgetStage.REGRESSION_REPLAY,
         BudgetStage.EVALUATION,
         BudgetStage.JUDGE,
     ),
@@ -552,6 +555,8 @@ def test_stage_workload_is_cardinality_monotonic_and_shape_aware() -> None:
 
     assert one.units_for(BudgetStage.PAIRED_REPLAY) == 2
     assert three_same_shape.units_for(BudgetStage.PAIRED_REPLAY) == 6
+    assert one.units_for(BudgetStage.REGRESSION_REPLAY) == 2
+    assert three_same_shape.units_for(BudgetStage.REGRESSION_REPLAY) == 6
     assert one.units_for(BudgetStage.CONFORMANCE) == 1
     assert three_same_shape.units_for(BudgetStage.CONFORMANCE) == 1
     assert three_two_shapes.units_for(BudgetStage.CONFORMANCE) == 2
@@ -826,7 +831,46 @@ def test_scheduler_state_reads_pre_stall_tracking_payload() -> None:
     )
 
     assert state.frontier_stalls == {}
+    assert state.frontier_mutation_families == {}
     assert state.last_focused_frontier is None
+
+
+def test_scheduler_exhausts_distinct_mutation_families_before_stall() -> None:
+    scheduler = StageAwareCandidateScheduler(exploration_population=2)
+    one_family = SchedulerState(
+        initial_exploration_scheduled=True,
+        frontier_progress={"semantic-a": 1},
+        frontier_stalls={"semantic-a": 1},
+        frontier_mutation_families={"semantic-a": ("focused-repair",)},
+        last_focused_frontier="semantic-a",
+    )
+
+    diverse = scheduler.schedule(
+        state=one_family,
+        frontiers=(_frontier("semantic-a"),),
+        diverse_budget_available=True,
+    )
+
+    assert diverse.stop is False
+    assert [slot.role for slot in diverse.slots] == [
+        ScheduledSlotRole.FOCUSED_REPAIR,
+        ScheduledSlotRole.DIVERSE_EXPLORATION,
+    ]
+
+    two_families = replace(
+        diverse.state,
+        frontier_mutation_families={
+            "semantic-a": ("focused-repair", "counterexample-repair")
+        },
+    )
+    exhausted = scheduler.schedule(
+        state=two_families,
+        frontiers=(_frontier("semantic-a"),),
+        diverse_budget_available=True,
+    )
+
+    assert exhausted.stop is True
+    assert exhausted.reason_code == "repair_frontier_stalled"
 
 
 @pytest.mark.parametrize(

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 from aworld.self_evolve.gates import EvaluationRuntimeHealthGate
 from aworld.self_evolve.runtime_health import (
     EvaluationRuntimeHealthStatus,
@@ -125,3 +127,31 @@ def test_runtime_health_is_backward_compatible_without_telemetry() -> None:
     assert EvaluationRuntimeHealthGate().evaluate(
         (_summary(score=90.0),)
     ).passed
+
+
+def test_runtime_health_counts_single_case_alias_once() -> None:
+    validation = _summary(
+        evaluation_execution_id="exec-1",
+        evaluation_agent_signal=True,
+        judge_attempt_count=3,
+        judge_success_count=2,
+        judge_failure_count=1,
+        judge_timeout_count=1,
+    )
+    held_out_alias = replace(
+        validation,
+        dataset_split="single_case_replay",
+        metrics={
+            **dict(validation.metrics),
+            "evaluation_alias_of_execution_id": "exec-1",
+            "evaluation_fresh_execution": False,
+        },
+    )
+
+    health = assess_evaluation_runtime_health(
+        (validation, held_out_alias)
+    )
+
+    assert health.summary_count == 1
+    assert health.judge_attempt_count == 3
+    assert health.judge_failure_count == 1

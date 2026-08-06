@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping
@@ -18,14 +19,17 @@ from aworld.self_evolve.provenance import (
     target_provenance_policy_class,
 )
 from aworld.self_evolve.replay_adaptation import ReplayAdaptationBundle
+from aworld.self_evolve.regression import RegressionEvidence
 from aworld.self_evolve.types import CandidateVariant, EvaluationSummary, GateResult
 from aworld.self_evolve.runtime_health import (
     EvaluationRuntimeHealthStatus,
     assess_evaluation_runtime_health,
 )
 from aworld.self_evolve.candidate_package import (
+    CandidateMutationKind,
     candidate_files_total_bytes,
     candidate_package_reference_report,
+    classify_candidate_mutation,
     validate_candidate_files,
 )
 from aworld.skills.structure import validate_skill_markdown_structure
@@ -76,8 +80,16 @@ class ReplayAdaptationGate:
 
 
 class ScoreImprovementGate:
-    def __init__(self, *, min_delta: float) -> None:
+    def __init__(
+        self,
+        *,
+        min_delta: float,
+        confidence_z: float = 1.0,
+        minimum_relative_margin: float = 0.01,
+    ) -> None:
         self.min_delta = min_delta
+        self.confidence_z = confidence_z
+        self.minimum_relative_margin = minimum_relative_margin
 
     def evaluate(
         self,
@@ -114,15 +126,147 @@ class ScoreImprovementGate:
                 },
             )
         delta = candidate_score - baseline_score
+        details: dict[str, object] = {
+            "baseline": baseline_score,
+            "candidate": candidate_score,
+            "delta": round(delta, 10),
+            "minimum_delta": self.min_delta,
+        }
+        if delta < self.min_delta:
+            details.update(
+                {
+                    "code": "score_improvement_below_minimum",
+                    "decision": "rejected",
+                    "failure_class": "candidate",
+                    "failure_owner": "candidate",
+                    "failure_scope": "candidate",
+                    "repairable": True,
+                }
+            )
+            return GateResult(
+                gate_name="score_improvement",
+                passed=False,
+                reason="score improvement below minimum delta",
+                details=details,
+            )
+
+        stochastic = any(
+            _number_metric(summary.metrics, key) is not None
+            for summary in (baseline, candidate)
+            for key in (
+                "judge_attempt_count",
+                "judge_success_count",
+                "judge_repetitions",
+            )
+        )
+        if not stochastic:
+            details.update(
+                {
+                    "code": "score_improvement_deterministic",
+                    "decision": "accepted",
+                    "uncertainty_model": "deterministic",
+                }
+            )
+            return GateResult(
+                gate_name="score_improvement",
+                passed=True,
+                reason="score improvement meets minimum delta",
+                details=details,
+            )
+
+        baseline_std = _number_metric(baseline.metrics, "score_std")
+        candidate_std = _number_metric(candidate.metrics, "score_std")
+        baseline_count = _score_sample_count(baseline.metrics)
+        candidate_count = _score_sample_count(candidate.metrics)
+        if (
+            baseline_std is not None
+            and candidate_std is not None
+            and baseline_count >= 2
+            and candidate_count >= 2
+        ):
+            standard_error = math.sqrt(
+                (baseline_std * baseline_std) / baseline_count
+                + (candidate_std * candidate_std) / candidate_count
+            )
+            lower_bound = delta - (self.confidence_z * standard_error)
+            details.update(
+                {
+                    "baseline_score_std": baseline_std,
+                    "candidate_score_std": candidate_std,
+                    "baseline_sample_count": baseline_count,
+                    "candidate_sample_count": candidate_count,
+                    "delta_standard_error": standard_error,
+                    "delta_confidence_lower_bound": lower_bound,
+                    "confidence_z": self.confidence_z,
+                    "uncertainty_model": "independent_standard_error",
+                }
+            )
+            if lower_bound >= self.min_delta:
+                details.update(
+                    {
+                        "code": "score_improvement_confident",
+                        "decision": "accepted",
+                    }
+                )
+                return GateResult(
+                    gate_name="score_improvement",
+                    passed=True,
+                    reason="score improvement clears the noise-aware confidence bound",
+                    details=details,
+                )
+            return GateResult(
+                gate_name="score_improvement",
+                passed=False,
+                reason="score improvement is inconclusive under observed judge variance",
+                details={
+                    **details,
+                    "code": "score_improvement_inconclusive",
+                    "decision": "inconclusive",
+                    "tiebreak_eligible": True,
+                    "failure_class": "framework",
+                    "failure_owner": "framework",
+                    "failure_scope": "shared_run",
+                    "repairable": False,
+                },
+            )
+
+        scale = max(abs(baseline_score), abs(candidate_score), 1.0)
+        evidence_free_margin = scale * self.minimum_relative_margin
+        details.update(
+            {
+                "baseline_score_std": baseline_std,
+                "candidate_score_std": candidate_std,
+                "baseline_sample_count": baseline_count,
+                "candidate_sample_count": candidate_count,
+                "minimum_evidence_free_margin": evidence_free_margin,
+                "uncertainty_model": "missing_repeated_score_evidence",
+            }
+        )
+        if delta - self.min_delta >= evidence_free_margin:
+            return GateResult(
+                gate_name="score_improvement",
+                passed=True,
+                reason="score improvement clears the conservative no-variance margin",
+                details={
+                    **details,
+                    "code": "score_improvement_large_margin",
+                    "decision": "accepted",
+                },
+            )
         return GateResult(
             gate_name="score_improvement",
-            passed=delta >= self.min_delta,
-            reason=(
-                "score improvement meets minimum delta"
-                if delta >= self.min_delta
-                else "score improvement below minimum delta"
-            ),
-            details={"baseline": baseline_score, "candidate": candidate_score, "delta": round(delta, 10)},
+            passed=False,
+            reason="score improvement is inconclusive without repeated score evidence",
+            details={
+                **details,
+                "code": "score_improvement_inconclusive",
+                "decision": "inconclusive",
+                "tiebreak_eligible": True,
+                "failure_class": "framework",
+                "failure_owner": "framework",
+                "failure_scope": "shared_run",
+                "repairable": False,
+            },
         )
 
 
@@ -132,9 +276,11 @@ class CostLatencyRegressionGate:
         *,
         max_cost_regression_ratio: float,
         max_latency_regression_ratio: float,
+        require_resource_evidence: bool = False,
     ) -> None:
         self.max_cost_regression_ratio = max_cost_regression_ratio
         self.max_latency_regression_ratio = max_latency_regression_ratio
+        self.require_resource_evidence = require_resource_evidence
 
     def evaluate(
         self,
@@ -142,7 +288,44 @@ class CostLatencyRegressionGate:
         baseline: EvaluationSummary,
         candidate: EvaluationSummary,
     ) -> GateResult:
-        cost_ratio = _regression_ratio(baseline.metrics, candidate.metrics, "cost_usd")
+        cost_key = _first_comparable_metric_key(
+            baseline.metrics,
+            candidate.metrics,
+            (
+                "cost_usd",
+                "judge_total_tokens",
+                "judge_estimated_input_tokens_total",
+            ),
+        )
+        latency_key = _first_comparable_metric_key(
+            baseline.metrics,
+            candidate.metrics,
+            ("latency_ms", "judge_model_latency_ms_total"),
+        )
+        if (
+            self.require_resource_evidence
+            and cost_key is None
+            and latency_key is None
+        ):
+            return GateResult(
+                gate_name="cost_latency_regression",
+                passed=False,
+                reason="verified evaluation has no comparable resource evidence",
+                details={
+                    "code": "resource_regression_evidence_missing",
+                    "cost_metric": None,
+                    "latency_metric": None,
+                    "failure_class": "framework",
+                    "failure_owner": "framework",
+                    "failure_scope": "shared_run",
+                    "repairable": False,
+                },
+            )
+        cost_ratio = (
+            _regression_ratio(baseline.metrics, candidate.metrics, cost_key)
+            if cost_key is not None
+            else None
+        )
         if cost_ratio is not None and cost_ratio > self.max_cost_regression_ratio:
             return GateResult(
                 gate_name="cost_latency_regression",
@@ -151,7 +334,15 @@ class CostLatencyRegressionGate:
                 details={"cost_regression_ratio": cost_ratio},
             )
 
-        latency_ratio = _regression_ratio(baseline.metrics, candidate.metrics, "latency_ms")
+        latency_ratio = (
+            _regression_ratio(
+                baseline.metrics,
+                candidate.metrics,
+                latency_key,
+            )
+            if latency_key is not None
+            else None
+        )
         if latency_ratio is not None and latency_ratio > self.max_latency_regression_ratio:
             return GateResult(
                 gate_name="cost_latency_regression",
@@ -167,6 +358,9 @@ class CostLatencyRegressionGate:
             details={
                 "cost_regression_ratio": cost_ratio,
                 "latency_regression_ratio": latency_ratio,
+                "cost_metric": cost_key,
+                "latency_metric": latency_key,
+                "resource_evidence_required": self.require_resource_evidence,
             },
         )
 
@@ -178,6 +372,50 @@ class NoopCandidateGate:
             gate_name="noop_candidate",
             passed=changed,
             reason="candidate changes target content" if changed else "candidate content is unchanged",
+        )
+
+
+class TargetBehaviorDeltaGate:
+    """Prevent evaluation support bootstrap from masquerading as improvement."""
+
+    def evaluate(
+        self,
+        *,
+        current_content: str,
+        candidate: CandidateVariant,
+    ) -> GateResult:
+        classification = classify_candidate_mutation(
+            candidate,
+            current_content=current_content,
+        )
+        passed = classification.quality_evaluation_allowed
+        if passed:
+            reason = "candidate changes the releasable target behavior surface"
+            code = "target_behavior_delta_present"
+        elif classification.kind is CandidateMutationKind.EVALUATION_SUPPORT:
+            reason = (
+                "candidate only bootstraps evaluation support and must be "
+                "composed with a target behavior change before quality evaluation"
+            )
+            code = "evaluation_support_bootstrap_only"
+        else:
+            reason = "candidate does not change releasable target behavior"
+            code = "target_behavior_delta_missing"
+        return GateResult(
+            gate_name="target_behavior_delta",
+            passed=passed,
+            reason=reason,
+            details={
+                **classification.to_dict(),
+                "code": code,
+                "candidate_status": (
+                    "prerequisite" if classification.evaluation_support_changed else "rejected"
+                ),
+                "failure_class": None if passed else "candidate",
+                "failure_owner": None if passed else "candidate",
+                "failure_scope": None if passed else "candidate",
+                "repairable": not passed,
+            },
         )
 
 
@@ -1047,7 +1285,7 @@ class GlobalRegressionBenchmarkGate:
     def evaluate(
         self,
         candidate: CandidateVariant,
-        summary: EvaluationSummary,
+        evidence: RegressionEvidence | None,
     ) -> GateResult:
         if candidate.target.target_type not in self._REQUIRES_REGRESSION_TARGET_TYPES:
             return GateResult(
@@ -1055,21 +1293,142 @@ class GlobalRegressionBenchmarkGate:
                 passed=True,
                 reason="target type does not require global regression benchmark",
             )
-        passed = summary.metrics.get("global_regression_passed") is True
+        if evidence is None or not isinstance(evidence, RegressionEvidence):
+            return GateResult(
+                gate_name="global_regression_benchmark",
+                passed=False,
+                reason=(
+                    "independent regression evidence is required for verified "
+                    "text targets"
+                ),
+                details={
+                    "code": "independent_regression_evidence_missing",
+                    "legacy_evaluator_boolean_accepted": False,
+                    "failure_class": "framework",
+                    "failure_owner": "framework",
+                    "repairable": False,
+                },
+            )
+        if evidence.candidate_id != candidate.candidate_id:
+            return GateResult(
+                gate_name="global_regression_benchmark",
+                passed=False,
+                reason="regression evidence belongs to a different candidate",
+                details={
+                    "code": "regression_candidate_mismatch",
+                    "expected_candidate_id": candidate.candidate_id,
+                    "evidence_candidate_id": evidence.candidate_id,
+                    "evidence_fingerprint": evidence.fingerprint,
+                    "failure_class": "framework",
+                    "failure_owner": "framework",
+                    "repairable": False,
+                },
+            )
+        passed = evidence.passed
+        failed_suite_gates = [
+            (result.spec.suite_id, gate)
+            for result in evidence.suite_results
+            for gate in result.gate_results
+            if not gate.passed
+        ]
+        shared_failure = any(
+            not result.fresh_execution
+            for result in evidence.suite_results
+        ) or any(
+            isinstance(gate.details, Mapping)
+            and gate.details.get("failure_class")
+            in {"infrastructure", "budget", "framework"}
+            for _, gate in failed_suite_gates
+        )
+        failure_code = (
+            next(
+                (
+                    str(gate.details["code"])
+                    for _, gate in failed_suite_gates
+                    if isinstance(gate.details, Mapping)
+                    and isinstance(gate.details.get("code"), str)
+                ),
+                "independent_regression_execution_failed",
+            )
+            if shared_failure
+            else "independent_regression_failed"
+        )
         return GateResult(
             gate_name="global_regression_benchmark",
             passed=passed,
             reason=(
-                "global regression benchmark passed"
+                "independent regression benchmark suite passed"
                 if passed
-                else "global regression benchmark is required for verified text targets"
+                else "independent regression benchmark suite did not pass"
             ),
+            details={
+                "code": (
+                    "independent_regression_passed"
+                    if passed
+                    else failure_code
+                ),
+                "evidence_fingerprint": evidence.fingerprint,
+                "suite_count": len(evidence.suite_results),
+                "failed_suite_ids": [
+                    result.spec.suite_id
+                    for result in evidence.suite_results
+                    if not result.passed
+                ],
+                "data_independent": evidence.data_independent,
+                "execution_independent": evidence.execution_independent,
+                "implementation_independent": (
+                    evidence.implementation_independent
+                ),
+                "selection_backend_id": evidence.selection_backend_id,
+                "regression_backend_id": evidence.regression_backend_id,
+                "suite_failures": [
+                    {
+                        "suite_id": suite_id,
+                        "gate_name": gate.gate_name,
+                        "reason": gate.reason,
+                        "details": dict(gate.details or {}),
+                    }
+                    for suite_id, gate in failed_suite_gates
+                ],
+                **(
+                    {}
+                    if passed
+                    else {
+                        "failure_class": (
+                            "framework" if shared_failure else "candidate"
+                        ),
+                        "failure_owner": (
+                            "framework" if shared_failure else "candidate"
+                        ),
+                        "failure_scope": (
+                            "shared_run" if shared_failure else "candidate"
+                        ),
+                        "repairable": not shared_failure,
+                    }
+                ),
+            },
         )
 
 
 def _number_metric(metrics: dict[str, Any] | Any, key: str) -> float | None:
     value = metrics.get(key) if hasattr(metrics, "get") else None
-    return float(value) if isinstance(value, (int, float)) else None
+    return (
+        float(value)
+        if isinstance(value, (int, float)) and not isinstance(value, bool)
+        else None
+    )
+
+
+def _score_sample_count(metrics: Mapping[str, Any]) -> int:
+    for key in ("score_sample_count", "judge_success_count", "judge_repetitions"):
+        value = metrics.get(key)
+        if (
+            isinstance(value, (int, float))
+            and not isinstance(value, bool)
+            and value >= 0
+        ):
+            return int(value)
+    return 0
 
 
 def _bool_metric(metrics: dict[str, Any] | Any, key: str) -> bool | None:
@@ -1109,3 +1468,19 @@ def _regression_ratio(
     if baseline is None or candidate is None or baseline <= 0:
         return None
     return (candidate - baseline) / baseline
+
+
+def _first_comparable_metric_key(
+    baseline_metrics: Mapping[str, Any],
+    candidate_metrics: Mapping[str, Any],
+    keys: Iterable[str],
+) -> str | None:
+    return next(
+        (
+            key
+            for key in keys
+            if _number_metric(baseline_metrics, key) is not None
+            and _number_metric(candidate_metrics, key) is not None
+        ),
+        None,
+    )

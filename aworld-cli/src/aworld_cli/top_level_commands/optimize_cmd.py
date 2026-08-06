@@ -127,6 +127,32 @@ class OptimizeTopLevelCommand:
             help="Reuse replay artifacts from --from-run and rerun evaluator/gates only.",
         )
         parser.add_argument("--batch-config", type=str, dest="batch_config")
+        parser.add_argument(
+            "--regression-benchmark",
+            action="append",
+            default=[],
+            dest="regression_benchmarks",
+            help=(
+                "Independent regression suite file. Repeat for multiple suites; "
+                "optionally prefix with trajectory_log:, trajectory_set:, jsonl:, "
+                "or batch_config:. Verified existing skills derive a bounded "
+                "baseline-contract suite when this option is omitted."
+            ),
+        )
+        parser.add_argument(
+            "--no-challenger",
+            action="store_false",
+            dest="challenger_enabled",
+            default=True,
+            help="Disable framework-generated regression counterexamples.",
+        )
+        parser.add_argument(
+            "--challenger-max-cases",
+            type=int,
+            default=2,
+            dest="challenger_max_cases",
+            help="Maximum admitted Challenger probes per candidate (1-8).",
+        )
         parser.add_argument("--iterations", type=int)
         parser.add_argument(
             "--apply",
@@ -268,6 +294,15 @@ class OptimizeTopLevelCommand:
                 from_run=getattr(args, "from_run", None),
                 rerun_evaluator=getattr(args, "rerun_evaluator", False),
                 batch_config=getattr(args, "batch_config", None),
+                regression_benchmarks=tuple(
+                    getattr(args, "regression_benchmarks", ()) or ()
+                ),
+                challenger_enabled=bool(
+                    getattr(args, "challenger_enabled", True)
+                ),
+                challenger_max_cases=int(
+                    getattr(args, "challenger_max_cases", 2)
+                ),
                 iterations=getattr(args, "iterations", None),
                 max_improvement_cycles=getattr(
                     args, "max_improvement_cycles", 3
@@ -334,6 +369,9 @@ def render_optimize_summary(report: Any) -> str:
     release_state = _read_report_value(report, "release_state")
     published = _read_report_value(report, "published")
     verified_target_path = _read_report_value(report, "verified_target_path")
+    regression_evidence_path = _read_report_value(
+        report, "regression_evidence_path"
+    )
 
     lines = [
         (
@@ -390,6 +428,8 @@ def render_optimize_summary(report: Any) -> str:
         lines.append(f"Published: {'yes' if published else 'no'}")
     if verified_target_path:
         lines.append(f"Verified target: {verified_target_path}")
+    if regression_evidence_path:
+        lines.append(f"Regression evidence: {regression_evidence_path}")
     if target_selection_path:
         lines.append(f"Target selection: {target_selection_path}")
     if replay_path:
@@ -408,6 +448,11 @@ def render_optimize_summary(report: Any) -> str:
         lines.append(f"New skill: {promotion['status']}")
     if status == "rejected" and failed_gate_names:
         lines.append(f"Rejected gates: {', '.join(failed_gate_names)}")
+    if status == "rejected" and _has_missing_independent_regression(report):
+        lines.append(
+            "Regression required: the target has no usable baseline contract; "
+            "add one or more independent suites with --regression-benchmark <path>."
+        )
     if status == "rejected" and replay_failure_summary:
         lines.append(f"Replay failures: {replay_failure_summary}")
     if status == "rejected" and _has_no_candidate(report):
@@ -432,6 +477,20 @@ def render_optimize_summary(report: Any) -> str:
             "--from-run --rerun-evaluator cannot add missing replay repetitions."
         )
     return "\n".join(lines)
+
+
+def _has_missing_independent_regression(report: Any) -> bool:
+    gates = _read_report_value(report, "gate_results")
+    if not isinstance(gates, (list, tuple)):
+        return False
+    return any(
+        isinstance(gate, Mapping)
+        and gate.get("gate_name") == "global_regression_benchmark"
+        and isinstance(gate.get("details"), Mapping)
+        and gate["details"].get("code")
+        == "independent_regression_evidence_missing"
+        for gate in gates
+    )
 
 
 def run_optimize_cli(
@@ -475,6 +534,9 @@ def run_optimize_cli(
     semantic_evidence_approval: str | None = None,
     semantic_qualification_report: str | None = None,
     ingestion_only: bool = False,
+    regression_benchmarks: tuple[str, ...] = (),
+    challenger_enabled: bool = True,
+    challenger_max_cases: int = 2,
 ) -> Mapping[str, Any]:
     _validate_ingestion_cli_options(
         dataset=dataset,
@@ -555,6 +617,9 @@ def run_optimize_cli(
         "from_run": from_run,
         "rerun_evaluator": rerun_evaluator,
         "batch_config": batch_config,
+        "regression_benchmarks": tuple(regression_benchmarks),
+        "challenger_enabled": challenger_enabled,
+        "challenger_max_cases": challenger_max_cases,
         "iterations": iterations,
         "apply_policy": runtime_apply,
         "inferred_new_skill_policy": new_skill_policy,

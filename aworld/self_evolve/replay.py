@@ -160,6 +160,7 @@ class CandidateReplayRequest:
     workspace_seed_fingerprint: str | None = None
     task_input_fingerprint: str | None = None
     verified_candidate_package_fingerprint: str | None = None
+    artifact_namespace: str | None = None
     repetition_semantics: str = _PER_MEMBER_REPETITION_SEMANTICS
 
 
@@ -2394,14 +2395,17 @@ class AWorldCliCandidateReplayBackend:
                 "candidate replay execution requires explicit per-member "
                 "repetition semantics"
             )
-        replay_dir = (
+        replay_root = (
             Path(request.workspace_root)
             / ".aworld"
             / "self_evolve"
             / _safe_path(request.run_id)
-            / "replay"
-            / _safe_path(candidate.candidate_id)
         )
+        if request.artifact_namespace is not None:
+            replay_root = replay_root.joinpath(
+                *_safe_artifact_namespace(request.artifact_namespace)
+            )
+        replay_dir = replay_root / "replay" / _safe_path(candidate.candidate_id)
         replay_dir.mkdir(parents=True, exist_ok=True)
         _write_json(replay_dir / "request.json", request)
         replay_cases = tuple(
@@ -4015,6 +4019,7 @@ def build_replay_request(
     baseline_replay_dir: str | Path | None = None,
     replay_adaptation: ReplayAdaptationBundle | None = None,
     verified_candidate_package_fingerprint: str | None = None,
+    artifact_namespace: str | None = None,
 ) -> CandidateReplayRequest:
     if not dataset.cases:
         raise ValueError("candidate replay requires at least one eval case")
@@ -4063,6 +4068,7 @@ def build_replay_request(
         verified_candidate_package_fingerprint=(
             verified_candidate_package_fingerprint
         ),
+        artifact_namespace=artifact_namespace,
     )
 
 
@@ -7273,6 +7279,13 @@ def _safe_path(value: str) -> str:
         if character.isalnum() or character in {"-", "_", "."}
     ).strip(".")
     return safe or "default"
+
+
+def _safe_artifact_namespace(value: str) -> tuple[str, ...]:
+    parts = tuple(part for part in value.replace("\\", "/").split("/") if part)
+    if not parts or any(part in {".", ".."} or _safe_path(part) != part for part in parts):
+        raise ValueError(f"invalid replay artifact namespace: {value!r}")
+    return parts
 
 
 def _member_artifact_name(case_id: str) -> str:

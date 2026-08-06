@@ -66,6 +66,28 @@ def test_cleanup_removes_only_expired_raw_artifacts_and_preserves_durable_run_fi
         )
         _write_text(run_dir / "replay" / "cand-1" / "workspace" / "source.py")
         _write_json(
+            run_dir
+            / "regression"
+            / "suite-one"
+            / "replay"
+            / "cand-1"
+            / "execution_request.json",
+            {"run_id": run_dir.name},
+        )
+        _write_text(
+            run_dir
+            / "regression"
+            / "suite-one"
+            / "replay"
+            / "cand-1"
+            / "workspace"
+            / "source.py"
+        )
+        _write_json(
+            run_dir / "regression" / "evidence" / "cand-1.json",
+            {"candidate_id": "cand-1", "passed": True},
+        )
+        _write_json(
             run_dir / "replay_adaptation" / "dataset" / "capability" / "bundle.json",
             {"status": "compiled"},
         )
@@ -125,6 +147,15 @@ def test_cleanup_removes_only_expired_raw_artifacts_and_preserves_durable_run_fi
     assert cleanup["removed_run_count"] == 2
     assert (old_run / "replay" / "cand-1" / "result.json").exists()
     assert not (old_run / "replay" / "cand-1" / "workspace").exists()
+    assert not (
+        old_run
+        / "regression"
+        / "suite-one"
+        / "replay"
+        / "cand-1"
+        / "workspace"
+    ).exists()
+    assert (old_run / "regression" / "evidence" / "cand-1.json").exists()
     assert (
         old_run / "replay_adaptation" / "dataset" / "capability" / "bundle.json"
     ).exists()
@@ -161,6 +192,15 @@ def test_cleanup_removes_only_expired_raw_artifacts_and_preserves_durable_run_fi
 
     assert (recent_run / "replay" / "cand-1" / "result.json").exists()
     assert not (recent_run / "replay" / "cand-1" / "workspace").exists()
+    assert not (
+        recent_run
+        / "regression"
+        / "suite-one"
+        / "replay"
+        / "cand-1"
+        / "workspace"
+    ).exists()
+    assert (recent_run / "regression" / "evidence" / "cand-1.json").exists()
     assert (
         recent_run / "replay_adaptation" / "dataset" / "capability" / "bundle.json"
     ).exists()

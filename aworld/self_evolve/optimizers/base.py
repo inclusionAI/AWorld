@@ -144,6 +144,7 @@ class OptimizerRequest:
     max_candidates: int = 1
     replay_requirements: tuple[ReplayCapabilityRequirement, ...] = ()
     target_package_inventory: tuple[str, ...] = ()
+    handbook_slice: Mapping[str, object] | None = None
     evolution_context: EvolutionContext | None = None
     improvement_signal_set_fingerprint: str | None = None
 
@@ -162,6 +163,7 @@ class OptimizerRequest:
         max_candidates: int = 1,
         replay_requirements: tuple[ReplayCapabilityRequirement, ...] = (),
         target_package_inventory: tuple[str, ...] = (),
+        handbook_slice: Mapping[str, object] | None = None,
     ) -> "OptimizerRequest":
         trainable_ids = set(dataset.recipe.trainable_case_ids)
         return cls(
@@ -178,6 +180,7 @@ class OptimizerRequest:
             max_candidates=max_candidates,
             replay_requirements=tuple(replay_requirements),
             target_package_inventory=tuple(target_package_inventory),
+            handbook_slice=handbook_slice,
             improvement_signal_set_fingerprint=(
                 str(
                     dataset.recipe.source[

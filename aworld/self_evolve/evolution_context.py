@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Mapping, Sequence
 
 from aworld.self_evolve.candidate_protocol import (
@@ -38,6 +38,7 @@ from aworld.self_evolve.sanitization import (
     sanitize_source_text,
     sanitize_text,
 )
+from aworld.self_evolve.handbook import HandbookLocatorIntegrityError
 
 
 EVOLUTION_CONTEXT_SCHEMA_VERSION = "aworld.self_evolve.evolution_context.v1"
@@ -72,6 +73,7 @@ class EvolutionContext:
     population_strategies: tuple[str, ...]
     acceptance_constraints: tuple[str, ...]
     expected_output: Mapping[str, object]
+    handbook: Mapping[str, object] = field(default_factory=dict)
 
     def repair_focus_for_candidate(
         self,
@@ -164,6 +166,8 @@ class EvolutionContext:
             "acceptance_constraints": list(self.acceptance_constraints),
             "expected_output": dict(self.expected_output),
         }
+        if self.handbook:
+            payload["handbook"] = dict(self.handbook)
         if prompt_repair_focus is not None:
             payload["repair_context_mode"] = "focused_candidate_delta"
             payload["repair_focus"] = prompt_repair_focus
@@ -746,6 +750,13 @@ def _repair_feedback_priority(feedback: Mapping[str, object]) -> int:
 
 
 def compile_evolution_context(request: OptimizerRequest) -> EvolutionContext:
+    handbook = dict(request.handbook_slice or {})
+    if handbook and handbook.get("mutation_allowed") is not True:
+        frozen = handbook.get("frozen_locator_ids")
+        raise HandbookLocatorIntegrityError(
+            "self-evolve handbook contains frozen target locators: "
+            f"{frozen if isinstance(frozen, (list, tuple)) else 'unknown'}"
+        )
     current_feedback = _deduplicate_feedback(request.validation_feedback)
     prior_feedback = _deduplicate_feedback(request.prior_feedback)
     if any(
@@ -820,6 +831,7 @@ def compile_evolution_context(request: OptimizerRequest) -> EvolutionContext:
         expected_output=build_candidate_output_contract(
             exposed_improvement_signal_ids(request)
         ),
+        handbook=handbook,
     )
 
 

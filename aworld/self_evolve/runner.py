@@ -6,6 +6,7 @@ import inspect
 import json
 import re
 import shutil
+import time
 import uuid
 from dataclasses import asdict, dataclass, field, replace
 from decimal import Decimal
@@ -48,6 +49,7 @@ from aworld.self_evolve.evaluation import (
     determine_candidate_confidence,
     estimate_replay_cost,
     evaluate_baseline_and_candidate,
+    evaluation_request_identity,
     evaluate_variant_task,
 )
 from aworld.self_evolve.gates import (
@@ -72,6 +74,7 @@ from aworld.self_evolve.gates import (
     StoppingConditionGate,
     StoppingConditionState,
     TokenLimitGate,
+    TargetBehaviorDeltaGate,
     TrustProvenanceGate,
 )
 from aworld.self_evolve.lifecycle import (
@@ -138,10 +141,12 @@ from aworld.self_evolve.semantic_qualification import (
 )
 from aworld.self_evolve.lessons import LessonRecord, extract_lesson_records
 from aworld.self_evolve.candidate_package import (
+    CandidateMutationKind,
     candidate_content_semantic_fingerprint,
     candidate_package_fingerprint,
     candidate_package_reference_report,
     candidate_semantic_package_fingerprint,
+    classify_candidate_mutation,
 )
 from aworld.self_evolve.candidate_errors import (
     candidate_materialization_requirement_id,
@@ -164,6 +169,17 @@ from aworld.self_evolve.candidate_generation import (
     CandidateGenerationAgent,
     CandidateGenerationInfrastructureError,
 )
+from aworld.self_evolve.challenger import (
+    DEFAULT_CHALLENGE_CASES,
+    MAX_CHALLENGE_CASES,
+    ChallengeProposalBatch,
+    ChallengeReport,
+    ChallengerBackend,
+    ChallengerRequest,
+    DeterministicInvariantChallenger,
+    admit_challenge_proposals,
+)
+from aworld.self_evolve.handbook import load_handbook_slice_for_target
 from aworld.self_evolve.budget import (
     BudgetCeilings,
     BudgetDecision,
@@ -176,6 +192,7 @@ from aworld.self_evolve.budget import (
     CandidateAttemptStage,
     RepairFrontier,
     RunBudgetLedger,
+    SchedulerDecision,
     SchedulerState,
     StageAwareCandidateScheduler,
     ZeroBudgetUsageProofProvider,
@@ -242,6 +259,16 @@ from aworld.self_evolve.recovery_trace import (
     update_constraint_recovery_trace,
     validate_public_constraint_recovery_trace,
     validate_public_recovery_trace,
+)
+from aworld.self_evolve.regression import (
+    RegressionEvidence,
+    RegressionSuiteResult,
+    ResolvedRegressionSuite,
+    dataset_case_fingerprints,
+    evaluation_backend_identity,
+    regression_execution_id,
+    resolve_regression_suites,
+    resolve_target_contract_regression_suite,
 )
 from aworld.self_evolve.schema_diagnostics import SchemaFieldRepairConstraint
 from aworld.self_evolve.repair_conformance import (
@@ -885,20 +912,21 @@ def _judge_actual_token_usage(
     *summaries: EvaluationSummary | None,
     expected_summary_count: int | None = None,
 ) -> tuple[int | None, str]:
-    """Return actual judge tokens only for a complete set of executions."""
+    """Return complete usage or the strongest observed token lower bound."""
 
     total = 0
     sources: set[str] = set()
-    executed = tuple(
+    executed = _unique_evaluation_summaries(
         summary
         for summary in summaries
-        if summary is not None and summary.dataset_split != "single_case_replay"
+        if summary is not None
+        and summary.dataset_split != "single_case_replay"
+        and summary.metrics.get("evaluation_fresh_execution") is not False
     )
     expected = len(executed) if expected_summary_count is None else expected_summary_count
     if isinstance(expected, bool) or expected < 0:
         raise ValueError("expected_summary_count must be non-negative")
-    if len(executed) != expected:
-        return None, "reserved_fallback_incomplete_judge_telemetry"
+    complete = len(executed) == expected
     for summary in executed:
         metrics = summary.metrics
         raw_total = metrics.get("judge_total_tokens")
@@ -917,12 +945,51 @@ def _judge_actual_token_usage(
             total += int(raw_input) + int(raw_output)
             sources.add("judge_input_output_tokens")
             continue
-        # Estimated input is useful as a diagnostic lower bound, but it is not
-        # a complete actual because output usage is absent.
-        return None, "reserved_fallback_incomplete_judge_telemetry"
+        estimated_input = metrics.get("judge_estimated_input_tokens_total")
+        if (
+            isinstance(estimated_input, (int, float))
+            and not isinstance(estimated_input, bool)
+            and estimated_input >= 0
+        ):
+            total += int(estimated_input)
+            sources.add("judge_estimated_input_tokens_lower_bound")
+            complete = False
+            continue
+        complete = False
     if not executed:
         return None, "reserved_fallback_missing_judge_telemetry"
+    if not complete:
+        return (
+            total,
+            "known_lower_bound_incomplete_judge_telemetry:"
+            + ("+".join(sorted(sources)) or "missing_dimensions"),
+        )
     return total, "+".join(sorted(sources))
+
+
+def _unique_evaluation_summaries(
+    summaries: Iterable[EvaluationSummary],
+) -> tuple[EvaluationSummary, ...]:
+    unique: list[EvaluationSummary] = []
+    seen: set[str] = set()
+    for index, summary in enumerate(summaries):
+        metrics = summary.metrics
+        execution_id = (
+            metrics.get("evaluation_alias_of_execution_id")
+            or metrics.get("evaluation_execution_id")
+        )
+        if not isinstance(execution_id, str) or not execution_id:
+            if summary.dataset_split == "single_case_replay":
+                continue
+            execution_id = (
+                f"legacy:{index}:{summary.variant_id}:"
+                f"{summary.dataset_split}"
+            )
+        if execution_id in seen:
+            continue
+        seen.add(execution_id)
+        unique.append(summary)
+    return tuple(unique)
 
 
 def _budget_usage_for_attempt_event(
@@ -1008,6 +1075,8 @@ def _terminal_candidate_evaluation_result(
     candidate_count: int,
     gate_results: Iterable[GateResult],
     status: str = "rejected",
+    replay_result: CandidateReplayResult | None = None,
+    replay_dataset: SelfEvolveDataset | None = None,
 ) -> tuple[dict[str, object], dict[str, object], tuple[EvaluationSummary, ...]]:
     gates = tuple(gate_results)
     failed_gates = tuple(gate for gate in gates if not gate.passed)
@@ -1034,8 +1103,8 @@ def _terminal_candidate_evaluation_result(
         baseline_summary=None,
         candidate_summary=None,
         held_out_summary=None,
-        replay_result=None,
-        replay_dataset=None,
+        replay_result=replay_result,
+        replay_dataset=replay_dataset,
         gate_results=gates,
         feedback=feedback,
         status=status,
@@ -1164,17 +1233,39 @@ def _execution_usage_report(
 
     judge_attempt_count = 0
     judge_estimated_input_tokens = 0
+    judge_summaries: list[EvaluationSummary] = []
     for state in iteration_states:
-        for key in ("baseline_summary", "candidate_summary", "held_out_summary"):
-            summary = state.get(key)
-            if not isinstance(summary, EvaluationSummary):
-                continue
-            attempts = summary.metrics.get("judge_attempt_count")
-            if isinstance(attempts, int) and not isinstance(attempts, bool):
-                judge_attempt_count += max(0, attempts)
-            estimated = summary.metrics.get("judge_estimated_input_tokens_total")
-            if isinstance(estimated, (int, float)) and not isinstance(estimated, bool):
-                judge_estimated_input_tokens += max(0, int(estimated))
+        summaries = [
+            state.get(key)
+            for key in (
+                "baseline_summary",
+                "candidate_summary",
+                "held_out_summary",
+            )
+        ]
+        evidence = state.get("regression_evidence")
+        if isinstance(evidence, RegressionEvidence):
+            summaries.extend(
+                summary
+                for result in evidence.suite_results
+                for summary in (
+                    result.baseline_summary,
+                    result.candidate_summary,
+                )
+                if result.fresh_execution
+            )
+        judge_summaries.extend(
+            summary
+            for summary in summaries
+            if isinstance(summary, EvaluationSummary)
+        )
+    for summary in _unique_evaluation_summaries(judge_summaries):
+        attempts = summary.metrics.get("judge_attempt_count")
+        if isinstance(attempts, int) and not isinstance(attempts, bool):
+            judge_attempt_count += max(0, attempts)
+        estimated = summary.metrics.get("judge_estimated_input_tokens_total")
+        if isinstance(estimated, (int, float)) and not isinstance(estimated, bool):
+            judge_estimated_input_tokens += max(0, int(estimated))
 
     replay_stage = stages.get("replay", {})
     evaluation_stage = stages.get("evaluation", {})
@@ -1696,6 +1787,8 @@ _CANDIDATE_REPAIRABLE_GATE_STAGES = {
     "replay_confidence": FailureStage.TASK_ROLLOUT,
 }
 _FRAMEWORK_SHARED_GATE_STAGES = {
+    "challenger_admission": FailureStage.EVALUATION,
+    "handbook_locator_integrity": FailureStage.CANDIDATE_GENERATION,
     "evaluation_runtime_health": FailureStage.EVALUATION,
     "held_out_verification": FailureStage.EVALUATION,
     "judge_only_signal": FailureStage.EVALUATION,
@@ -1802,6 +1895,11 @@ class SelfEvolveRunner:
         optimizer: CandidateOptimizer,
         post_apply_evaluator: Callable[[CandidateVariant], Any] | None = None,
         evaluation_backend: EvaluationBackend | None = None,
+        regression_backend: EvaluationBackend | None = None,
+        regression_suites: tuple[ResolvedRegressionSuite, ...] = (),
+        challenger_backend: ChallengerBackend | None = None,
+        challenger_enabled: bool = True,
+        challenger_max_cases: int = DEFAULT_CHALLENGE_CASES,
         min_score_delta: float = 0.0,
         pending_duplicate: bool = False,
         max_iterations: int = 1,
@@ -1831,6 +1929,7 @@ class SelfEvolveRunner:
         inferred_new_skill_policy: InferredNewSkillPolicy | str = InferredNewSkillPolicy.AUTO_VERIFIED,
         replay_enabled: bool = False,
         candidate_replay_backend: CandidateReplayBackend | None = None,
+        regression_replay_backend: CandidateReplayBackend | None = None,
         replay_timeout_seconds: int = 600,
         replay_max_steps: int | None = 1,
         replay_candidate_limit: int = 2,
@@ -1851,6 +1950,20 @@ class SelfEvolveRunner:
         self.optimizer = optimizer
         self.post_apply_evaluator = post_apply_evaluator
         self.evaluation_backend = evaluation_backend
+        self.regression_backend = regression_backend or evaluation_backend
+        self.regression_suites = tuple(regression_suites)
+        self.challenger_enabled = challenger_enabled
+        self.challenger_backend = (
+            challenger_backend or DeterministicInvariantChallenger()
+        ) if challenger_enabled else None
+        if (
+            isinstance(challenger_max_cases, bool)
+            or not 0 < challenger_max_cases <= MAX_CHALLENGE_CASES
+        ):
+            raise ValueError(
+                f"challenger_max_cases must be between 1 and {MAX_CHALLENGE_CASES}"
+            )
+        self.challenger_max_cases = challenger_max_cases
         self.min_score_delta = min_score_delta
         self.pending_duplicate = pending_duplicate
         self.max_iterations = max_iterations
@@ -1999,6 +2112,14 @@ class SelfEvolveRunner:
                 cost_ceiling=self.max_run_cost_usd,
                 wall_ceiling=self.max_run_wall_seconds,
             ),
+            BudgetStage.CHALLENGER: _configured_budget_usage(
+                tokens=candidate_generation_tokens_per_unit,
+                cost_usd=candidate_generation_cost_usd_per_unit,
+                wall_seconds=candidate_generation_wall_seconds_per_unit,
+                token_ceiling=self.total_run_token_budget,
+                cost_ceiling=self.max_run_cost_usd,
+                wall_ceiling=self.max_run_wall_seconds,
+            ),
             BudgetStage.CONFORMANCE: _configured_budget_usage(
                 tokens=0,
                 cost_usd=Decimal("0"),
@@ -2016,6 +2137,14 @@ class SelfEvolveRunner:
                 wall_ceiling=self.max_run_wall_seconds,
             ),
             BudgetStage.PAIRED_REPLAY: _configured_budget_usage(
+                tokens=replay_tokens_per_unit,
+                cost_usd=replay_cost_usd_per_unit,
+                wall_seconds=replay_wall_seconds_per_unit,
+                token_ceiling=self.total_run_token_budget,
+                cost_ceiling=self.max_run_cost_usd,
+                wall_ceiling=self.max_run_wall_seconds,
+            ),
+            BudgetStage.REGRESSION_REPLAY: _configured_budget_usage(
                 tokens=replay_tokens_per_unit,
                 cost_usd=replay_cost_usd_per_unit,
                 wall_seconds=replay_wall_seconds_per_unit,
@@ -2049,6 +2178,11 @@ class SelfEvolveRunner:
         self._active_target_intent: TargetMutationIntent | None = None
         self.replay_enabled = replay_enabled
         self.candidate_replay_backend = candidate_replay_backend
+        self.regression_replay_backend = (
+            regression_replay_backend
+            if regression_replay_backend is not None
+            else candidate_replay_backend
+        )
         self.replay_timeout_seconds = replay_timeout_seconds
         self.replay_max_steps = replay_max_steps
         self.replay_candidate_limit = replay_candidate_limit
@@ -2086,6 +2220,8 @@ class SelfEvolveRunner:
         target_provenance: TargetProvenance | None = None,
         target_selection_decision: TargetSelectionDecision | None = None,
         campaign_prior_run_ids: tuple[str, ...] | None = None,
+        campaign_id: str | None = None,
+        campaign_cycle: int | None = None,
     ) -> SelfEvolveRunnerResult:
         failure_cleanup = _RunFailureCleanup()
         try:
@@ -2099,6 +2235,8 @@ class SelfEvolveRunner:
                 target_provenance=target_provenance,
                 target_selection_decision=target_selection_decision,
                 campaign_prior_run_ids=campaign_prior_run_ids,
+                campaign_id=campaign_id,
+                campaign_cycle=campaign_cycle,
                 failure_cleanup=failure_cleanup,
             )
         except BaseException:
@@ -2119,6 +2257,8 @@ class SelfEvolveRunner:
         target_provenance: TargetProvenance | None = None,
         target_selection_decision: TargetSelectionDecision | None = None,
         campaign_prior_run_ids: tuple[str, ...] | None = None,
+        campaign_id: str | None = None,
+        campaign_cycle: int | None = None,
         failure_cleanup: _RunFailureCleanup,
     ) -> SelfEvolveRunnerResult:
         self.execution_telemetry = SelfEvolveExecutionTelemetry()
@@ -2138,6 +2278,10 @@ class SelfEvolveRunner:
                         BudgetStage.CANDIDATE_GENERATION,
                     )
                 ),
+                BudgetStage.CHALLENGER: _backend_proves_zero_budget_usage(
+                    self.challenger_backend,
+                    BudgetStage.CHALLENGER,
+                ),
                 BudgetStage.SCREENING: _backend_proves_zero_budget_usage(
                     self.candidate_replay_backend,
                     BudgetStage.SCREENING,
@@ -2145,6 +2289,12 @@ class SelfEvolveRunner:
                 BudgetStage.PAIRED_REPLAY: _backend_proves_zero_budget_usage(
                     self.candidate_replay_backend,
                     BudgetStage.PAIRED_REPLAY,
+                ),
+                BudgetStage.REGRESSION_REPLAY: (
+                    _backend_proves_zero_budget_usage(
+                        self.regression_replay_backend,
+                        BudgetStage.REGRESSION_REPLAY,
+                    )
                 ),
                 BudgetStage.EVALUATION: _backend_proves_zero_budget_usage(
                     self.evaluation_backend,
@@ -2183,7 +2333,12 @@ class SelfEvolveRunner:
                 replay_candidate_limit=self.replay_candidate_limit,
             )
         )
-        scheduler_state = SchedulerState()
+        scheduler_state = _load_prior_scheduler_state(
+            self.store,
+            target.identity,
+            current_run_id=run_id,
+            allowed_run_ids=campaign_prior_run_ids,
+        )
         scheduler_decisions: list[dict[str, object]] = []
         if apply_policy not in {"proposal", "auto_verified", "verified_only"}:
             raise ValueError(f"unsupported apply policy: {apply_policy}")
@@ -2335,6 +2490,11 @@ class SelfEvolveRunner:
         attempt_tracker = _CandidateAttemptTracker(self.store, run_id)
         failure_cleanup.attempt_tracker = attempt_tracker
         self.store.write_dataset_recipe(run_id, dataset.recipe)
+        if self.regression_suites:
+            self.store.write_regression_suite_manifest(
+                run_id,
+                tuple(suite.spec for suite in self.regression_suites),
+            )
         if target_selection_report is not None:
             self.store.write_target_selection_report(run_id, target_selection_report)
         target_provenance_path: Path | None = None
@@ -2413,6 +2573,7 @@ class SelfEvolveRunner:
 
         selected_candidate: CandidateVariant | None = None
         validation_feedback: tuple[EvaluationSummary, ...] = ()
+        baseline_evaluation_cache: dict[str, EvaluationSummary] = {}
         all_candidates: list[CandidateVariant] = []
         candidate_source_dispositions: dict[str, CandidateSourceDisposition] = {}
         fresh_evaluation_required = False
@@ -2425,6 +2586,9 @@ class SelfEvolveRunner:
         baseline_summary: EvaluationSummary | None = None
         candidate_summary: EvaluationSummary | None = None
         held_out_summary: EvaluationSummary | None = None
+        regression_evidence: RegressionEvidence | None = None
+        challenge_report: ChallengeReport | None = None
+        latest_handbook_slice: Mapping[str, object] | None = None
         replay_result: CandidateReplayResult | None = None
         replay_dataset: SelfEvolveDataset | None = None
         gate_results: list[GateResult] = []
@@ -2512,7 +2676,8 @@ class SelfEvolveRunner:
                 if repair_family is None:
                     break
                 progress_repair_families.add(repair_family)
-            repair_frontiers = _typed_repair_frontiers(validation_feedback)
+            cumulative_feedback = (*prior_feedback, *validation_feedback)
+            repair_frontiers = _typed_repair_frontiers(cumulative_feedback)
             focused_available = budget_context.can_fit(
                 BudgetStage.CANDIDATE_GENERATION,
                 f"iteration-{iteration_index + 1}-focused",
@@ -2529,7 +2694,7 @@ class SelfEvolveRunner:
                 focused_budget_available=focused_available,
                 diverse_budget_available=diverse_available,
                 untyped_feedback_present=(
-                    bool(validation_feedback) and not repair_frontiers
+                    bool(cumulative_feedback) and not repair_frontiers
                 ),
             )
             scheduler_state = scheduler_decision.state
@@ -2579,6 +2744,85 @@ class SelfEvolveRunner:
                     },
                     trace_packs=trace_packs,
                 )
+            handbook_signals = [
+                lesson.lesson_type for lesson in iteration_lesson_records
+            ]
+            for summary in validation_feedback:
+                failed_gate_names = summary.metrics.get("failed_gates", ())
+                if isinstance(failed_gate_names, str):
+                    handbook_signals.append(failed_gate_names)
+                elif isinstance(failed_gate_names, (list, tuple)):
+                    handbook_signals.extend(
+                        item
+                        for item in failed_gate_names
+                        if isinstance(item, str)
+                    )
+            try:
+                handbook_slice = load_handbook_slice_for_target(
+                    self.store.workspace_root,
+                    target_path=target.identity.path,
+                    behavior_signals=tuple(handbook_signals),
+                )
+            except Exception as exc:
+                budget_context.release(
+                    generation_budget,
+                    reason_code="handbook_index_failed",
+                )
+                gate_results.append(
+                    GateResult(
+                        gate_name="handbook_locator_integrity",
+                        passed=False,
+                        reason="self-evolve handbook index could not be refreshed",
+                        details={
+                            "failure_class": "infrastructure",
+                            "failure_owner": FailureOwner.FRAMEWORK.value,
+                            "failure_scope": FailureScope.SHARED_RUN.value,
+                            "repairable": False,
+                            "code": "handbook_index_failed",
+                            "type": type(exc).__name__,
+                            "reason": sanitize_text(str(exc), max_chars=240),
+                        },
+                    )
+                )
+                break
+            if handbook_slice is not None:
+                handbook_payload = handbook_slice.to_prompt_dict()
+                latest_handbook_slice = handbook_payload
+                self.store.write_handbook_slice(
+                    run_id,
+                    iteration_index + 1,
+                    handbook_payload,
+                )
+                if not handbook_slice.mutation_allowed:
+                    budget_context.release(
+                        generation_budget,
+                        reason_code="handbook_locator_frozen",
+                    )
+                    gate_results.append(
+                        GateResult(
+                            gate_name="handbook_locator_integrity",
+                            passed=False,
+                            reason=(
+                                "self-evolve handbook froze unresolved target locators"
+                            ),
+                            details={
+                                "failure_class": "infrastructure",
+                                "failure_owner": FailureOwner.FRAMEWORK.value,
+                                "failure_scope": FailureScope.SHARED_RUN.value,
+                                "repairable": False,
+                                "code": "handbook_locator_frozen",
+                                "snapshot_fingerprint": (
+                                    handbook_slice.snapshot_fingerprint
+                                ),
+                                "frozen_locator_ids": list(
+                                    handbook_slice.frozen_locator_ids
+                                ),
+                            },
+                        )
+                    )
+                    break
+            else:
+                handbook_payload = None
             optimizer_request = OptimizerRequest.from_dataset(
                 target=target.identity,
                 current_content=target.load_current_content(),
@@ -2591,6 +2835,7 @@ class SelfEvolveRunner:
                 max_candidates=generation_slot_count,
                 replay_requirements=replay_preflight.requirements,
                 target_package_inventory=target_package_inventory,
+                handbook_slice=handbook_payload,
             )
             optimizer_request = replace(
                 optimizer_request,
@@ -2740,6 +2985,11 @@ class SelfEvolveRunner:
                         iteration_optimizer_diagnostics
                     ),
                 }
+            )
+            scheduler_state = _scheduler_state_with_mutation_families(
+                scheduler_state,
+                decision=scheduler_decision,
+                optimizer_diagnostics=optimizer_result.diagnostics,
             )
             generated = (
                 ()
@@ -3520,6 +3770,7 @@ class SelfEvolveRunner:
                         iteration_candidate.candidate_id,
                         CandidateSourceDisposition(),
                     ),
+                    baseline_evaluation_cache=baseline_evaluation_cache,
                 )
                 evaluated_attempt_key = attempt_key_by_candidate_id.get(
                     iteration_candidate.candidate_id
@@ -3588,7 +3839,6 @@ class SelfEvolveRunner:
                 or infrastructure_blocked
             ):
                 break
-
         attempt_tracker.finalize_open(
             reason_code="run_terminated_before_candidate"
         )
@@ -3598,6 +3848,8 @@ class SelfEvolveRunner:
             baseline_summary = selected_state["baseline_summary"]  # type: ignore[assignment]
             candidate_summary = selected_state["candidate_summary"]  # type: ignore[assignment]
             held_out_summary = selected_state["held_out_summary"]  # type: ignore[assignment]
+            regression_evidence = selected_state.get("regression_evidence")  # type: ignore[assignment]
+            challenge_report = selected_state.get("challenge_report")  # type: ignore[assignment]
             replay_result = selected_state["replay_result"]  # type: ignore[assignment]
             replay_dataset = selected_state["replay_dataset"]  # type: ignore[assignment]
             gate_results = list(selected_state["gate_results"])  # type: ignore[arg-type]
@@ -3909,6 +4161,44 @@ class SelfEvolveRunner:
                 ),
             },
             "budget": budget_context.to_dict(),
+            "regression_evidence": (
+                regression_evidence.to_dict()
+                if regression_evidence is not None
+                else None
+            ),
+            "challenge_report": (
+                challenge_report.to_dict()
+                if challenge_report is not None
+                else None
+            ),
+            "handbook_slice": latest_handbook_slice,
+            "repair_frontier_state": _repair_frontier_state_report(
+                store=self.store,
+                target=target.identity,
+                current_run_id=run_id,
+                allowed_run_ids=campaign_prior_run_ids,
+                observed_frontiers=_typed_repair_frontiers(validation_feedback),
+                scheduler_state=scheduler_state,
+                selected_candidate_id=(
+                    selected_candidate.candidate_id
+                    if selected_candidate is not None
+                    else None
+                ),
+                run_succeeded=final_status is SelfEvolveRunStatus.SUCCEEDED,
+                campaign_id=campaign_id,
+                campaign_cycle=campaign_cycle,
+            ),
+            "regression_suites": [
+                suite.spec.to_dict()
+                for suite in (
+                    *self.regression_suites,
+                    *(
+                        challenge_report.suites
+                        if challenge_report is not None
+                        else ()
+                    ),
+                )
+            ],
         }
         if candidate_source_dispositions:
             report["candidate_source_dispositions"] = {
@@ -5073,12 +5363,16 @@ class SelfEvolveRunner:
         budget_context: _RunBudgetContext | None = None,
         precomputed_gate_results: tuple[GateResult, ...] = (),
         source_disposition: CandidateSourceDisposition = CandidateSourceDisposition(),
+        baseline_evaluation_cache: dict[str, EvaluationSummary] | None = None,
     ) -> tuple[dict[str, object], dict[str, object], tuple[EvaluationSummary, ...]]:
         baseline_summary: EvaluationSummary | None = None
         candidate_summary: EvaluationSummary | None = None
         held_out_summary: EvaluationSummary | None = None
+        regression_evidence: RegressionEvidence | None = None
+        challenge_report: ChallengeReport | None = None
         replay_result: CandidateReplayResult | None = None
         replay_dataset: SelfEvolveDataset | None = None
+        score_tiebreak_budget_summaries: tuple[EvaluationSummary, ...] = ()
         gate_results: list[GateResult] = []
         fresh_evaluation_completed = False
 
@@ -5432,6 +5726,45 @@ class SelfEvolveRunner:
         if replay_confidence_gate is not None:
             gate_results.append(replay_confidence_gate)
 
+        target_behavior_gate = TargetBehaviorDeltaGate().evaluate(
+            current_content=target.load_current_content(),
+            candidate=candidate,
+        )
+        gate_results.append(target_behavior_gate)
+        if not target_behavior_gate.passed:
+            classification = classify_candidate_mutation(
+                candidate,
+                current_content=target.load_current_content(),
+            )
+            support_bootstrap_ready = bool(
+                classification.kind is CandidateMutationKind.EVALUATION_SUPPORT
+                and all(gate.passed for gate in gate_results[:-1])
+            )
+            if (
+                attempt_tracker is not None
+                and attempt_key is not None
+                and not attempt_tracker.terminal(attempt_key)
+            ):
+                attempt_tracker.emit(
+                    attempt_key,
+                    CandidateAttemptStage.REJECTED,
+                    reason_code=(
+                        "evaluation_support_bootstrap_ready"
+                        if support_bootstrap_ready
+                        else "target_behavior_delta_missing"
+                    ),
+                )
+            return _terminal_candidate_evaluation_result(
+                candidate=candidate,
+                iteration_number=iteration_number,
+                candidate_number=candidate_number,
+                candidate_count=candidate_count,
+                gate_results=gate_results,
+                status=("prerequisite" if support_bootstrap_ready else "rejected"),
+                replay_result=replay_result,
+                replay_dataset=replay_dataset,
+            )
+
         evaluation_dataset = replay_dataset or dataset
         replay_blocked_verified_apply = (
             _is_verified_apply_policy(apply_policy)
@@ -5448,16 +5781,51 @@ class SelfEvolveRunner:
             and not replay_blocked_verified_apply
             and budget_context is not None
         ):
-            evaluation_variants = 2
+            baseline_identity = evaluation_request_identity(
+                self.evaluation_backend,
+                EvaluationRequest(
+                    variant_id="baseline",
+                    candidate=None,
+                    dataset=evaluation_dataset,
+                    dataset_split="validation",
+                ),
+                baseline_target_fingerprint=candidate.target_fingerprint,
+            )
+            baseline_is_cached = bool(
+                baseline_evaluation_cache is not None
+                and baseline_identity.fingerprint in baseline_evaluation_cache
+            )
+            evaluation_variants = 1 if baseline_is_cached else 2
+            if _is_verified_apply_policy(apply_policy):
+                # Reserve one bounded paired tie-break. It is executed only when
+                # the initial score decision is inconclusive under judge noise.
+                evaluation_variants += 2
             if (
                 _is_verified_apply_policy(apply_policy)
                 and not _can_reuse_single_case_replay_validation(evaluation_dataset)
             ):
                 evaluation_variants += 1
-            expected_judge_summary_count = evaluation_variants
+            expected_judge_summary_count = (
+                (1 if baseline_is_cached else 2)
+            )
+            regression_evaluation_units = (
+                sum(
+                    max(1, len(suite.dataset.cases)) * 2
+                    for suite in self.regression_suites
+                )
+                if _is_verified_apply_policy(apply_policy)
+                else 0
+            )
+            if (
+                _is_verified_apply_policy(apply_policy)
+                and self.challenger_enabled
+                and self.regression_suites
+            ):
+                regression_evaluation_units += self.challenger_max_cases * 2
             evaluation_units = max(
                 1,
-                evaluation_case_count * evaluation_variants,
+                evaluation_case_count * evaluation_variants
+                + regression_evaluation_units,
             )
             evaluation_budget = budget_context.reserve(
                 BudgetStage.EVALUATION,
@@ -5556,6 +5924,7 @@ class SelfEvolveRunner:
                             item_count=2,
                         ),
                         execution_telemetry=self.execution_telemetry,
+                        baseline_cache=baseline_evaluation_cache,
                     )
                     if replay_result is not None:
                         baseline_summary = _summary_with_replay_evidence_metrics(
@@ -5575,16 +5944,126 @@ class SelfEvolveRunner:
                         fresh_evaluation_completed = False
                         gate_results.append(validation_health_gate)
                     else:
+                        score_gate = ScoreImprovementGate(
+                            min_delta=self.min_score_delta
+                        ).evaluate(
+                            baseline=baseline_summary,
+                            candidate=candidate_summary,
+                        )
+                        if (
+                            _is_verified_apply_policy(apply_policy)
+                            and not score_gate.passed
+                            and isinstance(score_gate.details, Mapping)
+                            and score_gate.details.get("tiebreak_eligible") is True
+                        ):
+                            _emit_progress(
+                                self.progress_callback,
+                                "evaluation",
+                                (
+                                    "Running bounded score tie-break for "
+                                    f"candidate {candidate_number}/{candidate_count}"
+                                ),
+                            )
+                            initial_score_gate = score_gate
+                            initial_baseline_summary = baseline_summary
+                            initial_candidate_summary = candidate_summary
+                            (
+                                tiebreak_baseline,
+                                tiebreak_candidate,
+                            ) = await evaluate_baseline_and_candidate(
+                                self.evaluation_backend,
+                                dataset=evaluation_dataset,
+                                candidate=candidate,
+                                dataset_split="validation",
+                                artifact_namespace=(
+                                    f"{run_id}-score-tiebreak-1-"
+                                    f"{candidate.candidate_id}"
+                                ),
+                                task_batch_executor=self.task_batch_executor,
+                                max_concurrency=self.concurrency_policy.effective_limit(
+                                    "evaluation",
+                                    item_count=2,
+                                ),
+                                execution_telemetry=self.execution_telemetry,
+                            )
+                            expected_judge_summary_count += 2
+                            if replay_result is not None:
+                                tiebreak_baseline = (
+                                    _summary_with_replay_evidence_metrics(
+                                        tiebreak_baseline,
+                                        replay_result.baseline,
+                                    )
+                                )
+                                tiebreak_candidate = (
+                                    _summary_with_replay_evidence_metrics(
+                                        tiebreak_candidate,
+                                        replay_result.candidate,
+                                    )
+                                )
+                            tiebreak_health = EvaluationRuntimeHealthGate().evaluate(
+                                (tiebreak_baseline, tiebreak_candidate)
+                            )
+                            if tiebreak_health.passed:
+                                score_gate = ScoreImprovementGate(
+                                    min_delta=self.min_score_delta
+                                ).evaluate(
+                                    baseline=tiebreak_baseline,
+                                    candidate=tiebreak_candidate,
+                                )
+                                score_gate = replace(
+                                    score_gate,
+                                    details={
+                                        **dict(score_gate.details or {}),
+                                        "tiebreak_round": 1,
+                                        "initial_decision": dict(
+                                            initial_score_gate.details or {}
+                                        ),
+                                        "initial_baseline_execution_id": (
+                                            initial_baseline_summary.metrics.get(
+                                                "evaluation_execution_id"
+                                            )
+                                        ),
+                                        "initial_candidate_execution_id": (
+                                            initial_candidate_summary.metrics.get(
+                                                "evaluation_execution_id"
+                                            )
+                                        ),
+                                    },
+                                )
+                                baseline_summary = tiebreak_baseline
+                                candidate_summary = tiebreak_candidate
+                                score_tiebreak_budget_summaries = (
+                                    initial_baseline_summary,
+                                    initial_candidate_summary,
+                                )
+                            else:
+                                score_tiebreak_budget_summaries = (
+                                    tiebreak_baseline,
+                                    tiebreak_candidate,
+                                )
+                                gate_results.append(
+                                    replace(
+                                        tiebreak_health,
+                                        gate_name="score_tiebreak_runtime_health",
+                                    )
+                                )
                         quality_gates: list[GateResult] = [
-                            ScoreImprovementGate(
-                                min_delta=self.min_score_delta
-                            ).evaluate(
-                                baseline=baseline_summary,
-                                candidate=candidate_summary,
-                            ),
+                            score_gate,
                             CostLatencyRegressionGate(
                                 max_cost_regression_ratio=0.25,
                                 max_latency_regression_ratio=0.5,
+                                require_resource_evidence=(
+                                    isinstance(
+                                        self.evaluation_backend,
+                                        AWorldTrajectoryEvaluatorBackend,
+                                    )
+                                    or getattr(
+                                        self.evaluation_backend,
+                                        "resource_accounting_required",
+                                        False,
+                                    )
+                                    is True
+                                ),
                             ).evaluate(
                                 baseline=baseline_summary,
                                 candidate=candidate_summary,
@@ -5612,6 +6091,19 @@ class SelfEvolveRunner:
                             held_out_summary = replace(
                                 candidate_summary,
                                 dataset_split="single_case_replay",
+                                metrics={
+                                    **dict(candidate_summary.metrics),
+                                    "evaluation_evidence_role": (
+                                        "held_out_alias"
+                                    ),
+                                    "evaluation_alias_of_execution_id": (
+                                        candidate_summary.metrics.get(
+                                            "evaluation_execution_id"
+                                        )
+                                    ),
+                                    "evaluation_fresh_execution": False,
+                                    "evaluation_reused": True,
+                                },
                             )
                         else:
                             held_out_summary = await evaluate_variant_task(
@@ -5649,29 +6141,46 @@ class SelfEvolveRunner:
                             )
                             evidence_quality_gates = [
                                 gate
-                                for gate in (
-                                    _evidence_quality_gate(candidate_summary),
-                                    _evidence_quality_gate(held_out_summary),
+                                for summary in _unique_evaluation_summaries(
+                                    (candidate_summary, held_out_summary)
                                 )
+                                for gate in (_evidence_quality_gate(summary),)
                                 if gate is not None
                             ]
-                            gate_results.extend(
-                                [
-                                    *quality_gates,
-                                    *evidence_quality_gates,
-                                    RequiredVerificationGate().evaluate(
-                                        held_out_summary
-                                    ),
-                                    HeldOutVerificationGate(
-                                        min_eval_cases=self.min_eval_cases
-                                    ).evaluate(confidence),
-                                    JudgeOnlySignalGate().evaluate(confidence),
+                            pre_regression_gates = [
+                                *quality_gates,
+                                *evidence_quality_gates,
+                                RequiredVerificationGate().evaluate(
+                                    held_out_summary
+                                ),
+                                HeldOutVerificationGate(
+                                    min_eval_cases=self.min_eval_cases
+                                ).evaluate(confidence),
+                                JudgeOnlySignalGate().evaluate(confidence),
+                            ]
+                            gate_results.extend(pre_regression_gates)
+                            if all(gate.passed for gate in pre_regression_gates):
+                                (
+                                    regression_evidence,
+                                    challenge_report,
+                                    challenger_gate,
+                                ) = (
+                                    await self._evaluate_independent_regression(
+                                        run_id=run_id,
+                                        target=target,
+                                        selection_dataset=dataset,
+                                        candidate=candidate,
+                                        apply_policy=apply_policy,
+                                        budget_context=budget_context,
+                                    )
+                                )
+                                gate_results.append(challenger_gate)
+                                gate_results.append(
                                     GlobalRegressionBenchmarkGate().evaluate(
                                         candidate,
-                                        held_out_summary,
-                                    ),
-                                ]
-                            )
+                                        regression_evidence,
+                                    )
+                                )
                     elif validation_health_gate.passed:
                         fresh_evaluation_completed = True
                         gate_results.extend(
@@ -5709,17 +6218,52 @@ class SelfEvolveRunner:
                             actual_source=evaluation_usage.source,
                         )
                     if judge_budget is not None:
+                        regression_judge_summaries = tuple(
+                            summary
+                            for result in (
+                                regression_evidence.suite_results
+                                if regression_evidence is not None
+                                else ()
+                            )
+                            for summary in (
+                                result.baseline_summary,
+                                result.candidate_summary,
+                            )
+                            if result.fresh_execution
+                        )
                         judge_tokens, judge_source = _judge_actual_token_usage(
                             baseline_summary,
                             candidate_summary,
                             held_out_summary,
-                            expected_summary_count=expected_judge_summary_count,
+                            *score_tiebreak_budget_summaries,
+                            *regression_judge_summaries,
+                            expected_summary_count=(
+                                expected_judge_summary_count
+                                + len(regression_judge_summaries)
+                            ),
                         )
-                        budget_context.debit(
-                            judge_budget,
-                            tokens=judge_tokens,
-                            actual_source=judge_source,
-                        )
+                        if (
+                            judge_tokens is not None
+                            and judge_source.startswith("known_lower_bound_")
+                        ):
+                            budget_context.debit(
+                                judge_budget,
+                                usage_observation=BudgetUsageObservation(
+                                    known_lower_bound=BudgetUsage(
+                                        tokens=judge_tokens,
+                                    ),
+                                    completeness=(
+                                        BudgetUsageCompleteness.incomplete()
+                                    ),
+                                ),
+                                actual_source=judge_source,
+                            )
+                        else:
+                            budget_context.debit(
+                                judge_budget,
+                                tokens=judge_tokens,
+                                actual_source=judge_source,
+                            )
         elif (
             _is_verified_apply_policy(apply_policy)
             or source_disposition.requires_fresh_evaluation
@@ -5858,6 +6402,8 @@ class SelfEvolveRunner:
             candidate_summary=candidate_summary,
             held_out_summary=held_out_summary,
             failed_gates=failed_gates,
+            regression_evidence=regression_evidence,
+            challenge_report=challenge_report,
         )
         feedback = _iteration_validation_feedback(
             candidate=candidate,
@@ -5876,6 +6422,8 @@ class SelfEvolveRunner:
             gate_results=gate_results,
             feedback=feedback,
             status=status,
+            regression_evidence=regression_evidence,
+            challenge_report=challenge_report,
         )
         return state, report_item, feedback
 
@@ -6442,13 +6990,20 @@ class SelfEvolveRunner:
         timeout_seconds: int | None = None,
         lifecycle_callback: Callable[[str, Mapping[str, object]], None] | None = None,
         source_disposition: CandidateSourceDisposition = CandidateSourceDisposition(),
+        artifact_namespace: str | None = None,
+        replay_backend: CandidateReplayBackend | None = None,
     ) -> tuple[CandidateReplayResult | None, SelfEvolveDataset | None, GateResult | None]:
         if not self.replay_enabled or selected_candidate.target.target_type != "skill":
             return None, None, None
         candidate_requires_intervention_exposure = (
             _candidate_requires_task_plane_intervention(selected_candidate)
         )
-        if self.candidate_replay_backend is None:
+        effective_replay_backend = (
+            replay_backend
+            if replay_backend is not None
+            else self.candidate_replay_backend
+        )
+        if effective_replay_backend is None:
             if not _is_verified_apply_policy(apply_policy):
                 return None, None, None
             return (
@@ -6461,14 +7016,14 @@ class SelfEvolveRunner:
                 ),
             )
         if isinstance(
-            self.candidate_replay_backend,
+            effective_replay_backend,
             CandidateReplayEvidenceReuseBackend,
         ):
             disposition = (
-                self.candidate_replay_backend.replay_evidence_reuse_disposition()
+                effective_replay_backend.replay_evidence_reuse_disposition()
             )
             replay_result = (
-                await self.candidate_replay_backend.reuse_replay_evidence(
+                await effective_replay_backend.reuse_replay_evidence(
                     candidate=selected_candidate,
                     dataset=dataset,
                 )
@@ -6672,6 +7227,7 @@ class SelfEvolveRunner:
                 verified_candidate_package_fingerprint=(
                     overlay.candidate_skill_package_fingerprint
                 ),
+                artifact_namespace=artifact_namespace,
             )
         except ValueError as exc:
             return (
@@ -6684,7 +7240,7 @@ class SelfEvolveRunner:
                 ),
             )
         replay_history = getattr(
-            self.candidate_replay_backend,
+            effective_replay_backend,
             "replay_batch_observability",
             None,
         )
@@ -6705,7 +7261,7 @@ class SelfEvolveRunner:
                         "candidate_repetitions": effective_candidate_repetitions,
                     },
                 )
-            replay_result = await self.candidate_replay_backend.replay_candidate(
+            replay_result = await effective_replay_backend.replay_candidate(
                 request,
                 candidate=selected_candidate,
                 dataset=dataset,
@@ -6787,6 +7343,473 @@ class SelfEvolveRunner:
                 ),
             ),
         )
+
+    async def _evaluate_independent_regression(
+        self,
+        *,
+        run_id: str,
+        target: SelfEvolveTarget,
+        selection_dataset: SelfEvolveDataset,
+        candidate: CandidateVariant,
+        apply_policy: str,
+        budget_context: _RunBudgetContext | None,
+    ) -> tuple[RegressionEvidence | None, ChallengeReport | None, GateResult]:
+        challenge_report, challenge_gate = await self._prepare_challenge_suites(
+            run_id=run_id,
+            target=target,
+            candidate=candidate,
+            budget_context=budget_context,
+        )
+        if not challenge_gate.passed:
+            return None, challenge_report, challenge_gate
+        if not self.regression_suites or self.regression_backend is None:
+            return None, challenge_report, challenge_gate
+
+        challenge_suites = (
+            challenge_report.suites if challenge_report is not None else ()
+        )
+        regression_suites = (*self.regression_suites, *challenge_suites)
+        if challenge_suites:
+            self.store.write_regression_suite_manifest(
+                run_id,
+                tuple(suite.spec for suite in regression_suites),
+            )
+
+        suite_results: list[RegressionSuiteResult] = []
+        for suite in regression_suites:
+            started_at = time.monotonic()
+            execution_id = regression_execution_id(suite.spec.suite_id)
+            _emit_progress(
+                self.progress_callback,
+                "regression",
+                f"Running independent regression suite {suite.spec.suite_id}",
+            )
+            regression_dataset = suite.dataset
+            suite_gates: list[GateResult] = []
+            fresh_execution = False
+            baseline_summary: EvaluationSummary | None = None
+            candidate_summary: EvaluationSummary | None = None
+            replay_budget: BudgetDecision | None = None
+            replay_started = False
+            try:
+                if (
+                    self.replay_enabled
+                    and candidate.target.target_type == "skill"
+                ):
+                    if isinstance(
+                        self.regression_replay_backend,
+                        CandidateReplayEvidenceReuseBackend,
+                    ):
+                        raise RuntimeError(
+                            "stored selection replay evidence cannot approve an "
+                            "independent regression suite"
+                        )
+                    if budget_context is not None:
+                        replay_units = max(1, len(suite.dataset.cases)) * (
+                            self.baseline_replay_repetitions
+                            + self.candidate_replay_repetitions
+                        )
+                        replay_budget = budget_context.reserve(
+                            BudgetStage.REGRESSION_REPLAY,
+                            (
+                                f"{candidate.candidate_id}-regression-"
+                                f"{suite.spec.suite_id}"
+                            ),
+                            units=replay_units,
+                        )
+                        if not replay_budget.allowed:
+                            suite_gates.append(
+                                GateResult(
+                                    gate_name="run_budget_regression_replay",
+                                    passed=False,
+                                    reason=(
+                                        "independent regression replay was not run "
+                                        "because budget was denied"
+                                    ),
+                                    details={
+                                        "failure_class": "budget",
+                                        "failure_owner": FailureOwner.FRAMEWORK.value,
+                                        "repairable": False,
+                                        "code": "regression_replay_budget_denied",
+                                        "suite_id": suite.spec.suite_id,
+                                        "budget_decision": replay_budget.to_dict(),
+                                    },
+                                )
+                            )
+                            raise RuntimeError("regression replay budget denied")
+                    replay_telemetry_before = _stage_telemetry_usage_snapshot(
+                        self.execution_telemetry,
+                        "replay",
+                    )
+
+                    def regression_replay_lifecycle(
+                        stage: str,
+                        _payload: Mapping[str, object],
+                    ) -> None:
+                        nonlocal replay_started
+                        if stage == "replay_started":
+                            replay_started = True
+
+                    _, paired_dataset, replay_gate = (
+                        await self._replay_selected_candidate(
+                            run_id=run_id,
+                            target=target,
+                            dataset=suite.dataset,
+                            selected_candidate=candidate,
+                            apply_policy=apply_policy,
+                            baseline_replay_dir=None,
+                            progress_stage="regression_replay",
+                            artifact_namespace=(
+                                f"regression/{suite.spec.suite_id}"
+                            ),
+                            lifecycle_callback=regression_replay_lifecycle,
+                            replay_backend=self.regression_replay_backend,
+                        )
+                    )
+                    if replay_budget is not None:
+                        if replay_started:
+                            replay_telemetry_after = (
+                                _stage_telemetry_usage_snapshot(
+                                    self.execution_telemetry,
+                                    "replay",
+                                )
+                            )
+                            replay_usage = _stage_telemetry_usage_delta(
+                                replay_telemetry_before,
+                                replay_telemetry_after,
+                            )
+                            budget_context.debit(
+                                replay_budget,
+                                usage_observation=replay_usage.observation,
+                                actual_source=replay_usage.source,
+                            )
+                        else:
+                            budget_context.release(
+                                replay_budget,
+                                reason_code="regression_replay_not_started",
+                            )
+                        replay_budget = None
+                    if replay_gate is not None:
+                        suite_gates.append(replay_gate)
+                    if paired_dataset is None or (
+                        replay_gate is not None and not replay_gate.passed
+                    ):
+                        raise RuntimeError(
+                            "regression paired replay did not produce comparable evidence"
+                        )
+                    regression_dataset = paired_dataset
+
+                baseline_summary, candidate_summary = (
+                    await evaluate_baseline_and_candidate(
+                        self.regression_backend,
+                        dataset=regression_dataset,
+                        candidate=candidate,
+                        dataset_split="regression",
+                        artifact_namespace=(
+                            f"{run_id}-regression-{suite.spec.suite_id}"
+                        ),
+                        task_batch_executor=self.task_batch_executor,
+                        max_concurrency=self.concurrency_policy.effective_limit(
+                            "evaluation",
+                            item_count=2,
+                        ),
+                        execution_telemetry=self.execution_telemetry,
+                    )
+                )
+                fresh_execution = True
+                suite_gates.extend(
+                    [
+                        EvaluationRuntimeHealthGate().evaluate(
+                            (baseline_summary, candidate_summary)
+                        ),
+                        ScoreImprovementGate(min_delta=0.0).evaluate(
+                            baseline=baseline_summary,
+                            candidate=candidate_summary,
+                        ),
+                        CostLatencyRegressionGate(
+                            max_cost_regression_ratio=0.25,
+                            max_latency_regression_ratio=0.5,
+                        ).evaluate(
+                            baseline=baseline_summary,
+                            candidate=candidate_summary,
+                        ),
+                    ]
+                )
+            except Exception as exc:
+                if replay_budget is not None and replay_budget.allowed:
+                    if replay_started:
+                        replay_telemetry_after = (
+                            _stage_telemetry_usage_snapshot(
+                                self.execution_telemetry,
+                                "replay",
+                            )
+                        )
+                        replay_usage = _stage_telemetry_usage_delta(
+                            replay_telemetry_before,
+                            replay_telemetry_after,
+                        )
+                        budget_context.debit(
+                            replay_budget,
+                            usage_observation=replay_usage.observation,
+                            actual_source=replay_usage.source,
+                        )
+                    else:
+                        budget_context.release(
+                            replay_budget,
+                            reason_code="regression_replay_failed_before_start",
+                        )
+                    replay_budget = None
+                if not any(
+                    gate.gate_name == "run_budget_regression_replay"
+                    for gate in suite_gates
+                ):
+                    suite_gates.append(
+                        GateResult(
+                            gate_name="independent_regression_execution",
+                            passed=False,
+                            reason="independent regression suite execution failed",
+                            details={
+                                "failure_class": "infrastructure",
+                                "failure_owner": FailureOwner.FRAMEWORK.value,
+                                "repairable": False,
+                                "code": "independent_regression_execution_failed",
+                                "suite_id": suite.spec.suite_id,
+                                "type": type(exc).__name__,
+                                "reason": sanitize_text(str(exc), max_chars=240),
+                            },
+                        )
+                    )
+            if baseline_summary is None:
+                baseline_summary = EvaluationSummary(
+                    variant_id="baseline",
+                    dataset_split="regression",
+                    metrics={"regression_execution_available": False},
+                )
+            if candidate_summary is None:
+                candidate_summary = EvaluationSummary(
+                    variant_id=candidate.candidate_id,
+                    dataset_split="regression",
+                    metrics={"regression_execution_available": False},
+                )
+            suite_results.append(
+                RegressionSuiteResult(
+                    spec=suite.spec,
+                    baseline_summary=baseline_summary,
+                    candidate_summary=candidate_summary,
+                    gate_results=tuple(suite_gates),
+                    execution_id=execution_id,
+                    duration_ms=max(
+                        0,
+                        int((time.monotonic() - started_at) * 1000),
+                    ),
+                    fresh_execution=fresh_execution,
+                )
+            )
+
+        evidence = RegressionEvidence(
+            candidate_id=candidate.candidate_id,
+            selection_dataset_fingerprint=replay_dataset_fingerprint(
+                selection_dataset
+            ),
+            selection_case_fingerprints=dataset_case_fingerprints(
+                selection_dataset
+            ),
+            selection_backend_id=evaluation_backend_identity(
+                self.evaluation_backend
+            ),
+            regression_backend_id=evaluation_backend_identity(
+                self.regression_backend
+            ),
+            suite_results=tuple(suite_results),
+        )
+        self.store.write_regression_evidence(run_id, evidence)
+        return evidence, challenge_report, challenge_gate
+
+    async def _prepare_challenge_suites(
+        self,
+        *,
+        run_id: str,
+        target: SelfEvolveTarget,
+        candidate: CandidateVariant,
+        budget_context: _RunBudgetContext | None,
+    ) -> tuple[ChallengeReport | None, GateResult]:
+        if not self.challenger_enabled:
+            return None, GateResult(
+                gate_name="challenger_admission",
+                passed=True,
+                reason="challenger plane is disabled by explicit configuration",
+                details={
+                    "enabled": False,
+                    "approval_authority": False,
+                    "admitted_count": 0,
+                },
+            )
+        if not self.regression_suites:
+            return None, GateResult(
+                gate_name="challenger_admission",
+                passed=False,
+                reason="challenger requires independent regression source suites",
+                details={
+                    "enabled": True,
+                    "approval_authority": False,
+                    "failure_class": "infrastructure",
+                    "failure_owner": FailureOwner.FRAMEWORK.value,
+                    "failure_scope": FailureScope.SHARED_RUN.value,
+                    "repairable": False,
+                    "code": "challenger_source_suites_missing",
+                },
+            )
+        if self.challenger_backend is None:
+            return None, GateResult(
+                gate_name="challenger_admission",
+                passed=False,
+                reason="challenger backend is unavailable",
+                details={
+                    "enabled": True,
+                    "approval_authority": False,
+                    "failure_class": "infrastructure",
+                    "failure_owner": FailureOwner.FRAMEWORK.value,
+                    "failure_scope": FailureScope.SHARED_RUN.value,
+                    "repairable": False,
+                    "code": "challenger_backend_missing",
+                },
+            )
+
+        challenge_budget: BudgetDecision | None = None
+        if (
+            budget_context is not None
+            and not _backend_proves_zero_budget_usage(
+                self.challenger_backend,
+                BudgetStage.CHALLENGER,
+            )
+        ):
+            challenge_budget = budget_context.reserve(
+                BudgetStage.CHALLENGER,
+                f"{candidate.candidate_id}-challenger",
+            )
+            if not challenge_budget.allowed:
+                diagnostic = {
+                    "schema_version": "aworld.self_evolve.challenger_failure.v1",
+                    "candidate_id": candidate.candidate_id,
+                    "status": "failed",
+                    "approval_authority": False,
+                    "code": "challenger_budget_denied",
+                    "budget_decision": challenge_budget.to_dict(),
+                }
+                self.store.write_challenge_report(
+                    run_id,
+                    candidate.candidate_id,
+                    diagnostic,
+                )
+                return None, GateResult(
+                    gate_name="challenger_admission",
+                    passed=False,
+                    reason="challenger proposal generation budget was denied",
+                    details={
+                        "enabled": True,
+                        "approval_authority": False,
+                        "failure_class": "budget",
+                        "failure_owner": FailureOwner.FRAMEWORK.value,
+                        "failure_scope": FailureScope.SHARED_RUN.value,
+                        "repairable": False,
+                        **diagnostic,
+                    },
+                )
+        try:
+            request = ChallengerRequest(
+                candidate=candidate,
+                current_content=target.load_current_content(),
+                regression_suites=self.regression_suites,
+                max_cases=self.challenger_max_cases,
+            )
+            batch = await self.challenger_backend.propose(request)
+            if not isinstance(batch, ChallengeProposalBatch):
+                raise TypeError(
+                    "challenger backend must return ChallengeProposalBatch"
+                )
+            report = admit_challenge_proposals(
+                batch,
+                candidate=candidate,
+                current_content=request.current_content,
+                regression_suites=self.regression_suites,
+            )
+            self.store.write_challenge_report(
+                run_id,
+                candidate.candidate_id,
+                report,
+            )
+            rejected = [
+                admission
+                for admission in report.admissions
+                if not admission.admitted
+            ]
+            return report, GateResult(
+                gate_name="challenger_admission",
+                passed=not rejected,
+                reason=(
+                    "challenger proposals were admitted as independent tests"
+                    if report.admitted_count
+                    else "challenger found no applicable independent probe"
+                    if not rejected
+                    else "challenger proposals failed deterministic admission"
+                ),
+                details={
+                    "enabled": True,
+                    "approval_authority": False,
+                    "challenger_id": report.batch.challenger_id,
+                    "batch_fingerprint": report.batch.fingerprint,
+                    "proposal_count": len(report.admissions),
+                    "admitted_count": report.admitted_count,
+                    "rejected_count": len(rejected),
+                    "rejection_codes": [item.reason_code for item in rejected],
+                    **(
+                        {}
+                        if not rejected
+                        else {
+                            "failure_class": "infrastructure",
+                            "failure_owner": FailureOwner.FRAMEWORK.value,
+                            "failure_scope": FailureScope.SHARED_RUN.value,
+                            "repairable": False,
+                            "code": "challenger_admission_failed",
+                        }
+                    ),
+                },
+            )
+        except Exception as exc:
+            diagnostic = {
+                "schema_version": "aworld.self_evolve.challenger_failure.v1",
+                "candidate_id": candidate.candidate_id,
+                "status": "failed",
+                "approval_authority": False,
+                "code": "challenger_generation_failed",
+                "type": type(exc).__name__,
+                "reason": sanitize_text(str(exc), max_chars=240),
+            }
+            self.store.write_challenge_report(
+                run_id,
+                candidate.candidate_id,
+                diagnostic,
+            )
+            return None, GateResult(
+                gate_name="challenger_admission",
+                passed=False,
+                reason="challenger proposal generation failed",
+                details={
+                    "enabled": True,
+                    "approval_authority": False,
+                    "failure_class": "infrastructure",
+                    "failure_owner": FailureOwner.FRAMEWORK.value,
+                    "failure_scope": FailureScope.SHARED_RUN.value,
+                    "repairable": False,
+                    **diagnostic,
+                },
+            )
+        finally:
+            if challenge_budget is not None and challenge_budget.allowed:
+                budget_context.debit(
+                    challenge_budget,
+                    actual_source="reserved_fallback_challenger_generation",
+                )
 
     async def _apply_auto_verified(
         self,
@@ -8276,6 +9299,11 @@ def optimize_from_cli_request(
     infer_target: bool = False,
     inferred_new_skill_policy: InferredNewSkillPolicy | str = InferredNewSkillPolicy.AUTO_VERIFIED,
     evaluation_backend: EvaluationBackend | None = None,
+    regression_backend: EvaluationBackend | None = None,
+    regression_benchmarks: Iterable[str] = (),
+    challenger_backend: ChallengerBackend | None = None,
+    challenger_enabled: bool = True,
+    challenger_max_cases: int = DEFAULT_CHALLENGE_CASES,
     post_apply_evaluator: Callable[[CandidateVariant], Any] | None = None,
     min_eval_cases: int = 30,
     judge_repetitions: int = 3,
@@ -8306,6 +9334,7 @@ def optimize_from_cli_request(
     mutation_model_config: ModelConfig | None = None,
     replay_enabled: bool = False,
     candidate_replay_backend: CandidateReplayBackend | None = None,
+    regression_replay_backend: CandidateReplayBackend | None = None,
     replay_timeout_seconds: int = 600,
     replay_max_steps: int | None = 1,
     replay_candidate_limit: int = 2,
@@ -8350,6 +9379,11 @@ def optimize_from_cli_request(
             apply_policy=apply_policy,
             inferred_new_skill_policy=typed_new_skill_policy,
             evaluation_backend=evaluation_backend,
+            regression_backend=regression_backend,
+            regression_benchmarks=regression_benchmarks,
+            challenger_backend=challenger_backend,
+            challenger_enabled=challenger_enabled,
+            challenger_max_cases=challenger_max_cases,
             post_apply_evaluator=post_apply_evaluator,
             min_eval_cases=min_eval_cases,
             judge_repetitions=judge_repetitions,
@@ -8366,6 +9400,7 @@ def optimize_from_cli_request(
             baseline_replay_repetitions=baseline_replay_repetitions,
             candidate_replay_repetitions=candidate_replay_repetitions,
             replay_stability_margin=replay_stability_margin,
+            regression_replay_backend=regression_replay_backend,
             runtime_registry_refresher=runtime_registry_refresher,
             runtime_skill_activator=runtime_skill_activator,
             progress_callback=progress_callback,
@@ -8958,6 +9993,24 @@ def optimize_from_cli_request(
             current_run_id=run_id,
         )
 
+    resolved_regression_suites = resolve_regression_suites(
+        regression_benchmarks,
+        selection_dataset=built_dataset,
+        base_dir=workspace_root,
+    )
+    if (
+        not resolved_regression_suites
+        and _is_verified_apply_policy(apply_policy)
+    ):
+        resolved_regression_suites = resolve_target_contract_regression_suite(
+            target_type=target_adapter.identity.target_type,
+            target_id=target_adapter.identity.target_id,
+            target_path=target_adapter.identity.path,
+            current_content=target_adapter.load_current_content(),
+            target_fingerprint=target_adapter.fingerprint_current_content(),
+            selection_dataset=built_dataset,
+        )
+
     async def _cli_default_mutation(prompt: str) -> Mapping[str, Any]:
         current_content = target_adapter.load_current_content()
         candidate_content = _default_cli_skill_candidate(
@@ -9044,6 +10097,11 @@ def optimize_from_cli_request(
             concurrency_policy=effective_concurrency_policy,
         ),
         evaluation_backend=evaluation_backend,
+        regression_backend=regression_backend,
+        regression_suites=resolved_regression_suites,
+        challenger_backend=challenger_backend,
+        challenger_enabled=challenger_enabled,
+        challenger_max_cases=challenger_max_cases,
         post_apply_evaluator=post_apply_evaluator,
         min_score_delta=min_score_delta,
         max_iterations=effective_iteration_budget,
@@ -9085,6 +10143,7 @@ def optimize_from_cli_request(
         inferred_new_skill_policy=typed_new_skill_policy,
         replay_enabled=replay_enabled,
         candidate_replay_backend=candidate_replay_backend,
+        regression_replay_backend=regression_replay_backend,
         replay_timeout_seconds=replay_timeout_seconds,
         replay_max_steps=replay_max_steps,
         replay_candidate_limit=replay_candidate_limit,
@@ -9125,6 +10184,8 @@ def optimize_from_cli_request(
                 "target_provenance": target_provenance,
                 "target_selection_decision": target_selection_decision,
                 "campaign_prior_run_ids": tuple(campaign_prior_run_ids or ()),
+                "campaign_id": campaign_id,
+                "campaign_cycle": campaign_cycle,
             },
         ),
         task_id=f"{run_id}-self-evolve",
@@ -9182,6 +10243,17 @@ def optimize_from_cli_request(
             "status": target_selection_report.provenance_status or "unresolved",
             "reason": target_selection_report.provenance_reason,
         }
+    if selected_candidate_id is not None:
+        regression_evidence_path = (
+            run_path
+            / "regression"
+            / "evidence"
+            / f"{selected_candidate_id}.json"
+        )
+        if regression_evidence_path.is_file():
+            summary["regression_evidence_path"] = str(
+                regression_evidence_path
+            )
     if report_path.exists():
         try:
             report_payload = _load_json_mapping(report_path)
@@ -9737,6 +10809,11 @@ def _rerun_evaluator_from_stored_run(
     apply_policy: str,
     inferred_new_skill_policy: InferredNewSkillPolicy,
     evaluation_backend: EvaluationBackend | None,
+    regression_backend: EvaluationBackend | None,
+    regression_benchmarks: Iterable[str],
+    challenger_backend: ChallengerBackend | None,
+    challenger_enabled: bool,
+    challenger_max_cases: int,
     post_apply_evaluator: Callable[[CandidateVariant], Any] | None,
     min_eval_cases: int,
     judge_repetitions: int,
@@ -9753,6 +10830,7 @@ def _rerun_evaluator_from_stored_run(
     baseline_replay_repetitions: int,
     candidate_replay_repetitions: int,
     replay_stability_margin: float,
+    regression_replay_backend: CandidateReplayBackend | None,
     runtime_registry_refresher: Callable[[CandidateVariant], Any] | None,
     runtime_skill_activator: Callable[[CandidateVariant], Any] | None,
     progress_callback: Callable[[str, str], Any] | None,
@@ -9880,6 +10958,27 @@ def _rerun_evaluator_from_stored_run(
         )
     if _is_verified_apply_policy(apply_policy) and post_apply_evaluator is None:
         post_apply_evaluator = _default_post_apply_evaluator(target_adapter)
+    resolved_regression_suites = resolve_regression_suites(
+        regression_benchmarks,
+        selection_dataset=built_dataset,
+        base_dir=workspace_root,
+    )
+    if (
+        not resolved_regression_suites
+        and _is_verified_apply_policy(apply_policy)
+    ):
+        resolved_regression_suites = resolve_target_contract_regression_suite(
+            target_type=target_adapter.identity.target_type,
+            target_id=target_adapter.identity.target_id,
+            target_path=target_adapter.identity.path,
+            current_content=target_adapter.load_current_content(),
+            target_fingerprint=target_adapter.fingerprint_current_content(),
+            selection_dataset=built_dataset,
+        )
+    if regression_replay_backend is None:
+        regression_replay_backend = AWorldCliCandidateReplayBackend(
+            concurrency_policy=concurrency_policy,
+        )
 
     run_id = _rerun_cli_run_id(source_run_id, candidate.candidate_id)
     _emit_progress(
@@ -9895,6 +10994,11 @@ def _rerun_evaluator_from_stored_run(
             source_run_id=source_run_id,
         ),
         evaluation_backend=evaluation_backend,
+        regression_backend=regression_backend,
+        regression_suites=resolved_regression_suites,
+        challenger_backend=challenger_backend,
+        challenger_enabled=challenger_enabled,
+        challenger_max_cases=challenger_max_cases,
         post_apply_evaluator=post_apply_evaluator,
         min_score_delta=min_score_delta,
         max_iterations=1,
@@ -9911,6 +11015,7 @@ def _rerun_evaluator_from_stored_run(
             source_run_id=source_run_id,
             source_replay_path=str(replay_path),
         ),
+        regression_replay_backend=regression_replay_backend,
         replay_timeout_seconds=replay_timeout_seconds,
         replay_max_steps=replay_max_steps,
         replay_candidate_limit=replay_candidate_limit,
@@ -9982,6 +11087,17 @@ def _rerun_evaluator_from_stored_run(
     evaluator_report_paths = report.get("evaluator_report_paths")
     if isinstance(evaluator_report_paths, list):
         summary["evaluator_report_paths"] = evaluator_report_paths
+    if selected_candidate_id is not None:
+        regression_evidence_path = (
+            run_path
+            / "regression"
+            / "evidence"
+            / f"{selected_candidate_id}.json"
+        )
+        if regression_evidence_path.is_file():
+            summary["regression_evidence_path"] = str(
+                regression_evidence_path
+            )
     gate_results = report.get("gate_results")
     if isinstance(gate_results, list):
         summary["gate_results"] = gate_results
@@ -10375,10 +11491,10 @@ def _load_target_provenance(path: Path) -> TargetProvenanceResolution:
 
 
 def _rerun_cli_run_id(source_run_id: str, candidate_id: str) -> str:
-    return (
-        "cli-rerun-"
-        f"{abs(hash((source_run_id, candidate_id, 'evaluator'))) % 10**12:012d}"
-    )
+    lineage = hashlib.sha256(
+        f"{source_run_id}\0{candidate_id}\0evaluator".encode("utf-8")
+    ).hexdigest()[:12]
+    return f"cli-rerun-{lineage}-{uuid.uuid4().hex[:8]}"
 
 
 def _replay_report(replay_result: CandidateReplayResult) -> dict[str, object]:
@@ -10808,6 +11924,222 @@ def _load_prior_rejected_feedback(
             if len(feedback) >= limit:
                 return tuple(feedback)
     return tuple(feedback)
+
+
+def _load_prior_scheduler_state(
+    store: FilesystemSelfEvolveStore,
+    target: SelfEvolveTargetRef,
+    *,
+    current_run_id: str,
+    allowed_run_ids: Iterable[str] | None,
+) -> SchedulerState:
+    """Restore the latest Campaign scheduler checkpoint without heuristics."""
+
+    if not allowed_run_ids:
+        return SchedulerState()
+    for report_path in _prior_report_paths(
+        store,
+        current_run_id=current_run_id,
+        allowed_run_ids=allowed_run_ids,
+    ):
+        try:
+            report = _load_json_mapping(report_path)
+        except Exception:
+            continue
+        if not _report_matches_target(report, target, require_path=False):
+            continue
+        repair_state = report.get("repair_frontier_state")
+        raw_state = (
+            repair_state.get("scheduler_state")
+            if isinstance(repair_state, Mapping)
+            else None
+        )
+        if not isinstance(raw_state, Mapping):
+            population = report.get("population")
+            decisions = (
+                population.get("scheduler_decisions")
+                if isinstance(population, Mapping)
+                else None
+            )
+            if isinstance(decisions, list) and decisions:
+                latest = decisions[-1]
+                raw_state = (
+                    latest.get("state")
+                    if isinstance(latest, Mapping)
+                    else None
+                )
+        if isinstance(raw_state, Mapping):
+            try:
+                return SchedulerState.from_dict(raw_state)
+            except (TypeError, ValueError):
+                continue
+    return SchedulerState()
+
+
+def _scheduler_state_with_mutation_families(
+    state: SchedulerState,
+    *,
+    decision: SchedulerDecision,
+    optimizer_diagnostics: Mapping[str, object],
+) -> SchedulerState:
+    focused_keys = tuple(
+        dict.fromkeys(
+            slot.semantic_key
+            for slot in decision.slots
+            if slot.semantic_key is not None
+        )
+    )
+    raw_strategies = optimizer_diagnostics.get("candidate_strategies")
+    if not focused_keys or not isinstance(raw_strategies, (list, tuple)):
+        return state
+    families = {
+        str(strategy.get("candidate_family"))
+        for strategy in raw_strategies
+        if isinstance(strategy, Mapping)
+        and isinstance(strategy.get("candidate_family"), str)
+        and str(strategy.get("candidate_family")).strip()
+    }
+    if not families:
+        return state
+    family_map = {
+        key: tuple(values)
+        for key, values in state.frontier_mutation_families.items()
+    }
+    for semantic_key in focused_keys:
+        family_map[semantic_key] = tuple(
+            sorted({*family_map.get(semantic_key, ()), *families})
+        )
+    return replace(state, frontier_mutation_families=family_map)
+
+
+def _repair_frontier_state_report(
+    *,
+    store: FilesystemSelfEvolveStore,
+    target: SelfEvolveTargetRef,
+    current_run_id: str,
+    allowed_run_ids: Iterable[str] | None,
+    observed_frontiers: tuple[RepairFrontier, ...],
+    scheduler_state: SchedulerState,
+    selected_candidate_id: str | None,
+    run_succeeded: bool,
+    campaign_id: str | None,
+    campaign_cycle: int | None,
+) -> dict[str, object]:
+    previous_records: dict[str, Mapping[str, object]] = {}
+    if allowed_run_ids:
+        for report_path in _prior_report_paths(
+            store,
+            current_run_id=current_run_id,
+            allowed_run_ids=allowed_run_ids,
+        ):
+            try:
+                report = _load_json_mapping(report_path)
+            except Exception:
+                continue
+            if not _report_matches_target(report, target, require_path=False):
+                continue
+            previous_state = report.get("repair_frontier_state")
+            records = (
+                previous_state.get("records")
+                if isinstance(previous_state, Mapping)
+                else None
+            )
+            if isinstance(records, list):
+                previous_records = {
+                    str(item["semantic_key"]): item
+                    for item in records
+                    if isinstance(item, Mapping)
+                    and isinstance(item.get("semantic_key"), str)
+                }
+                break
+
+    observed = {item.semantic_key: item for item in observed_frontiers}
+    records: list[dict[str, object]] = []
+    for semantic_key in sorted({*previous_records, *observed}):
+        previous = previous_records.get(semantic_key, {})
+        frontier = observed.get(semantic_key)
+        previous_status = str(previous.get("status") or "active")
+        if previous_status not in {"active", "resolved", "regressed"}:
+            previous_status = "active"
+        previous_progress = _non_negative_int(previous.get("current_progress"))
+        previous_best = max(
+            previous_progress,
+            _non_negative_int(previous.get("best_progress")),
+        )
+        if frontier is None:
+            status = "resolved" if run_succeeded else previous_status
+            current_progress = previous_progress
+            best_progress = previous_best
+            owner = str(previous.get("owner") or "candidate")
+            scope = str(previous.get("scope") or "candidate")
+            repairable = previous.get("repairable") is True
+        else:
+            current_progress = frontier.progress
+            best_progress = max(previous_best, current_progress)
+            status = (
+                "regressed"
+                if previous_status == "resolved"
+                or (previous_best > 0 and current_progress < previous_best)
+                else "active"
+            )
+            owner = frontier.owner.value
+            scope = frontier.scope.value
+            repairable = frontier.repairable
+        champion_candidate_id = previous.get("champion_candidate_id")
+        if (
+            frontier is not None
+            and selected_candidate_id is not None
+            and current_progress >= previous_best
+        ):
+            champion_candidate_id = selected_candidate_id
+        previous_mutation_families = previous.get("mutation_families")
+        if not isinstance(previous_mutation_families, (list, tuple)):
+            previous_mutation_families = ()
+        records.append(
+            {
+                "semantic_key": semantic_key,
+                "status": status,
+                "owner": owner,
+                "scope": scope,
+                "repairable": repairable,
+                "current_progress": current_progress,
+                "best_progress": best_progress,
+                "first_seen_run_id": str(
+                    previous.get("first_seen_run_id") or current_run_id
+                ),
+                "last_seen_run_id": (
+                    current_run_id
+                    if frontier is not None
+                    else previous.get("last_seen_run_id")
+                ),
+                "champion_candidate_id": champion_candidate_id,
+                "mutation_families": list(
+                    scheduler_state.frontier_mutation_families.get(
+                        semantic_key,
+                        tuple(
+                            str(item)
+                            for item in previous_mutation_families
+                            if isinstance(item, str) and item
+                        ),
+                    )
+                ),
+                "regression_count": _non_negative_int(
+                    previous.get("regression_count")
+                )
+                + (1 if status == "regressed" and previous_status != "regressed" else 0),
+            }
+        )
+    return {
+        "schema_version": "aworld.self_evolve.repair_frontier_state.v1",
+        "campaign_id": campaign_id,
+        "campaign_cycle": campaign_cycle,
+        "run_id": current_run_id,
+        "records": records,
+        "active_count": sum(item["status"] == "active" for item in records),
+        "resolved_count": sum(item["status"] == "resolved" for item in records),
+        "regressed_count": sum(item["status"] == "regressed" for item in records),
+        "scheduler_state": scheduler_state.to_dict(),
+    }
 
 
 def _load_prior_candidate_package_index(
@@ -11504,7 +12836,11 @@ def _feedback_from_report(
         for iteration in iterations:
             if not isinstance(iteration, Mapping):
                 continue
-            if iteration.get("status") not in {"rejected", "accepted"}:
+            if iteration.get("status") not in {
+                "rejected",
+                "accepted",
+                "prerequisite",
+            }:
                 continue
             candidate_id = iteration.get("candidate_id")
             if not isinstance(candidate_id, str) or not candidate_id:
@@ -13260,6 +14596,17 @@ def _iteration_validation_feedback(
 ) -> tuple[EvaluationSummary, ...]:
     feedback: list[EvaluationSummary] = []
     typed_gate_metrics = _typed_gate_feedback_metrics(failed_gates)
+    typed_candidate_status = next(
+        (
+            str(gate.details["candidate_status"])
+            for gate in failed_gates
+            if isinstance(gate.details, Mapping)
+            and isinstance(gate.details.get("candidate_status"), str)
+        ),
+        None,
+    )
+    if typed_candidate_status is not None:
+        typed_gate_metrics["candidate_status"] = typed_candidate_status
     repair_candidate_package = _repair_candidate_package_feedback(
         candidate,
         failed_gates=failed_gates,
@@ -14675,6 +16022,8 @@ def _iteration_report_item(
     candidate_summary: EvaluationSummary | None,
     held_out_summary: EvaluationSummary | None,
     failed_gates: list[GateResult],
+    regression_evidence: RegressionEvidence | None = None,
+    challenge_report: ChallengeReport | None = None,
 ) -> dict[str, object]:
     return {
         "iteration": iteration_number,
@@ -14698,6 +16047,16 @@ def _iteration_report_item(
             else None
         ),
         "failed_gates": [gate.gate_name for gate in failed_gates],
+        "regression_evidence": (
+            regression_evidence.to_dict()
+            if regression_evidence is not None
+            else None
+        ),
+        "challenge_report": (
+            challenge_report.to_dict()
+            if challenge_report is not None
+            else None
+        ),
     }
 
 
@@ -14712,6 +16071,8 @@ def _iteration_state(
     gate_results: list[GateResult],
     feedback: tuple[EvaluationSummary, ...],
     status: str,
+    regression_evidence: RegressionEvidence | None = None,
+    challenge_report: ChallengeReport | None = None,
 ) -> dict[str, object]:
     return {
         "candidate": candidate,
@@ -14723,6 +16084,8 @@ def _iteration_state(
         "gate_results": gate_results,
         "feedback": feedback,
         "status": status,
+        "regression_evidence": regression_evidence,
+        "challenge_report": challenge_report,
     }
 
 
@@ -15205,7 +16568,19 @@ def _rank_candidate_population(
         if isinstance(record.get("candidate_id"), str)
     }
     if not strategy_by_candidate:
-        return candidates
+        return tuple(
+            candidate
+            for _, candidate in sorted(
+                enumerate(candidates),
+                key=lambda item: (
+                    _candidate_mutation_rank(
+                        item[1],
+                        current_content=current_content,
+                    ),
+                    item[0],
+                ),
+            )
+        )
     return tuple(
         sorted(
             candidates,
@@ -15223,7 +16598,11 @@ def _candidate_population_rank_key(
     *,
     strategy: Mapping[str, object],
     current_content: str,
-) -> tuple[int, int, int, int, str]:
+) -> tuple[int, int, int, int, int, str]:
+    mutation_rank = _candidate_mutation_rank(
+        candidate,
+        current_content=current_content,
+    )
     priority_rank = {"high": 0, "medium": 1, "low": 2}.get(
         str(strategy.get("replay_priority") or "low"),
         2,
@@ -15238,12 +16617,29 @@ def _candidate_population_rank_key(
     # Prefer candidates that explicitly address lessons and preserve successful
     # behavior, then keep replay cost bounded by favoring smaller deltas.
     return (
+        mutation_rank,
         priority_rank,
         -addressed_count,
         -preserve_count,
         char_growth + (line_growth * 80),
         candidate.candidate_id,
     )
+
+
+def _candidate_mutation_rank(
+    candidate: CandidateVariant,
+    *,
+    current_content: str,
+) -> int:
+    mutation = classify_candidate_mutation(
+        candidate,
+        current_content=current_content,
+    )
+    if mutation.target_behavior_changed:
+        return 0
+    if mutation.kind is CandidateMutationKind.EVALUATION_SUPPORT:
+        return 1
+    return 2
 
 
 def _sequence_length(value: object) -> int:
