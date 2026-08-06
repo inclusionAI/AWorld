@@ -396,6 +396,29 @@ class _RunBudgetContext:
             )
         )
 
+    def can_fit_workflow(
+        self,
+        work: Iterable[tuple[BudgetStage, str, int]],
+    ) -> bool:
+        required = BudgetUsage()
+        for stage, item_id, units in work:
+            usage = self.estimate(stage, item_id, units=units).resolved_usage()
+            if usage is None:
+                return False
+            required += usage
+        remaining = self.ledger.remaining()
+        return bool(
+            (remaining.tokens is None or required.tokens <= remaining.tokens)
+            and (
+                remaining.cost_usd is None
+                or required.cost_usd <= remaining.cost_usd
+            )
+            and (
+                remaining.wall_seconds is None
+                or required.wall_seconds <= remaining.wall_seconds
+            )
+        )
+
     def reserve(
         self,
         stage: BudgetStage,
@@ -2683,6 +2706,76 @@ class SelfEvolveRunner:
         iteration_budget = (
             self.max_iterations + _MAX_PROGRESS_REPAIR_EXTENSION_ITERATIONS
         )
+        estimated_replay_case_count = len(_replayable_user_task_dataset(dataset).cases)
+        estimated_replay_units = (
+            estimated_replay_case_count
+            * (
+                self.baseline_replay_repetitions
+                + self.candidate_replay_repetitions
+            )
+            if self.replay_enabled
+            and self.candidate_replay_backend is not None
+            else 0
+        )
+        estimated_evaluation_case_count = max(
+            len(dataset.cases),
+            estimated_replay_case_count * self.candidate_replay_repetitions,
+        )
+        estimated_evaluation_variants = (
+            5 if _is_verified_apply_policy(apply_policy) else 2
+        )
+        estimated_regression_units = (
+            sum(
+                max(1, len(suite.dataset.cases)) * 2
+                for suite in self.regression_suites
+            )
+            if _is_verified_apply_policy(apply_policy)
+            else 0
+        )
+        estimated_evaluation_units = max(
+            1,
+            estimated_evaluation_case_count * estimated_evaluation_variants
+            + estimated_regression_units,
+        )
+
+        def repair_workflow_budget_items(
+            *,
+            iteration: int,
+            candidate_count: int,
+        ) -> tuple[tuple[BudgetStage, str, int], ...]:
+            items: list[tuple[BudgetStage, str, int]] = [
+                (
+                    BudgetStage.CANDIDATE_GENERATION,
+                    f"iteration-{iteration}-workflow-generation",
+                    candidate_count,
+                )
+            ]
+            if estimated_replay_units > 0:
+                items.append(
+                    (
+                        BudgetStage.PAIRED_REPLAY,
+                        f"iteration-{iteration}-workflow-replay",
+                        estimated_replay_units * candidate_count,
+                    )
+                )
+            if self.evaluation_backend is not None:
+                evaluation_units = estimated_evaluation_units * candidate_count
+                items.extend(
+                    (
+                        (
+                            BudgetStage.EVALUATION,
+                            f"iteration-{iteration}-workflow-evaluation",
+                            evaluation_units,
+                        ),
+                        (
+                            BudgetStage.JUDGE,
+                            f"iteration-{iteration}-workflow-judge",
+                            max(1, evaluation_units * self.judge_repetitions),
+                        ),
+                    )
+                )
+            return tuple(items)
+
         for iteration_index in range(iteration_budget):
             if iteration_index >= self.max_iterations:
                 repair_family = _next_progress_repair_extension_family(
@@ -2694,15 +2787,17 @@ class SelfEvolveRunner:
                 progress_repair_families.add(repair_family)
             cumulative_feedback = (*prior_feedback, *validation_feedback)
             repair_frontiers = _typed_repair_frontiers(cumulative_feedback)
-            focused_available = budget_context.can_fit(
-                BudgetStage.CANDIDATE_GENERATION,
-                f"iteration-{iteration_index + 1}-focused",
-                units=1,
+            focused_available = budget_context.can_fit_workflow(
+                repair_workflow_budget_items(
+                    iteration=iteration_index + 1,
+                    candidate_count=1,
+                )
             )
-            diverse_available = budget_context.can_fit(
-                BudgetStage.CANDIDATE_GENERATION,
-                f"iteration-{iteration_index + 1}-focused-diverse",
-                units=2,
+            diverse_available = budget_context.can_fit_workflow(
+                repair_workflow_budget_items(
+                    iteration=iteration_index + 1,
+                    candidate_count=2,
+                )
             )
             scheduler_decision = scheduler.schedule(
                 state=scheduler_state,
@@ -15130,8 +15225,13 @@ def _typed_gate_feedback_metrics(
                 violated_schema_constraint_ids.add(
                     f"sha256:{constraint.identity_digest}"
                 )
-        raw_evidence_constraints = details.get(
-            "evidence_repair_constraints"
+        raw_evidence_regressions = details.get(
+            "evidence_constraint_regressions"
+        )
+        raw_evidence_constraints = (
+            raw_evidence_regressions
+            if isinstance(raw_evidence_regressions, (list, tuple))
+            else details.get("evidence_repair_constraints")
         )
         evidence_constraints: list[EvidenceRepairConstraint] = []
         if isinstance(raw_evidence_constraints, (list, tuple)):

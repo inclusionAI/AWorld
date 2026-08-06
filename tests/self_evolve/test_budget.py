@@ -405,7 +405,6 @@ def test_batch_token_observation_rounds_up_without_rounding_aggregate_spend() ->
             wall_seconds=Decimal("6"),
         ),
     )
-
     assert debit.observed_per_unit == ObservedBudgetUsage(
         tokens=11,
         cost_usd=Decimal("1"),
@@ -470,13 +469,43 @@ def test_incomplete_dimensions_use_conservative_spend_but_not_estimator_samples(
         ),
     )
     assert next_estimate.resolved_usage() == BudgetUsage(
-        tokens=150,
-        cost_usd=Decimal("3"),
+        tokens=225,
+        cost_usd=Decimal("4.5"),
         wall_seconds=Decimal("1.5"),
     )
     assert next_estimate.source is BudgetEstimateSource.OBSERVED_ROBUST
     assert next_estimate.confidence is BudgetEstimateConfidence.LOW
     assert RunBudgetLedger.from_dict(ledger.to_dict()).to_dict() == ledger.to_dict()
+
+
+def test_positive_incomplete_lower_bound_raises_next_planning_estimate() -> None:
+    ledger = RunBudgetLedger(
+        BudgetCeilings(total_tokens=1_000_000, total_cost_usd=None)
+    )
+    first = ledger.reserve(
+        ledger.estimate_next(
+            stage=BudgetStage.JUDGE,
+            item_id="first-judge",
+            units=20,
+            cold_start_per_unit=BudgetUsage(tokens=2_048),
+        )
+    )
+    ledger.debit_actual(
+        first.reservation_id or "",
+        BudgetUsage(tokens=100_000),
+        actual_completeness=BudgetUsageCompleteness.incomplete(),
+    )
+
+    estimate = ledger.estimate_next(
+        stage=BudgetStage.JUDGE,
+        item_id="second-judge",
+        units=20,
+        cold_start_per_unit=BudgetUsage(tokens=2_048),
+    )
+
+    assert estimate.tokens == 100_000
+    assert estimate.source is BudgetEstimateSource.OBSERVED_LOWER_BOUND
+    assert estimate.confidence is BudgetEstimateConfidence.LOW
 
 
 def test_repeated_reserved_fallbacks_do_not_train_or_raise_estimator_confidence() -> None:
