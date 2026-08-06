@@ -28,6 +28,7 @@ def _usage() -> str:
   /optimize --from-trajectory-set <trajectory-set.json> --include-prior-runs --apply proposal
   /optimize --from-run <run-id-or-path> --rerun-evaluator --apply auto_verified --judge-agent <agent.md>
   /optimize --resume-campaign <campaign-id>
+  /optimize --from-trajectory <trajectory.log> --apply verified_only --max-run-tokens 1000000
   /optimize --target skill:<name> --dataset <eval.jsonl> --apply proposal
   /optimize --drain-pending
 
@@ -97,6 +98,23 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--iterations", type=int)
     parser.add_argument("--apply")
     parser.add_argument("--max-improvement-cycles", type=int, default=3, dest="max_improvement_cycles")
+    parser.add_argument(
+        "--max-run-tokens",
+        "--total-run-token-budget",
+        type=int,
+        dest="total_run_token_budget",
+    )
+    parser.add_argument("--max-run-cost-usd", type=float, dest="max_run_cost_usd")
+    parser.add_argument(
+        "--max-run-wall-seconds",
+        type=float,
+        dest="max_run_wall_seconds",
+    )
+    parser.add_argument(
+        "--per-attempt-replay-token-limit",
+        type=int,
+        dest="per_attempt_replay_token_limit",
+    )
     parser.add_argument("--resume-campaign", dest="resume_campaign")
     parser.add_argument(
         "--new-skill-policy",
@@ -218,6 +236,12 @@ class OptimizeCommand(Command):
                 challenger_max_cases=args.challenger_max_cases,
                 iterations=args.iterations,
                 max_improvement_cycles=args.max_improvement_cycles,
+                total_run_token_budget=args.total_run_token_budget,
+                max_run_cost_usd=args.max_run_cost_usd,
+                max_run_wall_seconds=args.max_run_wall_seconds,
+                per_attempt_replay_token_limit=(
+                    args.per_attempt_replay_token_limit
+                ),
                 resume_campaign=args.resume_campaign,
                 apply=args.apply or ("auto_verified" if args.resume_campaign else "proposal"),
                 new_skill_policy=args.new_skill_policy,

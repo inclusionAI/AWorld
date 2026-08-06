@@ -65,6 +65,42 @@ def _ledger() -> RunBudgetLedger:
     )
 
 
+def test_unbounded_ledger_reports_mode_and_never_denies_estimated_usage() -> None:
+    ceilings = BudgetCeilings(
+        total_tokens=None,
+        total_cost_usd=None,
+        wall_seconds=None,
+    )
+    ledger = RunBudgetLedger(ceilings)
+
+    decision = ledger.reserve(
+        _estimate(tokens=10_000_000, cost="1000", wall="86400")
+    )
+
+    assert ceilings.to_dict() == {
+        "budget_mode": "unbounded",
+        "total_tokens": None,
+        "total_cost_usd": None,
+        "wall_seconds": None,
+    }
+    assert decision.allowed is True
+    assert ledger.remaining().to_dict() == {
+        "tokens": None,
+        "cost_usd": None,
+        "wall_seconds": None,
+    }
+
+
+def test_configured_ceiling_reports_explicit_hard_limit_mode() -> None:
+    ceilings = BudgetCeilings(
+        total_tokens=1_000,
+        total_cost_usd=None,
+        wall_seconds=None,
+    )
+
+    assert ceilings.to_dict()["budget_mode"] == "explicit_hard_limit"
+
+
 def test_ledger_reserves_debits_actual_releases_and_roundtrips() -> None:
     ledger = _ledger()
     first = ledger.reserve(_estimate())
@@ -100,7 +136,7 @@ def test_ledger_reserves_debits_actual_releases_and_roundtrips() -> None:
     assert RunBudgetLedger.from_dict(ledger.to_dict()).to_dict() == ledger.to_dict()
 
 
-def test_ledger_unknown_estimate_fails_closed_unless_backend_proves_zero() -> None:
+def test_ledger_unknown_estimate_only_fails_closed_for_bounded_dimensions() -> None:
     ledger = _ledger()
     unknown = StageBudgetEstimate(
         stage=BudgetStage.JUDGE,
@@ -115,7 +151,9 @@ def test_ledger_unknown_estimate_fails_closed_unless_backend_proves_zero() -> No
     assert denied.reason_code is BudgetDecisionReason.UNKNOWN_ESTIMATE
     assert ledger.outstanding_reservations == ()
     unbounded = RunBudgetLedger(BudgetCeilings(None, None, None))
-    assert unbounded.reserve(unknown).reason_code is BudgetDecisionReason.UNKNOWN_ESTIMATE
+    unbounded_decision = unbounded.reserve(unknown)
+    assert unbounded_decision.allowed is True
+    assert unbounded_decision.reason_code is BudgetDecisionReason.RESERVED
 
     configured_zero = ledger.estimate_next(
         stage=BudgetStage.JUDGE,

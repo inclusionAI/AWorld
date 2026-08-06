@@ -170,6 +170,34 @@ class OptimizeTopLevelCommand:
             help="Maximum bounded cross-run self-improvement cycles for verified policies.",
         )
         parser.add_argument(
+            "--max-run-tokens",
+            "--total-run-token-budget",
+            type=int,
+            dest="total_run_token_budget",
+            help=(
+                "Optional hard token ceiling for the optimize run or verified "
+                "campaign. Omitted by default."
+            ),
+        )
+        parser.add_argument(
+            "--max-run-cost-usd",
+            type=float,
+            dest="max_run_cost_usd",
+            help="Optional hard USD cost ceiling. Omitted by default.",
+        )
+        parser.add_argument(
+            "--max-run-wall-seconds",
+            type=float,
+            dest="max_run_wall_seconds",
+            help="Optional hard cumulative wall-time ceiling. Omitted by default.",
+        )
+        parser.add_argument(
+            "--per-attempt-replay-token-limit",
+            type=int,
+            dest="per_attempt_replay_token_limit",
+            help="Optional hard token ceiling for each replay attempt.",
+        )
+        parser.add_argument(
             "--resume-campaign",
             type=str,
             dest="resume_campaign",
@@ -306,6 +334,16 @@ class OptimizeTopLevelCommand:
                 iterations=getattr(args, "iterations", None),
                 max_improvement_cycles=getattr(
                     args, "max_improvement_cycles", 3
+                ),
+                total_run_token_budget=getattr(
+                    args, "total_run_token_budget", None
+                ),
+                max_run_cost_usd=getattr(args, "max_run_cost_usd", None),
+                max_run_wall_seconds=getattr(
+                    args, "max_run_wall_seconds", None
+                ),
+                per_attempt_replay_token_limit=getattr(
+                    args, "per_attempt_replay_token_limit", None
                 ),
                 resume_campaign=resume_campaign,
                 apply=apply_policy,
@@ -537,7 +575,17 @@ def run_optimize_cli(
     regression_benchmarks: tuple[str, ...] = (),
     challenger_enabled: bool = True,
     challenger_max_cases: int = 2,
+    total_run_token_budget: int | None = None,
+    max_run_cost_usd: float | None = None,
+    max_run_wall_seconds: float | None = None,
+    per_attempt_replay_token_limit: int | None = None,
 ) -> Mapping[str, Any]:
+    _validate_budget_cli_options(
+        total_run_token_budget=total_run_token_budget,
+        max_run_cost_usd=max_run_cost_usd,
+        max_run_wall_seconds=max_run_wall_seconds,
+        per_attempt_replay_token_limit=per_attempt_replay_token_limit,
+    )
     _validate_ingestion_cli_options(
         dataset=dataset,
         from_session=from_session,
@@ -621,6 +669,10 @@ def run_optimize_cli(
         "challenger_enabled": challenger_enabled,
         "challenger_max_cases": challenger_max_cases,
         "iterations": iterations,
+        "total_run_token_budget": total_run_token_budget,
+        "max_run_cost_usd": max_run_cost_usd,
+        "max_run_wall_seconds": max_run_wall_seconds,
+        "per_attempt_replay_token_limit": per_attempt_replay_token_limit,
         "apply_policy": runtime_apply,
         "inferred_new_skill_policy": new_skill_policy,
         "infer_target": infer_target,
@@ -658,6 +710,23 @@ def run_optimize_cli(
             resume_campaign=resume_campaign,
         )
     return self_evolve.optimize_from_cli_request(**request)
+
+
+def _validate_budget_cli_options(
+    *,
+    total_run_token_budget: int | None,
+    max_run_cost_usd: float | None,
+    max_run_wall_seconds: float | None,
+    per_attempt_replay_token_limit: int | None,
+) -> None:
+    for name, value in (
+        ("--max-run-tokens", total_run_token_budget),
+        ("--max-run-cost-usd", max_run_cost_usd),
+        ("--max-run-wall-seconds", max_run_wall_seconds),
+        ("--per-attempt-replay-token-limit", per_attempt_replay_token_limit),
+    ):
+        if value is not None and value <= 0:
+            raise ValueError(f"{name} must be positive")
 
 
 def _default_mutation_model_config():

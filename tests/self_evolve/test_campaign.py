@@ -147,6 +147,37 @@ def test_zero_generation_scheduler_stall_is_not_a_legacy_pause() -> None:
     assert disposition.stage == "candidate_generation"
 
 
+def test_shared_scheduler_block_is_a_framework_goal_handoff() -> None:
+    report = {
+        "status": "rejected",
+        "gate_results": [
+            {
+                "gate_name": "candidate_generation",
+                "passed": False,
+                "details": {
+                    "generated_candidate_count": 0,
+                    "iterations": 0,
+                },
+            }
+        ],
+        # Compatibility shape emitted before scheduler attribution overrode
+        # the candidate-generation gate's default owner.
+        "rejection_attribution": {
+            "failure_class": "candidate",
+            "primary_gate": "candidate_generation",
+            "scheduler_reason_code": "shared_run_blocked",
+            "scheduler_stop": True,
+        },
+    }
+
+    disposition = derive_self_improvement_disposition(report)
+
+    assert disposition.kind is SelfImprovementDispositionKind.HANDOFF_GOAL
+    assert disposition.reason_code == "typed_framework_or_shared_blocker"
+    assert disposition.owner == "framework"
+    assert disposition.scope == "shared_run"
+
+
 def test_campaign_continues_after_per_cycle_focused_budget_denial(
     tmp_path: Path,
 ) -> None:
@@ -691,7 +722,7 @@ def test_campaign_repairs_then_completes_without_operator_relaunch(tmp_path: Pat
     assert calls[1]["total_run_token_budget"] == 990
 
 
-def test_campaign_implicit_default_budget_is_available_per_cycle(
+def test_campaign_has_no_implicit_default_budget_per_cycle(
     tmp_path: Path,
 ) -> None:
     calls: list[dict] = []
@@ -731,7 +762,8 @@ def test_campaign_implicit_default_budget_is_available_per_cycle(
     )
 
     assert result["status"] == "succeeded"
-    assert [call["total_run_token_budget"] for call in calls] == [500_000, 500_000]
+    assert all("total_run_token_budget" not in call for call in calls)
+    assert all("max_run_tokens" not in call for call in calls)
 
 
 def test_campaign_stops_when_semantic_frontier_does_not_change(tmp_path: Path) -> None:
@@ -862,7 +894,7 @@ def test_campaign_missing_usage_telemetry_stops_before_second_run(tmp_path: Path
     )
 
 
-def test_retryable_infrastructure_keeps_specific_budget_limit_reason(
+def test_retryable_infrastructure_keeps_specific_cycle_limit_reason(
     tmp_path: Path,
 ) -> None:
     calls: list[dict] = []
@@ -915,9 +947,9 @@ def test_retryable_infrastructure_keeps_specific_budget_limit_reason(
     )
 
     assert len(calls) == 1
-    assert result["campaign_status"] == "budget_limited"
+    assert result["campaign_status"] == "exhausted"
     assert result["self_improvement_disposition"]["reason_code"] == (
-        "campaign_infrastructure_retry_budget_exhausted"
+        "campaign_infrastructure_retry_limit_reached"
     )
     assert result["self_improvement_disposition"]["owner"] == "infrastructure"
 
@@ -1060,9 +1092,9 @@ def test_campaign_archives_dead_incomplete_run_and_retries_same_cycle(
 
     assert advanced.status is SelfImprovementCampaignStatus.COMPLETE
     assert advanced.cycle_index == 1
-    assert advanced.cumulative_usage.tokens == 500_010
+    assert advanced.cumulative_usage.tokens == 10
     assert calls[0]["campaign_cycle"] == 1
-    assert calls[0]["total_run_token_budget"] == 500_000
+    assert "total_run_token_budget" not in calls[0]
     archive = Path(summary["interrupted_run_archive_path"])
     assert archive.name == f"{run_id}-attempt-001"
     assert (archive / "interruption.json").is_file()

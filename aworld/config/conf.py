@@ -208,7 +208,7 @@ class SelfEvolveConfig(BaseConfig):
     ] = "auto_verified"
     # ``max_run_tokens`` remains readable for existing configs.  New callers
     # should use the explicit total-run ceiling below.
-    max_run_tokens: int = 500000
+    max_run_tokens: Optional[int] = None
     total_run_token_budget: Optional[int] = None
     per_attempt_replay_token_limit: Optional[int] = None
     max_run_cost_usd: Optional[float] = None
@@ -320,12 +320,15 @@ class SelfEvolveConfig(BaseConfig):
             if value is not None and value < 0:
                 raise ValueError(f"{field_name} must be non-negative")
         deprecated_mappings = list(self.deprecated_config_mappings)
-        if self.total_run_token_budget is None:
+        if self.total_run_token_budget is None and self.max_run_tokens is not None:
             self.total_run_token_budget = self.max_run_tokens
             deprecated_mappings.append(
                 "max_run_tokens_to_total_run_token_budget"
             )
-        if self.per_attempt_replay_token_limit is None:
+        if (
+            self.per_attempt_replay_token_limit is None
+            and self.max_run_tokens is not None
+        ):
             self.per_attempt_replay_token_limit = self.max_run_tokens
             deprecated_mappings.append(
                 "max_run_tokens_to_per_attempt_replay_token_limit"

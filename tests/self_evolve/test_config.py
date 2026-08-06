@@ -12,13 +12,10 @@ def test_agent_config_disables_self_evolve_by_default() -> None:
     assert config.self_evolve_config.mode == "off"
     assert not hasattr(config.self_evolve_config, "enabled")
     assert not hasattr(config, "optimize")
-    assert config.self_evolve_config.max_run_tokens == 500_000
-    assert config.self_evolve_config.total_run_token_budget == 500_000
-    assert config.self_evolve_config.per_attempt_replay_token_limit == 500_000
-    assert config.self_evolve_config.deprecated_config_mappings == (
-        "max_run_tokens_to_total_run_token_budget",
-        "max_run_tokens_to_per_attempt_replay_token_limit",
-    )
+    assert config.self_evolve_config.max_run_tokens is None
+    assert config.self_evolve_config.total_run_token_budget is None
+    assert config.self_evolve_config.per_attempt_replay_token_limit is None
+    assert config.self_evolve_config.deprecated_config_mappings == ()
     assert config.self_evolve_config.min_eval_cases == 30
     assert config.self_evolve_config.judge_repetitions == 3
     assert config.self_evolve_config.judge_timeout_seconds == 300
