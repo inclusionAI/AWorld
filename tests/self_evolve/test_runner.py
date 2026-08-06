@@ -1839,6 +1839,33 @@ def test_substantive_screening_failure_outranks_later_duplicate_attempt() -> Non
     }
 
 
+def test_rejection_attribution_names_terminal_frontier_exhaustion() -> None:
+    attribution = runner_module._rejection_attribution(
+        final_status=SelfEvolveRunStatus.REJECTED,
+        selected_candidate_id=None,
+        gate_results=(
+            GateResult(
+                gate_name="candidate_generation",
+                passed=False,
+                reason="optimizer did not produce a replayable candidate",
+                details={
+                    "failure_class": "candidate",
+                    "generated_candidate_count": 0,
+                    "iterations": 0,
+                },
+            ),
+        ),
+        scheduler_decisions=(
+            {"reason_code": "repair_frontier_stalled", "stop": True},
+        ),
+    )
+
+    assert attribution is not None
+    assert attribution["code"] == "candidate_repair_frontier_stalled"
+    assert attribution["scheduler_reason_code"] == "repair_frontier_stalled"
+    assert attribution["scheduler_stop"] is True
+
+
 def test_verification_contract_fingerprint_covers_active_trajectory_contract(
     monkeypatch,
 ) -> None:

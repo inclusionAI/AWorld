@@ -1808,10 +1808,17 @@ def _rejection_attribution(
         attribution["capability_error_code"] = capability_error_code
     if scheduler_decisions:
         terminal_decision = scheduler_decisions[-1]
-        attribution["scheduler_reason_code"] = str(
+        scheduler_reason_code = str(
             terminal_decision.get("reason_code") or "unknown"
         )
+        attribution["scheduler_reason_code"] = scheduler_reason_code
         attribution["scheduler_stop"] = terminal_decision.get("stop") is True
+        if (
+            attribution["scheduler_stop"] is True
+            and scheduler_reason_code == "repair_frontier_stalled"
+            and primary.gate_name in {"candidate_generation", "no_candidate"}
+        ):
+            attribution["code"] = "candidate_repair_frontier_stalled"
     return attribution
 
 

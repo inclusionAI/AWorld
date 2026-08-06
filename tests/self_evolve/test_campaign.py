@@ -101,6 +101,52 @@ def test_focused_budget_denial_takes_precedence_over_candidate_stall() -> None:
     )
 
 
+def test_terminal_scheduler_stall_prevents_empty_followup_cycle() -> None:
+    report = _report(_event())
+    report["rejection_attribution"] = {
+        "failure_class": "candidate",
+        "primary_gate": "target_behavior_delta",
+        "scheduler_reason_code": "repair_frontier_stalled",
+        "scheduler_stop": True,
+    }
+
+    disposition = derive_self_improvement_disposition(report)
+
+    assert disposition.kind is SelfImprovementDispositionKind.EXHAUSTED
+    assert disposition.reason_code == "candidate_repair_frontier_stalled"
+    assert disposition.owner == "candidate"
+    assert disposition.stage == "target_behavior_delta"
+    assert disposition.repairable is False
+
+
+def test_zero_generation_scheduler_stall_is_not_a_legacy_pause() -> None:
+    report = {
+        "status": "rejected",
+        "gate_results": [
+            {
+                "gate_name": "candidate_generation",
+                "passed": False,
+                "details": {
+                    "generated_candidate_count": 0,
+                    "iterations": 0,
+                },
+            }
+        ],
+        "rejection_attribution": {
+            "failure_class": "candidate",
+            "primary_gate": "candidate_generation",
+            "scheduler_reason_code": "repair_frontier_stalled",
+            "scheduler_stop": True,
+        },
+    }
+
+    disposition = derive_self_improvement_disposition(report)
+
+    assert disposition.kind is SelfImprovementDispositionKind.EXHAUSTED
+    assert disposition.reason_code == "candidate_repair_frontier_stalled"
+    assert disposition.stage == "candidate_generation"
+
+
 def test_campaign_continues_after_per_cycle_focused_budget_denial(
     tmp_path: Path,
 ) -> None:
