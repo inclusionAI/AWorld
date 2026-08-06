@@ -56,6 +56,7 @@ from aworld.self_evolve.gates import (
     BudgetGate,
     CandidatePackageGate,
     CostLatencyRegressionGate,
+    EvaluationComparabilityGate,
     EvidenceQualityGate,
     EvaluationRuntimeHealthGate,
     ExternalCodeEvolutionGate,
@@ -990,6 +991,21 @@ def _unique_evaluation_summaries(
         seen.add(execution_id)
         unique.append(summary)
     return tuple(unique)
+
+
+def _same_evaluation_execution(
+    first: EvaluationSummary,
+    second: EvaluationSummary,
+) -> bool:
+    def execution_id(summary: EvaluationSummary) -> object:
+        return (
+            summary.metrics.get("evaluation_alias_of_execution_id")
+            or summary.metrics.get("evaluation_execution_id")
+        )
+
+    first_id = execution_id(first)
+    second_id = execution_id(second)
+    return isinstance(first_id, str) and bool(first_id) and first_id == second_id
 
 
 def _budget_usage_for_attempt_event(
@@ -6048,6 +6064,10 @@ class SelfEvolveRunner:
                                     )
                                 )
                         quality_gates: list[GateResult] = [
+                            EvaluationComparabilityGate().evaluate(
+                                baseline=baseline_summary,
+                                candidate=candidate_summary,
+                            ),
                             score_gate,
                             CostLatencyRegressionGate(
                                 max_cost_regression_ratio=0.25,
@@ -6139,14 +6159,24 @@ class SelfEvolveRunner:
                                 held_out_summary=held_out_summary,
                                 min_eval_cases=self.min_eval_cases,
                             )
-                            evidence_quality_gates = [
-                                gate
-                                for summary in _unique_evaluation_summaries(
-                                    (candidate_summary, held_out_summary)
+                            evidence_quality_gates: list[GateResult] = []
+                            candidate_evidence_gate = _evidence_quality_gate(
+                                candidate_summary,
+                                baseline=baseline_summary,
+                            )
+                            if candidate_evidence_gate is not None:
+                                evidence_quality_gates.append(candidate_evidence_gate)
+                            if not _same_evaluation_execution(
+                                candidate_summary,
+                                held_out_summary,
+                            ):
+                                held_out_evidence_gate = _evidence_quality_gate(
+                                    held_out_summary
                                 )
-                                for gate in (_evidence_quality_gate(summary),)
-                                if gate is not None
-                            ]
+                                if held_out_evidence_gate is not None:
+                                    evidence_quality_gates.append(
+                                        held_out_evidence_gate
+                                    )
                             pre_regression_gates = [
                                 *quality_gates,
                                 *evidence_quality_gates,
@@ -12059,7 +12089,7 @@ def _repair_frontier_state_report(
         previous = previous_records.get(semantic_key, {})
         frontier = observed.get(semantic_key)
         previous_status = str(previous.get("status") or "active")
-        if previous_status not in {"active", "resolved", "regressed"}:
+        if previous_status not in {"active", "dormant", "resolved", "regressed"}:
             previous_status = "active"
         previous_progress = _non_negative_int(previous.get("current_progress"))
         previous_best = max(
@@ -12067,7 +12097,12 @@ def _repair_frontier_state_report(
             _non_negative_int(previous.get("best_progress")),
         )
         if frontier is None:
-            status = "resolved" if run_succeeded else previous_status
+            if run_succeeded:
+                status = "resolved"
+            elif previous_status in {"active", "regressed"}:
+                status = "dormant"
+            else:
+                status = previous_status
             current_progress = previous_progress
             best_progress = previous_best
             owner = str(previous.get("owner") or "candidate")
@@ -12136,6 +12171,7 @@ def _repair_frontier_state_report(
         "run_id": current_run_id,
         "records": records,
         "active_count": sum(item["status"] == "active" for item in records),
+        "dormant_count": sum(item["status"] == "dormant" for item in records),
         "resolved_count": sum(item["status"] == "resolved" for item in records),
         "regressed_count": sum(item["status"] == "regressed" for item in records),
         "scheduler_state": scheduler_state.to_dict(),
@@ -13477,7 +13513,11 @@ def _has_missing_model_profile_judge_failure(metrics: Mapping[str, Any]) -> bool
     return False
 
 
-def _evidence_quality_gate(summary: EvaluationSummary) -> GateResult | None:
+def _evidence_quality_gate(
+    summary: EvaluationSummary,
+    *,
+    baseline: EvaluationSummary | None = None,
+) -> GateResult | None:
     metrics = summary.metrics
     requires_evidence_quality = (
         metrics.get("evaluator_mode") == "aworld_trajectory_evaluator"
@@ -13494,7 +13534,7 @@ def _evidence_quality_gate(summary: EvaluationSummary) -> GateResult | None:
     )
     if not requires_evidence_quality:
         return None
-    return EvidenceQualityGate().evaluate(summary)
+    return EvidenceQualityGate().evaluate(summary, baseline=baseline)
 
 
 def _summary_with_replay_evidence_metrics(

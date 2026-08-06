@@ -330,6 +330,56 @@ def test_repair_frontier_state_marks_reappearing_resolved_frontier_regressed(
     assert payload["records"][0]["regression_count"] == 1
 
 
+def test_repair_frontier_state_marks_unobserved_history_dormant(tmp_path) -> None:
+    store = FilesystemSelfEvolveStore(tmp_path)
+    target = SelfEvolveTargetRef(target_type="skill", target_id="demo")
+    prior_run = "campaign-demo-cycle-001"
+    report_path = store.run_path(prior_run) / "report.json"
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text(
+        json.dumps(
+            {
+                "run_id": prior_run,
+                "target": to_json_dict(target),
+                "status": "rejected",
+                "repair_frontier_state": {
+                    "records": [
+                        {
+                            "semantic_key": "historical-frontier",
+                            "status": "active",
+                            "owner": "candidate",
+                            "scope": "candidate",
+                            "repairable": True,
+                            "current_progress": 1,
+                            "best_progress": 1,
+                            "first_seen_run_id": prior_run,
+                            "last_seen_run_id": prior_run,
+                        }
+                    ]
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = runner_module._repair_frontier_state_report(
+        store=store,
+        target=target,
+        current_run_id="campaign-demo-cycle-002",
+        allowed_run_ids=(prior_run,),
+        observed_frontiers=(),
+        scheduler_state=runner_module.SchedulerState(),
+        selected_candidate_id=None,
+        run_succeeded=False,
+        campaign_id="campaign-demo",
+        campaign_cycle=2,
+    )
+
+    assert payload["active_count"] == 0
+    assert payload["dormant_count"] == 1
+    assert payload["records"][0]["status"] == "dormant"
+
+
 _REPLAY_PROVENANCE_KEYS = (
     "adaptation_fingerprint",
     "workspace_seed_fingerprint",
@@ -14440,7 +14490,7 @@ async def test_runner_auto_verified_rejects_compacted_evaluator_evidence(
     assert any(
         gate["gate_name"] == "evidence_quality"
         and gate["passed"] is False
-        and gate["reason"] == "evaluation evidence is compacted or incomplete"
+        and gate["reason"] == "candidate evidence quality regressed relative to baseline"
         for gate in report["gate_results"]
     )
 

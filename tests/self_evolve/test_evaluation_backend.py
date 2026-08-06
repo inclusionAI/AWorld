@@ -316,6 +316,57 @@ async def test_aworld_trajectory_evaluator_backend_aggregates_judge_repetitions(
 
 
 @pytest.mark.asyncio
+async def test_aworld_trajectory_evaluator_backend_preserves_report_distribution_metrics(
+    tmp_path,
+) -> None:
+    dataset = _dataset(
+        tuple(
+            EvalCase(
+                case_id=f"task-{index}",
+                input={"content": "Recover the workflow."},
+                metadata={
+                    "baseline_trajectory": [
+                        {"action": {"content": f"Recovered {index}."}}
+                    ]
+                },
+            )
+            for index in range(2)
+        )
+    )
+
+    def distribution_report(**kwargs):
+        return {
+            "summary": {
+                "trajectory-source-evaluator": {
+                    "score": {
+                        "mean": 80.0,
+                        "min": 70.0,
+                        "max": 90.0,
+                        "std": 10.0,
+                    }
+                }
+            },
+            "gate": {"status": "pass", "metric_name": "score", "value": 80.0},
+        }
+
+    backend = AWorldTrajectoryEvaluatorBackend(
+        workspace_root=tmp_path,
+        judge_agent_name="trajectory-judge",
+        run_evaluator_source=distribution_report,
+        judge_repetitions=1,
+    )
+
+    summary = await backend.evaluate_variant(
+        EvaluationRequest(variant_id="baseline", candidate=None, dataset=dataset)
+    )
+
+    assert summary.metrics["score_std"] == 10.0
+    assert summary.metrics["score_min"] == 70.0
+    assert summary.metrics["score_max"] == 90.0
+    assert summary.metrics["score_sample_count"] == 2
+
+
+@pytest.mark.asyncio
 async def test_aworld_trajectory_evaluator_backend_extracts_evidence_quality_metrics(tmp_path) -> None:
     dataset = _dataset(
         (
@@ -892,7 +943,7 @@ async def test_aworld_trajectory_evaluator_backend_compares_variant_trajectories
 
 
 @pytest.mark.asyncio
-async def test_aworld_trajectory_evaluator_backend_deduplicates_replay_variant_trajectories(
+async def test_aworld_trajectory_evaluator_backend_preserves_paired_case_cardinality(
     tmp_path,
 ) -> None:
     shared_baseline = [{"action": {"content": "Baseline replay."}}]
@@ -943,15 +994,23 @@ async def test_aworld_trajectory_evaluator_backend_deduplicates_replay_variant_t
         candidate=_candidate("cand-1"),
     )
 
-    assert line_counts == [1, 2]
+    assert line_counts == [4, 4]
     assert baseline.metrics["original_case_count"] == 4
-    assert baseline.metrics["effective_case_count"] == 1
-    assert baseline.metrics["deduplicated_case_count"] == 3
-    assert baseline.metrics["command_case_count"] == 1
+    assert baseline.metrics["effective_case_count"] == 4
+    assert baseline.metrics["deduplicated_case_count"] == 0
+    assert baseline.metrics["command_case_count"] == 4
     assert candidate.metrics["original_case_count"] == 4
-    assert candidate.metrics["effective_case_count"] == 2
-    assert candidate.metrics["deduplicated_case_count"] == 2
-    assert candidate.metrics["command_case_count"] == 2
+    assert candidate.metrics["effective_case_count"] == 4
+    assert candidate.metrics["deduplicated_case_count"] == 0
+    assert candidate.metrics["command_case_count"] == 4
+    assert baseline.metrics["comparison_plan_fingerprint"] == candidate.metrics[
+        "comparison_plan_fingerprint"
+    ]
+    assert baseline.metrics["comparison_case_ids"] == candidate.metrics[
+        "comparison_case_ids"
+    ]
+    assert baseline.metrics["comparison_cardinality_preserved"] is True
+    assert candidate.metrics["comparison_cardinality_preserved"] is True
 
 
 @pytest.mark.asyncio

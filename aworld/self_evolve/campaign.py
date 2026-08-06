@@ -1151,6 +1151,19 @@ def derive_self_improvement_disposition(
     events = _typed_failure_events(report)
     terminal = report.get("terminal_cause")
     attribution = report.get("rejection_attribution")
+    if (
+        isinstance(attribution, Mapping)
+        and attribution.get("scheduler_reason_code") == "focused_budget_denied"
+    ):
+        return SelfImprovementDisposition(
+            kind=SelfImprovementDispositionKind.EXHAUSTED,
+            reason_code="campaign_focused_budget_denied",
+            owner="budget",
+            stage="candidate_generation",
+            scope="shared_run",
+            repairable=False,
+            progress_delta_ids=delta,
+        )
     primary_failure: Mapping[str, Any] | None = None
     if (
         isinstance(terminal, Mapping)
@@ -1489,6 +1502,7 @@ def _status_for_disposition(
             "campaign_cycle_budget_exhausted",
             "campaign_infrastructure_retry_budget_exhausted",
             "campaign_usage_telemetry_missing",
+            "campaign_focused_budget_denied",
         }:
             return SelfImprovementCampaignStatus.BUDGET_LIMITED
         return SelfImprovementCampaignStatus.EXHAUSTED

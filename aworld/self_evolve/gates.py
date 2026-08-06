@@ -79,6 +79,41 @@ class ReplayAdaptationGate:
         )
 
 
+class EvaluationComparabilityGate:
+    """Fail closed when baseline and candidate were not evaluated as one experiment."""
+
+    def evaluate(
+        self,
+        *,
+        baseline: EvaluationSummary,
+        candidate: EvaluationSummary,
+    ) -> GateResult:
+        comparable, details = _evaluation_comparability(
+            baseline.metrics,
+            candidate.metrics,
+        )
+        if comparable:
+            return GateResult(
+                gate_name="evaluation_comparability",
+                passed=True,
+                reason="baseline and candidate evaluation plans are comparable",
+                details=details,
+            )
+        return GateResult(
+            gate_name="evaluation_comparability",
+            passed=False,
+            reason="baseline and candidate evaluation plans are not comparable",
+            details={
+                **details,
+                "code": "evaluation_plan_not_comparable",
+                "failure_class": "framework",
+                "failure_owner": "framework",
+                "failure_scope": "shared_run",
+                "repairable": False,
+            },
+        )
+
+
 class ScoreImprovementGate:
     def __init__(
         self,
@@ -132,22 +167,26 @@ class ScoreImprovementGate:
             "delta": round(delta, 10),
             "minimum_delta": self.min_delta,
         }
-        if delta < self.min_delta:
-            details.update(
-                {
-                    "code": "score_improvement_below_minimum",
-                    "decision": "rejected",
-                    "failure_class": "candidate",
-                    "failure_owner": "candidate",
-                    "failure_scope": "candidate",
-                    "repairable": True,
-                }
-            )
+        comparable, comparability = _evaluation_comparability(
+            baseline.metrics,
+            candidate.metrics,
+        )
+        details["comparability"] = comparability
+        if not comparable:
             return GateResult(
                 gate_name="score_improvement",
                 passed=False,
-                reason="score improvement below minimum delta",
-                details=details,
+                reason="score improvement is inconclusive across non-comparable evaluation plans",
+                details={
+                    **details,
+                    "code": "score_improvement_incomparable",
+                    "decision": "inconclusive",
+                    "tiebreak_eligible": False,
+                    "failure_class": "framework",
+                    "failure_owner": "framework",
+                    "failure_scope": "shared_run",
+                    "repairable": False,
+                },
             )
 
         stochastic = any(
@@ -160,6 +199,8 @@ class ScoreImprovementGate:
             )
         )
         if not stochastic:
+            if delta < self.min_delta:
+                return _score_rejection_result(details)
             details.update(
                 {
                     "code": "score_improvement_deterministic",
@@ -189,6 +230,7 @@ class ScoreImprovementGate:
                 + (candidate_std * candidate_std) / candidate_count
             )
             lower_bound = delta - (self.confidence_z * standard_error)
+            upper_bound = delta + (self.confidence_z * standard_error)
             details.update(
                 {
                     "baseline_score_std": baseline_std,
@@ -197,6 +239,7 @@ class ScoreImprovementGate:
                     "candidate_sample_count": candidate_count,
                     "delta_standard_error": standard_error,
                     "delta_confidence_lower_bound": lower_bound,
+                    "delta_confidence_upper_bound": upper_bound,
                     "confidence_z": self.confidence_z,
                     "uncertainty_model": "independent_standard_error",
                 }
@@ -213,6 +256,11 @@ class ScoreImprovementGate:
                     passed=True,
                     reason="score improvement clears the noise-aware confidence bound",
                     details=details,
+                )
+            if upper_bound < self.min_delta:
+                return _score_rejection_result(
+                    details,
+                    reason="score regression is confirmed by the noise-aware confidence bound",
                 )
             return GateResult(
                 gate_name="score_improvement",
@@ -253,6 +301,8 @@ class ScoreImprovementGate:
                     "decision": "accepted",
                 },
             )
+        if self.min_delta - delta >= evidence_free_margin:
+            return _score_rejection_result(details)
         return GateResult(
             gate_name="score_improvement",
             passed=False,
@@ -288,6 +338,24 @@ class CostLatencyRegressionGate:
         baseline: EvaluationSummary,
         candidate: EvaluationSummary,
     ) -> GateResult:
+        comparable, comparability = _evaluation_comparability(
+            baseline.metrics,
+            candidate.metrics,
+        )
+        if not comparable:
+            return GateResult(
+                gate_name="cost_latency_regression",
+                passed=False,
+                reason="resource regression is inconclusive across non-comparable evaluation plans",
+                details={
+                    "code": "resource_regression_incomparable",
+                    "comparability": comparability,
+                    "failure_class": "framework",
+                    "failure_owner": "framework",
+                    "failure_scope": "shared_run",
+                    "repairable": False,
+                },
+            )
         cost_key = _first_comparable_metric_key(
             baseline.metrics,
             candidate.metrics,
@@ -322,7 +390,7 @@ class CostLatencyRegressionGate:
                 },
             )
         cost_ratio = (
-            _regression_ratio(baseline.metrics, candidate.metrics, cost_key)
+            _normalized_regression_ratio(baseline.metrics, candidate.metrics, cost_key)
             if cost_key is not None
             else None
         )
@@ -331,11 +399,17 @@ class CostLatencyRegressionGate:
                 gate_name="cost_latency_regression",
                 passed=False,
                 reason="cost regression exceeds policy",
-                details={"cost_regression_ratio": cost_ratio},
+                details=_resource_regression_failure_details(
+                    baseline.metrics,
+                    candidate.metrics,
+                    key=cost_key,
+                    ratio=cost_ratio,
+                    kind="cost",
+                ),
             )
 
         latency_ratio = (
-            _regression_ratio(
+            _normalized_regression_ratio(
                 baseline.metrics,
                 candidate.metrics,
                 latency_key,
@@ -348,7 +422,13 @@ class CostLatencyRegressionGate:
                 gate_name="cost_latency_regression",
                 passed=False,
                 reason="latency regression exceeds policy",
-                details={"latency_regression_ratio": latency_ratio},
+                details=_resource_regression_failure_details(
+                    baseline.metrics,
+                    candidate.metrics,
+                    key=latency_key,
+                    ratio=latency_ratio,
+                    kind="latency",
+                ),
             )
 
         return GateResult(
@@ -361,6 +441,8 @@ class CostLatencyRegressionGate:
                 "cost_metric": cost_key,
                 "latency_metric": latency_key,
                 "resource_evidence_required": self.require_resource_evidence,
+                "comparability": comparability,
+                "normalization": "per_effective_case_when_available",
             },
         )
 
@@ -784,7 +866,12 @@ class EvidenceQualityGate:
         "preview:",
     )
 
-    def evaluate(self, summary: EvaluationSummary) -> GateResult:
+    def evaluate(
+        self,
+        summary: EvaluationSummary,
+        *,
+        baseline: EvaluationSummary | None = None,
+    ) -> GateResult:
         evidence_block_count = int(_number_metric(summary.metrics, "evidence_block_count") or 0)
         evidence_manifest_entry_count = int(
             _number_metric(summary.metrics, "evidence_manifest_entry_count") or 0
@@ -816,10 +903,48 @@ class EvidenceQualityGate:
         evidence_constraints = evidence_repair_constraints_from_metrics(
             summary.metrics
         )
+        baseline_constraints = (
+            evidence_repair_constraints_from_metrics(baseline.metrics)
+            if baseline is not None
+            else ()
+        )
+        constraint_regressions, resolved_constraints = _evidence_constraint_delta(
+            baseline_constraints,
+            evidence_constraints,
+        )
+        baseline_compacted = (
+            _bool_metric(baseline.metrics, "evidence_compacted")
+            if baseline is not None
+            else None
+        )
+        baseline_incomplete = (
+            _bool_metric(baseline.metrics, "evidence_incomplete")
+            if baseline is not None
+            else None
+        )
+        compacted_regressed = (
+            baseline is not None and compacted is True and baseline_compacted is not True
+        )
+        incomplete_regressed = (
+            baseline is not None and incomplete is True and baseline_incomplete is not True
+        )
         has_declared_evidence_constraints = bool(
             summary.metrics.get("evidence_repair_constraints")
         )
-        constraint_owners = {item.owner for item in evidence_constraints}
+        regressed_constraint_identities = {
+            str(item.get("constraint_identity_digest") or "")
+            for item in constraint_regressions
+        }
+        ownership_constraints = (
+            tuple(
+                item
+                for item in evidence_constraints
+                if item.identity_digest in regressed_constraint_identities
+            )
+            if baseline is not None
+            else evidence_constraints
+        )
+        constraint_owners = {item.owner for item in ownership_constraints}
         if FailureOwner.INFRASTRUCTURE in constraint_owners:
             failure_owner = FailureOwner.INFRASTRUCTURE
         elif FailureOwner.FRAMEWORK in constraint_owners:
@@ -845,6 +970,16 @@ class EvidenceQualityGate:
                 item.to_dict() for item in evidence_constraints
             ],
             "evidence_constraint_count": len(evidence_constraints),
+            "evidence_comparison_mode": (
+                "baseline_relative" if baseline is not None else "absolute"
+            ),
+            "baseline_evidence_repair_constraints": [
+                item.to_dict() for item in baseline_constraints
+            ],
+            "evidence_constraint_regressions": constraint_regressions,
+            "resolved_evidence_constraints": resolved_constraints,
+            "evidence_compacted_regressed": compacted_regressed,
+            "evidence_incomplete_regressed": incomplete_regressed,
             "failure_class": failure_owner.value,
             "failure_owner": failure_owner.value,
             "failure_scope": (
@@ -873,6 +1008,24 @@ class EvidenceQualityGate:
                 reason="artifact-first evidence is not fully verifiable",
                 details=details,
             )
+        if baseline is not None and (
+            constraint_regressions
+            or compacted_regressed
+            or incomplete_regressed
+        ):
+            return GateResult(
+                gate_name="evidence_quality",
+                passed=False,
+                reason="candidate evidence quality regressed relative to baseline",
+                details=details,
+            )
+        if baseline is not None:
+            # Pre-existing constraints remain visible in diagnostics, but only
+            # new or worsened constraints are attributed to this candidate.
+            evidence_constraints = ()
+            has_declared_evidence_constraints = False
+            compacted = False
+            incomplete = False
         if has_declared_evidence_constraints and evidence_constraints:
             return GateResult(
                 gate_name="evidence_quality",
@@ -1419,6 +1572,114 @@ def _number_metric(metrics: dict[str, Any] | Any, key: str) -> float | None:
     )
 
 
+def _evaluation_comparability(
+    baseline_metrics: Mapping[str, Any],
+    candidate_metrics: Mapping[str, Any],
+) -> tuple[bool, dict[str, Any]]:
+    baseline_plan = baseline_metrics.get("comparison_plan_fingerprint")
+    candidate_plan = candidate_metrics.get("comparison_plan_fingerprint")
+    baseline_count = _number_metric(
+        baseline_metrics,
+        "comparison_effective_case_count",
+    )
+    candidate_count = _number_metric(
+        candidate_metrics,
+        "comparison_effective_case_count",
+    )
+    if baseline_count is None:
+        baseline_count = _number_metric(baseline_metrics, "effective_case_count")
+    if candidate_count is None:
+        candidate_count = _number_metric(candidate_metrics, "effective_case_count")
+    baseline_case_ids = baseline_metrics.get("comparison_case_ids")
+    candidate_case_ids = candidate_metrics.get("comparison_case_ids")
+    reasons: list[str] = []
+    if (baseline_plan is None) != (candidate_plan is None):
+        reasons.append("comparison_plan_missing_on_one_side")
+    elif baseline_plan is not None and baseline_plan != candidate_plan:
+        reasons.append("comparison_plan_fingerprint_mismatch")
+    if (
+        baseline_count is not None
+        and candidate_count is not None
+        and int(baseline_count) != int(candidate_count)
+    ):
+        reasons.append("effective_case_count_mismatch")
+    if (
+        isinstance(baseline_case_ids, (list, tuple))
+        and isinstance(candidate_case_ids, (list, tuple))
+        and list(baseline_case_ids) != list(candidate_case_ids)
+    ):
+        reasons.append("comparison_case_identity_mismatch")
+    if baseline_plan is not None and (
+        baseline_metrics.get("comparison_cardinality_preserved") is not True
+        or candidate_metrics.get("comparison_cardinality_preserved") is not True
+    ):
+        reasons.append("comparison_cardinality_not_preserved")
+    return not reasons, {
+        "comparable": not reasons,
+        "reasons": reasons,
+        "baseline_plan_fingerprint": baseline_plan,
+        "candidate_plan_fingerprint": candidate_plan,
+        "baseline_effective_case_count": baseline_count,
+        "candidate_effective_case_count": candidate_count,
+    }
+
+
+def _evidence_constraint_delta(
+    baseline: Iterable[Any],
+    candidate: Iterable[Any],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    baseline_by_identity = {item.identity_digest: item for item in baseline}
+    candidate_by_identity = {item.identity_digest: item for item in candidate}
+    regressions: list[dict[str, Any]] = []
+    resolved: list[dict[str, Any]] = []
+    for identity in sorted({*baseline_by_identity, *candidate_by_identity}):
+        baseline_item = baseline_by_identity.get(identity)
+        candidate_item = candidate_by_identity.get(identity)
+        baseline_count = baseline_item.occurrence_count if baseline_item is not None else 0
+        candidate_count = candidate_item.occurrence_count if candidate_item is not None else 0
+        delta = candidate_count - baseline_count
+        if delta > 0 and candidate_item is not None:
+            regressions.append(
+                {
+                    **candidate_item.to_dict(),
+                    "baseline_occurrence_count": baseline_count,
+                    "candidate_occurrence_count": candidate_count,
+                    "occurrence_delta": delta,
+                }
+            )
+        elif delta < 0 and baseline_item is not None:
+            resolved.append(
+                {
+                    **baseline_item.to_dict(),
+                    "baseline_occurrence_count": baseline_count,
+                    "candidate_occurrence_count": candidate_count,
+                    "occurrence_delta": delta,
+                }
+            )
+    return regressions, resolved
+
+
+def _score_rejection_result(
+    details: Mapping[str, object],
+    *,
+    reason: str = "score improvement below minimum delta",
+) -> GateResult:
+    return GateResult(
+        gate_name="score_improvement",
+        passed=False,
+        reason=reason,
+        details={
+            **details,
+            "code": "score_improvement_below_minimum",
+            "decision": "rejected",
+            "failure_class": "candidate",
+            "failure_owner": "candidate",
+            "failure_scope": "candidate",
+            "repairable": True,
+        },
+    )
+
+
 def _score_sample_count(metrics: Mapping[str, Any]) -> int:
     for key in ("score_sample_count", "judge_success_count", "judge_repetitions"):
         value = metrics.get(key)
@@ -1458,16 +1719,63 @@ def _contains_compacted_evidence_marker(value: Any) -> bool:
     return False
 
 
-def _regression_ratio(
-    baseline_metrics: dict[str, Any] | Any,
-    candidate_metrics: dict[str, Any] | Any,
+def _normalized_resource_metric(
+    metrics: Mapping[str, Any],
+    key: str,
+) -> tuple[float | None, float | None]:
+    value = _number_metric(metrics, key)
+    if value is None:
+        return None, None
+    case_count = _number_metric(metrics, "effective_case_count")
+    if case_count is None:
+        case_count = _number_metric(metrics, "comparison_effective_case_count")
+    if case_count is None or case_count <= 0:
+        return value, None
+    return value / case_count, case_count
+
+
+def _normalized_regression_ratio(
+    baseline_metrics: Mapping[str, Any],
+    candidate_metrics: Mapping[str, Any],
     key: str,
 ) -> float | None:
-    baseline = _number_metric(baseline_metrics, key)
-    candidate = _number_metric(candidate_metrics, key)
+    baseline, _ = _normalized_resource_metric(baseline_metrics, key)
+    candidate, _ = _normalized_resource_metric(candidate_metrics, key)
     if baseline is None or candidate is None or baseline <= 0:
         return None
     return (candidate - baseline) / baseline
+
+
+def _resource_regression_failure_details(
+    baseline_metrics: Mapping[str, Any],
+    candidate_metrics: Mapping[str, Any],
+    *,
+    key: str,
+    ratio: float,
+    kind: str,
+) -> dict[str, Any]:
+    baseline_value, baseline_count = _normalized_resource_metric(
+        baseline_metrics,
+        key,
+    )
+    candidate_value, candidate_count = _normalized_resource_metric(
+        candidate_metrics,
+        key,
+    )
+    return {
+        f"{kind}_regression_ratio": ratio,
+        f"{kind}_metric": key,
+        "normalization": "per_effective_case_when_available",
+        "baseline_normalized_value": baseline_value,
+        "candidate_normalized_value": candidate_value,
+        "baseline_effective_case_count": baseline_count,
+        "candidate_effective_case_count": candidate_count,
+        "code": f"{kind}_regression_exceeds_policy",
+        "failure_class": "candidate",
+        "failure_owner": "candidate",
+        "failure_scope": "candidate",
+        "repairable": True,
+    }
 
 
 def _first_comparable_metric_key(

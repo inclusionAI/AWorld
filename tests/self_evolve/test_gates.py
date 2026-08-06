@@ -11,6 +11,7 @@ from aworld.self_evolve.gates import (
     BudgetGate,
     CandidatePackageGate,
     CostLatencyRegressionGate,
+    EvaluationComparabilityGate,
     EvidenceQualityGate,
     ExternalCodeEvolutionGate,
     GlobalRegressionBenchmarkGate,
@@ -292,6 +293,61 @@ def test_score_improvement_gate_uses_observed_judge_variance() -> None:
     assert result.details["failure_owner"] == "framework"
 
 
+def test_score_improvement_gate_treats_noisy_negative_delta_as_inconclusive() -> None:
+    result = ScoreImprovementGate(min_delta=0.0).evaluate(
+        baseline=EvaluationSummary(
+            variant_id="baseline",
+            metrics={
+                "score": 85.7,
+                "score_std": 0.42,
+                "score_sample_count": 4,
+                "judge_success_count": 1,
+            },
+        ),
+        candidate=EvaluationSummary(
+            variant_id="candidate",
+            metrics={
+                "score": 83.27,
+                "score_std": 7.73,
+                "score_sample_count": 4,
+                "judge_success_count": 1,
+            },
+        ),
+    )
+
+    assert result.passed is False
+    assert result.details["decision"] == "inconclusive"
+    assert result.details["tiebreak_eligible"] is True
+    assert result.details["delta_confidence_upper_bound"] > 0
+
+
+def test_evaluation_comparability_gate_rejects_mismatched_case_plans() -> None:
+    result = EvaluationComparabilityGate().evaluate(
+        baseline=EvaluationSummary(
+            variant_id="baseline",
+            metrics={
+                "comparison_plan_fingerprint": "sha256:baseline",
+                "comparison_effective_case_count": 2,
+                "comparison_case_ids": ["a", "b"],
+                "comparison_cardinality_preserved": True,
+            },
+        ),
+        candidate=EvaluationSummary(
+            variant_id="candidate",
+            metrics={
+                "comparison_plan_fingerprint": "sha256:candidate",
+                "comparison_effective_case_count": 3,
+                "comparison_case_ids": ["a", "b", "c"],
+                "comparison_cardinality_preserved": True,
+            },
+        ),
+    )
+
+    assert result.passed is False
+    assert result.details["failure_owner"] == "framework"
+    assert "effective_case_count_mismatch" in result.details["reasons"]
+
+
 def test_score_improvement_gate_accepts_confident_distribution_delta() -> None:
     gate = ScoreImprovementGate(min_delta=1.0)
 
@@ -347,6 +403,26 @@ def test_cost_latency_regression_gate_limits_regressions() -> None:
     assert passed.passed is True
     assert failed.passed is False
     assert failed.reason == "cost regression exceeds policy"
+
+
+def test_cost_latency_gate_normalizes_totals_per_effective_case() -> None:
+    result = CostLatencyRegressionGate(
+        max_cost_regression_ratio=0.25,
+        max_latency_regression_ratio=0.5,
+    ).evaluate(
+        baseline=EvaluationSummary(
+            variant_id="baseline",
+            metrics={"latency_ms": 200.0, "effective_case_count": 2},
+        ),
+        candidate=EvaluationSummary(
+            variant_id="candidate",
+            metrics={"latency_ms": 220.0, "effective_case_count": 2},
+        ),
+    )
+
+    assert result.passed is True
+    assert result.details["latency_regression_ratio"] == pytest.approx(0.1)
+    assert result.details["normalization"] == "per_effective_case_when_available"
 
 
 def test_cost_latency_gate_fails_closed_when_verified_resource_evidence_missing() -> None:
@@ -1035,6 +1111,79 @@ def test_evidence_quality_gate_accepts_valid_bundle_despite_raw_compaction() -> 
     assert result.details["evidence_incomplete"] is False
     assert result.details["evidence_bundle_valid"] is True
     assert result.details["evidence_bundle_entry_count"] == 2
+
+
+def test_evidence_quality_gate_accepts_unchanged_baseline_constraints() -> None:
+    constraint = {
+        "schema_version": "aworld.self_evolve.evidence_repair_constraint.v1",
+        "subject_kind": "general_claim",
+        "failure_mode": "support_incomplete",
+        "source_layer": "candidate_output",
+        "required_action": "support_or_omit",
+        "owner": "candidate",
+        "occurrence_count": 1,
+    }
+    baseline = EvaluationSummary(
+        variant_id="baseline",
+        metrics={
+            "has_evidence": 1.0,
+            "evidence_incomplete": True,
+            "evidence_bundle_valid": True,
+            "evidence_bundle_entry_count": 1,
+            "evidence_repair_constraints": [constraint],
+        },
+    )
+    candidate = EvaluationSummary(
+        variant_id="candidate",
+        metrics={
+            **baseline.metrics,
+            "evidence_repair_constraints": [dict(constraint)],
+        },
+    )
+
+    result = EvidenceQualityGate().evaluate(candidate, baseline=baseline)
+
+    assert result.passed is True
+    assert result.details["evidence_comparison_mode"] == "baseline_relative"
+    assert result.details["evidence_constraint_regressions"] == []
+
+
+def test_evidence_quality_gate_rejects_worsened_baseline_constraint() -> None:
+    constraint = {
+        "schema_version": "aworld.self_evolve.evidence_repair_constraint.v1",
+        "subject_kind": "general_claim",
+        "failure_mode": "unsupported_claim",
+        "source_layer": "candidate_output",
+        "required_action": "support_or_omit",
+        "owner": "candidate",
+        "occurrence_count": 1,
+    }
+    baseline = EvaluationSummary(
+        variant_id="baseline",
+        metrics={
+            "has_evidence": 1.0,
+            "evidence_bundle_valid": True,
+            "evidence_bundle_entry_count": 1,
+            "evidence_repair_constraints": [constraint],
+        },
+    )
+    candidate_constraint = dict(constraint)
+    candidate_constraint["occurrence_count"] = 2
+    candidate = EvaluationSummary(
+        variant_id="candidate",
+        metrics={
+            **baseline.metrics,
+            "evidence_repair_constraints": [candidate_constraint],
+        },
+    )
+
+    result = EvidenceQualityGate().evaluate(candidate, baseline=baseline)
+
+    assert result.passed is False
+    assert result.reason == "candidate evidence quality regressed relative to baseline"
+    assert result.details["evidence_constraint_regressions"][0][
+        "occurrence_delta"
+    ] == 1
 
 
 def test_evidence_quality_gate_rejects_incomplete_canonical_bundle() -> None:

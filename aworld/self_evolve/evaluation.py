@@ -56,6 +56,7 @@ class EvaluationRequest:
     eval_config: EvaluationConfig | None = None
     dataset_split: str = "all"
     artifact_namespace: str | None = None
+    preserve_case_cardinality: bool = False
 
 
 @dataclass(frozen=True)
@@ -112,6 +113,7 @@ def evaluation_request_identity(
         "backend_fingerprint": backend_fingerprint,
         "variant_fingerprint": variant_fingerprint,
         "dataset_split": request.dataset_split,
+        "preserve_case_cardinality": request.preserve_case_cardinality,
         "eval_config": eval_config,
     }
     fingerprint = _fingerprint_payload(payload)
@@ -446,6 +448,11 @@ class AWorldTrajectoryEvaluatorBackend:
         original_case_count = len(evaluation_cases)
         effective_case_count = len(records)
         deduplicated_case_count = max(0, original_case_count - effective_case_count)
+        comparison_metrics = _aworld_comparison_plan_metrics(
+            request=request,
+            evaluation_cases=evaluation_cases,
+            effective_case_count=effective_case_count,
+        )
         log_path.write_text(
             "\n".join(repr(record) for record in records) + "\n",
             encoding="utf-8",
@@ -464,6 +471,7 @@ class AWorldTrajectoryEvaluatorBackend:
                     "effective_case_count": 0,
                     "deduplicated_case_count": 0,
                     "evaluation_skip_reason": "dataset split has no evaluation cases",
+                    **comparison_metrics,
                 }
             )
             return EvaluationSummary(
@@ -603,13 +611,17 @@ class AWorldTrajectoryEvaluatorBackend:
                     effective_case_count=effective_case_count,
                 )
             )
+            metrics.update(comparison_metrics)
             metrics["judge_attempt_count"] = len(reports) + len(failures)
             metrics["judge_success_count"] = len(reports)
             metrics["judge_failure_count"] = len(failures)
             if isinstance(metrics.get("score"), (int, float)) and not isinstance(
                 metrics.get("score"), bool
             ):
-                metrics["score_sample_count"] = len(reports)
+                metrics["score_sample_count"] = max(
+                    effective_case_count,
+                    len(reports),
+                )
             metrics["judge_timeout_count"] = (
                 _nonnegative_metric_count(metrics.get("judge_timeout_count"))
                 + _judge_failure_timeout_count(failures)
@@ -641,6 +653,7 @@ class AWorldTrajectoryEvaluatorBackend:
                     effective_case_count=effective_case_count,
                 )
             )
+            metrics.update(comparison_metrics)
             if fallback_model_profile is not None:
                 metrics["judge_model_profile_fallback"] = fallback_model_profile
         logger.info(
@@ -842,6 +855,7 @@ async def evaluate_baseline_and_candidate(
         dataset=dataset,
         eval_config=eval_config,
         dataset_split=dataset_split,
+        preserve_case_cardinality=True,
     )
     candidate_request = EvaluationRequest(
         variant_id=candidate.candidate_id,
@@ -849,6 +863,7 @@ async def evaluate_baseline_and_candidate(
         dataset=dataset,
         eval_config=eval_config,
         dataset_split=dataset_split,
+        preserve_case_cardinality=True,
     )
     baseline_identity = evaluation_request_identity(
         backend,
@@ -1530,7 +1545,7 @@ def _aworld_trajectory_records_for_request(
     seen_replay_fingerprints: set[str] = set()
     for case in _evaluation_cases_for_split(request):
         record = _aworld_trajectory_record(case, request=request)
-        if _case_uses_replay_variant(case):
+        if _case_uses_replay_variant(case) and not request.preserve_case_cardinality:
             fingerprint = _aworld_trajectory_record_fingerprint(record)
             if fingerprint in seen_replay_fingerprints:
                 continue
@@ -1702,7 +1717,12 @@ def _aworld_evaluator_metrics(
                 continue
             for metric_name, aggregate in suite_summary.items():
                 if isinstance(aggregate, Mapping) and isinstance(aggregate.get("mean"), (int, float)):
-                    metrics[str(metric_name)] = float(aggregate["mean"])
+                    metric_key = str(metric_name)
+                    metrics[metric_key] = float(aggregate["mean"])
+                    for suffix in ("min", "max", "std"):
+                        value = aggregate.get(suffix)
+                        if isinstance(value, (int, float)) and not isinstance(value, bool):
+                            metrics[f"{metric_key}_{suffix}"] = float(value)
     metrics.update(_aworld_evidence_quality_metrics(report))
     metrics.update(_aworld_judge_diagnostic_metrics(report))
 
@@ -1740,6 +1760,30 @@ def _aworld_evaluator_case_count_metrics(
         "original_case_count": original_case_count,
         "effective_case_count": effective_case_count,
         "deduplicated_case_count": max(0, original_case_count - effective_case_count),
+    }
+
+
+def _aworld_comparison_plan_metrics(
+    *,
+    request: EvaluationRequest,
+    evaluation_cases: tuple[Any, ...],
+    effective_case_count: int,
+) -> dict[str, Any]:
+    case_ids = [str(case.case_id) for case in evaluation_cases]
+    return {
+        "comparison_plan_fingerprint": _fingerprint_payload(
+            {
+                "dataset_fingerprint": _evaluation_dataset_fingerprint(
+                    request.dataset
+                ),
+                "dataset_split": request.dataset_split,
+                "case_ids": case_ids,
+            }
+        ),
+        "comparison_case_ids": case_ids,
+        "comparison_case_count": len(case_ids),
+        "comparison_effective_case_count": effective_case_count,
+        "comparison_cardinality_preserved": request.preserve_case_cardinality,
     }
 
 
