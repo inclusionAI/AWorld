@@ -21,7 +21,7 @@ def _usage() -> str:
   /optimize --from-source <file-or-directory> --source-ingestor <registered-name> --target <target>
   /optimize --frozen-ingestion-id <id> --semantic-evidence-approval <approval.json> --semantic-qualification-report <report.json> --apply auto_verified
   /optimize --from-trajectory <trajectory.log> --apply proposal [--target <target>]
-  /optimize --from-trajectory <trajectory.log> --apply verified_only --target <target> --judge-agent <agent.md>
+  /optimize --from-trajectory <trajectory.log> --regression-benchmark <regression.log> --apply verified_only --target <target> --judge-agent <agent.md>
   /optimize --from-trajectory <trajectory.log> --apply auto_verified --new-skill-policy auto_verified --judge-agent <agent.md>
   /optimize --from-trajectory <multi-task-trajectory.log> --include-prior-runs --apply proposal
   /optimize --from-trajectory-set <trajectory-set.json> --apply auto_verified --judge-agent <agent.md>
@@ -76,6 +76,24 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--from-run", dest="from_run")
     parser.add_argument("--rerun-evaluator", action="store_true", dest="rerun_evaluator")
     parser.add_argument("--batch-config", dest="batch_config")
+    parser.add_argument(
+        "--regression-benchmark",
+        action="append",
+        default=[],
+        dest="regression_benchmarks",
+    )
+    parser.add_argument(
+        "--no-challenger",
+        action="store_false",
+        dest="challenger_enabled",
+        default=True,
+    )
+    parser.add_argument(
+        "--challenger-max-cases",
+        type=int,
+        default=2,
+        dest="challenger_max_cases",
+    )
     parser.add_argument("--iterations", type=int)
     parser.add_argument("--apply")
     parser.add_argument("--max-improvement-cycles", type=int, default=3, dest="max_improvement_cycles")
@@ -195,6 +213,9 @@ class OptimizeCommand(Command):
                 from_run=args.from_run,
                 rerun_evaluator=args.rerun_evaluator,
                 batch_config=args.batch_config,
+                regression_benchmarks=tuple(args.regression_benchmarks),
+                challenger_enabled=args.challenger_enabled,
+                challenger_max_cases=args.challenger_max_cases,
                 iterations=args.iterations,
                 max_improvement_cycles=args.max_improvement_cycles,
                 resume_campaign=args.resume_campaign,

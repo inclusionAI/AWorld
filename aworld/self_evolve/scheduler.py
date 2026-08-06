@@ -316,6 +316,9 @@ def _run_framework_job(
         baseline_replay_repetitions=config.baseline_replay_repetitions,
         candidate_replay_repetitions=config.candidate_replay_repetitions,
         replay_stability_margin=config.replay_stability_margin,
+        regression_benchmarks=config.regression_benchmarks,
+        challenger_enabled=config.challenger_enabled,
+        challenger_max_cases=config.challenger_max_cases,
         runtime_registry_refresher=runtime_registry_refresher,
     )
     apply_policy = _effective_background_apply_policy(config)

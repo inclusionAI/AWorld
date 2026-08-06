@@ -295,6 +295,26 @@ def test_quality_progress_round_trip_is_backward_compatible() -> None:
     assert type(progress).from_dict(legacy).candidate_quality is None
 
 
+def test_campaign_quality_uses_typed_regression_evidence_not_legacy_metric() -> None:
+    report = {
+        **_report(_event()),
+        "candidate_metrics": {
+            "score": 80.0,
+            "global_regression_passed": True,
+        },
+        "regression_evidence": {"passed": False},
+    }
+
+    progress = self_improvement_progress(report)
+
+    assert progress.candidate_quality is not None
+    assert progress.candidate_quality.global_regression_passed is False
+    report.pop("regression_evidence")
+    legacy_progress = self_improvement_progress(report)
+    assert legacy_progress.candidate_quality is not None
+    assert legacy_progress.candidate_quality.global_regression_passed is None
+
+
 def test_disposition_ignores_bounded_projection_placeholders_as_progress() -> None:
     event = _event()
     event["schema_field_constraints"] = [

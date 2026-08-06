@@ -59,6 +59,12 @@ from aworld.self_evolve.replay import (
     _distributed_member_repetitions,
     _member_artifact_name,
     _member_baseline_replay_dir,
+    replay_dataset_fingerprint,
+)
+from aworld.self_evolve.regression import (
+    RegressionSuiteSpec,
+    ResolvedRegressionSuite,
+    dataset_case_fingerprints,
 )
 from aworld.self_evolve.replay_adaptation import (
     ReplayAdapterBinding,
@@ -110,6 +116,7 @@ from aworld.self_evolve.runner import (
     _repair_conformance_failure_diagnostics,
     _repair_conformance_gate,
     _repair_conformance_required_nonempty_operations,
+    _rerun_cli_run_id,
     _retryable_candidate_generation_failure,
     _select_iteration_state,
     _candidate_screening_dataset,
@@ -165,6 +172,162 @@ from aworld.self_evolve.types import (
     SelfEvolveTargetRef,
     to_json_dict,
 )
+
+
+def _independent_regression_suites_for_test(
+    dataset: SelfEvolveDataset,
+) -> tuple[ResolvedRegressionSuite, ...]:
+    """Build an in-memory disjoint suite for verified runner unit tests."""
+
+    regression_dataset = replace(
+        dataset,
+        cases=tuple(
+            replace(
+                case,
+                input={
+                    "independent_regression_test_case": True,
+                    "selection_input": case.input,
+                },
+            )
+            for case in dataset.cases
+        ),
+        recipe=replace(
+            dataset.recipe,
+            source={"kind": "jsonl", "test_fixture": True},
+            split_seed="independent-regression-test",
+        ),
+    )
+    spec = RegressionSuiteSpec(
+        suite_id="independent-regression-test",
+        source_kind="jsonl",
+        source_ref="test-fixture.jsonl",
+        source_version="sha256:test-fixture",
+        dataset_fingerprint=replay_dataset_fingerprint(regression_dataset),
+        split_fingerprint="sha256:test-split",
+        case_fingerprints=dataset_case_fingerprints(regression_dataset),
+    )
+    return (ResolvedRegressionSuite(spec=spec, dataset=regression_dataset),)
+
+
+def test_evaluator_rerun_ids_are_unique_but_lineage_stable() -> None:
+    first = _rerun_cli_run_id("source-run", "candidate-one")
+    second = _rerun_cli_run_id("source-run", "candidate-one")
+
+    assert first != second
+    assert first.rsplit("-", 1)[0] == second.rsplit("-", 1)[0]
+
+
+def test_campaign_restores_typed_scheduler_frontier_checkpoint(tmp_path) -> None:
+    store = FilesystemSelfEvolveStore(tmp_path)
+    target = SelfEvolveTargetRef(
+        target_type="skill",
+        target_id="demo",
+        path=str(tmp_path / "aworld-skills/demo/SKILL.md"),
+    )
+    prior_run = "campaign-demo-cycle-001"
+    report_path = store.run_path(prior_run) / "report.json"
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text(
+        json.dumps(
+            {
+                "run_id": prior_run,
+                "target": to_json_dict(target),
+                "status": "rejected",
+                "repair_frontier_state": {
+                    "schema_version": (
+                        "aworld.self_evolve.repair_frontier_state.v1"
+                    ),
+                    "scheduler_state": {
+                        "initial_exploration_scheduled": True,
+                        "untyped_frontier_exploration_scheduled": False,
+                        "frontier_progress": {"semantic-a": 3},
+                        "frontier_stalls": {"semantic-a": 1},
+                        "frontier_mutation_families": {
+                            "semantic-a": ["focused-repair"]
+                        },
+                        "last_focused_frontier": "semantic-a",
+                    },
+                    "records": [],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    state = runner_module._load_prior_scheduler_state(
+        store,
+        target,
+        current_run_id="campaign-demo-cycle-002",
+        allowed_run_ids=(prior_run,),
+    )
+
+    assert state.frontier_progress == {"semantic-a": 3}
+    assert state.frontier_stalls == {"semantic-a": 1}
+    assert state.frontier_mutation_families == {
+        "semantic-a": ("focused-repair",)
+    }
+
+
+def test_repair_frontier_state_marks_reappearing_resolved_frontier_regressed(
+    tmp_path,
+) -> None:
+    store = FilesystemSelfEvolveStore(tmp_path)
+    target = SelfEvolveTargetRef(target_type="skill", target_id="demo")
+    prior_run = "campaign-demo-cycle-001"
+    report_path = store.run_path(prior_run) / "report.json"
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text(
+        json.dumps(
+            {
+                "run_id": prior_run,
+                "target": to_json_dict(target),
+                "status": "succeeded",
+                "repair_frontier_state": {
+                    "records": [
+                        {
+                            "semantic_key": "semantic-a",
+                            "status": "resolved",
+                            "owner": "candidate",
+                            "scope": "candidate",
+                            "repairable": True,
+                            "current_progress": 2,
+                            "best_progress": 2,
+                            "first_seen_run_id": prior_run,
+                            "last_seen_run_id": prior_run,
+                            "regression_count": 0,
+                        }
+                    ],
+                    "scheduler_state": {},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = runner_module._repair_frontier_state_report(
+        store=store,
+        target=target,
+        current_run_id="campaign-demo-cycle-002",
+        allowed_run_ids=(prior_run,),
+        observed_frontiers=(
+            runner_module.RepairFrontier(
+                semantic_key="semantic-a",
+                progress=1,
+                owner=FailureOwner.CANDIDATE,
+                scope=FailureScope.CANDIDATE,
+                repairable=True,
+            ),
+        ),
+        scheduler_state=runner_module.SchedulerState(),
+        selected_candidate_id="candidate-2",
+        run_succeeded=False,
+        campaign_id="campaign-demo",
+        campaign_cycle=2,
+    )
+
+    assert payload["regressed_count"] == 1
+    assert payload["records"][0]["status"] == "regressed"
+    assert payload["records"][0]["regression_count"] == 1
 
 
 _REPLAY_PROVENANCE_KEYS = (
@@ -6953,6 +7116,7 @@ async def test_runner_auto_verified_applies_allowlisted_candidate_after_post_app
         optimizer=TraceReflectiveLLMMutator(mutate_text=mutate),
         post_apply_evaluator=post_apply,
         evaluation_backend=VerifiedBackend(),
+        regression_suites=_independent_regression_suites_for_test(dataset),
         min_eval_cases=0,
         runtime_registry_refresher=refresh_runtime,
         runtime_skill_activator=activate_runtime_skill,
@@ -6988,6 +7152,15 @@ async def test_runner_auto_verified_applies_allowlisted_candidate_after_post_app
     assert report["apply_policy"] == "auto_verified"
     assert report["post_apply"]["status"] == "accepted"
     assert report["post_apply"]["metrics"]["post_apply_passed"] is True
+    assert report["regression_evidence"]["passed"] is True
+    assert report["regression_evidence"]["data_independent"] is True
+    assert report["regression_evidence"]["execution_independent"] is True
+    assert (
+        store.run_path("run-auto-verified")
+        / "regression"
+        / "evidence"
+        / f"{report['selected_candidate_id']}.json"
+    ).is_file()
     assert report["release_normalization"]["normalization_verification_passed"] is True
     assert report["release_normalization"]["pre_normalization_fingerprint"].startswith(
         "sha256:"
@@ -7183,6 +7356,7 @@ async def test_runner_rejects_apply_when_release_normalization_removes_runtime_c
         optimizer=TraceReflectiveLLMMutator(mutate_text=mutate),
         post_apply_evaluator=post_apply,
         evaluation_backend=VerifiedBackend(),
+        regression_suites=_independent_regression_suites_for_test(dataset),
         min_eval_cases=0,
     )
 
@@ -7393,6 +7567,7 @@ async def test_runner_refines_candidates_across_iterations_with_validation_feedb
         optimizer=optimizer,
         post_apply_evaluator=post_apply,
         evaluation_backend=IteratingBackend(),
+        regression_suites=_independent_regression_suites_for_test(dataset),
         min_eval_cases=0,
         max_iterations=2,
     )
@@ -7737,7 +7912,7 @@ def test_partial_multi_batch_telemetry_never_debits_below_known_lower_bound() ->
     }
 
 
-def test_judge_actual_tokens_require_complete_executed_summary_set() -> None:
+def test_judge_actual_tokens_preserve_incomplete_known_lower_bound() -> None:
     baseline = EvaluationSummary(
         variant_id="baseline",
         dataset_split="validation",
@@ -7755,8 +7930,8 @@ def test_judge_actual_tokens_require_complete_executed_summary_set() -> None:
         expected_summary_count=2,
     )
 
-    assert tokens is None
-    assert source == "reserved_fallback_incomplete_judge_telemetry"
+    assert tokens == 18
+    assert source.startswith("known_lower_bound_incomplete_judge_telemetry:")
 
 
 def test_judge_actual_tokens_fall_back_when_expected_heldout_never_completes() -> None:
@@ -7778,8 +7953,65 @@ def test_judge_actual_tokens_fall_back_when_expected_heldout_never_completes() -
         expected_summary_count=3,
     )
 
-    assert tokens is None
-    assert source == "reserved_fallback_incomplete_judge_telemetry"
+    assert tokens == 14
+    assert source.startswith("known_lower_bound_incomplete_judge_telemetry:")
+
+
+def test_execution_usage_deduplicates_aliases_and_reused_baselines() -> None:
+    baseline = EvaluationSummary(
+        variant_id="baseline",
+        dataset_split="validation",
+        metrics={
+            "evaluation_execution_id": "baseline-exec",
+            "judge_attempt_count": 3,
+            "judge_estimated_input_tokens_total": 100,
+        },
+    )
+    candidate = EvaluationSummary(
+        variant_id="candidate",
+        dataset_split="validation",
+        metrics={
+            "evaluation_execution_id": "candidate-exec",
+            "judge_attempt_count": 3,
+            "judge_estimated_input_tokens_total": 120,
+        },
+    )
+    alias = replace(
+        candidate,
+        dataset_split="single_case_replay",
+        metrics={
+            **dict(candidate.metrics),
+            "evaluation_alias_of_execution_id": "candidate-exec",
+            "evaluation_fresh_execution": False,
+        },
+    )
+    reused_baseline = replace(
+        baseline,
+        metrics={
+            **dict(baseline.metrics),
+            "evaluation_fresh_execution": False,
+        },
+    )
+
+    usage = runner_module._execution_usage_report(
+        optimizer_diagnostics=[],
+        iteration_states=[
+            {
+                "baseline_summary": baseline,
+                "candidate_summary": candidate,
+                "held_out_summary": alias,
+            },
+            {
+                "baseline_summary": reused_baseline,
+                "candidate_summary": None,
+                "held_out_summary": None,
+            },
+        ],
+        stages={},
+    )
+
+    assert usage["evaluation_usage"]["judge_attempt_count"] == 6
+    assert usage["token_usage"]["judge_estimated_input_tokens"] == 220
 
 
 @pytest.mark.asyncio
@@ -8324,6 +8556,7 @@ async def test_runner_evaluates_candidate_population_until_one_passes(tmp_path) 
         optimizer=optimizer,
         post_apply_evaluator=post_apply,
         evaluation_backend=backend,
+        regression_suites=_independent_regression_suites_for_test(dataset),
         min_eval_cases=0,
         replay_candidate_limit=2,
     )
@@ -8342,7 +8575,7 @@ async def test_runner_evaluates_candidate_population_until_one_passes(tmp_path) 
     assert result.selected_candidate.candidate_id == strong_candidate.candidate_id
     assert result.selected_candidate.target_fingerprint != "fingerprint"
     assert backend.candidate_ids.count("candidate-weak") == 2
-    assert backend.candidate_ids.count("candidate-strong") == 2
+    assert backend.candidate_ids.count("candidate-strong") == 4
     report = json.loads((store.run_path("run-population") / "report.json").read_text(encoding="utf-8"))
     assert report["candidate_ids"] == ["candidate-weak", "candidate-strong"]
     assert report["selected_candidate_id"] == "candidate-strong"
@@ -8688,6 +8921,7 @@ async def test_runner_reuses_successful_baseline_replay_across_candidate_populat
         store=FilesystemSelfEvolveStore(tmp_path),
         optimizer=PopulationOptimizer(),
         evaluation_backend=EvaluationBackend(),
+        regression_suites=_independent_regression_suites_for_test(dataset),
         post_apply_evaluator=post_apply,
         min_eval_cases=0,
         replay_enabled=True,
@@ -8718,7 +8952,7 @@ async def test_runner_reuses_successful_baseline_replay_across_candidate_populat
     assert replay_backend.baseline_replay_dirs == (
         [None, None]
         if explicit_empty_members
-        else [None, str(expected_baseline_dir)]
+        else [None, str(expected_baseline_dir), None, None]
     )
 
 
@@ -10926,6 +11160,7 @@ async def test_runner_does_not_reuse_legacy_member_baseline_without_provenance(t
         store=FilesystemSelfEvolveStore(tmp_path),
         optimizer=OneCandidateOptimizer(),
         evaluation_backend=EvaluationBackend(),
+        regression_suites=_independent_regression_suites_for_test(dataset),
         post_apply_evaluator=lambda candidate: EvaluationSummary(
             variant_id=candidate.candidate_id,
             metrics={"post_apply_passed": True},
@@ -10945,7 +11180,7 @@ async def test_runner_does_not_reuse_legacy_member_baseline_without_provenance(t
     )
 
     assert result.run.status.value == "succeeded"
-    assert replay_backend.baseline_replay_dirs == [None]
+    assert replay_backend.baseline_replay_dirs == [None, None, None]
 
 
 @pytest.mark.asyncio
@@ -11108,6 +11343,7 @@ async def test_runner_filters_quality_rejection_but_retries_replay_only_candidat
         store=FilesystemSelfEvolveStore(tmp_path),
         optimizer=optimizer,
         evaluation_backend=EvaluationBackend(),
+        regression_suites=_independent_regression_suites_for_test(dataset),
         post_apply_evaluator=post_apply,
         min_eval_cases=0,
         replay_enabled=True,
@@ -11127,7 +11363,7 @@ async def test_runner_filters_quality_rejection_but_retries_replay_only_candidat
 
     assert result.run.status.value == "succeeded"
     assert optimizer.requests[0].max_candidates == 2
-    assert replay_backend.candidate_ids == ["candidate-dup-2"]
+    assert replay_backend.candidate_ids == ["candidate-dup-2", "candidate-dup-2"]
     report = json.loads(
         (tmp_path / ".aworld" / "self_evolve" / "run-filter-duplicates" / "report.json").read_text(
             encoding="utf-8"
@@ -11141,9 +11377,8 @@ async def test_runner_filters_quality_rejection_but_retries_replay_only_candidat
     ]
     assert report["iterations"][1]["candidate_id"] == "candidate-dup-2"
     lifecycle = report["population"]["lifecycle"]
-    assert lifecycle["paired_replay_started_count"] == len(
-        replay_backend.candidate_ids
-    )
+    # Candidate-attempt lifecycle excludes the separately recorded regression plane.
+    assert lifecycle["paired_replay_started_count"] == 1
     assert lifecycle["paired_replay_completed_count"] == 1
     assert lifecycle["paired_replay_comparable_count"] == 1
 
@@ -11829,6 +12064,7 @@ async def test_runner_persists_lineage_lifecycle_for_rejected_and_accepted_candi
         store=FilesystemSelfEvolveStore(tmp_path),
         optimizer=LifecycleOptimizer(),
         evaluation_backend=EvaluationBackend(),
+        regression_suites=_independent_regression_suites_for_test(dataset),
         replay_enabled=True,
         candidate_replay_backend=ReplayBackend(),
         replay_candidate_limit=2,
@@ -12043,6 +12279,7 @@ async def test_runner_emits_progress_events_for_long_optimize_phases(tmp_path) -
         store=FilesystemSelfEvolveStore(tmp_path),
         optimizer=Optimizer(),
         evaluation_backend=Backend(),
+        regression_suites=_independent_regression_suites_for_test(dataset),
         min_eval_cases=0,
         replay_enabled=True,
         candidate_replay_backend=ReplayBackend(),
@@ -12071,6 +12308,8 @@ async def test_runner_emits_progress_events_for_long_optimize_phases(tmp_path) -
         "evaluation",
     ]
     assert "lesson_extraction" in stages
+    assert "regression" in stages
+    assert "regression_replay" in stages
     assert "release_normalization" in stages
     assert stages[-1] == "completed"
 
@@ -12198,6 +12437,7 @@ async def test_runner_uses_prior_rejected_candidate_feedback_across_runs(tmp_pat
         optimizer=optimizer,
         post_apply_evaluator=post_apply,
         evaluation_backend=VerifiedBackend(),
+        regression_suites=_independent_regression_suites_for_test(dataset),
         min_eval_cases=0,
         max_iterations=2,
     )
@@ -12668,6 +12908,7 @@ async def test_runner_skips_duplicate_rejected_candidate_before_replay(
         store=FilesystemSelfEvolveStore(tmp_path),
         optimizer=DuplicateOptimizer(),
         evaluation_backend=evaluation_backend,
+        regression_suites=_independent_regression_suites_for_test(dataset),
         post_apply_evaluator=post_apply,
         min_eval_cases=0,
         replay_enabled=True,
@@ -13023,6 +13264,7 @@ async def test_runner_allows_duplicate_rejected_candidate_after_judge_infrastruc
         store=FilesystemSelfEvolveStore(tmp_path),
         optimizer=DuplicateOptimizer(),
         evaluation_backend=evaluation_backend,
+        regression_suites=_independent_regression_suites_for_test(dataset),
         post_apply_evaluator=post_apply,
         min_eval_cases=0,
         replay_enabled=True,
@@ -13330,6 +13572,7 @@ async def test_runner_auto_verified_rolls_back_when_post_apply_gate_fails(tmp_pa
         optimizer=TraceReflectiveLLMMutator(mutate_text=mutate),
         post_apply_evaluator=post_apply,
         evaluation_backend=VerifiedBackend(),
+        regression_suites=_independent_regression_suites_for_test(dataset),
         min_eval_cases=0,
     )
 
@@ -13416,6 +13659,7 @@ async def test_runner_auto_verified_rolls_back_when_runtime_skill_activation_fai
         optimizer=TraceReflectiveLLMMutator(mutate_text=mutate),
         post_apply_evaluator=post_apply,
         evaluation_backend=VerifiedBackend(),
+        regression_suites=_independent_regression_suites_for_test(dataset),
         min_eval_cases=0,
         runtime_skill_activator=activate_runtime_skill,
     )
@@ -13844,6 +14088,7 @@ async def test_runner_auto_verified_uses_candidate_replay_dataset_for_evaluation
         store=FilesystemSelfEvolveStore(tmp_path),
         optimizer=TraceReflectiveLLMMutator(mutate_text=mutate),
         evaluation_backend=evaluation_backend,
+        regression_suites=_independent_regression_suites_for_test(dataset),
         post_apply_evaluator=post_apply,
         min_eval_cases=0,
         replay_enabled=True,
@@ -14008,6 +14253,7 @@ async def test_runner_auto_verified_accepts_stable_single_case_replay(
         store=FilesystemSelfEvolveStore(tmp_path),
         optimizer=TraceReflectiveLLMMutator(mutate_text=mutate),
         evaluation_backend=PositiveReplayEvaluationBackend(),
+        regression_suites=_independent_regression_suites_for_test(dataset),
         post_apply_evaluator=post_apply,
         min_eval_cases=30,
         replay_enabled=True,
@@ -14045,6 +14291,8 @@ async def test_runner_auto_verified_accepts_stable_single_case_replay(
     assert evaluation_calls == [
         ("baseline", "validation"),
         (report["selected_candidate_id"], "validation"),
+        ("baseline", "regression"),
+        (report["selected_candidate_id"], "regression"),
     ]
 
 
@@ -15831,6 +16079,27 @@ def test_inferred_new_skill_policy_controls_draft_retention_and_publication(
             "reward": {"status": "failed"},
         }
     ]
+    regression_log = tmp_path / "independent-regression.log"
+    _write_trajectory_log(
+        regression_log,
+        [
+            {
+                "task_id": "independent-regression-task",
+                "trajectory": [
+                    {
+                        "meta": {"step": 1, "agent_id": "agent"},
+                        "state": {
+                            "input": {
+                                "content": "Verify an unrelated browser workflow."
+                            }
+                        },
+                        "action": {"content": "Workflow completed."},
+                        "reward": {"status": "ok"},
+                    }
+                ],
+            }
+        ],
+    )
     new_skill_path = tmp_path / "aworld-skills" / "generated-capability" / "SKILL.md"
     inferred_target = SelfEvolveTargetRef(
         target_type="skill",
@@ -15973,6 +16242,7 @@ def test_inferred_new_skill_policy_controls_draft_retention_and_publication(
         replay_adaptation_compiler=ReplayAdaptationCompiler(
             adapters=(RecordedHttpAdapter(),)
         ),
+        regression_benchmarks=(str(regression_log),),
     )
 
     assert report_summary["status"] == expected_run_status
@@ -16005,10 +16275,18 @@ def test_inferred_new_skill_policy_controls_draft_retention_and_publication(
     assert candidate_record["target"]["target_id"] == "generated-capability"
     assert not Path(replay_backend.requests[0].overlay_skill_root).exists()
     assert skill_path.read_text(encoding="utf-8") == original_content
-    assert [request.dataset_split for request in evaluation_backend.requests] == [
-        "validation",
-        "validation",
-    ]
+    assert [request.dataset_split for request in evaluation_backend.requests] == (
+        ["validation", "validation"]
+        if apply_policy == "proposal"
+        else [
+            "validation",
+            "validation",
+            "regression",
+            "regression",
+            "regression",
+            "regression",
+        ]
+    )
     assert new_skill_path.exists() is (expected_promotion == "published")
     assert Path(report_summary["target_provenance_path"]).exists()
     provenance = json.loads(
@@ -16021,6 +16299,12 @@ def test_inferred_new_skill_policy_controls_draft_retention_and_publication(
     assert report["target"]["target_id"] == "generated-capability"
     assert report["target"]["path"] == str(draft_skill_path)
     assert report["candidate_ids"]
+    if apply_policy == "proposal":
+        assert report["challenge_report"] is None
+    else:
+        assert report["challenge_report"]["approval_authority"] is False
+        assert report["challenge_report"]["admitted_count"] == 1
+        assert len(report["regression_suites"]) == 2
     assert report["selected_candidate_id"] == report["candidate_ids"][0]
     assert report["target_selection"]["selected_target"]["target_id"] == "generated-capability"
     assert report["target_selection"]["selected_target"]["path"] == str(draft_skill_path)
@@ -16317,7 +16601,6 @@ def test_optimize_cli_request_filters_unsupported_inferred_target_before_adapter
             }
         ],
     )
-
     from aworld.self_evolve import optimize_from_cli_request
 
     report_summary = optimize_from_cli_request(
@@ -16586,7 +16869,9 @@ def test_optimize_cli_request_uses_framework_default_replay_backend_when_enabled
 def test_optimize_cli_request_auto_verified_smoke_applies_and_loads_real_skill(tmp_path: Path) -> None:
     skill_path = tmp_path / "aworld-skills" / "demo" / "SKILL.md"
     skill_path.parent.mkdir(parents=True)
-    original_content = "---\nname: demo\n---\n# Demo\n\nOld guidance.\n"
+    original_content = (
+        "---\nname: demo\n---\n# Demo\n\n## Core workflow\n\nOld guidance.\n"
+    )
     skill_path.write_text(original_content, encoding="utf-8")
     trajectory_log = tmp_path / "trajectory.log"
     _write_trajectory_log(
@@ -16608,7 +16893,11 @@ def test_optimize_cli_request_auto_verified_smoke_applies_and_loads_real_skill(t
     )
 
     class SuccessfulReplayBackend:
+        def __init__(self) -> None:
+            self.requests = []
+
         async def replay_candidate(self, request, *, candidate, dataset):
+            self.requests.append(request)
             baseline = ReplayVariantResult(
                 variant_id="baseline",
                 status="succeeded",
@@ -16672,13 +16961,16 @@ def test_optimize_cli_request_auto_verified_smoke_applies_and_loads_real_skill(t
         refresh_calls.append(candidate.candidate_id)
         return {"status": "refreshed", "runtime_skill_count": 1}
 
+    selection_replay_backend = SuccessfulReplayBackend()
+    regression_replay_backend = SuccessfulReplayBackend()
     report_summary = optimize_from_cli_request(
         workspace_root=tmp_path,
         target="skill:demo",
         from_trajectory=str(trajectory_log),
         apply_policy="auto_verified",
         replay_enabled=True,
-        candidate_replay_backend=SuccessfulReplayBackend(),
+        candidate_replay_backend=selection_replay_backend,
+        regression_replay_backend=regression_replay_backend,
         evaluation_backend=VerifiedEvaluationBackend(),
         min_eval_cases=1,
         runtime_registry_refresher=refresh_runtime,
@@ -16689,6 +16981,14 @@ def test_optimize_cli_request_auto_verified_smoke_applies_and_loads_real_skill(t
     candidate_id = report_summary["best_candidate_id"]
 
     assert report_summary["status"] == "succeeded"
+    assert len(selection_replay_backend.requests) == 1
+    assert selection_replay_backend.requests[0].artifact_namespace is None
+    assert len(regression_replay_backend.requests) == 2
+    assert all(
+        request.artifact_namespace.startswith("regression/")
+        for request in regression_replay_backend.requests
+    )
+    assert report["regression_suites"][0]["source_kind"] == "target_contract"
     assert candidate_id == report["selected_candidate_id"]
     assert updated_content != original_content
     assert "release_state: verified" in updated_content

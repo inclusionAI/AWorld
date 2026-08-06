@@ -52,6 +52,10 @@ def test_optimize_command_passes_generic_target_dataset_and_apply_to_framework(
             "proposal",
             "--new-skill-policy",
             "draft_only",
+            "--regression-benchmark",
+            "regression-a.jsonl",
+            "--regression-benchmark",
+            "trajectory_log:regression-b.log",
         ]
     )
 
@@ -61,6 +65,12 @@ def test_optimize_command_passes_generic_target_dataset_and_apply_to_framework(
     assert calls["dataset"] == "eval.jsonl"
     assert calls["apply"] == "proposal"
     assert calls["new_skill_policy"] == "draft_only"
+    assert calls["regression_benchmarks"] == (
+        "regression-a.jsonl",
+        "trajectory_log:regression-b.log",
+    )
+    assert calls["challenger_enabled"] is True
+    assert calls["challenger_max_cases"] == 2
     assert calls["max_improvement_cycles"] == 3
     assert callable(calls["progress_callback"])
     assert calls["from_trajectory"] is None

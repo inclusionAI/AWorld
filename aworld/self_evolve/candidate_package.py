@@ -3,8 +3,12 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable
+
+import yaml
 
 from aworld.self_evolve.candidate_errors import (
     CandidateFailureField,
@@ -28,6 +32,133 @@ _REPLAY_FILE_REFERENCE = re.compile(
     r"(replay/(?:[A-Za-z0-9_.-]+/)*[A-Za-z0-9_.-]+)"
     r"(?![A-Za-z0-9_./-])"
 )
+
+
+class CandidateMutationKind(str, Enum):
+    """Which independently governed surface a candidate package changes."""
+
+    NO_CHANGE = "no_change"
+    TARGET_BEHAVIOR = "target_behavior"
+    EVALUATION_SUPPORT = "evaluation_support"
+    TARGET_BEHAVIOR_WITH_SUPPORT = "target_behavior_with_support"
+
+
+@dataclass(frozen=True)
+class CandidateMutationClassification:
+    """Separates releasable target behavior from evaluation-only support.
+
+    Candidate-owned files currently live under the framework-reserved
+    ``replay/`` package.  They may be required to make a target replayable and
+    are released atomically with an accepted target, but they are not by
+    themselves evidence that target behavior improved.
+    """
+
+    kind: CandidateMutationKind
+    target_behavior_changed: bool
+    evaluation_support_changed: bool
+    current_target_behavior_fingerprint: str
+    candidate_target_behavior_fingerprint: str
+    support_file_paths: tuple[str, ...] = ()
+
+    @property
+    def quality_evaluation_allowed(self) -> bool:
+        return self.target_behavior_changed
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "kind": self.kind.value,
+            "target_behavior_changed": self.target_behavior_changed,
+            "evaluation_support_changed": self.evaluation_support_changed,
+            "quality_evaluation_allowed": self.quality_evaluation_allowed,
+            "current_target_behavior_fingerprint": (
+                self.current_target_behavior_fingerprint
+            ),
+            "candidate_target_behavior_fingerprint": (
+                self.candidate_target_behavior_fingerprint
+            ),
+            "support_file_paths": list(self.support_file_paths),
+        }
+
+
+def classify_candidate_mutation(
+    candidate: CandidateVariant,
+    *,
+    current_content: str,
+) -> CandidateMutationClassification:
+    """Classify a candidate without using task- or target-id-specific rules."""
+
+    current_fingerprint = candidate_target_behavior_fingerprint(
+        current_content,
+        target_type=candidate.target.target_type,
+    )
+    candidate_fingerprint = candidate_target_behavior_fingerprint(
+        candidate.content,
+        target_type=candidate.target.target_type,
+    )
+    target_changed = candidate_fingerprint != current_fingerprint
+    support_paths = tuple(
+        item.path for item in validate_candidate_files(candidate.files)
+    )
+    support_changed = bool(support_paths)
+    if target_changed and support_changed:
+        kind = CandidateMutationKind.TARGET_BEHAVIOR_WITH_SUPPORT
+    elif target_changed:
+        kind = CandidateMutationKind.TARGET_BEHAVIOR
+    elif support_changed:
+        kind = CandidateMutationKind.EVALUATION_SUPPORT
+    else:
+        kind = CandidateMutationKind.NO_CHANGE
+    return CandidateMutationClassification(
+        kind=kind,
+        target_behavior_changed=target_changed,
+        evaluation_support_changed=support_changed,
+        current_target_behavior_fingerprint=current_fingerprint,
+        candidate_target_behavior_fingerprint=candidate_fingerprint,
+        support_file_paths=support_paths,
+    )
+
+
+def candidate_target_behavior_fingerprint(
+    content: str,
+    *,
+    target_type: str,
+) -> str:
+    """Fingerprint releasable behavior while ignoring release bookkeeping.
+
+    ``self_evolve`` frontmatter is publication metadata written by the
+    framework.  Treating it as a behavior delta lets a repackaged but otherwise
+    unchanged skill pass quality gates.  Invalid frontmatter deliberately falls
+    back to the raw content; structural validation remains authoritative.
+    """
+
+    normalized = str(content or "").replace("\r\n", "\n").replace("\r", "\n")
+    payload: object = normalized
+    if target_type == "skill":
+        lines = normalized.split("\n")
+        if lines and lines[0].strip() == "---":
+            try:
+                end_index = next(
+                    index
+                    for index, line in enumerate(lines[1:], start=1)
+                    if line.strip() == "---"
+                )
+                front_matter = yaml.safe_load("\n".join(lines[1:end_index])) or {}
+            except (StopIteration, yaml.YAMLError):
+                front_matter = None
+            if isinstance(front_matter, dict):
+                public_front_matter = dict(front_matter)
+                public_front_matter.pop("self_evolve", None)
+                payload = {
+                    "front_matter": public_front_matter,
+                    "body": "\n".join(lines[end_index + 1 :]).rstrip(),
+                }
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return "sha256:" + hashlib.sha256(encoded).hexdigest()
 
 
 def validate_candidate_files(

@@ -71,7 +71,7 @@ def assess_evaluation_runtime_health(
     out. Partial failures are degraded and remain evaluable.
     """
 
-    items = tuple(summaries)
+    items = _unique_execution_summaries(summaries)
     attempts = 0
     successes = 0
     failures = 0
@@ -148,6 +148,30 @@ def assess_evaluation_runtime_health(
         timeout_blocked_summary_count=timeout_blocked_count,
         reason_codes=tuple(sorted(reasons)),
     )
+
+
+def _unique_execution_summaries(
+    summaries: Iterable[EvaluationSummary],
+) -> tuple[EvaluationSummary, ...]:
+    unique: list[EvaluationSummary] = []
+    seen: set[str] = set()
+    for index, summary in enumerate(summaries):
+        metrics = summary.metrics
+        execution_id = (
+            metrics.get("evaluation_alias_of_execution_id")
+            or metrics.get("evaluation_execution_id")
+        )
+        if not isinstance(execution_id, str) or not execution_id:
+            if summary.dataset_split == "single_case_replay":
+                # Backward-compatible alias produced before execution identity
+                # became mandatory. The validation summary already represents it.
+                continue
+            execution_id = f"legacy:{index}:{summary.variant_id}:{summary.dataset_split}"
+        if execution_id in seen:
+            continue
+        seen.add(execution_id)
+        unique.append(summary)
+    return tuple(unique)
 
 
 def _metric_count(

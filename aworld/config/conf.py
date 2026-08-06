@@ -250,6 +250,8 @@ class SelfEvolveConfig(BaseConfig):
         "batch_config",
     )
     regression_benchmarks: tuple[str, ...] = ()
+    challenger_enabled: bool = True
+    challenger_max_cases: int = 2
     require_deterministic_signal_for_verified: bool = True
     requires_post_apply_reevaluation: bool = True
     judge_config: SelfEvolveJudgeConfig = Field(default_factory=SelfEvolveJudgeConfig)
@@ -284,6 +286,8 @@ class SelfEvolveConfig(BaseConfig):
             raise ValueError("replay_timeout_seconds must be positive")
         if self.replay_stability_margin < 0:
             raise ValueError("replay_stability_margin must be non-negative")
+        if not 0 < self.challenger_max_cases <= 8:
+            raise ValueError("challenger_max_cases must be between 1 and 8")
         if self.max_improvement_cycles <= 0:
             raise ValueError("max_improvement_cycles must be positive")
         for field_name in (

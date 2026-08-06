@@ -10,10 +10,12 @@ import statistics
 import subprocess
 import sys
 import time
+import uuid
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from enum import Enum
 from pathlib import Path
-from typing import Any, Callable, Mapping, Protocol
+from typing import Any, Callable, Mapping, MutableMapping, Protocol
 
 from aworld.config.conf import EvaluationConfig
 from aworld.core.context.amni.local import LocalIsolatedApplicationContext
@@ -35,7 +37,15 @@ from aworld.self_evolve.evidence_diagnostics import (
     EvidenceRepairConstraint,
     merge_evidence_repair_constraints,
 )
-from aworld.self_evolve.types import CandidateVariant, EvaluationSummary
+from aworld.self_evolve.candidate_package import candidate_package_fingerprint
+from aworld.self_evolve.types import (
+    CandidateVariant,
+    EvaluationSummary,
+    to_json_dict,
+)
+
+
+EVALUATION_IDENTITY_SCHEMA_VERSION = "aworld.self_evolve.evaluation_identity.v1"
 
 
 @dataclass(frozen=True)
@@ -46,6 +56,73 @@ class EvaluationRequest:
     eval_config: EvaluationConfig | None = None
     dataset_split: str = "all"
     artifact_namespace: str | None = None
+
+
+@dataclass(frozen=True)
+class EvaluationIdentity:
+    """Content-addressed identity of one evaluation input and judge contract."""
+
+    fingerprint: str
+    role: str
+    dataset_fingerprint: str
+    backend_fingerprint: str
+    variant_fingerprint: str
+    dataset_split: str
+    schema_version: str = EVALUATION_IDENTITY_SCHEMA_VERSION
+
+    @property
+    def short_id(self) -> str:
+        return self.fingerprint.removeprefix("sha256:")[:16]
+
+    def to_dict(self) -> dict[str, str]:
+        return {
+            "schema_version": self.schema_version,
+            "fingerprint": self.fingerprint,
+            "role": self.role,
+            "dataset_fingerprint": self.dataset_fingerprint,
+            "backend_fingerprint": self.backend_fingerprint,
+            "variant_fingerprint": self.variant_fingerprint,
+            "dataset_split": self.dataset_split,
+        }
+
+
+def evaluation_request_identity(
+    backend: EvaluationBackend,
+    request: EvaluationRequest,
+    *,
+    baseline_target_fingerprint: str | None = None,
+) -> EvaluationIdentity:
+    role = "candidate" if request.candidate is not None else "baseline"
+    dataset_fingerprint = _evaluation_dataset_fingerprint(request.dataset)
+    backend_fingerprint = _evaluation_backend_fingerprint(backend)
+    variant_fingerprint = (
+        candidate_package_fingerprint(request.candidate)
+        if request.candidate is not None
+        else str(baseline_target_fingerprint or "baseline-target-unspecified")
+    )
+    eval_config = (
+        request.eval_config.model_dump(mode="json")
+        if request.eval_config is not None
+        else None
+    )
+    payload = {
+        "schema_version": EVALUATION_IDENTITY_SCHEMA_VERSION,
+        "role": role,
+        "dataset_fingerprint": dataset_fingerprint,
+        "backend_fingerprint": backend_fingerprint,
+        "variant_fingerprint": variant_fingerprint,
+        "dataset_split": request.dataset_split,
+        "eval_config": eval_config,
+    }
+    fingerprint = _fingerprint_payload(payload)
+    return EvaluationIdentity(
+        fingerprint=fingerprint,
+        role=role,
+        dataset_fingerprint=dataset_fingerprint,
+        backend_fingerprint=backend_fingerprint,
+        variant_fingerprint=variant_fingerprint,
+        dataset_split=request.dataset_split,
+    )
 
 
 @dataclass(frozen=True)
@@ -529,6 +606,10 @@ class AWorldTrajectoryEvaluatorBackend:
             metrics["judge_attempt_count"] = len(reports) + len(failures)
             metrics["judge_success_count"] = len(reports)
             metrics["judge_failure_count"] = len(failures)
+            if isinstance(metrics.get("score"), (int, float)) and not isinstance(
+                metrics.get("score"), bool
+            ):
+                metrics["score_sample_count"] = len(reports)
             metrics["judge_timeout_count"] = (
                 _nonnegative_metric_count(metrics.get("judge_timeout_count"))
                 + _judge_failure_timeout_count(failures)
@@ -750,35 +831,99 @@ async def evaluate_baseline_and_candidate(
     task_batch_executor: DeterministicTaskBatchExecutor | None = None,
     max_concurrency: int = 1,
     execution_telemetry: SelfEvolveExecutionTelemetry | None = None,
+    baseline_cache: MutableMapping[str, EvaluationSummary] | None = None,
 ) -> tuple[EvaluationSummary, EvaluationSummary]:
+    namespace_root = artifact_namespace or (
+        f"evaluation-{uuid.uuid4().hex[:16]}"
+    )
+    baseline_request = EvaluationRequest(
+        variant_id=baseline_variant_id,
+        candidate=None,
+        dataset=dataset,
+        eval_config=eval_config,
+        dataset_split=dataset_split,
+    )
+    candidate_request = EvaluationRequest(
+        variant_id=candidate.candidate_id,
+        candidate=candidate,
+        dataset=dataset,
+        eval_config=eval_config,
+        dataset_split=dataset_split,
+    )
+    baseline_identity = evaluation_request_identity(
+        backend,
+        baseline_request,
+        baseline_target_fingerprint=candidate.target_fingerprint,
+    )
+    candidate_identity = evaluation_request_identity(
+        backend,
+        candidate_request,
+    )
+    baseline_namespace = (
+        f"{namespace_root}-baseline-{baseline_identity.short_id}"
+    )
+    candidate_namespace = (
+        f"{namespace_root}-candidate-{candidate_identity.short_id}"
+    )
+    cached_baseline = (
+        baseline_cache.get(baseline_identity.fingerprint)
+        if baseline_cache is not None
+        else None
+    )
     requests = (
-        EvaluationRequest(
-            variant_id=baseline_variant_id,
-            candidate=None,
-            dataset=dataset,
-            eval_config=eval_config,
-            dataset_split=dataset_split,
-            artifact_namespace=artifact_namespace,
-        ),
-        EvaluationRequest(
-            variant_id=candidate.candidate_id,
-            candidate=candidate,
-            dataset=dataset,
-            eval_config=eval_config,
-            dataset_split=dataset_split,
-            artifact_namespace=artifact_namespace,
-        ),
+        (
+            replace(baseline_request, artifact_namespace=baseline_namespace),
+            replace(candidate_request, artifact_namespace=candidate_namespace),
+        )
+        if cached_baseline is None
+        else (
+            replace(candidate_request, artifact_namespace=candidate_namespace),
+        )
     )
     summaries = await _execute_evaluation_requests(
         backend,
         requests=requests,
         task_batch_executor=task_batch_executor,
         max_concurrency=max_concurrency,
-        artifact_namespace=artifact_namespace,
+        artifact_namespace=namespace_root,
         dataset_split=dataset_split,
         execution_telemetry=execution_telemetry,
     )
-    return summaries[0], summaries[1]
+    if cached_baseline is None:
+        baseline_summary = _summary_with_evaluation_identity(
+            summaries[0],
+            identity=baseline_identity,
+            artifact_namespace=baseline_namespace,
+            fresh_execution=True,
+        )
+        candidate_summary = _summary_with_evaluation_identity(
+            summaries[1],
+            identity=candidate_identity,
+            artifact_namespace=candidate_namespace,
+            fresh_execution=True,
+        )
+        if baseline_cache is not None:
+            baseline_cache[baseline_identity.fingerprint] = baseline_summary
+    else:
+        baseline_summary = _summary_with_evaluation_identity(
+            cached_baseline,
+            identity=baseline_identity,
+            artifact_namespace=str(
+                cached_baseline.metrics.get("evaluation_artifact_namespace")
+                or baseline_namespace
+            ),
+            fresh_execution=False,
+            reused_from_execution_id=str(
+                cached_baseline.metrics.get("evaluation_execution_id") or ""
+            ),
+        )
+        candidate_summary = _summary_with_evaluation_identity(
+            summaries[0],
+            identity=candidate_identity,
+            artifact_namespace=candidate_namespace,
+            fresh_execution=True,
+        )
+    return baseline_summary, candidate_summary
 
 
 async def evaluate_variant_task(
@@ -798,6 +943,115 @@ async def evaluate_variant_task(
         execution_telemetry=execution_telemetry,
     )
     return summaries[0]
+
+
+def _summary_with_evaluation_identity(
+    summary: EvaluationSummary,
+    *,
+    identity: EvaluationIdentity,
+    artifact_namespace: str,
+    fresh_execution: bool,
+    reused_from_execution_id: str | None = None,
+) -> EvaluationSummary:
+    execution_id = str(
+        summary.metrics.get("evaluation_execution_id")
+        or _fingerprint_payload(
+            {
+                "identity": identity.fingerprint,
+                "artifact_namespace": artifact_namespace,
+            }
+        )
+    )
+    return replace(
+        summary,
+        metrics={
+            **dict(summary.metrics),
+            "evaluation_identity": identity.to_dict(),
+            "evaluation_identity_fingerprint": identity.fingerprint,
+            "evaluation_execution_id": execution_id,
+            "evaluation_evidence_role": identity.role,
+            "evaluation_artifact_namespace": artifact_namespace,
+            "evaluation_fresh_execution": fresh_execution,
+            "evaluation_reused": not fresh_execution,
+            "evaluation_reused_from_execution_id": (
+                reused_from_execution_id or None
+            ),
+        },
+    )
+
+
+def _evaluation_dataset_fingerprint(dataset: SelfEvolveDataset) -> str:
+    return _fingerprint_payload(
+        {
+            "cases": to_json_dict(dataset.cases),
+            "recipe": to_json_dict(dataset.recipe),
+        }
+    )
+
+
+def _evaluation_backend_fingerprint(backend: object) -> str:
+    backend_type = type(backend)
+    try:
+        backend_attributes = vars(backend)
+    except TypeError:
+        backend_attributes = {}
+    configuration = {
+        key: normalized
+        for key, value in sorted(backend_attributes.items())
+        if not key.startswith("_")
+        and (normalized := _stable_identity_value(value)) is not None
+    }
+    return _fingerprint_payload(
+        {
+            "type": f"{backend_type.__module__}.{backend_type.__qualname__}",
+            "configuration": configuration,
+        }
+    )
+
+
+def _stable_identity_value(value: object, *, depth: int = 0) -> object | None:
+    if depth > 5:
+        return None
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, Enum):
+        return value.value
+    if isinstance(value, Path):
+        return str(value.resolve(strict=False))
+    if callable(value):
+        module = getattr(value, "__module__", type(value).__module__)
+        qualname = getattr(value, "__qualname__", type(value).__qualname__)
+        return {"callable": f"{module}.{qualname}"}
+    if isinstance(value, Mapping):
+        return {
+            str(key): normalized
+            for key, nested in sorted(value.items(), key=lambda item: str(item[0]))
+            if (normalized := _stable_identity_value(nested, depth=depth + 1))
+            is not None
+        }
+    if isinstance(value, (list, tuple, set, frozenset)):
+        normalized_items = [
+            normalized
+            for item in value
+            if (normalized := _stable_identity_value(item, depth=depth + 1))
+            is not None
+        ]
+        return sorted(normalized_items, key=lambda item: repr(item))
+    model_dump = getattr(value, "model_dump", None)
+    if callable(model_dump):
+        return _stable_identity_value(model_dump(mode="json"), depth=depth + 1)
+    return None
+
+
+def _fingerprint_payload(payload: object) -> str:
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    ).encode("utf-8")
+    return "sha256:" + hashlib.sha256(encoded).hexdigest()
 
 
 async def _execute_evaluation_requests(
@@ -826,7 +1080,7 @@ async def _execute_evaluation_requests(
     for index, request in enumerate(requests):
         task_id = (
             "self-evolve-evaluation-"
-            f"{_safe_path_component(artifact_namespace or 'run')}-"
+            f"{_safe_path_component(request.artifact_namespace or artifact_namespace or 'run')}-"
             f"{_safe_path_component(request.variant_id)}-"
             f"{_safe_path_component(dataset_split)}"
         )

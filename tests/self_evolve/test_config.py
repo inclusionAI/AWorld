@@ -68,6 +68,19 @@ def test_self_evolve_config_rejects_non_positive_campaign_cycles() -> None:
         SelfEvolveConfig(max_improvement_cycles=0)
 
 
+@pytest.mark.parametrize("value", (0, 9))
+def test_self_evolve_config_bounds_challenger_cases(value: int) -> None:
+    with pytest.raises(ValidationError, match="challenger_max_cases"):
+        SelfEvolveConfig(challenger_max_cases=value)
+
+
+def test_self_evolve_config_enables_bounded_challenger_by_default() -> None:
+    config = SelfEvolveConfig()
+
+    assert config.challenger_enabled is True
+    assert config.challenger_max_cases == 2
+
+
 @pytest.mark.parametrize(
     "policy",
     ("disabled", "draft_only", "auto_verified"),
@@ -108,6 +121,8 @@ def test_self_evolve_budget_fields_parse() -> None:
         auto_apply_target_types=("skill", "prompt-section"),
         require_deterministic_signal_for_verified=False,
         regression_benchmarks=("global",),
+        challenger_enabled=False,
+        challenger_max_cases=4,
         max_iterations=2,
         min_improvement=0.1,
         target_types=("skill", "tool-description"),
@@ -145,6 +160,8 @@ def test_self_evolve_budget_fields_parse() -> None:
     assert config.cooldown_seconds == 600
     assert config.auto_apply_target_types == ("skill", "prompt-section")
     assert config.require_deterministic_signal_for_verified is False
+    assert config.challenger_enabled is False
+    assert config.challenger_max_cases == 4
     assert config.regression_benchmarks == ("global",)
     assert config.max_iterations == 2
     assert config.min_improvement == 0.1

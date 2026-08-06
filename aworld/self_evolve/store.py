@@ -38,6 +38,8 @@ from aworld.self_evolve.candidate_package import (
     validate_candidate_files,
 )
 from aworld.self_evolve.replay_adaptation import ReplayPreflightReport
+from aworld.self_evolve.regression import RegressionEvidence, RegressionSuiteSpec
+from aworld.self_evolve.challenger import ChallengeReport
 from aworld.self_evolve.judge import JudgeRecord
 from aworld.self_evolve.sanitization import public_diagnostic_projection
 from aworld.self_evolve.credit_assignment import TargetSelectionReport
@@ -1081,6 +1083,79 @@ class FilesystemSelfEvolveStore:
     ) -> Path:
         path = self.run_path(run_id) / "replay_requirements.json"
         self._write_json(path, report)
+        return path
+
+    def write_regression_evidence(
+        self,
+        run_id: str,
+        evidence: RegressionEvidence,
+    ) -> Path:
+        if not isinstance(evidence, RegressionEvidence):
+            raise TypeError("regression evidence must be typed")
+        self._validate_id(evidence.candidate_id, "candidate_id")
+        path = (
+            self.run_path(run_id)
+            / "regression"
+            / "evidence"
+            / f"{evidence.candidate_id}.json"
+        )
+        self._write_json(path, evidence.to_dict())
+        return path
+
+    def write_regression_suite_manifest(
+        self,
+        run_id: str,
+        suites: tuple[RegressionSuiteSpec, ...],
+    ) -> Path:
+        if any(not isinstance(suite, RegressionSuiteSpec) for suite in suites):
+            raise TypeError("regression suite manifest requires typed suites")
+        path = self.run_path(run_id) / "regression" / "suites.json"
+        self._write_json(
+            path,
+            {
+                "schema_version": "aworld.self_evolve.regression_suite_manifest.v1",
+                "suite_count": len(suites),
+                "suites": [suite.to_dict() for suite in suites],
+            },
+        )
+        return path
+
+    def write_challenge_report(
+        self,
+        run_id: str,
+        candidate_id: str,
+        report: ChallengeReport | Mapping[str, Any],
+    ) -> Path:
+        self._validate_id(candidate_id, "candidate_id")
+        if isinstance(report, ChallengeReport):
+            payload = report.to_dict()
+        elif isinstance(report, Mapping):
+            payload = dict(report)
+        else:
+            raise TypeError("challenge report must be typed or a diagnostic mapping")
+        path = (
+            self.run_path(run_id)
+            / "regression"
+            / "challenger"
+            / f"{candidate_id}.json"
+        )
+        self._write_json(path, payload)
+        return path
+
+    def write_handbook_slice(
+        self,
+        run_id: str,
+        iteration: int,
+        payload: Mapping[str, Any],
+    ) -> Path:
+        if isinstance(iteration, bool) or iteration <= 0:
+            raise ValueError("handbook iteration must be positive")
+        path = (
+            self.run_path(run_id)
+            / "handbook"
+            / f"iteration-{iteration:03d}.json"
+        )
+        self._write_json(path, payload)
         return path
 
     def write_replay_evidence_reuse(

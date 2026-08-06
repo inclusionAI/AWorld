@@ -39,11 +39,13 @@ _MAX_OBSERVED_SAMPLES_PER_STAGE = 64
 
 class BudgetStage(str, Enum):
     CANDIDATE_GENERATION = "candidate_generation"
+    CHALLENGER = "challenger"
     LOCAL_GATES = "local_gates"
     ADAPTATION = "adaptation"
     CONFORMANCE = "conformance"
     SCREENING = "screening"
     PAIRED_REPLAY = "paired_replay"
+    REGRESSION_REPLAY = "regression_replay"
     EVALUATION = "evaluation"
     JUDGE = "judge"
 
@@ -1727,6 +1729,7 @@ class StageWorkload:
             return min(1, self.case_count)
         if normalized in {
             BudgetStage.PAIRED_REPLAY,
+            BudgetStage.REGRESSION_REPLAY,
             BudgetStage.EVALUATION,
             BudgetStage.JUDGE,
         }:
@@ -2359,6 +2362,9 @@ class SchedulerState:
     untyped_frontier_exploration_scheduled: bool = False
     frontier_progress: Mapping[str, int] = field(default_factory=dict)
     frontier_stalls: Mapping[str, int] = field(default_factory=dict)
+    frontier_mutation_families: Mapping[str, tuple[str, ...]] = field(
+        default_factory=dict
+    )
     last_focused_frontier: str | None = None
 
     def __post_init__(self) -> None:
@@ -2378,6 +2384,24 @@ class SchedulerState:
                 _identity(semantic_key, field_name="semantic_key")
             ] = _non_negative_int(stalls, field_name="frontier stalls")
         object.__setattr__(self, "frontier_stalls", normalized_stalls)
+        normalized_families: dict[str, tuple[str, ...]] = {}
+        for semantic_key, families in self.frontier_mutation_families.items():
+            key = _identity(semantic_key, field_name="semantic_key")
+            if not isinstance(families, (list, tuple)):
+                raise TypeError("frontier mutation families must be sequences")
+            normalized_families[key] = tuple(
+                sorted(
+                    {
+                        _identity(family, field_name="mutation family")
+                        for family in families
+                    }
+                )
+            )
+        object.__setattr__(
+            self,
+            "frontier_mutation_families",
+            normalized_families,
+        )
         if self.last_focused_frontier is not None:
             object.__setattr__(
                 self,
@@ -2396,6 +2420,12 @@ class SchedulerState:
             ),
             "frontier_progress": dict(sorted(self.frontier_progress.items())),
             "frontier_stalls": dict(sorted(self.frontier_stalls.items())),
+            "frontier_mutation_families": {
+                key: list(families)
+                for key, families in sorted(
+                    self.frontier_mutation_families.items()
+                )
+            },
             "last_focused_frontier": self.last_focused_frontier,
         }
 
@@ -2403,10 +2433,15 @@ class SchedulerState:
     def from_dict(cls, value: Mapping[str, object]) -> "SchedulerState":
         raw_progress = value.get("frontier_progress", {})
         raw_stalls = value.get("frontier_stalls", {})
+        raw_families = value.get("frontier_mutation_families", {})
         if not isinstance(raw_progress, Mapping):
             raise ValueError("scheduler frontier_progress must be a mapping")
         if not isinstance(raw_stalls, Mapping):
             raise ValueError("scheduler frontier_stalls must be a mapping")
+        if not isinstance(raw_families, Mapping):
+            raise ValueError(
+                "scheduler frontier_mutation_families must be a mapping"
+            )
         return cls(
             initial_exploration_scheduled=(
                 value.get("initial_exploration_scheduled") is True
@@ -2427,6 +2462,14 @@ class SchedulerState:
                     field_name="frontier stalls",
                 )
                 for key, stalls in raw_stalls.items()
+            },
+            frontier_mutation_families={
+                _identity(key, field_name="semantic_key"): tuple(
+                    _identity(family, field_name="mutation family")
+                    for family in families
+                )
+                for key, families in raw_families.items()
+                if isinstance(families, (list, tuple))
             },
             last_focused_frontier=(
                 _identity(
@@ -2546,6 +2589,7 @@ class SchedulerDecision:
 class StageAwareCandidateScheduler:
     exploration_population: int
     max_stalled_frontier_schedules: int = 1
+    min_distinct_mutation_families: int = 2
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -2554,6 +2598,14 @@ class StageAwareCandidateScheduler:
             _positive_int(
                 self.exploration_population,
                 field_name="exploration_population",
+            ),
+        )
+        object.__setattr__(
+            self,
+            "min_distinct_mutation_families",
+            _positive_int(
+                self.min_distinct_mutation_families,
+                field_name="minimum distinct mutation families",
             ),
         )
         object.__setattr__(
@@ -2603,6 +2655,7 @@ class StageAwareCandidateScheduler:
                 ),
                 frontier_progress=state.frontier_progress,
                 frontier_stalls=state.frontier_stalls,
+                frontier_mutation_families=state.frontier_mutation_families,
                 last_focused_frontier=state.last_focused_frontier,
             )
             return SchedulerDecision(
@@ -2637,6 +2690,9 @@ class StageAwareCandidateScheduler:
                     untyped_frontier_exploration_scheduled=True,
                     frontier_progress=state.frontier_progress,
                     frontier_stalls=state.frontier_stalls,
+                    frontier_mutation_families=(
+                        state.frontier_mutation_families
+                    ),
                     last_focused_frontier=state.last_focused_frontier,
                 ),
             )
@@ -2667,6 +2723,7 @@ class StageAwareCandidateScheduler:
             ),
             frontier_progress=updated_progress,
             frontier_stalls=updated_stalls,
+            frontier_mutation_families=state.frontier_mutation_families,
             last_focused_frontier=state.last_focused_frontier,
         )
         eligible_frontiers = tuple(
@@ -2674,6 +2731,17 @@ class StageAwareCandidateScheduler:
             for frontier in repairable
             if updated_stalls.get(frontier.semantic_key, 0)
             <= self.max_stalled_frontier_schedules
+            or (
+                frontier.semantic_key in state.frontier_mutation_families
+                and len(
+                    state.frontier_mutation_families.get(
+                        frontier.semantic_key,
+                        (),
+                    )
+                ) < self.min_distinct_mutation_families
+                and updated_stalls.get(frontier.semantic_key, 0)
+                <= self.max_stalled_frontier_schedules + 1
+            )
         )
         if not eligible_frontiers:
             return SchedulerDecision(
@@ -2700,6 +2768,9 @@ class StageAwareCandidateScheduler:
             ),
             frontier_progress=next_state.frontier_progress,
             frontier_stalls=next_state.frontier_stalls,
+            frontier_mutation_families=(
+                next_state.frontier_mutation_families
+            ),
             last_focused_frontier=focused.semantic_key,
         )
         slots = [
@@ -2710,7 +2781,19 @@ class StageAwareCandidateScheduler:
             )
         ]
         if (
-            new_frontier
+            (
+                new_frontier
+                or (
+                    focused.semantic_key
+                    in next_state.frontier_mutation_families
+                    and len(
+                        next_state.frontier_mutation_families.get(
+                            focused.semantic_key,
+                            (),
+                        )
+                    ) < self.min_distinct_mutation_families
+                )
+            )
             and diverse_budget_available
             and self.exploration_population > 1
         ):

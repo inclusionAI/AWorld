@@ -450,6 +450,8 @@ def test_job_worker_passes_configured_judge_to_framework_job(monkeypatch, tmp_pa
                 candidate_screening_tokens_per_unit=200,
                 replay_tokens_per_unit=2_000,
                 evaluation_tokens_per_unit=500,
+                challenger_enabled=False,
+                challenger_max_cases=4,
             ),
         )
     )
@@ -474,6 +476,8 @@ def test_job_worker_passes_configured_judge_to_framework_job(monkeypatch, tmp_pa
     assert captured["candidate_screening_tokens_per_unit"] == 200
     assert captured["replay_tokens_per_unit"] == 2_000
     assert captured["evaluation_tokens_per_unit"] == 500
+    assert captured["challenger_enabled"] is False
+    assert captured["challenger_max_cases"] == 4
     assert captured["deprecated_config_mappings"] == ()
 
 

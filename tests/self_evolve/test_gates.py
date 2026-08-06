@@ -29,8 +29,14 @@ from aworld.self_evolve.gates import (
     StoppingConditionGate,
     StoppingConditionState,
     TokenLimitGate,
+    TargetBehaviorDeltaGate,
     ToolDescriptionGate,
     TrustProvenanceGate,
+)
+from aworld.self_evolve.regression import (
+    RegressionEvidence,
+    RegressionSuiteResult,
+    RegressionSuiteSpec,
 )
 from aworld.self_evolve.replay_adaptation import (
     ReplayAdaptationBundle,
@@ -42,6 +48,7 @@ from aworld.self_evolve.types import (
     CandidateFileDelta,
     CandidateVariant,
     EvaluationSummary,
+    GateResult,
     SelfEvolveTargetRef,
 )
 from aworld.self_evolve.patch_intent import apply_skill_patch_intent
@@ -68,6 +75,51 @@ def _candidate(
         target_fingerprint="sha256:old",
         structural_edit_intent=structural_edit_intent,
     )
+
+
+def test_target_behavior_delta_gate_blocks_support_only_candidate() -> None:
+    current = "---\nname: demo\n---\n# Demo\n"
+    candidate = replace(
+        _candidate(current),
+        files=(
+            CandidateFileDelta(
+                path="replay/runtime.py",
+                content="print('ready')\n",
+            ),
+        ),
+    )
+
+    result = TargetBehaviorDeltaGate().evaluate(
+        current_content=current,
+        candidate=candidate,
+    )
+
+    assert result.passed is False
+    assert result.details is not None
+    assert result.details["code"] == "evaluation_support_bootstrap_only"
+    assert result.details["candidate_status"] == "prerequisite"
+
+
+def test_target_behavior_delta_gate_accepts_target_and_support_composite() -> None:
+    current = "---\nname: demo\n---\n# Demo\n"
+    candidate = replace(
+        _candidate(current + "\n## Completion\nVerify the outcome.\n"),
+        files=(
+            CandidateFileDelta(
+                path="replay/runtime.py",
+                content="print('ready')\n",
+            ),
+        ),
+    )
+
+    result = TargetBehaviorDeltaGate().evaluate(
+        current_content=current,
+        candidate=candidate,
+    )
+
+    assert result.passed is True
+    assert result.details is not None
+    assert result.details["kind"] == "target_behavior_with_support"
 
 
 def test_candidate_package_gate_requires_referenced_release_files(tmp_path) -> None:
@@ -211,6 +263,63 @@ def test_score_improvement_gate_rejects_inconclusive_baseline_judge_timeout() ->
     assert result.details["baseline_judge_success_count"] == 0
 
 
+def test_score_improvement_gate_uses_observed_judge_variance() -> None:
+    gate = ScoreImprovementGate(min_delta=1.0)
+
+    result = gate.evaluate(
+        baseline=EvaluationSummary(
+            variant_id="baseline",
+            metrics={
+                "score": 80.0,
+                "score_std": 4.0,
+                "judge_success_count": 3,
+            },
+        ),
+        candidate=EvaluationSummary(
+            variant_id="cand-1",
+            metrics={
+                "score": 82.0,
+                "score_std": 4.0,
+                "judge_success_count": 3,
+            },
+        ),
+    )
+
+    assert result.passed is False
+    assert result.details is not None
+    assert result.details["decision"] == "inconclusive"
+    assert result.details["tiebreak_eligible"] is True
+    assert result.details["failure_owner"] == "framework"
+
+
+def test_score_improvement_gate_accepts_confident_distribution_delta() -> None:
+    gate = ScoreImprovementGate(min_delta=1.0)
+
+    result = gate.evaluate(
+        baseline=EvaluationSummary(
+            variant_id="baseline",
+            metrics={
+                "score": 80.0,
+                "score_std": 0.5,
+                "judge_success_count": 3,
+            },
+        ),
+        candidate=EvaluationSummary(
+            variant_id="cand-1",
+            metrics={
+                "score": 84.0,
+                "score_std": 0.5,
+                "judge_success_count": 3,
+            },
+        ),
+    )
+
+    assert result.passed is True
+    assert result.details is not None
+    assert result.details["decision"] == "accepted"
+    assert result.details["delta_confidence_lower_bound"] > 1.0
+
+
 def test_cost_latency_regression_gate_limits_regressions() -> None:
     gate = CostLatencyRegressionGate(max_cost_regression_ratio=0.25, max_latency_regression_ratio=0.5)
 
@@ -238,6 +347,56 @@ def test_cost_latency_regression_gate_limits_regressions() -> None:
     assert passed.passed is True
     assert failed.passed is False
     assert failed.reason == "cost regression exceeds policy"
+
+
+def test_cost_latency_gate_fails_closed_when_verified_resource_evidence_missing() -> None:
+    result = CostLatencyRegressionGate(
+        max_cost_regression_ratio=0.25,
+        max_latency_regression_ratio=0.5,
+        require_resource_evidence=True,
+    ).evaluate(
+        baseline=EvaluationSummary(
+            variant_id="baseline",
+            metrics={"score": 80.0},
+        ),
+        candidate=EvaluationSummary(
+            variant_id="candidate",
+            metrics={"score": 85.0},
+        ),
+    )
+
+    assert result.passed is False
+    assert result.details is not None
+    assert result.details["code"] == "resource_regression_evidence_missing"
+    assert result.details["failure_owner"] == "framework"
+
+
+def test_cost_latency_gate_uses_token_and_model_latency_proxies() -> None:
+    result = CostLatencyRegressionGate(
+        max_cost_regression_ratio=0.25,
+        max_latency_regression_ratio=0.5,
+        require_resource_evidence=True,
+    ).evaluate(
+        baseline=EvaluationSummary(
+            variant_id="baseline",
+            metrics={
+                "judge_estimated_input_tokens_total": 100,
+                "judge_model_latency_ms_total": 1_000,
+            },
+        ),
+        candidate=EvaluationSummary(
+            variant_id="candidate",
+            metrics={
+                "judge_estimated_input_tokens_total": 110,
+                "judge_model_latency_ms_total": 1_200,
+            },
+        ),
+    )
+
+    assert result.passed is True
+    assert result.details is not None
+    assert result.details["cost_metric"] == "judge_estimated_input_tokens_total"
+    assert result.details["latency_metric"] == "judge_model_latency_ms_total"
 
 
 def test_noop_and_skill_markdown_gates_reject_bad_candidates() -> None:
@@ -1027,14 +1186,102 @@ def test_held_out_and_global_regression_gates_require_independent_verification()
     assert verified.passed is True
 
     regression_gate = GlobalRegressionBenchmarkGate()
+    legacy_summary = EvaluationSummary(
+        variant_id="cand-1",
+        metrics={"global_regression_passed": True},
+    )
     assert regression_gate.evaluate(
         _candidate("x"),
-        EvaluationSummary(variant_id="cand-1", metrics={"global_regression_passed": False}),
+        None,
     ).passed is False
+    # An evaluator-owned boolean can no longer approve a verified target.
+    assert legacy_summary.metrics["global_regression_passed"] is True
+    suite = RegressionSuiteSpec(
+        suite_id="regression-suite",
+        source_kind="jsonl",
+        source_ref="regression.jsonl",
+        source_version="sha256:source",
+        dataset_fingerprint="sha256:regression",
+        split_fingerprint="sha256:split",
+        case_fingerprints=("sha256:regression-case",),
+    )
+    evidence = RegressionEvidence(
+        candidate_id="cand-1",
+        selection_dataset_fingerprint="sha256:selection",
+        selection_case_fingerprints=("sha256:selection-case",),
+        selection_backend_id="selection.Backend",
+        regression_backend_id="regression.Backend",
+        suite_results=(
+            RegressionSuiteResult(
+                spec=suite,
+                baseline_summary=EvaluationSummary(
+                    variant_id="baseline", metrics={"score": 0.9}
+                ),
+                candidate_summary=EvaluationSummary(
+                    variant_id="cand-1", metrics={"score": 0.9}
+                ),
+                gate_results=(
+                    GateResult(
+                        gate_name="score_improvement",
+                        passed=True,
+                        reason="no regression",
+                    ),
+                ),
+                execution_id="fresh-execution",
+                duration_ms=1,
+            ),
+        ),
+    )
     assert regression_gate.evaluate(
         _candidate("x"),
-        EvaluationSummary(variant_id="cand-1", metrics={"global_regression_passed": True}),
+        evidence,
     ).passed is True
+    candidate_regression = regression_gate.evaluate(
+        _candidate("x"),
+        replace(
+            evidence,
+            suite_results=(
+                replace(
+                    evidence.suite_results[0],
+                    gate_results=(
+                        GateResult(
+                            gate_name="score_improvement",
+                            passed=False,
+                            reason="candidate regressed",
+                        ),
+                    ),
+                ),
+            ),
+        ),
+    )
+    assert candidate_regression.passed is False
+    assert candidate_regression.details["failure_owner"] == "candidate"
+    assert candidate_regression.details["repairable"] is True
+    infrastructure_regression = regression_gate.evaluate(
+        _candidate("x"),
+        replace(
+            evidence,
+            suite_results=(
+                replace(
+                    evidence.suite_results[0],
+                    fresh_execution=False,
+                    gate_results=(
+                        GateResult(
+                            gate_name="independent_regression_execution",
+                            passed=False,
+                            reason="backend failed",
+                            details={
+                                "failure_class": "infrastructure",
+                                "code": "regression_backend_failed",
+                            },
+                        ),
+                    ),
+                ),
+            ),
+        ),
+    )
+    assert infrastructure_regression.details["failure_owner"] == "framework"
+    assert infrastructure_regression.details["repairable"] is False
     assert regression_gate.evaluate(
         CandidateVariant(
             candidate_id="cand-1",
@@ -1042,7 +1289,7 @@ def test_held_out_and_global_regression_gates_require_independent_verification()
             content="x",
             rationale="test",
         ),
-        EvaluationSummary(variant_id="cand-1", metrics={}),
+        None,
     ).passed is True
 
 
