@@ -1167,6 +1167,31 @@ def derive_self_improvement_disposition(
             repairable=False,
             progress_delta_ids=delta,
         )
+    if (
+        isinstance(attribution, Mapping)
+        and attribution.get("scheduler_stop") is True
+        and attribution.get("scheduler_reason_code")
+        == "repair_frontier_stalled"
+    ):
+        # The scheduler has already consumed the typed repair frontier and
+        # found no eligible mutation family.  A newly observed diagnostic or
+        # recovery identity must not reopen another Campaign cycle: the next
+        # run would restore the same scheduler state and terminate before
+        # candidate generation.  Treat the scheduler's terminal decision as
+        # the authoritative candidate-level exhaustion signal, including for
+        # reports produced before a causal failure event was attached to the
+        # candidate-generation gate.
+        return SelfImprovementDisposition(
+            kind=SelfImprovementDispositionKind.EXHAUSTED,
+            reason_code="candidate_repair_frontier_stalled",
+            owner="candidate",
+            stage=_optional_string(
+                attribution.get("primary_gate") or "candidate_generation"
+            ),
+            scope="candidate",
+            repairable=False,
+            progress_delta_ids=delta,
+        )
     primary_failure: Mapping[str, Any] | None = None
     if (
         isinstance(terminal, Mapping)
