@@ -5,6 +5,7 @@ import socket
 from pathlib import Path
 
 import pytest
+import aworld.self_evolve.campaign as campaign_module
 
 from aworld.self_evolve.campaign import (
     CampaignUsage,
@@ -82,6 +83,22 @@ def test_disposition_is_cardinality_neutral(member_count: int) -> None:
     assert disposition.kind is SelfImprovementDispositionKind.CONTINUE_CANDIDATE
     assert disposition.owner == "candidate"
     assert len(disposition.progress_delta_ids) == 2
+
+
+def test_focused_budget_denial_takes_precedence_over_candidate_stall() -> None:
+    report = _report(_event())
+    report["rejection_attribution"] = {
+        "failure_class": "candidate",
+        "scheduler_reason_code": "focused_budget_denied",
+    }
+
+    disposition = derive_self_improvement_disposition(report)
+
+    assert disposition.kind is SelfImprovementDispositionKind.EXHAUSTED
+    assert disposition.reason_code == "campaign_focused_budget_denied"
+    assert campaign_module._status_for_disposition(disposition) is (
+        SelfImprovementCampaignStatus.BUDGET_LIMITED
+    )
 
 
 def test_disposition_keeps_distinct_member_constraints() -> None:
