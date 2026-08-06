@@ -85,6 +85,7 @@ class SelfImprovementCampaignStatus(str, Enum):
 class SelfImprovementDispositionKind(str, Enum):
     COMPLETE = "complete"
     CONTINUE_CANDIDATE = "continue_candidate"
+    CONTINUE_CAMPAIGN = "continue_campaign"
     RETRY_INFRASTRUCTURE = "retry_infrastructure"
     HANDOFF_GOAL = "handoff_goal"
     PAUSE_OPERATOR = "pause_operator"
@@ -422,6 +423,7 @@ class SelfImprovementDisposition:
     def continuable(self) -> bool:
         return self.kind in {
             SelfImprovementDispositionKind.CONTINUE_CANDIDATE,
+            SelfImprovementDispositionKind.CONTINUE_CAMPAIGN,
             SelfImprovementDispositionKind.RETRY_INFRASTRUCTURE,
         }
 
@@ -873,6 +875,7 @@ class SelfImprovementCampaignController:
                 and current.latest_disposition.kind
                 not in {
                     SelfImprovementDispositionKind.CONTINUE_CANDIDATE,
+                    SelfImprovementDispositionKind.CONTINUE_CAMPAIGN,
                     SelfImprovementDispositionKind.RETRY_INFRASTRUCTURE,
                 }
             ):
@@ -1156,8 +1159,8 @@ def derive_self_improvement_disposition(
         and attribution.get("scheduler_reason_code") == "focused_budget_denied"
     ):
         return SelfImprovementDisposition(
-            kind=SelfImprovementDispositionKind.EXHAUSTED,
-            reason_code="campaign_focused_budget_denied",
+            kind=SelfImprovementDispositionKind.CONTINUE_CAMPAIGN,
+            reason_code="cycle_focused_budget_denied",
             owner="budget",
             stage="candidate_generation",
             scope="shared_run",
@@ -1502,7 +1505,6 @@ def _status_for_disposition(
             "campaign_cycle_budget_exhausted",
             "campaign_infrastructure_retry_budget_exhausted",
             "campaign_usage_telemetry_missing",
-            "campaign_focused_budget_denied",
         }:
             return SelfImprovementCampaignStatus.BUDGET_LIMITED
         return SelfImprovementCampaignStatus.EXHAUSTED

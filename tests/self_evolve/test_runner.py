@@ -871,6 +871,45 @@ def test_skill_release_fidelity_failure_enters_typed_repair_frontier() -> None:
     ]
 
 
+def test_typed_gate_feedback_uses_only_relative_evidence_regressions() -> None:
+    unchanged = {
+        "schema_version": "aworld.self_evolve.evidence_repair_constraint.v1",
+        "subject_kind": "general_claim",
+        "failure_mode": "support_incomplete",
+        "source_layer": "candidate_output",
+        "required_action": "support_or_omit",
+        "owner": "candidate",
+        "occurrence_count": 1,
+    }
+    regressed = {
+        "schema_version": "aworld.self_evolve.evidence_repair_constraint.v1",
+        "subject_kind": "artifact",
+        "failure_mode": "missing_source",
+        "source_layer": "candidate_output",
+        "required_action": "repair_artifact_reference",
+        "owner": "candidate",
+        "occurrence_count": 1,
+    }
+    gate = GateResult(
+        gate_name="evidence_quality",
+        passed=False,
+        reason="candidate evidence quality regressed relative to baseline",
+        details={
+            "failure_class": "candidate",
+            "repairable": True,
+            "evidence_repair_constraints": [unchanged, regressed],
+            "evidence_constraint_regressions": [regressed],
+        },
+    )
+
+    metrics = runner_module._typed_gate_feedback_metrics((gate,))
+
+    assert len(metrics["evidence_repair_constraints"]) == 1
+    assert metrics["evidence_repair_constraints"][0]["failure_mode"] == (
+        "missing_source"
+    )
+
+
 @pytest.mark.asyncio
 async def test_local_skill_fidelity_gate_feeds_next_generation_frontier(
     tmp_path,
@@ -7835,6 +7874,30 @@ def test_local_stage_can_configure_zero_tokens_with_bounded_wall_time() -> None:
     assert decision.allowed is True
     assert decision.estimate.tokens == 0
     assert decision.estimate.wall_seconds == Decimal("30")
+
+
+def test_workflow_budget_fit_requires_complete_verification_loop() -> None:
+    context = _RunBudgetContext(
+        ledger=RunBudgetLedger(
+            BudgetCeilings(total_tokens=99, total_cost_usd=None)
+        ),
+        cold_start_by_stage={
+            BudgetStage.CANDIDATE_GENERATION: BudgetUsage(tokens=10),
+            BudgetStage.PAIRED_REPLAY: BudgetUsage(tokens=10),
+            BudgetStage.EVALUATION: BudgetUsage(tokens=10),
+            BudgetStage.JUDGE: BudgetUsage(tokens=10),
+        },
+    )
+
+    assert context.can_fit(BudgetStage.CANDIDATE_GENERATION, "generation")
+    assert not context.can_fit_workflow(
+        (
+            (BudgetStage.CANDIDATE_GENERATION, "workflow-generation", 1),
+            (BudgetStage.PAIRED_REPLAY, "workflow-replay", 3),
+            (BudgetStage.EVALUATION, "workflow-evaluation", 3),
+            (BudgetStage.JUDGE, "workflow-judge", 3),
+        )
+    )
 
 
 def test_stored_replay_backend_explicitly_proves_zero_for_multi_trajectory_reuse() -> None:

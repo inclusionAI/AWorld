@@ -63,6 +63,7 @@ class BudgetEstimateSource(str, Enum):
     UNKNOWN = "unknown"
     CONFIGURED_COLD_START = "configured_cold_start"
     OBSERVED_ROBUST = "observed_robust"
+    OBSERVED_LOWER_BOUND = "observed_lower_bound"
     BACKEND_PROVEN_ZERO = "backend_proven_zero"
 
 
@@ -1324,6 +1325,31 @@ class RunBudgetLedger:
             ),
         )
 
+    def _planning_lower_bound(
+        self,
+        stage: BudgetStage,
+    ) -> ObservedBudgetUsage:
+        token_samples: list[int] = []
+        cost_samples: list[Decimal] = []
+        wall_samples: list[Decimal] = []
+        for observation in self._debit_observations:
+            if observation.estimate.stage is not stage:
+                continue
+            count = observation.estimate.units
+            lower = observation.known_lower_bound
+            completeness = observation.actual_completeness
+            if not completeness.tokens and lower.tokens > 0:
+                token_samples.append((lower.tokens + count - 1) // count)
+            if not completeness.cost_usd and lower.cost_usd > 0:
+                cost_samples.append(lower.cost_usd / Decimal(count))
+            if not completeness.wall_seconds and lower.wall_seconds > 0:
+                wall_samples.append(lower.wall_seconds / Decimal(count))
+        return ObservedBudgetUsage(
+            tokens=max(token_samples) if token_samples else None,
+            cost_usd=max(cost_samples) if cost_samples else None,
+            wall_seconds=max(wall_samples) if wall_samples else None,
+        )
+
     def estimate_next(
         self,
         *,
@@ -1340,6 +1366,7 @@ class RunBudgetLedger:
         ):
             raise TypeError("cold-start budget estimate must be BudgetUsage")
         statistics_value = self.estimate_statistics(stage)
+        lower_bound = self._planning_lower_bound(stage).scale(count)
         if statistics_value is None and backend_proven_zero:
             return StageBudgetEstimate(
                 stage=stage,
@@ -1369,34 +1396,44 @@ class RunBudgetLedger:
             else ObservedBudgetUsage()
         )
 
-        tokens = (
+        base_tokens = (
             observed.tokens
             if observed.tokens is not None
-            else (
-                0
-                if backend_proven_zero
-                else (configured.tokens if configured is not None else None)
-            )
+            else (configured.tokens if configured is not None else None)
         )
-        cost_usd = (
+        base_cost_usd = (
             observed.cost_usd
             if observed.cost_usd is not None
-            else (
-                Decimal("0")
-                if backend_proven_zero
-                else (configured.cost_usd if configured is not None else None)
-            )
+            else (configured.cost_usd if configured is not None else None)
         )
-        wall_seconds = (
+        base_wall_seconds = (
             observed.wall_seconds
             if observed.wall_seconds is not None
-            else (
-                Decimal("0")
-                if backend_proven_zero
-                else (
-                    configured.wall_seconds if configured is not None else None
-                )
-            )
+            else (configured.wall_seconds if configured is not None else None)
+        )
+        tokens = max(
+            tuple(
+                value
+                for value in (base_tokens, lower_bound.tokens)
+                if value is not None
+            ),
+            default=(0 if backend_proven_zero else None),
+        )
+        cost_usd = max(
+            tuple(
+                value
+                for value in (base_cost_usd, lower_bound.cost_usd)
+                if value is not None
+            ),
+            default=(Decimal("0") if backend_proven_zero else None),
+        )
+        wall_seconds = max(
+            tuple(
+                value
+                for value in (base_wall_seconds, lower_bound.wall_seconds)
+                if value is not None
+            ),
+            default=(Decimal("0") if backend_proven_zero else None),
         )
         if statistics_value is not None:
             counts = statistics_value.sample_count_by_dimension
@@ -1428,6 +1465,9 @@ class RunBudgetLedger:
                 )
             )
             source = BudgetEstimateSource.OBSERVED_ROBUST
+        elif lower_bound.has_observation:
+            confidence = BudgetEstimateConfidence.LOW
+            source = BudgetEstimateSource.OBSERVED_LOWER_BOUND
         elif configured is not None:
             confidence = BudgetEstimateConfidence.LOW
             source = BudgetEstimateSource.CONFIGURED_COLD_START

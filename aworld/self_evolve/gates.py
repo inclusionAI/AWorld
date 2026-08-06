@@ -119,7 +119,7 @@ class ScoreImprovementGate:
         self,
         *,
         min_delta: float,
-        confidence_z: float = 1.0,
+        confidence_z: float = 1.96,
         minimum_relative_margin: float = 0.01,
     ) -> None:
         self.min_delta = min_delta
