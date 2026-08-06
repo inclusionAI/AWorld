@@ -762,7 +762,9 @@ class TestOptimizeCommand:
                     f"--from-trajectory {trajectory_path} --apply auto_verified "
                     "--new-skill-policy draft_only "
                     f"--judge-agent {judge_path} --replay-timeout 600 "
-                    "--replay-max-runs 1 --judge-timeout 120"
+                    "--replay-max-runs 1 --judge-timeout 120 "
+                    "--max-run-tokens 900000 "
+                    "--per-attempt-replay-token-limit 200000"
                 ),
             )
         )
@@ -780,6 +782,8 @@ class TestOptimizeCommand:
         assert calls["replay_max_steps"] == 1
         assert calls["judge_timeout_seconds"] == 120
         assert calls["max_improvement_cycles"] == 3
+        assert calls["total_run_token_budget"] == 900_000
+        assert calls["per_attempt_replay_token_limit"] == 200_000
         assert "Status: rejected" in result
         assert "Selected candidate: cand-1" in result
 

@@ -72,6 +72,10 @@ def test_optimize_command_passes_generic_target_dataset_and_apply_to_framework(
     assert calls["challenger_enabled"] is True
     assert calls["challenger_max_cases"] == 2
     assert calls["max_improvement_cycles"] == 3
+    assert calls["total_run_token_budget"] is None
+    assert calls["max_run_cost_usd"] is None
+    assert calls["max_run_wall_seconds"] is None
+    assert calls["per_attempt_replay_token_limit"] is None
     assert callable(calls["progress_callback"])
     assert calls["from_trajectory"] is None
     assert calls["task"] is None
@@ -586,6 +590,46 @@ def test_optimize_command_passes_replay_runtime_limits(
     assert calls["judge_timeout_seconds"] == 120
     assert calls["baseline_replay_repetitions"] == 2
     assert calls["candidate_replay_repetitions"] == 3
+
+
+def test_optimize_command_passes_only_explicit_budget_limits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = {}
+
+    def fake_run_optimize_cli(**kwargs):
+        calls.update(kwargs)
+        return {"report_path": ".aworld/self_evolve/run/report.json"}
+
+    monkeypatch.setattr(
+        "aworld_cli.top_level_commands.optimize_cmd.run_optimize_cli",
+        fake_run_optimize_cli,
+    )
+
+    handled = main_module._maybe_dispatch_top_level_command(
+        [
+            "aworld-cli",
+            "optimize",
+            "--from-trajectory",
+            "trajectory.log",
+            "--apply",
+            "verified_only",
+            "--max-run-tokens",
+            "1000000",
+            "--max-run-cost-usd",
+            "12.5",
+            "--max-run-wall-seconds",
+            "7200",
+            "--per-attempt-replay-token-limit",
+            "250000",
+        ]
+    )
+
+    assert handled is True
+    assert calls["total_run_token_budget"] == 1_000_000
+    assert calls["max_run_cost_usd"] == 12.5
+    assert calls["max_run_wall_seconds"] == 7200.0
+    assert calls["per_attempt_replay_token_limit"] == 250_000
 
 
 def test_optimize_command_passes_rerun_evaluator_from_run(
@@ -1109,6 +1153,10 @@ def test_run_optimize_cli_delegates_generic_request_to_framework_api(
         judge_agent_name=None,
         judge_backend_ref=None,
         judge_model_profile="judge",
+        total_run_token_budget=1_000_000,
+        max_run_cost_usd=12.5,
+        max_run_wall_seconds=7_200,
+        per_attempt_replay_token_limit=250_000,
     )
 
     assert report["report_path"].endswith("report.json")
@@ -1122,6 +1170,10 @@ def test_run_optimize_cli_delegates_generic_request_to_framework_api(
     assert calls["apply_policy"] == "auto_verified"
     assert calls["inferred_new_skill_policy"] == "disabled"
     assert calls["infer_target"] is False
+    assert calls["total_run_token_budget"] == 1_000_000
+    assert calls["max_run_cost_usd"] == 12.5
+    assert calls["max_run_wall_seconds"] == 7_200
+    assert calls["per_attempt_replay_token_limit"] == 250_000
     assert calls["judge_config"].mode == "agent_md"
     assert calls["judge_config"].agent_path == "agent.md"
     assert calls["judge_config"].model_profile == "judge"

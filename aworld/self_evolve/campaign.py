@@ -622,13 +622,14 @@ class SelfImprovementCampaignController:
         persistent = persistent_campaign_request(request)
         explicit_total_tokens = request.get("total_run_token_budget")
         explicit_legacy_tokens = request.get("max_run_tokens")
-        persistent["_campaign_total_run_token_budget"] = (
-            int(explicit_total_tokens)
-            if explicit_total_tokens is not None
-            else int(explicit_legacy_tokens)
-            if explicit_legacy_tokens is not None
-            else int(persistent.get("max_run_tokens", 500_000)) * max_cycles
-        )
+        if explicit_total_tokens is not None:
+            persistent["_campaign_total_run_token_budget"] = int(
+                explicit_total_tokens
+            )
+        elif explicit_legacy_tokens is not None:
+            persistent["_campaign_total_run_token_budget"] = int(
+                explicit_legacy_tokens
+            )
         if str(persistent.get("apply_policy") or "proposal") not in {
             "auto_verified",
             "verified_only",
@@ -693,9 +694,12 @@ class SelfImprovementCampaignController:
         if stored.to_dict() != campaign.to_dict():
             raise ValueError("campaign checkpoint changed before advance")
         if campaign.cycle_index >= campaign.max_cycles:
-            limited = _limit_campaign(campaign, reason_code="campaign_cycle_budget_exhausted")
-            self.store.write_campaign(limited)
-            return limited, _campaign_summary(limited, {})
+            exhausted = _exhaust_campaign(
+                campaign,
+                reason_code="campaign_cycle_limit_reached",
+            )
+            self.store.write_campaign(exhausted)
+            return exhausted, _campaign_summary(exhausted, {})
 
         request = dict(campaign.request)
         for key, value in dict(runtime_request or {}).items():
@@ -826,15 +830,15 @@ class SelfImprovementCampaignController:
             goal_handoff_path=None,
         )
         if disposition.continuable and next_cycle >= campaign.max_cycles:
-            limit_reason = (
-                "campaign_infrastructure_retry_budget_exhausted"
+            exhaustion_reason = (
+                "campaign_infrastructure_retry_limit_reached"
                 if disposition.kind
                 is SelfImprovementDispositionKind.RETRY_INFRASTRUCTURE
-                else "campaign_cycle_budget_exhausted"
+                else "campaign_cycle_limit_reached"
             )
-            advanced = _limit_campaign(
+            advanced = _exhaust_campaign(
                 advanced,
-                reason_code=limit_reason,
+                reason_code=exhaustion_reason,
             )
             disposition = advanced.latest_disposition
             assert disposition is not None
@@ -1070,7 +1074,6 @@ def persistent_campaign_request(request: Mapping[str, Any]) -> dict[str, Any]:
         }
     }
     payload.setdefault("apply_policy", "proposal")
-    payload.setdefault("max_run_tokens", 500_000)
     return json.loads(json.dumps(payload, ensure_ascii=False, sort_keys=True))
 
 
@@ -1189,6 +1192,26 @@ def derive_self_improvement_disposition(
                 attribution.get("primary_gate") or "candidate_generation"
             ),
             scope="candidate",
+            repairable=False,
+            progress_delta_ids=delta,
+        )
+    if (
+        isinstance(attribution, Mapping)
+        and attribution.get("scheduler_stop") is True
+        and attribution.get("scheduler_reason_code") == "shared_run_blocked"
+    ):
+        # Older reports attributed the empty candidate-generation gate to a
+        # candidate even though the scheduler stopped on a framework-owned
+        # shared blocker.  The typed scheduler decision is authoritative and
+        # must produce a Goal handoff rather than a legacy operator pause.
+        return SelfImprovementDisposition(
+            kind=SelfImprovementDispositionKind.HANDOFF_GOAL,
+            reason_code="typed_framework_or_shared_blocker",
+            owner="framework",
+            stage=_optional_string(
+                attribution.get("primary_gate") or "candidate_generation"
+            ),
+            scope="shared_run",
             repairable=False,
             progress_delta_ids=delta,
         )
@@ -1517,6 +1540,25 @@ def _limit_campaign(
     )
 
 
+def _exhaust_campaign(
+    campaign: SelfImprovementCampaign,
+    *,
+    reason_code: str,
+) -> SelfImprovementCampaign:
+    disposition = SelfImprovementDisposition(
+        kind=SelfImprovementDispositionKind.EXHAUSTED,
+        reason_code=reason_code,
+        owner=(campaign.latest_disposition.owner if campaign.latest_disposition else None),
+        stage=(campaign.latest_disposition.stage if campaign.latest_disposition else None),
+        scope=(campaign.latest_disposition.scope if campaign.latest_disposition else None),
+    )
+    return replace(
+        campaign,
+        status=SelfImprovementCampaignStatus.EXHAUSTED,
+        latest_disposition=disposition,
+    )
+
+
 def _status_for_disposition(
     disposition: SelfImprovementDisposition,
 ) -> SelfImprovementCampaignStatus:
@@ -1702,11 +1744,16 @@ def _finite_metric(value: Any) -> float:
 def _interrupted_run_reservation(
     request: Mapping[str, Any],
 ) -> CampaignUsage:
-    """Conservatively charge the full available run budget without telemetry."""
+    """Charge configured hard ceilings when an interrupted run has no telemetry."""
 
-    tokens = _positive_int(
-        request.get("total_run_token_budget", request.get("max_run_tokens", 500_000)),
-        "interrupted run token reservation",
+    raw_tokens = request.get(
+        "total_run_token_budget",
+        request.get("max_run_tokens"),
+    )
+    tokens = (
+        _positive_int(raw_tokens, "interrupted run token reservation")
+        if raw_tokens is not None
+        else 0
     )
     cost = request.get("max_run_cost_usd")
     wall = request.get("max_run_wall_seconds")
@@ -1723,7 +1770,7 @@ def _remaining_budget_request(campaign: SelfImprovementCampaign) -> dict[str, An
     if token_ceiling is None:
         token_ceiling = request.get("total_run_token_budget")
     if token_ceiling is None:
-        token_ceiling = request.get("max_run_tokens", 500_000)
+        token_ceiling = request.get("max_run_tokens")
     remaining_tokens = _remaining_int(token_ceiling, campaign.cumulative_usage.tokens)
     remaining_cost = _remaining_decimal(
         request.get("max_run_cost_usd"), campaign.cumulative_usage.cost_usd
@@ -1737,17 +1784,21 @@ def _remaining_budget_request(campaign: SelfImprovementCampaign) -> dict[str, An
         raise ValueError("campaign cost budget is exhausted")
     if remaining_wall is not None and remaining_wall <= 0:
         raise ValueError("campaign wall-time budget is exhausted")
-    per_cycle_tokens = _positive_int(
-        request.get("max_run_tokens", 500_000),
-        "max_run_tokens",
+    raw_per_cycle_tokens = request.get("max_run_tokens")
+    per_cycle_tokens = (
+        _positive_int(raw_per_cycle_tokens, "max_run_tokens")
+        if raw_per_cycle_tokens is not None
+        else None
     )
-    payload: dict[str, Any] = {
-        "total_run_token_budget": (
+    payload: dict[str, Any] = {}
+    if remaining_tokens is not None:
+        payload["total_run_token_budget"] = (
             min(remaining_tokens, per_cycle_tokens)
-            if remaining_tokens is not None
-            else per_cycle_tokens
+            if per_cycle_tokens is not None
+            else remaining_tokens
         )
-    }
+    elif per_cycle_tokens is not None:
+        payload["total_run_token_budget"] = per_cycle_tokens
     if remaining_cost is not None:
         payload["max_run_cost_usd"] = remaining_cost
     if remaining_wall is not None:

@@ -379,6 +379,8 @@ class _RunBudgetContext:
         )
 
     def can_fit(self, stage: BudgetStage, item_id: str, *, units: int = 1) -> bool:
+        if self.ledger.ceilings.is_unbounded:
+            return True
         estimate = self.estimate(stage, item_id, units=units)
         usage = estimate.resolved_usage()
         if usage is None:
@@ -400,6 +402,8 @@ class _RunBudgetContext:
         self,
         work: Iterable[tuple[BudgetStage, str, int]],
     ) -> bool:
+        if self.ledger.ceilings.is_unbounded:
+            return True
         required = BudgetUsage()
         for stage, item_id, units in work:
             usage = self.estimate(stage, item_id, units=units).resolved_usage()
@@ -502,6 +506,7 @@ class _RunBudgetContext:
 
     def to_dict(self) -> dict[str, object]:
         return {
+            "budget_mode": self.ledger.ceilings.budget_mode,
             "ledger": self.ledger.to_dict(),
             "decisions": list(self.decisions),
             "debits": list(self.debits),
@@ -1056,9 +1061,10 @@ def _typed_repair_frontiers(
     frontiers: dict[str, RepairFrontier] = {}
     for summary in feedback:
         raw_events = summary.metrics.get("causal_failure_events")
-        for payload in (
+        event_payloads = (
             raw_events if isinstance(raw_events, (list, tuple)) else ()
-        ):
+        )
+        for payload in event_payloads:
             if not isinstance(payload, Mapping):
                 continue
             try:
@@ -1079,6 +1085,50 @@ def _typed_repair_frontiers(
             previous = frontiers.get(frontier.semantic_key)
             if previous is None or frontier.progress > previous.progress:
                 frontiers[frontier.semantic_key] = frontier
+        # Lesson memory intentionally stores a bounded scalar projection of a
+        # causal aggregate instead of duplicating its full envelope.  Restore
+        # the scheduler frontier from that typed projection so Campaign
+        # continuation does not lose the exact repair signal that justified a
+        # fresh-cycle budget.  Only causal_failure_memory lessons are eligible;
+        # free-form lessons remain generation context, not scheduler control.
+        if (
+            event_payloads
+            or summary.metrics.get("lesson_type") != "causal_failure_memory"
+        ):
+            continue
+        semantic_key = summary.metrics.get("causal_semantic_key")
+        raw_owner = summary.metrics.get("causal_owner")
+        raw_scope = summary.metrics.get("causal_scope")
+        repairable = summary.metrics.get("repairable")
+        if (
+            not isinstance(semantic_key, str)
+            or not semantic_key
+            or not isinstance(repairable, bool)
+        ):
+            continue
+        try:
+            owner = FailureOwner(str(raw_owner))
+            scope = FailureScope(str(raw_scope))
+        except ValueError:
+            continue
+        frontier = RepairFrontier(
+            semantic_key=semantic_key,
+            progress=max(
+                _positive_int_or_default(
+                    summary.metrics.get("occurrence_count"), default=1
+                ),
+                _nonnegative_int_or_default(
+                    summary.metrics.get("distinct_source_count"), default=0
+                ),
+                len(_string_list(summary.metrics.get("affected_case_ids"))),
+            ),
+            owner=owner,
+            scope=scope,
+            repairable=repairable,
+        )
+        previous = frontiers.get(frontier.semantic_key)
+        if previous is None or frontier.progress > previous.progress:
+            frontiers[frontier.semantic_key] = frontier
     return tuple(frontiers[key] for key in sorted(frontiers))
 
 
@@ -1815,6 +1865,12 @@ def _rejection_attribution(
         attribution["scheduler_stop"] = terminal_decision.get("stop") is True
         if (
             attribution["scheduler_stop"] is True
+            and scheduler_reason_code == "shared_run_blocked"
+        ):
+            attribution["failure_class"] = "framework"
+            attribution["code"] = "shared_run_blocked"
+        if (
+            attribution["scheduler_stop"] is True
             and scheduler_reason_code == "repair_frontier_stalled"
             and primary.gate_name in {"candidate_generation", "no_candidate"}
         ):
@@ -1933,6 +1989,9 @@ def _with_typed_gate_failure_event(gate: GateResult) -> GateResult:
     )
 
 
+_DEFAULT_CANDIDATE_CONTENT_MAX_CHARS = 500_000
+
+
 class SelfEvolveRunner:
     def __init__(
         self,
@@ -1951,7 +2010,7 @@ class SelfEvolveRunner:
         max_iterations: int = 1,
         min_eval_cases: int = 30,
         judge_repetitions: int = 3,
-        max_run_tokens: int = 500_000,
+        max_run_tokens: int | None = None,
         total_run_token_budget: int | None = None,
         per_attempt_replay_token_limit: int | None = None,
         max_run_cost_usd: float | Decimal | None = None,
@@ -2025,13 +2084,17 @@ class SelfEvolveRunner:
             )
         self.ingestion_model_call_count = ingestion_model_call_count
         self.max_run_tokens = max_run_tokens
-        legacy_total_budget_mapping = total_run_token_budget is None
+        legacy_total_budget_mapping = (
+            total_run_token_budget is None and max_run_tokens is not None
+        )
         self.total_run_token_budget = (
             max_run_tokens
             if legacy_total_budget_mapping
             else total_run_token_budget
         )
-        legacy_per_attempt_budget_mapping = per_attempt_replay_token_limit is None
+        legacy_per_attempt_budget_mapping = (
+            per_attempt_replay_token_limit is None and max_run_tokens is not None
+        )
         self.per_attempt_replay_token_limit = (
             max_run_tokens
             if legacy_per_attempt_budget_mapping
@@ -3616,7 +3679,7 @@ class SelfEvolveRunner:
                     candidate,
                     current_content=current_content,
                     workspace_root=self.store.workspace_root,
-                    max_chars=self.max_run_tokens,
+                    max_chars=_DEFAULT_CANDIDATE_CONTENT_MAX_CHARS,
                     target_provenance=target_provenance,
                     target_provenance_unresolved_reason=(
                         target_provenance_unresolved_reason
@@ -5503,7 +5566,7 @@ class SelfEvolveRunner:
                     candidate,
                     current_content=current_content,
                     workspace_root=self.store.workspace_root,
-                    max_chars=self.max_run_tokens,
+                    max_chars=_DEFAULT_CANDIDATE_CONTENT_MAX_CHARS,
                     target_provenance=target_provenance,
                     target_provenance_unresolved_reason=(
                         target_provenance_unresolved_reason
@@ -9440,7 +9503,7 @@ def optimize_from_cli_request(
     min_eval_cases: int = 30,
     judge_repetitions: int = 3,
     judge_timeout_seconds: float | None = 300.0,
-    max_run_tokens: int = 500_000,
+    max_run_tokens: int | None = None,
     total_run_token_budget: int | None = None,
     per_attempt_replay_token_limit: int | None = None,
     max_run_cost_usd: float | Decimal | None = None,
@@ -9521,6 +9584,10 @@ def optimize_from_cli_request(
             judge_repetitions=judge_repetitions,
             judge_timeout_seconds=judge_timeout_seconds,
             max_run_tokens=max_run_tokens,
+            total_run_token_budget=total_run_token_budget,
+            per_attempt_replay_token_limit=per_attempt_replay_token_limit,
+            max_run_cost_usd=max_run_cost_usd,
+            max_run_wall_seconds=max_run_wall_seconds,
             min_score_delta=min_score_delta,
             auto_apply_target_types=auto_apply_target_types,
             allow_generated_target_mutation=allow_generated_target_mutation,
@@ -10950,7 +11017,11 @@ def _rerun_evaluator_from_stored_run(
     min_eval_cases: int,
     judge_repetitions: int,
     judge_timeout_seconds: float | None,
-    max_run_tokens: int,
+    max_run_tokens: int | None,
+    total_run_token_budget: int | None,
+    per_attempt_replay_token_limit: int | None,
+    max_run_cost_usd: float | Decimal | None,
+    max_run_wall_seconds: float | Decimal | None,
     min_score_delta: float,
     auto_apply_target_types: tuple[str, ...],
     allow_generated_target_mutation: bool,
@@ -11137,6 +11208,10 @@ def _rerun_evaluator_from_stored_run(
         min_eval_cases=min_eval_cases,
         judge_repetitions=judge_repetitions,
         max_run_tokens=max_run_tokens,
+        total_run_token_budget=total_run_token_budget,
+        per_attempt_replay_token_limit=per_attempt_replay_token_limit,
+        max_run_cost_usd=max_run_cost_usd,
+        max_run_wall_seconds=max_run_wall_seconds,
         auto_apply_target_types=auto_apply_target_types,
         allow_generated_target_mutation=allow_generated_target_mutation,
         allow_external_target_mutation=allow_external_target_mutation,
@@ -18451,7 +18526,7 @@ def _blocked_low_confidence_target_selection_report(
 
 def _empty_run_budget_report(
     *,
-    max_run_tokens: int,
+    max_run_tokens: int | None,
     total_run_token_budget: int | None,
     max_run_cost_usd: float | Decimal | None,
     max_run_wall_seconds: float | Decimal | None,
@@ -18460,7 +18535,7 @@ def _empty_run_budget_report(
 
     effective_token_budget = (
         max_run_tokens
-        if total_run_token_budget is None
+        if total_run_token_budget is None and max_run_tokens is not None
         else total_run_token_budget
     )
     return _RunBudgetContext(

@@ -419,8 +419,21 @@ class BudgetCeilings:
             _optional_decimal(self.wall_seconds, field_name="wall_seconds"),
         )
 
+    @property
+    def is_unbounded(self) -> bool:
+        return (
+            self.total_tokens is None
+            and self.total_cost_usd is None
+            and self.wall_seconds is None
+        )
+
+    @property
+    def budget_mode(self) -> str:
+        return "unbounded" if self.is_unbounded else "explicit_hard_limit"
+
     def to_dict(self) -> dict[str, object]:
         return {
+            "budget_mode": self.budget_mode,
             "total_tokens": self.total_tokens,
             "total_cost_usd": (
                 _decimal_text(self.total_cost_usd)
@@ -1629,11 +1642,21 @@ class RunBudgetLedger:
             tokens = 0 if tokens is None else tokens
             cost = Decimal("0") if cost is None else cost
             wall = Decimal("0") if wall is None else wall
-        # Unknown is distinct from zero even for an unbounded dimension.  This
-        # prevents later configuration changes or report consumers from
-        # silently interpreting missing estimates as free work.
-        if tokens is None or cost is None or wall is None:
-            return None
+        # Unknown estimates fail closed only for dimensions with an active
+        # ceiling.  An unbounded dimension does not participate in admission;
+        # reserve zero provisionally and debit observed usage afterwards.
+        if tokens is None:
+            if self.ceilings.total_tokens is not None:
+                return None
+            tokens = 0
+        if cost is None:
+            if self.ceilings.total_cost_usd is not None:
+                return None
+            cost = Decimal("0")
+        if wall is None:
+            if self.ceilings.wall_seconds is not None:
+                return None
+            wall = Decimal("0")
         usage = BudgetUsage(
             tokens=tokens or 0,
             cost_usd=cost or Decimal("0"),
@@ -1643,6 +1666,7 @@ class RunBudgetLedger:
             usage == BudgetUsage()
             and estimate.source is BudgetEstimateSource.CONFIGURED_COLD_START
             and not estimate.backend_proven_zero
+            and not self.ceilings.is_unbounded
         ):
             return None
         return usage

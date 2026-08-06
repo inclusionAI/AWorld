@@ -871,6 +871,33 @@ def test_skill_release_fidelity_failure_enters_typed_repair_frontier() -> None:
     ]
 
 
+def test_causal_lesson_memory_restores_typed_repair_frontier() -> None:
+    feedback = EvaluationSummary(
+        variant_id="lesson-candidate-preflight",
+        dataset_split="lesson_memory",
+        metrics={
+            "lesson_type": "causal_failure_memory",
+            "causal_semantic_key": "replay-failure-candidate-preflight",
+            "causal_owner": "candidate",
+            "causal_scope": "candidate",
+            "causal_stage": "capability_preflight",
+            "causal_code": "candidate_capability_operational_preflight_failed",
+            "repairable": True,
+            "occurrence_count": 2,
+            "distinct_source_count": 1,
+        },
+    )
+
+    frontiers = runner_module._typed_repair_frontiers((feedback,))
+
+    assert len(frontiers) == 1
+    assert frontiers[0].semantic_key == "replay-failure-candidate-preflight"
+    assert frontiers[0].owner is FailureOwner.CANDIDATE
+    assert frontiers[0].scope is FailureScope.CANDIDATE
+    assert frontiers[0].repairable is True
+    assert frontiers[0].progress == 2
+
+
 def test_typed_gate_feedback_uses_only_relative_evidence_regressions() -> None:
     unchanged = {
         "schema_version": "aworld.self_evolve.evidence_repair_constraint.v1",
@@ -1553,6 +1580,37 @@ def test_runner_legacy_budget_fallbacks_are_reportable(tmp_path) -> None:
     )
 
 
+def test_runner_has_no_implicit_hard_budget(tmp_path) -> None:
+    runner = SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=EmptyOptimizer(),
+    )
+
+    assert runner.max_run_tokens is None
+    assert runner.total_run_token_budget is None
+    assert runner.per_attempt_replay_token_limit is None
+    assert runner.max_run_cost_usd is None
+    assert runner.max_run_wall_seconds is None
+    assert runner.deprecated_config_mappings == ()
+
+
+def test_empty_budget_report_marks_unbounded_default() -> None:
+    report = runner_module._empty_run_budget_report(
+        max_run_tokens=None,
+        total_run_token_budget=None,
+        max_run_cost_usd=None,
+        max_run_wall_seconds=None,
+    )
+
+    assert report["budget_mode"] == "unbounded"
+    assert report["ledger"]["ceilings"] == {
+        "budget_mode": "unbounded",
+        "total_tokens": None,
+        "total_cost_usd": None,
+        "wall_seconds": None,
+    }
+
+
 class CaptureOptimizer:
     def __init__(self) -> None:
         self.requests: list[OptimizerRequest] = []
@@ -1863,6 +1921,29 @@ def test_rejection_attribution_names_terminal_frontier_exhaustion() -> None:
     assert attribution is not None
     assert attribution["code"] == "candidate_repair_frontier_stalled"
     assert attribution["scheduler_reason_code"] == "repair_frontier_stalled"
+    assert attribution["scheduler_stop"] is True
+
+
+def test_rejection_attribution_names_shared_scheduler_blocker() -> None:
+    attribution = runner_module._rejection_attribution(
+        final_status=SelfEvolveRunStatus.REJECTED,
+        selected_candidate_id=None,
+        gate_results=(
+            GateResult(
+                gate_name="candidate_generation",
+                passed=False,
+                reason="optimizer did not produce a replayable candidate",
+                details={"generated_candidate_count": 0, "iterations": 0},
+            ),
+        ),
+        scheduler_decisions=(
+            {"reason_code": "shared_run_blocked", "stop": True},
+        ),
+    )
+
+    assert attribution is not None
+    assert attribution["failure_class"] == "framework"
+    assert attribution["code"] == "shared_run_blocked"
     assert attribution["scheduler_stop"] is True
 
 
