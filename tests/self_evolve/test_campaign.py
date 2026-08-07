@@ -119,6 +119,31 @@ def test_terminal_scheduler_stall_prevents_empty_followup_cycle() -> None:
     assert disposition.repairable is False
 
 
+def test_framework_score_uncertainty_precedes_candidate_scheduler_stall() -> None:
+    event = _event(
+        code="score_improvement_inconclusive",
+        owner="framework",
+        scope="shared_run",
+        repairable=False,
+    )
+    event["stage"] = "score_improvement"
+    report = _report(event)
+    report["rejection_attribution"] = {
+        "code": "score_improvement_inconclusive",
+        "failure_class": "framework",
+        "primary_gate": "score_improvement",
+        "scheduler_reason_code": "repair_frontier_stalled",
+        "scheduler_stop": True,
+    }
+
+    disposition = derive_self_improvement_disposition(report)
+
+    assert disposition.kind is SelfImprovementDispositionKind.HANDOFF_GOAL
+    assert disposition.reason_code == "typed_framework_or_shared_blocker"
+    assert disposition.owner == "framework"
+    assert disposition.stage == "score_improvement"
+
+
 def test_zero_generation_scheduler_stall_is_not_a_legacy_pause() -> None:
     report = {
         "status": "rejected",

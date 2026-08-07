@@ -366,6 +366,59 @@ async def test_aworld_trajectory_evaluator_backend_preserves_report_distribution
     assert summary.metrics["score_sample_count"] == 2
 
 
+def test_aworld_evaluator_metrics_preserve_ordered_case_score_samples(
+    tmp_path,
+) -> None:
+    report = {
+        "summary": {
+            "trajectory-source-evaluator": {
+                "score": {"mean": 85.0, "std": 2.0},
+            }
+        },
+        "results": [
+            {"case_id": "case-a", "metrics": {"score": {"value": 83.0}}},
+            {"case_id": "case-b", "metrics": {"score": {"value": 87.0}}},
+        ],
+        "gate": {"status": "pass", "metric_name": "score", "value": 85.0},
+    }
+
+    metrics = evaluation_module._aworld_evaluator_metrics(
+        report,
+        case_count=2,
+        input_path=tmp_path / "trajectory.log",
+    )
+
+    assert metrics["score_samples"] == [83.0, 87.0]
+
+
+def test_aworld_evaluator_metrics_flatten_repetition_score_samples(
+    tmp_path,
+) -> None:
+    reports = [
+        {
+            "summary": {
+                "trajectory-source-evaluator": {
+                    "score": {"mean": sum(scores) / len(scores)},
+                }
+            },
+            "results": [
+                {"case_id": f"case-{index}", "metrics": {"score": {"value": score}}}
+                for index, score in enumerate(scores)
+            ],
+            "gate": {"status": "pass", "metric_name": "score", "value": sum(scores) / len(scores)},
+        }
+        for scores in ([81.0, 83.0], [85.0, 87.0])
+    ]
+
+    metrics = evaluation_module._aggregate_aworld_evaluator_metrics(
+        reports,
+        case_count=2,
+        input_path=tmp_path / "trajectory.log",
+    )
+
+    assert metrics["score_samples"] == [81.0, 83.0, 85.0, 87.0]
+
+
 @pytest.mark.asyncio
 async def test_aworld_trajectory_evaluator_backend_extracts_evidence_quality_metrics(tmp_path) -> None:
     dataset = _dataset(
