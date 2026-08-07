@@ -157,7 +157,7 @@ class RunTopLevelCommand:
                 ),
             )
         )
-        if args.emit_trajectory:
+        if getattr(args, "emit_trajectory", False):
             from aworld_cli.main import _trajectory_payload_from_direct_run_summary
 
             print(

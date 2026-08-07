@@ -114,7 +114,7 @@ docker run --rm -it \
   --env-file .env.aworld-filex \
   -v "$PWD/workspace:/root/workspace" \
   "$FILEX_IMAGE" \
-  aworld-cli \
+  aworld-cli run \
     --agent Aworld \
     --skill filex \
     --task "解析 /root/workspace/report.pdf，并总结主要内容"
@@ -230,7 +230,7 @@ docker run --rm -it \
   --env-file .env.aworld-filex \
   -v "$PWD/workspace:/root/workspace" \
   ghcr.io/inclusionai/aworld-filex:latest \
-  aworld-cli --agent Aworld --skill filex \
+  aworld-cli run --agent Aworld --skill filex \
   --task "Parse @report.pdf and summarize it"
 ```
 
