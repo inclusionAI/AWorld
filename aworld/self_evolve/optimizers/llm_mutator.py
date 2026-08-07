@@ -212,6 +212,17 @@ class TraceReflectiveLLMMutator:
                 preserved_existing_replay_file_delta_count += (
                     preserved_replay_file_count
                 )
+                repair_context = (
+                    request.evolution_context
+                    or compile_evolution_context(request)
+                )
+                _validate_judge_repair_target_delta(
+                    request,
+                    repair_focus=repair_context.repair_focus_for_candidate(
+                        candidate_index=index
+                    ),
+                    candidate_content=content,
+                )
                 if _violates_transport_completion_invariant(content):
                     content = _append_transport_completion_invariant(content)
                     repaired_transport_completion_violation_count += 1
@@ -245,6 +256,10 @@ class TraceReflectiveLLMMutator:
                 candidate_index=index,
                 addressed_signal_ids=addressed_signal_ids,
             )
+            parent_candidate_ids = _repair_focus_parent_candidate_ids(
+                request,
+                candidate_index=index,
+            )
             if content == request.current_content and not files:
                 filtered_noop_count += 1
                 continue
@@ -253,6 +268,7 @@ class TraceReflectiveLLMMutator:
                 target=request.target,
                 content=content,
                 rationale=rationale,
+                parent_candidate_ids=parent_candidate_ids,
                 target_fingerprint=request.target_fingerprint,
                 files=files,
                 structural_edit_intent=structural_edit_intent,
@@ -284,6 +300,7 @@ class TraceReflectiveLLMMutator:
                 target=request.target,
                 content=content,
                 rationale=rationale,
+                parent_candidate_ids=parent_candidate_ids,
                 target_fingerprint=request.target_fingerprint,
                 files=files,
                 structural_edit_intent=structural_edit_intent,
@@ -320,6 +337,7 @@ class TraceReflectiveLLMMutator:
                     candidate_id=candidate_id,
                     optimizer_name=self.optimizer_name,
                     optimizer_version=self.optimizer_version,
+                    parent_candidate_ids=parent_candidate_ids,
                     trainable_case_ids=tuple(case.case_id for case in request.trainable_cases),
                     content_fingerprint=content_fingerprint,
                     semantic_fingerprint=candidate_content_semantic_fingerprint(
@@ -693,6 +711,18 @@ def _focused_repair_prompt_instructions(
             "identity hashes, and do not reinterpret evaluator prose as an additional "
             "constraint. "
         )
+        required_evidence_actions = {
+            str(item.get("required_action") or "")
+            for item in candidate_evidence_constraints
+        }
+        if "repair_artifact_reference" in required_evidence_actions:
+            instructions += (
+                "For repair_artifact_reference, make the reusable target require "
+                "that every file presented as final-answer evidence resolves to a "
+                "valid canonical manifest or bundle entry. A file merely existing "
+                "in the artifact directory is insufficient: register it as a "
+                "bounded evidence source or omit it from the final evidence ledger. "
+            )
     repair_support = payload.get("repair_support")
     if isinstance(repair_support, Mapping):
         instructions += (
@@ -721,6 +751,19 @@ def _focused_repair_prompt_instructions(
             "the user. If it does not, continue with one materially different bounded "
             "artifact-backed source or return only an explicit insufficiency; never invent "
             "the missing content and never encode case-specific endpoints or prompts. "
+        )
+    if (
+        "duplicate_prior_candidate" in feedback_text
+        or "repair_parent_target_delta_lost" in feedback_text
+        or "repair_parent_semantic_delta_missing" in feedback_text
+    ):
+        instructions += (
+            "The previous repair repeated or discarded its focused parent delta. "
+            "Start from repair_focus.repair_candidate_package.content, preserve its "
+            "verified target behavior, and make a materially different semantic "
+            "change that implements the active typed repair action. Returning "
+            "current_content, whitespace-only edits, rationale-only claims, or the "
+            "unchanged focused package is invalid. "
         )
     if (
         "align_compiler_runtime_recorded_response_selection"
@@ -951,6 +994,11 @@ def _validate_mutator_output_context(
         repair_focus = context.repair_focus_for_candidate(
             candidate_index=candidate_index
         )
+        _validate_judge_repair_target_delta(
+            request,
+            repair_focus=repair_focus,
+            candidate_content=content,
+        )
         private_contract = (
             None
             if (
@@ -997,6 +1045,87 @@ def _validate_mutator_output_context(
             request=request,
         ) from exc
     return output
+
+
+def _repair_focus_parent_candidate_ids(
+    request: OptimizerRequest,
+    *,
+    candidate_index: int,
+) -> tuple[str, ...]:
+    context = request.evolution_context or compile_evolution_context(request)
+    repair_focus = context.repair_focus_for_candidate(
+        candidate_index=candidate_index
+    )
+    package = (
+        repair_focus.get("repair_candidate_package")
+        if isinstance(repair_focus, Mapping)
+        else None
+    )
+    candidate_id = (
+        package.get("candidate_id")
+        if isinstance(package, Mapping)
+        else None
+    )
+    if not isinstance(candidate_id, str) or not candidate_id.strip():
+        return ()
+    return (candidate_id.strip(),)
+
+
+def _validate_judge_repair_target_delta(
+    request: OptimizerRequest,
+    *,
+    repair_focus: Mapping[str, object] | None,
+    candidate_content: str,
+) -> None:
+    """Fail same-slot repair when a judged parent delta is lost or unchanged."""
+
+    if not isinstance(repair_focus, Mapping) or not (
+        _repair_feedback_reached_judged_task_output(repair_focus)
+    ):
+        return
+    package = repair_focus.get("repair_candidate_package")
+    parent_content = (
+        package.get("content") if isinstance(package, Mapping) else None
+    )
+    if not isinstance(parent_content, str) or not parent_content.strip():
+        return
+    candidate_fingerprint = candidate_content_semantic_fingerprint(
+        candidate_content
+    )
+    current_fingerprint = candidate_content_semantic_fingerprint(
+        request.current_content
+    )
+    parent_fingerprint = candidate_content_semantic_fingerprint(parent_content)
+    if candidate_fingerprint == current_fingerprint:
+        code = "repair_parent_target_delta_lost"
+        reason = (
+            "judge-stage repair discarded the focused candidate target delta; "
+            "edit the focused package content instead of returning current content"
+        )
+    elif candidate_fingerprint == parent_fingerprint:
+        code = "repair_parent_semantic_delta_missing"
+        reason = (
+            "judge-stage repair did not materially change the focused candidate "
+            "target content"
+        )
+    else:
+        return
+    raise CandidateSemanticValidationError(
+        code,
+        reason,
+        field_path=CandidateFailureField.CONTENT.value,
+        representation=CandidateRepresentation.CANDIDATE_PACKAGE.value,
+        repairable=True,
+        allowed_improvement_signal_ids=exposed_improvement_signal_ids(request),
+        details={
+            "parent_target_delta_required": True,
+            "focused_candidate_id": (
+                package.get("candidate_id")
+                if isinstance(package, Mapping)
+                else None
+            ),
+        },
+    )
 
 
 def _candidate_output_representation(output: Any) -> CandidateRepresentation:
@@ -1297,11 +1426,13 @@ def _materialize_mutator_output(
     request: OptimizerRequest,
     candidate_index: int = 0,
 ) -> tuple[str, str, str, tuple[CandidateFileDelta, ...]]:
-    # The evaluated target snapshot is the only authoritative patch base.
-    # Historical repair packages are bounded prompt evidence and file overlays;
-    # their content may be truncated or rejected and must never replace the
-    # current target snapshot during materialization.
-    base_content = request.current_content
+    # Current content remains the default patch base. A complete judge-scored
+    # package is the exception: it crossed authoritative replay, so a repair
+    # patch must retain its positive target delta.
+    base_content = _focused_repair_patch_base(
+        request,
+        candidate_index=candidate_index,
+    )
     if isinstance(output, Mapping):
         # Some structured-output providers return the schema payload under an
         # ``expected_output`` envelope even though the prompt requests the
@@ -1390,6 +1521,34 @@ def _materialize_mutator_output(
             field_path=CandidateFailureField.FILES,
         )
     return content, rationale, materialization, files
+
+
+def _focused_repair_patch_base(
+    request: OptimizerRequest,
+    *,
+    candidate_index: int,
+) -> str:
+    context = request.evolution_context or compile_evolution_context(request)
+    repair_focus = context.repair_focus_for_candidate(
+        candidate_index=candidate_index
+    )
+    if not isinstance(repair_focus, Mapping) or not (
+        _repair_feedback_reached_judged_task_output(repair_focus)
+    ):
+        return request.current_content
+    package = repair_focus.get("repair_candidate_package")
+    parent_content = (
+        package.get("content") if isinstance(package, Mapping) else None
+    )
+    raw_files = package.get("files") if isinstance(package, Mapping) else None
+    content_limit = 32_000 if raw_files else 64_000
+    if (
+        not isinstance(parent_content, str)
+        or not parent_content.strip()
+        or len(parent_content) >= content_limit
+    ):
+        return request.current_content
+    return parent_content
 
 
 def _candidate_id(

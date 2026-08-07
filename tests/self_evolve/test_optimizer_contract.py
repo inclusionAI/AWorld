@@ -1936,6 +1936,101 @@ async def test_judged_target_repair_freezes_empty_replay_file_set() -> None:
     assert len(result.candidates) == 1
     assert result.candidates[0].files == ()
     assert "Verify each generic claim" in result.candidates[0].content
+    assert result.candidates[0].parent_candidate_ids == ("candidate-judged",)
+    assert result.lineage[0].parent_candidate_ids == ("candidate-judged",)
+
+
+@pytest.mark.asyncio
+async def test_judged_target_repair_rejects_lost_parent_delta() -> None:
+    request = OptimizerRequest(
+        target=_target(),
+        current_content="# Demo\n\nCurrent guidance.\n",
+        target_fingerprint="sha256:old",
+        trace_packs=(_trace_pack(),),
+        validation_feedback=(
+            EvaluationSummary(
+                variant_id="candidate-judged",
+                metrics={
+                    "score": 88.0,
+                    "failed_gates": ["evidence_quality"],
+                    "failure_class": "candidate",
+                    "repairable": True,
+                    "repair_candidate_package": {
+                        "candidate_id": "candidate-judged",
+                        "content": "# Demo\n\nVerified parent behavior.\n",
+                        "files": [],
+                    },
+                },
+                dataset_split="validation",
+            ),
+        ),
+        max_candidates=1,
+    )
+
+    result = await TraceReflectiveLLMMutator(
+        mutate_text=lambda prompt: {
+            "content": "# Demo\n\nCurrent guidance.\n\n",
+            "rationale": "Claimed repair without preserving the parent.",
+        }
+    ).propose(request)
+
+    assert result.candidates == ()
+    assert result.diagnostics["filtered_invalid_patch_candidates"] == 1
+    failure = result.diagnostics["candidate_materialization_failures"][0]
+    assert failure["code"] == "repair_parent_target_delta_lost"
+
+
+@pytest.mark.asyncio
+async def test_judged_target_patch_repairs_complete_parent_content() -> None:
+    request = OptimizerRequest(
+        target=_target(),
+        current_content="# Demo\n\nCurrent guidance.\n",
+        target_fingerprint="sha256:old",
+        trace_packs=(_trace_pack(),),
+        validation_feedback=(
+            EvaluationSummary(
+                variant_id="candidate-judged",
+                metrics={
+                    "score": 88.0,
+                    "failed_gates": ["evidence_quality"],
+                    "failure_class": "candidate",
+                    "repairable": True,
+                    "repair_candidate_package": {
+                        "candidate_id": "candidate-judged",
+                        "content": (
+                            "# Demo\n\nVerified parent behavior.\n\n"
+                            "## Evidence\n\nOld evidence rule.\n"
+                        ),
+                        "files": [],
+                    },
+                },
+                dataset_split="validation",
+            ),
+        ),
+        max_candidates=1,
+    )
+
+    result = await TraceReflectiveLLMMutator(
+        mutate_text=lambda prompt: {
+            "patch_intent": {
+                "operations": [
+                    {
+                        "op": "replace_section",
+                        "heading": "Evidence",
+                        "content": (
+                            "Register every final artifact reference or omit it."
+                        ),
+                    }
+                ]
+            },
+            "rationale": "Repair the typed artifact-reference constraint.",
+        }
+    ).propose(request)
+
+    assert len(result.candidates) == 1
+    assert "Verified parent behavior." in result.candidates[0].content
+    assert "Register every final artifact reference" in result.candidates[0].content
+    assert "Current guidance." not in result.candidates[0].content
 
 
 @pytest.mark.asyncio

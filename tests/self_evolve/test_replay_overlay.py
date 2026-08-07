@@ -47,6 +47,7 @@ from aworld.self_evolve.replay import (
     _invalid_evidence_manifest_entry_reason,
     _infer_baseline_skill_root_from_target,
     _evidence_manifest_metrics,
+    _final_answer_artifact_reference_metrics,
     _execution_failure_event,
     _extract_trajectory_payload_from_stdout,
     _has_authoritative_per_member_repetitions,
@@ -6465,6 +6466,53 @@ def test_evidence_manifest_accepts_consecutive_pretty_printed_json_objects(
     assert metrics["evidence_manifest_entry_count"] == 2
     assert "evidence_manifest_invalid_entry_count" not in metrics
     assert metrics["evidence_bundle_valid"] is True
+
+
+def test_final_answer_artifact_references_are_reconciled_with_bundle(
+    tmp_path: Path,
+) -> None:
+    artifact_dir = tmp_path / "artifacts"
+    artifact_dir.mkdir()
+    manifested = artifact_dir / "source.json"
+    manifested.write_text("{}", encoding="utf-8")
+    (artifact_dir / "unregistered.txt").write_text("raw", encoding="utf-8")
+    (artifact_dir / "evidence_bundle.json").write_text(
+        json.dumps(
+            {
+                "entries": [
+                    {
+                        "source_id": "source",
+                        "artifact_path": str(manifested),
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    trajectory = [
+        {
+            "action": {
+                "content": (
+                    "Evidence: `source.json`, `unregistered.txt`, and "
+                    "`evidence_manifest.jsonl`."
+                ),
+                "is_agent_finished": True,
+            }
+        }
+    ]
+
+    metrics = _final_answer_artifact_reference_metrics(
+        trajectory=trajectory,
+        artifact_dir=artifact_dir,
+    )
+
+    assert metrics["evidence_artifact_reference_count"] == 3
+    assert metrics["evidence_manifested_artifact_reference_count"] == 2
+    assert metrics["evidence_unmanifested_artifact_reference_count"] == 1
+    assert len(
+        metrics["evidence_unmanifested_artifact_reference_identity_digests"]
+    ) == 1
+    assert "unregistered.txt" not in json.dumps(metrics)
 
 
 def test_evidence_manifest_normalizes_bounded_excerpt_fields(

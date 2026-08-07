@@ -171,6 +171,20 @@ def evidence_repair_constraints_from_metrics(
     if not structured:
         structured = _structured_constraints(metrics.get("evidence_constraints"))
     runtime_constraints: list[EvidenceRepairConstraint] = []
+    unmanifested_reference_count = _non_negative_count(
+        metrics.get("evidence_unmanifested_artifact_reference_count")
+    )
+    if unmanifested_reference_count:
+        runtime_constraints.append(
+            EvidenceRepairConstraint(
+                subject_kind="artifact",
+                failure_mode="source_mismatch",
+                source_layer="candidate_output",
+                required_action="repair_artifact_reference",
+                owner=FailureOwner.CANDIDATE,
+                occurrence_count=unmanifested_reference_count,
+            )
+        )
     if (
         _metric_bool(metrics.get("judge_artifact_projection_incomplete")) is True
         and _metric_bool(metrics.get("evidence_incomplete")) is True

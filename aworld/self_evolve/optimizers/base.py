@@ -147,6 +147,7 @@ class OptimizerRequest:
     handbook_slice: Mapping[str, object] | None = None
     evolution_context: EvolutionContext | None = None
     improvement_signal_set_fingerprint: str | None = None
+    consumed_mutation_families: tuple[str, ...] = ()
 
     @classmethod
     def from_dataset(
@@ -164,6 +165,7 @@ class OptimizerRequest:
         replay_requirements: tuple[ReplayCapabilityRequirement, ...] = (),
         target_package_inventory: tuple[str, ...] = (),
         handbook_slice: Mapping[str, object] | None = None,
+        consumed_mutation_families: tuple[str, ...] = (),
     ) -> "OptimizerRequest":
         trainable_ids = set(dataset.recipe.trainable_case_ids)
         return cls(
@@ -181,6 +183,7 @@ class OptimizerRequest:
             replay_requirements=tuple(replay_requirements),
             target_package_inventory=tuple(target_package_inventory),
             handbook_slice=handbook_slice,
+            consumed_mutation_families=tuple(consumed_mutation_families),
             improvement_signal_set_fingerprint=(
                 str(
                     dataset.recipe.source[

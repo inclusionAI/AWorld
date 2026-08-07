@@ -815,6 +815,7 @@ def compile_evolution_context(request: OptimizerRequest) -> EvolutionContext:
             has_feedback=bool(feedback),
             has_current_validation_feedback=bool(request.validation_feedback),
             has_capability_contracts=bool(contracts),
+            consumed_mutation_families=request.consumed_mutation_families,
         ),
         acceptance_constraints=(
             "return_one_canonical_candidate_package",
@@ -1396,6 +1397,7 @@ def _population_strategies(
     has_feedback: bool,
     has_current_validation_feedback: bool,
     has_capability_contracts: bool,
+    consumed_mutation_families: tuple[str, ...] = (),
 ) -> tuple[str, ...]:
     strategies = (
         ["quality_regression_repair"]
@@ -1409,4 +1411,9 @@ def _population_strategies(
     if has_current_validation_feedback:
         strategies.append("minimal_behavior_delta")
     strategies.append("efficiency_and_robustness")
-    return tuple(strategies)
+    ordered = tuple(dict.fromkeys(strategies))
+    consumed = set(consumed_mutation_families)
+    return (
+        *(item for item in ordered if item not in consumed),
+        *(item for item in ordered if item in consumed),
+    )
