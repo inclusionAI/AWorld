@@ -3017,6 +3017,19 @@ class SelfEvolveRunner:
                 replay_requirements=replay_preflight.requirements,
                 target_package_inventory=target_package_inventory,
                 handbook_slice=handbook_payload,
+                consumed_mutation_families=tuple(
+                    sorted(
+                        {
+                            family
+                            for slot in scheduler_decision.slots
+                            if slot.semantic_key is not None
+                            for family in scheduler_state.frontier_mutation_families.get(
+                                slot.semantic_key,
+                                (),
+                            )
+                        }
+                    )
+                ),
             )
             optimizer_request = replace(
                 optimizer_request,
@@ -13730,6 +13743,10 @@ def _summary_with_replay_evidence_metrics(
         "evidence_bundle_present",
         "evidence_bundle_valid",
         "evidence_bundle_entry_count",
+        "evidence_artifact_reference_count",
+        "evidence_manifested_artifact_reference_count",
+        "evidence_unmanifested_artifact_reference_count",
+        "evidence_unmanifested_artifact_reference_identity_digests",
         "failed_repetition_count",
         "repetition_failures",
     )

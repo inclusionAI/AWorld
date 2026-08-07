@@ -275,6 +275,27 @@ def test_compiler_does_not_treat_prior_feedback_as_current_iteration_repair() ->
     )
 
 
+def test_compiler_rotates_consumed_mutation_families_to_the_back() -> None:
+    request = replace(
+        _request(),
+        consumed_mutation_families=(
+            "quality_regression_repair",
+            "missing_capability_completion",
+        ),
+    )
+
+    context = compile_evolution_context(request)
+
+    assert context.population_strategies[:2] == (
+        "minimal_behavior_delta",
+        "efficiency_and_robustness",
+    )
+    assert context.population_strategies[-2:] == (
+        "quality_regression_repair",
+        "missing_capability_completion",
+    )
+
+
 def test_compiler_preserves_bounded_repair_candidate_package_source() -> None:
     runtime_source = (
         "def handle_websocket_frame(frame):\n"

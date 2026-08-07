@@ -121,6 +121,9 @@ _EVIDENCE_COVERAGE_NUMERIC_METRIC_KEYS = (
     "evidence_manifest_invalid_entry_count",
     "evidence_manifest_size_bytes",
     "evidence_bundle_entry_count",
+    "evidence_artifact_reference_count",
+    "evidence_manifested_artifact_reference_count",
+    "evidence_unmanifested_artifact_reference_count",
 )
 
 _PER_MEMBER_REPETITION_SEMANTICS = "per_member_v3"
@@ -6535,6 +6538,10 @@ def _replay_evidence_metrics(
         evidence_manifest=evidence_manifest,
         workspace_root=workspace_root,
     )
+    reference_metrics = _final_answer_artifact_reference_metrics(
+        trajectory=trajectory,
+        artifact_dir=artifact_dir,
+    )
     manifest_valid = manifest_metrics.get("evidence_manifest_valid") is True
     manifest_invalid_count = manifest_metrics.get("evidence_manifest_invalid_entry_count")
     manifest_fully_valid = manifest_valid and not (
@@ -6545,10 +6552,150 @@ def _replay_evidence_metrics(
         "evidence_strategy_passed": (not compacted) or manifest_fully_valid,
         "evidence_compaction_signals": signals,
         **manifest_metrics,
+        **reference_metrics,
     }
     if replay_compacted_argument_blocked:
         metrics["replay_compacted_argument_blocked"] = True
     return metrics
+
+
+_FINAL_ANSWER_ARTIFACT_REFERENCE = re.compile(
+    r"`([^`\n]{1,512})`|\[[^\]\n]{0,256}\]\(([^)\n]{1,512})\)"
+)
+_CANONICAL_EVIDENCE_CONTROL_FILES = frozenset(
+    {"evidence_manifest.jsonl", "evidence_bundle.json"}
+)
+
+
+def _final_answer_artifact_reference_metrics(
+    *,
+    trajectory: list[Mapping[str, Any]],
+    artifact_dir: Path | None,
+) -> dict[str, Any]:
+    """Compare bounded final-answer file references with canonical evidence.
+
+    Only counts and content-addressed identities leave the replay boundary. Raw
+    filenames and task text remain private, while the repair loop receives a
+    deterministic, actionable signal instead of relying solely on judge prose.
+    """
+
+    if artifact_dir is None:
+        return {}
+    final_answer = _replay_final_answer(trajectory)
+    if not final_answer:
+        return {}
+    references = _bounded_final_answer_artifact_references(final_answer)
+    if not references:
+        return {
+            "evidence_artifact_reference_count": 0,
+            "evidence_unmanifested_artifact_reference_count": 0,
+        }
+    manifested_paths = _canonical_bundle_artifact_paths(artifact_dir)
+    manifested_names = {path.name for path in manifested_paths}
+    unresolved: list[str] = []
+    manifested_count = 0
+    assessed_count = 0
+    artifact_root = artifact_dir.resolve(strict=False)
+    for reference in references:
+        reference_path = Path(reference).expanduser()
+        reference_name = reference_path.name
+        canonical_control = reference_name in _CANONICAL_EVIDENCE_CONTROL_FILES
+        referenced_path = (
+            reference_path
+            if reference_path.is_absolute()
+            else artifact_dir / reference_path
+        )
+        matched = canonical_control or any(
+            referenced_path.resolve(strict=False) == path
+            for path in manifested_paths
+        )
+        if not matched and reference_name in manifested_names:
+            matched = True
+        artifact_local = referenced_path.resolve(strict=False).is_relative_to(
+            artifact_root
+        ) and referenced_path.exists()
+        if not matched and not canonical_control and not artifact_local:
+            # Backticked source/package paths are common in normal task output.
+            # Only artifact-local or canonically manifested references belong to
+            # the evidence-integrity contract.
+            continue
+        assessed_count += 1
+        if matched:
+            manifested_count += 1
+        else:
+            unresolved.append(reference)
+    metrics: dict[str, Any] = {
+        "evidence_artifact_reference_count": assessed_count,
+        "evidence_manifested_artifact_reference_count": manifested_count,
+        "evidence_unmanifested_artifact_reference_count": len(unresolved),
+    }
+    if unresolved:
+        metrics["evidence_unmanifested_artifact_reference_identity_digests"] = [
+            "sha256:" + hashlib.sha256(value.encode("utf-8")).hexdigest()
+            for value in unresolved[:32]
+        ]
+    return metrics
+
+
+def _replay_final_answer(trajectory: list[Mapping[str, Any]]) -> str:
+    fallback = ""
+    for step in trajectory:
+        action = step.get("action") if isinstance(step, Mapping) else None
+        if not isinstance(action, Mapping):
+            continue
+        content = action.get("content")
+        if not isinstance(content, str) or not content.strip():
+            continue
+        fallback = content
+        finished = action.get("is_agent_finished")
+        if finished is True or (
+            isinstance(finished, str)
+            and finished.strip().casefold() == "true"
+        ):
+            return content
+    return fallback
+
+
+def _bounded_final_answer_artifact_references(final_answer: str) -> tuple[str, ...]:
+    references: list[str] = []
+    for match in _FINAL_ANSWER_ARTIFACT_REFERENCE.finditer(final_answer[:64_000]):
+        raw = next((value for value in match.groups() if value), "").strip()
+        if not raw or "://" in raw or raw.startswith(("#", "@")):
+            continue
+        path = Path(raw)
+        if not path.suffix or any(char in raw for char in ("<", ">", "\0")):
+            continue
+        normalized = str(path)
+        if normalized not in references:
+            references.append(normalized)
+        if len(references) >= 64:
+            break
+    return tuple(references)
+
+
+def _canonical_bundle_artifact_paths(artifact_dir: Path) -> tuple[Path, ...]:
+    bundle_path = artifact_dir / "evidence_bundle.json"
+    try:
+        payload = json.loads(bundle_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, json.JSONDecodeError):
+        return ()
+    entries = payload.get("entries") if isinstance(payload, Mapping) else None
+    if not isinstance(entries, list):
+        return ()
+    paths: list[Path] = []
+    for entry in entries[:256]:
+        artifact_path = (
+            entry.get("artifact_path")
+            if isinstance(entry, Mapping)
+            else None
+        )
+        if not isinstance(artifact_path, str) or not artifact_path.strip():
+            continue
+        path = Path(artifact_path).expanduser()
+        if not path.is_absolute():
+            path = artifact_dir / path
+        paths.append(path.resolve(strict=False))
+    return tuple(paths)
 
 
 def _compacted_argument_replay_failure(
@@ -7394,7 +7541,11 @@ def _aggregate_variant_results(
         ]
         metrics[key] = (
             max(values)
-            if key == "evidence_manifest_invalid_entry_count"
+            if key
+            in {
+                "evidence_manifest_invalid_entry_count",
+                "evidence_unmanifested_artifact_reference_count",
+            }
             else sum(values) / len(values)
         )
         metrics[f"{key}_values"] = values

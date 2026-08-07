@@ -98,6 +98,23 @@ def test_incomplete_uncompacted_claim_support_remains_candidate_owned() -> None:
     assert constraints[0].owner is FailureOwner.CANDIDATE
 
 
+def test_unmanifested_final_artifact_reference_has_typed_repair_action() -> None:
+    constraints = evidence_repair_constraints_from_metrics(
+        {
+            "evidence_bundle_valid": True,
+            "evidence_unmanifested_artifact_reference_count": 2,
+        }
+    )
+
+    assert len(constraints) == 1
+    assert constraints[0].subject_kind == "artifact"
+    assert constraints[0].failure_mode == "source_mismatch"
+    assert constraints[0].source_layer == "candidate_output"
+    assert constraints[0].required_action == "repair_artifact_reference"
+    assert constraints[0].occurrence_count == 2
+    assert constraints[0].owner is FailureOwner.CANDIDATE
+
+
 def test_runtime_read_budget_constraint_merges_with_judge_constraint() -> None:
     candidate_constraint = _constraint().to_dict()
 
