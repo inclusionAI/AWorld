@@ -1,0 +1,55 @@
+[project]
+name = "aworld-filex"
+version = "0.1.0"
+description = "Self-contained FileX runtime for AWorld"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "mcp",
+    "requests~=2.32.4",
+    "fastmcp~=2.11.3",
+    "pydantic>=2.11.7",
+    "pyyaml~=6.0.2",
+    "liteparse==2.0.7",
+    "afts==0.1.7",
+    "pycryptodome~=3.23.0",
+    "crcmod~=1.7",
+    "aiohttp~=3.12.13",
+    "numpy~=2.2.6",
+    "chardet~=5.2.0",
+    "openpyxl~=3.1.5",
+    "pandas~=2.2.3",
+    "duckdb>=1.1.0",
+    "xlrd~=2.0.1",
+    "python-docx~=1.2.0",
+    "python-pptx~=1.0.2",
+    "pillow~=12.1.0",
+    "pdf2image~=1.17.0",
+    "pypdf~=5.9.0",
+    "paddleocr>=3.0.0",
+    "paddlex[ocr,genai-client]>=3.7.2",
+    "paddlepaddle>=3.0.0",
+    "socksio>=1.0.0",
+    "reportlab~=4.4.3",
+    "markdown~=3.7",
+    "weasyprint~=65.0",
+    "layotto==2026.1.22.1",
+    "faster-whisper~=1.2.1",
+]
+
+[project.scripts]
+filex = "document_parse_service.cli:main"
+ocr-server = "document_parse_service.ocr_server:main"
+
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.24",
+]
