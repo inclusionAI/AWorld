@@ -34,11 +34,6 @@ if args[0] == "parse":
         "file_path": str(result.relative_to(workspace)),
         "metrics": {"provider": "python_docx"},
     }
-elif args[0] == "save":
-    output = pathlib.Path(args[args.index("--output") + 1])
-    output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_bytes(b"downloaded")
-    payload = {"success": True, "workspace_path": str(output), "bytes": 10}
 else:
     payload = {"success": True, "status": "parsing", "completed_batches": 2}
 
@@ -102,20 +97,20 @@ def test_filex_wrapper_parses_any_supported_local_file(tmp_path: Path) -> None:
     assert provider == {"filex_parse_provider": "python_docx"}
 
 
-def test_filex_wrapper_passes_env_file_without_exposing_secret(tmp_path: Path) -> None:
+def test_filex_wrapper_parses_url_and_passes_env_file_without_exposing_secret(tmp_path: Path) -> None:
     workspace, args_log, env = _environment(tmp_path)
     env_file = workspace / "filex-env.json"
     secret = "sensitive-test-value"
-    env_file.write_text(json.dumps({"afts_biz_secret": secret}), encoding="utf-8")
-    output = workspace / "downloaded.pdf"
+    env_file.write_text(json.dumps({"gateway_vllm": {"api_key": secret}}), encoding="utf-8")
+    output = workspace / "parsed" / "remote.md"
 
     completed = subprocess.run(
         [
             sys.executable,
             str(FILEX_SCRIPT),
-            "save",
-            "--file-id",
-            "remote-id",
+            "parse",
+            "--url",
+            "https://example.com/report.pdf",
             "--output",
             str(output),
             "--env-file",
@@ -129,9 +124,10 @@ def test_filex_wrapper_passes_env_file_without_exposing_secret(tmp_path: Path) -
 
     assert completed.returncode == 0
     cli_args = json.loads(args_log.read_text(encoding="utf-8"))
+    assert cli_args[cli_args.index("--url") + 1] == "https://example.com/report.pdf"
     assert "--env-content-file" in cli_args
     assert secret not in json.dumps(cli_args)
-    assert output.read_bytes() == b"downloaded"
+    assert output.read_text(encoding="utf-8") == "# Parsed by FileX\n"
 
 
 def test_filex_wrapper_reads_batch_status(tmp_path: Path) -> None:

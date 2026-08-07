@@ -26,10 +26,10 @@ def _parser() -> argparse.ArgumentParser:
     )
     commands = parser.add_subparsers(dest="command", required=True)
 
-    parse = commands.add_parser("parse", help="Parse a local or remote file to Markdown")
+    parse = commands.add_parser("parse", help="Parse a local path or HTTP(S) URL to Markdown")
     source = parse.add_mutually_exclusive_group(required=True)
     source.add_argument("--input", help="Local file inside the workspace")
-    source.add_argument("--file-id", help="Remote AFTS file id")
+    source.add_argument("--url", help="HTTP(S) file URL")
     parse.add_argument("--output", help="Optional Markdown destination inside the workspace")
     parse.add_argument("--file-type", help="Explicit source type; otherwise infer from the file")
     parse.add_argument("--provider", help="Configured FileX provider")
@@ -47,11 +47,6 @@ def _parser() -> argparse.ArgumentParser:
     parse.add_argument("--batch-resume-id", help="Stable PDF batch resume id")
     parse.add_argument("--force-refresh", action="store_true")
     parse.add_argument("--no-cache", action="store_true")
-
-    save = commands.add_parser("save", help="Download an AFTS file into the workspace")
-    save.add_argument("--file-id", required=True, help="Remote AFTS file id")
-    save.add_argument("--output", required=True, help="Destination inside the workspace")
-    save.add_argument("--env-file", required=True, help="Credential/config JSON file")
 
     status = commands.add_parser("status", help="Read resumable PDF batch progress")
     status.add_argument("--batch-resume-id", required=True)
@@ -132,7 +127,7 @@ def _parse(args: argparse.Namespace, executable: str, workspace: Path) -> int:
             source_path = _inside_workspace(args.input, workspace, must_exist=True)
             command.extend(["--workspace-path", str(source_path)])
         else:
-            command.extend(["--file-id", args.file_id])
+            command.extend(["--url", args.url])
         if args.env_file:
             env_file = _inside_workspace(args.env_file, workspace, must_exist=True)
             command.extend(["--env-content-file", str(env_file)])
@@ -182,32 +177,10 @@ def _parse(args: argparse.Namespace, executable: str, workspace: Path) -> int:
             output = result
     except ValueError as exc:
         return _fail(str(exc), error_type="OutputError")
-    payload["input_path"] = str(source_path) if source_path else ""
+    payload["input_path"] = str(source_path) if source_path else args.url
     payload["output_path"] = str(output)
     _emit(payload)
     return 0
-
-
-def _save(args: argparse.Namespace, executable: str, workspace: Path) -> int:
-    try:
-        output = _inside_workspace(args.output, workspace)
-        env_file = _inside_workspace(args.env_file, workspace, must_exist=True)
-    except ValueError as exc:
-        return _fail(str(exc), error_type="InputError")
-    return_code, payload = _run(
-        [
-            executable,
-            "save",
-            "--file-id",
-            args.file_id,
-            "--output",
-            str(output),
-            "--env-content-file",
-            str(env_file),
-        ]
-    )
-    _emit(payload)
-    return return_code
 
 
 def _status(args: argparse.Namespace, executable: str) -> int:
@@ -231,8 +204,6 @@ def main(argv: list[str] | None = None) -> int:
         )
     if args.command == "parse":
         return _parse(args, executable, workspace)
-    if args.command == "save":
-        return _save(args, executable, workspace)
     return _status(args, executable)
 
 

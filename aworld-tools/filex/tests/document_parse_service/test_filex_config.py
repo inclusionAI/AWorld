@@ -107,28 +107,6 @@ def test_build_default_env_content_maps_top_level_gateway_vllm() -> None:
     }
 
 
-def test_build_default_env_content_maps_top_level_afts() -> None:
-    _add_src_path()
-    from document_parse_service.filex_config import build_default_env_content
-
-    env = build_default_env_content(
-        file_type="pdf",
-        config={
-            "afts": {
-                "afts_app_id": "apwallet",
-                "afts_base_url": "https://mmtcapi.alipay.com",
-                "afts_biz_key": "leopard_file",
-                "afts_biz_secret": "secret",
-            },
-        },
-    )
-
-    assert env["afts_app_id"] == "apwallet"
-    assert env["afts_base_url"] == "https://mmtcapi.alipay.com"
-    assert env["afts_biz_key"] == "leopard_file"
-    assert env["afts_biz_secret"] == "secret"
-
-
 def test_merge_env_content_deep_merges_caller_overrides() -> None:
     _add_src_path()
     from document_parse_service.filex_config import merge_env_content

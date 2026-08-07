@@ -47,16 +47,6 @@ def build_default_env_content(
 
     resolved_config = config if config is not None else load_filex_config()
     env: dict[str, Any] = {}
-    afts_config = resolved_config.get("afts") or {}
-    if isinstance(afts_config, dict):
-        env.update(
-            {
-                key: value
-                for key, value in afts_config.items()
-                if key in {"afts_app_id", "afts_base_url", "afts_biz_key", "afts_biz_secret"}
-            }
-        )
-
     gateway_vllm_config = resolved_config.get("gateway_vllm") or {}
     if isinstance(gateway_vllm_config, dict):
         env["gateway_vllm"] = deepcopy(gateway_vllm_config)

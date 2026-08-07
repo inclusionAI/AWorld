@@ -1,11 +1,11 @@
 ---
 name: filex
-description: Parse local or remote files into Markdown, download AFTS files, and inspect resumable PDF batch status with the FileX CLI inside an AWorld sandbox. Use for reading, extracting, transcribing, inspecting, summarizing, or answering questions about PDF, Word, PowerPoint, Excel, CSV, text, Markdown, image, audio, or video files.
+description: Parse workspace files or HTTP(S) URLs into Markdown and inspect resumable PDF batch status with the FileX CLI inside an AWorld sandbox. Use for reading, extracting, transcribing, inspecting, summarizing, or answering questions about PDF, Word, PowerPoint, Excel, CSV, text, Markdown, image, audio, or video files.
 ---
 
 # Use FileX
 
-Use the bundled wrapper for FileX `parse`, `save`, and `status`. It validates workspace paths, keeps credentials out of command-line arguments, preserves FileX JSON fields, and returns `output_path` for synchronous parsing.
+Use the bundled wrapper for FileX `parse` and `status`. It validates workspace paths, downloads HTTP(S) inputs into the workspace, keeps credentials out of command-line arguments, preserves FileX JSON fields, and returns `output_path` for synchronous parsing.
 
 ## Parse a local file
 
@@ -41,25 +41,19 @@ Available providers depend on the file type and image configuration. They includ
 
 For provider credentials or complex configuration, create a protected JSON file in the workspace and pass `--env-file`. Put `filex_parse_provider` in that file when selecting a provider. Do not combine `--provider` with `--env-file`.
 
-## Parse remote AFTS files
+## Parse a URL
 
-Use the remote file id with an environment file:
+Pass an HTTP(S) URL directly. FileX downloads it into a bounded workspace cache before parsing:
 
 ```bash
 python3 /skills/filex/scripts/filex.py parse \
-  --file-id AFTS_FILE_ID \
-  --file-type pdf \
-  --env-file /root/workspace/filex-env.json
+  --url https://example.com/report.pdf \
+  --file-type pdf
 ```
 
-To download without parsing:
-
-```bash
-python3 /skills/filex/scripts/filex.py save \
-  --file-id AFTS_FILE_ID \
-  --output /root/workspace/source.pdf \
-  --env-file /root/workspace/filex-env.json
-```
+The default maximum download is 512 MiB and the default timeout is 120 seconds.
+Operators may adjust `FILEX_MAX_DOWNLOAD_BYTES` and
+`FILEX_DOWNLOAD_TIMEOUT_SECONDS` on the container.
 
 ## PDF page and batch controls
 
@@ -85,5 +79,5 @@ For synchronous parsing, read `output_path` with the filesystem text tool or bou
 - Confirm `command -v filex` before use. Report a missing FileX-enabled image instead of falling back to AWorld's unsupported built-in PDF parser.
 - Keep source files unchanged and keep every local input, output, and environment file inside the workspace.
 - Never place credentials directly in a command, prompt, log, skill file, or generated Markdown.
-- Upload host-only files into a remote sandbox workspace before parsing.
+- Prefer a workspace path for private files; use `--url` only for a trusted HTTP(S) source.
 - Preserve FileX error messages, task ids, warnings, metrics, and partial-success information.

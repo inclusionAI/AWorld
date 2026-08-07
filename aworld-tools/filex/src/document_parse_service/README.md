@@ -4,10 +4,10 @@ Typed document parsing pipeline for `filesystem_server`.
 
 ## Responsibilities
 
-- Resolve remote `file_id` and local `workspace_path` sources into one parse pipeline.
+- Parse local `workspace_path` sources; the CLI downloads HTTP(S) URLs into the workspace first.
 - Route by file type through `DocumentServiceFactory`.
 - Produce Markdown as the single normalized output.
-- Upload extracted images and parsed markdown through AFTS when `env_content` is provided.
+- Keep extracted assets and parsed Markdown in the mounted workspace.
 
 ## Key Files
 
@@ -15,12 +15,12 @@ Typed document parsing pipeline for `filesystem_server`.
 - `cli.py` - `filex` CLI entrypoint.
 - `pdf_page_selection.py` - shared one-based PDF page-range validation and provider-neutral subset generation.
 - `document_service_factory.py` - file-type routing.
-- `document_parse_executor.py` - shared execution and markdown upload.
+- `document_parse_executor.py` - shared parsing execution and Markdown output.
 - `document_parse_metrics.py` - versioned common metrics and file-type-specific metric schemas.
 - `provider_registry.py` - canonical provider names, supported formats, capability metadata, versions, and request validation.
   Metrics are returned with the parse result and persisted beside the Markdown output as `<name>.metrics.json`.
   Common timing and model fields stay comparable across formats, while PDF, presentation, word-processing, spreadsheet, image, audio, and video details live under `type_metrics`.
-- Published images use HTML `<img>` elements with both `src` and stable `data-file-id` attributes; tests must not regress this contract to plain Markdown image syntax.
+- Extracted images use local workspace references by default in the public image.
 - `pdf/` - PDF-specific services and providers:
   - `pdf_document_service.py` - PDF document pipeline.
   - `pdf_batch_checkpoint.py` - durable successful-page-batch checkpoints used by retry/resume.

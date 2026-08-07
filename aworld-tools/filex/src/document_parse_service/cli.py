@@ -4,16 +4,22 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
 import logging
 import os
+import re
 import sys
+import uuid
+from pathlib import Path
 from typing import Any, Optional
+from urllib.parse import unquote, urlparse
+from urllib.request import Request, urlopen
 
 from utils import generate_trace_id, set_trace_id
 
 from .service import DocumentParseService, normalize_env_content
-from .paths import DOCUMENT_PARSE_WORKSPACE
+from .paths import DOCUMENT_PARSE_WORKSPACE, FS_WORKSPACE_ROOT
 from .pdf.pdf_batch_checkpoint import PdfBatchCheckpointStore
 
 
@@ -25,9 +31,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     set_trace_id(trace_id)
 
     try:
-        if args.command == "save":
-            payload = asyncio.run(_run_save(args))
-        elif args.command == "parse":
+        if args.command == "parse":
             payload = asyncio.run(_run_parse(args, trace_id=trace_id))
         elif args.command == "status":
             store = PdfBatchCheckpointStore(
@@ -82,25 +86,20 @@ def _configure_logging() -> None:
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="filex",
-        description="Save or parse documents using filesystem_server document_parse_service.",
+        description="Parse local paths or HTTP(S) URLs using FileX.",
     )
     subparsers = parser.add_subparsers(dest="command")
 
-    save = subparsers.add_parser("save", help="Download a remote AFTS file into the filesystem workspace")
-    save.add_argument("--file-id", required=True, help="AFTS file id")
-    save.add_argument("--output", required=True, help="Absolute output path under workspace")
-    _add_env_content_args(save, required=True)
-
-    parse = subparsers.add_parser("parse", help="Parse a remote or local file into Markdown")
+    parse = subparsers.add_parser("parse", help="Parse a URL or local file into Markdown")
     group = parse.add_mutually_exclusive_group(required=True)
-    group.add_argument("--file-id", help="AFTS file id")
+    group.add_argument("--url", help="HTTP(S) file URL")
     group.add_argument("--workspace-path", help="Absolute local path under workspace")
     parse.add_argument("--file-type", help="Optional explicit source file type")
     parse.add_argument("--sync-mode", choices=["sync", "async"], default="sync", help="Run in sync or async mode")
     parse.add_argument(
         "--asset-reference-mode",
         choices=["remote_id", "local_path"],
-        default="remote_id",
+        default="local_path",
         help="How Markdown references extracted assets",
     )
     parse.add_argument("--task-id", help="Optional task id override")
@@ -163,19 +162,12 @@ def _add_env_content_args(parser: argparse.ArgumentParser, *, required: bool) ->
     group.add_argument("--env-content-file", help="Read env_content JSON from a file")
 
 
-async def _run_save(args: argparse.Namespace) -> dict[str, Any]:
-    service = DocumentParseService()
-    env_content = _load_optional_json_argument(args.env_content_json, args.env_content_file)
-    return await service.save_file(
-        file_id=args.file_id,
-        output_path=args.output,
-        env_content=env_content,
-    )
-
-
 async def _run_parse(args: argparse.Namespace, *, trace_id: str) -> dict[str, Any]:
     service = DocumentParseService()
     env_content = _load_optional_json_argument(args.env_content_json, args.env_content_file)
+    workspace_path = args.workspace_path
+    if args.url:
+        workspace_path = str(await asyncio.to_thread(_download_url, args.url))
     if args.pages:
         env_content["pdf_pages"] = args.pages
     if args.first_batch_pages is not None:
@@ -193,14 +185,52 @@ async def _run_parse(args: argparse.Namespace, *, trace_id: str) -> dict[str, An
     if args.no_cache:
         env_content["filex_no_cache"] = True
     return await service.parse(
-        file_id=args.file_id,
-        workspace_path=args.workspace_path,
+        workspace_path=workspace_path,
         file_type=args.file_type,
         task_id=args.task_id or trace_id,
         sync_mode=args.sync_mode,
         asset_reference_mode=args.asset_reference_mode,
         env_content=env_content,
     )
+
+
+def _download_url(raw_url: str) -> Path:
+    url = str(raw_url or "").strip()
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("url must be an absolute HTTP(S) URL")
+
+    timeout = max(1, int(os.getenv("FILEX_DOWNLOAD_TIMEOUT_SECONDS", "120")))
+    max_bytes = max(1, int(os.getenv("FILEX_MAX_DOWNLOAD_BYTES", str(512 * 1024 * 1024))))
+    request = Request(url, headers={"User-Agent": "AWorld-FileX/1.0"})
+    identity = hashlib.sha256(url.encode("utf-8")).hexdigest()[:16]
+    target_dir = FS_WORKSPACE_ROOT / "url_downloads" / identity
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    with urlopen(request, timeout=timeout) as response:  # noqa: S310 - HTTP(S) validated above
+        final_url = str(response.geturl() or url)
+        if urlparse(final_url).scheme not in {"http", "https"}:
+            raise ValueError("url redirected to an unsupported scheme")
+        content_length = int(response.headers.get("Content-Length") or 0)
+        if content_length > max_bytes:
+            raise ValueError(f"url content exceeds FILEX_MAX_DOWNLOAD_BYTES ({max_bytes})")
+
+        candidate = Path(unquote(urlparse(final_url).path)).name or "downloaded_file"
+        file_name = re.sub(r"[^A-Za-z0-9._-]+", "_", candidate).strip("._") or "downloaded_file"
+        target_path = target_dir / file_name
+        temporary_path = target_dir / f".{file_name}.{uuid.uuid4().hex}.tmp"
+        total = 0
+        try:
+            with temporary_path.open("wb") as output:
+                while chunk := response.read(1024 * 1024):
+                    total += len(chunk)
+                    if total > max_bytes:
+                        raise ValueError(f"url content exceeds FILEX_MAX_DOWNLOAD_BYTES ({max_bytes})")
+                    output.write(chunk)
+            os.replace(temporary_path, target_path)
+        finally:
+            temporary_path.unlink(missing_ok=True)
+    return target_path
 
 
 def _load_optional_json_argument(inline: Optional[str], file_path: Optional[str]) -> dict[str, Any]:
@@ -214,7 +244,6 @@ def _load_optional_json_argument(inline: Optional[str], file_path: Optional[str]
 
 def _trace_method_name(command: Optional[str]) -> str:
     return {
-        "save": "save_file",
         "parse": "file_parse",
     }.get(command or "", "filex_cli")
 

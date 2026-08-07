@@ -10,8 +10,5 @@
     "model": "base",
     "device": "auto",
     "compute_type": "default"
-  },
-  "afts_app_id": "",
-  "afts_biz_key": "",
-  "afts_biz_secret": ""
+  }
 }

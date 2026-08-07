@@ -3,6 +3,7 @@ FROM ${BASE_IMAGE}
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV UV_NO_PROGRESS=1
+ENV UV_DEFAULT_INDEX=https://pypi.org/simple
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
@@ -24,15 +25,15 @@ WORKDIR /opt/filex
 
 RUN python3 -m pip install --break-system-packages --no-cache-dir uv
 
-COPY aworld-tools/filex/pyproject.toml aworld-tools/filex/uv.lock aworld-tools/filex/README.md ./
+COPY aworld-tools/filex/pyproject.toml aworld-tools/filex/README.md ./
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-dev --no-install-project
+    uv sync --no-dev --no-install-project
 
 COPY aworld-tools/filex/bin ./bin
 COPY aworld-tools/filex/config ./config
 COPY aworld-tools/filex/src ./src
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-dev \
+    uv sync --locked --no-dev \
     && chmod +x /opt/filex/bin/filex \
     && mkdir -p /root/.local/bin /root/workspace /skills \
     && ln -sf /opt/filex/bin/filex /root/.local/bin/filex

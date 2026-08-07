@@ -233,11 +233,11 @@ def test_cache_key_separates_provider_pages_and_model() -> None:
     assert len({liteparse, paddle, other_pages, other_model}) == 4
 
 
-def test_document_parse_service_cache_and_no_cache_switch() -> None:
-    asyncio.run(_assert_document_parse_service_cache_and_no_cache_switch())
+def test_document_parse_service_cache_and_no_cache_switch(tmp_path: Path) -> None:
+    asyncio.run(_assert_document_parse_service_cache_and_no_cache_switch(tmp_path))
 
 
-async def _assert_document_parse_service_cache_and_no_cache_switch() -> None:
+async def _assert_document_parse_service_cache_and_no_cache_switch(tmp_path: Path) -> None:
     service = DocumentParseService()
     calls = 0
 
@@ -250,11 +250,13 @@ async def _assert_document_parse_service_cache_and_no_cache_switch() -> None:
         fake_parse_uncached,
         service,
     )
-    file_id = f"cache-test-{uuid.uuid4()}"
-    first = await service.parse(file_id=file_id, file_type="pdf", task_id="first")
-    second = await service.parse(file_id=file_id, file_type="pdf", task_id="second")
+    source_path = tmp_path / f"cache-test-{uuid.uuid4()}.pdf"
+    source_path.write_bytes(b"%PDF-1.4\n")
+    workspace_path = str(source_path)
+    first = await service.parse(workspace_path=workspace_path, file_type="pdf", task_id="first")
+    second = await service.parse(workspace_path=workspace_path, file_type="pdf", task_id="second")
     bypass = await service.parse(
-        file_id=file_id,
+        workspace_path=workspace_path,
         file_type="pdf",
         task_id="bypass",
         env_content={"filex_no_cache": True},

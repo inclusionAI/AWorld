@@ -1,8 +1,8 @@
 # FileX for AWorld
 
-This directory contains the complete FileX runtime used by the AWorld `filex` skill. It is self-contained inside the AWorld repository and includes the CLI, document/media parsing services, required utility and AFTS modules, dependency lock, container recipe, examples, and FileX tests. The published container also installs AWorld and `aworld-cli`, making it a single ready-to-run image.
+This directory contains the FileX runtime used by the AWorld `filex` skill. It is self-contained inside the AWorld repository and includes the CLI, local path/URL document and media parsing services, required utilities, container recipe, examples, and FileX tests. The published container also installs AWorld and `aworld-cli`, making it a single ready-to-run image.
 
-Supported inputs include PDF, text/Markdown, Word, PowerPoint, Excel/CSV, images, audio, and video. The CLI exposes `filex save`, `filex parse`, and `filex status`.
+Supported inputs include PDF, text/Markdown, Word, PowerPoint, Excel/CSV, images, audio, and video. Sources can be workspace paths or HTTP(S) URLs. The CLI exposes `filex parse` and `filex status`; it does not require a file service or file ID.
 
 ## Local development
 
@@ -66,9 +66,25 @@ For a FileX provider that needs structured configuration, copy
 `config/filex-env.example.json` to `workspace/filex-env.json`, restrict its
 permissions, and tell the FileX skill to use
 `--env-file /root/workspace/filex-env.json`. Native text, Office, table, and
-LiteParse flows do not require provider credentials. AFTS, remote VLM, and
-remote media providers require only the relevant fields; unused empty fields
+LiteParse flows do not require provider credentials. Remote VLM and remote
+media providers require only the relevant fields; unused empty fields
 should be removed.
+
+The image includes a credential-free `/opt/filex/config/filex.yaml` with native
+defaults (LiteParse PDF, python-pptx, 10-page PDF batches, and local
+audio/video transcription). To replace these defaults, mount another YAML file
+read-only and set `FILEX_CONFIG_PATH`:
+
+```bash
+docker run --rm -it \
+  -e FILEX_CONFIG_PATH=/root/workspace/filex.yaml \
+  -v "$PWD/workspace:/root/workspace" \
+  ghcr.io/inclusionai/aworld-filex:latest \
+  filex parse --workspace-path /root/workspace/report.pdf
+```
+
+Keep secrets out of `filex.yaml`; pass provider credentials with the mounted
+`filex-env.json` and `--env-content-file` instead.
 
 The repository also includes `.github/workflows/filex-image.yml`. Pull requests
 build the all-in-one image for validation, while pushes to `main`, `codex/**`, and tags
@@ -78,4 +94,4 @@ the workflow does not require a registry password or an additional secret.
 
 ## Source provenance
 
-The initial source was imported from the local `mcp_servers/leopard-mcp-server/mcp_servers/filesystem_server` FileX implementation at commit `f32b51c0266a8d1104450ebd59f76680f4312a5a`. The credential-bearing source `config/filex.yaml` was not imported.
+The initial source was imported from the local `mcp_servers/leopard-mcp-server/mcp_servers/filesystem_server` FileX implementation at commit `f32b51c0266a8d1104450ebd59f76680f4312a5a`. Its credential-bearing configuration was not imported; the bundled `config/filex.yaml` is a new credential-free default.

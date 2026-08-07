@@ -10,7 +10,7 @@ import time
 import uuid
 import zipfile
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Optional
+from typing import Any, Optional
 
 from utils import validate_file, verify_file_type
 
@@ -29,10 +29,6 @@ from .parse_result_cache import (
     build_parse_cache_key,
 )
 from .provider_registry import normalize_provider_env
-
-if TYPE_CHECKING:
-    from services.afts_service import AftsService
-
 
 logger = logging.getLogger(__name__)
 
@@ -76,43 +72,16 @@ def normalize_env_content(raw: Any) -> dict[str, Any]:
 
 
 class DocumentParseService:
-    """Unifies local-path and remote-file parsing into one pipeline."""
+    """Parses files that have been placed in the FileX workspace."""
 
     def __init__(self, workspace_root: Path | None = None) -> None:
         self._workspace_root = workspace_root or FS_WORKSPACE_ROOT
         self._output_root = self._workspace_root / "document_parse"
         self._parse_result_cache = ParseResultCache(self._workspace_root / ".filex_parse_cache")
 
-    async def save_file(
-        self,
-        *,
-        file_id: str,
-        output_path: str,
-        env_content: dict[str, Any] | None,
-    ) -> dict[str, Any]:
-        normalized_file_id = str(file_id or "").strip()
-        if not normalized_file_id:
-            raise ValueError("file_id is required")
-
-        afts_service = self._create_afts_service(env_content, required=True)
-        target_path = self._resolve_output_path(output_path)
-        target_path.parent.mkdir(parents=True, exist_ok=True)
-
-        downloaded = await afts_service.download_file(normalized_file_id)
-        final_path = self._move_file(downloaded, target_path)
-        return {
-            "success": True,
-            "message": "File saved successfully",
-            "file_id": normalized_file_id,
-            "workspace_path": str(final_path),
-            "file_name": final_path.name,
-            "bytes": final_path.stat().st_size if final_path.exists() else 0,
-        }
-
     async def parse(
         self,
         *,
-        file_id: Optional[str] = None,
         workspace_path: Optional[str] = None,
         file_type: Optional[str] = None,
         task_id: Optional[str] = None,
@@ -120,10 +89,9 @@ class DocumentParseService:
         asset_reference_mode: AssetReferenceMode = "remote_id",
         env_content: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        normalized_file_id = str(file_id or "").strip()
         normalized_workspace_path = str(workspace_path or "").strip()
-        if bool(normalized_file_id) == bool(normalized_workspace_path):
-            raise ValueError("provide exactly one of file_id or workspace_path")
+        if not normalized_workspace_path:
+            raise ValueError("workspace_path is required")
         if sync_mode not in {"sync", "async"}:
             raise ValueError("sync_mode must be 'sync' or 'async'")
 
@@ -135,7 +103,6 @@ class DocumentParseService:
         force_refresh = _as_bool(normalized_env.pop("filex_force_refresh", False))
         if sync_mode != "sync" or not cache_enabled or no_cache:
             result = await self._parse_uncached(
-                file_id=normalized_file_id,
                 workspace_path=normalized_workspace_path,
                 file_type=file_type,
                 task_id=task_id,
@@ -173,7 +140,7 @@ class DocumentParseService:
             )
             cache_env = normalize_provider_env(normalized_file_type, cache_env)
         cache_key = build_parse_cache_key(
-            file_id=normalized_file_id,
+            file_id="",
             workspace_path=normalized_workspace_path,
             file_type=file_type,
             asset_reference_mode=asset_reference_mode,
@@ -186,7 +153,6 @@ class DocumentParseService:
             max_entries=max_entries,
             force_refresh=force_refresh,
             compute=lambda: self._parse_uncached(
-                file_id=normalized_file_id,
                 workspace_path=normalized_workspace_path,
                 file_type=file_type,
                 task_id=task_id,
@@ -199,7 +165,6 @@ class DocumentParseService:
     async def _parse_uncached(
         self,
         *,
-        file_id: Optional[str] = None,
         workspace_path: Optional[str] = None,
         file_type: Optional[str] = None,
         task_id: Optional[str] = None,
@@ -207,32 +172,15 @@ class DocumentParseService:
         asset_reference_mode: AssetReferenceMode = "remote_id",
         env_content: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        normalized_file_id = str(file_id or "").strip()
         normalized_workspace_path = str(workspace_path or "").strip()
         normalized_env = normalize_env_content(env_content)
         resolved_task_id = self._resolve_task_id(
-            file_id=normalized_file_id,
             workspace_path=normalized_workspace_path,
             task_id=task_id,
         )
-        afts_service = self._create_afts_service(
-            normalized_env,
-            required=bool(normalized_file_id),
-        )
-
-        download_started_at = time.perf_counter()
-        source_path, source_file_id = await self._resolve_source_path(
-            file_id=normalized_file_id,
-            workspace_path=normalized_workspace_path,
-            task_id=resolved_task_id,
-            afts_service=afts_service,
-        )
-        download_duration_ms = (
-            int((time.perf_counter() - download_started_at) * 1000)
-            if normalized_file_id
-            else 0
-        )
-        runtime_metrics = {"queue": 0, "download": download_duration_ms}
+        source_path = self._resolve_workspace_input_path(normalized_workspace_path)
+        source_file_id = ""
+        runtime_metrics = {"queue": 0, "download": 0}
         source_file_type = self._resolve_file_type(
             source_path,
             explicit_file_type=file_type,
@@ -271,7 +219,7 @@ class DocumentParseService:
                 task_id=resolved_task_id,
                 source_file_id=source_file_id,
                 source_file_name=source_file_name,
-                afts_service=afts_service,
+                afts_service=None,
                 run_in_background=True,
                 runtime_metrics=runtime_metrics,
             )
@@ -292,15 +240,12 @@ class DocumentParseService:
             task_id=resolved_task_id,
             source_file_id=source_file_id,
             source_file_name=source_file_name,
-            afts_service=afts_service,
+            afts_service=None,
             runtime_metrics=runtime_metrics,
         )
         self._apply_provider_identity(result, normalized_env)
         output_file_id = result.get("output_file_id") or ""
         file_url = ""
-        if output_file_id and afts_service is not None:
-            file_url = await afts_service.get_file_url(output_file_id) or ""
-
         return {
             "success": True,
             "message": "Document parsed successfully",
@@ -356,27 +301,6 @@ class DocumentParseService:
         if not path.exists():
             raise FileNotFoundError(f"file not found: {path}")
         return path
-
-    async def _resolve_source_path(
-        self,
-        *,
-        file_id: str,
-        workspace_path: str,
-        task_id: str,
-        afts_service: Optional["AftsService"],
-    ) -> tuple[Path, str]:
-        if workspace_path:
-            source_path = self._resolve_workspace_input_path(workspace_path)
-            return source_path, ""
-
-        if afts_service is None:
-            raise ValueError("env_content is required when file_id is used")
-
-        downloaded = await afts_service.download_file(file_id)
-        source_dir = self._output_root / task_id / "source"
-        source_dir.mkdir(parents=True, exist_ok=True)
-        target_path = source_dir / downloaded.name
-        return self._copy_file(downloaded, target_path), file_id
 
     def _resolve_file_type(self, source_path: Path, explicit_file_type: Optional[str]) -> str:
         if explicit_file_type:
@@ -460,48 +384,14 @@ class DocumentParseService:
     def _resolve_task_id(
         self,
         *,
-        file_id: str,
         workspace_path: str,
         task_id: Optional[str],
     ) -> str:
         normalized_task_id = str(task_id or "").strip()
         if normalized_task_id:
             return normalized_task_id
-        if file_id:
-            return file_id
         source_path = Path(workspace_path)
         return f"{source_path.stem}_{int(time.time() * 1000)}"
-
-    def _create_afts_service(
-        self,
-        env_content: dict[str, Any] | None,
-        *,
-        required: bool,
-    ) -> Optional["AftsService"]:
-        normalized_env = merge_env_content(
-            build_default_env_content(file_type=""),
-            normalize_env_content(env_content),
-        )
-        if not normalized_env or not self._has_afts_credentials(normalized_env):
-            if required:
-                raise ValueError("env_content is required")
-            return None
-        try:
-            from services.afts_service import AftsService
-        except ImportError:
-            if required:
-                raise
-            logger.warning("AFTS service unavailable, continue without asset publishing")
-            return None
-
-        return AftsService.create_from_env_content(normalized_env)
-
-    @staticmethod
-    def _has_afts_credentials(env_content: dict[str, Any]) -> bool:
-        return all(
-            str(env_content.get(key, "")).strip()
-            for key in ("afts_biz_key", "afts_biz_secret", "afts_app_id")
-        )
 
     def _ensure_under_workspace(self, path: Path) -> None:
         try:
