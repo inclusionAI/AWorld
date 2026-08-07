@@ -5,6 +5,7 @@ import contextvars
 import hashlib
 import inspect
 import json
+import math
 import os
 import statistics
 import subprocess
@@ -1725,6 +1726,9 @@ def _aworld_evaluator_metrics(
                             metrics[f"{metric_key}_{suffix}"] = float(value)
     metrics.update(_aworld_evidence_quality_metrics(report))
     metrics.update(_aworld_judge_diagnostic_metrics(report))
+    score_samples = _aworld_evaluator_score_samples(report)
+    if score_samples:
+        metrics["score_samples"] = score_samples
 
     gate = report.get("gate")
     gate_status = gate.get("status") if isinstance(gate, Mapping) else None
@@ -1749,6 +1753,39 @@ def _aworld_evaluator_metrics(
     if isinstance(report_path, str):
         metrics["report_path"] = report_path
     return metrics
+
+
+def _aworld_evaluator_score_samples(
+    report: Mapping[str, Any],
+) -> list[float]:
+    """Preserve ordered case scores for paired candidate comparisons."""
+
+    results = report.get("results")
+    if not isinstance(results, list):
+        return []
+    samples: list[float] = []
+    for result in results:
+        if not isinstance(result, Mapping):
+            return []
+        result_metrics = result.get("metrics")
+        score_metric = (
+            result_metrics.get("score")
+            if isinstance(result_metrics, Mapping)
+            else None
+        )
+        value = (
+            score_metric.get("value")
+            if isinstance(score_metric, Mapping)
+            else None
+        )
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(float(value))
+        ):
+            return []
+        samples.append(float(value))
+    return samples
 
 
 def _aworld_evaluator_case_count_metrics(
@@ -1819,6 +1856,22 @@ def _aggregate_aworld_evaluator_metrics(
                 combined_judge_diagnostics.extend(
                     dict(item) for item in value if isinstance(item, Mapping)
                 )
+            continue
+        if key == "score_samples":
+            score_samples: list[float] = []
+            for value in values:
+                if not isinstance(value, list):
+                    score_samples = []
+                    break
+                score_samples.extend(
+                    float(item)
+                    for item in value
+                    if isinstance(item, (int, float))
+                    and not isinstance(item, bool)
+                    and math.isfinite(float(item))
+                )
+            if score_samples:
+                aggregated[key] = score_samples
             continue
         if key == "evidence_repair_constraints":
             constraint_groups = [

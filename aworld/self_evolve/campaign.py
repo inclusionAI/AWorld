@@ -1172,6 +1172,7 @@ def derive_self_improvement_disposition(
         )
     if (
         isinstance(attribution, Mapping)
+        and attribution.get("failure_class") == "candidate"
         and attribution.get("scheduler_stop") is True
         and attribution.get("scheduler_reason_code")
         == "repair_frontier_stalled"

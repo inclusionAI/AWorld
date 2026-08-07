@@ -321,6 +321,59 @@ def test_score_improvement_gate_treats_noisy_negative_delta_as_inconclusive() ->
     assert result.details["delta_confidence_upper_bound"] > 0
 
 
+def test_score_improvement_gate_uses_paired_case_deltas_for_noninferiority() -> None:
+    result = ScoreImprovementGate(min_delta=0.0).evaluate(
+        baseline=EvaluationSummary(
+            variant_id="baseline",
+            metrics={
+                "score": 85.9333333333,
+                "score_samples": [86.8, 86.6, 84.4],
+                "judge_success_count": 3,
+            },
+        ),
+        candidate=EvaluationSummary(
+            variant_id="candidate",
+            metrics={
+                "score": 86.8,
+                "score_samples": [89.0, 87.4, 84.0],
+                "judge_success_count": 3,
+            },
+        ),
+    )
+
+    assert result.passed is True
+    assert result.details["code"] == "score_improvement_paired_noninferior"
+    assert result.details["uncertainty_model"] == "paired_standard_error"
+    assert result.details["paired_sample_count"] == 3
+    assert result.details["delta"] == pytest.approx(0.8666666667)
+
+
+def test_score_improvement_gate_rejects_paired_material_regression() -> None:
+    result = ScoreImprovementGate(min_delta=0.0).evaluate(
+        baseline=EvaluationSummary(
+            variant_id="baseline",
+            metrics={
+                "score": 85.0,
+                "score_samples": [84.0, 85.0, 86.0],
+                "judge_success_count": 3,
+            },
+        ),
+        candidate=EvaluationSummary(
+            variant_id="candidate",
+            metrics={
+                "score": 80.0,
+                "score_samples": [79.0, 80.0, 81.0],
+                "judge_success_count": 3,
+            },
+        ),
+    )
+
+    assert result.passed is False
+    assert result.details["decision"] == "rejected"
+    assert result.details["uncertainty_model"] == "paired_standard_error"
+    assert result.details["failure_owner"] == "candidate"
+
+
 def test_evaluation_comparability_gate_rejects_mismatched_case_plans() -> None:
     result = EvaluationComparabilityGate().evaluate(
         baseline=EvaluationSummary(

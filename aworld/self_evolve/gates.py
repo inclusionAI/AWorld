@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import math
+import statistics
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping
@@ -219,6 +220,91 @@ class ScoreImprovementGate:
         candidate_std = _number_metric(candidate.metrics, "score_std")
         baseline_count = _score_sample_count(baseline.metrics)
         candidate_count = _score_sample_count(candidate.metrics)
+        paired_deltas = _paired_score_deltas(
+            baseline.metrics,
+            candidate.metrics,
+        )
+        if len(paired_deltas) >= 2:
+            paired_delta = statistics.mean(paired_deltas)
+            paired_std = statistics.stdev(paired_deltas)
+            paired_error = paired_std / math.sqrt(len(paired_deltas))
+            paired_lower = paired_delta - (self.confidence_z * paired_error)
+            paired_upper = paired_delta + (self.confidence_z * paired_error)
+            scale = max(abs(baseline_score), abs(candidate_score), 1.0)
+            noninferiority_margin = scale * self.minimum_relative_margin
+            details.update(
+                {
+                    "delta": round(paired_delta, 10),
+                    "paired_delta_std": paired_std,
+                    "paired_delta_standard_error": paired_error,
+                    "delta_confidence_lower_bound": paired_lower,
+                    "delta_confidence_upper_bound": paired_upper,
+                    "paired_sample_count": len(paired_deltas),
+                    "confidence_z": self.confidence_z,
+                    "noninferiority_margin": noninferiority_margin,
+                    "uncertainty_model": "paired_standard_error",
+                }
+            )
+            if paired_lower >= self.min_delta:
+                details.update(
+                    {
+                        "code": "score_improvement_confident",
+                        "decision": "accepted",
+                    }
+                )
+                return GateResult(
+                    gate_name="score_improvement",
+                    passed=True,
+                    reason=(
+                        "score improvement clears the paired confidence bound"
+                    ),
+                    details=details,
+                )
+            if paired_upper < self.min_delta - noninferiority_margin:
+                return _score_rejection_result(
+                    details,
+                    reason=(
+                        "score regression exceeds the paired noninferiority "
+                        "margin"
+                    ),
+                )
+            if (
+                paired_delta >= self.min_delta
+                and paired_lower >= self.min_delta - noninferiority_margin
+            ):
+                details.update(
+                    {
+                        "code": "score_improvement_paired_noninferior",
+                        "decision": "accepted",
+                    }
+                )
+                return GateResult(
+                    gate_name="score_improvement",
+                    passed=True,
+                    reason=(
+                        "positive paired score delta clears the practical "
+                        "noninferiority bound"
+                    ),
+                    details=details,
+                )
+            return GateResult(
+                gate_name="score_improvement",
+                passed=False,
+                reason=(
+                    "score improvement is inconclusive under paired judge "
+                    "variance"
+                ),
+                details={
+                    **details,
+                    "code": "score_improvement_inconclusive",
+                    "decision": "inconclusive",
+                    "tiebreak_eligible": True,
+                    "failure_class": "framework",
+                    "failure_owner": "framework",
+                    "failure_scope": "shared_run",
+                    "repairable": False,
+                },
+            )
         if (
             baseline_std is not None
             and candidate_std is not None
@@ -1690,6 +1776,31 @@ def _score_sample_count(metrics: Mapping[str, Any]) -> int:
         ):
             return int(value)
     return 0
+
+
+def _paired_score_deltas(
+    baseline_metrics: Mapping[str, Any],
+    candidate_metrics: Mapping[str, Any],
+) -> tuple[float, ...]:
+    baseline = baseline_metrics.get("score_samples")
+    candidate = candidate_metrics.get("score_samples")
+    if (
+        not isinstance(baseline, (list, tuple))
+        or not isinstance(candidate, (list, tuple))
+        or len(baseline) != len(candidate)
+    ):
+        return ()
+    deltas: list[float] = []
+    for baseline_value, candidate_value in zip(baseline, candidate):
+        if any(
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(float(value))
+            for value in (baseline_value, candidate_value)
+        ):
+            return ()
+        deltas.append(float(candidate_value) - float(baseline_value))
+    return tuple(deltas)
 
 
 def _bool_metric(metrics: dict[str, Any] | Any, key: str) -> bool | None:
