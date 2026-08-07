@@ -99,7 +99,7 @@ def _load_simple_document_service_module():
         sys.modules[f"{services_package}.document_parse_logging"] = document_parse_logging_stub
         sys.modules[f"{services_package}.markdown_assembler"] = markdown_assembler_stub
 
-        # 用真实基类参与测试（其依赖的 models/writer/logging 已被上面桩替换）
+# Exercise the real base class with its dependencies stubbed above.
         base_module_name = f"{services_package}.base_document_service"
         base_spec = importlib.util.spec_from_file_location(
             base_module_name, services_dir / "base_document_service.py"

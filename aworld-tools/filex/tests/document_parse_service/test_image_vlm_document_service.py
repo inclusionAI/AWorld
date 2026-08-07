@@ -39,10 +39,10 @@ def test_image_document_service_keeps_explicit_backend_override() -> None:
     service = ImageDocumentService(
         file_type="png",
         env_content={
-            "media_parse_backend": "asap_gateway",
+            "media_parse_backend": "openai_compatible",
             "media_parse_options": {"base_url": "http://gateway.example.test"},
         },
     )
 
-    assert service._backend.name == "asap_gateway"
+    assert service._backend.name == "openai_compatible"
     assert service._backend_options["base_url"] == "http://gateway.example.test"

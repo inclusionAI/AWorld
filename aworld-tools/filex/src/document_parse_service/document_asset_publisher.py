@@ -1,8 +1,4 @@
-"""
-文档资源发布抽象。
-
-用于将本地资源上传到远端存储并回填 remote_id。
-"""
+"""Publish local document assets and populate remote references."""
 
 from __future__ import annotations
 
@@ -20,21 +16,21 @@ logger = logging.getLogger(__name__)
 
 
 class DocumentAssetPublisher(Protocol):
-    """文档资源发布协议。"""
+    """Protocol for publishing document assets."""
 
     async def publish_assets(self, assets: list[DocumentAsset]) -> list[DocumentAsset]:
-        """发布资源并返回带 remote_id 的资源列表。"""
+        """Publish assets and return them with remote IDs populated."""
 
 
 class NoOpDocumentAssetPublisher:
-    """空实现，后续再替换为 AFTS 发布实现。"""
+    """No-op publisher for local-only parsing."""
 
     async def publish_assets(self, assets: list[DocumentAsset]) -> list[DocumentAsset]:
         return assets
 
 
 class AftsDocumentAssetPublisher:
-    """基于 AFTS 的文档资源发布实现。"""
+    """Legacy remote-storage asset publisher."""
 
     def __init__(self, afts_service: "AftsService") -> None:
         self._afts_service = afts_service

@@ -1,9 +1,4 @@
-"""
-文档产物写入抽象。
-
-后续将承接 MarkdownArtifact 的统一落盘逻辑；
-当前仅提供最小写盘能力，尚未接管现有主链路。
-"""
+"""Write Markdown artifacts and metrics to disk."""
 
 from __future__ import annotations
 
@@ -14,7 +9,7 @@ from .document_artifact_models import MarkdownArtifact
 
 
 class DocumentArtifactWriter:
-    """统一文档产物写入器。"""
+    """Persist normalized document artifacts."""
 
     def write_markdown(
         self,

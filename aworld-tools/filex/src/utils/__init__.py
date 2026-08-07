@@ -1,8 +1,4 @@
-"""
-工具模块
-
-提供通用工具函数
-"""
+"""Shared utility functions."""
 
 from .file_utils import verify_file_type, validate_file
 from .trace_id_utils import (

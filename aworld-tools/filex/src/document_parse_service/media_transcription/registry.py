@@ -5,7 +5,6 @@ from __future__ import annotations
 from typing import Any
 
 from .backend import MediaTranscriptionBackend
-from .asap_gateway_backend import AsapGatewayBackend
 from .local_backend import LocalMediaTranscriptionBackend
 from .openai_compatible_backend import OpenAICompatibleMediaTranscriptionBackend
 
@@ -28,8 +27,6 @@ class MediaTranscriptionBackendRegistry:
 
         if backend_name in {"local", "local_whisper", "faster_whisper"}:
             return LocalMediaTranscriptionBackend(), options
-        if backend_name in {"asap_gateway", "file_understand", "ocr", "ocr_http", "image_ocr"}:
-            return AsapGatewayBackend(), options
         if backend_name in {"openai", "openai_compatible", "openai_chat_completions"}:
             return OpenAICompatibleMediaTranscriptionBackend(), options
         raise ValueError(f"Unsupported media_parse_backend: {backend_name}")
@@ -56,14 +53,6 @@ class MediaTranscriptionBackendRegistry:
             "media_parse_file_id": "file_id",
             "media_parse_session_id": "session_id",
             "media_parse_trace_id": "trace_id",
-            "asap_gateway_base_url": "asap_gateway_base_url",
-            "asap_gateway_endpoint": "asap_gateway_endpoint",
-            "asap_gateway_auth_token": "asap_gateway_auth_token",
-            "asap_gateway_authorization": "authorization",
-            "file_understand_base_url": "file_understand_base_url",
-            "file_understand_endpoint": "file_understand_endpoint",
-            "file_understand_auth_token": "auth_token",
-            "file_understand_authorization": "authorization",
             "gateway_auth_token": "gateway_auth_token",
             "gateway_authorization": "authorization",
         }.items():

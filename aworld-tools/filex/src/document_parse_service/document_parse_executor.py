@@ -1,8 +1,4 @@
-"""
-统一的文档解析执行器。
-
-负责调度 DocumentService、回填相对路径，并在需要时上传产物到 AFTS。
-"""
+"""Execute document parsing and normalize result paths."""
 
 from __future__ import annotations
 
@@ -21,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 
 class DocumentParseExecutor:
-    """执行统一的文档解析 pipeline。"""
+    """Run the shared document parsing pipeline."""
 
     def __init__(self, document_service: DocumentService) -> None:
         self._document_service = document_service

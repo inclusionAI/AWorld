@@ -1,9 +1,7 @@
-"""
-文档服务基类。
+"""Shared template for document parsing services.
 
-用模板方法固定「init -> 内容抽取 -> 写盘 -> 落盘后处理 -> finish」骨架，
-子类只需实现 `_build_artifact`，负责正文/资源抽取与 Markdown 组装。
-写盘、阶段日志、空结果校验统一收口在此，不再由各文件类型重复实现。
+Subclasses implement ``_build_artifact`` while this class owns output writing,
+stage logging, empty-result validation, metrics, and post-write processing.
 """
 
 from __future__ import annotations
@@ -25,7 +23,7 @@ from .paths import DOCUMENT_PARSE_WORKSPACE
 
 logger = logging.getLogger(__name__)
 
-# 含资源提取阶段的标准流程（PDF / PPT / Word）。
+# Standard pipeline for formats that may contain embedded assets.
 ASSET_STAGE_NAMES: tuple[str, ...] = (
     "init",
     "content_extract",
@@ -37,14 +35,14 @@ ASSET_STAGE_NAMES: tuple[str, ...] = (
 
 
 class BaseDocumentService:
-    """所有文件类型文档服务的公共骨架。"""
+    """Common pipeline shared by every document service."""
 
-    #: 阶段日志使用的阶段集合，子类按需覆盖。
+    #: Stage sequence used for logging; subclasses may override it.
     _stage_names: Sequence[str] = ASSET_STAGE_NAMES
-    #: 文件无后缀时用于日志的兜底类型。
+    #: Fallback type used when a file has no suffix.
     _default_suffix: str = "bin"
-    #: 正文为空时抛出的错误信息。
-    _empty_error_message: str = "解析结果为空"
+    #: Error raised when parsing produces no content.
+    _empty_error_message: str = "The parse result is empty"
 
     def __init__(self, *, artifact_writer: Optional[DocumentArtifactWriter] = None) -> None:
         self._artifact_writer = artifact_writer or DocumentArtifactWriter()
@@ -127,10 +125,9 @@ class BaseDocumentService:
         afts_service: Optional["AftsService"],
         stage_logger: DocumentParseLogger,
     ) -> MarkdownArtifact:
-        """抽取正文与资源并组装 Markdown，返回已就绪的产物。
+        """Extract content and assets, then assemble a ready Markdown artifact.
 
-        子类必须实现，并负责记录 content_extract / asset_extract /
-        markdown_assemble 等阶段日志。
+        Subclasses must also record their extraction and assembly stages.
         """
         raise NotImplementedError
 
@@ -143,7 +140,7 @@ class BaseDocumentService:
         file_path: Path,
         stage_logger: DocumentParseLogger,
     ) -> None:
-        """落盘后的可选处理（如 debug sidecar），默认无操作。"""
+        """Run optional post-write processing such as debug sidecars."""
         return None
 
     def _build_stage_logger(

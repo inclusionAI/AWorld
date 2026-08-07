@@ -1,6 +1,4 @@
-"""
-按文件类型选择 DocumentService 的工厂。
-"""
+"""Create document services by file type."""
 
 from __future__ import annotations
 
@@ -12,7 +10,7 @@ from .media_file_types import AUDIO_FILE_TYPES, IMAGE_FILE_TYPES, VIDEO_FILE_TYP
 
 
 class DocumentServiceFactory:
-    """按文件类型构造对应的文档服务。"""
+    """Construct the document service for a file type."""
 
     @staticmethod
     def create(

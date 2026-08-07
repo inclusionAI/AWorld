@@ -1,8 +1,7 @@
-"""
-PDF 图表/矢量图截图提取服务。
+"""Extract screenshots of figures, tables, and vector graphics from PDFs.
 
-使用 `pdftohtml -xml` 的 caption 坐标和 `pdftocairo` 的页面渲染结果，
-从 PDF 中裁剪 Figure/Table 等区域截图，覆盖非嵌入图片的矢量图场景。
+The service combines caption coordinates from ``pdftohtml -xml`` with pages
+rendered by ``pdftocairo`` to crop regions that are not embedded bitmaps.
 """
 
 from __future__ import annotations
@@ -31,7 +30,7 @@ logger = logging.getLogger(__name__)
 
 
 class PdfFigureExtractService:
-    """封装 PDF Figure/Table 截图提取逻辑。"""
+    """Extract screenshots of figures and tables from PDF files."""
 
     _CAPTION_PATTERN = re.compile(
         r"^(Figure|Fig\.|Chart)\s+\d+[A-Za-z]?(?:\s+.*)?$",
@@ -455,7 +454,7 @@ class PdfFigureExtractService:
             if not self._looks_like_chart_or_figure_region(page, column_bounds, figure_bbox):
                 continue
             if self._has_embedded_image_in_region(images, figure_bbox):
-                # 避免与 pdfimages / <image> 提取的位图重复。
+                # Avoid duplicates from pdfimages and <image> extraction.
                 continue
 
             figure_specs.append(

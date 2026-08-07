@@ -1,7 +1,7 @@
-"""
-文本类文档服务。
+"""Document services for text files.
 
-承接 TXT / Markdown 两类无附件文本文件的统一解析 pipeline。
+This module provides the shared parsing pipeline for TXT and Markdown files
+without embedded assets.
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 
 class TxtContentExtractor:
-    """TXT 正文提取器。"""
+    """Extract content from TXT files."""
 
     async def extract_content(self, file_path: Path) -> tuple[str, dict[str, str]]:
         if chardet is None:
@@ -76,7 +76,7 @@ class TxtContentExtractor:
 
 
 class MarkdownContentExtractor:
-    """Markdown 正文提取器。"""
+    """Extract content from Markdown files."""
 
     async def extract_content(self, file_path: Path) -> tuple[str, dict[str, str]]:
         try:
@@ -106,14 +106,14 @@ class MarkdownContentExtractor:
 
 
 class TxtDocumentService(SimpleDocumentService):
-    """TXT 顶层文档服务。"""
+    """Top-level document service for TXT files."""
 
     def __init__(self) -> None:
         super().__init__(file_type="txt", content_extractor=TxtContentExtractor())
 
 
 class MarkdownDocumentService(SimpleDocumentService):
-    """Markdown 顶层文档服务。"""
+    """Top-level document service for Markdown files."""
 
     def __init__(self) -> None:
         super().__init__(file_type="md", content_extractor=MarkdownContentExtractor())

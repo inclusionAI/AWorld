@@ -1,7 +1,7 @@
-"""
-PDF 提图服务。
+"""Extract embedded images from PDF files.
 
-使用系统 `pdfimages` 命令提取 PDF 中的嵌入图片，并将结果落到 document_parse workspace。
+The service uses the system ``pdfimages`` command and stores extracted assets
+in the document parsing workspace.
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 
 class PdfImageExtractService:
-    """封装 PDF 嵌入图片提取逻辑。"""
+    """Extract embedded images from PDF files."""
 
     def __init__(
         self,
@@ -155,7 +155,7 @@ class PdfImageExtractService:
         if extracted_files:
             return extracted_files
 
-        # 某些版本可能不输出文件名，兜底扫描目录。
+            # Some versions omit filenames; scan the output directory as a fallback.
         parent_dir = output_prefix.parent
         prefix_name = output_prefix.name
         return sorted(

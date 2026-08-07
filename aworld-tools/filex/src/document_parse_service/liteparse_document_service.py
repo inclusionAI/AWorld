@@ -1,8 +1,7 @@
-"""
-基于 LiteParse 主链路的文档服务基类。
+"""Base service for LiteParse-backed document formats.
 
-PDF 与 PPT 共享同一套「LiteParse 抽取 + 资源提取 + Markdown 组装 + debug sidecar」
-流程，差异仅在默认 Markdown 组装器与日志兜底类型，由子类通过类属性声明。
+PDF and presentation services share extraction, asset processing, Markdown
+assembly, and debug-sidecar behavior through this class.
 """
 
 from __future__ import annotations
@@ -23,12 +22,12 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# LiteParse 主链路产出 parse_result 时暂存于 diagnostics 的键，供 debug sidecar 使用。
+# Diagnostics key that retains the raw parse result for debug sidecars.
 _PARSE_RESULT_KEY = "_parse_result"
 
 
 class LiteParseDocumentService(BaseDocumentService):
-    """PDF / PPT 等走 LiteParse 主链路的文档服务公共实现。"""
+    """Shared LiteParse implementation for PDF and presentation formats."""
 
     _empty_error_message = "LiteParse 解析结果为空"
 
@@ -47,7 +46,7 @@ class LiteParseDocumentService(BaseDocumentService):
         self._markdown_assembler = markdown_assembler or self._default_markdown_assembler()
 
     def _default_markdown_assembler(self) -> MarkdownAssembler:
-        """子类提供默认 Markdown 组装器。"""
+        """Return the default Markdown assembler for this format."""
         raise NotImplementedError
 
     async def _build_artifact(

@@ -1,9 +1,4 @@
-"""
-文档产物统一数据模型。
-
-用于承接后续的“内容提取 -> 资源发布 -> Markdown 组装 -> 落盘”抽象，
-当前仅提供结构定义，不承载旧链路迁移逻辑。
-"""
+"""Data models for extracted assets and Markdown artifacts."""
 
 from __future__ import annotations
 
@@ -17,7 +12,7 @@ AssetKind = Literal["embedded_image", "figure_crop", "page_screenshot"]
 
 @dataclass(slots=True)
 class DocumentAnchor:
-    """文档内资源锚点。"""
+    """Location hints for an asset inside a document."""
 
     page_number: int = 0
     top: int = 0
@@ -28,7 +23,7 @@ class DocumentAnchor:
 
 @dataclass(slots=True)
 class DocumentAsset:
-    """文档资源定义。"""
+    """Extracted document asset."""
 
     asset_id: str
     kind: AssetKind
@@ -42,7 +37,7 @@ class DocumentAsset:
 
 @dataclass(slots=True)
 class MarkdownArtifact:
-    """统一的 Markdown 产物。"""
+    """Normalized Markdown artifact."""
 
     markdown_text: str
     assets: list[DocumentAsset] = field(default_factory=list)

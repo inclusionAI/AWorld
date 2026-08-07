@@ -1,9 +1,8 @@
-"""
-LiteParse 文档解析服务
+"""LiteParse-based document parsing service.
 
-当前 filesystem_server 的文档解析主链路统一走 LiteParse。
-旧的各格式 legacy 逻辑仍保留在对应 Parser 中，便于后续切回，
-但当前服务层不做任何回退。
+The filesystem server uses LiteParse as its primary document parsing path.
+Legacy format-specific parsers remain available, but this service does not
+fall back to them.
 """
 
 import asyncio
@@ -39,7 +38,7 @@ logger = logging.getLogger(__name__)
 
 
 class LiteParseContentExtractor:
-    """LiteParse 正文抽取器，并承载当前 PDF 资源构建逻辑。"""
+    """Extract PDF content with LiteParse and build its document assets."""
 
     _TEXT_BASED_EXTENSIONS = {"txt", "md", "markdown"}
     _CLI_CANDIDATES = ("lit", "liteparse")
@@ -894,8 +893,8 @@ class _NoOpStageContext:
 
 
 class LiteParseDocumentService(LiteParseContentExtractor):
-    """兼容旧导入名，待逐步迁移到按文件类型的 DocumentService。"""
+    """Preserve a legacy import alias during the DocumentService migration."""
 
 
 class LiteParsePdfService(LiteParseContentExtractor):
-    """兼容旧导入名，待逐步迁移到按文件类型的 DocumentService。"""
+    """Preserve a legacy import alias during the DocumentService migration."""

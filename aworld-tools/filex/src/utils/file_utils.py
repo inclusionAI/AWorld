@@ -1,8 +1,4 @@
-"""
-文件工具模块
-
-提供文件相关的工具函数
-"""
+"""File validation utilities."""
 
 import asyncio
 import logging
@@ -13,33 +9,26 @@ logger = logging.getLogger(__name__)
 
 
 async def validate_file(file_path: Optional[Path]) -> Dict[str, Any]:
-    """验证文件的基本信息（路径、存在性、大小）
+    """Validate a file path, existence, and size.
 
-    参数：
-        file_path: 文件路径（可能为None）
-
-    返回：
-        字典，包含以下键：
-        - is_valid: bool, True表示文件有效，False表示文件无效
-        - error_message: Optional[str], 如果文件无效，返回错误信息；如果文件有效，返回None
-        - file_size: Optional[int], 如果文件有效，返回文件大小（字节）；如果文件无效，返回None
+    Returns validation status, an optional error message, and the file size.
     """
     logger.debug(
        f"file_utils.validate_file called | file_path={file_path}"
     )
 
-    # 检查文件路径是否为空
+    # Reject an empty path.
     if not file_path:
         logger.warning(
            f" file_utils.validate_file failed | file_path is None"
         )
         return {
             "is_valid": False,
-            "error_message": "文件路径为空",
+            "error_message": "File path is empty",
             "file_size": None,
         }
 
-    # 检查文件是否存在和大小
+    # Check file existence and size.
     try:
         if not file_path.exists():
             logger.warning(
@@ -47,7 +36,7 @@ async def validate_file(file_path: Optional[Path]) -> Dict[str, Any]:
             )
             return {
                 "is_valid": False,
-                "error_message": "文件不存在",
+                "error_message": "File does not exist",
                 "file_size": None,
             }
 
@@ -58,7 +47,7 @@ async def validate_file(file_path: Optional[Path]) -> Dict[str, Any]:
             )
             return {
                 "is_valid": False,
-                "error_message": "文件为空",
+                "error_message": "File is empty",
                 "file_size": 0,
             }
 
@@ -77,21 +66,13 @@ async def validate_file(file_path: Optional[Path]) -> Dict[str, Any]:
         )
         return {
             "is_valid": False,
-            "error_message":f"无法获取文件信息: {str(e)}",
+            "error_message":f"Unable to read file information: {str(e)}",
             "file_size": None,
         }
 
 
 async def verify_file_type(file_path: Path, expected_type: str) -> bool:
-    """验证文件类型是否与预期一致（通过文件头判断，不依赖扩展名）
-
-    参数：
-        file_path: 文件路径
-        expected_type: 预期的文件类型（如 'pdf', 'docx', 'xlsx' 等）
-
-    返回：
-        如果文件类型匹配返回True，否则返回False
-    """
+    """Verify the expected type from file signatures instead of the suffix."""
     logger.debug(
         f"file_utils.verify_file_type called | "
         f"file_path={file_path} expected_type={expected_type}"
@@ -106,7 +87,7 @@ async def verify_file_type(file_path: Path, expected_type: str) -> bool:
 
     try:
         with open(file_path, 'rb') as f:
-            header = f.read(64)  # 读取前64字节用于判断容器格式
+            header = f.read(64)  # Read enough bytes to identify container formats.
 
         if len(header) == 0:
             logger.warning(
@@ -115,48 +96,43 @@ async def verify_file_type(file_path: Path, expected_type: str) -> bool:
             )
             return False
 
-        # 定义文件类型的magic number（文件头特征）
-        # 注意：某些类型可能共享相同的magic number（如docx/xlsx/pptx都是ZIP格式）
+        # Define file signatures. Some types share the same container signature.
         file_type_signatures = {
             'pdf': [
                 b'%PDF',
             ],
             'docx': [
-                b'PK\x03\x04',  # ZIP格式
+                b'PK\x03\x04',  # ZIP container
             ],
             'doc': [
-                b'\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1',  # OLE2格式（MS Office旧格式）
+                b'\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1',  # Legacy MS Office OLE2 container
             ],
             'xlsx': [
-                b'PK\x03\x04',  # ZIP格式
+                b'PK\x03\x04',  # ZIP container
             ],
             'xls': [
-                b'\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1',  # OLE2格式
+                b'\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1',  # OLE2 container
             ],
             'pptx': [
-                b'PK\x03\x04',  # ZIP格式
+                b'PK\x03\x04',  # ZIP container
             ],
             'ppt': [
-                b'\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1',  # OLE2格式
+                b'\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1',  # OLE2 container
             ],
             'csv': [
-                # CSV没有特定的magic number，需要检查内容
-                # 这里不进行严格验证，因为CSV格式太灵活
+                # CSV has no stable signature, so strict validation is skipped.
                 None,
             ],
             'txt': [
-                # TXT没有特定的magic number，可以是任何文本
-                # 这里不进行严格验证
+                # Plain text has no stable signature.
                 None,
             ],
             'md': [
-                # Markdown没有特定的magic number
-                # 这里不进行严格验证
+                # Markdown has no stable signature.
                 None,
             ],
             'markdown': [
-                # Markdown没有特定的magic number
-                # 这里不进行严格验证
+                # Markdown has no stable signature.
                 None,
             ],
             'mp3': [
@@ -233,7 +209,7 @@ async def verify_file_type(file_path: Path, expected_type: str) -> bool:
 
         expected_signatures = file_type_signatures.get(expected_type.lower())
 
-        # 对于没有特定magic number的类型（csv, txt, md），直接返回True
+        # Accept formats that have no stable file signature.
         if expected_signatures is None or None in expected_signatures:
             logger.debug(
                f" file_utils.verify_file_type no signature check | "
@@ -241,7 +217,7 @@ async def verify_file_type(file_path: Path, expected_type: str) -> bool:
             )
             return True
 
-        # 检查文件头是否匹配任一签名
+        # Match the header against every accepted signature.
         for signature in expected_signatures:
             if _header_matches_signature(header, expected_type.lower(), signature):
                 logger.debug(
@@ -261,7 +237,7 @@ async def verify_file_type(file_path: Path, expected_type: str) -> bool:
            f" file_utils.verify_file_type exception | "
            f"file_path={file_path} expected_type={expected_type} error={str(e)}"
         )
-        # 如果读取文件失败，返回False
+        # Treat read failures as a type mismatch.
         return False
 
 

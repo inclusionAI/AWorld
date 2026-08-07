@@ -159,7 +159,7 @@ def _load_pdf_document_service_module():
         sys.modules[f"{services_package}.document_artifact_models"] = document_artifact_models_stub
         sys.modules[f"{services_package}.document_parse_logging"] = document_parse_logging_stub
 
-        # 用真实基类参与测试（其依赖的 models/writer/logging/markdown/liteparse 已被上面桩替换）
+# Exercise the real base class with its dependencies stubbed above.
         for real_name in ("base_document_service", "liteparse_document_service"):
             real_module_name = f"{services_package}.{real_name}"
             real_spec = importlib.util.spec_from_file_location(

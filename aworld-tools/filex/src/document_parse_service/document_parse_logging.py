@@ -1,6 +1,4 @@
-"""
-统一的文档解析阶段日志。
-"""
+"""Structured stage logging for document parsing."""
 
 from __future__ import annotations
 
@@ -13,7 +11,7 @@ from typing import Any, Iterator, Sequence
 
 
 class DocumentParseLogger:
-    """输出统一格式的解析阶段日志。"""
+    """Emit document parsing stages in a consistent format."""
 
     def __init__(
         self,
@@ -40,7 +38,7 @@ class DocumentParseLogger:
 
     @contextmanager
     def stage(self, stage: str, **fields: Any) -> Iterator[None]:
-        """记录阶段开始、结束和失败日志。"""
+        """Record stage start, completion, and failure events."""
         stage_start = time.perf_counter()
         self.emit(stage, "started", **fields)
         try:
@@ -64,11 +62,11 @@ class DocumentParseLogger:
         )
 
     def progress(self, stage: str, **fields: Any) -> None:
-        """记录阶段内进度。"""
+        """Record progress within a stage."""
         self.emit(stage, "progress", **fields)
 
     def emit(self, stage: str, status: str, **fields: Any) -> None:
-        """输出一条阶段日志。"""
+        """Emit one structured stage log record."""
         record = dict(self._base_fields)
         stage_index = self._stage_to_index.get(stage)
         record.update(

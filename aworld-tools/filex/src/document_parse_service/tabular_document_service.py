@@ -1,7 +1,7 @@
-"""
-表格类文档服务。
+"""Document services for tabular files.
 
-承接 CSV / Excel 两类最终直接产出 Markdown 的统一解析 pipeline。
+This module provides the shared parsing pipeline that converts CSV and Excel
+files directly to Markdown.
 """
 
 from __future__ import annotations
@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 
 
 class CsvContentExtractor:
-    """CSV 正文提取器。"""
+    """Extract content from CSV files."""
 
     _DELIMITER_CANDIDATES = (",", "\t", ";", "|", ":")
     _DELIMITER_SAMPLE_SIZE = 65536
@@ -260,7 +260,7 @@ class CsvContentExtractor:
 
 
 class ExcelContentExtractor:
-    """Excel 正文提取器。"""
+    """Extract content from Excel files."""
 
     async def extract_content(self, file_path: Path) -> tuple[str, dict[str, str | int]]:
         if pd is None:
@@ -473,14 +473,14 @@ class ExcelContentExtractor:
 
 
 class CsvDocumentService(SimpleDocumentService):
-    """CSV 顶层文档服务。"""
+    """Top-level document service for CSV files."""
 
     def __init__(self) -> None:
         super().__init__(file_type="csv", content_extractor=CsvContentExtractor())
 
 
 class ExcelDocumentService(SimpleDocumentService):
-    """Excel 顶层文档服务。"""
+    """Top-level document service for Excel files."""
 
     def __init__(self) -> None:
         super().__init__(file_type="xlsx", content_extractor=ExcelContentExtractor())

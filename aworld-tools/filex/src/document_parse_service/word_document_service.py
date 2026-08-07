@@ -1,7 +1,7 @@
-"""
-Word 文档服务。
+"""Document service for Word files.
 
-按文件类型组织正文提取、附件发布、Markdown 组装，公共骨架见 BaseDocumentService。
+The service organizes content extraction, asset publishing, and Markdown
+assembly by file type on top of ``BaseDocumentService``.
 """
 
 from __future__ import annotations
@@ -37,7 +37,7 @@ from .paths import DOCUMENT_PARSE_WORKSPACE
 logger = logging.getLogger(__name__)
 
 class WordDocumentService(BaseDocumentService):
-    """面向 DOC/DOCX 的文档服务。"""
+    """Provide document parsing for DOC and DOCX files."""
 
     _stage_names = ASSET_STAGE_NAMES
     _default_suffix = "docx"

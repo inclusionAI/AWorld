@@ -1,8 +1,7 @@
-"""
-PDF 版面提取服务。
+"""Extract layout information from PDF files.
 
-使用系统 `pdftohtml -xml` 提取 PDF 页内文本框与图片框坐标，
-供 Markdown 回填图片位置时使用。
+The service uses ``pdftohtml -xml`` to obtain text and image bounding boxes
+for placing extracted images back into Markdown.
 """
 
 from __future__ import annotations
@@ -20,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 
 class PdfLayoutExtractService:
-    """封装 PDF 版面坐标提取逻辑。"""
+    """Extract PDF layout coordinates."""
 
     def __init__(
         self,

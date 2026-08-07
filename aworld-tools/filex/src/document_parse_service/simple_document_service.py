@@ -1,7 +1,7 @@
-"""
-无附件文档的通用解析 pipeline。
+"""Shared parsing pipeline for documents without embedded assets.
 
-用于承接 TXT / Markdown / CSV / Excel 等最终直接产出 Markdown 的场景。
+This service handles formats such as TXT, Markdown, CSV, and Excel that
+produce Markdown directly.
 """
 
 from __future__ import annotations
@@ -32,7 +32,7 @@ SIMPLE_STAGE_NAMES = (
 
 
 class SimpleDocumentService(BaseDocumentService):
-    """统一处理无附件文件类型的标准 pipeline。"""
+    """Provide the standard pipeline for formats without embedded assets."""
 
     _stage_names = SIMPLE_STAGE_NAMES
 

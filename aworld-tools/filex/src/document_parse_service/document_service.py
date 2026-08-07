@@ -1,6 +1,4 @@
-"""
-按文档类型组织的顶层服务抽象。
-"""
+"""Top-level protocol implemented by file-type document services."""
 
 from __future__ import annotations
 
@@ -12,7 +10,7 @@ if TYPE_CHECKING:
 
 
 class DocumentService(Protocol):
-    """面向文件类型的文档服务协议。"""
+    """Protocol for a file-type-specific document service."""
 
     async def parse_to_markdown(
         self,
@@ -21,4 +19,4 @@ class DocumentService(Protocol):
         source_file_name: str,
         afts_service: "AftsService | None" = None,
     ) -> "Path":
-        """解析文档并落盘为 Markdown。"""
+        """Parse a document and persist it as Markdown."""

@@ -77,5 +77,4 @@ Each evidence record keeps the stable object ID, crop reference, normalized impr
 FileX does not guess medication names or call external drug databases; a domain workflow must resolve the evidence against Drugs.com and MedlinePlus.
 Routing metrics include `image_scene_type`, `image_selected_pipeline`, object and batch counts, query-ready and review-required counts, evidence schema identity, and any fallback reason.
 
-The ASAP Gateway currently keeps `paddle_ocr` as its static PDF default until scenario-aware routing is deployed.
 Provider metrics must keep `provider`, `provider_version`, model identity, model call count, timings, cache state, and error type so selection conclusions remain replayable.

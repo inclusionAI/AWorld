@@ -24,8 +24,8 @@ def test_build_default_env_content_maps_yaml_to_env_content() -> None:
             },
             "media_parse": {
                 "image": {
-                    "backend": "asap_gateway",
-                    "asap_gateway": {
+                    "backend": "openai_compatible",
+                    "openai_compatible": {
                         "base_url": "http://127.0.0.1:8081",
                     },
                 }
@@ -35,7 +35,7 @@ def test_build_default_env_content_maps_yaml_to_env_content() -> None:
 
     assert env["liteparse_ocr_enabled"] is True
     assert env["liteparse_ocr_server_url"] == "http://127.0.0.1:8081"
-    assert env["media_parse_backend"] == "asap_gateway"
+    assert env["media_parse_backend"] == "openai_compatible"
     assert env["media_parse_options"]["base_url"] == "http://127.0.0.1:8081"
 
 

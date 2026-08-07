@@ -1,8 +1,7 @@
-"""
-PDF 文档服务。
+"""Document service for PDF files.
 
-走 LiteParse 主链路，按文件类型组织正文抽取、资源提取、Markdown 组装与落盘，
-公共骨架见 LiteParseDocumentService。
+The service uses LiteParse for content and asset extraction, Markdown
+assembly, and persistence on top of ``LiteParseDocumentService``.
 """
 
 from __future__ import annotations
@@ -25,7 +24,7 @@ if TYPE_CHECKING:
 
 
 class PdfDocumentService(LiteParseDocumentService):
-    """面向 PDF 的文档服务。"""
+    """Provide document parsing for PDF files."""
 
     _default_suffix = "pdf"
 

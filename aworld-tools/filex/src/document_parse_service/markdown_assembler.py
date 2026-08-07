@@ -1,8 +1,4 @@
-"""
-Markdown 组装抽象。
-
-负责把文档资源按锚点插回 Markdown，或在无法定位时追加到附录区块。
-"""
+"""Assemble extracted assets into normalized Markdown."""
 
 from __future__ import annotations
 
@@ -14,14 +10,14 @@ from .document_artifact_models import DocumentAsset, MarkdownArtifact
 
 
 class MarkdownAssembler(Protocol):
-    """Markdown 组装协议。"""
+    """Protocol for Markdown assembly."""
 
     def assemble(self, artifact: MarkdownArtifact) -> str:
-        """根据正文与资源列表生成最终 Markdown。"""
+        """Generate final Markdown from text and extracted assets."""
 
 
 class AnchoredMarkdownAssembler:
-    """按锚点将图片 AFTS id 插回正文。"""
+    """Insert image references at their document anchors."""
 
     def assemble(self, artifact: MarkdownArtifact) -> str:
         if not artifact.assets:
@@ -179,14 +175,14 @@ class AnchoredMarkdownAssembler:
 
 
 class PassthroughMarkdownAssembler:
-    """保留 passthrough 骨架，供未接入资源组装的场景使用。"""
+    """Pass through Markdown for formats without asset assembly."""
 
     def assemble(self, artifact: MarkdownArtifact) -> str:
         return artifact.markdown_text
 
 
 class PlaceholderMarkdownAssembler:
-    """将正文中的资源占位符替换为图片 Markdown。"""
+    """Replace asset placeholders with Markdown image references."""
 
     def assemble(self, artifact: MarkdownArtifact) -> str:
         if not artifact.assets:
