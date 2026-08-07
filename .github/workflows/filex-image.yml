@@ -8,11 +8,19 @@ on:
     tags:
       - "filex-v*"
     paths:
+      - "aworld/**"
+      - "aworld-cli/**"
+      - "aworld-skills/**"
       - "aworld-tools/filex/**"
+      - "setup.py"
       - ".github/workflows/filex-image.yml"
   pull_request:
     paths:
+      - "aworld/**"
+      - "aworld-cli/**"
+      - "aworld-skills/**"
       - "aworld-tools/filex/**"
+      - "setup.py"
       - ".github/workflows/filex-image.yml"
   workflow_dispatch:
 
@@ -57,7 +65,7 @@ jobs:
       - name: Build and optionally publish image
         uses: docker/build-push-action@v6
         with:
-          context: ./aworld-tools/filex
+          context: .
           file: ./aworld-tools/filex/Dockerfile
           platforms: linux/amd64
           push: ${{ github.event_name != 'pull_request' }}

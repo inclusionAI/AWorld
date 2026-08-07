@@ -24,18 +24,41 @@ WORKDIR /opt/filex
 
 RUN python3 -m pip install --break-system-packages --no-cache-dir uv
 
-COPY pyproject.toml uv.lock README.md ./
-RUN uv sync --frozen --no-dev --no-install-project
+COPY aworld-tools/filex/pyproject.toml aworld-tools/filex/uv.lock aworld-tools/filex/README.md ./
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --no-dev --no-install-project
 
-COPY bin ./bin
-COPY config ./config
-COPY src ./src
-RUN uv sync --frozen --no-dev \
+COPY aworld-tools/filex/bin ./bin
+COPY aworld-tools/filex/config ./config
+COPY aworld-tools/filex/src ./src
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --no-dev \
     && chmod +x /opt/filex/bin/filex \
-    && mkdir -p /root/.local/bin /root/workspace \
+    && mkdir -p /root/.local/bin /root/workspace /skills \
     && ln -sf /opt/filex/bin/filex /root/.local/bin/filex
 
-ENV PATH=/root/.local/bin:/opt/filex/.venv/bin:${PATH}
+WORKDIR /opt/aworld
+
+COPY setup.py README.md README_zh.md LICENSE ./
+COPY aworld ./aworld
+COPY aworld-cli ./aworld-cli
+COPY aworld-skills ./aworld-skills
+
+ENV AWORLD_EXTRA=framework
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv venv --python /usr/bin/python3 /opt/aworld/.venv \
+    && uv pip install --python /opt/aworld/.venv/bin/python \
+        -e /opt/aworld \
+        -e /opt/aworld/aworld-cli \
+    && ln -sfn /opt/aworld/aworld-skills/filex /skills/filex
+
+ENV PATH=/opt/aworld/.venv/bin:/root/.local/bin:/opt/filex/.venv/bin:${PATH}
 ENV FILEX_WORKSPACE_ROOT=/root/workspace
+ENV SKILLS_PATH=/opt/aworld/aworld-skills
+ENV AWORLD_SKILLS_PATH=/opt/aworld/aworld-skills
 
 WORKDIR /root/workspace
+
+RUN filex --help >/dev/null && aworld-cli --help >/dev/null
+
+CMD ["aworld-cli"]
