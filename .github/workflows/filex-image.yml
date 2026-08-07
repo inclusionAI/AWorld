@@ -1,0 +1,75 @@
+name: Build FileX image
+
+on:
+  push:
+    branches:
+      - main
+      - "codex/**"
+    tags:
+      - "filex-v*"
+    paths:
+      - "aworld/**"
+      - "aworld-cli/**"
+      - "aworld-skills/**"
+      - "aworld-tools/filex/**"
+      - "setup.py"
+      - ".github/workflows/filex-image.yml"
+  pull_request:
+    paths:
+      - "aworld/**"
+      - "aworld-cli/**"
+      - "aworld-skills/**"
+      - "aworld-tools/filex/**"
+      - "setup.py"
+      - ".github/workflows/filex-image.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: filex-image-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GitHub Container Registry
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generate image metadata
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ghcr.io/inclusionai/aworld-filex
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=match,pattern=filex-v(.*),group=1
+            type=sha,prefix=sha-
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and optionally publish image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ./aworld-tools/filex/Dockerfile
+          platforms: linux/amd64
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=filex-amd64
+          cache-to: type=gha,mode=max,scope=filex-amd64

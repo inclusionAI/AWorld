@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SOURCE="${BASH_SOURCE[0]}"
+while [ -L "${SOURCE}" ]; do
+  SOURCE_DIR="$(cd -P "$(dirname "${SOURCE}")" && pwd)"
+  TARGET="$(readlink "${SOURCE}")"
+  if [[ "${TARGET}" == /* ]]; then
+    SOURCE="${TARGET}"
+  else
+    SOURCE="${SOURCE_DIR}/${TARGET}"
+  fi
+done
+
+BIN_DIR="$(cd -P "$(dirname "${SOURCE}")" && pwd)"
+SERVER_DIR="$(cd "${BIN_DIR}/.." && pwd)"
+
+export PYTHONPATH="${SERVER_DIR}/src${PYTHONPATH:+:${PYTHONPATH}}"
+
+if [ -n "${FILEX_PYTHON:-}" ]; then
+  exec "${FILEX_PYTHON}" -m document_parse_service.cli "$@"
+fi
+
+if command -v uv >/dev/null 2>&1; then
+  if [ -d "${SERVER_DIR}/.venv" ]; then
+    exec uv run --project "${SERVER_DIR}" --no-sync python -m document_parse_service.cli "$@"
+  fi
+  exec uv run --project "${SERVER_DIR}" python -m document_parse_service.cli "$@"
+fi
+
+exec python3 -m document_parse_service.cli "$@"

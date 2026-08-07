@@ -5,6 +5,7 @@ File parsing hook for aworld-cli executor.
 This hook automatically handles @filename file references from user input:
 - Text files: Reads content and replaces @filename reference directly (not saved to working_dir)
 - Image files: Saves to context working_dir and adds to image_urls
+- Binary documents and media: Keeps the reference intact for a FileX skill/tool
 
 This is a default hook that is automatically registered and enabled.
 """
@@ -198,6 +199,24 @@ class FileParseHook(PostInputParseHook):
                     
                     # Check if file exists
                     if file_path.exists() and file_path.is_file():
+                        # Keep FileX-compatible binary documents and media out of the
+                        # text decoder. Falling through would eventually accept latin-1
+                        # and inject the complete binary file into the prompt. Images
+                        # remain on the existing multimodal path below.
+                        filex_binary_extensions = {
+                            '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx',
+                            '.mp3', '.wav', '.m4a', '.aac', '.flac', '.ogg', '.opus',
+                            '.mp4', '.mov', '.mkv', '.webm', '.avi', '.m4v', '.mpeg', '.mpg',
+                        }
+                        if file_path.suffix.lower() in filex_binary_extensions:
+                            emit_status(
+                                f"[dim]📄 [FileParseHook] Deferred binary file to FileX: {file_path}[/dim]"
+                            )
+                            logger.info(
+                                f"📄 [FileParseHook] Deferred binary file to FileX: {file_path}"
+                            )
+                            continue
+
                         # Check if it's an image file
                         image_extensions = {'.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.svg'}
                         if file_path.suffix.lower() in image_extensions:
