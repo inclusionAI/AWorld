@@ -1,0 +1,4 @@
+interface:
+  display_name: "FileX PDF"
+  short_description: "Parse PDFs into Markdown with FileX"
+  default_prompt: "Use $filex-pdf to parse this PDF into Markdown and summarize the result."
