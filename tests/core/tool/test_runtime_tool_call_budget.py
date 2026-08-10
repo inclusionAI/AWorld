@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import pytest
 
-from aworld.core.common import ActionModel
+from aworld.core.common import ActionModel, ActionResult, Observation
 from aworld.core.tool.base import ToolExecutionDenied, _enforce_runtime_tool_call_budget
 from aworld.core.tool.base import _enforce_replay_evidence_runtime_policy
+from aworld.core.tool.replay_policy import record_replay_runtime_tool_result
 
 
 class _Context:
@@ -133,3 +134,141 @@ def test_replay_runtime_policy_rejects_collection_after_evidence_ready(
         encoding="utf-8"
     )
     assert '"phase": "evidence_ready"' in state
+
+
+def test_replay_runtime_policy_enforces_declared_loopback_endpoints(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    _enable_replay_policy(monkeypatch, tmp_path)
+    monkeypatch.setenv(
+        "AWORLD_REPLAY_ENDPOINT_BROWSER",
+        "http://127.0.0.1:4100",
+    )
+
+    _enforce_replay_evidence_runtime_policy(
+        "browser",
+        _replay_action("open ws://127.0.0.1:4100/devtools/session"),
+        _Message(_Context()),
+    )
+    with pytest.raises(ToolExecutionDenied, match="undeclared_loopback_endpoint"):
+        _enforce_replay_evidence_runtime_policy(
+            "browser",
+            _replay_action("open http://127.0.0.1:9222/json"),
+            _Message(_Context()),
+        )
+
+
+def test_replay_runtime_policy_requires_typed_control_plane_authorization(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    _enable_replay_policy(monkeypatch, tmp_path)
+
+    with pytest.raises(
+        ToolExecutionDenied,
+        match="unauthorized_control_plane_action",
+    ):
+        _enforce_replay_evidence_runtime_policy(
+            "bash",
+            _replay_action("pkill browser-driver"),
+            _Message(_Context()),
+        )
+
+    monkeypatch.setenv("AWORLD_REPLAY_ALLOWED_CONTROL_ACTIONS", "pkill")
+    _enforce_replay_evidence_runtime_policy(
+        "bash",
+        _replay_action("pkill browser-driver"),
+        _Message(_Context()),
+    )
+
+
+def test_replay_runtime_policy_preserves_isolated_runtime_roots(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    _enable_replay_policy(monkeypatch, tmp_path)
+
+    with pytest.raises(ToolExecutionDenied, match="protected_runtime_root_override"):
+        _enforce_replay_evidence_runtime_policy(
+            "bash",
+            _replay_action("export HOME=/tmp/host-profile; run-browser"),
+            _Message(_Context()),
+        )
+
+    structured = [
+        ActionModel(
+            tool_name="process",
+            action_name="run",
+            tool_call_id="call-structured-env",
+            params={
+                "command": "run-browser",
+                "environment": {"XDG_CONFIG_HOME": "/tmp/host-profile"},
+            },
+        )
+    ]
+    with pytest.raises(ToolExecutionDenied, match="protected_runtime_root_override"):
+        _enforce_replay_evidence_runtime_policy(
+            "process",
+            structured,
+            _Message(_Context()),
+        )
+
+
+def test_replay_runtime_policy_blocks_host_discovery_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    _enable_replay_policy(monkeypatch, tmp_path)
+
+    with pytest.raises(ToolExecutionDenied, match="host_discovery_forbidden"):
+        _enforce_replay_evidence_runtime_policy(
+            "bash",
+            _replay_action("lsof -nP -iTCP -sTCP:LISTEN"),
+            _Message(_Context()),
+        )
+    monkeypatch.setenv("AWORLD_REPLAY_ALLOWED_CONTROL_ACTIONS", "lsof")
+    _enforce_replay_evidence_runtime_policy(
+        "bash",
+        _replay_action("lsof -nP -iTCP -sTCP:LISTEN"),
+        _Message(_Context()),
+    )
+
+
+def test_replay_runtime_policy_breaks_consecutive_failed_action_loop(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    _enable_replay_policy(monkeypatch, tmp_path)
+    monkeypatch.setenv("AWORLD_REPLAY_MAX_CONSECUTIVE_FAILED_ACTIONS", "2")
+    context = _Context()
+    message = _Message(context)
+    repeated = _replay_action("agent-browser snapshot")
+    failed_result = (
+        Observation(
+            action_result=[
+                ActionResult(
+                    is_done=True,
+                    success=False,
+                    error="bounded failure",
+                )
+            ]
+        ),
+        0.0,
+        False,
+        False,
+        {},
+    )
+
+    for _ in range(2):
+        _enforce_replay_evidence_runtime_policy("bash", repeated, message)
+        record_replay_runtime_tool_result(repeated, failed_result, message)
+
+    with pytest.raises(ToolExecutionDenied, match="repeated_failed_action_limit"):
+        _enforce_replay_evidence_runtime_policy("bash", repeated, message)
+
+    _enforce_replay_evidence_runtime_policy(
+        "bash",
+        _replay_action("agent-browser inspect-errors"),
+        message,
+    )

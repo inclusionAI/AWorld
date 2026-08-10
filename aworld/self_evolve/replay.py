@@ -33,6 +33,9 @@ from aworld.runners.batch import (
     TaskResourceClaim,
 )
 from aworld.self_evolve.concurrency import SelfEvolveConcurrencyPolicy
+from aworld.self_evolve.counterexamples import (
+    REPLAY_COUNTEREXAMPLE_SCHEMA_VERSION,
+)
 from aworld.self_evolve.datasets import (
     EvalCase,
     SelfEvolveDataset,
@@ -132,6 +135,10 @@ _EVIDENCE_COVERAGE_NUMERIC_METRIC_KEYS = (
     "evidence_runtime_policy_tool_call_attempt_count",
     "evidence_runtime_policy_artifact_file_count",
     "evidence_runtime_policy_artifact_bytes",
+    "evidence_runtime_policy_consecutive_failed_action_count",
+    "evidence_runtime_policy_max_consecutive_failed_actions",
+    "evidence_runtime_policy_allowed_loopback_endpoint_count",
+    "evidence_runtime_policy_allowed_control_action_count",
 )
 
 _PER_MEMBER_REPETITION_SEMANTICS = "per_member_v3"
@@ -3375,6 +3382,7 @@ class AWorldCliReplayExecutor:
     _DEFAULT_RESERVED_OUTPUT_TOKENS = 4096
     _DEFAULT_ARTIFACT_FILE_LIMIT = 8
     _DEFAULT_ARTIFACT_BYTE_LIMIT = 2_000_000
+    _DEFAULT_MAX_CONSECUTIVE_FAILED_ACTIONS = 2
 
     async def __call__(self, request: ReplayExecutionRequest) -> ReplayExecutionResult:
         artifact_dir = Path(request.artifact_dir)
@@ -3384,6 +3392,9 @@ class AWorldCliReplayExecutor:
             artifact_dir,
             artifact_file_limit=self._DEFAULT_ARTIFACT_FILE_LIMIT,
             artifact_byte_limit=self._DEFAULT_ARTIFACT_BYTE_LIMIT,
+            max_consecutive_failed_actions=(
+                self._DEFAULT_MAX_CONSECUTIVE_FAILED_ACTIONS
+            ),
         )
         # Keep process-local roots short as well as isolated. Unix-domain socket
         # consumers (browser drivers in particular) commonly impose path limits
@@ -3444,6 +3455,9 @@ class AWorldCliReplayExecutor:
                 "AWORLD_REPLAY_ARTIFACT_BYTE_LIMIT": str(
                     self._DEFAULT_ARTIFACT_BYTE_LIMIT
                 ),
+                "AWORLD_REPLAY_MAX_CONSECUTIVE_FAILED_ACTIONS": str(
+                    self._DEFAULT_MAX_CONSECUTIVE_FAILED_ACTIONS
+                ),
                 "AWORLD_LOG_PATH": str(artifact_dir / "logs"),
                 "AWORLD_TRAJECTORY_LOG_DISABLED": "1",
                 "AWORLD_TOOL_CALL_LIMIT": str(self._DEFAULT_TOOL_CALL_LIMIT),
@@ -3478,6 +3492,7 @@ class AWorldCliReplayExecutor:
                 artifact_dir=artifact_dir,
                 evidence_manifest=evidence_manifest,
                 workspace_root=Path(request.workspace_root),
+                variant_id=request.variant_id,
             )
             compacted_argument_failure = _compacted_argument_replay_failure(
                 evidence_metrics
@@ -3542,7 +3557,10 @@ class AWorldCliReplayExecutor:
                     "task_completion_established": False,
                     **evidence_metrics,
                 }
-                counterexample = _timeout_evidence_counterexample(metrics)
+                counterexample = _timeout_evidence_counterexample(
+                    metrics,
+                    variant_id=request.variant_id,
+                )
                 metrics = {
                     **metrics,
                     "replay_counterexamples": [counterexample],
@@ -3615,6 +3633,7 @@ class AWorldCliReplayExecutor:
             artifact_dir=artifact_dir,
             evidence_manifest=evidence_manifest,
             workspace_root=Path(request.workspace_root),
+            variant_id=request.variant_id,
         )
         metrics = {
             "returncode": completed.returncode,
@@ -3697,6 +3716,11 @@ class AWorldCliReplayExecutor:
                     else "unsupported_trajectory_capture_mode"
                 ),
                 required_transition="emit_task_response_trajectory",
+                owner=(
+                    "task"
+                    if request.variant_id == "baseline"
+                    else "candidate"
+                ),
             )
             metrics = {
                 **metrics,
@@ -6606,6 +6630,7 @@ def _replay_evidence_metrics(
     artifact_dir: Path | None = None,
     evidence_manifest: Path | None = None,
     workspace_root: Path | None = None,
+    variant_id: str | None = None,
 ) -> dict[str, Any]:
     signal_text = "\n".join(
         text
@@ -6645,7 +6670,14 @@ def _replay_evidence_metrics(
         artifact_dir=artifact_dir,
     )
     runtime_policy_metrics = _replay_evidence_runtime_policy_metrics(
-        artifact_dir
+        artifact_dir,
+        owner=(
+            "task"
+            if variant_id == "baseline"
+            else "candidate"
+            if variant_id is not None
+            else None
+        ),
     )
     manifest_valid = manifest_metrics.get("evidence_manifest_valid") is True
     manifest_invalid_count = manifest_metrics.get("evidence_manifest_invalid_entry_count")
@@ -6671,7 +6703,6 @@ def _replay_evidence_metrics(
 
 
 _REPLAY_EVIDENCE_POLICY_SCHEMA_VERSION = "aworld.replay.evidence_policy.v1"
-_REPLAY_COUNTEREXAMPLE_SCHEMA_VERSION = "aworld.replay.counterexample.v1"
 _REPLAY_POLICY_CONTROL_FILES = frozenset(
     {
         "evidence_manifest.jsonl",
@@ -6692,6 +6723,7 @@ def _initialize_replay_evidence_policy_state(
     *,
     artifact_file_limit: int,
     artifact_byte_limit: int,
+    max_consecutive_failed_actions: int,
 ) -> None:
     payload = {
         "schema_version": _REPLAY_EVIDENCE_POLICY_SCHEMA_VERSION,
@@ -6703,12 +6735,16 @@ def _initialize_replay_evidence_policy_state(
         "artifact_bytes": 0,
         "artifact_file_limit": artifact_file_limit,
         "artifact_byte_limit": artifact_byte_limit,
+        "max_consecutive_failed_actions": max_consecutive_failed_actions,
+        "consecutive_failed_action_count": 0,
     }
     _write_json(artifact_dir / "framework_evidence_state.json", payload)
 
 
 def _replay_evidence_runtime_policy_metrics(
     artifact_dir: Path | None,
+    *,
+    owner: str | None = None,
 ) -> dict[str, Any]:
     if artifact_dir is None:
         return {}
@@ -6771,7 +6807,11 @@ def _replay_evidence_runtime_policy_metrics(
             }
         )
     counterexamples = [
-        _replay_policy_counterexample(item, sequence=index + 1)
+        _replay_policy_counterexample(
+            item,
+            sequence=index + 1,
+            owner=owner,
+        )
         for index, item in enumerate(violations[:16])
     ]
     return {
@@ -6786,6 +6826,23 @@ def _replay_evidence_runtime_policy_metrics(
         ),
         "evidence_runtime_policy_artifact_file_count": artifact_file_count,
         "evidence_runtime_policy_artifact_bytes": artifact_bytes,
+        "evidence_runtime_policy_consecutive_failed_action_count": int(
+            state.get("consecutive_failed_action_count") or 0
+        ),
+        "evidence_runtime_policy_max_consecutive_failed_actions": (
+            _positive_metric_int(
+                state.get("max_consecutive_failed_actions"),
+                default=(
+                    AWorldCliReplayExecutor._DEFAULT_MAX_CONSECUTIVE_FAILED_ACTIONS
+                ),
+            )
+        ),
+        "evidence_runtime_policy_allowed_loopback_endpoint_count": int(
+            state.get("allowed_loopback_endpoint_count") or 0
+        ),
+        "evidence_runtime_policy_allowed_control_action_count": int(
+            state.get("allowed_control_action_count") or 0
+        ),
         "replay_counterexamples": counterexamples,
     }
 
@@ -6851,10 +6908,12 @@ def _replay_policy_counterexample(
     violation: Mapping[str, Any],
     *,
     sequence: int,
+    owner: str | None = None,
 ) -> dict[str, Any]:
     return {
-        "schema_version": _REPLAY_COUNTEREXAMPLE_SCHEMA_VERSION,
+        "schema_version": REPLAY_COUNTEREXAMPLE_SCHEMA_VERSION,
         "sequence": sequence,
+        **({"owner": owner} if owner else {}),
         "failure_code": str(
             violation.get("code") or "replay_evidence_policy_violation"
         )[:96],
@@ -6874,6 +6933,27 @@ def _replay_policy_counterexample(
             violation.get("required_transition")
             or "finalize_or_reduce_collection"
         )[:128],
+        **(
+            {
+                "action_fingerprint": str(
+                    violation.get("action_fingerprint")
+                )[:80],
+            }
+            if violation.get("action_fingerprint")
+            else {}
+        ),
+        **(
+            {
+                key: max(0, int(violation.get(key) or 0))
+                for key in (
+                    "consecutive_failure_count",
+                    "observed_endpoint_count",
+                    "undeclared_endpoint_count",
+                    "control_action_count",
+                )
+                if violation.get(key) is not None
+            }
+        ),
     }
 
 
@@ -7550,8 +7630,8 @@ def _evidence_quality_failure(
             ),
             "failure_stage": "task_rollout",
             "repairable": not baseline,
-            "category": "replay_evidence_policy",
-            "reason": "replay violated framework-enforced evidence lifecycle",
+            "category": "replay_runtime_policy",
+            "reason": "replay violated a framework-enforced runtime contract",
             "diagnostics": {
                 "policy_violation_count": int(policy_violation_count),
                 "replay_counterexamples": counterexamples,
@@ -7597,6 +7677,8 @@ def _has_valid_artifact_backed_timeout_evidence(metrics: Mapping[str, Any]) -> b
 
 def _timeout_evidence_counterexample(
     metrics: Mapping[str, Any],
+    *,
+    variant_id: str,
 ) -> dict[str, Any]:
     """Describe a timeout without copying task text, paths, or payloads."""
 
@@ -7605,6 +7687,7 @@ def _timeout_evidence_counterexample(
         failure_code="replay_task_timeout_with_recoverable_evidence",
         trigger="task_timeout",
         required_transition="finalize_task_response_before_timeout",
+        owner="task" if variant_id == "baseline" else "candidate",
     )
 
 
@@ -7614,12 +7697,14 @@ def _task_completion_counterexample(
     failure_code: str,
     trigger: str,
     required_transition: str,
+    owner: str,
 ) -> dict[str, Any]:
     """Describe missing completion without copying task text or payloads."""
 
     return {
-        "schema_version": _REPLAY_COUNTEREXAMPLE_SCHEMA_VERSION,
+        "schema_version": REPLAY_COUNTEREXAMPLE_SCHEMA_VERSION,
         "sequence": 1,
+        "owner": owner,
         "failure_code": failure_code,
         "stage": "task_rollout",
         "state_before": (
@@ -7941,6 +8026,7 @@ def _aggregate_variant_results(
                 "evidence_runtime_policy_tool_call_attempt_count",
                 "evidence_runtime_policy_artifact_file_count",
                 "evidence_runtime_policy_artifact_bytes",
+                "evidence_runtime_policy_consecutive_failed_action_count",
             }
             else sum(values) / len(values)
         )

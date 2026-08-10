@@ -34,6 +34,10 @@ from aworld.self_evolve.credit_assignment import (
     build_target_selection_decision,
     build_default_target_inventory,
 )
+from aworld.self_evolve.counterexamples import (
+    candidate_failure_counterexample,
+    normalize_counterexample,
+)
 from aworld.self_evolve.datasets import (
     EvalCase,
     SelfEvolveDataset,
@@ -14692,6 +14696,10 @@ def _summary_with_replay_evidence_metrics(
         "evidence_runtime_policy_tool_call_attempt_count",
         "evidence_runtime_policy_artifact_file_count",
         "evidence_runtime_policy_artifact_bytes",
+        "evidence_runtime_policy_consecutive_failed_action_count",
+        "evidence_runtime_policy_max_consecutive_failed_actions",
+        "evidence_runtime_policy_allowed_loopback_endpoint_count",
+        "evidence_runtime_policy_allowed_control_action_count",
         "task_completion_established",
         "timeout_evidence_recovered",
         "replay_counterexamples",
@@ -16363,6 +16371,22 @@ def _typed_gate_feedback_metrics(
     ] = []
     replay_counterexamples: list[dict[str, object]] = []
     replay_counterexample_fingerprints: set[str] = set()
+
+    def add_replay_counterexample(value: object) -> None:
+        normalized = normalize_counterexample(value)
+        if normalized is None:
+            return
+        fingerprint = json.dumps(
+            normalized,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        if fingerprint in replay_counterexample_fingerprints:
+            return
+        replay_counterexample_fingerprints.add(fingerprint)
+        replay_counterexamples.append(normalized)
+
     for gate in failed_gate_items:
         details = gate.details
         gate_diagnostic: dict[str, object] = {
@@ -16374,16 +16398,7 @@ def _typed_gate_feedback_metrics(
             diagnostics.append(gate_diagnostic)
             continue
         for counterexample in _public_replay_counterexamples(details):
-            fingerprint = json.dumps(
-                counterexample,
-                ensure_ascii=False,
-                sort_keys=True,
-                separators=(",", ":"),
-            )
-            if fingerprint in replay_counterexample_fingerprints:
-                continue
-            replay_counterexample_fingerprints.add(fingerprint)
-            replay_counterexamples.append(counterexample)
+            add_replay_counterexample(counterexample)
         raw_schema_constraints = details.get("schema_field_constraints")
         if isinstance(raw_schema_constraints, (list, tuple)):
             for raw_constraint in raw_schema_constraints[:100]:
@@ -16457,6 +16472,24 @@ def _typed_gate_feedback_metrics(
                         "causal emission id was reused with a different typed payload"
                     )
                 if typed_event.owner is FailureOwner.CANDIDATE:
+                    has_specific_counterexample = any(
+                        item.get("failure_code") == typed_event.code
+                        and item.get("stage") == typed_event.stage.value
+                        for item in replay_counterexamples
+                    )
+                    generic_counterexample = (
+                        None
+                        if has_specific_counterexample
+                        or _public_replay_counterexamples(event)
+                        else candidate_failure_counterexample(
+                            transport,
+                            sequence=len(replay_counterexamples) + 1,
+                        )
+                    )
+                    if generic_counterexample is not None:
+                        add_replay_counterexample(
+                            generic_counterexample.to_dict()
+                        )
                     raw_contract = details.get("repair_conformance")
                     inherited_context = candidate_causal_contexts.get(
                         typed_event.semantic_key
@@ -16898,23 +16931,6 @@ def _typed_gate_feedback_metrics(
     return result
 
 
-_REPLAY_COUNTEREXAMPLE_SCHEMA_VERSION = "aworld.replay.counterexample.v1"
-_REPLAY_COUNTEREXAMPLE_FIELDS = (
-    "schema_version",
-    "sequence",
-    "failure_code",
-    "stage",
-    "state_before",
-    "trigger",
-    "tool_name",
-    "action_name",
-    "manifest_entry_count",
-    "artifact_file_count",
-    "artifact_bytes",
-    "required_transition",
-)
-
-
 def _public_replay_counterexamples(value: object) -> tuple[dict[str, object], ...]:
     """Extract bounded, payload-free counterexamples from gate diagnostics."""
 
@@ -16946,25 +16962,7 @@ def _public_replay_counterexamples(value: object) -> tuple[dict[str, object], ..
 def _public_replay_counterexample(
     value: object,
 ) -> dict[str, object] | None:
-    if not isinstance(value, Mapping):
-        return None
-    if value.get("schema_version") != _REPLAY_COUNTEREXAMPLE_SCHEMA_VERSION:
-        return None
-    failure_code = value.get("failure_code")
-    required_transition = value.get("required_transition")
-    if not isinstance(failure_code, str) or not failure_code.strip():
-        return None
-    if not isinstance(required_transition, str) or not required_transition.strip():
-        return None
-    bounded = public_diagnostic_projection(
-        {
-            key: value.get(key)
-            for key in _REPLAY_COUNTEREXAMPLE_FIELDS
-            if value.get(key) is not None
-        },
-        max_chars=1_024,
-    )
-    return dict(bounded) if isinstance(bounded, Mapping) else None
+    return normalize_counterexample(value)
 
 
 def _typed_causal_feedback_event(

@@ -33,6 +33,7 @@ from aworld.self_evolve.datasets import (
     SelfEvolveEvalSourceConfig,
     build_dataset_from_source,
 )
+from aworld.self_evolve.evolution_context import compile_evolution_context
 from aworld.self_evolve.optimizers.llm_mutator import TraceReflectiveLLMMutator
 from aworld.self_evolve.optimizers.base import (
     CandidateGenerationOutcome,
@@ -981,10 +982,180 @@ def test_typed_gate_feedback_preserves_payload_free_replay_counterexample() -> N
 
     metrics = runner_module._typed_gate_feedback_metrics((gate,))
 
-    assert metrics["replay_counterexamples"] == [counterexample]
+    assert metrics["replay_counterexamples"] == [
+        {
+            **counterexample,
+            "owner": "candidate",
+            "occurrence_count": 1,
+        }
+    ]
     assert metrics["candidate_validation_diagnostics"][0]["code"] == (
         "replay_evidence_runtime_policy_violation"
     )
+
+
+def test_typed_gate_feedback_builds_generic_candidate_counterexample() -> None:
+    event = ReplayFailureEvent(
+        code="candidate_capability_operational_preflight_failed",
+        owner=FailureOwner.CANDIDATE,
+        stage=FailureStage.CAPABILITY_PREFLIGHT,
+        scope=FailureScope.CANDIDATE,
+        repairable=True,
+        category="capability_contract",
+        requirement_id="requirement-browser-runtime",
+    )
+    gate = GateResult(
+        gate_name="candidate_capability_replay",
+        passed=False,
+        reason="candidate capability preflight failed",
+        details={
+            "failure_class": "candidate",
+            "repairable": True,
+            "causal_failure_events": [event.to_dict()],
+        },
+    )
+
+    metrics = runner_module._typed_gate_feedback_metrics((gate,))
+
+    counterexample = metrics["replay_counterexamples"][0]
+    assert counterexample["failure_code"] == (
+        "candidate_capability_operational_preflight_failed"
+    )
+    assert counterexample["trigger"] == "typed_candidate_failure"
+    assert counterexample["required_transition"] == (
+        "satisfy_candidate_capability_preflight"
+    )
+    assert counterexample["owner"] == "candidate"
+
+
+def test_candidate_failure_counterexample_reaches_next_generation_contract() -> None:
+    candidate = CandidateVariant(
+        candidate_id="candidate-loop",
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo"),
+        content="# Demo\n\nRetry the browser action.\n",
+        rationale="candidate under repair",
+        files=(
+            CandidateFileDelta(
+                path="SKILL.md",
+                content="# Demo\n\nRetry the browser action.\n",
+            ),
+        ),
+    )
+    event = ReplayFailureEvent(
+        code="repeated_failed_action_limit",
+        owner=FailureOwner.CANDIDATE,
+        stage=FailureStage.TASK_ROLLOUT,
+        scope=FailureScope.CANDIDATE,
+        repairable=True,
+        category="replay_runtime_policy",
+        diagnostics={
+            "replay_counterexamples": [
+                {
+                    "schema_version": "aworld.replay.counterexample.v1",
+                    "sequence": 1,
+                    "failure_code": "repeated_failed_action_limit",
+                    "owner": "candidate",
+                    "stage": "task_rollout",
+                    "state_before": "collecting",
+                    "trigger": "tool_call",
+                    "action_fingerprint": "sha256:" + "a" * 64,
+                    "consecutive_failure_count": 2,
+                    "required_transition": (
+                        "switch_strategy_or_fail_with_observed_reason"
+                    ),
+                }
+            ]
+        },
+    )
+    aggregate = aggregate_replay_failure_observations(
+        (
+            ReplayFailureObservation(
+                event=event,
+                case_id="case-loop",
+                candidate_id=candidate.candidate_id,
+            ),
+        )
+    )[0]
+    gate = GateResult(
+        gate_name="candidate_replay",
+        passed=False,
+        reason="candidate repeated a failed replay action",
+        details={
+            "failure_class": "candidate",
+            "repairable": True,
+            "candidate_failure_event": event.to_dict(),
+            "causal_failure_events": [aggregate.to_dict()],
+        },
+    )
+
+    feedback = _iteration_validation_feedback(
+        candidate=candidate,
+        baseline_summary=None,
+        candidate_summary=None,
+        held_out_summary=None,
+        failed_gates=[gate],
+    )
+    context = compile_evolution_context(
+        OptimizerRequest(
+            target=candidate.target,
+            current_content="# Demo\n",
+            target_fingerprint="sha256:demo",
+            trace_packs=(),
+            validation_feedback=feedback,
+            target_package_inventory=("SKILL.md",),
+        )
+    )
+    payload = context.to_prompt_payload(candidate_index=0)
+
+    assert payload["repair_context_mode"] == "focused_candidate_delta"
+    assert len(payload["repair_focus"]["replay_counterexamples"]) == 1
+    counterexample = payload["repair_focus"]["replay_counterexamples"][0]
+    assert counterexample["failure_code"] == "repeated_failed_action_limit"
+    assert counterexample["required_transition"] == (
+        "switch_strategy_or_fail_with_observed_reason"
+    )
+    assert payload["repair_conformance"]["required_runtime_transitions"] == [
+        "switch_strategy_or_fail_with_observed_reason"
+    ]
+
+
+def test_task_owned_counterexample_does_not_enter_candidate_repair() -> None:
+    event = ReplayFailureEvent(
+        code="replay_task_completion_not_established",
+        owner=FailureOwner.TASK,
+        stage=FailureStage.TASK_ROLLOUT,
+        scope=FailureScope.MEMBER,
+        repairable=False,
+        category="task_completion",
+        diagnostics={
+            "replay_counterexamples": [
+                {
+                    "schema_version": "aworld.replay.counterexample.v1",
+                    "sequence": 1,
+                    "failure_code": "replay_task_completion_not_established",
+                    "owner": "task",
+                    "stage": "task_rollout",
+                    "state_before": "running",
+                    "trigger": "trajectory_unavailable",
+                    "required_transition": "emit_task_response_trajectory",
+                }
+            ]
+        },
+    )
+    gate = GateResult(
+        gate_name="baseline_replay",
+        passed=False,
+        reason="baseline task did not establish completion",
+        details={
+            "failure_class": "task",
+            "repairable": False,
+            "causal_failure_events": [event.to_dict()],
+        },
+    )
+
+    metrics = runner_module._typed_gate_feedback_metrics((gate,))
+
+    assert "replay_counterexamples" not in metrics
 
 
 @pytest.mark.asyncio
