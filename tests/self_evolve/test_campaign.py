@@ -163,6 +163,45 @@ def test_framework_score_uncertainty_precedes_candidate_scheduler_stall() -> Non
     assert disposition.stage == "score_improvement"
 
 
+def test_candidate_evidence_repair_precedes_simultaneous_score_uncertainty() -> None:
+    score_event = _event(
+        code="score_improvement_inconclusive",
+        owner="framework",
+        scope="shared_run",
+        repairable=False,
+    )
+    score_event["stage"] = "evaluation"
+    evidence_event = _event(
+        code="evidence_quality",
+        owner="candidate",
+        scope="candidate",
+        repairable=True,
+    )
+    evidence_event["stage"] = "evaluation"
+    report = _report(score_event)
+    report["gate_results"].append(
+        {
+            "gate_name": "evidence_quality",
+            "passed": False,
+            "details": {
+                "failure_event": evidence_event,
+                "causal_failure_events": [evidence_event],
+            },
+        }
+    )
+    report["rejection_attribution"] = {
+        "code": "score_improvement_inconclusive",
+        "failure_class": "framework",
+        "primary_gate": "score_improvement",
+    }
+
+    disposition = derive_self_improvement_disposition(report)
+
+    assert disposition.kind is SelfImprovementDispositionKind.CONTINUE_CANDIDATE
+    assert disposition.reason_code == "candidate_repair_frontier_progressed"
+    assert disposition.owner == "candidate"
+
+
 def test_zero_generation_scheduler_stall_is_not_a_legacy_pause() -> None:
     report = {
         "status": "rejected",

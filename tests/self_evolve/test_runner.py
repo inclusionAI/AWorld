@@ -1995,6 +1995,44 @@ def test_substantive_screening_failure_outranks_later_duplicate_attempt() -> Non
     }
 
 
+def test_rejection_attribution_prefers_actionable_candidate_evidence_failure() -> None:
+    attribution = runner_module._rejection_attribution(
+        final_status=SelfEvolveRunStatus.REJECTED,
+        selected_candidate_id="candidate-evidence-repair",
+        gate_results=(
+            GateResult(
+                gate_name="score_improvement",
+                passed=False,
+                reason="score improvement is inconclusive",
+                details={
+                    "code": "score_improvement_inconclusive",
+                    "failure_class": "framework",
+                    "failure_owner": "framework",
+                    "failure_scope": "shared_run",
+                    "repairable": False,
+                },
+            ),
+            GateResult(
+                gate_name="evidence_quality",
+                passed=False,
+                reason="candidate evidence quality regressed",
+                details={
+                    "code": "evidence_quality",
+                    "failure_class": "candidate",
+                    "failure_owner": "candidate",
+                    "failure_scope": "candidate",
+                    "repairable": True,
+                },
+            ),
+        ),
+        scheduler_decisions=(),
+    )
+
+    assert attribution is not None
+    assert attribution["primary_gate"] == "evidence_quality"
+    assert attribution["failure_class"] == "candidate"
+
+
 def test_rejection_attribution_names_terminal_frontier_exhaustion() -> None:
     attribution = runner_module._rejection_attribution(
         final_status=SelfEvolveRunStatus.REJECTED,
