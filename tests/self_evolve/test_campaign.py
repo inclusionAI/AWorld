@@ -678,6 +678,26 @@ def test_candidate_materialization_failure_continues_typed_campaign() -> None:
     assert disposition.stage == "candidate_generation"
 
 
+def test_generation_policy_frontier_stall_exhausts_without_legacy_pause() -> None:
+    event = {
+        "code": "candidate_generation_policy_frontier_stalled",
+        "owner": "candidate",
+        "stage": "candidate_generation",
+        "scope": "candidate",
+        "repairable": False,
+        "category": "candidate_generation_policy",
+    }
+
+    disposition = derive_self_improvement_disposition(_report(event))
+
+    assert disposition.kind is SelfImprovementDispositionKind.EXHAUSTED
+    assert disposition.reason_code == (
+        "candidate_generation_policy_frontier_stalled"
+    )
+    assert disposition.owner == "candidate"
+    assert disposition.stage == "candidate_generation"
+
+
 def test_campaign_store_round_trip_and_rejects_invalid_cycle(tmp_path: Path) -> None:
     controller = SelfImprovementCampaignController(workspace_root=tmp_path)
     campaign = controller.create(

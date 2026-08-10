@@ -98,6 +98,14 @@ class EvolutionContext:
             candidate_index=candidate_index,
         )
         focused_repair = repair_focus is not None
+        generation_policy_focus = (
+            _focused_generation_policy_feedback(feedback)
+            if not focused_repair
+            else None
+        )
+        generation_policy_repair = generation_policy_focus is not None
+        if generation_policy_focus is not None:
+            feedback = (generation_policy_focus,)
         repair_conformance = (
             compile_repair_conformance_contract(repair_focus)
             if (
@@ -138,6 +146,7 @@ class EvolutionContext:
             else feedback
         )
         prompt_feedback = _budget_prompt_feedback(prompt_feedback)
+        compact_generation_context = focused_repair or generation_policy_repair
         payload: dict[str, object] = {
             "schema_version": self.schema_version,
             "candidate_index": candidate_index,
@@ -151,10 +160,16 @@ class EvolutionContext:
             # are available, they are the authoritative repair context. Repeating
             # the original trajectory and lessons makes the source delta harder to
             # attend to and can duplicate the same package in the prompt.
-            "trainable_cases": [] if focused_repair else list(self.trainable_cases),
-            "trace_evidence": [] if focused_repair else list(self.trace_evidence),
+            "trainable_cases": (
+                [] if compact_generation_context else list(self.trainable_cases)
+            ),
+            "trace_evidence": (
+                [] if compact_generation_context else list(self.trace_evidence)
+            ),
             "validation_feedback": list(prompt_feedback),
-            "lesson_records": [] if focused_repair else list(self.lesson_records),
+            "lesson_records": (
+                [] if compact_generation_context else list(self.lesson_records)
+            ),
             "observed_failures": list(self.observed_failures),
             "required_behaviors": list(self.required_behaviors),
             "preserved_behaviors": list(self.preserved_behaviors),
@@ -193,6 +208,14 @@ class EvolutionContext:
                 payload["repair_conformance"] = (
                     repair_conformance.to_public_dict()
                 )
+        elif generation_policy_focus is not None:
+            payload["repair_context_mode"] = "generation_policy_delta"
+            payload["repair_prompt_budget"] = {
+                "omitted_trainable_cases": len(self.trainable_cases),
+                "omitted_trace_evidence": len(self.trace_evidence),
+                "omitted_lesson_records": len(self.lesson_records),
+                "preserved_current_content_chars": len(self.current_content),
+            }
         if repair_support is not None:
             payload["repair_support"] = _repair_support_prompt_summary(
                 repair_support
@@ -299,7 +322,18 @@ def _compact_prompt_feedback_item(
         compact["candidate_validation_diagnostics"] = [
             {
                 key: sanitize_metric_value(diagnostic.get(key), max_chars=160)
-                for key in ("code", "stage", "reason", "field_path")
+                for key in (
+                    "code",
+                    "stage",
+                    "reason",
+                    "field_path",
+                    "policy_id",
+                    "enforcement",
+                    "reason_codes",
+                    "constraint_ids",
+                    "active_frontier_key",
+                    "affected_case_ids",
+                )
                 if diagnostic.get(key) is not None
             }
             for diagnostic in diagnostics[:4]
@@ -479,6 +513,28 @@ def _focused_validation_feedback(
             }
         )
     return tuple(contextual_feedback), focus, support
+
+
+def _focused_generation_policy_feedback(
+    feedback: Sequence[Mapping[str, object]],
+) -> Mapping[str, object] | None:
+    """Select the latest source-free policy repair without replaying history."""
+
+    for item in reversed(feedback):
+        diagnostics = item.get("candidate_validation_diagnostics")
+        if not isinstance(diagnostics, list):
+            continue
+        if any(
+            isinstance(diagnostic, Mapping)
+            and diagnostic.get("code")
+            in {
+                "candidate_generation_policy_filtered",
+                "candidate_generation_policy_frontier_stalled",
+            }
+            for diagnostic in diagnostics
+        ):
+            return item
+    return None
 
 
 def _repair_support_is_complementary(

@@ -1477,6 +1477,16 @@ def derive_self_improvement_disposition(
         None,
     )
     if non_repairable_candidate is not None:
+        if (
+            non_repairable_candidate.get("code")
+            == "candidate_generation_policy_frontier_stalled"
+        ):
+            return _event_disposition(
+                SelfImprovementDispositionKind.EXHAUSTED,
+                "candidate_generation_policy_frontier_stalled",
+                non_repairable_candidate,
+                delta,
+            )
         return _event_disposition(
             SelfImprovementDispositionKind.EXHAUSTED,
             "candidate_failure_not_repairable",

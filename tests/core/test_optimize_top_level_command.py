@@ -812,6 +812,38 @@ def test_render_optimize_summary_explains_no_candidate_rejection() -> None:
     assert "replay/evaluation/apply were skipped" in summary
 
 
+def test_render_optimize_summary_explains_generation_policy_frontier() -> None:
+    summary = render_optimize_summary(
+        {
+            "status": "rejected",
+            "candidate_ids": [],
+            "selected_candidate_id": None,
+            "iterations": [
+                {"iteration": 1, "status": "policy_filtered"},
+                {"iteration": 2, "status": "policy_filtered"},
+            ],
+            "verification_funnel": {
+                "policy_filtered_candidate_count": 3,
+                "generation_policy_frontier_exhausted": True,
+            },
+            "gate_results": [
+                {
+                    "gate_name": "candidate_generation",
+                    "passed": False,
+                    "details": {
+                        "code": "candidate_generation_policy_frontier_stalled"
+                    },
+                }
+            ],
+        }
+    )
+
+    assert "Rejected gates: candidate_generation" in summary
+    assert "Candidate admission: 3 generated candidate(s) rejected" in summary
+    assert "Generation policy frontier exhausted" in summary
+    assert "No candidate generated:" not in summary
+
+
 def test_run_optimize_cli_uses_interactive_auto_verified_defaults(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

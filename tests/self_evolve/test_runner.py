@@ -35,6 +35,8 @@ from aworld.self_evolve.datasets import (
 )
 from aworld.self_evolve.optimizers.llm_mutator import TraceReflectiveLLMMutator
 from aworld.self_evolve.optimizers.base import (
+    CandidateGenerationOutcome,
+    CandidateGenerationOutcomeKind,
     CandidateSemanticValidationError,
     OptimizerRequest,
     OptimizerResult,
@@ -111,6 +113,7 @@ from aworld.self_evolve.runner import (
     _rank_candidate_population,
     _rejected_candidate_ids_from_report,
     _replay_confidence_gate,
+    _replay_evaluator_admission_gate,
     _replay_gate_details,
     _replay_adaptation_exception_details,
     _replay_report,
@@ -1468,6 +1471,89 @@ def test_candidate_screening_prefers_case_exercising_replay_requirements() -> No
     assert screening.cases[0].case_id == "capability-case"
 
 
+def test_candidate_screening_uses_single_case_as_low_cost_promotion_stage() -> None:
+    dataset = SelfEvolveDataset(
+        cases=(EvalCase(case_id="only-case", input="single user task"),),
+        recipe=DatasetRecipe(
+            source={"kind": "trajectory", "case_count": 1},
+            split_seed="seed",
+            splits={"train": ["only-case"], "validation": [], "held_out": []},
+            trainable_case_ids=("only-case",),
+        ),
+    )
+
+    screening = _candidate_screening_dataset(dataset)
+
+    assert screening is not None
+    assert tuple(case.case_id for case in screening.cases) == ("only-case",)
+    assert screening.recipe.source["candidate_screening"] is True
+
+
+def test_replay_adaptation_cache_reuses_behavior_only_sibling_capability(
+    tmp_path: Path,
+) -> None:
+    def write_skill(name: str, guidance: str) -> Path:
+        root = tmp_path / name
+        replay_root = root / "replay"
+        replay_root.mkdir(parents=True)
+        (root / "SKILL.md").write_text(guidance, encoding="utf-8")
+        (replay_root / "capability.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": "aworld.skill.replay_capability.v1",
+                    "capability_id": "shared-fixture",
+                    "protocol": "aworld.replay.subprocess.v1",
+                    "entrypoint": "replay/compiler.py",
+                    "handles": ["local_endpoint"],
+                }
+            ),
+            encoding="utf-8",
+        )
+        (replay_root / "compiler.py").write_text("# identical compiler\n", encoding="utf-8")
+        return root
+
+    first_root = write_skill("first", "# First behavior\n")
+    second_root = write_skill("second", "# Second behavior\n")
+    dataset = SelfEvolveDataset(
+        cases=(EvalCase(case_id="case-1", input="plain task"),),
+        recipe=DatasetRecipe(
+            source={"kind": "test"},
+            split_seed="seed",
+            splits={"train": ["case-1"], "validation": [], "held_out": []},
+            trainable_case_ids=("case-1",),
+        ),
+    )
+
+    class NoopOptimizer:
+        async def propose(self, request: OptimizerRequest) -> OptimizerResult:
+            return OptimizerResult(candidates=())
+
+    runner = SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=NoopOptimizer(),
+    )
+
+    first_bundle, first_gate = runner._prepare_replay_adaptation(
+        run_id="run-shared-adaptation",
+        dataset=dataset,
+        capability_skill_root=first_root,
+        candidate_package_fingerprint="sha256:first-full-package",
+        emit_progress=False,
+    )
+    second_bundle, second_gate = runner._prepare_replay_adaptation(
+        run_id="run-shared-adaptation",
+        dataset=dataset,
+        capability_skill_root=second_root,
+        candidate_package_fingerprint="sha256:second-full-package",
+        emit_progress=False,
+    )
+
+    assert first_gate.passed is True
+    assert second_gate.passed is True
+    assert first_bundle is second_bundle
+    assert len(runner._replay_adaptation_cache) == 1
+
+
 def test_candidate_screening_builds_stratified_multi_case_panel() -> None:
     dataset = SelfEvolveDataset(
         cases=tuple(
@@ -2324,6 +2410,94 @@ def test_multi_member_replay_advances_from_historical_to_current_member_root(
         / "replay"
         / "candidate-1"
         / "members"
+    )
+
+
+def test_replay_evaluator_admission_rejects_deterministic_evidence_regression() -> None:
+    request = CandidateReplayRequest(
+        run_id="run-admission",
+        task_id="task-a",
+        workspace_root="/tmp/workspace",
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo"),
+        candidate_id="candidate-1",
+        overlay_skill_root="/tmp/overlay",
+        task_input="task A",
+    )
+    replay = _CandidateReplayResult(
+        request=request,
+        baseline=ReplayVariantResult(
+            variant_id="baseline",
+            status="succeeded",
+            trajectory=[],
+            metrics={
+                "evidence_strategy_passed": True,
+                "evidence_bundle_valid": True,
+                "evidence_manifest_invalid_entry_count": 0,
+            },
+        ),
+        candidate=ReplayVariantResult(
+            variant_id="candidate-1",
+            status="succeeded",
+            trajectory=[],
+            metrics={
+                "evidence_strategy_passed": False,
+                "evidence_bundle_valid": False,
+                "evidence_manifest_invalid_entry_count": 2,
+            },
+        ),
+    )
+
+    gate = _replay_evaluator_admission_gate(
+        replay,
+        apply_policy="verified_only",
+    )
+    typed_gate = _with_typed_gate_failure_event(gate)
+
+    assert gate is not None
+    assert gate.passed is False
+    assert gate.details["evaluator_skipped"] is True
+    assert {item["metric"] for item in gate.details["regressions"]} == {
+        "evidence_strategy_passed",
+        "evidence_bundle_valid",
+        "evidence_manifest_invalid_entry_count",
+    }
+    assert typed_gate.details["failure_event"]["owner"] == "candidate"
+
+
+def test_replay_evaluator_admission_allows_missing_or_non_regressed_evidence() -> None:
+    request = CandidateReplayRequest(
+        run_id="run-admission-pass",
+        task_id="task-a",
+        workspace_root="/tmp/workspace",
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo"),
+        candidate_id="candidate-1",
+        overlay_skill_root="/tmp/overlay",
+        task_input="task A",
+    )
+    replay = _CandidateReplayResult(
+        request=request,
+        baseline=ReplayVariantResult(
+            variant_id="baseline",
+            status="succeeded",
+            trajectory=[],
+            metrics={"evidence_strategy_passed": True},
+        ),
+        candidate=ReplayVariantResult(
+            variant_id="candidate-1",
+            status="succeeded",
+            trajectory=[],
+            metrics={"evidence_strategy_passed": True},
+        ),
+    )
+
+    gate = _replay_evaluator_admission_gate(replay, apply_policy="auto_verified")
+
+    assert gate is not None
+    assert gate.passed is True
+    assert gate.details["evaluator_skipped"] is False
+    assert gate.details["regressions"] == []
+    assert (
+        _replay_evaluator_admission_gate(replay, apply_policy="proposal") is None
     )
 
 
@@ -4222,6 +4396,123 @@ async def test_auto_verified_no_candidate_is_rejected(tmp_path) -> None:
             "reward": {"status": "failed"},
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_generation_policy_filter_retries_once_then_exhausts_typed_frontier(
+    tmp_path,
+) -> None:
+    skill_path = tmp_path / "aworld-skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text(
+        "---\nname: demo\n---\n# Demo\n\nKeep the verified path.\n",
+        encoding="utf-8",
+    )
+    target = SkillTextTarget(skill_path, allow_auto_apply=True)
+    store = FilesystemSelfEvolveStore(tmp_path)
+    trajectory = [
+        {
+            "meta": {"step": 1, "agent_id": "agent", "pre_agent": "runner"},
+            "state": {"input": {"content": "repair behavior"}},
+            "action": {"content": "broad rewrite failed"},
+            "reward": {"status": "failed"},
+        }
+    ]
+    dataset = build_dataset_from_source(
+        SelfEvolveEvalSourceConfig(kind="current_trajectory"),
+        current_trajectory=trajectory,
+        task_id="policy-filter",
+    )
+    trace_pack = build_trace_pack(
+        trajectory,
+        source_kind="current_trajectory",
+        task_id="policy-filter",
+    )
+
+    class PolicyFilterOptimizer:
+        def __init__(self) -> None:
+            self.requests: list[OptimizerRequest] = []
+
+        async def propose(self, request: OptimizerRequest) -> OptimizerResult:
+            self.requests.append(request)
+            outcomes = tuple(
+                CandidateGenerationOutcome(
+                    candidate_index=index,
+                    kind=CandidateGenerationOutcomeKind.POLICY_FILTERED,
+                    candidate_id=f"filtered-candidate-{len(self.requests)}-{index}",
+                    candidate_fingerprint=f"sha256:package-{len(self.requests)}-{index}",
+                    semantic_fingerprint=f"sha256:semantic-{len(self.requests)}-{index}",
+                    policy_id="preserve_high_baseline",
+                    enforcement="hard",
+                    repairable=True,
+                    reason_codes=(
+                        "authoritative_base_replaced_by_rejected_parent",
+                    ),
+                    constraint_ids=("preserve_authoritative_current_base",),
+                    active_frontier_key=(
+                        request.active_repair_frontier_keys[index]
+                        if index < len(request.active_repair_frontier_keys)
+                        else None
+                    ),
+                    strategy_id=f"focused:{index}",
+                )
+                for index in range(request.max_candidates)
+            )
+            return OptimizerResult(
+                candidates=(),
+                generation_outcomes=outcomes,
+                diagnostics={
+                    "filtered_high_baseline_regression_candidates": len(outcomes),
+                    "candidate_generation_outcomes": [
+                        outcome.to_dict() for outcome in outcomes
+                    ],
+                },
+            )
+
+    optimizer = PolicyFilterOptimizer()
+    result = await SelfEvolveRunner(
+        store=store,
+        optimizer=optimizer,
+        max_iterations=10,
+    ).run_explicit_target(
+        run_id="run-policy-filter-stall",
+        target=target,
+        dataset=dataset,
+        trace_packs=(trace_pack,),
+        apply_policy="auto_verified",
+    )
+
+    assert result.run.status is SelfEvolveRunStatus.REJECTED
+    assert len(optimizer.requests) == 2
+    assert optimizer.requests[1].validation_feedback[0].metrics[
+        "candidate_policy_filter_count"
+    ] >= 1
+    report = json.loads(
+        (
+            tmp_path
+            / ".aworld"
+            / "self_evolve"
+            / "run-policy-filter-stall"
+            / "report.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert [item["status"] for item in report["iterations"]] == [
+        "policy_filtered",
+        "policy_filtered",
+    ]
+    assert report["verification_funnel"][
+        "generation_policy_frontier_exhausted"
+    ] is True
+    gate = next(
+        item for item in report["gate_results"] if item["gate_name"] == "candidate_generation"
+    )
+    assert gate["details"]["code"] == (
+        "candidate_generation_policy_frontier_stalled"
+    )
+    assert gate["details"]["failure_event"]["repairable"] is False
+    assert report["population"]["lifecycle"]["stage_counts"][
+        "policy_filtered"
+    ] >= 2
     dataset = build_dataset_from_source(
         SelfEvolveEvalSourceConfig(kind="current_trajectory"),
         current_trajectory=trajectory,
@@ -8792,9 +9083,9 @@ async def test_replay_actual_wall_overrun_blocks_following_stage_and_candidate(
     )
     replay_debit = next(
         item for item in report["budget"]["debits"]
-        if item["stage"] == "paired_replay"
+        if item["stage"] == "screening"
     )
-    assert replay_calls == ["candidate-wall-1"]
+    assert replay_calls == ["candidate-wall-1--screening"]
     assert replay_debit["actual"]["tokens"] == 23
     assert replay_debit["actual"]["cost_usd"] == "4"
     assert replay_debit["actual"]["wall_seconds"] == "5"
@@ -8804,8 +9095,8 @@ async def test_replay_actual_wall_overrun_blocks_following_stage_and_candidate(
         "terminal_reason_counts"
     ]
     assert terminal_reasons == {
-        "evaluation_budget_denied": 1,
         "replay_budget_denied": 1,
+        "screening_budget_denied": 1,
     }
     assert report["budget"]["ledger"]["outstanding_reservations"] == []
 
@@ -9037,6 +9328,8 @@ async def test_verified_runner_bounds_authoritative_candidates_across_iterations
         "generated_candidate_slot_count": 3,
         "unique_generated_candidate_count": 2,
         "generation_frontier_exhausted": False,
+        "generation_policy_frontier_exhausted": False,
+        "policy_filtered_candidate_count": 0,
         "max_authoritative_candidates": 2,
         "authoritative_candidate_count": 2,
         "max_score_tiebreak_candidates": 0,
@@ -9555,7 +9848,13 @@ async def test_runner_reuses_successful_baseline_replay_across_candidate_populat
                     variant_id=candidate.candidate_id,
                     status="succeeded",
                     trajectory=[{"action": {"content": candidate.candidate_id}}],
-                    metrics={"repetition_count": 3, "successful_repetition_count": 3},
+                    metrics={
+                        "repetition_count": 3,
+                        "successful_repetition_count": 3,
+                        "evidence_strategy_passed": (
+                            candidate.candidate_id.startswith("candidate-two")
+                        ),
+                    },
                 ),
                 member_results=() if explicit_empty_members else None,
             )
@@ -9620,16 +9919,20 @@ async def test_runner_reuses_successful_baseline_replay_across_candidate_populat
         / "self_evolve"
         / "run-baseline-reuse"
         / "replay"
-        / "candidate-one"
+        / "candidate-one--screening"
         / "baseline"
     )
     assert result.run.status.value == (
         "rejected" if explicit_empty_members else "succeeded"
     )
-    assert replay_backend.baseline_replay_dirs == (
+    assert replay_backend.baseline_replay_dirs[:2] == (
         [None, None]
         if explicit_empty_members
-        else [None, str(expected_baseline_dir), None, None]
+        else [None, str(expected_baseline_dir)]
+    )
+    assert all(
+        replay_dir is None
+        for replay_dir in replay_backend.baseline_replay_dirs[2:]
     )
 
 
@@ -9640,13 +9943,13 @@ async def test_runner_reuses_successful_baseline_replay_across_candidate_populat
         pytest.param(
             FailureOwner.CANDIDATE,
             FailureScope.CANDIDATE,
-            ["candidate-one", "candidate-two"],
+            ["candidate-one--screening", "candidate-two--screening"],
             id="candidate_owned_continues",
         ),
         pytest.param(
             FailureOwner.INFRASTRUCTURE,
             FailureScope.SHARED_RUN,
-            ["candidate-one"],
+            ["candidate-one--screening"],
             id="shared_run_stops",
         ),
     ),
@@ -10094,6 +10397,7 @@ async def test_runner_screens_population_on_representative_member_before_full_re
     assert result.run.status.value == "rejected"
     assert replay_backend.calls == [
         ("candidate-1--screening", ("task-a", "task-b")),
+        ("candidate-2--screening", ("task-a", "task-b")),
         ("candidate-1", ("task-a", "task-b")),
     ]
     report = json.loads(
@@ -10108,7 +10412,7 @@ async def test_runner_screens_population_on_representative_member_before_full_re
         "task-b",
     ]
     stage_counts = report["population"]["lifecycle"]["stage_counts"]
-    assert stage_counts["representative_screening"] == 1
+    assert stage_counts["representative_screening"] == 2
     assert stage_counts["paired_replay_started"] == 1
     assert sum(
         stage_counts[stage]
@@ -10393,12 +10697,72 @@ async def test_population_screening_preserves_all_candidates_when_baseline_is_in
 
     assert screened == candidates[:1]
     assert report is not None
-    assert report["attempted_candidate_count"] == 1
+    assert report["attempted_candidate_count"] == 2
     assert report["ranked_below_screening_candidate_ids"] == ["candidate-2"]
     assert report["candidate_dispositions"] == {
         "candidate-1": "promoted_to_authoritative",
         "candidate-2": "ranked_below_screening_frontier",
     }
+    assert report["progressive_repetition"] is True
+
+    async def deterministic_evidence_regression(**kwargs):
+        selected = kwargs["selected_candidate"]
+        request = CandidateReplayRequest(
+            run_id="run-screening-evidence-regression",
+            task_id="task-a",
+            workspace_root=str(tmp_path),
+            target=target_ref,
+            candidate_id=selected.candidate_id,
+            overlay_skill_root=str(tmp_path / "overlay"),
+            task_input="Replay task A",
+        )
+        replay = _CandidateReplayResult(
+            request=request,
+            baseline=ReplayVariantResult(
+                variant_id="baseline",
+                status="succeeded",
+                trajectory=[],
+                metrics={"evidence_strategy_passed": True},
+            ),
+            candidate=ReplayVariantResult(
+                variant_id=selected.candidate_id,
+                status="succeeded",
+                trajectory=[],
+                metrics={"evidence_strategy_passed": False},
+            ),
+        )
+        return (
+            replay,
+            dataset,
+            GateResult(
+                gate_name="candidate_replay",
+                passed=True,
+                reason="candidate produced a comparable representative replay",
+            ),
+        )
+
+    monkeypatch.setattr(
+        runner,
+        "_replay_selected_candidate",
+        deterministic_evidence_regression,
+    )
+    screened, report = await runner._screen_candidate_population(
+        run_id="run-screening-evidence-regression",
+        target=SkillTextTarget(skill_path, allow_auto_apply=True),
+        dataset=dataset,
+        candidates=candidates,
+        apply_policy="verified_only",
+    )
+
+    assert screened == ()
+    assert report is not None
+    assert report["attempted_candidate_count"] == 2
+    assert all(
+        attempt["details"]["code"]
+        == "deterministic_replay_evidence_regression"
+        for attempt in report["attempts"]
+    )
+    assert "candidate repair" in report["selection_reason"]
 
     async def repairable_capability_replay(**kwargs):
         return (
@@ -10474,10 +10838,8 @@ async def test_population_screening_preserves_all_candidates_when_baseline_is_in
         ),
     )
 
-    assert screened == ()
-    assert report is not None
-    assert report["generated_candidate_count"] == 1
-    assert report["attempted_candidate_count"] == 1
+    assert screened == candidates[:1]
+    assert report is None
 
 
 @pytest.mark.asyncio
@@ -11494,7 +11856,7 @@ async def test_population_screening_rejects_unchanged_repair_branch_before_rollo
 
 
 @pytest.mark.asyncio
-async def test_population_screening_rollout_failure_preserves_passed_conformance_contract(
+async def test_single_candidate_conformance_skips_redundant_promotion_rollout(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -11632,19 +11994,12 @@ async def test_population_screening_rollout_failure_preserves_passed_conformance
         repair_conformance_contracts={candidate.candidate_id: contract},
     )
 
-    assert screened == ()
+    assert screened == (candidate,)
     assert report is not None
     assert preflight_case_ids == ("task-a", "task-b")
-    assert rollout_case_ids == ("task-a", "task-b")
-    details = report["attempts"][0]["details"]
-    assert details["repair_conformance"] == contract.to_public_dict()
-    feedback = _candidate_screening_repair_feedback((candidate,), report)
-    inherited = compile_repair_conformance_contract(feedback[0].metrics)
-    assert inherited is not None
-    # Persisted/public feedback is useful repair context but is deliberately
-    # not an executable contract. Exact execution state travels only through
-    # OptimizerResult.private_context.
-    assert inherited.required_fixture_probe_operations == ()
+    assert rollout_case_ids == ()
+    assert report["screening"] is None
+    assert report["conformance"]["passed_candidate_ids"] == [candidate.candidate_id]
 
 
 def test_repair_conformance_failure_preserves_fixture_shape_and_trace_tail(
@@ -12744,7 +13099,15 @@ async def test_runner_persists_lineage_lifecycle_for_rejected_and_accepted_candi
                     variant_id=candidate.candidate_id,
                     status="succeeded",
                     trajectory=[{"action": {"content": "candidate"}}],
-                    metrics={"repetition_count": 3, "successful_repetition_count": 3},
+                    metrics={
+                        "repetition_count": 3,
+                        "successful_repetition_count": 3,
+                        "evidence_strategy_passed": (
+                            candidate.candidate_id.startswith(
+                                strong_candidate.candidate_id
+                            )
+                        ),
+                    },
                 ),
             )
 
@@ -12808,8 +13171,11 @@ async def test_runner_persists_lineage_lifecycle_for_rejected_and_accepted_candi
         (lineage_dir / "candidate-strong-lineage.json").read_text(encoding="utf-8")
     )
     assert weak_lineage["lifecycle_status"] == "rejected"
-    assert weak_lineage["replayed"] is True
-    assert "score_improvement" in weak_lineage["failed_gates"]
+    assert weak_lineage["screened"] is True
+    assert weak_lineage["replayed"] is False
+    assert weak_lineage["lifecycle_reason_code"] == (
+        "ranked_below_screening_frontier"
+    )
     assert strong_lineage["lifecycle_status"] == "accepted"
     assert strong_lineage["replayed"] is True
     assert strong_lineage["post_apply_status"] == "accepted"

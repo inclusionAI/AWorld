@@ -1805,6 +1805,7 @@ class CandidateAttemptStage(str, Enum):
     GENERATED = "generated"
     UNIQUE = "unique"
     DUPLICATE_FILTERED = "duplicate_filtered"
+    POLICY_FILTERED = "policy_filtered"
     LOCAL_GATES = "local_gates"
     ADAPTATION = "adaptation_compile"
     CONFORMANCE = "repair_conformance"
@@ -1836,6 +1837,7 @@ _ATTEMPT_TRANSITIONS: Mapping[CandidateAttemptStage, frozenset[CandidateAttemptS
         {
             CandidateAttemptStage.UNIQUE,
             CandidateAttemptStage.DUPLICATE_FILTERED,
+            CandidateAttemptStage.POLICY_FILTERED,
             CandidateAttemptStage.BLOCKED,
             CandidateAttemptStage.NOT_RUN,
         }
@@ -1849,6 +1851,9 @@ _ATTEMPT_TRANSITIONS: Mapping[CandidateAttemptStage, frozenset[CandidateAttemptS
         }
     ),
     CandidateAttemptStage.DUPLICATE_FILTERED: frozenset(
+        {CandidateAttemptStage.NOT_RUN}
+    ),
+    CandidateAttemptStage.POLICY_FILTERED: frozenset(
         {CandidateAttemptStage.NOT_RUN}
     ),
     CandidateAttemptStage.LOCAL_GATES: frozenset(

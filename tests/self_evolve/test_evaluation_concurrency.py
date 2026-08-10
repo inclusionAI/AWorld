@@ -190,8 +190,9 @@ async def test_cli_judge_subprocesses_receive_distinct_env_without_parent_mutati
     monkeypatch.setenv("AWORLD_LOG_PATH", "parent-log-path")
     captured_environments: list[dict[str, str]] = []
 
-    def fake_run(command, **kwargs):
-        captured_environments.append(dict(kwargs["env"]))
+    def fake_run(command, *, cwd, environment, timeout_seconds):
+        del cwd, timeout_seconds
+        captured_environments.append(dict(environment))
         output_index = command.index("--output") + 1
         Path(command[output_index]).write_text(
             json.dumps({"summary": {}, "gate": {"status": "fail"}}),
@@ -199,7 +200,10 @@ async def test_cli_judge_subprocesses_receive_distinct_env_without_parent_mutati
         )
         return SimpleNamespace(returncode=1, stdout="", stderr="")
 
-    monkeypatch.setattr("aworld.self_evolve.evaluation.subprocess.run", fake_run)
+    monkeypatch.setattr(
+        "aworld.self_evolve.evaluation._run_isolated_evaluator_process",
+        fake_run,
+    )
     kwargs_a = {
         "input": str(tmp_path / "a.log"),
         "kind": "trajectory",
@@ -246,14 +250,18 @@ def test_cli_judge_subprocess_failure_includes_bounded_process_diagnostics(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    def fake_run(command, **kwargs):
+    def fake_run(command, *, cwd, environment, timeout_seconds):
+        del command, cwd, environment, timeout_seconds
         return SimpleNamespace(
             returncode=1,
             stdout="unused output",
             stderr="model profile not found or incomplete: missing-profile",
         )
 
-    monkeypatch.setattr("aworld.self_evolve.evaluation.subprocess.run", fake_run)
+    monkeypatch.setattr(
+        "aworld.self_evolve.evaluation._run_isolated_evaluator_process",
+        fake_run,
+    )
 
     with pytest.raises(RuntimeError) as exc_info:
         _run_evaluator_cli_subprocess(
