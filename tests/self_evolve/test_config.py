@@ -29,6 +29,9 @@ def test_agent_config_disables_self_evolve_by_default() -> None:
     assert config.self_evolve_config.replay_timeout_seconds == 600
     assert config.self_evolve_config.replay_max_steps == 1
     assert config.self_evolve_config.replay_candidate_limit == 2
+    assert config.self_evolve_config.candidate_screening_max_cases == 3
+    assert config.self_evolve_config.max_full_evaluation_candidates == 3
+    assert config.self_evolve_config.max_score_tiebreak_candidates == 1
     assert config.self_evolve_config.baseline_replay_repetitions == 1
     assert config.self_evolve_config.candidate_replay_repetitions == 1
     assert config.self_evolve_config.replay_stability_margin == 0.0

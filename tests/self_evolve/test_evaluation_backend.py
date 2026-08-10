@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import os
 import subprocess
+import sys
+import time
 from dataclasses import dataclass
 
 import pytest
@@ -50,6 +52,36 @@ def _candidate(candidate_id: str = "candidate") -> CandidateVariant:
         content="# Demo\n",
         rationale="test candidate",
     )
+
+
+def test_isolated_evaluator_timeout_terminates_descendant_processes(tmp_path) -> None:
+    child_pid_path = tmp_path / "child.pid"
+    script = (
+        "import pathlib,subprocess,sys,time; "
+        "child=subprocess.Popen([sys.executable,'-c','import time; time.sleep(60)']); "
+        f"pathlib.Path({str(child_pid_path)!r}).write_text(str(child.pid)); "
+        "time.sleep(60)"
+    )
+
+    started = time.monotonic()
+    with pytest.raises(subprocess.TimeoutExpired):
+        evaluation_module._run_isolated_evaluator_process(
+            [sys.executable, "-c", script],
+            cwd=tmp_path,
+            environment=os.environ,
+            timeout_seconds=0.2,
+        )
+
+    assert time.monotonic() - started < 3.0
+    child_pid = int(child_pid_path.read_text())
+    for _ in range(20):
+        try:
+            os.kill(child_pid, 0)
+        except ProcessLookupError:
+            break
+        time.sleep(0.05)
+    else:
+        pytest.fail("evaluator descendant remained alive after process-group timeout")
 
 
 @pytest.mark.asyncio
@@ -208,12 +240,12 @@ async def test_aworld_trajectory_evaluator_backend_counts_outer_process_timeouts
     assert summary.metrics["judge_success_count"] == 1
     assert summary.metrics["judge_failure_count"] == 2
     assert summary.metrics["judge_timeout_count"] == 2
-    assert [call["judge_timeout_seconds"] for call in calls] == [
-        600.0,
-        900.0,
-        1350.0,
-    ]
-    assert summary.metrics["judge_timeout_seconds_effective_max"] == 1350.0
+    assert [call["judge_timeout_seconds"] for call in calls[:2]] == [600.0, 900.0]
+    assert calls[2]["judge_timeout_seconds"] == pytest.approx(1200.0, rel=1e-3)
+    assert summary.metrics["judge_timeout_seconds_effective_max"] == pytest.approx(
+        1200.0,
+        rel=1e-3,
+    )
     assert [
         failure["type"] for failure in summary.metrics["judge_failures"]
     ] == ["TimeoutExpired", "TimeoutExpired"]
@@ -702,6 +734,49 @@ async def test_aworld_trajectory_evaluator_backend_preserves_provider_timeout_wi
     failure = summary.metrics["judge_failures"][0]
     assert failure["reason"] == "judge call timed out during initial_judge"
     assert failure["timeout_phase"] == "initial_judge"
+
+
+@pytest.mark.asyncio
+async def test_aworld_trajectory_evaluator_backend_bounds_complete_retry_lifecycle(
+    tmp_path,
+) -> None:
+    dataset = _dataset(
+        (
+            EvalCase(
+                case_id="task-eval",
+                input={"content": "Recover the workflow."},
+                metadata={"baseline_trajectory": [{"action": {"content": "Recovered."}}]},
+            ),
+        )
+    )
+    calls = 0
+
+    async def hanging_run_evaluator_source(**kwargs):
+        nonlocal calls
+        calls += 1
+        await asyncio.sleep(1)
+
+    backend = AWorldTrajectoryEvaluatorBackend(
+        workspace_root=tmp_path,
+        judge_agent_name="trajectory-judge",
+        run_evaluator_source=hanging_run_evaluator_source,
+        judge_repetitions=1,
+        judge_failure_retries=5,
+        judge_timeout_seconds=0.05,
+        evaluation_timeout_seconds=0.08,
+    )
+
+    started = time.monotonic()
+    summary = await backend.evaluate_variant(
+        EvaluationRequest(variant_id="baseline", candidate=None, dataset=dataset)
+    )
+
+    assert time.monotonic() - started < 0.25
+    assert calls == 2
+    assert summary.metrics["evaluation_timeout_seconds"] == 0.08
+    assert summary.metrics["judge_failures"][-1]["timeout_phase"] == (
+        "evaluation_deadline"
+    )
 
 
 @pytest.mark.asyncio

@@ -252,6 +252,27 @@ class OptimizeTopLevelCommand:
             help="Number of candidate replay rollouts to aggregate.",
         )
         parser.add_argument(
+            "--candidate-screening-max-cases",
+            type=int,
+            default=3,
+            dest="candidate_screening_max_cases",
+            help="Maximum representative cases used by low-cost candidate screening.",
+        )
+        parser.add_argument(
+            "--max-full-evaluation-candidates",
+            type=int,
+            default=3,
+            dest="max_full_evaluation_candidates",
+            help="Maximum candidates admitted to authoritative full-dataset evaluation.",
+        )
+        parser.add_argument(
+            "--max-score-tiebreak-candidates",
+            type=int,
+            default=1,
+            dest="max_score_tiebreak_candidates",
+            help="Maximum candidates allowed to receive incremental score tie-break evidence.",
+        )
+        parser.add_argument(
             "--drain-pending",
             action="store_true",
             dest="drain_pending",
@@ -360,6 +381,15 @@ class OptimizeTopLevelCommand:
                 replay_max_steps=getattr(args, "replay_max_steps", None),
                 baseline_replay_repetitions=getattr(args, "baseline_replay_repetitions", None),
                 candidate_replay_repetitions=getattr(args, "candidate_replay_repetitions", None),
+                candidate_screening_max_cases=getattr(
+                    args, "candidate_screening_max_cases", 3
+                ),
+                max_full_evaluation_candidates=getattr(
+                    args, "max_full_evaluation_candidates", 3
+                ),
+                max_score_tiebreak_candidates=getattr(
+                    args, "max_score_tiebreak_candidates", 1
+                ),
                 progress_callback=_print_optimize_progress,
             )
         except (FileNotFoundError, ValueError, KeyError, NotImplementedError) as exc:
@@ -558,6 +588,9 @@ def run_optimize_cli(
     replay_max_steps: int | None = None,
     baseline_replay_repetitions: int | None = None,
     candidate_replay_repetitions: int | None = None,
+    candidate_screening_max_cases: int = 3,
+    max_full_evaluation_candidates: int = 3,
+    max_score_tiebreak_candidates: int = 1,
     runtime_registry_refresher: Callable[[Any], Any] | None = None,
     runtime_skill_activator: Callable[[Any], Any] | None = None,
     progress_callback: Callable[[str, str], Any] | None = None,
@@ -580,6 +613,13 @@ def run_optimize_cli(
     max_run_wall_seconds: float | None = None,
     per_attempt_replay_token_limit: int | None = None,
 ) -> Mapping[str, Any]:
+    for name, value, allow_zero in (
+        ("--candidate-screening-max-cases", candidate_screening_max_cases, False),
+        ("--max-full-evaluation-candidates", max_full_evaluation_candidates, False),
+        ("--max-score-tiebreak-candidates", max_score_tiebreak_candidates, True),
+    ):
+        if value < 0 or (value == 0 and not allow_zero):
+            raise ValueError(f"{name} must be {'non-negative' if allow_zero else 'positive'}")
     _validate_budget_cli_options(
         total_run_token_budget=total_run_token_budget,
         max_run_cost_usd=max_run_cost_usd,
@@ -673,6 +713,9 @@ def run_optimize_cli(
         "max_run_cost_usd": max_run_cost_usd,
         "max_run_wall_seconds": max_run_wall_seconds,
         "per_attempt_replay_token_limit": per_attempt_replay_token_limit,
+        "candidate_screening_max_cases": candidate_screening_max_cases,
+        "max_full_evaluation_candidates": max_full_evaluation_candidates,
+        "max_score_tiebreak_candidates": max_score_tiebreak_candidates,
         "apply_policy": runtime_apply,
         "inferred_new_skill_policy": new_skill_policy,
         "infer_target": infer_target,
