@@ -103,6 +103,9 @@ class EvolutionContext:
             if (
                 repair_focus is not None
                 and not _repair_feedback_reached_judged_task_output(repair_focus)
+                and not _repair_feedback_is_prerequisite_composition(
+                    repair_focus
+                )
             )
             else None
         )
@@ -561,6 +564,24 @@ def _repair_feedback_reached_task_plane(
     )
 
 
+def _repair_feedback_is_prerequisite_composition(
+    feedback: Mapping[str, object],
+) -> bool:
+    metrics = feedback.get("metrics")
+    failed_gates = feedback.get("failed_gates", ())
+    if isinstance(failed_gates, str):
+        failed_gate_names = {failed_gates}
+    elif isinstance(failed_gates, (list, tuple)):
+        failed_gate_names = {str(item) for item in failed_gates}
+    else:
+        failed_gate_names = set()
+    return bool(
+        isinstance(metrics, Mapping)
+        and metrics.get("candidate_status") == "prerequisite"
+        and "target_behavior_delta" in failed_gate_names
+    )
+
+
 def _repair_feedback_reached_judged_task_output(
     feedback: Mapping[str, object],
 ) -> bool:
@@ -668,6 +689,23 @@ def _repair_feedback_priority(feedback: Mapping[str, object]) -> int:
             # and should remain visible to the focused repair prompt.
             recovery_frontier += min(16, repeated_constraints)
     frontier_progress = recovery_frontier + interaction_progress
+    prerequisite_failed_gates = feedback.get("failed_gates", ())
+    if isinstance(prerequisite_failed_gates, str):
+        prerequisite_failed_gate_names = {prerequisite_failed_gates}
+    elif isinstance(prerequisite_failed_gates, (list, tuple)):
+        prerequisite_failed_gate_names = {
+            str(item) for item in prerequisite_failed_gates
+        }
+    else:
+        prerequisite_failed_gate_names = set()
+    if (
+        isinstance(metrics, Mapping)
+        and metrics.get("candidate_status") == "prerequisite"
+        and "target_behavior_delta" in prerequisite_failed_gate_names
+    ):
+        # A verified evaluation-support package is deeper than replay repair:
+        # the next mutation must inherit it and add releasable target behavior.
+        return 190_000 + frontier_progress
     diagnostic_text = json.dumps(
         feedback.get("candidate_validation_diagnostics", ()),
         ensure_ascii=False,
@@ -815,6 +853,10 @@ def compile_evolution_context(request: OptimizerRequest) -> EvolutionContext:
             has_feedback=bool(feedback),
             has_current_validation_feedback=bool(request.validation_feedback),
             has_capability_contracts=bool(contracts),
+            requires_target_behavior_composition=any(
+                _repair_feedback_is_prerequisite_composition(item)
+                for item in feedback
+            ),
             consumed_mutation_families=request.consumed_mutation_families,
         ),
         acceptance_constraints=(
@@ -1397,13 +1439,15 @@ def _population_strategies(
     has_feedback: bool,
     has_current_validation_feedback: bool,
     has_capability_contracts: bool,
+    requires_target_behavior_composition: bool = False,
     consumed_mutation_families: tuple[str, ...] = (),
 ) -> tuple[str, ...]:
-    strategies = (
-        ["quality_regression_repair"]
-        if has_current_validation_feedback
-        else ["minimal_behavior_delta"]
-    )
+    if requires_target_behavior_composition:
+        strategies = ["target_behavior_composition"]
+    elif has_current_validation_feedback:
+        strategies = ["quality_regression_repair"]
+    else:
+        strategies = ["minimal_behavior_delta"]
     if has_capability_contracts:
         strategies.append("missing_capability_completion")
     if has_feedback and not has_current_validation_feedback:

@@ -1176,6 +1176,12 @@ def derive_self_improvement_disposition(
         and attribution.get("scheduler_stop") is True
         and attribution.get("scheduler_reason_code")
         == "repair_frontier_stalled"
+        and (
+            attribution.get("primary_gate")
+            in {"candidate_generation", "no_candidate"}
+            or attribution.get("code")
+            == "candidate_repair_frontier_stalled"
+        )
     ):
         # The scheduler has already consumed the typed repair frontier and
         # found no eligible mutation family.  A newly observed diagnostic or
@@ -1339,6 +1345,21 @@ def derive_self_improvement_disposition(
         None,
     )
     if candidate is not None:
+        if candidate.get("code") == "evaluation_support_bootstrap_only":
+            return _event_disposition(
+                (
+                    SelfImprovementDispositionKind.CONTINUE_CANDIDATE
+                    if delta
+                    else SelfImprovementDispositionKind.EXHAUSTED
+                ),
+                (
+                    "evaluation_support_composition_required"
+                    if delta
+                    else "evaluation_support_composition_stalled"
+                ),
+                candidate,
+                delta,
+            )
         if delta:
             return _event_disposition(
                 SelfImprovementDispositionKind.CONTINUE_CANDIDATE,

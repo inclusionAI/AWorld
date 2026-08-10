@@ -223,6 +223,13 @@ class TraceReflectiveLLMMutator:
                     ),
                     candidate_content=content,
                 )
+                _validate_prerequisite_composition_target_delta(
+                    request,
+                    repair_focus=repair_context.repair_focus_for_candidate(
+                        candidate_index=index
+                    ),
+                    candidate_content=content,
+                )
                 if _violates_transport_completion_invariant(content):
                     content = _append_transport_completion_invariant(content)
                     repaired_transport_completion_violation_count += 1
@@ -314,7 +321,12 @@ class TraceReflectiveLLMMutator:
                 None
                 if (
                     isinstance(repair_focus, Mapping)
-                    and _repair_feedback_reached_judged_task_output(repair_focus)
+                    and (
+                        _repair_feedback_reached_judged_task_output(repair_focus)
+                        or _repair_feedback_is_prerequisite_composition(
+                            repair_focus
+                        )
+                    )
                 )
                 else compile_repair_conformance_contract(repair_focus)
             )
@@ -766,6 +778,20 @@ def _focused_repair_prompt_instructions(
             "unchanged focused package is invalid. "
         )
     if (
+        "evaluation_support_bootstrap_only" in feedback_text
+        or (
+            '"candidate_status": "prerequisite"' in feedback_text
+            and "target_behavior_delta" in feedback_text
+        )
+    ):
+        instructions += (
+            "The focused package is a verified evaluation-support prerequisite, not a "
+            "failed replay implementation. Preserve every candidate-owned support file "
+            "byte-for-byte and produce a semantic change to the releasable target content. "
+            "A files-only response, current_content, frontmatter-only provenance change, "
+            "or another support repair does not satisfy this composition frontier. "
+        )
+    if (
         "align_compiler_runtime_recorded_response_selection"
         in failure_codes
     ):
@@ -999,11 +1025,21 @@ def _validate_mutator_output_context(
             repair_focus=repair_focus,
             candidate_content=content,
         )
+        _validate_prerequisite_composition_target_delta(
+            request,
+            repair_focus=repair_focus,
+            candidate_content=content,
+        )
         private_contract = (
             None
             if (
                 isinstance(repair_focus, Mapping)
-                and _repair_feedback_reached_judged_task_output(repair_focus)
+                and (
+                    _repair_feedback_reached_judged_task_output(repair_focus)
+                    or _repair_feedback_is_prerequisite_composition(
+                        repair_focus
+                    )
+                )
             )
             else compile_repair_conformance_contract(repair_focus)
         )
@@ -1128,6 +1164,67 @@ def _validate_judge_repair_target_delta(
     )
 
 
+def _validate_prerequisite_composition_target_delta(
+    request: OptimizerRequest,
+    *,
+    repair_focus: Mapping[str, object] | None,
+    candidate_content: str,
+) -> None:
+    """Require real target behavior when inheriting verified support files."""
+
+    if not isinstance(repair_focus, Mapping):
+        return
+    if not _repair_feedback_is_prerequisite_composition(repair_focus):
+        return
+    candidate_fingerprint = candidate_content_semantic_fingerprint(
+        candidate_content
+    )
+    current_fingerprint = candidate_content_semantic_fingerprint(
+        request.current_content
+    )
+    if candidate_fingerprint != current_fingerprint:
+        return
+    package = repair_focus.get("repair_candidate_package")
+    raise CandidateSemanticValidationError(
+        "prerequisite_target_behavior_delta_missing",
+        (
+            "evaluation-support composition must change releasable target "
+            "behavior while inheriting the verified support package"
+        ),
+        field_path=CandidateFailureField.CONTENT.value,
+        representation=CandidateRepresentation.CANDIDATE_PACKAGE.value,
+        repairable=True,
+        allowed_improvement_signal_ids=exposed_improvement_signal_ids(request),
+        details={
+            "composition_required": True,
+            "focused_candidate_id": (
+                package.get("candidate_id")
+                if isinstance(package, Mapping)
+                else None
+            ),
+        },
+    )
+
+
+def _repair_feedback_is_prerequisite_composition(
+    repair_focus: Mapping[str, object],
+) -> bool:
+    metrics = repair_focus.get("metrics")
+    if not isinstance(metrics, Mapping):
+        return False
+    failed_gates = repair_focus.get("failed_gates", ())
+    if isinstance(failed_gates, str):
+        failed_gate_names = {failed_gates}
+    elif isinstance(failed_gates, (list, tuple, set, frozenset)):
+        failed_gate_names = {str(item) for item in failed_gates}
+    else:
+        failed_gate_names = set()
+    return bool(
+        metrics.get("candidate_status") == "prerequisite"
+        and "target_behavior_delta" in failed_gate_names
+    )
+
+
 def _candidate_output_representation(output: Any) -> CandidateRepresentation:
     if not isinstance(output, Mapping):
         return CandidateRepresentation.FULL_CONTENT
@@ -1205,7 +1302,10 @@ def _overlay_repair_focus_files(
         for item in raw_files
         if isinstance(item, Mapping)
     )
-    if _repair_feedback_reached_judged_task_output(repair_focus):
+    if (
+        _repair_feedback_reached_judged_task_output(repair_focus)
+        or _repair_feedback_is_prerequisite_composition(repair_focus)
+    ):
         # Judge-stage repair is a target-behavior delta over a runtime that has
         # already passed authoritative replay. Ignore model-proposed harness
         # changes and carry the verified candidate-owned files byte-for-byte,
@@ -1339,6 +1439,10 @@ def _population_strategy(
         "minimal_behavior_delta": (
             "preserve existing strengths and add the smallest behavior change that "
             "satisfies the typed acceptance constraints"
+        ),
+        "target_behavior_composition": (
+            "inherit the verified evaluation-support package byte-for-byte and "
+            "add the smallest releasable target behavior improvement"
         ),
         "missing_capability_completion": (
             "publish candidate-owned files that satisfy every applicable capability "

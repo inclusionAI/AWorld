@@ -1994,6 +1994,7 @@ _CANDIDATE_REPAIRABLE_GATE_STAGES = {
     "replay_stability_margin": FailureStage.EVALUATION,
     "evidence_quality": FailureStage.EVALUATION,
     "replay_confidence": FailureStage.TASK_ROLLOUT,
+    "target_behavior_delta": FailureStage.CANDIDATE_GENERATION,
 }
 _FRAMEWORK_SHARED_GATE_STAGES = {
     "challenger_admission": FailureStage.EVALUATION,
@@ -2906,6 +2907,7 @@ class SelfEvolveRunner:
         semantic_lesson_duplicate_attempt_count = 0
         authoritative_candidate_count = 0
         score_tiebreak_candidate_count = 0
+        prerequisite_candidate_ids: list[str] = []
         generated_candidate_slot_count = 0
         generation_frontier_exhausted = False
         verification_frontier_exhausted = False
@@ -4257,8 +4259,12 @@ class SelfEvolveRunner:
                 failed_gates = [
                     gate for gate in state["gate_results"] if not gate.passed
                 ]
-                if failed_gates:
+                if failed_gates and state["status"] != "prerequisite":
                     rejected_candidate_ids.add(iteration_candidate.candidate_id)
+                elif state["status"] == "prerequisite":
+                    prerequisite_candidate_ids.append(
+                        iteration_candidate.candidate_id
+                    )
                 if (
                     isinstance(replay_state, CandidateReplayResult)
                     and _shared_replay_failure_blocks_population(replay_state)
@@ -4624,6 +4630,16 @@ class SelfEvolveRunner:
                 if challenge_report is not None
                 else None
             ),
+            "composition_prerequisites": [
+                {
+                    "candidate_id": candidate_id,
+                    "status": "verified_support",
+                    "next_stage": "target_behavior_composition",
+                    "inherit_candidate_package": True,
+                    "evidence": "all_applicable_prerequisite_gates_passed",
+                }
+                for candidate_id in dict.fromkeys(prerequisite_candidate_ids)
+            ],
             "verification_funnel": {
                 "screening_max_cases": self.candidate_screening_max_cases,
                 "max_generated_candidates": self.max_generated_candidates,
@@ -4640,6 +4656,9 @@ class SelfEvolveRunner:
                 "score_tiebreak_candidate_count": score_tiebreak_candidate_count,
                 "frontier_exhausted": verification_frontier_exhausted,
                 "authoritative_evaluation_uses_full_dataset": True,
+                "prerequisite_candidate_ids": list(
+                    dict.fromkeys(prerequisite_candidate_ids)
+                ),
             },
             "handbook_slice": latest_handbook_slice,
             "repair_frontier_state": _repair_frontier_state_report(
@@ -6254,9 +6273,11 @@ class SelfEvolveRunner:
         if replay_confidence_gate is not None:
             gate_results.append(replay_confidence_gate)
 
-        target_behavior_gate = TargetBehaviorDeltaGate().evaluate(
-            current_content=target.load_current_content(),
-            candidate=candidate,
+        target_behavior_gate = _with_typed_gate_failure_event(
+            TargetBehaviorDeltaGate().evaluate(
+                current_content=target.load_current_content(),
+                candidate=candidate,
+            )
         )
         gate_results.append(target_behavior_gate)
         if not target_behavior_gate.passed:
@@ -6275,7 +6296,11 @@ class SelfEvolveRunner:
             ):
                 attempt_tracker.emit(
                     attempt_key,
-                    CandidateAttemptStage.REJECTED,
+                    (
+                        CandidateAttemptStage.PREREQUISITE_READY
+                        if support_bootstrap_ready
+                        else CandidateAttemptStage.REJECTED
+                    ),
                     reason_code=(
                         "evaluation_support_bootstrap_ready"
                         if support_bootstrap_ready
@@ -13546,13 +13571,22 @@ def _repair_feedback_from_selected_candidate(
         )
     if not gates:
         return ()
+    candidate_status = (
+        "prerequisite"
+        if any(
+            isinstance(gate.details, Mapping)
+            and gate.details.get("candidate_status") == "prerequisite"
+            for gate in gates
+        )
+        else "repairable"
+    )
     metrics = _typed_gate_feedback_metrics(gates)
     metrics.update(judge_metrics)
     metrics.update(
         {
             "failed_gates": [gate.gate_name for gate in gates],
-            "candidate_status": "repairable",
-            "authoritative_replay_failure": True,
+            "candidate_status": candidate_status,
+            "authoritative_replay_failure": candidate_status != "prerequisite",
             "run_id": report.get("run_id") or report_path.parent.name,
             "report_path": str(report_path),
             "repair_candidate_package": package,
@@ -15222,7 +15256,9 @@ def _iteration_validation_feedback(
         # Mark its repair frontier explicitly so bounded representative screening
         # or historical task-rollout feedback cannot outrank a later failure
         # discovered across the authoritative dataset.
-        typed_gate_metrics["authoritative_replay_failure"] = True
+        typed_gate_metrics["authoritative_replay_failure"] = (
+            typed_candidate_status != "prerequisite"
+        )
     comparison_metrics = _baseline_comparison_feedback_metrics(
         baseline_summary=baseline_summary,
         candidate_summary=candidate_summary,
