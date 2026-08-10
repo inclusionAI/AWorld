@@ -85,6 +85,7 @@ _SCALAR_METRIC_KEYS = {
     "replay_evidence_manifest_invalid_entry_count",
     "failure_class",
     "repairable",
+    "candidate_status",
     "candidate_protocol_invalid_count",
     "candidate_materialization_invalid_count",
     "authoritative_replay_failure",

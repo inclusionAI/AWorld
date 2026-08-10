@@ -10,6 +10,7 @@ from aworld.self_evolve.candidate_generation import (
     CandidateGenerationInfrastructureError,
 )
 from aworld.self_evolve.feedback import normalize_feedback_summary
+from aworld.self_evolve.evolution_context import compile_evolution_context
 from aworld.self_evolve.lessons import LessonRecord
 from aworld.self_evolve.optimizers.base import (
     CandidateSemanticValidationError,
@@ -18,6 +19,7 @@ from aworld.self_evolve.optimizers.base import (
 from aworld.self_evolve.optimizers.dspy_adapter import DSPyGEPAOptimizer, DSPyMIPROOptimizer
 from aworld.self_evolve.optimizers.llm_mutator import (
     TraceReflectiveLLMMutator,
+    _validate_prerequisite_composition_target_delta,
     _validate_mutator_output_context,
 )
 from aworld.self_evolve.patch_intent import apply_skill_patch_intent
@@ -70,6 +72,42 @@ def _trace_pack():
         ],
         source_kind="current_trajectory",
         task_id="optimizer-task",
+    )
+
+
+def _evaluation_support_prerequisite_feedback(
+    current_content: str,
+) -> EvaluationSummary:
+    return EvaluationSummary(
+        variant_id="support-prerequisite",
+        dataset_split="validation",
+        metrics={
+            "failed_gates": ["target_behavior_delta"],
+            "candidate_status": "prerequisite",
+            "failure_class": "candidate",
+            "repairable": True,
+            "causal_failure_events": [
+                {
+                    "code": "evaluation_support_bootstrap_only",
+                    "owner": "candidate",
+                    "stage": "candidate_generation",
+                    "scope": "candidate",
+                    "repairable": True,
+                    "category": "verification_gate",
+                }
+            ],
+            "repair_candidate_package": {
+                "candidate_id": "support-prerequisite",
+                "content": current_content,
+                "files": [
+                    {
+                        "path": "replay/runtime.py",
+                        "operation": "upsert",
+                        "content": "def respond():\n    return {'verified': True}\n",
+                    }
+                ],
+            },
+        },
     )
 
 
@@ -573,6 +611,83 @@ async def test_llm_mutator_inherits_primary_content_for_files_only_delta() -> No
     assert result.diagnostics["candidate_strategies"][0]["materialization"] == (
         "files_only"
     )
+
+
+@pytest.mark.asyncio
+async def test_llm_mutator_composes_target_delta_over_verified_support() -> None:
+    prompts: list[str] = []
+
+    async def mutate(prompt: str) -> dict:
+        prompts.append(prompt)
+        return {
+            "content": (
+                "# Demo\n\nExisting skill guidance.\n\n"
+                "## Completion contract\nVerify the requested artifact before finishing.\n"
+            ),
+            "rationale": "compose reusable behavior over verified replay support",
+            "files": [
+                {
+                    "path": "replay/runtime.py",
+                    "content": "def respond():\n    return {'unverified': True}\n",
+                }
+            ],
+        }
+
+    current_content = "# Demo\n\nExisting skill guidance.\n"
+    request = OptimizerRequest(
+        target=_target(),
+        current_content=current_content,
+        target_fingerprint="sha256:old",
+        trace_packs=(_trace_pack(),),
+        validation_feedback=(
+            _evaluation_support_prerequisite_feedback(current_content),
+        ),
+        trainable_cases=(EvalCase(case_id="train-1", input="login task"),),
+        replay_requirements=(_replay_requirement(),),
+        max_candidates=1,
+    )
+
+    result = await TraceReflectiveLLMMutator(mutate_text=mutate).propose(request)
+
+    assert len(result.candidates) == 1
+    candidate = result.candidates[0]
+    assert candidate.parent_candidate_ids == ("support-prerequisite",)
+    assert candidate.content != current_content
+    assert candidate.files == (
+        CandidateFileDelta(
+            path="replay/runtime.py",
+            operation="upsert",
+            content="def respond():\n    return {'verified': True}",
+        ),
+    )
+    assert result.diagnostics["candidate_strategies"][0][
+        "candidate_family"
+    ] == "target_behavior_composition"
+    assert "verified evaluation-support prerequisite" in prompts[0]
+
+
+def test_prerequisite_composition_rejects_support_only_output() -> None:
+    current_content = "# Demo\n\nExisting skill guidance.\n"
+    request = OptimizerRequest(
+        target=_target(),
+        current_content=current_content,
+        target_fingerprint="sha256:old",
+        trace_packs=(_trace_pack(),),
+        validation_feedback=(
+            _evaluation_support_prerequisite_feedback(current_content),
+        ),
+    )
+    context = compile_evolution_context(request)
+
+    with pytest.raises(
+        CandidateSemanticValidationError,
+        match="must change releasable target behavior",
+    ):
+        _validate_prerequisite_composition_target_delta(
+            request,
+            repair_focus=context.repair_focus_for_candidate(candidate_index=0),
+            candidate_content=current_content,
+        )
 
 
 @pytest.mark.asyncio

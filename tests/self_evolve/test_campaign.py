@@ -101,7 +101,7 @@ def test_focused_budget_denial_takes_precedence_over_candidate_stall() -> None:
     )
 
 
-def test_terminal_scheduler_stall_prevents_empty_followup_cycle() -> None:
+def test_terminal_scheduler_stall_does_not_override_substantive_candidate_gate() -> None:
     report = _report(_event())
     report["rejection_attribution"] = {
         "failure_class": "candidate",
@@ -112,11 +112,30 @@ def test_terminal_scheduler_stall_prevents_empty_followup_cycle() -> None:
 
     disposition = derive_self_improvement_disposition(report)
 
-    assert disposition.kind is SelfImprovementDispositionKind.EXHAUSTED
-    assert disposition.reason_code == "candidate_repair_frontier_stalled"
+    assert disposition.kind is SelfImprovementDispositionKind.CONTINUE_CANDIDATE
+    assert disposition.reason_code == "candidate_repair_frontier_progressed"
     assert disposition.owner == "candidate"
-    assert disposition.stage == "target_behavior_delta"
-    assert disposition.repairable is False
+    assert disposition.stage == "capability_compile"
+    assert disposition.repairable is True
+
+
+def test_evaluation_support_prerequisite_requests_composition_followup() -> None:
+    event = _event(code="evaluation_support_bootstrap_only")
+    event["stage"] = "candidate_generation"
+    report = _report(event)
+    report["rejection_attribution"] = {
+        "failure_class": "candidate",
+        "primary_gate": "target_behavior_delta",
+        "code": "evaluation_support_bootstrap_only",
+        "scheduler_reason_code": "repair_frontier_stalled",
+        "scheduler_stop": True,
+    }
+
+    disposition = derive_self_improvement_disposition(report)
+
+    assert disposition.kind is SelfImprovementDispositionKind.CONTINUE_CANDIDATE
+    assert disposition.reason_code == "evaluation_support_composition_required"
+    assert disposition.stage == "candidate_generation"
 
 
 def test_framework_score_uncertainty_precedes_candidate_scheduler_stall() -> None:

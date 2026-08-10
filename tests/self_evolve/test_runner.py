@@ -9005,6 +9005,7 @@ async def test_verified_runner_bounds_authoritative_candidates_across_iterations
         "score_tiebreak_candidate_count": 0,
         "frontier_exhausted": True,
         "authoritative_evaluation_uses_full_dataset": True,
+        "prerequisite_candidate_ids": [],
     }
 
 
@@ -9064,6 +9065,170 @@ async def test_verified_runner_bounds_generation_slots_before_authoritative_repl
     scheduler_decisions = report["population"]["scheduler_decisions"]
     assert scheduler_decisions[-1]["requested_slot_count"] >= 1
     assert scheduler_decisions[-1]["admitted_slot_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_runner_carries_verified_support_prerequisite_into_composite_candidate(
+    tmp_path: Path,
+) -> None:
+    skill_path, dataset = _cycle1_runner_fixture(tmp_path)
+    current_content = skill_path.read_text(encoding="utf-8")
+    support_file = CandidateFileDelta(
+        path="replay/runtime.py",
+        content="def replay():\n    return {'verified': True}\n",
+    )
+    requests: list[OptimizerRequest] = []
+
+    class Optimizer:
+        async def propose(self, request: OptimizerRequest) -> OptimizerResult:
+            requests.append(request)
+            if len(requests) == 1:
+                return OptimizerResult(
+                    candidates=(
+                        CandidateVariant(
+                            candidate_id="support-prerequisite",
+                            target=SelfEvolveTargetRef(
+                                "skill", "demo", str(skill_path)
+                            ),
+                            content=current_content,
+                            files=(support_file,),
+                            rationale="establish deterministic evaluation support",
+                        ),
+                    )
+                )
+            prerequisite = next(
+                item
+                for item in request.validation_feedback
+                if item.metrics.get("candidate_status") == "prerequisite"
+            )
+            package = prerequisite.metrics["repair_candidate_package"]
+            assert package["candidate_id"] == "support-prerequisite"
+            return OptimizerResult(
+                candidates=(
+                    CandidateVariant(
+                        candidate_id="support-composite",
+                        target=SelfEvolveTargetRef(
+                            "skill", "demo", str(skill_path)
+                        ),
+                        content=(
+                            current_content
+                            + "\n## Completion contract\n"
+                            + "Verify the requested artifact before finishing.\n"
+                        ),
+                        files=(support_file,),
+                        parent_candidate_ids=("support-prerequisite",),
+                        rationale="compose target behavior over verified support",
+                    ),
+                )
+            )
+
+    store = FilesystemSelfEvolveStore(tmp_path)
+    runner = SelfEvolveRunner(
+        store=store,
+        optimizer=Optimizer(),
+        max_iterations=2,
+        min_eval_cases=0,
+    )
+
+    await runner.run_explicit_target(
+        run_id="run-prerequisite-composition",
+        target=SkillTextTarget(skill_path, allow_auto_apply=True),
+        dataset=dataset,
+        trace_packs=(),
+        apply_policy="proposal",
+    )
+
+    report = json.loads(
+        (store.run_path("run-prerequisite-composition") / "report.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert len(requests) == 2
+    assert report["iterations"][0]["status"] == "prerequisite"
+    assert report["verification_funnel"]["prerequisite_candidate_ids"] == [
+        "support-prerequisite"
+    ]
+    assert report["composition_prerequisites"] == [
+        {
+            "candidate_id": "support-prerequisite",
+            "status": "verified_support",
+            "next_stage": "target_behavior_composition",
+            "inherit_candidate_package": True,
+            "evidence": "all_applicable_prerequisite_gates_passed",
+        }
+    ]
+    lifecycle = report["population"]["lifecycle"]
+    assert lifecycle["stage_counts"]["prerequisite_ready"] == 1
+    assert lifecycle["terminal_reason_counts"][
+        "evaluation_support_bootstrap_ready"
+    ] == 1
+
+
+@pytest.mark.asyncio
+async def test_prerequisite_package_rehydrates_for_next_campaign_cycle(
+    tmp_path: Path,
+) -> None:
+    skill_path, dataset = _cycle1_runner_fixture(tmp_path)
+    current_content = skill_path.read_text(encoding="utf-8")
+
+    class Optimizer:
+        async def propose(self, request: OptimizerRequest) -> OptimizerResult:
+            return OptimizerResult(
+                candidates=(
+                    CandidateVariant(
+                        candidate_id="persisted-support-prerequisite",
+                        target=SelfEvolveTargetRef(
+                            "skill", "demo", str(skill_path)
+                        ),
+                        content=current_content,
+                        files=(
+                            CandidateFileDelta(
+                                path="replay/runtime.py",
+                                content="def replay():\n    return True\n",
+                            ),
+                        ),
+                        rationale="persist verified evaluation support",
+                    ),
+                )
+            )
+
+    store = FilesystemSelfEvolveStore(tmp_path)
+    runner = SelfEvolveRunner(
+        store=store,
+        optimizer=Optimizer(),
+        max_iterations=1,
+        min_eval_cases=0,
+    )
+    await runner.run_explicit_target(
+        run_id="run-persisted-prerequisite",
+        target=SkillTextTarget(skill_path, allow_auto_apply=True),
+        dataset=dataset,
+        trace_packs=(),
+        apply_policy="proposal",
+    )
+
+    report_path = store.run_path("run-persisted-prerequisite") / "report.json"
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    target_gate = next(
+        gate
+        for gate in report["gate_results"]
+        if gate["gate_name"] == "target_behavior_delta"
+    )
+    assert target_gate["details"]["causal_failure_events"][0]["code"] == (
+        "evaluation_support_bootstrap_only"
+    )
+    feedback = _feedback_from_report(report, report_path=report_path)
+    prerequisite = next(
+        item
+        for item in feedback
+        if item.variant_id == "persisted-support-prerequisite"
+        and item.metrics.get("candidate_status") == "prerequisite"
+    )
+
+    assert prerequisite.metrics["failed_gates"] == ["target_behavior_delta"]
+    package = prerequisite.metrics["repair_candidate_package"]
+    assert package["candidate_id"] == "persisted-support-prerequisite"
+    assert package["files"][0]["path"] == "replay/runtime.py"
 
 
 @pytest.mark.asyncio

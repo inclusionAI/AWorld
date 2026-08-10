@@ -748,6 +748,29 @@ def test_attempt_aggregation_rejects_incomplete_lifecycle() -> None:
         aggregate_candidate_attempts(incomplete)
 
 
+def test_attempt_lifecycle_records_verified_prerequisite_terminal_stage() -> None:
+    key = CandidateAttemptKey("run-prerequisite", 0, 0)
+    events = (
+        _event(key, 0, CandidateAttemptStage.GENERATED),
+        _event(key, 1, CandidateAttemptStage.UNIQUE),
+        _event(key, 2, CandidateAttemptStage.LOCAL_GATES),
+        _event(
+            key,
+            3,
+            CandidateAttemptStage.PREREQUISITE_READY,
+            reason_code="evaluation_support_bootstrap_ready",
+        ),
+    )
+
+    validate_candidate_attempt_lifecycle(events, require_terminal=True)
+    aggregate = aggregate_candidate_attempts(events)
+
+    assert aggregate.stage_counts["prerequisite_ready"] == 1
+    assert aggregate.terminal_reason_counts == {
+        "evaluation_support_bootstrap_ready": 1
+    }
+
+
 def test_attempt_aggregation_counts_are_monotonic_when_attempt_is_added() -> None:
     first = _selected_attempt(CandidateAttemptKey("run-1", 0, 0))
     baseline = aggregate_candidate_attempts(first)

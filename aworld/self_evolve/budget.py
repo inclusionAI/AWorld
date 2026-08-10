@@ -1814,6 +1814,7 @@ class CandidateAttemptStage(str, Enum):
     PAIRED_REPLAY_COMPLETED = "paired_replay_completed"
     PAIRED_REPLAY_COMPARABLE = "paired_replay_comparable"
     EVALUATION = "evaluation"
+    PREREQUISITE_READY = "prerequisite_ready"
     SELECTED = "selected"
     REJECTED = "rejected"
     BLOCKED = "blocked"
@@ -1822,6 +1823,7 @@ class CandidateAttemptStage(str, Enum):
 
 TERMINAL_ATTEMPT_STAGES = frozenset(
     {
+        CandidateAttemptStage.PREREQUISITE_READY,
         CandidateAttemptStage.SELECTED,
         CandidateAttemptStage.REJECTED,
         CandidateAttemptStage.BLOCKED,
@@ -1857,6 +1859,7 @@ _ATTEMPT_TRANSITIONS: Mapping[CandidateAttemptStage, frozenset[CandidateAttemptS
             CandidateAttemptStage.REPLAY_EVIDENCE_REUSED,
             CandidateAttemptStage.PAIRED_REPLAY_STARTED,
             CandidateAttemptStage.EVALUATION,
+            CandidateAttemptStage.PREREQUISITE_READY,
             CandidateAttemptStage.SELECTED,
             CandidateAttemptStage.REJECTED,
             CandidateAttemptStage.BLOCKED,
@@ -1870,6 +1873,7 @@ _ATTEMPT_TRANSITIONS: Mapping[CandidateAttemptStage, frozenset[CandidateAttemptS
             CandidateAttemptStage.REPLAY_EVIDENCE_REUSED,
             CandidateAttemptStage.PAIRED_REPLAY_STARTED,
             CandidateAttemptStage.EVALUATION,
+            CandidateAttemptStage.PREREQUISITE_READY,
             CandidateAttemptStage.SELECTED,
             CandidateAttemptStage.REJECTED,
             CandidateAttemptStage.BLOCKED,
@@ -1882,6 +1886,7 @@ _ATTEMPT_TRANSITIONS: Mapping[CandidateAttemptStage, frozenset[CandidateAttemptS
             CandidateAttemptStage.REPLAY_EVIDENCE_REUSED,
             CandidateAttemptStage.PAIRED_REPLAY_STARTED,
             CandidateAttemptStage.EVALUATION,
+            CandidateAttemptStage.PREREQUISITE_READY,
             CandidateAttemptStage.SELECTED,
             CandidateAttemptStage.REJECTED,
             CandidateAttemptStage.BLOCKED,
@@ -1893,6 +1898,7 @@ _ATTEMPT_TRANSITIONS: Mapping[CandidateAttemptStage, frozenset[CandidateAttemptS
             CandidateAttemptStage.REPLAY_EVIDENCE_REUSED,
             CandidateAttemptStage.PAIRED_REPLAY_STARTED,
             CandidateAttemptStage.EVALUATION,
+            CandidateAttemptStage.PREREQUISITE_READY,
             CandidateAttemptStage.SELECTED,
             CandidateAttemptStage.REJECTED,
             CandidateAttemptStage.BLOCKED,
@@ -1902,6 +1908,7 @@ _ATTEMPT_TRANSITIONS: Mapping[CandidateAttemptStage, frozenset[CandidateAttemptS
     CandidateAttemptStage.REPLAY_EVIDENCE_REUSED: frozenset(
         {
             CandidateAttemptStage.EVALUATION,
+            CandidateAttemptStage.PREREQUISITE_READY,
             CandidateAttemptStage.SELECTED,
             CandidateAttemptStage.REJECTED,
             CandidateAttemptStage.BLOCKED,
@@ -1919,6 +1926,7 @@ _ATTEMPT_TRANSITIONS: Mapping[CandidateAttemptStage, frozenset[CandidateAttemptS
         {
             CandidateAttemptStage.PAIRED_REPLAY_COMPARABLE,
             CandidateAttemptStage.EVALUATION,
+            CandidateAttemptStage.PREREQUISITE_READY,
             CandidateAttemptStage.SELECTED,
             CandidateAttemptStage.REJECTED,
             CandidateAttemptStage.BLOCKED,
@@ -1927,6 +1935,7 @@ _ATTEMPT_TRANSITIONS: Mapping[CandidateAttemptStage, frozenset[CandidateAttemptS
     CandidateAttemptStage.PAIRED_REPLAY_COMPARABLE: frozenset(
         {
             CandidateAttemptStage.EVALUATION,
+            CandidateAttemptStage.PREREQUISITE_READY,
             CandidateAttemptStage.SELECTED,
             CandidateAttemptStage.REJECTED,
             CandidateAttemptStage.BLOCKED,
@@ -1934,6 +1943,7 @@ _ATTEMPT_TRANSITIONS: Mapping[CandidateAttemptStage, frozenset[CandidateAttemptS
     ),
     CandidateAttemptStage.EVALUATION: frozenset(
         {
+            CandidateAttemptStage.PREREQUISITE_READY,
             CandidateAttemptStage.SELECTED,
             CandidateAttemptStage.REJECTED,
             CandidateAttemptStage.BLOCKED,
