@@ -392,6 +392,47 @@ def test_compiler_preserves_complete_large_repair_runtime_source() -> None:
     assert preserved.endswith("return 'runtime-tail-preserved'\n")
 
 
+def test_compiler_keeps_replay_counterexample_in_focused_repair_context() -> None:
+    counterexample = {
+        "schema_version": "aworld.replay.counterexample.v1",
+        "sequence": 1,
+        "failure_code": "tool_call_after_evidence_ready",
+        "stage": "task_rollout",
+        "state_before": "evidence_ready",
+        "trigger": "tool_call",
+        "tool_name": "bash",
+        "action_name": "run",
+        "manifest_entry_count": 1,
+        "artifact_file_count": 2,
+        "artifact_bytes": 512,
+        "required_transition": "finalize_task_response",
+    }
+    feedback = EvaluationSummary(
+        variant_id="candidate-evidence-loop",
+        dataset_split="validation",
+        metrics={
+            "failed_gates": ["candidate_replay"],
+            "replay_counterexamples": [counterexample],
+            "repair_candidate_package": {
+                "candidate_id": "candidate-evidence-loop",
+                "content": "# Demo\n\nCollect bounded evidence.\n",
+                "files": [],
+            },
+        },
+    )
+
+    context = compile_evolution_context(
+        replace(
+            _request(),
+            validation_feedback=(feedback,),
+            prior_feedback=(),
+        )
+    )
+    payload = context.to_prompt_payload(candidate_index=0)
+
+    assert payload["repair_focus"]["replay_counterexamples"] == [counterexample]
+
+
 def test_source_sanitizer_preserves_expressions_and_redacts_literals() -> None:
     source = (
         'token = match.group().decode("ascii")\n'

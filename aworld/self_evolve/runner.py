@@ -14685,6 +14685,16 @@ def _summary_with_replay_evidence_metrics(
         "evidence_manifested_artifact_reference_count",
         "evidence_unmanifested_artifact_reference_count",
         "evidence_unmanifested_artifact_reference_identity_digests",
+        "evidence_runtime_policy_active",
+        "evidence_runtime_policy_passed",
+        "evidence_runtime_policy_violation_count",
+        "evidence_runtime_policy_phase",
+        "evidence_runtime_policy_tool_call_attempt_count",
+        "evidence_runtime_policy_artifact_file_count",
+        "evidence_runtime_policy_artifact_bytes",
+        "task_completion_established",
+        "timeout_evidence_recovered",
+        "replay_counterexamples",
         "failed_repetition_count",
         "repetition_failures",
     )
@@ -15712,7 +15722,7 @@ def _replay_evaluator_admission_gate(
     *,
     apply_policy: str,
 ) -> GateResult | None:
-    """Reject deterministic evidence regressions before an expensive judge run."""
+    """Reject hard replay evidence invariant regressions before judge work."""
 
     if replay_result is None or not _is_verified_apply_policy(apply_policy):
         return None
@@ -15720,6 +15730,26 @@ def _replay_evaluator_admission_gate(
     candidate_metrics = replay_result.candidate.metrics or {}
     regressions: list[dict[str, object]] = []
     observed_metrics: list[str] = []
+
+    # These are candidate-side completion invariants, not relative quality
+    # signals. A baseline with the same failure must not make an incomplete or
+    # policy-violating candidate admissible.
+    for metric_name in (
+        "evidence_runtime_policy_passed",
+        "task_completion_established",
+    ):
+        candidate_value = candidate_metrics.get(metric_name)
+        if isinstance(candidate_value, bool):
+            observed_metrics.append(metric_name)
+        if candidate_value is False:
+            regressions.append(
+                {
+                    "metric": metric_name,
+                    "baseline": baseline_metrics.get(metric_name),
+                    "candidate": False,
+                    "direction": "candidate_invariant_failed",
+                }
+            )
 
     for metric_name in (
         "evidence_strategy_passed",
@@ -15743,6 +15773,7 @@ def _replay_evaluator_admission_gate(
     for metric_name in (
         "evidence_manifest_invalid_entry_count",
         "evidence_unmanifested_artifact_reference_count",
+        "evidence_runtime_policy_violation_count",
     ):
         baseline_value = baseline_metrics.get(metric_name)
         candidate_value = candidate_metrics.get(metric_name)
@@ -15769,10 +15800,10 @@ def _replay_evaluator_admission_gate(
         gate_name="replay_evaluator_admission",
         passed=passed,
         reason=(
-            "deterministic replay evidence did not regress"
+            "replay evidence invariants did not regress"
             if passed
             else (
-                "candidate deterministically regressed replay evidence; "
+                "candidate regressed a hard replay evidence invariant; "
                 "authoritative evaluator was skipped"
             )
         ),
@@ -15782,7 +15813,7 @@ def _replay_evaluator_admission_gate(
             "failure_scope": None if passed else FailureScope.CANDIDATE.value,
             "repairable": not passed,
             "code": (
-                None if passed else "deterministic_replay_evidence_regression"
+                None if passed else "replay_evidence_invariant_regression"
             ),
             "observed_metrics": sorted(set(observed_metrics)),
             "regressions": regressions,
@@ -16330,6 +16361,8 @@ def _typed_gate_feedback_metrics(
     evidence_constraint_groups: list[
         tuple[EvidenceRepairConstraint, ...]
     ] = []
+    replay_counterexamples: list[dict[str, object]] = []
+    replay_counterexample_fingerprints: set[str] = set()
     for gate in failed_gate_items:
         details = gate.details
         gate_diagnostic: dict[str, object] = {
@@ -16340,6 +16373,17 @@ def _typed_gate_feedback_metrics(
         if not isinstance(details, Mapping):
             diagnostics.append(gate_diagnostic)
             continue
+        for counterexample in _public_replay_counterexamples(details):
+            fingerprint = json.dumps(
+                counterexample,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            if fingerprint in replay_counterexample_fingerprints:
+                continue
+            replay_counterexample_fingerprints.add(fingerprint)
+            replay_counterexamples.append(counterexample)
         raw_schema_constraints = details.get("schema_field_constraints")
         if isinstance(raw_schema_constraints, (list, tuple)):
             for raw_constraint in raw_schema_constraints[:100]:
@@ -16458,6 +16502,8 @@ def _typed_gate_feedback_metrics(
         result["evidence_repair_constraints"] = [
             constraint.to_dict() for constraint in evidence_constraints
         ]
+    if replay_counterexamples:
+        result["replay_counterexamples"] = replay_counterexamples[:16]
     if recovery_traces:
         result["recovery_trace"] = max(
             recovery_traces,
@@ -16850,6 +16896,75 @@ def _typed_gate_feedback_metrics(
     if diagnostics:
         result["candidate_validation_diagnostics"] = diagnostics[:16]
     return result
+
+
+_REPLAY_COUNTEREXAMPLE_SCHEMA_VERSION = "aworld.replay.counterexample.v1"
+_REPLAY_COUNTEREXAMPLE_FIELDS = (
+    "schema_version",
+    "sequence",
+    "failure_code",
+    "stage",
+    "state_before",
+    "trigger",
+    "tool_name",
+    "action_name",
+    "manifest_entry_count",
+    "artifact_file_count",
+    "artifact_bytes",
+    "required_transition",
+)
+
+
+def _public_replay_counterexamples(value: object) -> tuple[dict[str, object], ...]:
+    """Extract bounded, payload-free counterexamples from gate diagnostics."""
+
+    pending: list[tuple[object, int]] = [(value, 0)]
+    result: list[dict[str, object]] = []
+    visited = 0
+    while pending and visited < 512 and len(result) < 16:
+        current, depth = pending.pop()
+        visited += 1
+        if depth > 8:
+            continue
+        if isinstance(current, Mapping):
+            raw = current.get("replay_counterexamples")
+            if isinstance(raw, (list, tuple)):
+                for item in raw[:16]:
+                    normalized = _public_replay_counterexample(item)
+                    if normalized is not None and normalized not in result:
+                        result.append(normalized)
+            for nested in current.values():
+                if isinstance(nested, (Mapping, list, tuple)):
+                    pending.append((nested, depth + 1))
+        elif isinstance(current, (list, tuple)):
+            for nested in current[:128]:
+                if isinstance(nested, (Mapping, list, tuple)):
+                    pending.append((nested, depth + 1))
+    return tuple(result)
+
+
+def _public_replay_counterexample(
+    value: object,
+) -> dict[str, object] | None:
+    if not isinstance(value, Mapping):
+        return None
+    if value.get("schema_version") != _REPLAY_COUNTEREXAMPLE_SCHEMA_VERSION:
+        return None
+    failure_code = value.get("failure_code")
+    required_transition = value.get("required_transition")
+    if not isinstance(failure_code, str) or not failure_code.strip():
+        return None
+    if not isinstance(required_transition, str) or not required_transition.strip():
+        return None
+    bounded = public_diagnostic_projection(
+        {
+            key: value.get(key)
+            for key in _REPLAY_COUNTEREXAMPLE_FIELDS
+            if value.get(key) is not None
+        },
+        max_chars=1_024,
+    )
+    return dict(bounded) if isinstance(bounded, Mapping) else None
 
 
 def _typed_causal_feedback_event(

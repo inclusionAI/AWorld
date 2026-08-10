@@ -339,6 +339,30 @@ def _compact_prompt_feedback_item(
             for diagnostic in diagnostics[:4]
             if isinstance(diagnostic, Mapping)
         ]
+    counterexamples = item.get("replay_counterexamples")
+    if isinstance(counterexamples, list):
+        compact["replay_counterexamples"] = [
+            {
+                key: sanitize_metric_value(counterexample.get(key), max_chars=160)
+                for key in (
+                    "schema_version",
+                    "sequence",
+                    "failure_code",
+                    "stage",
+                    "state_before",
+                    "trigger",
+                    "tool_name",
+                    "action_name",
+                    "manifest_entry_count",
+                    "artifact_file_count",
+                    "artifact_bytes",
+                    "required_transition",
+                )
+                if counterexample.get(key) is not None
+            }
+            for counterexample in counterexamples[:4]
+            if isinstance(counterexample, Mapping)
+        ]
     recovery_trace = validate_public_recovery_trace(item.get("recovery_trace"))
     if recovery_trace is not None:
         compact["recovery_trace"] = recovery_trace
@@ -604,6 +628,8 @@ def _repair_feedback_reached_task_plane(
     feedback: Mapping[str, object],
 ) -> bool:
     if _repair_feedback_reached_judged_task_output(feedback):
+        return True
+    if isinstance(feedback.get("replay_counterexamples"), list):
         return True
     diagnostic_text = json.dumps(
         feedback.get("candidate_validation_diagnostics", ()),

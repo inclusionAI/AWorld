@@ -942,6 +942,51 @@ def test_typed_gate_feedback_uses_only_relative_evidence_regressions() -> None:
     )
 
 
+def test_typed_gate_feedback_preserves_payload_free_replay_counterexample() -> None:
+    counterexample = {
+        "schema_version": "aworld.replay.counterexample.v1",
+        "sequence": 1,
+        "failure_code": "tool_call_after_evidence_ready",
+        "stage": "task_rollout",
+        "state_before": "evidence_ready",
+        "trigger": "tool_call",
+        "tool_name": "bash",
+        "action_name": "run",
+        "manifest_entry_count": 1,
+        "artifact_file_count": 2,
+        "artifact_bytes": 512,
+        "required_transition": "finalize_task_response",
+    }
+    event = ReplayFailureEvent(
+        code="replay_evidence_runtime_policy_violation",
+        owner=FailureOwner.CANDIDATE,
+        stage=FailureStage.TASK_ROLLOUT,
+        scope=FailureScope.MEMBER,
+        repairable=True,
+        category="replay_evidence_policy",
+        diagnostics={"replay_counterexamples": [counterexample]},
+    )
+    gate = GateResult(
+        gate_name="candidate_replay",
+        passed=False,
+        reason="candidate violated replay evidence policy",
+        details={
+            "failure_class": "candidate",
+            "repairable": True,
+            "candidate_failure": event.compatibility_dict(),
+            "candidate_failure_event": event.to_dict(),
+            "causal_failure_events": [event.to_dict()],
+        },
+    )
+
+    metrics = runner_module._typed_gate_feedback_metrics((gate,))
+
+    assert metrics["replay_counterexamples"] == [counterexample]
+    assert metrics["candidate_validation_diagnostics"][0]["code"] == (
+        "replay_evidence_runtime_policy_violation"
+    )
+
+
 @pytest.mark.asyncio
 async def test_local_skill_fidelity_gate_feeds_next_generation_frontier(
     tmp_path,
@@ -2414,7 +2459,7 @@ def test_multi_member_replay_advances_from_historical_to_current_member_root(
     )
 
 
-def test_replay_evaluator_admission_rejects_deterministic_evidence_regression() -> None:
+def test_replay_evaluator_admission_rejects_hard_evidence_invariant_regression() -> None:
     request = CandidateReplayRequest(
         run_id="run-admission",
         task_id="task-a",
@@ -2463,6 +2508,55 @@ def test_replay_evaluator_admission_rejects_deterministic_evidence_regression() 
         "evidence_manifest_invalid_entry_count",
     }
     assert typed_gate.details["failure_event"]["owner"] == "candidate"
+
+
+def test_replay_evaluator_admission_rejects_absolute_candidate_incompletion() -> None:
+    request = CandidateReplayRequest(
+        run_id="run-admission-incomplete",
+        task_id="task-a",
+        workspace_root="/tmp/workspace",
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo"),
+        candidate_id="candidate-1",
+        overlay_skill_root="/tmp/overlay",
+        task_input="task A",
+    )
+    replay = _CandidateReplayResult(
+        request=request,
+        baseline=ReplayVariantResult(
+            variant_id="baseline",
+            status="succeeded",
+            trajectory=[],
+            metrics={
+                "evidence_runtime_policy_passed": False,
+                "task_completion_established": False,
+            },
+        ),
+        candidate=ReplayVariantResult(
+            variant_id="candidate-1",
+            status="succeeded",
+            trajectory=[],
+            metrics={
+                "evidence_runtime_policy_passed": False,
+                "task_completion_established": False,
+            },
+        ),
+    )
+
+    gate = _replay_evaluator_admission_gate(
+        replay,
+        apply_policy="verified_only",
+    )
+
+    assert gate is not None
+    assert gate.passed is False
+    assert gate.details["evaluator_skipped"] is True
+    assert {
+        (item["metric"], item["direction"])
+        for item in gate.details["regressions"]
+    } == {
+        ("evidence_runtime_policy_passed", "candidate_invariant_failed"),
+        ("task_completion_established", "candidate_invariant_failed"),
+    }
 
 
 def test_replay_evaluator_admission_allows_missing_or_non_regressed_evidence() -> None:
@@ -10849,7 +10943,7 @@ async def test_population_screening_preserves_all_candidates_when_baseline_is_in
     assert report["attempted_candidate_count"] == 2
     assert all(
         attempt["details"]["code"]
-        == "deterministic_replay_evidence_regression"
+        == "replay_evidence_invariant_regression"
         for attempt in report["attempts"]
     )
     assert "candidate repair" in report["selection_reason"]

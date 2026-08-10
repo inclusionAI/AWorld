@@ -115,6 +115,10 @@ _EVIDENCE_COVERAGE_BOOL_METRIC_KEYS = (
     "evidence_manifest_valid",
     "evidence_bundle_present",
     "evidence_bundle_valid",
+    "evidence_runtime_policy_active",
+    "evidence_runtime_policy_passed",
+    "task_completion_established",
+    "timeout_evidence_recovered",
 )
 _EVIDENCE_COVERAGE_NUMERIC_METRIC_KEYS = (
     "evidence_manifest_entry_count",
@@ -124,6 +128,10 @@ _EVIDENCE_COVERAGE_NUMERIC_METRIC_KEYS = (
     "evidence_artifact_reference_count",
     "evidence_manifested_artifact_reference_count",
     "evidence_unmanifested_artifact_reference_count",
+    "evidence_runtime_policy_violation_count",
+    "evidence_runtime_policy_tool_call_attempt_count",
+    "evidence_runtime_policy_artifact_file_count",
+    "evidence_runtime_policy_artifact_bytes",
 )
 
 _PER_MEMBER_REPETITION_SEMANTICS = "per_member_v3"
@@ -3028,7 +3036,10 @@ class AWorldCliCandidateReplayBackend:
                 "reason": "trajectory_capture_unavailable",
                 "detail": "replay executor succeeded but did not return trajectory evidence",
             }
-        evidence_failure = _evidence_quality_failure(metrics)
+        evidence_failure = _evidence_quality_failure(
+            metrics,
+            variant_id=variant_id,
+        )
         if status == "succeeded" and evidence_failure is not None:
             status = "failed"
             failure = evidence_failure
@@ -3362,10 +3373,18 @@ def _terminal_replay_artifact_diagnostics(
 class AWorldCliReplayExecutor:
     _DEFAULT_TOOL_CALL_LIMIT = 24
     _DEFAULT_RESERVED_OUTPUT_TOKENS = 4096
+    _DEFAULT_ARTIFACT_FILE_LIMIT = 8
+    _DEFAULT_ARTIFACT_BYTE_LIMIT = 2_000_000
 
     async def __call__(self, request: ReplayExecutionRequest) -> ReplayExecutionResult:
         artifact_dir = Path(request.artifact_dir)
+        artifact_dir.mkdir(parents=True, exist_ok=True)
         evidence_manifest = artifact_dir / "evidence_manifest.jsonl"
+        _initialize_replay_evidence_policy_state(
+            artifact_dir,
+            artifact_file_limit=self._DEFAULT_ARTIFACT_FILE_LIMIT,
+            artifact_byte_limit=self._DEFAULT_ARTIFACT_BYTE_LIMIT,
+        )
         # Keep process-local roots short as well as isolated. Unix-domain socket
         # consumers (browser drivers in particular) commonly impose path limits
         # near 100 bytes, while replay artifact paths are intentionally verbose.
@@ -3418,6 +3437,13 @@ class AWorldCliReplayExecutor:
                 "AWORLD_SELF_EVOLVE_AUTO_DRAIN": "0",
                 "AWORLD_SELF_EVOLVE_REPLAY_ARTIFACT_DIR": str(artifact_dir),
                 "AWORLD_SELF_EVOLVE_EVIDENCE_MANIFEST": str(evidence_manifest),
+                "AWORLD_REPLAY_EVIDENCE_POLICY": "1",
+                "AWORLD_REPLAY_ARTIFACT_FILE_LIMIT": str(
+                    self._DEFAULT_ARTIFACT_FILE_LIMIT
+                ),
+                "AWORLD_REPLAY_ARTIFACT_BYTE_LIMIT": str(
+                    self._DEFAULT_ARTIFACT_BYTE_LIMIT
+                ),
                 "AWORLD_LOG_PATH": str(artifact_dir / "logs"),
                 "AWORLD_TRAJECTORY_LOG_DISABLED": "1",
                 "AWORLD_TOOL_CALL_LIMIT": str(self._DEFAULT_TOOL_CALL_LIMIT),
@@ -3465,6 +3491,23 @@ class AWorldCliReplayExecutor:
                     failure=compacted_argument_failure,
                     metrics=evidence_metrics,
                 )
+            evidence_policy_failure = _evidence_quality_failure(
+                evidence_metrics,
+                variant_id=request.variant_id,
+            )
+            if (
+                evidence_policy_failure is not None
+                and evidence_policy_failure.get("code")
+                == "replay_evidence_runtime_policy_violation"
+            ):
+                return ReplayExecutionResult(
+                    status="failed",
+                    trajectory=[],
+                    stdout=stdout,
+                    stderr=stderr,
+                    failure=evidence_policy_failure,
+                    metrics=evidence_metrics,
+                )
             process_diagnostics = _bounded_process_output_diagnostics(
                 stdout=stdout,
                 stderr=stderr,
@@ -3494,18 +3537,47 @@ class AWorldCliReplayExecutor:
                 )
             if _has_valid_artifact_backed_timeout_evidence(evidence_metrics):
                 metrics = {
-                    "trajectory_capture_mode": "artifact_manifest",
-                    "timeout_recovered_with_artifact_evidence": True,
+                    "trajectory_capture_mode": "evidence_only",
+                    "timeout_evidence_recovered": True,
+                    "task_completion_established": False,
                     **evidence_metrics,
                 }
+                counterexample = _timeout_evidence_counterexample(metrics)
+                metrics = {
+                    **metrics,
+                    "replay_counterexamples": [counterexample],
+                }
                 return ReplayExecutionResult(
-                    status="succeeded",
-                    trajectory=_artifact_manifest_trajectory(
-                        request,
-                        metrics=metrics,
-                    ),
+                    status="failed",
+                    trajectory=[],
                     stdout=stdout,
                     stderr=stderr,
+                    failure={
+                        "code": "replay_task_timeout_with_recoverable_evidence",
+                        "type": "TimeoutExpired",
+                        "outcome": (
+                            "task_failure"
+                            if request.variant_id == "baseline"
+                            else "candidate_failure"
+                        ),
+                        "failure_class": (
+                            "baseline_task_timeout"
+                            if request.variant_id == "baseline"
+                            else "candidate_task_behavior"
+                        ),
+                        "failure_stage": "task_rollout",
+                        "repairable": request.variant_id != "baseline",
+                        "category": "task_completion",
+                        "reason": (
+                            "replay timed out after persisting recoverable evidence; "
+                            "task completion was not established"
+                        ),
+                        "diagnostics": {
+                            "evidence_recoverable": True,
+                            "task_completion_established": False,
+                            "replay_counterexamples": [counterexample],
+                        },
+                    },
                     metrics=metrics,
                 )
             failure: dict[str, Any] = {
@@ -3547,6 +3619,12 @@ class AWorldCliReplayExecutor:
         metrics = {
             "returncode": completed.returncode,
             "trajectory_capture_mode": capture_mode,
+            "task_completion_established": bool(
+                completed.returncode == 0
+                and trajectory
+                and capture_mode == "task_response"
+            ),
+            "timeout_evidence_recovered": False,
             **evidence_metrics,
         }
         compacted_argument_failure = _compacted_argument_replay_failure(metrics)
@@ -3582,19 +3660,6 @@ class AWorldCliReplayExecutor:
                 metrics=metrics,
                 failure=boundary_failure,
             )
-        if completed.returncode == 0 and trajectory and capture_mode != "task_response":
-            return ReplayExecutionResult(
-                status="failed",
-                trajectory=trajectory,
-                stdout=stdout,
-                stderr=stderr,
-                metrics=metrics,
-                failure={
-                    "reason": "trajectory_capture_mode_unsupported",
-                    "detail": "self-evolve replay requires TaskResponse.trajectory evidence",
-                    "trajectory_capture_mode": capture_mode,
-                },
-            )
         if completed.returncode != 0:
             return ReplayExecutionResult(
                 status="failed",
@@ -3609,7 +3674,10 @@ class AWorldCliReplayExecutor:
                     "command": command,
                 },
             )
-        evidence_failure = _evidence_quality_failure(metrics)
+        evidence_failure = _evidence_quality_failure(
+            metrics,
+            variant_id=request.variant_id,
+        )
         if evidence_failure is not None:
             return ReplayExecutionResult(
                 status="failed",
@@ -3618,6 +3686,53 @@ class AWorldCliReplayExecutor:
                 stderr=stderr,
                 metrics=metrics,
                 failure=evidence_failure,
+            )
+        if metrics.get("task_completion_established") is not True:
+            counterexample = _task_completion_counterexample(
+                metrics,
+                failure_code="replay_task_completion_not_established",
+                trigger=(
+                    "trajectory_unavailable"
+                    if not trajectory
+                    else "unsupported_trajectory_capture_mode"
+                ),
+                required_transition="emit_task_response_trajectory",
+            )
+            metrics = {
+                **metrics,
+                "replay_counterexamples": [counterexample],
+            }
+            return ReplayExecutionResult(
+                status="failed",
+                trajectory=trajectory,
+                stdout=stdout,
+                stderr=stderr,
+                metrics=metrics,
+                failure={
+                    "code": "replay_task_completion_not_established",
+                    "outcome": (
+                        "task_failure"
+                        if request.variant_id == "baseline"
+                        else "candidate_failure"
+                    ),
+                    "failure_class": (
+                        "baseline_task_incomplete"
+                        if request.variant_id == "baseline"
+                        else "candidate_task_behavior"
+                    ),
+                    "failure_stage": "task_rollout",
+                    "repairable": request.variant_id != "baseline",
+                    "category": "task_completion",
+                    "reason": (
+                        "replay process exited without establishing task "
+                        "completion through TaskResponse.trajectory"
+                    ),
+                    "diagnostics": {
+                        "trajectory_capture_mode": capture_mode,
+                        "task_completion_established": False,
+                        "replay_counterexamples": [counterexample],
+                    },
+                },
             )
         return ReplayExecutionResult(
             status="succeeded",
@@ -6529,6 +6644,9 @@ def _replay_evidence_metrics(
         trajectory=trajectory,
         artifact_dir=artifact_dir,
     )
+    runtime_policy_metrics = _replay_evidence_runtime_policy_metrics(
+        artifact_dir
+    )
     manifest_valid = manifest_metrics.get("evidence_manifest_valid") is True
     manifest_invalid_count = manifest_metrics.get("evidence_manifest_invalid_entry_count")
     manifest_fully_valid = manifest_valid and not (
@@ -6536,14 +6654,227 @@ def _replay_evidence_metrics(
     )
     metrics = {
         "evidence_compacted": compacted,
-        "evidence_strategy_passed": (not compacted) or manifest_fully_valid,
+        "evidence_strategy_passed": (
+            ((not compacted) or manifest_fully_valid)
+            and runtime_policy_metrics.get(
+                "evidence_runtime_policy_passed", True
+            )
+        ),
         "evidence_compaction_signals": signals,
         **manifest_metrics,
         **reference_metrics,
+        **runtime_policy_metrics,
     }
     if replay_compacted_argument_blocked:
         metrics["replay_compacted_argument_blocked"] = True
     return metrics
+
+
+_REPLAY_EVIDENCE_POLICY_SCHEMA_VERSION = "aworld.replay.evidence_policy.v1"
+_REPLAY_COUNTEREXAMPLE_SCHEMA_VERSION = "aworld.replay.counterexample.v1"
+_REPLAY_POLICY_CONTROL_FILES = frozenset(
+    {
+        "evidence_manifest.jsonl",
+        "evidence_bundle.json",
+        "execution_request.json",
+        "framework_evidence_policy.jsonl",
+        "framework_evidence_state.json",
+        "metrics.json",
+        "trajectory.json",
+        "stdout.txt",
+        "stderr.txt",
+    }
+)
+
+
+def _initialize_replay_evidence_policy_state(
+    artifact_dir: Path,
+    *,
+    artifact_file_limit: int,
+    artifact_byte_limit: int,
+) -> None:
+    payload = {
+        "schema_version": _REPLAY_EVIDENCE_POLICY_SCHEMA_VERSION,
+        "enforcement": "tool_boundary",
+        "phase": "collecting",
+        "tool_call_attempt_count": 0,
+        "manifest_entry_count": 0,
+        "artifact_file_count": 0,
+        "artifact_bytes": 0,
+        "artifact_file_limit": artifact_file_limit,
+        "artifact_byte_limit": artifact_byte_limit,
+    }
+    _write_json(artifact_dir / "framework_evidence_state.json", payload)
+
+
+def _replay_evidence_runtime_policy_metrics(
+    artifact_dir: Path | None,
+) -> dict[str, Any]:
+    if artifact_dir is None:
+        return {}
+    state_path = artifact_dir / "framework_evidence_state.json"
+    try:
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if (
+        not isinstance(state, Mapping)
+        or state.get("schema_version")
+        != _REPLAY_EVIDENCE_POLICY_SCHEMA_VERSION
+    ):
+        return {}
+    violations = _read_replay_evidence_policy_violations(artifact_dir)
+    artifact_file_count, artifact_bytes = _replay_agent_artifact_inventory(
+        artifact_dir
+    )
+    artifact_file_limit = _positive_metric_int(
+        state.get("artifact_file_limit"),
+        default=AWorldCliReplayExecutor._DEFAULT_ARTIFACT_FILE_LIMIT,
+    )
+    artifact_byte_limit = _positive_metric_int(
+        state.get("artifact_byte_limit"),
+        default=AWorldCliReplayExecutor._DEFAULT_ARTIFACT_BYTE_LIMIT,
+    )
+    observed_codes = {
+        str(item.get("code") or "")
+        for item in violations
+        if isinstance(item, Mapping)
+    }
+    if artifact_file_count > artifact_file_limit and (
+        "artifact_file_limit_exhausted" not in observed_codes
+    ):
+        violations.append(
+            {
+                "code": "artifact_file_limit_exhausted",
+                "phase": str(state.get("phase") or "collecting"),
+                "artifact_file_count": artifact_file_count,
+                "artifact_bytes": artifact_bytes,
+                "artifact_file_limit": artifact_file_limit,
+                "artifact_byte_limit": artifact_byte_limit,
+                "manifest_entry_count": state.get("manifest_entry_count", 0),
+                "required_transition": "reduce_collection_and_persist_evidence",
+            }
+        )
+    if artifact_bytes > artifact_byte_limit and (
+        "artifact_byte_limit_exhausted" not in observed_codes
+    ):
+        violations.append(
+            {
+                "code": "artifact_byte_limit_exhausted",
+                "phase": str(state.get("phase") or "collecting"),
+                "artifact_file_count": artifact_file_count,
+                "artifact_bytes": artifact_bytes,
+                "artifact_file_limit": artifact_file_limit,
+                "artifact_byte_limit": artifact_byte_limit,
+                "manifest_entry_count": state.get("manifest_entry_count", 0),
+                "required_transition": "reduce_collection_and_persist_evidence",
+            }
+        )
+    counterexamples = [
+        _replay_policy_counterexample(item, sequence=index + 1)
+        for index, item in enumerate(violations[:16])
+    ]
+    return {
+        "evidence_runtime_policy_active": True,
+        "evidence_runtime_policy_passed": not counterexamples,
+        "evidence_runtime_policy_violation_count": len(counterexamples),
+        "evidence_runtime_policy_phase": str(
+            state.get("phase") or "collecting"
+        ),
+        "evidence_runtime_policy_tool_call_attempt_count": int(
+            state.get("tool_call_attempt_count") or 0
+        ),
+        "evidence_runtime_policy_artifact_file_count": artifact_file_count,
+        "evidence_runtime_policy_artifact_bytes": artifact_bytes,
+        "replay_counterexamples": counterexamples,
+    }
+
+
+def _read_replay_evidence_policy_violations(
+    artifact_dir: Path,
+) -> list[dict[str, Any]]:
+    path = artifact_dir / "framework_evidence_policy.jsonl"
+    try:
+        raw = path.read_bytes()[:131_072].decode("utf-8", errors="replace")
+    except OSError:
+        return []
+    violations: list[dict[str, Any]] = []
+    for line in raw.splitlines()[:32]:
+        try:
+            item = json.loads(line)
+        except (TypeError, ValueError):
+            continue
+        if (
+            isinstance(item, Mapping)
+            and item.get("schema_version")
+            == _REPLAY_EVIDENCE_POLICY_SCHEMA_VERSION
+            and item.get("code")
+        ):
+            violations.append(dict(item))
+    return violations
+
+
+def _replay_agent_artifact_inventory(artifact_dir: Path) -> tuple[int, int]:
+    count = 0
+    total_bytes = 0
+    for current_root, directories, filenames in os.walk(
+        artifact_dir,
+        followlinks=False,
+    ):
+        directories[:] = [
+            name
+            for name in directories[:64]
+            if name != "logs" and not (Path(current_root) / name).is_symlink()
+        ]
+        for name in filenames[:256]:
+            if name in _REPLAY_POLICY_CONTROL_FILES:
+                continue
+            path = Path(current_root) / name
+            try:
+                size = path.stat().st_size
+            except OSError:
+                continue
+            count += 1
+            total_bytes += max(0, size)
+            if count >= 256:
+                return count, total_bytes
+    return count, total_bytes
+
+
+def _positive_metric_int(value: Any, *, default: int) -> int:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return default
+    return int(value) if int(value) > 0 else default
+
+
+def _replay_policy_counterexample(
+    violation: Mapping[str, Any],
+    *,
+    sequence: int,
+) -> dict[str, Any]:
+    return {
+        "schema_version": _REPLAY_COUNTEREXAMPLE_SCHEMA_VERSION,
+        "sequence": sequence,
+        "failure_code": str(
+            violation.get("code") or "replay_evidence_policy_violation"
+        )[:96],
+        "stage": "task_rollout",
+        "state_before": str(violation.get("phase") or "collecting")[:64],
+        "trigger": "tool_call",
+        "tool_name": str(violation.get("tool_name") or "unknown")[:128],
+        "action_name": str(violation.get("action_name") or "unknown")[:128],
+        "manifest_entry_count": max(
+            0, int(violation.get("manifest_entry_count") or 0)
+        ),
+        "artifact_file_count": max(
+            0, int(violation.get("artifact_file_count") or 0)
+        ),
+        "artifact_bytes": max(0, int(violation.get("artifact_bytes") or 0)),
+        "required_transition": str(
+            violation.get("required_transition")
+            or "finalize_or_reduce_collection"
+        )[:128],
+    }
 
 
 _FINAL_ANSWER_ARTIFACT_REFERENCE = re.compile(
@@ -7188,7 +7519,44 @@ def _has_any_manifest_payload(entry: Mapping[str, Any], *, keys: Sequence[str]) 
     return False
 
 
-def _evidence_quality_failure(metrics: Mapping[str, Any]) -> dict[str, Any] | None:
+def _evidence_quality_failure(
+    metrics: Mapping[str, Any],
+    *,
+    variant_id: str | None = None,
+) -> dict[str, Any] | None:
+    policy_violation_count = metrics.get(
+        "evidence_runtime_policy_violation_count"
+    )
+    if (
+        isinstance(policy_violation_count, (int, float))
+        and not isinstance(policy_violation_count, bool)
+        and policy_violation_count > 0
+    ):
+        raw_counterexamples = metrics.get("replay_counterexamples")
+        counterexamples = [
+            dict(item)
+            for item in raw_counterexamples[:16]
+            if isinstance(item, Mapping)
+        ] if isinstance(raw_counterexamples, list) else []
+        baseline = variant_id == "baseline"
+        return {
+            "code": "replay_evidence_runtime_policy_violation",
+            "type": "ReplayEvidencePolicyViolation",
+            "outcome": "task_failure" if baseline else "candidate_failure",
+            "failure_class": (
+                "baseline_task_behavior"
+                if baseline
+                else "candidate_task_behavior"
+            ),
+            "failure_stage": "task_rollout",
+            "repairable": not baseline,
+            "category": "replay_evidence_policy",
+            "reason": "replay violated framework-enforced evidence lifecycle",
+            "diagnostics": {
+                "policy_violation_count": int(policy_violation_count),
+                "replay_counterexamples": counterexamples,
+            },
+        }
     compacted = metrics.get("evidence_compacted") is True
     strategy_failed = metrics.get("evidence_strategy_passed") is False
     invalid_manifest_count = metrics.get("evidence_manifest_invalid_entry_count")
@@ -7227,31 +7595,57 @@ def _has_valid_artifact_backed_timeout_evidence(metrics: Mapping[str, Any]) -> b
     )
 
 
-def _artifact_manifest_trajectory(
-    request: ReplayExecutionRequest,
-    *,
+def _timeout_evidence_counterexample(
     metrics: Mapping[str, Any],
-) -> list[Mapping[str, Any]]:
-    meta = {
-        "trajectory_capture_mode": "artifact_manifest",
+) -> dict[str, Any]:
+    """Describe a timeout without copying task text, paths, or payloads."""
+
+    return _task_completion_counterexample(
+        metrics,
+        failure_code="replay_task_timeout_with_recoverable_evidence",
+        trigger="task_timeout",
+        required_transition="finalize_task_response_before_timeout",
+    )
+
+
+def _task_completion_counterexample(
+    metrics: Mapping[str, Any],
+    *,
+    failure_code: str,
+    trigger: str,
+    required_transition: str,
+) -> dict[str, Any]:
+    """Describe missing completion without copying task text or payloads."""
+
+    return {
+        "schema_version": _REPLAY_COUNTEREXAMPLE_SCHEMA_VERSION,
+        "sequence": 1,
+        "failure_code": failure_code,
+        "stage": "task_rollout",
+        "state_before": (
+            "evidence_ready"
+            if metrics.get("evidence_manifest_valid") is True
+            else "collecting"
+        ),
+        "trigger": trigger,
+        "tool_name": "replay_runtime",
+        "action_name": "finalize_task_response",
+        "manifest_entry_count": max(
+            0, int(metrics.get("evidence_manifest_entry_count") or 0)
+        ),
+        "artifact_file_count": max(
+            0,
+            int(
+                metrics.get("evidence_runtime_policy_artifact_file_count")
+                or 0
+            ),
+        ),
+        "artifact_bytes": max(
+            0,
+            int(metrics.get("evidence_runtime_policy_artifact_bytes") or 0),
+        ),
+        "required_transition": required_transition,
     }
-    manifest_path = metrics.get("evidence_manifest_path")
-    if isinstance(manifest_path, str) and manifest_path:
-        meta["evidence_manifest_path"] = manifest_path
-    bundle_path = metrics.get("evidence_bundle_path")
-    if isinstance(bundle_path, str) and bundle_path:
-        meta["evidence_bundle_path"] = bundle_path
-    return [
-        {
-            "state": {"input": request.task_input},
-            "action": {
-                "content": "Replay completed from artifact-backed evidence manifest.",
-                "is_agent_finished": "True",
-            },
-            "reward": {"status": "ok"},
-            "meta": meta,
-        }
-    ]
 
 
 def _is_evidence_quality_failure(result: ReplayVariantResult) -> bool:
@@ -7459,6 +7853,7 @@ def _aggregate_variant_results(
     evidence_compaction_signals: list[str] = []
     evidence_compacted_values: list[bool] = []
     latest_evidence_bundle_path: str | None = None
+    replay_counterexamples: list[dict[str, Any]] = []
     provenance_values: dict[str, list[str]] = {
         key: [] for key in _REPLAY_PROVENANCE_METRIC_KEYS
     }
@@ -7479,6 +7874,10 @@ def _aggregate_variant_results(
                     signal = str(item).strip()
                     if signal and signal not in evidence_compaction_signals:
                         evidence_compaction_signals.append(signal)
+            elif key == "replay_counterexamples" and isinstance(value, list):
+                for item in value[:16]:
+                    if isinstance(item, Mapping) and dict(item) not in replay_counterexamples:
+                        replay_counterexamples.append(dict(item))
             elif isinstance(value, (int, float)) and not isinstance(value, bool):
                 numeric_metrics.setdefault(str(key), []).append(float(value))
     metrics: dict[str, Any] = {
@@ -7495,6 +7894,8 @@ def _aggregate_variant_results(
     ]
     if repetition_failures:
         metrics["repetition_failures"] = repetition_failures
+    if replay_counterexamples:
+        metrics["replay_counterexamples"] = replay_counterexamples[:16]
     if evidence_compacted_values:
         metrics["evidence_compacted"] = any(evidence_compacted_values)
     for key in _EVIDENCE_COVERAGE_BOOL_METRIC_KEYS:
@@ -7505,7 +7906,11 @@ def _aggregate_variant_results(
         if not coverage_count:
             continue
         values = [result.metrics.get(key) is True for result in results]
-        metrics[key] = all(values)
+        metrics[key] = (
+            any(values)
+            if key == "timeout_evidence_recovered"
+            else all(values)
+        )
         metrics[f"{key}_values"] = values
         metrics[f"{key}_coverage_count"] = coverage_count
         metrics[f"{key}_coverage"] = coverage_count / len(results)
@@ -7532,6 +7937,10 @@ def _aggregate_variant_results(
             in {
                 "evidence_manifest_invalid_entry_count",
                 "evidence_unmanifested_artifact_reference_count",
+                "evidence_runtime_policy_violation_count",
+                "evidence_runtime_policy_tool_call_attempt_count",
+                "evidence_runtime_policy_artifact_file_count",
+                "evidence_runtime_policy_artifact_bytes",
             }
             else sum(values) / len(values)
         )

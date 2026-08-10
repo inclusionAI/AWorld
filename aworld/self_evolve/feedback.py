@@ -153,6 +153,13 @@ def normalize_feedback_summary(feedback: EvaluationSummary) -> dict[str, Any]:
             for item in diagnostics[:16]
             if isinstance(item, Mapping)
         ]
+    replay_counterexamples = metrics.get("replay_counterexamples")
+    if isinstance(replay_counterexamples, list):
+        result["replay_counterexamples"] = [
+            sanitize_metric_value(item)
+            for item in replay_counterexamples[:16]
+            if isinstance(item, Mapping)
+        ]
     recovery_trace = validate_public_recovery_trace(metrics.get("recovery_trace"))
     if recovery_trace is not None:
         result["recovery_trace"] = recovery_trace

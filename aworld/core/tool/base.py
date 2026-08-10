@@ -26,6 +26,7 @@ from aworld.core.event.base import Message, AgentMessage, Constants, MemoryEvent
 from aworld.core.factory import Factory
 from aworld.core.tool.action import ToolAction
 from aworld.core.tool.action_factory import ActionFactory
+from aworld.core.tool.replay_policy import enforce_replay_evidence_runtime_policy
 from aworld.events import eventbus
 from aworld.events.util import send_message, send_message_with_future
 from aworld.logs.util import logger
@@ -112,6 +113,24 @@ def _enforce_runtime_tool_call_budget(
             f"runtime tool-call budget exhausted ({current}/{limit})",
         )
     setattr(owner, "_aworld_runtime_tool_call_count", current + requested)
+
+
+def _enforce_replay_evidence_runtime_policy(
+    tool_name: str,
+    action: List["ActionModel"],
+    message: Message,
+) -> None:
+    violation_code = enforce_replay_evidence_runtime_policy(
+        tool_name,
+        action,
+        message,
+    )
+    if violation_code is None:
+        return
+    raise ToolExecutionDenied(
+        tool_name,
+        f"replay evidence runtime policy rejected {violation_code}",
+    )
 
 
 def _iter_hook_headers(hook_events: List[Message]):
@@ -531,6 +550,7 @@ class Tool(BaseTool[Observation, List[ActionModel]]):
 
             _apply_hook_headers_to_message(message, pre_hook_events)
 
+            _enforce_replay_evidence_runtime_policy(self.name(), action, message)
             _enforce_runtime_tool_call_budget(self.name(), action, message)
 
             self.pre_step(action, **kwargs)
@@ -817,6 +837,7 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
 
             _apply_hook_headers_to_message(message, pre_hook_events)
 
+            _enforce_replay_evidence_runtime_policy(self.name(), action, message)
             _enforce_runtime_tool_call_budget(self.name(), action, message)
 
             await self.pre_step(action, message=message,**kwargs)
