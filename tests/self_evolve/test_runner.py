@@ -78,6 +78,7 @@ from aworld.self_evolve.runner import (
     _StoredCandidateReplayBackend,
     _TelemetryUsageSnapshot,
     _aggregate_target_selection_decisions,
+    _accumulate_score_evidence,
     _auto_group_trajectory_log_dataset,
     _baseline_replay_artifact_dir,
     _backend_proves_zero_budget_usage,
@@ -1465,6 +1466,103 @@ def test_candidate_screening_prefers_case_exercising_replay_requirements() -> No
 
     assert screening is not None
     assert screening.cases[0].case_id == "capability-case"
+
+
+def test_candidate_screening_builds_stratified_multi_case_panel() -> None:
+    dataset = SelfEvolveDataset(
+        cases=tuple(
+            EvalCase(
+                case_id=f"case-{index}",
+                input=f"task {index}",
+                metadata={"category": category},
+            )
+            for index, category in enumerate(("browser", "browser", "api", "files"))
+        ),
+        recipe=DatasetRecipe(
+            source={"kind": "trajectory_set"},
+            split_seed="seed",
+            splits={"train": [f"case-{index}" for index in range(4)]},
+            trainable_case_ids=tuple(f"case-{index}" for index in range(4)),
+        ),
+    )
+
+    screening = _candidate_screening_dataset(dataset, max_cases=3)
+
+    assert screening is not None
+    assert len(screening.cases) == 3
+    assert {case.metadata["category"] for case in screening.cases} == {
+        "browser",
+        "api",
+        "files",
+    }
+    assert screening.recipe.source["screening_case_count"] == 3
+
+
+def test_score_tiebreak_accumulates_compatible_paired_samples() -> None:
+    common = {
+        "comparison_plan_fingerprint": "plan",
+        "comparison_cardinality_preserved": True,
+        "comparison_effective_case_count": 3,
+        "comparison_case_ids": ["case-1", "case-2", "case-3"],
+        "judge_attempt_count": 3,
+        "judge_success_count": 3,
+        "evaluation_execution_id": "initial",
+    }
+    initial = EvaluationSummary(
+        variant_id="candidate",
+        dataset_split="validation",
+        metrics={**common, "score": 89.733, "score_samples": [86.8, 88.4, 94.0]},
+    )
+    additional = EvaluationSummary(
+        variant_id="candidate",
+        dataset_split="validation",
+        metrics={
+            **common,
+            "evaluation_execution_id": "tiebreak",
+            "score": 90.333,
+            "score_samples": [84.6, 94.0, 92.4],
+        },
+    )
+
+    pooled = _accumulate_score_evidence(initial, additional)
+    baseline_initial = replace(
+        initial,
+        variant_id="baseline",
+        metrics={**common, "score": 88.2, "score_samples": [85.6, 90.6, 88.4]},
+    )
+    baseline_additional = replace(
+        additional,
+        variant_id="baseline",
+        metrics={
+            **common,
+            "evaluation_execution_id": "baseline-tiebreak",
+            "score": 88.0,
+            "score_samples": [86.2, 88.8, 89.0],
+        },
+    )
+    pooled_baseline = _accumulate_score_evidence(
+        baseline_initial,
+        baseline_additional,
+    )
+    decision = runner_module.ScoreImprovementGate(min_delta=0.0).evaluate(
+        baseline=pooled_baseline,
+        candidate=pooled,
+    )
+
+    assert pooled.metrics["score_samples"] == [86.8, 88.4, 94.0, 84.6, 94.0, 92.4]
+    assert pooled.metrics["score_sample_count"] == 6
+    assert pooled.metrics["judge_attempt_count"] == 6
+    assert pooled.metrics["score_evidence_round_count"] == 2
+    assert pooled.metrics["score_evidence_accumulation"] == {
+        "status": "pooled",
+        "initial_sample_count": 3,
+        "additional_sample_count": 3,
+        "pooled_sample_count": 6,
+        "execution_ids": ["initial", "tiebreak"],
+    }
+    assert decision.passed is True
+    assert decision.details["code"] == "score_improvement_paired_noninferior"
+    assert decision.details["paired_sample_count"] == 6
 
 
 def CandidateReplayResult(*args, **kwargs):
@@ -8814,6 +8912,99 @@ async def test_runner_evaluates_candidate_population_until_one_passes(tmp_path) 
 
 
 @pytest.mark.asyncio
+async def test_verified_runner_bounds_authoritative_candidates_across_iterations(
+    tmp_path: Path,
+) -> None:
+    skill_path, dataset = _cycle1_runner_fixture(tmp_path)
+    optimizer_calls = 0
+
+    class Optimizer:
+        async def propose(self, request: OptimizerRequest) -> OptimizerResult:
+            nonlocal optimizer_calls
+            optimizer_calls += 1
+            candidate = CandidateVariant(
+                candidate_id=f"candidate-frontier-{optimizer_calls}",
+                target=SelfEvolveTargetRef("skill", "demo", str(skill_path)),
+                content=(
+                    "---\nname: demo\n---\n# Demo\n\n"
+                    f"Candidate frontier {optimizer_calls}.\n"
+                ),
+                rationale="bounded authoritative frontier",
+            )
+            return OptimizerResult(candidates=(candidate,))
+
+    class Backend:
+        def __init__(self) -> None:
+            self.candidate_ids: list[str | None] = []
+
+        async def evaluate_variant(self, request):
+            candidate_id = (
+                request.candidate.candidate_id
+                if request.candidate is not None
+                else None
+            )
+            self.candidate_ids.append(candidate_id)
+            return EvaluationSummary(
+                variant_id=candidate_id or "baseline",
+                dataset_split=request.dataset_split,
+                metrics={
+                    "score": 80.0 if candidate_id else 90.0,
+                    "A1_groundedness": 5.0,
+                    "A2_completeness": 5.0,
+                    "B2_efficiency": 5.0,
+                    "latency_ms": 100.0,
+                    "cost_usd": 1.0,
+                    "deterministic_signal": True,
+                    "command_case_count": 1,
+                    "command_pass_count": 1,
+                    "global_regression_passed": True,
+                    "evidence_block_count": 1,
+                    "evidence_compacted": False,
+                    "evidence_incomplete": False,
+                },
+            )
+
+    backend = Backend()
+    store = FilesystemSelfEvolveStore(tmp_path)
+    runner = SelfEvolveRunner(
+        store=store,
+        optimizer=Optimizer(),
+        evaluation_backend=backend,
+        max_iterations=5,
+        max_full_evaluation_candidates=2,
+        max_score_tiebreak_candidates=0,
+        min_eval_cases=0,
+    )
+
+    await runner.run_explicit_target(
+        run_id="run-bounded-authoritative-frontier",
+        target=SkillTextTarget(skill_path, allow_auto_apply=True),
+        dataset=dataset,
+        trace_packs=(),
+        apply_policy="verified_only",
+    )
+
+    report = json.loads(
+        (store.run_path("run-bounded-authoritative-frontier") / "report.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert optimizer_calls == 2
+    assert {
+        item for item in backend.candidate_ids if item is not None
+    } == {"candidate-frontier-1", "candidate-frontier-2"}
+    assert report["verification_funnel"] == {
+        "screening_max_cases": 3,
+        "max_authoritative_candidates": 2,
+        "authoritative_candidate_count": 2,
+        "max_score_tiebreak_candidates": 0,
+        "score_tiebreak_candidate_count": 0,
+        "frontier_exhausted": True,
+        "authoritative_evaluation_uses_full_dataset": True,
+    }
+
+
+@pytest.mark.asyncio
 async def test_runner_filters_current_run_terminal_whitespace_semantic_duplicate(
     tmp_path,
 ) -> None:
@@ -9637,7 +9828,7 @@ async def test_runner_screens_population_on_representative_member_before_full_re
 
     assert result.run.status.value == "rejected"
     assert replay_backend.calls == [
-        ("candidate-1--screening", ("task-a",)),
+        ("candidate-1--screening", ("task-a", "task-b")),
         ("candidate-1", ("task-a", "task-b")),
     ]
     report = json.loads(
@@ -9647,6 +9838,10 @@ async def test_runner_screens_population_on_representative_member_before_full_re
     )
     assert report["population"]["screening"]["selected_candidate_id"] == "candidate-1"
     assert report["population"]["screening"]["representative_case_id"] == "task-a"
+    assert report["population"]["screening"]["representative_case_ids"] == [
+        "task-a",
+        "task-b",
+    ]
     stage_counts = report["population"]["lifecycle"]["stage_counts"]
     assert stage_counts["representative_screening"] == 1
     assert stage_counts["paired_replay_started"] == 1
@@ -11138,7 +11333,7 @@ async def test_population_screening_rollout_failure_preserves_passed_conformance
     assert screened == ()
     assert report is not None
     assert preflight_case_ids == ("task-a", "task-b")
-    assert rollout_case_ids == ("task-a",)
+    assert rollout_case_ids == ("task-a", "task-b")
     details = report["attempts"][0]["details"]
     assert details["repair_conformance"] == contract.to_public_dict()
     feedback = _candidate_screening_repair_feedback((candidate,), report)

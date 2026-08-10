@@ -7,6 +7,7 @@ import inspect
 import json
 import math
 import os
+import signal
 import statistics
 import subprocess
 import sys
@@ -380,6 +381,7 @@ class AWorldTrajectoryEvaluatorBackend:
         judge_timeout_seconds: float | None = 300.0,
         judge_timeout_backoff: float = 1.5,
         max_judge_timeout_multiplier: float = 3.0,
+        evaluation_timeout_seconds: float | None = None,
     ) -> None:
         selector_count = sum(
             bool(value)
@@ -409,6 +411,17 @@ class AWorldTrajectoryEvaluatorBackend:
         self.judge_timeout_seconds = judge_timeout_seconds
         self.judge_timeout_backoff = judge_timeout_backoff
         self.max_judge_timeout_multiplier = max_judge_timeout_multiplier
+        if evaluation_timeout_seconds is not None and evaluation_timeout_seconds <= 0:
+            raise ValueError("evaluation_timeout_seconds must be positive")
+        self.evaluation_timeout_seconds = (
+            float(evaluation_timeout_seconds)
+            if evaluation_timeout_seconds is not None
+            else (
+                max(300.0, float(judge_timeout_seconds) * 2.0)
+                if judge_timeout_seconds is not None
+                else None
+            )
+        )
 
     @property
     def task_local_runtime(self) -> bool:
@@ -508,10 +521,39 @@ class AWorldTrajectoryEvaluatorBackend:
             f"repetitions={self.judge_repetitions} "
             f"max_attempts={max_attempts} namespace={request.artifact_namespace or '-'}"
         )
+        evaluation_started_at = time.monotonic()
         for attempt_index in range(1, max_attempts + 1):
             effective_timeout_seconds = self._effective_judge_timeout_seconds(
                 timeout_failure_count=_judge_failure_timeout_count(failures)
             )
+            remaining_evaluation_seconds = (
+                self.evaluation_timeout_seconds
+                - (time.monotonic() - evaluation_started_at)
+                if self.evaluation_timeout_seconds is not None
+                else None
+            )
+            if (
+                remaining_evaluation_seconds is not None
+                and remaining_evaluation_seconds <= 0
+            ):
+                failures.append(
+                    {
+                        "attempt": attempt_index,
+                        "type": "TimeoutError",
+                        "reason": "evaluation deadline exhausted before judge retry",
+                        "timeout_phase": "evaluation_deadline",
+                        "timeout_seconds": self.evaluation_timeout_seconds,
+                    }
+                )
+                break
+            if remaining_evaluation_seconds is not None:
+                if effective_timeout_seconds is None:
+                    effective_timeout_seconds = remaining_evaluation_seconds
+                else:
+                    effective_timeout_seconds = min(
+                        float(effective_timeout_seconds),
+                        remaining_evaluation_seconds,
+                    )
             attempt_runner_kwargs = dict(runner_kwargs)
             attempt_runner_kwargs["judge_timeout_seconds"] = effective_timeout_seconds
             logger.info(
@@ -657,6 +699,8 @@ class AWorldTrajectoryEvaluatorBackend:
             metrics.update(comparison_metrics)
             if fallback_model_profile is not None:
                 metrics["judge_model_profile_fallback"] = fallback_model_profile
+        if self.evaluation_timeout_seconds is not None:
+            metrics["evaluation_timeout_seconds"] = self.evaluation_timeout_seconds
         logger.info(
             "self_evolve.evaluator.end "
             f"variant_id={request.variant_id} split={request.dataset_split} "
@@ -771,14 +815,26 @@ def _run_evaluator_cli_subprocess(
         if isinstance(timeout, (int, float)) and not isinstance(timeout, bool)
         else None
     )
-    completed = subprocess.run(
-        command,
-        cwd=workspace_root,
-        env=environment,
-        text=True,
-        capture_output=True,
-        timeout=process_timeout,
-    )
+    try:
+        completed = _run_isolated_evaluator_process(
+            command,
+            cwd=workspace_root,
+            environment=environment,
+            timeout_seconds=process_timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        timeout_error = asyncio.TimeoutError(
+            "isolated evaluator process tree timed out after "
+            f"{process_timeout:g}s"
+        )
+        timeout_error.judge_diagnostics = [
+            {
+                "phase": "isolated_evaluator_process",
+                "timeout_seconds": process_timeout,
+                "process_tree_terminated": True,
+            }
+        ]
+        raise timeout_error from exc
     report_path = Path(output)
     if report_path.is_file():
         try:
@@ -801,6 +857,61 @@ def _run_evaluator_cli_subprocess(
         "isolated evaluator subprocess did not produce a report "
         f"(exit={completed.returncode}){diagnostic_suffix}"
     )
+
+
+def _run_isolated_evaluator_process(
+    command: list[str],
+    *,
+    cwd: Path,
+    environment: Mapping[str, str],
+    timeout_seconds: float | None,
+) -> subprocess.CompletedProcess[str]:
+    """Run an evaluator with a hard deadline covering its descendant tree."""
+
+    process = subprocess.Popen(
+        command,
+        cwd=cwd,
+        env=dict(environment),
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        start_new_session=True,
+    )
+    try:
+        stdout, stderr = process.communicate(timeout=timeout_seconds)
+    except subprocess.TimeoutExpired:
+        _terminate_process_group(process)
+        stdout, stderr = process.communicate()
+        raise subprocess.TimeoutExpired(
+            command,
+            timeout_seconds,
+            output=stdout,
+            stderr=stderr,
+        )
+    return subprocess.CompletedProcess(
+        command,
+        process.returncode,
+        stdout,
+        stderr,
+    )
+
+
+def _terminate_process_group(process: subprocess.Popen[str]) -> None:
+    if process.poll() is not None:
+        return
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    try:
+        process.wait(timeout=2.0)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
 
 
 @contextmanager

@@ -4,8 +4,10 @@ import asyncio
 import hashlib
 import inspect
 import json
+import math
 import re
 import shutil
+import statistics
 import time
 import uuid
 from dataclasses import asdict, dataclass, field, replace
@@ -1412,6 +1414,111 @@ def _candidate_screening_timeout(authoritative_timeout_seconds: int) -> int:
     )
 
 
+def _accumulate_score_evidence(
+    initial: EvaluationSummary,
+    additional: EvaluationSummary,
+) -> EvaluationSummary:
+    """Pool compatible ordered judge samples without discarding prior evidence."""
+
+    initial_metrics = dict(initial.metrics)
+    additional_metrics = dict(additional.metrics)
+    initial_plan = initial_metrics.get("comparison_plan_fingerprint")
+    additional_plan = additional_metrics.get("comparison_plan_fingerprint")
+    compatible = (
+        initial.variant_id == additional.variant_id
+        and initial.dataset_split == additional.dataset_split
+        and isinstance(initial_plan, str)
+        and bool(initial_plan)
+        and initial_plan == additional_plan
+    )
+    initial_samples = _finite_score_samples(initial_metrics.get("score_samples"))
+    additional_samples = _finite_score_samples(
+        additional_metrics.get("score_samples")
+    )
+    if not compatible or not initial_samples or not additional_samples:
+        additional_metrics["score_evidence_accumulation"] = {
+            "status": "incompatible",
+            "initial_sample_count": len(initial_samples),
+            "additional_sample_count": len(additional_samples),
+        }
+        return replace(additional, metrics=additional_metrics)
+
+    samples = (*initial_samples, *additional_samples)
+    additional_metrics.update(
+        {
+            "score": statistics.mean(samples),
+            "score_samples": list(samples),
+            "score_sample_count": len(samples),
+            "score_std": statistics.stdev(samples) if len(samples) >= 2 else 0.0,
+            "score_evidence_round_count": (
+                _positive_metric_count(
+                    initial_metrics.get("score_evidence_round_count")
+                )
+                or 1
+            )
+            + 1,
+            "score_evidence_accumulation": {
+                "status": "pooled",
+                "initial_sample_count": len(initial_samples),
+                "additional_sample_count": len(additional_samples),
+                "pooled_sample_count": len(samples),
+                "execution_ids": list(
+                    dict.fromkeys(
+                        str(value)
+                        for value in (
+                            initial_metrics.get("evaluation_execution_id"),
+                            additional_metrics.get("evaluation_execution_id"),
+                        )
+                        if isinstance(value, str) and value
+                    )
+                ),
+            },
+        }
+    )
+    for key in (
+        "judge_attempt_count",
+        "judge_success_count",
+        "judge_failure_count",
+        "judge_timeout_count",
+    ):
+        initial_count = _nonnegative_numeric_count(initial_metrics.get(key))
+        additional_count = _nonnegative_numeric_count(additional_metrics.get(key))
+        if initial_count is not None or additional_count is not None:
+            additional_metrics[key] = (initial_count or 0) + (additional_count or 0)
+    return replace(additional, metrics=additional_metrics)
+
+
+def _finite_score_samples(value: object) -> tuple[float, ...]:
+    if not isinstance(value, (list, tuple)):
+        return ()
+    samples: list[float] = []
+    for item in value:
+        if (
+            isinstance(item, bool)
+            or not isinstance(item, (int, float))
+            or not math.isfinite(float(item))
+        ):
+            return ()
+        samples.append(float(item))
+    return tuple(samples)
+
+
+def _nonnegative_numeric_count(value: object) -> int | None:
+    if (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(float(value))
+        and value >= 0
+    ):
+        return int(value)
+    return None
+
+
+def _positive_metric_count(value: object) -> int:
+    count = _nonnegative_numeric_count(value)
+    return count if count is not None and count > 0 else 0
+
+
 def _optimizer_iteration_diagnostics(
     optimizer_diagnostics: Iterable[Mapping[str, object]],
 ) -> Iterable[Mapping[str, object]]:
@@ -2038,6 +2145,9 @@ class SelfEvolveRunner:
         replay_timeout_seconds: int = 600,
         replay_max_steps: int | None = 1,
         replay_candidate_limit: int = 2,
+        candidate_screening_max_cases: int = 3,
+        max_full_evaluation_candidates: int = 3,
+        max_score_tiebreak_candidates: int = 1,
         baseline_replay_repetitions: int = 1,
         candidate_replay_repetitions: int = 1,
         replay_stability_margin: float = 0.0,
@@ -2295,6 +2405,15 @@ class SelfEvolveRunner:
         self.replay_timeout_seconds = replay_timeout_seconds
         self.replay_max_steps = replay_max_steps
         self.replay_candidate_limit = replay_candidate_limit
+        if candidate_screening_max_cases <= 0:
+            raise ValueError("candidate_screening_max_cases must be positive")
+        if max_full_evaluation_candidates <= 0:
+            raise ValueError("max_full_evaluation_candidates must be positive")
+        if max_score_tiebreak_candidates < 0:
+            raise ValueError("max_score_tiebreak_candidates must be non-negative")
+        self.candidate_screening_max_cases = candidate_screening_max_cases
+        self.max_full_evaluation_candidates = max_full_evaluation_candidates
+        self.max_score_tiebreak_candidates = max_score_tiebreak_candidates
         self.baseline_replay_repetitions = baseline_replay_repetitions
         self.candidate_replay_repetitions = candidate_replay_repetitions
         self.replay_stability_margin = replay_stability_margin
@@ -2760,6 +2879,13 @@ class SelfEvolveRunner:
             "min_score_delta": self.min_score_delta,
             "min_eval_cases": self.min_eval_cases,
             "judge_repetitions": self.judge_repetitions,
+            "candidate_screening_max_cases": self.candidate_screening_max_cases,
+            "max_full_evaluation_candidates": (
+                self.max_full_evaluation_candidates
+            ),
+            "max_score_tiebreak_candidates": (
+                self.max_score_tiebreak_candidates
+            ),
             "replay_enabled": self.replay_enabled,
             "baseline_replay_repetitions": self.baseline_replay_repetitions,
             "candidate_replay_repetitions": self.candidate_replay_repetitions,
@@ -2773,6 +2899,9 @@ class SelfEvolveRunner:
         candidate_generation_infrastructure_retries = 0
         raw_generation_attempt_count = 0
         semantic_lesson_duplicate_attempt_count = 0
+        authoritative_candidate_count = 0
+        score_tiebreak_candidate_count = 0
+        verification_frontier_exhausted = False
         iteration_budget = (
             self.max_iterations + _MAX_PROGRESS_REPAIR_EXTENSION_ITERATIONS
         )
@@ -3934,6 +4063,36 @@ class SelfEvolveRunner:
                         ),
                     )
             for candidate_index, iteration_candidate in enumerate(candidate_population):
+                if (
+                    _is_verified_apply_policy(apply_policy)
+                    and authoritative_candidate_count
+                    >= self.max_full_evaluation_candidates
+                ):
+                    verification_frontier_exhausted = True
+                    deferred_key = attempt_key_by_candidate_id.get(
+                        iteration_candidate.candidate_id
+                    )
+                    if (
+                        deferred_key is not None
+                        and not attempt_tracker.terminal(deferred_key)
+                    ):
+                        attempt_tracker.emit(
+                            deferred_key,
+                            CandidateAttemptStage.NOT_RUN,
+                            reason_code="authoritative_frontier_limit_reached",
+                        )
+                    iteration_reports.append(
+                        {
+                            "iteration": iteration_index + 1,
+                            "candidate_id": iteration_candidate.candidate_id,
+                            "status": "not_run",
+                            "failed_gates": [],
+                            "lifecycle_stage": "not_run",
+                            "reason_code": "authoritative_frontier_limit_reached",
+                        }
+                    )
+                    break
+                authoritative_candidate_count += 1
                 state, report_item, candidate_feedback = await self._evaluate_iteration_candidate(
                     run_id=run_id,
                     target=target,
@@ -3965,7 +4124,18 @@ class SelfEvolveRunner:
                         CandidateSourceDisposition(),
                     ),
                     baseline_evaluation_cache=baseline_evaluation_cache,
+                    allow_score_tiebreak=(
+                        score_tiebreak_candidate_count
+                        < self.max_score_tiebreak_candidates
+                    ),
                 )
+                if any(
+                    gate.gate_name == "score_improvement"
+                    and isinstance(gate.details, Mapping)
+                    and gate.details.get("tiebreak_round") is not None
+                    for gate in state["gate_results"]
+                ):
+                    score_tiebreak_candidate_count += 1
                 evaluated_attempt_key = attempt_key_by_candidate_id.get(
                     iteration_candidate.candidate_id
                 )
@@ -4028,9 +4198,17 @@ class SelfEvolveRunner:
                     accepted_in_iteration = True
                     break
             if (
+                _is_verified_apply_policy(apply_policy)
+                and not accepted_in_iteration
+                and authoritative_candidate_count
+                >= self.max_full_evaluation_candidates
+            ):
+                verification_frontier_exhausted = True
+            if (
                 accepted_in_iteration
                 or baseline_preflight_blocked
                 or infrastructure_blocked
+                or verification_frontier_exhausted
             ):
                 break
         attempt_tracker.finalize_open(
@@ -4365,6 +4543,19 @@ class SelfEvolveRunner:
                 if challenge_report is not None
                 else None
             ),
+            "verification_funnel": {
+                "screening_max_cases": self.candidate_screening_max_cases,
+                "max_authoritative_candidates": (
+                    self.max_full_evaluation_candidates
+                ),
+                "authoritative_candidate_count": authoritative_candidate_count,
+                "max_score_tiebreak_candidates": (
+                    self.max_score_tiebreak_candidates
+                ),
+                "score_tiebreak_candidate_count": score_tiebreak_candidate_count,
+                "frontier_exhausted": verification_frontier_exhausted,
+                "authoritative_evaluation_uses_full_dataset": True,
+            },
             "handbook_slice": latest_handbook_slice,
             "repair_frontier_state": _repair_frontier_state_report(
                 store=self.store,
@@ -4661,6 +4852,7 @@ class SelfEvolveRunner:
         screening_dataset = _candidate_screening_dataset(
             dataset,
             capability_requirements=capability_requirements,
+            max_cases=self.candidate_screening_max_cases,
         )
         if (
             not _is_verified_apply_policy(apply_policy)
@@ -4677,13 +4869,16 @@ class SelfEvolveRunner:
                 screening=None,
             )
 
-        representative_case_id = screening_dataset.cases[0].case_id
+        representative_case_ids = tuple(
+            case.case_id for case in screening_dataset.cases
+        )
         _emit_progress(
             self.progress_callback,
             "candidate_screening",
             (
-                "Screening candidate population on representative case "
-                f"{representative_case_id} ({len(conformance_candidates)} candidate(s))"
+                "Screening candidate population on representative case panel "
+                f"{','.join(representative_case_ids)} "
+                f"({len(conformance_candidates)} candidate(s))"
             ),
         )
         attempts: list[dict[str, object]] = []
@@ -4765,13 +4960,13 @@ class SelfEvolveRunner:
                     attempt_tracker.emit(
                         attempt_key,
                         CandidateAttemptStage.ADAPTATION,
-                        case_count=1,
+                        case_count=len(screening_dataset.cases),
                     )
                 elif stage == "replay_started":
                     attempt_tracker.emit(
                         attempt_key,
                         CandidateAttemptStage.SCREENING,
-                        case_count=1,
+                        case_count=len(screening_dataset.cases),
                         usage=(
                             _budget_usage_for_attempt_event(screening_budget)
                             if screening_budget is not None
@@ -4985,7 +5180,9 @@ class SelfEvolveRunner:
         else:
             selected_candidates = (selected_candidate,)
         screening_report = {
-                "representative_case_id": representative_case_id,
+                "representative_case_id": representative_case_ids[0],
+                "representative_case_ids": list(representative_case_ids),
+                "representative_case_count": len(representative_case_ids),
                 "generated_candidate_count": len(conformance_candidates),
                 "attempted_candidate_count": len(attempts),
                 "selected_candidate_id": (
@@ -5558,6 +5755,7 @@ class SelfEvolveRunner:
         precomputed_gate_results: tuple[GateResult, ...] = (),
         source_disposition: CandidateSourceDisposition = CandidateSourceDisposition(),
         baseline_evaluation_cache: dict[str, EvaluationSummary] | None = None,
+        allow_score_tiebreak: bool = True,
     ) -> tuple[dict[str, object], dict[str, object], tuple[EvaluationSummary, ...]]:
         baseline_summary: EvaluationSummary | None = None
         candidate_summary: EvaluationSummary | None = None
@@ -6146,6 +6344,7 @@ class SelfEvolveRunner:
                         )
                         if (
                             _is_verified_apply_policy(apply_policy)
+                            and allow_score_tiebreak
                             and not score_gate.passed
                             and isinstance(score_gate.details, Mapping)
                             and score_gate.details.get("tiebreak_eligible") is True
@@ -6198,11 +6397,19 @@ class SelfEvolveRunner:
                                 (tiebreak_baseline, tiebreak_candidate)
                             )
                             if tiebreak_health.passed:
+                                accumulated_baseline = _accumulate_score_evidence(
+                                    initial_baseline_summary,
+                                    tiebreak_baseline,
+                                )
+                                accumulated_candidate = _accumulate_score_evidence(
+                                    initial_candidate_summary,
+                                    tiebreak_candidate,
+                                )
                                 score_gate = ScoreImprovementGate(
                                     min_delta=self.min_score_delta
                                 ).evaluate(
-                                    baseline=tiebreak_baseline,
-                                    candidate=tiebreak_candidate,
+                                    baseline=accumulated_baseline,
+                                    candidate=accumulated_candidate,
                                 )
                                 score_gate = replace(
                                     score_gate,
@@ -6224,8 +6431,8 @@ class SelfEvolveRunner:
                                         ),
                                     },
                                 )
-                                baseline_summary = tiebreak_baseline
-                                candidate_summary = tiebreak_candidate
+                                baseline_summary = accumulated_baseline
+                                candidate_summary = accumulated_candidate
                                 score_tiebreak_budget_summaries = (
                                     initial_baseline_summary,
                                     initial_candidate_summary,
@@ -6241,6 +6448,23 @@ class SelfEvolveRunner:
                                         gate_name="score_tiebreak_runtime_health",
                                     )
                                 )
+                        elif (
+                            _is_verified_apply_policy(apply_policy)
+                            and not allow_score_tiebreak
+                            and not score_gate.passed
+                            and isinstance(score_gate.details, Mapping)
+                            and score_gate.details.get("tiebreak_eligible") is True
+                        ):
+                            score_gate = replace(
+                                score_gate,
+                                details={
+                                    **dict(score_gate.details),
+                                    "tiebreak_skipped": True,
+                                    "tiebreak_skip_reason": (
+                                        "score_tiebreak_candidate_limit_reached"
+                                    ),
+                                },
+                            )
                         quality_gates: list[GateResult] = [
                             EvaluationComparabilityGate().evaluate(
                                 baseline=baseline_summary,
@@ -9546,6 +9770,9 @@ def optimize_from_cli_request(
     replay_timeout_seconds: int = 600,
     replay_max_steps: int | None = 1,
     replay_candidate_limit: int = 2,
+    candidate_screening_max_cases: int = 3,
+    max_full_evaluation_candidates: int = 3,
+    max_score_tiebreak_candidates: int = 1,
     baseline_replay_repetitions: int = 1,
     candidate_replay_repetitions: int = 1,
     replay_stability_margin: float = 0.0,
@@ -10359,6 +10586,9 @@ def optimize_from_cli_request(
         replay_timeout_seconds=replay_timeout_seconds,
         replay_max_steps=replay_max_steps,
         replay_candidate_limit=replay_candidate_limit,
+        candidate_screening_max_cases=candidate_screening_max_cases,
+        max_full_evaluation_candidates=max_full_evaluation_candidates,
+        max_score_tiebreak_candidates=max_score_tiebreak_candidates,
         baseline_replay_repetitions=baseline_replay_repetitions,
         candidate_replay_repetitions=candidate_replay_repetitions,
         replay_stability_margin=replay_stability_margin,
@@ -16714,7 +16944,10 @@ def _candidate_screening_dataset(
     dataset: SelfEvolveDataset,
     *,
     capability_requirements: tuple[ReplayCapabilityRequirement, ...] = (),
+    max_cases: int = 1,
 ) -> SelfEvolveDataset | None:
+    if max_cases <= 0:
+        raise ValueError("candidate screening max_cases must be positive")
     replayable_cases = tuple(
         case for case in dataset.cases if _is_replayable_user_task_case(case)
     )
@@ -16742,36 +16975,95 @@ def _candidate_screening_dataset(
             seen_case_ids.add(case_id)
     if not ordered_candidates:
         ordered_candidates = list(replayable_cases)
-    requirement_counts: dict[str, int] = {}
+    requirement_ids_by_case: dict[str, set[str]] = {}
     for requirement in capability_requirements:
         for case_id in requirement.case_ids:
-            requirement_counts[case_id] = requirement_counts.get(case_id, 0) + 1
-    representative = max(
-        enumerate(ordered_candidates),
-        key=lambda item: (
-            requirement_counts.get(item[1].case_id, 0),
-            -item[0],
-        ),
-    )[1]
+            requirement_ids_by_case.setdefault(case_id, set()).add(
+                requirement.requirement_id
+            )
+    case_index = {
+        case.case_id: index for index, case in enumerate(ordered_candidates)
+    }
+    selected: list[EvalCase] = []
+    covered_requirements: set[str] = set()
+    covered_strata: set[str] = set()
+    while ordered_candidates and len(selected) < min(max_cases, len(ordered_candidates)):
+        remaining = [case for case in ordered_candidates if case not in selected]
+        representative = max(
+            remaining,
+            key=lambda case: (
+                len(
+                    requirement_ids_by_case.get(case.case_id, set())
+                    - covered_requirements
+                ),
+                len(_candidate_screening_case_strata(case) - covered_strata),
+                _candidate_screening_case_distance(
+                    case_index[case.case_id],
+                    selected_indices=tuple(
+                        case_index[item.case_id] for item in selected
+                    ),
+                    case_count=len(ordered_candidates),
+                ),
+                -case_index[case.case_id],
+            ),
+        )
+        selected.append(representative)
+        covered_requirements.update(
+            requirement_ids_by_case.get(representative.case_id, set())
+        )
+        covered_strata.update(_candidate_screening_case_strata(representative))
+    representative_ids = tuple(case.case_id for case in selected)
     return SelfEvolveDataset(
-        cases=(representative,),
+        cases=tuple(selected),
         recipe=replace(
             dataset.recipe,
             source={
                 **dict(dataset.recipe.source),
                 "candidate_screening": True,
-                "screening_case_id": representative.case_id,
+                "screening_case_id": representative_ids[0],
+                "screening_case_ids": list(representative_ids),
+                "screening_case_count": len(representative_ids),
                 "original_case_count": len(dataset.cases),
             },
             splits={
-                "train": [representative.case_id],
+                "train": list(representative_ids),
                 "validation": [],
                 "held_out": [],
             },
-            trainable_case_ids=(representative.case_id,),
+            trainable_case_ids=representative_ids,
             held_out_case_ids=(),
         ),
     )
+
+
+def _candidate_screening_case_strata(case: EvalCase) -> set[str]:
+    strata: set[str] = set()
+    for namespace, values in (("metadata", case.metadata), ("source", case.source)):
+        for key in ("task_type", "category", "cluster", "domain", "kind", "role"):
+            value = values.get(key)
+            if isinstance(value, (str, int, float)) and not isinstance(value, bool):
+                strata.add(f"{namespace}:{key}:{value}")
+    if case.verification_command:
+        strata.add("verification:command")
+    if case.expected_output is not None:
+        strata.add("verification:expected_output")
+    if case.trace_pack is not None:
+        strata.add("evidence:trace_pack")
+    if not strata:
+        strata.add("task:unclassified")
+    return strata
+
+
+def _candidate_screening_case_distance(
+    index: int,
+    *,
+    selected_indices: tuple[int, ...],
+    case_count: int,
+) -> float:
+    if not selected_indices:
+        return 0.0
+    denominator = max(1, case_count - 1)
+    return min(abs(index - selected) / denominator for selected in selected_indices)
 
 
 def _candidate_strategy_records(
