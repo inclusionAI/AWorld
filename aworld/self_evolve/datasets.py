@@ -10,6 +10,7 @@ from aworld.self_evolve.trace_pack import (
     TracePack,
     TrajectoryLogRecord,
     build_trace_pack,
+    iter_trajectory_log_records,
     load_trajectory_log_records,
 )
 from aworld.self_evolve.ingestion.types import (
@@ -239,20 +240,17 @@ def build_dataset_from_source(
         if source_config.path is None:
             raise ValueError("trajectory_log eval source requires path")
         trajectory_path = Path(source_config.path).expanduser()
-        records = load_trajectory_log_records(trajectory_path)
-        packs = [
-            build_trace_pack(
-                record.trajectory,
-                source_kind="trajectory_log",
-                task_id=record.task_id,
-            )
-            for record in records
-        ]
+        records, packs, framework_packs = _trajectory_log_records_and_packs(
+            trajectory_path,
+            source_config=source_config,
+        )
         snapshots = build_trajectory_context_snapshots(records)
+        # Context snapshots and trace packs are the bounded runtime form. Drop
+        # decoded full trajectories before constructing cases so snapshot
+        # persistence does not overlap with the raw-record memory footprint.
+        del records
         snapshots_by_task = {snapshot.case_id: snapshot for snapshot in snapshots}
-        framework_packs = tuple(pack for pack in packs if is_framework_meta_trace_pack(pack))
-        user_packs = tuple(pack for pack in packs if not is_framework_meta_trace_pack(pack))
-        effective_packs = user_packs if framework_packs else tuple(packs)
+        effective_packs = tuple(packs)
         set_id = f"trajectory_log:{_file_fingerprint(trajectory_path)}"
         cases = _filter_and_limit_cases(
             (
@@ -360,6 +358,60 @@ def build_dataset_from_source(
     raise NotImplementedError(
         f"{source_config.kind} eval source is declared but not implemented in phase 1a"
     )
+
+
+def _trajectory_log_records_and_packs(
+    trajectory_path: Path,
+    *,
+    source_config: SelfEvolveEvalSourceConfig,
+) -> tuple[
+    tuple[TrajectoryLogRecord, ...],
+    tuple[TracePack, ...],
+    tuple[TracePack, ...],
+]:
+    # Explicit task filters can depend on context from records that are not
+    # themselves selected, so retain the existing full-source behavior there.
+    # The common unfiltered path can stop once the bounded case panel is full.
+    if source_config.task_ids:
+        all_records = load_trajectory_log_records(trajectory_path)
+        all_packs = tuple(
+            build_trace_pack(
+                record.trajectory,
+                source_kind="trajectory_log",
+                task_id=record.task_id,
+            )
+            for record in all_records
+        )
+        framework_packs = tuple(
+            pack for pack in all_packs if is_framework_meta_trace_pack(pack)
+        )
+        return (
+            tuple(all_records),
+            tuple(
+                pack
+                for pack in all_packs
+                if not is_framework_meta_trace_pack(pack)
+            ),
+            framework_packs,
+        )
+
+    records: list[TrajectoryLogRecord] = []
+    packs: list[TracePack] = []
+    framework_packs: list[TracePack] = []
+    for record in iter_trajectory_log_records(trajectory_path):
+        pack = build_trace_pack(
+            record.trajectory,
+            source_kind="trajectory_log",
+            task_id=record.task_id,
+        )
+        if is_framework_meta_trace_pack(pack):
+            framework_packs.append(pack)
+            continue
+        records.append(record)
+        packs.append(pack)
+        if len(records) >= source_config.max_cases:
+            break
+    return tuple(records), tuple(packs), tuple(framework_packs)
 
 
 def load_batch_config_eval_cases(path: str | Path) -> list[EvalCase]:

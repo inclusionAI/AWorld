@@ -3,7 +3,11 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from aworld.self_evolve.trace_pack import build_trace_pack, trace_packs_from_trajectory_log
+from aworld.self_evolve.trace_pack import (
+    build_trace_pack,
+    load_trajectory_log_records,
+    trace_packs_from_trajectory_log,
+)
 
 
 def _trajectory_item(step: int, content: str, *, tool_name: str | None = None) -> dict:
@@ -204,3 +208,31 @@ def test_trajectory_log_contract_preserves_sar_steps_with_extended_record_fields
     assert extended_pack.steps[0].state["input"]["content"] == "extended style task"
     assert extended_pack.steps[0].action["tool_calls"][0]["function"]["name"] == "artifact.read"
     assert extended_pack.steps[0].reward["score"] == 1.0
+
+
+def test_trajectory_log_loader_streams_lines_without_reading_whole_file(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    trajectory = [_trajectory_item(1, "streamed")]
+    log_path = tmp_path / "streamed.log"
+    log_path.write_text(
+        repr(
+            {
+                "task_id": "streamed-task",
+                "trajectory": json.dumps(trajectory),
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    def reject_whole_file_read(*_args, **_kwargs):
+        raise AssertionError("trajectory loader must stream file lines")
+
+    monkeypatch.setattr(Path, "read_text", reject_whole_file_read)
+
+    records = load_trajectory_log_records(log_path)
+
+    assert len(records) == 1
+    assert records[0].task_id == "streamed-task"

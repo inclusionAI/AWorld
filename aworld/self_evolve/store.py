@@ -830,15 +830,28 @@ class FilesystemSelfEvolveStore:
             SelfImprovementCampaign,
             validate_campaign_source_snapshot,
         )
+        from aworld.self_evolve.dataset_snapshot import (
+            load_campaign_dataset_snapshot_manifest,
+        )
 
         path = self.campaign_path(campaign_id) / "campaign.json"
         if not path.is_file() or path.is_symlink():
             raise FileNotFoundError(f"self-improvement campaign not found: {campaign_id}")
         campaign = SelfImprovementCampaign.from_dict(self._read_json(path))
-        validate_campaign_source_snapshot(
-            campaign,
-            workspace_root=self.workspace_root,
+        dataset_snapshot_path = (
+            self.campaign_path(campaign_id) / "dataset_snapshot"
         )
+        if dataset_snapshot_path.exists():
+            load_campaign_dataset_snapshot_manifest(
+                dataset_snapshot_path,
+                expected_campaign_id=campaign.campaign_id,
+                expected_campaign_source_fingerprint=campaign.source_fingerprint,
+            )
+        else:
+            validate_campaign_source_snapshot(
+                campaign,
+                workspace_root=self.workspace_root,
+            )
         for run_id in campaign.run_ids:
             report = self.run_path(run_id) / "report.json"
             if not report.is_file() or report.is_symlink():

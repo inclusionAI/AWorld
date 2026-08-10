@@ -6,7 +6,7 @@ import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, Mapping
+from typing import Any, Iterable, Iterator, Mapping
 
 
 @dataclass(frozen=True)
@@ -123,28 +123,34 @@ def trace_packs_from_trajectory_log(
 
 
 def load_trajectory_log_records(path: str | Path) -> list[TrajectoryLogRecord]:
-    records: list[TrajectoryLogRecord] = []
-    for raw_line in Path(path).read_text(encoding="utf-8").splitlines():
-        if not raw_line.strip():
-            continue
-        payload = _trajectory_log_record(raw_line)
-        if payload is None:
-            continue
-        raw_trajectory = payload.get("trajectory")
-        try:
-            trajectory = (
-                json.loads(raw_trajectory)
-                if isinstance(raw_trajectory, str)
-                else raw_trajectory
-            )
-        except json.JSONDecodeError:
-            continue
-        if not isinstance(trajectory, list):
-            continue
-        task_id = str(payload.get("task_id") or "")
-        records.append(
-            TrajectoryLogRecord(
-                record_index=len(records),
+    return list(iter_trajectory_log_records(path))
+
+
+def iter_trajectory_log_records(
+    path: str | Path,
+) -> Iterator[TrajectoryLogRecord]:
+    record_index = 0
+    with Path(path).open("r", encoding="utf-8") as handle:
+        for raw_line in handle:
+            if not raw_line.strip():
+                continue
+            payload = _trajectory_log_record(raw_line)
+            if payload is None:
+                continue
+            raw_trajectory = payload.get("trajectory")
+            try:
+                trajectory = (
+                    json.loads(raw_trajectory)
+                    if isinstance(raw_trajectory, str)
+                    else raw_trajectory
+                )
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(trajectory, list):
+                continue
+            task_id = str(payload.get("task_id") or "")
+            yield TrajectoryLogRecord(
+                record_index=record_index,
                 task_id=task_id,
                 record_metadata={
                     str(key): value
@@ -155,8 +161,7 @@ def load_trajectory_log_records(path: str | Path) -> list[TrajectoryLogRecord]:
                     item for item in trajectory if isinstance(item, Mapping)
                 ),
             )
-        )
-    return records
+            record_index += 1
 
 
 def _trajectory_log_record(raw_line: str) -> Mapping[str, Any] | None:
