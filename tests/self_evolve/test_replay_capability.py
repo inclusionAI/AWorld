@@ -877,6 +877,18 @@ def test_skill_runtime_with_recorded_responses_must_consume_response_index(
         ),
         (
             "import json, os\n"
+            "RESPONSE_INDEX_ENV = 'AWORLD_REPLAY_RESPONSE_INDEX'\n"
+            "def load_index():\n"
+            "    index_path = os.environ.get(RESPONSE_INDEX_ENV)\n"
+            "    with open(index_path, encoding='utf-8') as stream:\n"
+            "        return json.load(stream)\n"
+            "def project(index):\n"
+            "    for record in index['records']:\n"
+            "        yield record['value']\n",
+            True,
+        ),
+        (
+            "import json, os\n"
             "from pathlib import Path\n"
             "def load_json(path):\n"
             "    return json.loads(Path(path).read_text())\n"
@@ -976,6 +988,31 @@ def test_response_index_source_behavior_reports_unsupported_state_boundary() -> 
     assert proof["unsupported_boundaries"] == [
         {"kind": "attribute_storage", "scope": "main", "line": 10}
     ]
+
+
+def test_response_index_source_behavior_rejects_reassigned_environment_key() -> None:
+    source = (
+        "import json, os\n"
+        "RESPONSE_INDEX_ENV = 'AWORLD_REPLAY_RESPONSE_INDEX'\n"
+        "RESPONSE_INDEX_ENV = os.getenv('REPLAY_INDEX_KEY', 'other')\n"
+        "def load_index():\n"
+        "    index_path = os.environ.get(RESPONSE_INDEX_ENV)\n"
+        "    with open(index_path, encoding='utf-8') as stream:\n"
+        "        return json.load(stream)\n"
+        "def project(index):\n"
+        "    return index['records'][0]['value']\n"
+    )
+
+    proof = replay_capability_module.recorded_response_index_source_behavior_proof(
+        source
+    )
+
+    assert proof["proven"] is False
+    assert proof["operation_status"]["read_environment_binding_as_path"] is False
+    assert (
+        proof["operation_status"]["bind_environment_path_to_json_file_reader"]
+        is False
+    )
 
 
 def test_response_index_source_behavior_fingerprint_is_topology_stable() -> None:
