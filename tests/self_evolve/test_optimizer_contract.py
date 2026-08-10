@@ -2286,6 +2286,36 @@ def test_feedback_normalization_requires_stronger_evidence_repair_for_veto_and_m
     assert "raise_groundedness_before_breadth" in summary["required_behaviors"]
 
 
+def test_feedback_normalization_preserves_replay_counterexamples() -> None:
+    counterexample = {
+        "schema_version": "aworld.replay.counterexample.v1",
+        "sequence": 1,
+        "failure_code": "replay_task_timeout_with_recoverable_evidence",
+        "stage": "task_rollout",
+        "state_before": "evidence_ready",
+        "trigger": "task_timeout",
+        "tool_name": "replay_runtime",
+        "action_name": "finalize_task_response",
+        "manifest_entry_count": 1,
+        "artifact_file_count": 1,
+        "artifact_bytes": 256,
+        "required_transition": "finalize_task_response_before_timeout",
+    }
+
+    summary = normalize_feedback_summary(
+        EvaluationSummary(
+            variant_id="candidate-timeout",
+            dataset_split="validation",
+            metrics={
+                "failed_gates": ["candidate_replay"],
+                "replay_counterexamples": [counterexample],
+            },
+        )
+    )
+
+    assert summary["replay_counterexamples"] == [counterexample]
+
+
 def test_feedback_normalization_preserves_target_only_repair_package() -> None:
     summary = normalize_feedback_summary(
         EvaluationSummary(

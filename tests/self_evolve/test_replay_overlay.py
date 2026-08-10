@@ -65,6 +65,7 @@ from aworld.self_evolve.replay import (
     _read_websocket_frame,
     _replay_capability_fixture_summaries,
     _replay_dependency_boundary_failure,
+    _replay_evidence_runtime_policy_metrics,
     replay_capability_fixture_leaf_values,
     replay_capability_fixture_response_leaf_values,
     _replay_service_failure_with_stderr,
@@ -6114,6 +6115,12 @@ async def test_aworld_cli_replay_executor_requests_machine_readable_trajectory_a
     )
     assert captured["kwargs"]["env"]["AWORLD_TRAJECTORY_LOG_DISABLED"] == "1"
     assert captured["kwargs"]["env"]["AWORLD_TOOL_CALL_LIMIT"] == "24"
+    assert captured["kwargs"]["env"]["AWORLD_REPLAY_EVIDENCE_POLICY"] == "1"
+    assert captured["kwargs"]["env"]["AWORLD_REPLAY_ARTIFACT_FILE_LIMIT"] == "8"
+    assert (
+        captured["kwargs"]["env"]["AWORLD_REPLAY_ARTIFACT_BYTE_LIMIT"]
+        == "2000000"
+    )
     assert captured["kwargs"]["env"][
         "AWORLD_PROMPT_BUDGET_RESERVED_OUTPUT_TOKENS"
     ] == "4096"
@@ -6350,7 +6357,7 @@ async def test_aworld_cli_replay_executor_accepts_compacted_markers_with_valid_m
 
     def fake_run(command, **kwargs):
         artifact_dir = tmp_path / "artifacts"
-        artifact_dir.mkdir(parents=True)
+        artifact_dir.mkdir(parents=True, exist_ok=True)
         evidence_path = artifact_dir / "episode_extract.txt"
         evidence_path.write_text("bounded non-compacted evidence excerpt", encoding="utf-8")
         (artifact_dir / "evidence_manifest.jsonl").write_text(
@@ -6577,7 +6584,7 @@ async def test_aworld_cli_replay_executor_writes_canonical_evidence_bundle(
 
     def fake_run(command, **kwargs):
         artifact_dir = tmp_path / "artifacts"
-        artifact_dir.mkdir(parents=True)
+        artifact_dir.mkdir(parents=True, exist_ok=True)
         evidence_path = artifact_dir / "bounded_extract.txt"
         evidence_path.write_text("bounded non-compacted evidence excerpt", encoding="utf-8")
         (artifact_dir / "evidence_manifest.jsonl").write_text(
@@ -6677,7 +6684,7 @@ async def test_aworld_cli_replay_executor_accepts_non_file_evidence_metadata(
 
     def fake_run(command, **kwargs):
         artifact_dir = tmp_path / "artifacts"
-        artifact_dir.mkdir(parents=True)
+        artifact_dir.mkdir(parents=True, exist_ok=True)
         (artifact_dir / "evidence_manifest.jsonl").write_text(
             json.dumps(
                 {
@@ -6764,7 +6771,7 @@ async def test_aworld_cli_replay_executor_canonicalizes_bounded_metadata_evidenc
 
     def fake_run(command, **kwargs):
         artifact_dir = tmp_path / "artifacts"
-        artifact_dir.mkdir(parents=True)
+        artifact_dir.mkdir(parents=True, exist_ok=True)
         (artifact_dir / "evidence_manifest.jsonl").write_text(
             json.dumps(
                 {
@@ -6990,7 +6997,7 @@ async def test_aworld_cli_replay_executor_archives_workspace_manifest_artifact(
         workspace_root = tmp_path / "workspace"
         workspace_root.mkdir(parents=True, exist_ok=True)
         artifact_dir = workspace_root / "artifacts"
-        artifact_dir.mkdir(parents=True)
+        artifact_dir.mkdir(parents=True, exist_ok=True)
         output_path = workspace_root / "x_ai_daily_extra.json"
         output_path.write_text(
             json.dumps({"meta": {"count": 1}, "tweets": [{"text": "AI news"}]}),
@@ -7079,7 +7086,7 @@ async def test_aworld_cli_replay_executor_rejects_untrusted_manifest_artifact_ou
         workspace_root = tmp_path / "workspace"
         workspace_root.mkdir(parents=True, exist_ok=True)
         artifact_dir = workspace_root / "artifacts"
-        artifact_dir.mkdir(parents=True)
+        artifact_dir.mkdir(parents=True, exist_ok=True)
         outside_path = tmp_path / "outside.txt"
         outside_path.write_text("secret should not be allowlisted", encoding="utf-8")
         (artifact_dir / "evidence_manifest.jsonl").write_text(
@@ -7157,7 +7164,7 @@ async def test_aworld_cli_replay_executor_accepts_bounded_excerpt_for_outside_ar
         workspace_root = tmp_path / "workspace"
         workspace_root.mkdir(parents=True, exist_ok=True)
         artifact_dir = workspace_root / "artifacts"
-        artifact_dir.mkdir(parents=True)
+        artifact_dir.mkdir(parents=True, exist_ok=True)
         outside_path = tmp_path / "scrape_stderr.log"
         outside_path.write_text("large outside log should not be read", encoding="utf-8")
         (artifact_dir / "evidence_manifest.jsonl").write_text(
@@ -7336,6 +7343,108 @@ def test_replay_aggregate_evidence_metrics_fail_closed_on_missing_repetition() -
     assert aggregate.metrics["evidence_strategy_passed_coverage"] == pytest.approx(2 / 3)
 
 
+def test_replay_aggregate_preserves_any_timeout_and_requires_all_completion(
+    tmp_path: Path,
+) -> None:
+    results = [
+        ReplayVariantResult(
+            variant_id="cand-1",
+            status="succeeded",
+            trajectory=[{"action": {"content": "completed"}}],
+            metrics={
+                "task_completion_established": True,
+                "timeout_evidence_recovered": False,
+            },
+        ),
+        ReplayVariantResult(
+            variant_id="cand-2",
+            status="failed",
+            trajectory=[],
+            metrics={
+                "task_completion_established": False,
+                "timeout_evidence_recovered": True,
+            },
+            failure=ReplayFailureEvent(
+                code="replay_task_timeout_with_recoverable_evidence",
+                owner=FailureOwner.CANDIDATE,
+                stage=FailureStage.TASK_ROLLOUT,
+                scope=FailureScope.MEMBER,
+                repairable=True,
+            ),
+        ),
+    ]
+
+    aggregate = _aggregate_variant_results(
+        base_variant_id="candidate",
+        results=results,
+        artifact_dir=tmp_path,
+    )
+
+    assert aggregate.metrics["task_completion_established"] is False
+    assert aggregate.metrics["timeout_evidence_recovered"] is True
+    assert aggregate.metrics["task_completion_established_values"] == [True, False]
+    assert aggregate.metrics["timeout_evidence_recovered_values"] == [False, True]
+
+
+def test_replay_runtime_policy_violation_becomes_bounded_counterexample(
+    tmp_path: Path,
+) -> None:
+    artifact_dir = tmp_path / "artifacts"
+    artifact_dir.mkdir()
+    (artifact_dir / "framework_evidence_state.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "aworld.replay.evidence_policy.v1",
+                "phase": "evidence_ready",
+                "tool_call_attempt_count": 5,
+                "manifest_entry_count": 1,
+                "artifact_file_limit": 8,
+                "artifact_byte_limit": 2_000_000,
+            }
+        ),
+        encoding="utf-8",
+    )
+    (artifact_dir / "framework_evidence_policy.jsonl").write_text(
+        json.dumps(
+            {
+                "schema_version": "aworld.replay.evidence_policy.v1",
+                "code": "tool_call_after_evidence_ready",
+                "phase": "evidence_ready",
+                "tool_name": "bash",
+                "action_name": "run",
+                "manifest_entry_count": 1,
+                "artifact_file_count": 1,
+                "artifact_bytes": 128,
+                "required_transition": "finalize_task_response",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    metrics = _replay_evidence_runtime_policy_metrics(artifact_dir)
+
+    assert metrics["evidence_runtime_policy_active"] is True
+    assert metrics["evidence_runtime_policy_passed"] is False
+    assert metrics["evidence_runtime_policy_violation_count"] == 1
+    assert metrics["replay_counterexamples"] == [
+        {
+            "schema_version": "aworld.replay.counterexample.v1",
+            "sequence": 1,
+            "failure_code": "tool_call_after_evidence_ready",
+            "stage": "task_rollout",
+            "state_before": "evidence_ready",
+            "trigger": "tool_call",
+            "tool_name": "bash",
+            "action_name": "run",
+            "manifest_entry_count": 1,
+            "artifact_file_count": 1,
+            "artifact_bytes": 128,
+            "required_transition": "finalize_task_response",
+        }
+    ]
+
+
 @pytest.mark.asyncio
 async def test_aworld_cli_replay_executor_rejects_compacted_evidence_without_manifest(
     monkeypatch: pytest.MonkeyPatch,
@@ -7438,11 +7547,13 @@ async def test_aworld_cli_replay_executor_rejects_summary_synthetic_trajectory(
     )
 
     assert result.succeeded is False
-    assert result.failure == {
-        "reason": "trajectory_capture_mode_unsupported",
-        "detail": "self-evolve replay requires TaskResponse.trajectory evidence",
-        "trajectory_capture_mode": "summary_synthetic",
-    }
+    assert result.failure["code"] == "replay_task_completion_not_established"
+    assert result.failure["diagnostics"]["trajectory_capture_mode"] == (
+        "summary_synthetic"
+    )
+    assert result.failure["diagnostics"]["replay_counterexamples"][0][
+        "trigger"
+    ] == "unsupported_trajectory_capture_mode"
 
 
 @pytest.mark.asyncio
@@ -7882,7 +7993,7 @@ async def test_aworld_cli_replay_executor_trusts_scoped_task_protocol_artifact(
 ) -> None:
     def fake_run(command, **kwargs):
         artifact_dir = tmp_path / "artifacts"
-        artifact_dir.mkdir(parents=True)
+        artifact_dir.mkdir(parents=True, exist_ok=True)
         (artifact_dir / "scrape_output.log").write_text(
             "Failed to deserialize protocol response: missing field sessionId",
             encoding="utf-8",
@@ -7918,13 +8029,24 @@ async def test_aworld_cli_replay_executor_trusts_scoped_task_protocol_artifact(
 
 
 @pytest.mark.asyncio
-async def test_aworld_cli_replay_executor_recovers_timeout_with_valid_artifact_manifest(
+@pytest.mark.parametrize(
+    ("variant_id", "expected_outcome", "expected_failure_class", "repairable"),
+    (
+        ("candidate", "candidate_failure", "candidate_task_behavior", True),
+        ("baseline", "task_failure", "baseline_task_timeout", False),
+    ),
+)
+async def test_aworld_cli_replay_executor_preserves_timeout_with_recoverable_evidence(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    variant_id: str,
+    expected_outcome: str,
+    expected_failure_class: str,
+    repairable: bool,
 ) -> None:
     def fake_run(command, **kwargs):
         artifact_dir = tmp_path / "artifacts"
-        artifact_dir.mkdir(parents=True)
+        artifact_dir.mkdir(parents=True, exist_ok=True)
         evidence_path = artifact_dir / "x_ai_daily_extra.json"
         evidence_path.write_text(
             json.dumps(
@@ -7966,6 +8088,55 @@ async def test_aworld_cli_replay_executor_recovers_timeout_with_valid_artifact_m
 
     result = await AWorldCliReplayExecutor()(
         ReplayExecutionRequest(
+            variant_id=variant_id,
+            task_id="task-1",
+            candidate_id="cand-1",
+            workspace_root=str(tmp_path),
+            task_input={"content": "Replay this task"},
+            task_text="Replay this task",
+            skill_root=str(tmp_path / "skills"),
+            artifact_dir=str(tmp_path / "artifacts"),
+            timeout_seconds=1,
+        )
+    )
+
+    assert result.succeeded is False
+    assert result.status == "failed"
+    assert result.failure["code"] == "replay_task_timeout_with_recoverable_evidence"
+    assert result.failure["outcome"] == expected_outcome
+    assert result.failure["failure_class"] == expected_failure_class
+    assert result.failure["repairable"] is repairable
+    assert result.failure["diagnostics"]["evidence_recoverable"] is True
+    assert result.stdout == "partial stdout"
+    assert result.stderr == "partial stderr"
+    assert result.metrics["timeout_evidence_recovered"] is True
+    assert result.metrics["task_completion_established"] is False
+    assert result.metrics["evidence_bundle_valid"] is True
+    assert result.trajectory == []
+    counterexample = result.failure["diagnostics"]["replay_counterexamples"][0]
+    assert counterexample["state_before"] == "evidence_ready"
+    assert counterexample["required_transition"] == (
+        "finalize_task_response_before_timeout"
+    )
+
+
+@pytest.mark.asyncio
+async def test_aworld_cli_replay_executor_rejects_zero_exit_without_task_response(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    def fake_run(command, **kwargs):
+        return subprocess.CompletedProcess(
+            args=command,
+            returncode=0,
+            stdout="ordinary process output without trajectory framing",
+            stderr="",
+        )
+
+    monkeypatch.setattr("aworld.self_evolve.replay._run_replay_cli", fake_run)
+
+    result = await AWorldCliReplayExecutor()(
+        ReplayExecutionRequest(
             variant_id="candidate",
             task_id="task-1",
             candidate_id="cand-1",
@@ -7978,27 +8149,13 @@ async def test_aworld_cli_replay_executor_recovers_timeout_with_valid_artifact_m
         )
     )
 
-    assert result.succeeded is True
-    assert result.failure is None
-    assert result.stdout == "partial stdout"
-    assert result.stderr == "partial stderr"
-    assert result.metrics["timeout_recovered_with_artifact_evidence"] is True
-    assert result.metrics["evidence_bundle_valid"] is True
-    assert result.trajectory == [
-        {
-            "state": {"input": {"content": "Replay this task"}},
-            "action": {
-                "content": "Replay completed from artifact-backed evidence manifest.",
-                "is_agent_finished": "True",
-            },
-            "reward": {"status": "ok"},
-            "meta": {
-                "trajectory_capture_mode": "artifact_manifest",
-                "evidence_manifest_path": str(tmp_path / "artifacts" / "evidence_manifest.jsonl"),
-                "evidence_bundle_path": str(tmp_path / "artifacts" / "evidence_bundle.json"),
-            },
-        }
-    ]
+    assert result.succeeded is False
+    assert result.failure["code"] == "replay_task_completion_not_established"
+    assert result.failure["outcome"] == "candidate_failure"
+    assert result.metrics["task_completion_established"] is False
+    assert result.metrics["replay_counterexamples"][0]["trigger"] == (
+        "trajectory_unavailable"
+    )
 
 
 @pytest.mark.asyncio
@@ -8008,7 +8165,7 @@ async def test_aworld_cli_replay_executor_does_not_recover_dependency_mismatch_m
 ) -> None:
     def fake_run(command, **kwargs):
         artifact_dir = tmp_path / "artifacts"
-        artifact_dir.mkdir(parents=True)
+        artifact_dir.mkdir(parents=True, exist_ok=True)
         (artifact_dir / "diag_replay_capability_mismatch.json").write_text(
             json.dumps(
                 {
@@ -8060,7 +8217,7 @@ async def test_aworld_cli_replay_executor_does_not_recover_dependency_mismatch_m
     )
 
     assert result.succeeded is False
-    assert result.metrics.get("timeout_recovered_with_artifact_evidence") is None
+    assert result.metrics.get("timeout_evidence_recovered") is None
     assert result.failure["outcome"] == "candidate_failure"
     assert result.failure["failure_class"] == "candidate_replay_capability"
     assert result.failure["failure_stage"] == "task_rollout"
