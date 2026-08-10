@@ -1222,6 +1222,8 @@ def recorded_response_index_source_behavior_proof(
             ],
         }
 
+    _inline_response_index_environment_key_constants(tree)
+
     accessed_keys = _runtime_accessed_key_locations(tree)
     function_scopes = _runtime_function_scopes(tree)
     reader_parameters = _runtime_file_reader_parameter_summaries(function_scopes)
@@ -1325,6 +1327,125 @@ def _source_behavior_proof_fingerprint(topology: Mapping[str, object]) -> str:
         sort_keys=True,
     ).encode("utf-8")
     return "sha256:" + hashlib.sha256(encoded).hexdigest()
+
+
+def _inline_response_index_environment_key_constants(tree: ast.Module) -> None:
+    """Resolve safe module constants used only as environment lookup keys.
+
+    Generated runtimes commonly name the framework environment key before
+    reading it, for example ``INDEX_ENV = "AWORLD_REPLAY_RESPONSE_INDEX"``.
+    The data-flow analyzer previously required the literal to appear directly
+    in ``os.environ.get``/``os.getenv`` and therefore rejected that equivalent
+    local path flow.  Resolve only a direct, unique top-level string binding;
+    dynamic aliases, reassignments, destructuring, imports, and names declared
+    global inside a function remain outside the proof boundary.
+    """
+
+    candidates: set[str] = set()
+    for statement in tree.body:
+        target: ast.AST | None = None
+        value: ast.AST | None = None
+        if isinstance(statement, ast.Assign) and len(statement.targets) == 1:
+            target = statement.targets[0]
+            value = statement.value
+        elif isinstance(statement, ast.AnnAssign):
+            target = statement.target
+            value = statement.value
+        if not isinstance(target, ast.Name):
+            continue
+        if (
+            isinstance(value, ast.Constant)
+            and value.value == REPLAY_RESPONSE_INDEX_ENV
+        ):
+            candidates.add(target.id)
+
+    module_binding_counts: dict[str, int] = {}
+
+    class ModuleBindingCounter(ast.NodeVisitor):
+        def bind(self, name: str) -> None:
+            module_binding_counts[name] = module_binding_counts.get(name, 0) + 1
+
+        def visit_Name(self, node: ast.Name) -> None:
+            if isinstance(node.ctx, (ast.Store, ast.Del)):
+                self.bind(node.id)
+
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            self.bind(node.name)
+
+        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+            self.bind(node.name)
+
+        def visit_ClassDef(self, node: ast.ClassDef) -> None:
+            self.bind(node.name)
+
+        def visit_Lambda(self, node: ast.Lambda) -> None:
+            return None
+
+        def visit_Import(self, node: ast.Import) -> None:
+            for alias in node.names:
+                self.bind(alias.asname or alias.name.partition(".")[0])
+
+        def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+            for alias in node.names:
+                self.bind(alias.asname or alias.name)
+
+    counter = ModuleBindingCounter()
+    for statement in tree.body:
+        counter.visit(statement)
+
+    global_mutations = {
+        name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Global)
+        for name in node.names
+    }
+    safe_names = {
+        name
+        for name in candidates
+        if module_binding_counts.get(name) == 1 and name not in global_mutations
+    }
+    if not safe_names:
+        return
+
+    class EnvironmentKeyInliner(ast.NodeTransformer):
+        @staticmethod
+        def replacement(value: ast.AST) -> ast.AST:
+            if isinstance(value, ast.Name) and value.id in safe_names:
+                return ast.copy_location(
+                    ast.Constant(value=REPLAY_RESPONSE_INDEX_ENV),
+                    value,
+                )
+            return value
+
+        def visit_Call(self, node: ast.Call) -> ast.AST:
+            self.generic_visit(node)
+            if not node.args:
+                return node
+            if isinstance(node.func, ast.Attribute):
+                is_environment_get = (
+                    node.func.attr == "get"
+                    and _is_os_environ_expression(node.func.value)
+                ) or (
+                    node.func.attr == "getenv"
+                    and isinstance(node.func.value, ast.Name)
+                    and node.func.value.id == "os"
+                )
+            else:
+                is_environment_get = (
+                    isinstance(node.func, ast.Name)
+                    and node.func.id == "getenv"
+                )
+            if is_environment_get:
+                node.args[0] = self.replacement(node.args[0])
+            return node
+
+        def visit_Subscript(self, node: ast.Subscript) -> ast.AST:
+            self.generic_visit(node)
+            if _is_os_environ_expression(node.value):
+                node.slice = self.replacement(node.slice)
+            return node
+
+    EnvironmentKeyInliner().visit(tree)
 
 
 def _runtime_accessed_key_locations(
