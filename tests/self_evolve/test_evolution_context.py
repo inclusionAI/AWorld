@@ -721,6 +721,53 @@ def test_prompt_payload_omits_repair_focus_without_candidate_source() -> None:
     assert "repair_focus" not in payload
 
 
+def test_generation_policy_feedback_compacts_history_but_keeps_current_base() -> None:
+    feedback = EvaluationSummary(
+        variant_id="candidate-policy-filter-1",
+        dataset_split="validation",
+        metrics={
+            "failed_gates": ["candidate_generation_policy"],
+            "failure_class": "candidate",
+            "repairable": True,
+            "candidate_validation_diagnostics": [
+                {
+                    "code": "candidate_generation_policy_filtered",
+                    "stage": "candidate_generation",
+                    "policy_id": "preserve_high_baseline",
+                    "enforcement": "hard",
+                    "reason_codes": [
+                        "authoritative_base_replaced_by_rejected_parent"
+                    ],
+                    "constraint_ids": [
+                        "preserve_authoritative_current_base"
+                    ],
+                }
+            ],
+        },
+    )
+    request = replace(
+        _request(),
+        validation_feedback=(feedback,),
+        prior_feedback=_request().validation_feedback,
+    )
+
+    payload = compile_evolution_context(request).to_prompt_payload(
+        candidate_index=0
+    )
+
+    assert payload["repair_context_mode"] == "generation_policy_delta"
+    assert payload["current_content"] == request.current_content.rstrip()
+    assert payload["trainable_cases"] == []
+    assert payload["trace_evidence"] == []
+    assert payload["lesson_records"] == []
+    diagnostics = payload["validation_feedback"][0][
+        "candidate_validation_diagnostics"
+    ]
+    assert diagnostics[0]["constraint_ids"] == [
+        "preserve_authoritative_current_base"
+    ]
+
+
 def test_prompt_payload_omits_support_that_failed_same_specific_repair_gate() -> None:
     def repair_feedback(candidate_id: str, code: str) -> EvaluationSummary:
         return EvaluationSummary(

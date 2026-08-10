@@ -390,6 +390,34 @@ def test_compile_request_binds_manifest_capability_identity(tmp_path: Path) -> N
     assert request.to_dict()["capability_id"] == "fixture-service"
 
 
+def test_discovered_capability_fingerprint_excludes_behavior_guidance(
+    tmp_path: Path,
+) -> None:
+    skill = _write_capability_skill(tmp_path)
+    initial = discover_replay_capability(skill)
+
+    assert initial is not None
+    (skill / "SKILL.md").write_text(
+        "---\nname: fixture-skill\n---\n# Updated behavior guidance\n",
+        encoding="utf-8",
+    )
+    (skill / "examples.md").write_text("release-only example\n", encoding="utf-8")
+    behavior_only = discover_replay_capability(skill)
+
+    assert behavior_only is not None
+    assert behavior_only.package_fingerprint == initial.package_fingerprint
+
+    runtime_path = skill / "replay" / "runtime.py"
+    runtime_path.write_text(
+        runtime_path.read_text(encoding="utf-8") + "\n# capability change\n",
+        encoding="utf-8",
+    )
+    capability_changed = discover_replay_capability(skill)
+
+    assert capability_changed is not None
+    assert capability_changed.package_fingerprint != initial.package_fingerprint
+
+
 @pytest.mark.replay_sandbox
 @pytest.mark.parametrize(
     "result_capability_id",

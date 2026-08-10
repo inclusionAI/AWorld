@@ -6379,40 +6379,27 @@ def _task_text(task_input: Any) -> str:
 _REPLAY_EVIDENCE_POLICY = """
 
 Self-evolve replay evidence requirements:
-- Preserve the original user task above, but execute it with artifact-first evidence handling.
-- Do not stream large raw tool outputs, full pages, full documents, large JSON, or long logs directly into the conversation.
-- Persist large or unknown-size source material under this exact artifact directory before inspecting or summarizing it: {artifact_dir}
-- Redirect large or unknown-size responses directly to an artifact file. A line-count limit such as `head -N` is not a byte bound because JSON, HTML, and logs may contain one very large line; inspect only an explicit byte-bounded excerpt or selected structured fields from the saved artifact.
-- Also export or use AWORLD_SELF_EVOLVE_REPLAY_ARTIFACT_DIR={artifact_dir} when invoking tools that can receive environment variables.
-- Append one JSON object per evidence source to this exact replay evidence_manifest.jsonl file: {evidence_manifest}
-- Serialize each manifest object compactly on one physical line (for example with json.dumps and no indentation), then parse that line once before appending it; do not append pretty-printed multi-line JSON.
-- Also export or use AWORLD_SELF_EVOLVE_EVIDENCE_MANIFEST={evidence_manifest} when invoking tools that can receive environment variables.
-- Each manifest object must include source_id, extraction_method, and the bounded excerpt or field list used for the final answer.
-- File-backed evidence must include artifact_path. Non-file operation evidence must instead use evidence_type="metadata" with a structured metadata object; never place job IDs, status text, or multiple values into artifact_path.
-- Emit only bounded structured summaries with source identifiers, locations, and short excerpts.
-- If a tool result is compacted, truncated, schema-invalid, or too large to inspect and no valid artifact-backed evidence bundle, manifest entry, or bounded extract exists, treat that result as unusable evidence and retry with a narrower extraction strategy before answering.
-- Keep a concise evidence ledger mapping important final-answer claims to non-compacted extracts or artifact references.
-- For bounded replay validation, prefer the smallest representative evidence path that can verify the task contract; cap slow external collection once at least one valid artifact-backed sample exists, and report the actual collected counts rather than padding them.
-- After the first successful structured extraction, immediately persist replay artifacts and a manifest entry before any further collection attempts.
-- Once the requested output artifact and a valid evidence manifest exist, stop evidence collection and return the final answer with only the artifact path, counts, and evidence ledger requested by the task.
-- Before finalizing, perform a claim-by-claim check and omit claims that are not supported by non-compacted evidence captured in the trajectory.
+- Preserve the original user task above and use artifact-first evidence. Do not stream large raw tool outputs, full pages, documents, JSON, or logs into the conversation; save large or unknown-size material under {artifact_dir} and use AWORLD_SELF_EVOLVE_REPLAY_ARTIFACT_DIR={artifact_dir}.
+- A line-count limit such as `head -N` is not a byte bound; inspect only an explicit byte-bounded excerpt or selected structured fields from a saved artifact.
+- Append one compact, single-line JSON object per source to {evidence_manifest} and use AWORLD_SELF_EVOLVE_EVIDENCE_MANIFEST={evidence_manifest}. Each object needs source_id, extraction_method, and the bounded excerpt or field list used in the answer.
+- File-backed evidence must include artifact_path. Non-file operation evidence must use evidence_type="metadata" with one structured metadata object, never an artifact_path containing status or multiple values.
+- Emit only bounded structured summaries and keep a concise ledger mapping final claims to non-compacted extracts or artifact references. Treat compacted, truncated, schema-invalid, or unbounded results without valid artifact evidence as unusable and retry once with a narrower extraction.
+- For bounded replay validation, prefer the smallest representative evidence path. Cap slow collection after one valid artifact-backed sample and report actual counts.
+- After the first successful structured extraction, immediately persist replay artifacts and a manifest entry. Once the requested output artifact and a valid evidence manifest exist, stop evidence collection and return the final answer with the requested artifact path, counts, and evidence ledger.
+- Before finalizing, omit every claim not supported by non-compacted trajectory evidence.
 """.strip()
 
 
 _REPLAY_RUNTIME_POLICY = """
 Self-evolve replay runtime contract:
-- Preserve the original task's authorization boundary. Task-plane operations required by the original task are allowed, including task-requested reads, writes, navigation, submissions, and artifact creation.
-- Treat prerequisites not created by this replay as externally managed and attach-only by default.
-- Do not terminate, restart, reconfigure, or replace externally managed prerequisites solely to make replay succeed.
-- Do not copy or substitute credentials, sessions, profiles, or private state from the host solely to repair a missing prerequisite.
-- Do not override the supplied HOME, TMPDIR, XDG_*, or framework runtime-root environment variables. Keep subprocess state in those isolated roots or the replay artifact directory.
-- Only endpoints supplied through AWORLD_REPLAY_ENDPOINT_* are inside the replay dependency boundary. Do not enumerate or connect to any other loopback port, original endpoint, host service, or externally running process as a fallback.
-- If a supplied replay endpoint does not implement the required protocol, report a replay capability mismatch; do not bypass it by discovering another host endpoint.
-- On the first terminal protocol signal from a supplied endpoint (for example a CDP/WebSocket protocol error, closed response channel, or required-field mismatch), persist one bounded diagnostic artifact and immediately return a replay capability mismatch. Do not retry alternate URL forms or inspect host ports.
-- If the original task explicitly authorizes a control-plane operation, that operation is allowed within the stated scope. Resources created by this replay may also be managed and cleaned up by this replay.
-- Probe prerequisite compatibility using bounded, non-mutating checks. If the required prerequisite remains unavailable, fail the replay with a prerequisite-unavailable reason instead of repairing the host environment.
-- Keep all replay-created files inside the workspace or replay artifact directory unless the original task explicitly names another output location.
-- Stop retrying a failed execution path when it cannot produce new evidence; switch once to a materially different bounded strategy or fail with the observed reason.
+- Preserve the original authorization boundary. Task-plane operations required by the original task are allowed, including requested reads, writes, navigation, submissions, and artifacts. If the original task explicitly authorizes a control-plane operation, it is allowed only within its stated scope.
+- Treat prerequisites not created by replay as externally managed and attach-only. Do not terminate, restart, reconfigure, or replace externally managed prerequisites. Do not copy or substitute credentials, sessions, profiles, or private state from the host to make replay succeed.
+- Do not override the supplied HOME, TMPDIR, XDG_*, or framework runtime roots; keep subprocess state in those roots or the replay artifact directory.
+- Only endpoints supplied through AWORLD_REPLAY_ENDPOINT_* are in scope. Do not enumerate or connect to any other loopback port, original endpoint, host service, or process as a fallback. A protocol mismatch must not be bypassed through endpoint discovery.
+- On the first terminal protocol signal from a supplied endpoint, persist one bounded diagnostic and return a replay capability mismatch. Do not retry alternate URL forms or inspect host ports.
+- Probe prerequisite compatibility with bounded, non-mutating checks. If unavailable, fail the replay with a prerequisite-unavailable reason instead of repairing the host environment.
+- Keep replay-created files inside the workspace or replay artifact directory unless the task names another output location. Replay-created resources may be cleaned up by replay.
+- Stop retrying a path that cannot produce new evidence; switch once to a materially different bounded strategy or fail with the observed reason.
 """.strip()
 
 

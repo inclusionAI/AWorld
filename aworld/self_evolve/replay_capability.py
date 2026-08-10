@@ -275,6 +275,66 @@ def fingerprint_skill_package(skill_root: str | Path) -> str:
     return _json_fingerprint({"files": package_entries})
 
 
+def fingerprint_replay_capability_package(
+    skill_root: str | Path,
+    *,
+    manifest_path: str | Path,
+    entrypoint: str | Path,
+    runtime_files: Sequence[str | Path] = (),
+) -> str:
+    """Fingerprint only the declared replay-capability implementation surface.
+
+    Skill guidance and other release files affect the candidate package identity,
+    but they do not change the executable replay environment.  Keeping those two
+    identities separate allows sibling behavior candidates to reuse one compiled
+    replay adaptation and baseline while still preserving full-package release
+    fidelity checks.
+    """
+
+    root = Path(skill_root).expanduser().resolve()
+    if not root.is_dir():
+        raise ReplayCapabilityError(f"skill root is not a directory: {root}")
+    resolved_manifest = Path(manifest_path).expanduser().resolve()
+    capability_root = resolved_manifest.parent
+    try:
+        capability_root.relative_to(root)
+    except ValueError as exc:
+        raise ReplayCapabilityError(
+            "replay capability manifest must be contained by the skill root"
+        ) from exc
+
+    surface_paths: set[Path] = set()
+    for path in sorted(capability_root.rglob("*")):
+        if path.is_symlink():
+            raise ReplayCapabilityError("replay capability cannot contain symlinks")
+        if path.is_file():
+            surface_paths.add(path.resolve())
+    for declared_path in (entrypoint, *runtime_files):
+        resolved = Path(declared_path).expanduser().resolve()
+        try:
+            resolved.relative_to(root)
+        except ValueError as exc:
+            raise ReplayCapabilityError(
+                "declared replay capability file must be contained by the skill root"
+            ) from exc
+        if not resolved.is_file() or resolved.is_symlink():
+            raise ReplayCapabilityError(
+                "declared replay capability file must be a regular file"
+            )
+        surface_paths.add(resolved)
+
+    package_entries = [
+        _file_manifest_entry(path, path.relative_to(root).as_posix())
+        for path in sorted(surface_paths)
+    ]
+    return _json_fingerprint(
+        {
+            "surface": "replay_capability",
+            "files": package_entries,
+        }
+    )
+
+
 @dataclass(frozen=True)
 class ReplayCapabilityManifest:
     schema_version: str
@@ -861,7 +921,12 @@ def discover_replay_capability(
         manifest=manifest,
         entrypoint=entrypoint,
         runtime_files=runtime_files,
-        package_fingerprint=fingerprint_skill_package(root),
+        package_fingerprint=fingerprint_replay_capability_package(
+            root,
+            manifest_path=manifest_path,
+            entrypoint=entrypoint,
+            runtime_files=runtime_files,
+        ),
     )
 
 

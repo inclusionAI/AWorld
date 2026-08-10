@@ -533,7 +533,14 @@ def render_optimize_summary(report: Any) -> str:
         )
     if status == "rejected" and replay_failure_summary:
         lines.append(f"Replay failures: {replay_failure_summary}")
-    if status == "rejected" and _has_no_candidate(report):
+    policy_filter_summary = _candidate_policy_filter_summary(report)
+    if status == "rejected" and policy_filter_summary:
+        lines.append(policy_filter_summary)
+    if (
+        status == "rejected"
+        and not policy_filter_summary
+        and _has_no_candidate(report)
+    ):
         lines.append(
             "No candidate generated: optimizer produced no non-noop candidate, "
             "so replay/evaluation/apply were skipped."
@@ -1075,6 +1082,30 @@ def _has_no_candidate(report: Any) -> bool:
         isinstance(iteration, Mapping) and iteration.get("status") == "no_candidate"
         for iteration in iterations
     )
+
+
+def _candidate_policy_filter_summary(report: Any) -> str | None:
+    funnel = _read_report_value(report, "verification_funnel")
+    if not isinstance(funnel, Mapping):
+        return None
+    filtered_count = funnel.get("policy_filtered_candidate_count")
+    if (
+        isinstance(filtered_count, bool)
+        or not isinstance(filtered_count, (int, float))
+        or int(filtered_count) <= 0
+    ):
+        return None
+    summary = (
+        "Candidate admission: "
+        f"{int(filtered_count)} generated candidate(s) rejected by hard generation "
+        "policy; replay/evaluation/apply were skipped for those candidates."
+    )
+    if funnel.get("generation_policy_frontier_exhausted") is True:
+        summary += (
+            " Generation policy frontier exhausted after the same blocking "
+            "constraints repeated without structural progress."
+        )
+    return summary
 
 
 def _metrics_have_replay_repetition_failure(metrics: Any) -> bool:

@@ -5,6 +5,7 @@ import inspect
 import json
 import re
 import time
+from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Mapping, Sequence
 
 from aworld.self_evolve.candidate_package import (
@@ -33,6 +34,8 @@ from aworld.self_evolve.evolution_context import (
 )
 from aworld.self_evolve.feedback import normalize_feedback_summary
 from aworld.self_evolve.optimizers.base import (
+    CandidateGenerationOutcome,
+    CandidateGenerationOutcomeKind,
     CandidateSemanticValidationError,
     OptimizerRequest,
     OptimizerResult,
@@ -88,13 +91,14 @@ class TraceReflectiveLLMMutator:
         lineage: list[OptimizerLineage] = []
         filtered_noop_count = 0
         filtered_high_baseline_regression_count = 0
+        high_baseline_policy_risk_count = 0
         filtered_duplicate_count = 0
         filtered_invalid_patch_count = 0
         repaired_transport_completion_violation_count = 0
         preserved_existing_replay_file_delta_count = 0
         seen_content_fingerprints: set[str] = set()
-        require_targeted_delta = _request_has_high_baseline_regression(request)
         candidate_strategy_records: list[dict[str, Any]] = []
+        generation_outcomes: list[CandidateGenerationOutcome] = []
         private_repair_contracts: dict[str, RepairConformanceContract] = {}
         candidate_generation_failure: dict[str, str] | None = None
         candidate_protocol_invalid_count = 0
@@ -129,6 +133,25 @@ class TraceReflectiveLLMMutator:
                     candidate_outputs.append((slot.index, slot.output))
                 elif slot.status == "failed" and candidate_generation_failure is None:
                     candidate_generation_failure = dict(slot.failure or {})
+                    generation_outcomes.append(
+                        CandidateGenerationOutcome(
+                            candidate_index=slot.index,
+                            kind=(
+                                CandidateGenerationOutcomeKind.INFRASTRUCTURE_FAILED
+                            ),
+                            repairable=False,
+                            reason_codes=(
+                                str(
+                                    candidate_generation_failure.get("code")
+                                    or "candidate_generation_infrastructure_error"
+                                ),
+                            ),
+                            active_frontier_key=_active_frontier_key(
+                                request,
+                                slot.index,
+                            ),
+                        )
+                    )
                 elif slot.status == "protocol_invalid":
                     failure = dict(slot.failure or {})
                     if (
@@ -146,8 +169,44 @@ class TraceReflectiveLLMMutator:
                                 ),
                             }
                         )
+                        generation_outcomes.append(
+                            CandidateGenerationOutcome(
+                                candidate_index=slot.index,
+                                kind=(
+                                    CandidateGenerationOutcomeKind.MATERIALIZATION_FAILED
+                                ),
+                                repairable=failure.get("repairable") is not False,
+                                reason_codes=(
+                                    str(
+                                        failure.get("code")
+                                        or "candidate_materialization_invalid"
+                                    ),
+                                ),
+                                active_frontier_key=_active_frontier_key(
+                                    request,
+                                    slot.index,
+                                ),
+                            )
+                        )
                     else:
                         candidate_protocol_invalid_count += 1
+                        generation_outcomes.append(
+                            CandidateGenerationOutcome(
+                                candidate_index=slot.index,
+                                kind=CandidateGenerationOutcomeKind.PROTOCOL_INVALID,
+                                repairable=True,
+                                reason_codes=(
+                                    str(
+                                        failure.get("code")
+                                        or "candidate_protocol_invalid"
+                                    ),
+                                ),
+                                active_frontier_key=_active_frontier_key(
+                                    request,
+                                    slot.index,
+                                ),
+                            )
+                        )
         else:
             statuses = ["discarded"] * request.max_candidates
             failure_cutoff: int | None = None
@@ -159,6 +218,25 @@ class TraceReflectiveLLMMutator:
                         output = await output
                 except CandidateGenerationInfrastructureError as exc:
                     candidate_generation_failure = exc.to_diagnostic()
+                    generation_outcomes.append(
+                        CandidateGenerationOutcome(
+                            candidate_index=index,
+                            kind=(
+                                CandidateGenerationOutcomeKind.INFRASTRUCTURE_FAILED
+                            ),
+                            repairable=False,
+                            reason_codes=(
+                                str(
+                                    candidate_generation_failure.get("code")
+                                    or "candidate_generation_infrastructure_error"
+                                ),
+                            ),
+                            active_frontier_key=_active_frontier_key(
+                                request,
+                                index,
+                            ),
+                        )
+                    )
                     statuses[index] = "failed"
                     failure_cutoff = index
                     break
@@ -257,6 +335,16 @@ class TraceReflectiveLLMMutator:
                         "reason": sanitize_text(str(exc), max_chars=240),
                     }
                 )
+                generation_outcomes.append(
+                    CandidateGenerationOutcome(
+                        candidate_index=index,
+                        kind=CandidateGenerationOutcomeKind.MATERIALIZATION_FAILED,
+                        repairable=diagnostic.get("repairable") is not False,
+                        reason_codes=(str(diagnostic.get("code") or "invalid"),),
+                        active_frontier_key=_active_frontier_key(request, index),
+                        strategy_id=_candidate_strategy_id(request, index),
+                    )
+                )
                 continue
             strategy_record = _candidate_strategy_record(
                 request,
@@ -269,6 +357,16 @@ class TraceReflectiveLLMMutator:
             )
             if content == request.current_content and not files:
                 filtered_noop_count += 1
+                generation_outcomes.append(
+                    CandidateGenerationOutcome(
+                        candidate_index=index,
+                        kind=CandidateGenerationOutcomeKind.NOOP_FILTERED,
+                        repairable=True,
+                        reason_codes=("candidate_matches_current_package",),
+                        active_frontier_key=_active_frontier_key(request, index),
+                        strategy_id=str(strategy_record["strategy_id"]),
+                    )
+                )
                 continue
             candidate = CandidateVariant(
                 candidate_id="pending",
@@ -286,16 +384,19 @@ class TraceReflectiveLLMMutator:
             )
             if semantic_package_fingerprint in seen_content_fingerprints:
                 filtered_duplicate_count += 1
+                generation_outcomes.append(
+                    CandidateGenerationOutcome(
+                        candidate_index=index,
+                        kind=CandidateGenerationOutcomeKind.DUPLICATE_FILTERED,
+                        candidate_fingerprint=content_fingerprint,
+                        semantic_fingerprint=semantic_package_fingerprint,
+                        repairable=True,
+                        reason_codes=("duplicate_candidate_semantics",),
+                        active_frontier_key=_active_frontier_key(request, index),
+                        strategy_id=str(strategy_record["strategy_id"]),
+                    )
+                )
                 continue
-            if require_targeted_delta and _is_weak_high_baseline_regression_candidate(
-                content,
-                current_content=request.current_content,
-                request=request,
-            ):
-                filtered_high_baseline_regression_count += 1
-                continue
-            seen_content_fingerprints.add(semantic_package_fingerprint)
-
             candidate_id = _candidate_id(
                 request,
                 content,
@@ -312,6 +413,51 @@ class TraceReflectiveLLMMutator:
                 files=files,
                 structural_edit_intent=structural_edit_intent,
             )
+            policy_assessment = _high_baseline_policy_assessment(
+                content,
+                current_content=request.current_content,
+                request=request,
+                candidate_index=index,
+            )
+            if policy_assessment is not None:
+                policy_payload = policy_assessment.to_dict()
+                strategy_record["policy_assessment"] = policy_payload
+                if policy_assessment.enforcement == "hard":
+                    filtered_high_baseline_regression_count += 1
+                    candidate_strategy_records.append(
+                        {
+                            "candidate_id": candidate_id,
+                            "materialization": materialization,
+                            "admission_status": "policy_filtered",
+                            **strategy_record,
+                        }
+                    )
+                    generation_outcomes.append(
+                        CandidateGenerationOutcome(
+                            candidate_index=index,
+                            kind=CandidateGenerationOutcomeKind.POLICY_FILTERED,
+                            candidate_id=candidate_id,
+                            candidate_fingerprint=content_fingerprint,
+                            semantic_fingerprint=semantic_package_fingerprint,
+                            policy_id=policy_assessment.policy_id,
+                            enforcement=policy_assessment.enforcement,
+                            repairable=True,
+                            reason_codes=policy_assessment.reason_codes,
+                            constraint_ids=policy_assessment.constraint_ids,
+                            active_frontier_key=_active_frontier_key(
+                                request,
+                                index,
+                            ),
+                            affected_case_ids=_policy_affected_case_ids(
+                                request,
+                                candidate_index=index,
+                            ),
+                            strategy_id=str(strategy_record["strategy_id"]),
+                        )
+                    )
+                    continue
+                high_baseline_policy_risk_count += 1
+            seen_content_fingerprints.add(semantic_package_fingerprint)
             candidates.append(candidate)
             context = request.evolution_context or compile_evolution_context(request)
             repair_focus = context.repair_focus_for_candidate(
@@ -336,6 +482,7 @@ class TraceReflectiveLLMMutator:
                 {
                     "candidate_id": candidate_id,
                     "materialization": materialization,
+                    "admission_status": "admitted",
                     "structural_edit_authorization": (
                         candidate.structural_edit_intent.authorization
                         if candidate.structural_edit_intent is not None
@@ -343,6 +490,36 @@ class TraceReflectiveLLMMutator:
                     ),
                     **strategy_record,
                 }
+            )
+            generation_outcomes.append(
+                CandidateGenerationOutcome(
+                    candidate_index=index,
+                    kind=CandidateGenerationOutcomeKind.ADMITTED,
+                    candidate_id=candidate_id,
+                    candidate_fingerprint=content_fingerprint,
+                    semantic_fingerprint=semantic_package_fingerprint,
+                    enforcement=(
+                        policy_assessment.enforcement
+                        if policy_assessment is not None
+                        else None
+                    ),
+                    reason_codes=(
+                        policy_assessment.reason_codes
+                        if policy_assessment is not None
+                        else ()
+                    ),
+                    constraint_ids=(
+                        policy_assessment.constraint_ids
+                        if policy_assessment is not None
+                        else ()
+                    ),
+                    active_frontier_key=_active_frontier_key(request, index),
+                    affected_case_ids=_policy_affected_case_ids(
+                        request,
+                        candidate_index=index,
+                    ),
+                    strategy_id=str(strategy_record["strategy_id"]),
+                )
             )
             lineage.append(
                 OptimizerLineage(
@@ -373,6 +550,9 @@ class TraceReflectiveLLMMutator:
             "filtered_high_baseline_regression_candidates": (
                 filtered_high_baseline_regression_count
             ),
+            "high_baseline_policy_risk_candidates": (
+                high_baseline_policy_risk_count
+            ),
             "filtered_duplicate_candidates": filtered_duplicate_count,
             "filtered_invalid_patch_candidates": filtered_invalid_patch_count,
             "repaired_transport_completion_violation_candidates": (
@@ -387,6 +567,9 @@ class TraceReflectiveLLMMutator:
             "candidate_materialization_failures": (
                 candidate_materialization_failures
             ),
+            "candidate_generation_outcomes": [
+                outcome.to_dict() for outcome in generation_outcomes
+            ],
         }
         if candidate_generation_failure is not None:
             diagnostics["candidate_generation_failure"] = candidate_generation_failure
@@ -394,6 +577,7 @@ class TraceReflectiveLLMMutator:
         return OptimizerResult(
             candidates=tuple(candidates),
             lineage=tuple(lineage),
+            generation_outcomes=tuple(generation_outcomes),
             diagnostics=diagnostics,
             private_context=private_repair_contracts,
         )
@@ -437,6 +621,17 @@ def _build_mutation_prompt(request: OptimizerRequest, *, candidate_index: int) -
             payload,
             ensure_ascii=False,
             sort_keys=True,
+        )
+    if payload.get("repair_context_mode") == "generation_policy_delta":
+        return (
+            "Repair the typed generation-policy violation in this bounded "
+            "EvolutionContext. Treat current_content as the authoritative base, "
+            "satisfy every candidate_validation_diagnostic constraint_id, and use "
+            "patch_intent for the smallest structural delta. A policy reason is a "
+            "source-shape constraint, not permission to copy historical candidate "
+            "content or broaden the task behavior. Preserve unrelated target behavior "
+            "and return exactly one expected_output object.\n"
+            + json.dumps(payload, ensure_ascii=False, sort_keys=True)
         )
     return (
         "Generate one candidate package from this bounded EvolutionContext. Follow "
@@ -1393,6 +1588,14 @@ def _candidate_strategy_record(
     return record
 
 
+def _candidate_strategy_id(
+    request: OptimizerRequest,
+    candidate_index: int,
+) -> str:
+    strategy = _population_strategy(request, candidate_index)
+    return f"{strategy['name']}:{candidate_index}"
+
+
 def _candidate_structural_edit_intent(
     output: Any,
     *,
@@ -1759,8 +1962,96 @@ def _addressed_lesson_ids(request: OptimizerRequest) -> tuple[str, ...]:
     return tuple(dict.fromkeys(lesson_ids))
 
 
-def _request_has_high_baseline_regression(request: OptimizerRequest) -> bool:
-    for feedback in (*request.validation_feedback, *request.prior_feedback):
+@dataclass(frozen=True)
+class _CandidatePolicyAssessment:
+    policy_id: str
+    enforcement: str
+    reason_codes: tuple[str, ...]
+    constraint_ids: tuple[str, ...]
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "policy_id": self.policy_id,
+            "enforcement": self.enforcement,
+            "reason_codes": list(self.reason_codes),
+            "constraint_ids": list(self.constraint_ids),
+        }
+
+
+def _active_frontier_key(
+    request: OptimizerRequest,
+    candidate_index: int,
+) -> str | None:
+    if candidate_index >= len(request.active_repair_frontier_keys):
+        return None
+    value = request.active_repair_frontier_keys[candidate_index]
+    return value if isinstance(value, str) and value else None
+
+
+def _feedback_semantic_keys(feedback: object) -> tuple[str, ...]:
+    metrics = getattr(feedback, "metrics", None)
+    if not isinstance(metrics, Mapping):
+        return ()
+    values: list[str] = []
+    direct = metrics.get("causal_semantic_key")
+    if isinstance(direct, str) and direct:
+        values.append(direct)
+    events = metrics.get("causal_failure_events")
+    if isinstance(events, (list, tuple)):
+        for event in events:
+            if not isinstance(event, Mapping):
+                continue
+            semantic_key = event.get("semantic_key")
+            if isinstance(semantic_key, str) and semantic_key:
+                values.append(semantic_key)
+    return tuple(dict.fromkeys(values))
+
+
+def _scoped_policy_feedback(
+    request: OptimizerRequest,
+    *,
+    candidate_index: int,
+) -> tuple[object, ...]:
+    """Bind historical policy signals to the scheduler's active frontier."""
+
+    active_frontier = _active_frontier_key(request, candidate_index)
+    current = tuple(request.validation_feedback)
+    if active_frontier is None:
+        # Current-run feedback is causally local. Historical feedback without a
+        # scheduler binding must not globally activate a generation policy.
+        return current
+    scoped: list[object] = []
+    for feedback in (*current, *request.prior_feedback):
+        semantic_keys = _feedback_semantic_keys(feedback)
+        if active_frontier in semantic_keys or (
+            feedback in current and not semantic_keys
+        ):
+            scoped.append(feedback)
+    return tuple(scoped)
+
+
+def _request_has_high_baseline_regression(
+    request: OptimizerRequest,
+    *,
+    candidate_index: int = 0,
+) -> bool:
+    for feedback in _scoped_policy_feedback(
+        request,
+        candidate_index=candidate_index,
+    ):
+        raw_metrics = getattr(feedback, "metrics", None)
+        raw_diagnostics = (
+            raw_metrics.get("candidate_validation_diagnostics")
+            if isinstance(raw_metrics, Mapping)
+            else None
+        )
+        if isinstance(raw_diagnostics, (list, tuple)) and any(
+            isinstance(item, Mapping)
+            and item.get("policy_id") == "preserve_high_baseline"
+            and item.get("enforcement") == "hard"
+            for item in raw_diagnostics
+        ):
+            return True
         summary = normalize_feedback_summary(feedback)
         metrics = summary.get("metrics")
         metrics = metrics if isinstance(metrics, Mapping) else {}
@@ -1793,17 +2084,57 @@ def _request_has_high_baseline_regression(request: OptimizerRequest) -> bool:
     return False
 
 
-def _is_weak_high_baseline_regression_candidate(
+def _focused_repair_base_content(
+    request: OptimizerRequest,
+    *,
+    candidate_index: int,
+) -> str | None:
+    context = request.evolution_context or compile_evolution_context(request)
+    focus = context.repair_focus_for_candidate(candidate_index=candidate_index)
+    package = (
+        focus.get("repair_candidate_package")
+        if isinstance(focus, Mapping)
+        else None
+    )
+    content = package.get("content") if isinstance(package, Mapping) else None
+    return content if isinstance(content, str) and content.strip() else None
+
+
+def _high_baseline_policy_assessment(
     content: str,
     *,
     current_content: str,
-    request: OptimizerRequest | None = None,
-) -> bool:
+    request: OptimizerRequest,
+    candidate_index: int,
+) -> _CandidatePolicyAssessment | None:
+    if not _request_has_high_baseline_regression(
+        request,
+        candidate_index=candidate_index,
+    ):
+        return None
+
     retained_delta = _retained_baseline_delta(
         content,
         current_content=current_content,
     )
     text = (retained_delta if retained_delta is not None else content).lower()
+    focused_base = _focused_repair_base_content(
+        request,
+        candidate_index=candidate_index,
+    )
+    if (
+        focused_base is not None
+        and focused_base.rstrip() != current_content.rstrip()
+        and content.rstrip().startswith(focused_base.rstrip())
+        and not content.rstrip().startswith(current_content.rstrip())
+    ):
+        return _CandidatePolicyAssessment(
+            policy_id="preserve_high_baseline",
+            enforcement="hard",
+            reason_codes=("authoritative_base_replaced_by_rejected_parent",),
+            constraint_ids=("preserve_authoritative_current_base",),
+        )
+
     has_preserve = bool(
         re.search(
             r"\b(preserve|keep|unchanged|baseline strengths|baseline behavior|保留|保持|不变)\b",
@@ -1825,9 +2156,13 @@ def _is_weak_high_baseline_regression_candidate(
         )
     )
     if has_preserve and has_behavior_delta and has_acceptance_check:
-        return not (
-            retained_delta is not None
-            or _preserves_lean_solution_path(text, request)
+        if retained_delta is not None or _preserves_lean_solution_path(text, request):
+            return None
+        return _CandidatePolicyAssessment(
+            policy_id="preserve_high_baseline",
+            enforcement="heuristic",
+            reason_codes=("lean_solution_path_not_explicitly_preserved",),
+            constraint_ids=("preserve_lean_solution_path",),
         )
 
     growth_ratio = len(content) / max(len(current_content), 1)
@@ -1844,14 +2179,85 @@ def _is_weak_high_baseline_regression_candidate(
         "扩大",
     )
     has_broad_guidance = _has_unnegated_guidance(text, broad_terms)
+    reasons: list[str] = []
+    constraints: list[str] = []
+    if has_broad_guidance:
+        reasons.append("broad_evidence_expansion_language")
+        constraints.append("avoid_broad_evidence_expansion")
     if retained_delta is not None:
         max_delta_chars = min(4_000, max(1_200, int(len(current_content) * 0.4)))
-        return has_broad_guidance or len(retained_delta) > max_delta_chars
-    return (
-        has_broad_guidance
-        or growth_ratio > 1.4
-        or not _preserves_lean_solution_path(text, request)
+        if len(retained_delta) > max_delta_chars:
+            reasons.append("target_delta_size_exceeds_heuristic_bound")
+            constraints.append("bound_target_delta_size")
+    else:
+        if growth_ratio > 1.4:
+            reasons.append("candidate_growth_exceeds_heuristic_ratio")
+            constraints.append("bound_target_delta_size")
+        if not _preserves_lean_solution_path(text, request):
+            reasons.append("lean_solution_path_not_explicitly_preserved")
+            constraints.append("preserve_lean_solution_path")
+    if not reasons:
+        return None
+    return _CandidatePolicyAssessment(
+        policy_id="preserve_high_baseline",
+        enforcement="heuristic",
+        reason_codes=tuple(dict.fromkeys(reasons)),
+        constraint_ids=tuple(dict.fromkeys(constraints)),
     )
+
+
+def _is_weak_high_baseline_regression_candidate(
+    content: str,
+    *,
+    current_content: str,
+    request: OptimizerRequest | None = None,
+) -> bool:
+    """Compatibility predicate: heuristic risk is observable, not a hard veto."""
+
+    if request is None:
+        return False
+    return _high_baseline_policy_assessment(
+        content,
+        current_content=current_content,
+        request=request,
+        candidate_index=0,
+    ) is not None
+
+
+def _policy_affected_case_ids(
+    request: OptimizerRequest,
+    *,
+    candidate_index: int,
+) -> tuple[str, ...]:
+    case_ids: list[str] = []
+    for feedback in _scoped_policy_feedback(
+        request,
+        candidate_index=candidate_index,
+    ):
+        metrics = getattr(feedback, "metrics", None)
+        if not isinstance(metrics, Mapping):
+            continue
+        raw_case_ids = metrics.get("affected_case_ids")
+        if isinstance(raw_case_ids, (list, tuple)):
+            case_ids.extend(
+                str(item) for item in raw_case_ids if isinstance(item, str) and item
+            )
+        raw_events = metrics.get("causal_failure_events")
+        if not isinstance(raw_events, (list, tuple)):
+            continue
+        for event in raw_events:
+            event_case_ids = (
+                event.get("affected_case_ids")
+                if isinstance(event, Mapping)
+                else None
+            )
+            if isinstance(event_case_ids, (list, tuple)):
+                case_ids.extend(
+                    str(item)
+                    for item in event_case_ids
+                    if isinstance(item, str) and item
+                )
+    return tuple(dict.fromkeys(case_ids))
 
 
 def _retained_baseline_delta(

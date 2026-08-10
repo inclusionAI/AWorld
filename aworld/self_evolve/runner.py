@@ -198,6 +198,7 @@ from aworld.self_evolve.budget import (
     SchedulerDecision,
     SchedulerState,
     StageAwareCandidateScheduler,
+    TERMINAL_ATTEMPT_STAGES,
     ZeroBudgetUsageProofProvider,
     aggregate_candidate_attempts,
 )
@@ -207,6 +208,8 @@ from aworld.self_evolve.concurrency import (
     SelfEvolveExecutionTelemetry,
 )
 from aworld.self_evolve.optimizers.base import (
+    CandidateGenerationOutcome,
+    CandidateGenerationOutcomeKind,
     CandidateOptimizer,
     CandidateSemanticValidationError,
     CandidateSourceDisposition,
@@ -341,6 +344,7 @@ from aworld.skills.release import normalize_verified_skill_release
 
 _MAX_PROGRESS_REPAIR_EXTENSION_ITERATIONS = 6
 _MAX_CONSECUTIVE_DUPLICATE_POPULATION_STALLS = 1
+_MAX_CONSECUTIVE_POLICY_FILTER_STALLS = 2
 _SEMANTIC_DEDUP_IDENTITY_VERSION = "aworld.self_evolve.semantic_dedup.v2"
 _VERIFICATION_CONTRACT_VERSION = "aworld.self_evolve.verification_contract.v2"
 _VERIFIED_APPLY_POLICIES = frozenset({"auto_verified", "verified_only"})
@@ -1667,11 +1671,163 @@ def _candidate_generation_failure_events(
     optimizer_diagnostics: Iterable[Mapping[str, object]],
 ) -> tuple[dict[str, object], ...]:
     failures: list[dict[str, object]] = []
+    policy_events: list[dict[str, object]] = []
     for item in _optimizer_iteration_diagnostics(optimizer_diagnostics):
         failures.extend(_candidate_materialization_failures(item))
-    if not failures:
+        policy_events.extend(_candidate_policy_filter_events(item))
+    materialization_events = _candidate_materialization_failure_events(failures)
+    events: list[dict[str, object]] = []
+    seen_semantic_keys: set[str] = set()
+    for event in (*materialization_events, *policy_events):
+        semantic_key = str(event["semantic_key"])
+        if semantic_key in seen_semantic_keys:
+            continue
+        seen_semantic_keys.add(semantic_key)
+        events.append(event)
+    return tuple(events)
+
+
+def _candidate_policy_filter_outcomes(
+    diagnostics: Mapping[str, object],
+) -> tuple[CandidateGenerationOutcome, ...]:
+    raw_outcomes = diagnostics.get("candidate_generation_outcomes")
+    if not isinstance(raw_outcomes, (list, tuple)):
         return ()
-    return _candidate_materialization_failure_events(failures)
+    outcomes: list[CandidateGenerationOutcome] = []
+    for item in raw_outcomes[:64]:
+        if not isinstance(item, Mapping):
+            continue
+        try:
+            outcome = CandidateGenerationOutcome.from_dict(item)
+        except (TypeError, ValueError):
+            continue
+        if outcome.kind is CandidateGenerationOutcomeKind.POLICY_FILTERED:
+            outcomes.append(outcome)
+    return tuple(outcomes)
+
+
+def _candidate_policy_filter_event(
+    outcome: CandidateGenerationOutcome,
+) -> dict[str, object]:
+    constraint_identity = json.dumps(
+        {
+            "policy_id": outcome.policy_id,
+            "constraint_ids": list(outcome.constraint_ids),
+            "enforcement": outcome.enforcement,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    event = ReplayFailureEvent(
+        code="candidate_generation_policy_filtered",
+        owner=FailureOwner.CANDIDATE,
+        stage=FailureStage.CANDIDATE_GENERATION,
+        scope=FailureScope.CANDIDATE,
+        repairable=outcome.repairable,
+        category="candidate_generation_policy",
+        summary="candidate violated a deterministic generation policy",
+        diagnostics={
+            "policy_id": outcome.policy_id,
+            "enforcement": outcome.enforcement,
+            "reason_codes": list(outcome.reason_codes),
+            "constraint_ids": list(outcome.constraint_ids),
+            "active_frontier_key": outcome.active_frontier_key,
+            "affected_case_ids": list(outcome.affected_case_ids),
+            "candidate_fingerprint": outcome.candidate_fingerprint,
+            "semantic_fingerprint": outcome.semantic_fingerprint,
+            "strategy_id": outcome.strategy_id,
+        },
+        requirement_id=(
+            "candidate-policy:sha256:"
+            + hashlib.sha256(constraint_identity.encode("utf-8")).hexdigest()
+        ),
+    )
+    return event.to_dict()
+
+
+def _candidate_policy_frontier_stalled_event(
+    outcomes: Sequence[CandidateGenerationOutcome],
+) -> dict[str, object]:
+    policy_ids = tuple(
+        sorted(
+            {
+                str(outcome.policy_id)
+                for outcome in outcomes
+                if outcome.policy_id
+            }
+        )
+    )
+    constraint_ids = tuple(
+        sorted(
+            {
+                constraint_id
+                for outcome in outcomes
+                for constraint_id in outcome.constraint_ids
+            }
+        )
+    )
+    signature = _candidate_policy_filter_signature(outcomes) or "unknown"
+    event = ReplayFailureEvent(
+        code="candidate_generation_policy_frontier_stalled",
+        owner=FailureOwner.CANDIDATE,
+        stage=FailureStage.CANDIDATE_GENERATION,
+        scope=FailureScope.CANDIDATE,
+        repairable=False,
+        category="candidate_generation_policy",
+        summary="generation policy frontier repeated without structural progress",
+        diagnostics={
+            "policy_ids": list(policy_ids),
+            "constraint_ids": list(constraint_ids),
+            "filter_signature": signature,
+            "consecutive_stall_limit": _MAX_CONSECUTIVE_POLICY_FILTER_STALLS,
+        },
+        requirement_id=signature,
+    )
+    return event.to_dict()
+
+
+def _candidate_policy_filter_events(
+    diagnostics: Mapping[str, object],
+) -> tuple[dict[str, object], ...]:
+    events: list[dict[str, object]] = []
+    seen_semantic_keys: set[str] = set()
+    for outcome in _candidate_policy_filter_outcomes(diagnostics):
+        event = _candidate_policy_filter_event(outcome)
+        semantic_key = str(event["semantic_key"])
+        if semantic_key in seen_semantic_keys:
+            continue
+        seen_semantic_keys.add(semantic_key)
+        events.append(event)
+    return tuple(events)
+
+
+def _candidate_policy_filter_signature(
+    outcomes: Sequence[CandidateGenerationOutcome],
+) -> str | None:
+    policy_outcomes = [
+        outcome
+        for outcome in outcomes
+        if outcome.kind is CandidateGenerationOutcomeKind.POLICY_FILTERED
+    ]
+    if not policy_outcomes:
+        return None
+    payload = sorted(
+        {
+            (
+                str(outcome.policy_id),
+                str(outcome.enforcement),
+                tuple(sorted(outcome.reason_codes)),
+                tuple(sorted(outcome.constraint_ids)),
+                tuple(sorted(outcome.affected_case_ids)),
+            )
+            for outcome in policy_outcomes
+        }
+    )
+    return "candidate-policy-filter:sha256:" + hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode(
+            "utf-8"
+        )
+    ).hexdigest()
 
 
 def _candidate_generation_failure_event(
@@ -2006,6 +2162,7 @@ _CANDIDATE_REPAIRABLE_GATE_STAGES = {
     "replay_stability_margin": FailureStage.EVALUATION,
     "evidence_quality": FailureStage.EVALUATION,
     "replay_confidence": FailureStage.TASK_ROLLOUT,
+    "replay_evaluator_admission": FailureStage.TASK_ROLLOUT,
     "target_behavior_delta": FailureStage.CANDIDATE_GENERATION,
 }
 _FRAMEWORK_SHARED_GATE_STAGES = {
@@ -2914,6 +3071,10 @@ class SelfEvolveRunner:
         infrastructure_blocked = False
         progress_repair_families: set[str] = set()
         duplicate_population_stalls = 0
+        consecutive_policy_filter_stalls = 0
+        last_policy_filter_signature: str | None = None
+        last_policy_filter_outcomes: tuple[CandidateGenerationOutcome, ...] = ()
+        generation_policy_frontier_exhausted = False
         candidate_generation_infrastructure_retries = 0
         raw_generation_attempt_count = 0
         semantic_lesson_duplicate_attempt_count = 0
@@ -3225,6 +3386,9 @@ class SelfEvolveRunner:
                         }
                     )
                 ),
+                active_repair_frontier_keys=tuple(
+                    slot.semantic_key for slot in scheduler_decision.slots
+                ),
             )
             optimizer_request = replace(
                 optimizer_request,
@@ -3293,7 +3457,16 @@ class SelfEvolveRunner:
                 apply_policy=apply_policy,
                 verification_settings=verification_settings,
             )
-            raw_generation_attempt_count += len(optimizer_result.candidates)
+            generation_outcomes = tuple(optimizer_result.generation_outcomes)
+            raw_generation_attempt_count += (
+                sum(
+                    outcome.kind
+                    is not CandidateGenerationOutcomeKind.INFRASTRUCTURE_FAILED
+                    for outcome in generation_outcomes
+                )
+                if generation_outcomes
+                else len(optimizer_result.candidates)
+            )
             population_execution = optimizer_result.diagnostics.get(
                 "candidate_population_execution"
             )
@@ -3348,6 +3521,9 @@ class SelfEvolveRunner:
             )
             iteration_optimizer_diagnostics = {
                 **dict(optimizer_result.diagnostics),
+                "candidate_generation_outcomes": [
+                    outcome.to_dict() for outcome in generation_outcomes
+                ],
                 "filtered_known_duplicate_candidates": filtered_known_duplicates,
                 "filtered_semantic_lesson_duplicate_candidates": (
                     filtered_semantic_lesson_duplicates
@@ -3400,16 +3576,45 @@ class SelfEvolveRunner:
             )
             if candidate_protocol_overflow_count:
                 invalid_slots_remaining = generation_slot_count
+            outcomes_by_slot = {
+                outcome.candidate_index: outcome
+                for outcome in generation_outcomes
+                if outcome.candidate_index < generation_slot_count
+            }
+            candidates_by_id = {
+                candidate.candidate_id: candidate for candidate in generated
+            }
+            legacy_candidates = iter(
+                candidate
+                for candidate in generated
+                if candidate.candidate_id
+                not in {
+                    outcome.candidate_id
+                    for outcome in generation_outcomes
+                    if outcome.candidate_id is not None
+                }
+            )
             for slot_index in range(generation_slot_count):
+                generation_outcome = outcomes_by_slot.get(slot_index)
                 generated_candidate = (
-                    generated[slot_index]
-                    if slot_index < len(generated)
+                    candidates_by_id.get(generation_outcome.candidate_id)
+                    if generation_outcome is not None
+                    and generation_outcome.kind
+                    is CandidateGenerationOutcomeKind.ADMITTED
+                    and generation_outcome.candidate_id is not None
                     else None
                 )
+                if generated_candidate is None and generation_outcome is None:
+                    generated_candidate = next(legacy_candidates, None)
                 if generated_candidate is None:
-                    placeholder = _candidate_attempt_placeholder(
-                        iteration_index,
-                        slot_index,
+                    placeholder = (
+                        generation_outcome.candidate_id
+                        if generation_outcome is not None
+                        and generation_outcome.candidate_id is not None
+                        else _candidate_attempt_placeholder(
+                            iteration_index,
+                            slot_index,
+                        )
                     )
                     key = attempt_tracker.start(
                         iteration=iteration_index,
@@ -3417,8 +3622,25 @@ class SelfEvolveRunner:
                         candidate_id=placeholder,
                         usage=(generation_usage if slot_index == 0 else None),
                     )
+                    if (
+                        generation_outcome is not None
+                        and generation_outcome.kind
+                        is CandidateGenerationOutcomeKind.POLICY_FILTERED
+                    ):
+                        attempt_tracker.emit(
+                            key,
+                            CandidateAttemptStage.POLICY_FILTERED,
+                        )
+                        attempt_tracker.emit(
+                            key,
+                            CandidateAttemptStage.NOT_RUN,
+                            reason_code="candidate_policy_filtered",
+                        )
+                        continue
                     if candidate_protocol_overflow_count:
                         reason_code = "candidate_population_exceeds_scheduled_slots"
+                    elif generation_outcome is not None:
+                        reason_code = generation_outcome.kind.value
                     elif invalid_slots_remaining:
                         invalid_slots_remaining -= 1
                         reason_code = "candidate_protocol_invalid"
@@ -3709,6 +3931,97 @@ class SelfEvolveRunner:
                 ),
             )
             if not candidate_population:
+                policy_filter_outcomes = tuple(
+                    outcome
+                    for outcome in generation_outcomes
+                    if outcome.kind
+                    is CandidateGenerationOutcomeKind.POLICY_FILTERED
+                )
+                if policy_filter_outcomes:
+                    last_policy_filter_outcomes = policy_filter_outcomes
+                    policy_events = tuple(
+                        _candidate_policy_filter_event(outcome)
+                        for outcome in policy_filter_outcomes
+                    )
+                    validation_feedback = _merge_validation_feedback(
+                        validation_feedback,
+                        (
+                            EvaluationSummary(
+                                variant_id=(
+                                    "candidate-policy-filter-"
+                                    f"{iteration_index + 1}"
+                                ),
+                                dataset_split="validation",
+                                metrics={
+                                    "failed_gates": [
+                                        "candidate_generation_policy"
+                                    ],
+                                    "candidate_status": "rejected",
+                                    "failure_class": "candidate",
+                                    "repairable": True,
+                                    "candidate_policy_filter_count": len(
+                                        policy_filter_outcomes
+                                    ),
+                                    "candidate_validation_diagnostics": [
+                                        {
+                                            "code": (
+                                                "candidate_generation_policy_filtered"
+                                            ),
+                                            "stage": "candidate_generation",
+                                            "failure_class": "candidate",
+                                            "repairable": True,
+                                            "policy_id": outcome.policy_id,
+                                            "enforcement": outcome.enforcement,
+                                            "reason_codes": list(
+                                                outcome.reason_codes
+                                            ),
+                                            "constraint_ids": list(
+                                                outcome.constraint_ids
+                                            ),
+                                            "active_frontier_key": (
+                                                outcome.active_frontier_key
+                                            ),
+                                            "affected_case_ids": list(
+                                                outcome.affected_case_ids
+                                            ),
+                                        }
+                                        for outcome in policy_filter_outcomes
+                                    ],
+                                    "causal_failure_events": list(policy_events),
+                                },
+                            ),
+                        ),
+                    )
+                    iteration_reports.append(
+                        {
+                            "iteration": iteration_index + 1,
+                            "candidate_id": None,
+                            "status": "policy_filtered",
+                            "failed_gates": [
+                                "candidate_generation_policy"
+                            ],
+                            "filtered_candidate_count": len(
+                                policy_filter_outcomes
+                            ),
+                        }
+                    )
+                    signature = _candidate_policy_filter_signature(
+                        policy_filter_outcomes
+                    )
+                    if signature == last_policy_filter_signature:
+                        consecutive_policy_filter_stalls += 1
+                    else:
+                        last_policy_filter_signature = signature
+                        consecutive_policy_filter_stalls = 1
+                    if (
+                        len(policy_filter_outcomes) == generation_slot_count
+                        and consecutive_policy_filter_stalls
+                        >= _MAX_CONSECUTIVE_POLICY_FILTER_STALLS
+                    ):
+                        generation_policy_frontier_exhausted = True
+                        break
+                    if len(policy_filter_outcomes) == generation_slot_count:
+                        continue
                 generation_failure = optimizer_result.diagnostics.get(
                     "candidate_generation_failure"
                 )
@@ -3902,6 +4215,8 @@ class SelfEvolveRunner:
                 continue
 
             duplicate_population_stalls = 0
+            consecutive_policy_filter_stalls = 0
+            last_policy_filter_signature = None
             candidate_generation_infrastructure_retries = 0
 
             local_gate_results_by_candidate: dict[str, tuple[GateResult, ...]] = {}
@@ -4337,7 +4652,15 @@ class SelfEvolveRunner:
                 and not all_candidates
             )
             candidate_generation_failure_events = (
-                _candidate_generation_failure_events(optimizer_diagnostics)
+                (
+                    _candidate_policy_frontier_stalled_event(
+                        last_policy_filter_outcomes
+                    ),
+                )
+                if generation_policy_frontier_exhausted
+                else _candidate_generation_failure_events(
+                    optimizer_diagnostics
+                )
             )
             candidate_generation_failure_event = (
                 candidate_generation_failure_events[0]
@@ -4348,6 +4671,14 @@ class SelfEvolveRunner:
                 "generated_candidate_count": len(all_candidates),
                 "iterations": len(optimizer_diagnostics),
             }
+            if raw_generation_attempt_count:
+                candidate_generation_details["generation_attempt_count"] = (
+                    raw_generation_attempt_count
+                )
+            if generation_policy_frontier_exhausted:
+                candidate_generation_details[
+                    "generation_policy_frontier_exhausted"
+                ] = True
             if candidate_generation_failure_event is not None:
                 candidate_generation_details.update(
                     {
@@ -4376,6 +4707,11 @@ class SelfEvolveRunner:
                             "contract"
                         )
                         if semantic_dedup_exhausted
+                        else (
+                            "candidate generation policy frontier repeated without "
+                            "structural progress"
+                        )
+                        if generation_policy_frontier_exhausted
                         else "optimizer did not produce a replayable candidate"
                         if _is_verified_apply_policy(apply_policy)
                         else "optimizer did not produce a candidate"
@@ -4593,6 +4929,9 @@ class SelfEvolveRunner:
             _persist_lineage_lifecycle(
                 optimizer_lineage_paths_by_candidate,
                 iteration_states=iteration_states,
+                attempt_events=self.store.read_all_candidate_attempt_events(
+                    run_id
+                ),
                 selected_candidate_id=(
                     selected_candidate.candidate_id if selected_candidate is not None else None
                 ),
@@ -4658,6 +4997,15 @@ class SelfEvolveRunner:
                 "generated_candidate_slot_count": generated_candidate_slot_count,
                 "unique_generated_candidate_count": len(all_candidates),
                 "generation_frontier_exhausted": generation_frontier_exhausted,
+                "generation_policy_frontier_exhausted": (
+                    generation_policy_frontier_exhausted
+                ),
+                "policy_filtered_candidate_count": sum(
+                    len(_candidate_policy_filter_outcomes(diagnostics))
+                    for diagnostics in _optimizer_iteration_diagnostics(
+                        optimizer_diagnostics
+                    )
+                ),
                 "max_authoritative_candidates": (
                     self.max_full_evaluation_candidates
                 ),
@@ -4972,11 +5320,7 @@ class SelfEvolveRunner:
         )
         if (
             not _is_verified_apply_policy(apply_policy)
-            or (
-                len(conformance_candidates) == 1
-                and not capability_requirements
-                and not repair_conformance_contracts
-            )
+            or len(conformance_candidates) == 1
             or screening_dataset is None
         ):
             return conformance_candidates, _combined_candidate_validation_report(
@@ -4999,6 +5343,9 @@ class SelfEvolveRunner:
         )
         attempts: list[dict[str, object]] = []
         selected_candidate: CandidateVariant | None = None
+        passing_candidates: list[
+            tuple[CandidateVariant, tuple[int, ...]]
+        ] = []
         screening_baseline_replay_dir = _find_reusable_baseline_replay_dir(
             store=self.store,
             run_id=run_id,
@@ -5164,6 +5511,11 @@ class SelfEvolveRunner:
                 attempt_tracker is not None
                 and attempt_key is not None
                 and replay_result is None
+                and (
+                    replay_gate is None
+                    or not replay_gate.passed
+                    or replay_dataset is None
+                )
                 and not attempt_tracker.terminal(attempt_key)
             ):
                 terminal_stage = (
@@ -5181,6 +5533,19 @@ class SelfEvolveRunner:
                     ),
                 )
                 screening_terminal_ids.add(candidate.candidate_id)
+            screening_admission_gate = _replay_evaluator_admission_gate(
+                replay_result,
+                apply_policy=apply_policy,
+            )
+            if (
+                replay_gate is not None
+                and replay_gate.passed
+                and screening_admission_gate is not None
+                and not screening_admission_gate.passed
+            ):
+                replay_gate = _with_typed_gate_failure_event(
+                    screening_admission_gate
+                )
             if (
                 conformance_contract is not None
                 and replay_gate is not None
@@ -5205,6 +5570,7 @@ class SelfEvolveRunner:
                 and replay_gate is not None
                 and replay_gate.passed
             )
+            screening_rank = _candidate_screening_rank(replay_result)
             attempts.append(
                 {
                     "candidate_id": candidate.candidate_id,
@@ -5216,11 +5582,13 @@ class SelfEvolveRunner:
                         else "screening replay was unavailable"
                     ),
                     "details": replay_gate.details if replay_gate is not None else None,
+                    "screening_rank": _candidate_screening_rank_details(
+                        screening_rank
+                    ),
                 }
             )
             if passed:
-                selected_candidate = candidate
-                break
+                passing_candidates.append((candidate, screening_rank))
             if shared_screening_failure and not _screening_attempt_requires_candidate_repair(
                 attempts[-1]
             ):
@@ -5237,6 +5605,12 @@ class SelfEvolveRunner:
                     screening_terminal_ids.add(candidate.candidate_id)
                 stopped_by_shared_screening = True
                 break
+
+        if passing_candidates and not stopped_by_shared_screening:
+            selected_candidate = max(
+                passing_candidates,
+                key=lambda item: item[1],
+            )[0]
 
         if stopped_by_shared_screening:
             attempted_ids = {
@@ -5264,7 +5638,10 @@ class SelfEvolveRunner:
                         reason_code="screening_shared_infrastructure_blocked",
                     )
 
-        selection_reason = "representative replay produced a comparable pair"
+        selection_reason = (
+            "all candidates completed representative replay; the strongest "
+            "deterministic replay evidence was promoted"
+        )
         if selected_candidate is None:
             if stopped_by_shared_screening:
                 selection_reason = (
@@ -5303,10 +5680,13 @@ class SelfEvolveRunner:
         selected_ids = {
             candidate.candidate_id for candidate in selected_candidates
         }
+        passing_candidate_ids = {
+            candidate.candidate_id for candidate, _ in passing_candidates
+        }
         ranked_below_screening_ids = tuple(
             candidate.candidate_id
             for candidate in conformance_candidates
-            if candidate.candidate_id not in attempted_ids
+            if candidate.candidate_id in passing_candidate_ids
             and candidate.candidate_id not in selected_ids
             and not stopped_by_shared_screening
         )
@@ -5323,7 +5703,11 @@ class SelfEvolveRunner:
             ):
                 attempt_tracker.emit(
                     pending_key,
-                    CandidateAttemptStage.NOT_RUN,
+                    (
+                        CandidateAttemptStage.REJECTED
+                        if candidate_id in attempted_ids
+                        else CandidateAttemptStage.NOT_RUN
+                    ),
                     reason_code="ranked_below_screening_frontier",
                 )
         candidate_dispositions = {
@@ -5363,6 +5747,13 @@ class SelfEvolveRunner:
                 "selection_reason": selection_reason,
                 "baseline_repetitions": 1,
                 "candidate_repetitions": 1,
+                "progressive_repetition": True,
+                "authoritative_baseline_repetitions": (
+                    self.baseline_replay_repetitions
+                ),
+                "authoritative_candidate_repetitions": (
+                    self.candidate_replay_repetitions
+                ),
                 "attempts": attempts,
                 "stopped_by_shared_infrastructure": stopped_by_shared_screening,
             }
@@ -6284,6 +6675,37 @@ class SelfEvolveRunner:
         )
         if replay_confidence_gate is not None:
             gate_results.append(replay_confidence_gate)
+
+        replay_evaluator_admission_gate = _replay_evaluator_admission_gate(
+            replay_result,
+            apply_policy=apply_policy,
+        )
+        if replay_evaluator_admission_gate is not None:
+            replay_evaluator_admission_gate = _with_typed_gate_failure_event(
+                replay_evaluator_admission_gate
+            )
+            gate_results.append(replay_evaluator_admission_gate)
+            if not replay_evaluator_admission_gate.passed:
+                if (
+                    attempt_tracker is not None
+                    and attempt_key is not None
+                    and not attempt_tracker.terminal(attempt_key)
+                ):
+                    attempt_tracker.emit(
+                        attempt_key,
+                        CandidateAttemptStage.REJECTED,
+                        reason_code="deterministic_replay_evidence_regressed",
+                    )
+                return _terminal_candidate_evaluation_result(
+                    candidate=candidate,
+                    iteration_number=iteration_number,
+                    candidate_number=candidate_number,
+                    candidate_count=candidate_count,
+                    gate_results=gate_results,
+                    status="rejected",
+                    replay_result=replay_result,
+                    replay_dataset=replay_dataset,
+                )
 
         target_behavior_gate = _with_typed_gate_failure_event(
             TargetBehaviorDeltaGate().evaluate(
@@ -7351,9 +7773,21 @@ class SelfEvolveRunner:
         discovered_package_fingerprint = (
             capability.package_fingerprint if capability is not None else "none"
         )
-        capability_cache_key = (
-            f"{requested_package_fingerprint}:{discovered_package_fingerprint}"
-        )
+        if discovery_error is not None:
+            # Invalid candidate packages must retain distinct diagnostics.  A
+            # successfully discovered capability, however, is keyed only by its
+            # executable surface so behavior-only siblings can share adaptation.
+            capability_cache_key = (
+                f"candidate-discovery-error:{requested_package_fingerprint}"
+            )
+        elif capability is not None:
+            capability_cache_key = (
+                f"replay-capability:{discovered_package_fingerprint}"
+            )
+        elif capability_skill_root is not None:
+            capability_cache_key = "candidate-without-replay-capability"
+        else:
+            capability_cache_key = "framework-only"
         cache_key = (run_id, dataset_fingerprint, capability_cache_key)
         cached = self._replay_adaptation_cache.get(cache_key)
         if cached is not None:
@@ -13092,6 +13526,7 @@ def _persist_lineage_lifecycle(
     lineage_paths_by_candidate: Mapping[str, str],
     *,
     iteration_states: list[dict[str, object]],
+    attempt_events: tuple[CandidateAttemptEvent, ...] = (),
     selected_candidate_id: str | None,
     post_apply: Mapping[str, object] | None,
 ) -> None:
@@ -13101,6 +13536,9 @@ def _persist_lineage_lifecycle(
         candidate_id = getattr(candidate, "candidate_id", None)
         if isinstance(candidate_id, str) and candidate_id:
             states_by_candidate[candidate_id] = state
+    events_by_candidate: dict[str, list[CandidateAttemptEvent]] = {}
+    for event in attempt_events:
+        events_by_candidate.setdefault(event.candidate_id, []).append(event)
 
     for candidate_id, raw_path in lineage_paths_by_candidate.items():
         path = Path(raw_path)
@@ -13109,9 +13547,40 @@ def _persist_lineage_lifecycle(
         except Exception:
             continue
         state = states_by_candidate.get(candidate_id)
+        candidate_events = sorted(
+            events_by_candidate.get(candidate_id, ()),
+            key=lambda event: (event.key.iteration, event.key.slot, event.sequence),
+        )
+        payload["screened"] = any(
+            event.stage is CandidateAttemptStage.SCREENING
+            for event in candidate_events
+        )
         if state is None:
-            payload.setdefault("lifecycle_status", "generated")
-            payload.setdefault("replayed", False)
+            terminal_event = next(
+                (
+                    event
+                    for event in reversed(candidate_events)
+                    if event.stage in TERMINAL_ATTEMPT_STAGES
+                ),
+                None,
+            )
+            payload["lifecycle_status"] = (
+                terminal_event.stage.value
+                if terminal_event is not None
+                else "generated"
+            )
+            payload["replayed"] = any(
+                event.stage
+                in {
+                    CandidateAttemptStage.REPLAY_EVIDENCE_REUSED,
+                    CandidateAttemptStage.PAIRED_REPLAY_STARTED,
+                    CandidateAttemptStage.PAIRED_REPLAY_COMPLETED,
+                    CandidateAttemptStage.PAIRED_REPLAY_COMPARABLE,
+                }
+                for event in candidate_events
+            )
+            if terminal_event is not None and terminal_event.reason_code:
+                payload["lifecycle_reason_code"] = terminal_event.reason_code
         else:
             status = state.get("status")
             payload["lifecycle_status"] = str(status or "generated")
@@ -13550,6 +14019,7 @@ def _repair_feedback_from_selected_candidate(
     )
     judge_repair_gates = {
         "evidence_quality",
+        "replay_evaluator_admission",
         "required_verification",
         "held_out_verification",
         "judge_only_signal",
@@ -14588,6 +15058,9 @@ def _combined_candidate_validation_report(
             "representative_case_ids",
             "baseline_repetitions",
             "candidate_repetitions",
+            "progressive_repetition",
+            "authoritative_baseline_repetitions",
+            "authoritative_candidate_repetitions",
             "ranked_below_screening_candidate_ids",
             "candidate_dispositions",
         ):
@@ -15190,6 +15663,90 @@ def _replay_confidence_gate(
         passed=True,
         reason="replay comparison has sufficient confidence for policy",
         details=base_details,
+    )
+
+
+def _replay_evaluator_admission_gate(
+    replay_result: CandidateReplayResult | None,
+    *,
+    apply_policy: str,
+) -> GateResult | None:
+    """Reject deterministic evidence regressions before an expensive judge run."""
+
+    if replay_result is None or not _is_verified_apply_policy(apply_policy):
+        return None
+    baseline_metrics = replay_result.baseline.metrics or {}
+    candidate_metrics = replay_result.candidate.metrics or {}
+    regressions: list[dict[str, object]] = []
+    observed_metrics: list[str] = []
+
+    for metric_name in (
+        "evidence_strategy_passed",
+        "evidence_bundle_valid",
+        "evidence_manifest_valid",
+    ):
+        baseline_value = baseline_metrics.get(metric_name)
+        candidate_value = candidate_metrics.get(metric_name)
+        if isinstance(baseline_value, bool) or isinstance(candidate_value, bool):
+            observed_metrics.append(metric_name)
+        if baseline_value is True and candidate_value is False:
+            regressions.append(
+                {
+                    "metric": metric_name,
+                    "baseline": True,
+                    "candidate": False,
+                    "direction": "true_to_false",
+                }
+            )
+
+    for metric_name in (
+        "evidence_manifest_invalid_entry_count",
+        "evidence_unmanifested_artifact_reference_count",
+    ):
+        baseline_value = baseline_metrics.get(metric_name)
+        candidate_value = candidate_metrics.get(metric_name)
+        if not (
+            isinstance(baseline_value, (int, float))
+            and not isinstance(baseline_value, bool)
+            and isinstance(candidate_value, (int, float))
+            and not isinstance(candidate_value, bool)
+        ):
+            continue
+        observed_metrics.append(metric_name)
+        if candidate_value > baseline_value:
+            regressions.append(
+                {
+                    "metric": metric_name,
+                    "baseline": baseline_value,
+                    "candidate": candidate_value,
+                    "direction": "increased",
+                }
+            )
+
+    passed = not regressions
+    return GateResult(
+        gate_name="replay_evaluator_admission",
+        passed=passed,
+        reason=(
+            "deterministic replay evidence did not regress"
+            if passed
+            else (
+                "candidate deterministically regressed replay evidence; "
+                "authoritative evaluator was skipped"
+            )
+        ),
+        details={
+            "failure_class": None if passed else FailureOwner.CANDIDATE.value,
+            "failure_owner": None if passed else FailureOwner.CANDIDATE.value,
+            "failure_scope": None if passed else FailureScope.CANDIDATE.value,
+            "repairable": not passed,
+            "code": (
+                None if passed else "deterministic_replay_evidence_regression"
+            ),
+            "observed_metrics": sorted(set(observed_metrics)),
+            "regressions": regressions,
+            "evaluator_skipped": not passed,
+        },
     )
 
 
@@ -17142,6 +17699,52 @@ def _population_report(
     return report
 
 
+def _candidate_screening_rank(
+    replay_result: CandidateReplayResult | None,
+) -> tuple[int, ...]:
+    if replay_result is None:
+        return (0, 0, 0, 0, 0, 0, 0, 0)
+    candidate = replay_result.candidate
+    metrics = candidate.metrics or {}
+
+    def tri_state(value: object) -> int:
+        if value is True:
+            return 1
+        if value is False:
+            return -1
+        return 0
+
+    def count(value: object) -> int:
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return int(value)
+        return 0
+
+    return (
+        int(candidate.succeeded),
+        count(metrics.get("successful_repetition_count")),
+        tri_state(metrics.get("evidence_strategy_passed")),
+        tri_state(metrics.get("evidence_bundle_valid")),
+        tri_state(metrics.get("evidence_manifest_valid")),
+        -count(metrics.get("evidence_manifest_invalid_entry_count")),
+        -count(metrics.get("evidence_unmanifested_artifact_reference_count")),
+        -count(metrics.get("failed_repetition_count")),
+    )
+
+
+def _candidate_screening_rank_details(rank: tuple[int, ...]) -> dict[str, int]:
+    labels = (
+        "succeeded",
+        "successful_repetition_count",
+        "evidence_strategy_passed",
+        "evidence_bundle_valid",
+        "evidence_manifest_valid",
+        "negative_invalid_manifest_entry_count",
+        "negative_unmanifested_artifact_reference_count",
+        "negative_failed_repetition_count",
+    )
+    return dict(zip(labels, rank, strict=True))
+
+
 def _candidate_screening_dataset(
     dataset: SelfEvolveDataset,
     *,
@@ -17153,7 +17756,7 @@ def _candidate_screening_dataset(
     replayable_cases = tuple(
         case for case in dataset.cases if _is_replayable_user_task_case(case)
     )
-    if len(replayable_cases) <= 1:
+    if not replayable_cases:
         return None
 
     replayable_by_id = {case.case_id: case for case in replayable_cases}
@@ -17331,7 +17934,7 @@ def _candidate_population_rank_key(
     *,
     strategy: Mapping[str, object],
     current_content: str,
-) -> tuple[int, int, int, int, int, str]:
+) -> tuple[int, int, int, int, int, int, str]:
     mutation_rank = _candidate_mutation_rank(
         candidate,
         current_content=current_content,
@@ -17339,6 +17942,13 @@ def _candidate_population_rank_key(
     priority_rank = {"high": 0, "medium": 1, "low": 2}.get(
         str(strategy.get("replay_priority") or "low"),
         2,
+    )
+    policy_assessment = strategy.get("policy_assessment")
+    policy_risk_rank = (
+        1
+        if isinstance(policy_assessment, Mapping)
+        and policy_assessment.get("enforcement") == "heuristic"
+        else 0
     )
     addressed_count = _sequence_length(strategy.get("addressed_lessons"))
     preserve_count = _sequence_length(strategy.get("preserved_success_behaviors"))
@@ -17350,6 +17960,7 @@ def _candidate_population_rank_key(
     # Prefer candidates that explicitly address lessons and preserve successful
     # behavior, then keep replay cost bounded by favoring smaller deltas.
     return (
+        policy_risk_rank,
         mutation_rank,
         priority_rank,
         -addressed_count,
@@ -17957,9 +18568,10 @@ def _feedback_has_evidence_preservation_issue(prompt: str | None) -> bool:
         failed_gates = summary.get("failed_gates")
         if not isinstance(failed_gates, list):
             failed_gates = metrics.get("failed_gates")
-        if isinstance(failed_gates, list) and "evidence_quality" in {
-            str(gate) for gate in failed_gates
-        }:
+        if isinstance(failed_gates, list) and {
+            "evidence_quality",
+            "replay_evaluator_admission",
+        }.intersection(str(gate) for gate in failed_gates):
             return True
         if evidence.get("evidence_compacted") is True:
             return True

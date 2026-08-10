@@ -13,6 +13,7 @@ from aworld.self_evolve.feedback import normalize_feedback_summary
 from aworld.self_evolve.evolution_context import compile_evolution_context
 from aworld.self_evolve.lessons import LessonRecord
 from aworld.self_evolve.optimizers.base import (
+    CandidateGenerationOutcomeKind,
     CandidateSemanticValidationError,
     OptimizerRequest,
 )
@@ -2943,7 +2944,7 @@ async def test_llm_mutator_keeps_typed_intent_after_same_content_untyped_frontie
 
 
 @pytest.mark.asyncio
-async def test_llm_mutator_filters_weak_high_baseline_regression_candidate() -> None:
+async def test_llm_mutator_ranks_heuristic_high_baseline_regression_risk() -> None:
     async def mutate(prompt: str) -> dict:
         return {
             "content": (
@@ -2978,12 +2979,71 @@ async def test_llm_mutator_filters_weak_high_baseline_regression_candidate() -> 
     optimizer = TraceReflectiveLLMMutator(mutate_text=mutate)
     result = await optimizer.propose(request)
 
-    assert result.candidates == ()
-    assert result.diagnostics["filtered_high_baseline_regression_candidates"] == 1
+    assert len(result.candidates) == 1
+    assert result.diagnostics["filtered_high_baseline_regression_candidates"] == 0
+    assert result.diagnostics["high_baseline_policy_risk_candidates"] == 1
+    assert result.generation_outcomes[0].kind is (
+        CandidateGenerationOutcomeKind.ADMITTED
+    )
+    assert result.generation_outcomes[0].enforcement == "heuristic"
+    assert "avoid_broad_evidence_expansion" in (
+        result.generation_outcomes[0].constraint_ids
+    )
 
 
 @pytest.mark.asyncio
-async def test_llm_mutator_filters_high_baseline_candidate_that_drops_lean_path() -> None:
+async def test_high_baseline_policy_ignores_unbound_historical_frontier() -> None:
+    async def mutate(prompt: str) -> dict:
+        return {
+            "content": (
+                "# Demo\n\nCollect more evidence and add broader validation.\n"
+            ),
+            "rationale": "historical policy scope",
+        }
+
+    historical = EvaluationSummary(
+        variant_id="historical-regression",
+        metrics={
+            "baseline_score": 92.0,
+            "candidate_score": 88.0,
+            "score_delta": -4.0,
+            "failed_gates": ["score_improvement"],
+            "causal_failure_events": [
+                {"semantic_key": "frontier-historical"}
+            ],
+        },
+        dataset_split="historical",
+    )
+    optimizer = TraceReflectiveLLMMutator(mutate_text=mutate)
+    unbound = await optimizer.propose(
+        OptimizerRequest(
+            target=_target(),
+            current_content="# Demo\n\nOld guidance.\n",
+            target_fingerprint="sha256:old",
+            trace_packs=(_trace_pack(),),
+            prior_feedback=(historical,),
+            active_repair_frontier_keys=("frontier-current",),
+        )
+    )
+    bound = await optimizer.propose(
+        OptimizerRequest(
+            target=_target(),
+            current_content="# Demo\n\nOld guidance.\n",
+            target_fingerprint="sha256:old",
+            trace_packs=(_trace_pack(),),
+            prior_feedback=(historical,),
+            active_repair_frontier_keys=("frontier-historical",),
+        )
+    )
+
+    assert unbound.diagnostics["high_baseline_policy_risk_candidates"] == 0
+    assert unbound.generation_outcomes[0].enforcement is None
+    assert bound.diagnostics["high_baseline_policy_risk_candidates"] == 1
+    assert bound.generation_outcomes[0].enforcement == "heuristic"
+
+
+@pytest.mark.asyncio
+async def test_llm_mutator_marks_dropped_lean_path_as_heuristic_risk() -> None:
     async def mutate(prompt: str) -> dict:
         return {
             "content": (
@@ -3029,8 +3089,13 @@ async def test_llm_mutator_filters_high_baseline_candidate_that_drops_lean_path(
 
     result = await TraceReflectiveLLMMutator(mutate_text=mutate).propose(request)
 
-    assert result.candidates == ()
-    assert result.diagnostics["filtered_high_baseline_regression_candidates"] == 1
+    assert len(result.candidates) == 1
+    assert result.diagnostics["filtered_high_baseline_regression_candidates"] == 0
+    assert result.diagnostics["high_baseline_policy_risk_candidates"] == 1
+    assert result.generation_outcomes[0].enforcement == "heuristic"
+    assert "preserve_lean_solution_path" in (
+        result.generation_outcomes[0].constraint_ids
+    )
 
 
 @pytest.mark.asyncio
@@ -3153,6 +3218,15 @@ async def test_llm_mutator_rejects_full_repair_package_replacement_of_current() 
     assert result.diagnostics["filtered_duplicate_candidates"] == 0
     assert result.diagnostics["filtered_invalid_patch_candidates"] == 0
     assert len(result.candidates) == 0
+    assert result.generation_outcomes[0].kind is (
+        CandidateGenerationOutcomeKind.POLICY_FILTERED
+    )
+    assert result.generation_outcomes[0].enforcement == "hard"
+    assert result.generation_outcomes[0].candidate_id
+    assert result.generation_outcomes[0].candidate_fingerprint
+    assert result.diagnostics["candidate_strategies"][0][
+        "admission_status"
+    ] == "policy_filtered"
 
 
 @pytest.mark.asyncio
