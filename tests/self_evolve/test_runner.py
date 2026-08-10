@@ -95,6 +95,7 @@ from aworld.self_evolve.runner import (
     _candidate_generation_actual_usage,
     _candidate_materialization_failure_events,
     _candidate_mutation_repair_prompt,
+    _canonicalize_verified_prerequisite_files,
     _configured_budget_usage,
     _feedback_from_report,
     _trajectory_group_rank_key,
@@ -558,7 +559,7 @@ def test_feedback_from_report_restores_latest_repairable_screening_package(
                 "path": "replay/runtime.py",
                 "operation": "upsert",
                 "executable": False,
-                "content": "def respond():\n    return {'id': 1, 'result': {}}",
+                "content": "def respond():\n    return {'id': 1, 'result': {}}\n",
             }
         ],
     }
@@ -5428,7 +5429,7 @@ def test_iteration_validation_feedback_preserves_nested_root_cause_and_repair_pa
                 "path": "replay/runtime.py",
                 "operation": "upsert",
                 "executable": False,
-                "content": "def websocket_control_frame():\n    return 'incomplete'",
+                "content": "def websocket_control_frame():\n    return 'incomplete'\n",
             }
         ],
     }
@@ -5472,8 +5473,8 @@ def test_iteration_validation_feedback_preserves_complete_large_runtime_source()
     preserved = feedback[0].metrics["repair_candidate_package"]["files"][0][
         "content"
     ]
-    assert preserved == runtime_source.strip()
-    assert preserved.endswith("return 'runtime-tail-preserved'")
+    assert preserved == runtime_source
+    assert preserved.endswith("return 'runtime-tail-preserved'\n")
 
 
 def test_replay_gate_marks_candidate_owned_protocol_failure_as_repairable() -> None:
@@ -9495,6 +9496,95 @@ async def test_runner_carries_verified_support_prerequisite_into_composite_candi
     ] == 1
 
 
+def test_verified_prerequisite_files_restore_format_only_differences() -> None:
+    target = SelfEvolveTargetRef(target_type="skill", target_id="demo")
+    feedback = EvaluationSummary(
+        variant_id="support-prerequisite",
+        dataset_split="historical_repair",
+        metrics={
+            "candidate_status": "prerequisite",
+            "repair_candidate_package": {
+                "candidate_id": "support-prerequisite",
+                "files": [
+                    {
+                        "path": "replay/runtime.py",
+                        "operation": "upsert",
+                        "content": "def replay():\n    return True\n",
+                        "executable": False,
+                    }
+                ],
+            },
+        },
+    )
+    candidate = CandidateVariant(
+        candidate_id="composite",
+        target=target,
+        content="# Demo\n\nNew behavior.\n",
+        rationale="compose behavior",
+        parent_candidate_ids=("support-prerequisite",),
+        files=(
+            CandidateFileDelta(
+                path="replay/runtime.py",
+                content="def replay():\n    return True",
+            ),
+        ),
+    )
+
+    canonical, gate, count = _canonicalize_verified_prerequisite_files(
+        candidate,
+        (feedback,),
+    )
+
+    assert gate is None
+    assert count == 1
+    assert canonical.files[0].content == "def replay():\n    return True\n"
+
+
+def test_verified_prerequisite_files_reject_material_support_mutation() -> None:
+    target = SelfEvolveTargetRef(target_type="skill", target_id="demo")
+    feedback = EvaluationSummary(
+        variant_id="support-prerequisite",
+        dataset_split="historical_repair",
+        metrics={
+            "candidate_status": "prerequisite",
+            "repair_candidate_package": {
+                "candidate_id": "support-prerequisite",
+                "files": [
+                    {
+                        "path": "replay/runtime.py",
+                        "operation": "upsert",
+                        "content": "def replay():\n    return True\n",
+                    }
+                ],
+            },
+        },
+    )
+    candidate = CandidateVariant(
+        candidate_id="composite",
+        target=target,
+        content="# Demo\n\nNew behavior.\n",
+        rationale="compose behavior",
+        parent_candidate_ids=("support-prerequisite",),
+        files=(
+            CandidateFileDelta(
+                path="replay/runtime.py",
+                content="def replay():\n    return False\n",
+            ),
+        ),
+    )
+
+    canonical, gate, count = _canonicalize_verified_prerequisite_files(
+        candidate,
+        (feedback,),
+    )
+
+    assert canonical == candidate
+    assert count == 0
+    assert gate is not None
+    assert gate.gate_name == "verified_prerequisite_fidelity"
+    assert gate.details["code"] == "verified_prerequisite_support_mutation"
+
+
 @pytest.mark.asyncio
 async def test_prerequisite_package_rehydrates_for_next_campaign_cycle(
     tmp_path: Path,
@@ -10260,11 +10350,11 @@ async def test_runner_validates_registered_capability_before_replay(
     capability_gate = next(
         gate
         for gate in report["gate_results"]
-        if gate["gate_name"] == "candidate_capability_replay"
+        if gate["gate_name"] == "candidate_replay"
     )
     assert capability_gate["passed"] is False
-    assert capability_gate["details"]["diagnostics"][0]["code"] == (
-        "missing_capability_manifest"
+    assert capability_gate["details"]["code"] == (
+        "candidate_replay_capability_missing"
     )
 
 
@@ -10838,8 +10928,10 @@ async def test_population_screening_preserves_all_candidates_when_baseline_is_in
         ),
     )
 
-    assert screened == candidates[:1]
-    assert report is None
+    assert screened == ()
+    assert report is not None
+    assert report["screening"]["single_candidate_qualification"] is True
+    assert report["screening"]["attempted_candidate_count"] == 1
 
 
 @pytest.mark.asyncio
@@ -11856,7 +11948,7 @@ async def test_population_screening_rejects_unchanged_repair_branch_before_rollo
 
 
 @pytest.mark.asyncio
-async def test_single_candidate_conformance_skips_redundant_promotion_rollout(
+async def test_single_candidate_conformance_runs_qualification_rollout(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -11994,11 +12086,14 @@ async def test_single_candidate_conformance_skips_redundant_promotion_rollout(
         repair_conformance_contracts={candidate.candidate_id: contract},
     )
 
-    assert screened == (candidate,)
+    assert screened == ()
     assert report is not None
     assert preflight_case_ids == ("task-a", "task-b")
-    assert rollout_case_ids == ()
-    assert report["screening"] is None
+    assert rollout_case_ids == ("task-a",)
+    assert report["screening"]["single_candidate_qualification"] is True
+    assert report["screening"]["screening_role"] == (
+        "qualification_and_ranking"
+    )
     assert report["conformance"]["passed_candidate_ids"] == [candidate.candidate_id]
 
 
@@ -12253,7 +12348,7 @@ async def test_runner_does_not_reuse_legacy_member_baseline_without_provenance(t
     )
 
     assert result.run.status.value == "succeeded"
-    assert replay_backend.baseline_replay_dirs == [None, None, None]
+    assert replay_backend.baseline_replay_dirs == [None, None, None, None]
 
 
 @pytest.mark.asyncio
@@ -12436,7 +12531,11 @@ async def test_runner_filters_quality_rejection_but_retries_replay_only_candidat
 
     assert result.run.status.value == "succeeded"
     assert optimizer.requests[0].max_candidates == 2
-    assert replay_backend.candidate_ids == ["candidate-dup-2", "candidate-dup-2"]
+    assert replay_backend.candidate_ids == [
+        "candidate-dup-2--screening",
+        "candidate-dup-2",
+        "candidate-dup-2",
+    ]
     report = json.loads(
         (tmp_path / ".aworld" / "self_evolve" / "run-filter-duplicates" / "report.json").read_text(
             encoding="utf-8"
@@ -13382,15 +13481,15 @@ async def test_runner_emits_progress_events_for_long_optimize_phases(tmp_path) -
     )
 
     stages = [stage for stage, _ in events]
-    assert stages[:7] == [
+    assert stages[:5] == [
         "start",
         "trajectory_set_loading",
         "candidate_generation",
         "population_generation",
-        "replay_adaptation",
-        "candidate_replay",
-        "evaluation",
+        "candidate_screening",
     ]
+    assert stages.index("candidate_screening") < stages.index("candidate_replay")
+    assert stages.index("candidate_replay") < stages.index("evaluation")
     assert "lesson_extraction" in stages
     assert "regression" in stages
     assert "regression_replay" in stages
@@ -15196,8 +15295,14 @@ async def test_runner_auto_verified_uses_candidate_replay_dataset_for_evaluation
     assert "verified_run_id: run-replay-eval" in applied_content
     assert "# Demo\n\nReplay verified guidance." in applied_content
     assert replay_backend.requests
-    assert replay_backend.requests[0].baseline_repetitions == 2
-    assert replay_backend.requests[0].candidate_repetitions == 3
+    assert replay_backend.requests[0].baseline_repetitions == 1
+    assert replay_backend.requests[0].candidate_repetitions == 1
+    authoritative_request = next(
+        request
+        for request in replay_backend.requests
+        if request.baseline_repetitions == 2
+    )
+    assert authoritative_request.candidate_repetitions == 3
     candidate_record = json.loads(
         (
             tmp_path
@@ -15205,11 +15310,11 @@ async def test_runner_auto_verified_uses_candidate_replay_dataset_for_evaluation
             / "self_evolve"
             / "run-replay-eval"
             / "candidates"
-            / f"{replay_backend.requests[0].candidate_id}.json"
+            / f"{authoritative_request.candidate_id}.json"
         ).read_text(encoding="utf-8")
     )
     assert candidate_record["content"] == candidate_content
-    assert not Path(replay_backend.requests[0].overlay_skill_root).exists()
+    assert not Path(authoritative_request.overlay_skill_root).exists()
     assert all(
         request.dataset.cases[0].metadata["variant_trajectories"]
         for request in evaluation_backend.requests
@@ -15217,7 +15322,7 @@ async def test_runner_auto_verified_uses_candidate_replay_dataset_for_evaluation
     assert len(evaluation_backend.requests[0].dataset.cases) == 3
     report = json.loads((tmp_path / ".aworld" / "self_evolve" / "run-replay-eval" / "report.json").read_text())
     assert report["replay"]["candidate"]["status"] == "succeeded"
-    assert report["replay"]["overlay_skill_root"] == replay_backend.requests[0].overlay_skill_root
+    assert report["replay"]["overlay_skill_root"] == authoritative_request.overlay_skill_root
     assert "/run-replay-eval/replay/llm-mutator-" in report["replay_path"]
     assert str(tmp_path / "candidate-eval-report.json") in report["evaluator_report_paths"]
     assert any(
@@ -17344,20 +17449,29 @@ def test_inferred_new_skill_policy_controls_draft_retention_and_publication(
     else:
         assert report_summary["best_candidate_id"] is not None
     assert replay_backend.requests
-    assert replay_backend.requests[0].baseline_repetitions == 2
-    assert replay_backend.requests[0].candidate_repetitions == 3
-    assert replay_backend.requests[0].baseline_skill_root is None
+    authoritative_request = next(
+        request
+        for request in replay_backend.requests
+        if request.baseline_repetitions == 2
+    )
+    if apply_policy == "proposal":
+        assert replay_backend.requests[0] is authoritative_request
+    else:
+        assert replay_backend.requests[0].baseline_repetitions == 1
+        assert replay_backend.requests[0].candidate_repetitions == 1
+    assert authoritative_request.candidate_repetitions == 3
+    assert authoritative_request.baseline_skill_root is None
     candidate_record_path = (
         tmp_path
         / ".aworld"
         / "self_evolve"
         / report_summary["run_id"]
         / "candidates"
-        / f"{replay_backend.requests[0].candidate_id}.json"
+        / f"{authoritative_request.candidate_id}.json"
     )
     candidate_record = json.loads(candidate_record_path.read_text(encoding="utf-8"))
     assert candidate_record["target"]["target_id"] == "generated-capability"
-    assert not Path(replay_backend.requests[0].overlay_skill_root).exists()
+    assert not Path(authoritative_request.overlay_skill_root).exists()
     assert skill_path.read_text(encoding="utf-8") == original_content
     assert [request.dataset_split for request in evaluation_backend.requests] == (
         ["validation", "validation"]
@@ -17925,8 +18039,8 @@ def test_optimize_cli_request_uses_framework_default_replay_backend_when_enabled
     )
 
     assert created["count"] == 1
-    assert replay_agents == ["Aworld"]
-    assert replay_max_steps == [1]
+    assert replay_agents == ["Aworld", "Aworld"]
+    assert replay_max_steps == [1, 1]
     assert report_summary["best_candidate_id"] is None
     assert report_summary["selected_candidate_id"] is not None
     assert any(
@@ -18065,8 +18179,13 @@ def test_optimize_cli_request_auto_verified_smoke_applies_and_loads_real_skill(t
     candidate_id = report_summary["best_candidate_id"]
 
     assert report_summary["status"] == "succeeded"
-    assert len(selection_replay_backend.requests) == 1
-    assert selection_replay_backend.requests[0].artifact_namespace is None
+    assert len(selection_replay_backend.requests) == 2
+    assert selection_replay_backend.requests[0].candidate_id.endswith("--screening")
+    assert not selection_replay_backend.requests[1].candidate_id.endswith("--screening")
+    assert all(
+        request.artifact_namespace is None
+        for request in selection_replay_backend.requests
+    )
     assert len(regression_replay_backend.requests) == 2
     assert all(
         request.artifact_namespace.startswith("regression/")

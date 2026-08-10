@@ -204,7 +204,11 @@ def _repair_candidate_package_summary(value: Any) -> dict[str, Any] | None:
         content = raw_file.get("content")
         if isinstance(content, str) and remaining_chars > 0:
             content_limit = min(remaining_chars, _MAX_REPAIR_FILE_CHARS)
-            bounded_content = sanitize_source_text(content, max_chars=content_limit)
+            bounded_content = sanitize_source_text(
+                content,
+                max_chars=content_limit,
+                preserve_format=True,
+            )
             item["content"] = bounded_content
             remaining_chars -= len(bounded_content)
         files.append(item)

@@ -427,6 +427,12 @@ def render_optimize_summary(report: Any) -> str:
     campaign_status = _read_report_value(report, "campaign_status")
     campaign_cycle = _read_report_value(report, "campaign_cycle")
     campaign_max_cycles = _read_report_value(report, "campaign_max_cycles")
+    campaign_authoritative_candidate_count = _read_report_value(
+        report, "campaign_authoritative_candidate_count"
+    )
+    campaign_max_authoritative_candidates = _read_report_value(
+        report, "campaign_max_authoritative_candidates"
+    )
     disposition = _read_report_value(report, "self_improvement_disposition")
     goal_handoff_path = _read_report_value(report, "goal_handoff_path")
     ingestion_id = _read_report_value(report, "ingestion_id")
@@ -489,6 +495,15 @@ def render_optimize_summary(report: Any) -> str:
         lines.append(f"Campaign status: {campaign_status}")
     if campaign_cycle is not None and campaign_max_cycles is not None:
         lines.append(f"Campaign cycle: {campaign_cycle}/{campaign_max_cycles}")
+    if (
+        campaign_authoritative_candidate_count is not None
+        and campaign_max_authoritative_candidates is not None
+    ):
+        lines.append(
+            "Campaign authoritative candidates: "
+            f"{campaign_authoritative_candidate_count}/"
+            f"{campaign_max_authoritative_candidates}"
+        )
     if isinstance(disposition, Mapping) and disposition.get("reason_code"):
         lines.append(
             "Self-improvement: "

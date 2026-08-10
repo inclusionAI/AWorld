@@ -294,20 +294,28 @@ class TraceReflectiveLLMMutator:
                     request.evolution_context
                     or compile_evolution_context(request)
                 )
+                repair_focus = repair_context.repair_focus_for_candidate(
+                    candidate_index=index
+                )
                 _validate_judge_repair_target_delta(
                     request,
-                    repair_focus=repair_context.repair_focus_for_candidate(
-                        candidate_index=index
-                    ),
+                    repair_focus=repair_focus,
                     candidate_content=content,
                 )
                 _validate_prerequisite_composition_target_delta(
                     request,
-                    repair_focus=repair_context.repair_focus_for_candidate(
-                        candidate_index=index
-                    ),
+                    repair_focus=repair_focus,
                     candidate_content=content,
                 )
+                if (
+                    isinstance(repair_focus, Mapping)
+                    and _repair_feedback_is_prerequisite_composition(
+                        repair_focus
+                    )
+                ):
+                    rationale = _verified_prerequisite_composition_rationale(
+                        repair_focus
+                    )
                 if _violates_transport_completion_invariant(content):
                     content = _append_transport_completion_invariant(content)
                     repaired_transport_completion_violation_count += 1
@@ -1417,6 +1425,29 @@ def _repair_feedback_is_prerequisite_composition(
     return bool(
         metrics.get("candidate_status") == "prerequisite"
         and "target_behavior_delta" in failed_gate_names
+    )
+
+
+def _verified_prerequisite_composition_rationale(
+    repair_focus: Mapping[str, object],
+) -> str:
+    """Record the materialized composition instead of untrusted model claims."""
+
+    package = repair_focus.get("repair_candidate_package")
+    candidate_id = (
+        package.get("candidate_id")
+        if isinstance(package, Mapping)
+        else None
+    )
+    suffix = (
+        f" {candidate_id}"
+        if isinstance(candidate_id, str) and candidate_id.strip()
+        else ""
+    )
+    return (
+        "Composed a releasable target-behavior delta over verified "
+        f"evaluation-support prerequisite{suffix}; inherited candidate-owned "
+        "support files byte-for-byte."
     )
 
 

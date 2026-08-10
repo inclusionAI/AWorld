@@ -61,6 +61,14 @@ def test_source_sanitizer_redacts_short_explicit_auth_credentials() -> None:
     assert "Bearer token authentication" in sanitized
 
 
+def test_source_sanitizer_can_preserve_verified_file_format() -> None:
+    source = "def replay():\r\n    return True\r\n"
+
+    sanitized = sanitize_source_text(source, preserve_format=True)
+
+    assert sanitized == source
+
+
 def test_secret_sanitizer_distinguishes_auth_syntax_from_documentation() -> None:
     documentation = (
         "Bearer syntax uses one scheme token.\n"
