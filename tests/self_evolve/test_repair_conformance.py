@@ -589,6 +589,82 @@ def test_compile_probe_failure_requires_compiler_change_not_runtime_change() -> 
     assert evaluate_candidate_source_conformance(compiler_only, contract).passed is True
 
 
+def test_fixture_compile_failure_is_not_redirected_by_inherited_runtime_constraint() -> None:
+    runtime_constraint = SchemaFieldRepairConstraint(
+        schema_layer="runtime",
+        field_path="environment.AWORLD_REPLAY_RESPONSE_INDEX.consumer",
+        rule="enum",
+        expected=("json_sidecar_record_value_projector",),
+        value_domain="source_behavior",
+        required_operations=(
+            "read_environment_binding_as_path",
+            "bind_environment_path_to_json_file_reader",
+            "access_records_array",
+            "project_record_value_field_directly",
+        ),
+    )
+    inherited = RepairConformanceContract(
+        focus_candidate_id="candidate-parent",
+        failure_codes=("inherited_typed_repair_constraints",),
+        interaction_progress=0,
+        base_file_fingerprints={"replay/runtime.py": "sha256:base"},
+        required_branch_paths=("replay/runtime.py",),
+        base_branch_fingerprints={},
+        manifest_path="replay/capability.json",
+        compiler_path="replay/compiler.py",
+        runtime_paths=("replay/runtime.py",),
+        schema_field_constraints=(runtime_constraint,),
+    )
+    contract = compile_repair_conformance_contract(
+        {
+            "repair_candidate_package": _package(),
+            "candidate_validation_diagnostics": [
+                {
+                    "code": "repair_capability_compile_failed",
+                    "capability_error_code": (
+                        "protocol_probe_not_fixture_derived"
+                    ),
+                    "fixture_probe_constraints": [
+                        {
+                            "requirement_id": "requirement-1",
+                            "kind": "http",
+                            "path": "/",
+                            "max_response_chars": 4096,
+                        }
+                    ],
+                    "repair_conformance": inherited.to_public_dict(),
+                }
+            ],
+        }
+    )
+
+    assert contract is not None
+    assert contract.required_branch_paths == ("replay/compiler.py",)
+    assert contract.compiler_path == "replay/compiler.py"
+    assert contract.runtime_paths == ("replay/runtime.py",)
+    assert contract.requires_compiler_fixture_reconstruction is True
+    assert contract.requires_fixture_derived_probe is False
+
+    runtime_only = _candidate(
+        compiler_source="def compile_request():\n    return None\n",
+        runtime_source=(
+            "import json, os\n"
+            "def respond():\n"
+            "    path = os.getenv('AWORLD_REPLAY_RESPONSE_INDEX')\n"
+            "    with open(path) as stream:\n"
+            "        index = json.load(stream)\n"
+            "    records = index['records']\n"
+            "    return records[0]['value']\n"
+        ),
+    )
+    result = evaluate_candidate_source_conformance(runtime_only, contract)
+    assert result.passed is False
+    assert result.code == "repair_branch_unchanged"
+    assert result.details["required_changed_paths"] == [
+        "replay/compiler.py"
+    ]
+
+
 def test_compile_runtime_semantics_failure_still_requires_runtime_change() -> None:
     contract = compile_repair_conformance_contract(
         {
@@ -1760,6 +1836,8 @@ def test_compile_contract_preserves_typed_fixture_probe_constraints() -> None:
 
     assert contract is not None
     assert "protocol_probe_not_fixture_derived" in contract.failure_codes
+    assert contract.requires_compiler_fixture_reconstruction is True
+    assert contract.requires_fixture_derived_probe is False
     assert set(contract.fixture_probe_constraints) == {
         FixtureDerivedProbeConstraint(
             requirement_id="requirement-1",
