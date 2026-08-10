@@ -45,6 +45,13 @@ from aworld.self_evolve.datasets import (
     build_dataset_recipe,
     build_dataset_from_source,
 )
+from aworld.self_evolve.dataset_snapshot import (
+    CAMPAIGN_DATASET_SNAPSHOT_SCHEMA_VERSION,
+    campaign_dataset_snapshot_supported,
+    load_campaign_dataset_snapshot,
+    load_campaign_dataset_snapshot_manifest,
+    write_campaign_dataset_snapshot,
+)
 from aworld.self_evolve.diagnostics import extract_harness_diagnostics
 from aworld.self_evolve.evolution_context import compile_evolution_context
 from aworld.self_evolve.evaluation import (
@@ -10375,6 +10382,134 @@ def _persist_ingestion_rejection(
     return summary
 
 
+def _load_or_build_campaign_dataset(
+    *,
+    store: FilesystemSelfEvolveStore,
+    campaign_id: str | None,
+    campaign_cycle: int | None,
+    source_config: SelfEvolveEvalSourceConfig,
+    current_trajectory: Iterable[Mapping[str, Any]] | None,
+    task_id: str | None,
+    progress_callback: Callable[[str, str], Any] | None,
+) -> tuple[SelfEvolveDataset, Path | None, bool]:
+    snapshot_path: Path | None = None
+    campaign_source_fingerprint: str | None = None
+    snapshot_enabled = (
+        campaign_id is not None
+        and campaign_cycle is not None
+        and campaign_dataset_snapshot_supported(source_config.kind)
+    )
+    if snapshot_enabled:
+        campaign = store.read_campaign(campaign_id)
+        if campaign_cycle != campaign.cycle_index + 1:
+            raise ValueError(
+                "campaign dataset snapshot request does not match next cycle"
+            )
+        campaign_source_fingerprint = campaign.source_fingerprint
+        snapshot_path = store.campaign_path(campaign_id) / "dataset_snapshot"
+        if snapshot_path.exists():
+            _emit_progress(
+                progress_callback,
+                "trajectory_set_loading",
+                "Loading frozen campaign dataset snapshot",
+            )
+            dataset = load_campaign_dataset_snapshot(
+                snapshot_path,
+                expected_campaign_id=campaign_id,
+                expected_campaign_source_fingerprint=(
+                    campaign_source_fingerprint
+                ),
+            )
+            manifest = load_campaign_dataset_snapshot_manifest(
+                snapshot_path,
+                expected_campaign_id=campaign_id,
+                expected_campaign_source_fingerprint=(
+                    campaign_source_fingerprint
+                ),
+            )
+            if dataset.recipe.source.get("kind") != source_config.kind:
+                raise ValueError(
+                    "campaign dataset snapshot source kind changed"
+                )
+            dataset = _with_campaign_dataset_snapshot_reference(
+                dataset,
+                campaign_id=campaign_id,
+                manifest=manifest,
+            )
+            _emit_progress(
+                progress_callback,
+                "trajectory_set_loading",
+                (
+                    "Loaded frozen campaign dataset snapshot with "
+                    f"{len(dataset.cases)} case(s)"
+                ),
+            )
+            return dataset, snapshot_path, True
+
+    _emit_progress(
+        progress_callback,
+        "trajectory_set_loading",
+        "Loading self-evolve trajectory source",
+    )
+    dataset = build_dataset_from_source(
+        source_config,
+        current_trajectory=current_trajectory,
+        task_id=task_id,
+    )
+    _emit_progress(
+        progress_callback,
+        "trajectory_set_loading",
+        f"Loaded self-evolve trajectory source with {len(dataset.cases)} case(s)",
+    )
+    if (
+        snapshot_path is None
+        or campaign_id is None
+        or campaign_source_fingerprint is None
+    ):
+        return dataset, None, False
+    manifest = write_campaign_dataset_snapshot(
+        snapshot_path,
+        dataset,
+        campaign_id=campaign_id,
+        campaign_source_fingerprint=campaign_source_fingerprint,
+    )
+    dataset = _with_campaign_dataset_snapshot_reference(
+        dataset,
+        campaign_id=campaign_id,
+        manifest=manifest,
+    )
+    _emit_progress(
+        progress_callback,
+        "trajectory_set_loading",
+        (
+            "Frozen campaign dataset snapshot with "
+            f"{len(dataset.cases)} case(s)"
+        ),
+    )
+    return dataset, snapshot_path, False
+
+
+def _with_campaign_dataset_snapshot_reference(
+    dataset: SelfEvolveDataset,
+    *,
+    campaign_id: str,
+    manifest: Mapping[str, Any],
+) -> SelfEvolveDataset:
+    source = dict(dataset.recipe.source)
+    source["campaign_dataset_snapshot"] = {
+        "schema_version": CAMPAIGN_DATASET_SNAPSHOT_SCHEMA_VERSION,
+        "storage_layout": manifest.get("storage_layout"),
+        "campaign_id": campaign_id,
+        "snapshot_fingerprint": manifest.get("snapshot_fingerprint"),
+        "case_count": manifest.get("case_count"),
+        "cases_size_bytes": manifest.get("cases_size_bytes"),
+    }
+    return replace(
+        dataset,
+        recipe=replace(dataset.recipe, source=source),
+    )
+
+
 def optimize_from_cli_request(
     *,
     workspace_root: str | Path,
@@ -10608,11 +10743,6 @@ def optimize_from_cli_request(
                 "registered ingestor did not freeze the requested source manifest"
             )
 
-    _emit_progress(
-        progress_callback,
-        "trajectory_set_loading",
-        "Loading self-evolve trajectory source",
-    )
     source_config = (
         SelfEvolveEvalSourceConfig(kind="current_trajectory")
         if current_trajectory is not None
@@ -10631,10 +10761,18 @@ def optimize_from_cli_request(
             workspace_root=workspace_root,
         )
     )
-    built_dataset = build_dataset_from_source(
-        source_config,
+    (
+        built_dataset,
+        campaign_dataset_snapshot_path,
+        campaign_dataset_snapshot_reused,
+    ) = _load_or_build_campaign_dataset(
+        store=store,
+        campaign_id=campaign_id,
+        campaign_cycle=campaign_cycle,
+        source_config=source_config,
         current_trajectory=current_trajectory,
         task_id=task,
+        progress_callback=progress_callback,
     )
     if ingestion_snapshot is not None:
         split_fingerprint = ingestion_fingerprint_json(built_dataset.recipe.splits)
@@ -10821,11 +10959,6 @@ def optimize_from_cli_request(
                 apply_policy=apply_policy,
                 ingestion_gate=ingestion_gate.to_dict(),
             )
-    _emit_progress(
-        progress_callback,
-        "trajectory_set_loading",
-        f"Loaded self-evolve trajectory source with {len(built_dataset.cases)} case(s)",
-    )
     trace_packs = tuple(
         case.trace_pack for case in built_dataset.cases if case.trace_pack is not None
     )
@@ -11328,6 +11461,13 @@ def optimize_from_cli_request(
         "run_id": result.run.run_id,
         "status": result.run.status.value,
     }
+    if campaign_dataset_snapshot_path is not None:
+        summary["campaign_dataset_snapshot_path"] = str(
+            campaign_dataset_snapshot_path
+        )
+        summary["campaign_dataset_snapshot_reused"] = (
+            campaign_dataset_snapshot_reused
+        )
     _add_post_apply_summary(summary, report)
     if ingestion_snapshot is not None:
         summary.update(
