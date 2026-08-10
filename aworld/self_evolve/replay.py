@@ -3145,10 +3145,9 @@ def _stored_baseline_matches_request(request: CandidateReplayRequest) -> bool:
     )
     if artifact_failures:
         return False
-    return (
-        baseline.succeeded
-        and _successful_repetition_count(baseline)
-        == request.baseline_repetitions
+    return _baseline_replay_is_reusable(
+        baseline,
+        requested_repetitions=request.baseline_repetitions,
     )
 
 
@@ -3159,6 +3158,32 @@ def _successful_repetition_count(result: ReplayVariantResult) -> int:
     if result.repetition_results:
         return sum(1 for repetition in result.repetition_results if repetition.succeeded)
     return 1 if result.succeeded else 0
+
+
+def _baseline_replay_is_reusable(
+    result: ReplayVariantResult,
+    *,
+    requested_repetitions: int,
+) -> bool:
+    """Reuse complete baselines, including attributable task-level failures."""
+
+    if requested_repetitions <= 0 or not result.executed:
+        return False
+    repetition_count = result.metrics.get("repetition_count")
+    if isinstance(repetition_count, bool) or not isinstance(
+        repetition_count, (int, float)
+    ):
+        repetition_count = (
+            len(result.repetition_results) if result.repetition_results else 1
+        )
+    if int(repetition_count) < requested_repetitions:
+        return False
+    if result.succeeded:
+        return _successful_repetition_count(result) >= requested_repetitions
+    return bool(
+        isinstance(result.failure, ReplayFailureEvent)
+        and result.failure.owner is FailureOwner.TASK
+    )
 
 
 def _short_runtime_root(prefix: str) -> Path:
@@ -3387,9 +3412,16 @@ class AWorldCliReplayExecutor:
     async def __call__(self, request: ReplayExecutionRequest) -> ReplayExecutionResult:
         artifact_dir = Path(request.artifact_dir)
         artifact_dir.mkdir(parents=True, exist_ok=True)
-        evidence_manifest = artifact_dir / "evidence_manifest.jsonl"
+        # Keep agent-owned evidence in a dedicated, initially empty namespace.
+        # ``artifact_dir`` also contains the seeded replay workspace, framework
+        # logs, service diagnostics, and lifecycle records.  Counting that
+        # shared state against the agent evidence quota makes a sufficiently
+        # large workspace fail before the first tool call can execute.
+        evidence_dir = artifact_dir / "evidence"
+        evidence_dir.mkdir(parents=True, exist_ok=True)
+        evidence_manifest = evidence_dir / "evidence_manifest.jsonl"
         _initialize_replay_evidence_policy_state(
-            artifact_dir,
+            evidence_dir,
             artifact_file_limit=self._DEFAULT_ARTIFACT_FILE_LIMIT,
             artifact_byte_limit=self._DEFAULT_ARTIFACT_BYTE_LIMIT,
             max_consecutive_failed_actions=(
@@ -3419,7 +3451,7 @@ class AWorldCliReplayExecutor:
             "--task",
             _replay_task_text(
                 request.task_text,
-                artifact_dir=artifact_dir,
+                artifact_dir=evidence_dir,
                 evidence_manifest=evidence_manifest,
                 workspace_root=Path(request.workspace_root),
             ),
@@ -3446,7 +3478,8 @@ class AWorldCliReplayExecutor:
                     for name, path in isolated_runtime_paths.items()
                 },
                 "AWORLD_SELF_EVOLVE_AUTO_DRAIN": "0",
-                "AWORLD_SELF_EVOLVE_REPLAY_ARTIFACT_DIR": str(artifact_dir),
+                "AWORLD_REPLAY_ARTIFACT_DIR": str(evidence_dir),
+                "AWORLD_SELF_EVOLVE_REPLAY_ARTIFACT_DIR": str(evidence_dir),
                 "AWORLD_SELF_EVOLVE_EVIDENCE_MANIFEST": str(evidence_manifest),
                 "AWORLD_REPLAY_EVIDENCE_POLICY": "1",
                 "AWORLD_REPLAY_ARTIFACT_FILE_LIMIT": str(
@@ -3489,7 +3522,7 @@ class AWorldCliReplayExecutor:
                 stdout=stdout,
                 stderr=stderr,
                 trajectory=[],
-                artifact_dir=artifact_dir,
+                artifact_dir=evidence_dir,
                 evidence_manifest=evidence_manifest,
                 workspace_root=Path(request.workspace_root),
                 variant_id=request.variant_id,
@@ -3630,7 +3663,7 @@ class AWorldCliReplayExecutor:
             stdout=stdout,
             stderr=stderr,
             trajectory=trajectory,
-            artifact_dir=artifact_dir,
+            artifact_dir=evidence_dir,
             evidence_manifest=evidence_manifest,
             workspace_root=Path(request.workspace_root),
             variant_id=request.variant_id,

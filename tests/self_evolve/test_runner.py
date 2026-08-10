@@ -86,6 +86,7 @@ from aworld.self_evolve.runner import (
     _baseline_replay_artifact_dir,
     _backend_proves_zero_budget_usage,
     _candidate_screening_timeout,
+    _candidate_screening_max_steps,
     _candidate_validation_report_for_persistence,
     _candidate_gate_results,
     _candidate_screening_repair_feedback,
@@ -221,6 +222,43 @@ def test_evaluator_rerun_ids_are_unique_but_lineage_stable() -> None:
 
     assert first != second
     assert first.rsplit("-", 1)[0] == second.rsplit("-", 1)[0]
+
+
+def test_candidate_screening_depth_observes_bounded_source_trace_horizon() -> None:
+    trace_pack = build_trace_pack(
+        (
+            {
+                "meta": {"step": index + 1},
+                "state": {"input": "task"},
+                "action": {"content": f"step-{index + 1}"},
+                "reward": {"status": "ok"},
+            }
+            for index in range(5)
+        ),
+        source_kind="trajectory_log",
+        task_id="screening-depth",
+    )
+    dataset = SelfEvolveDataset(
+        cases=(
+            EvalCase(
+                case_id="screening-depth",
+                input="task",
+                trace_pack=trace_pack,
+            ),
+        ),
+        recipe=DatasetRecipe(
+            source={"kind": "trajectory_log"},
+            split_seed="screening-depth",
+            splits={"train": ["screening-depth"]},
+        ),
+    )
+
+    assert _candidate_screening_max_steps(
+        dataset, configured_max_steps=1
+    ) == 3
+    assert _candidate_screening_max_steps(
+        dataset, configured_max_steps=5
+    ) == 5
 
 
 def test_campaign_restores_typed_scheduler_frontier_checkpoint(tmp_path) -> None:
@@ -6139,6 +6177,13 @@ def test_replay_gate_attributes_unobserved_candidate_intervention_to_framework(
         task_input="recover task",
     )
     timeout = {"type": "TimeoutExpired", "reason": "replay timed out"}
+    candidate_timeout = {
+        **timeout,
+        "outcome": "candidate_failure",
+        "failure_class": "candidate_task_behavior",
+        "failure_stage": "task_rollout",
+        "repairable": True,
+    }
     replay_result = _CandidateReplayResult(
         request=request,
         baseline=ReplayVariantResult(
@@ -6151,7 +6196,7 @@ def test_replay_gate_attributes_unobserved_candidate_intervention_to_framework(
             variant_id="candidate-unobserved",
             status="failed",
             trajectory=[],
-            failure=timeout,
+            failure=candidate_timeout,
         ),
     )
     dataset = SelfEvolveDataset(
@@ -6171,11 +6216,33 @@ def test_replay_gate_attributes_unobserved_candidate_intervention_to_framework(
 
     events = details["causal_failure_events"]
     assert any(event["code"] == "candidate_intervention_unobserved" for event in events)
+    assert any(
+        event["code"] == "candidate_intervention_unobserved"
+        and event["scope"] == "shared_run"
+        for event in events
+    )
     assert not any(event["code"] == "candidate_recovery_incomplete" for event in events)
     assert details["failure_class"] == "framework"
     assert details["repairable"] is False
     assert details["recovery_trace"]["candidate_intervention_required"] is True
     assert details["recovery_trace"]["candidate_intervention_observed"] is False
+
+    terminal_gate = runner_module._candidate_validation_shared_failure_gate(
+        {
+            "screening": {
+                "stopped_by_shared_infrastructure": True,
+                "attempts": [
+                    {
+                        "reason": "candidate intervention was not observed",
+                        "details": details,
+                    }
+                ],
+            }
+        }
+    )
+    assert terminal_gate.gate_name == "candidate_replay"
+    assert terminal_gate.details["failure_class"] == "framework"
+    assert terminal_gate.details["repairable"] is False
 
 
 def test_replay_gate_repairs_candidate_only_after_intervention_is_observed(
@@ -8982,7 +9049,7 @@ async def test_shared_candidate_validation_stops_before_next_iteration(
 
     monkeypatch.setattr(runner, "_screen_candidate_population", shared_validation)
 
-    await runner.run_explicit_target(
+    result = await runner.run_explicit_target(
         run_id=f"run-shared-{shared_stage}-stop",
         target=SkillTextTarget(skill_path),
         dataset=dataset,
@@ -9009,6 +9076,11 @@ async def test_shared_candidate_validation_stops_before_next_iteration(
     assert {event.reason_code for event in terminal_events} == {
         "candidate_validation_shared_infrastructure_blocked"
     }
+    assert [
+        gate.gate_name for gate in result.run.gate_results if not gate.passed
+    ] == ["candidate_validation"]
+    assert result.run.gate_results[-1].details["failure_class"] == "framework"
+    assert result.run.gate_results[-1].details["failure_scope"] == "shared_run"
 
 
 @pytest.mark.asyncio

@@ -266,6 +266,7 @@ from aworld.self_evolve.replay import (
     replay_capability_fixture_response_leaf_values,
     replay_capability_fixture_summaries,
     replay_dataset_fingerprint,
+    _baseline_replay_is_reusable,
     _distributed_member_repetitions,
     _load_variant_result_from_dir,
     _is_replayable_user_task_case,
@@ -1421,6 +1422,7 @@ def _default_iteration_budget(
 
 
 _DEFAULT_CANDIDATE_SCREENING_TIMEOUT_SECONDS = 240
+_DEFAULT_CANDIDATE_SCREENING_TRACE_HORIZON = 3
 
 
 def _candidate_screening_timeout(authoritative_timeout_seconds: int) -> int:
@@ -1428,6 +1430,34 @@ def _candidate_screening_timeout(authoritative_timeout_seconds: int) -> int:
     return min(
         authoritative_timeout_seconds,
         _DEFAULT_CANDIDATE_SCREENING_TIMEOUT_SECONDS,
+    )
+
+
+def _candidate_screening_max_steps(
+    dataset: SelfEvolveDataset,
+    *,
+    configured_max_steps: int | None,
+) -> int:
+    """Expose enough source-trace depth to observe candidate intervention.
+
+    Screening remains bounded to a small horizon, but a one-step replay cannot
+    observe the result of the first tool call for multi-step source traces.  Use
+    the configured replay depth as a floor and expand only to the smaller of the
+    observed trace depth and the bounded screening horizon.
+    """
+
+    configured_floor = max(1, int(configured_max_steps or 1))
+    observed_depth = max(
+        (
+            len(case.trace_pack.steps)
+            for case in dataset.cases
+            if case.trace_pack is not None
+        ),
+        default=1,
+    )
+    return max(
+        configured_floor,
+        min(observed_depth, _DEFAULT_CANDIDATE_SCREENING_TRACE_HORIZON),
     )
 
 
@@ -3082,6 +3112,7 @@ class SelfEvolveRunner:
 
         baseline_preflight_blocked = False
         infrastructure_blocked = False
+        shared_validation_gate: GateResult | None = None
         progress_repair_families: set[str] = set()
         duplicate_population_stalls = 0
         consecutive_policy_filter_stalls = 0
@@ -4391,6 +4422,9 @@ class SelfEvolveRunner:
                 screening_report
             ):
                 infrastructure_blocked = True
+                shared_validation_gate = _candidate_validation_shared_failure_gate(
+                    screening_report
+                )
                 for blocked_candidate in screening_candidates:
                     blocked_key = attempt_key_by_candidate_id.get(
                         blocked_candidate.candidate_id
@@ -4673,8 +4707,14 @@ class SelfEvolveRunner:
             reason_code="run_terminated_before_candidate"
         )
         budget_context.release_all(reason_code="run_terminal_cleanup")
-        selected_state = _select_iteration_state(iteration_states)
-        if selected_state is not None:
+        selected_state = (
+            None
+            if shared_validation_gate is not None
+            else _select_iteration_state(iteration_states)
+        )
+        if shared_validation_gate is not None:
+            gate_results.append(shared_validation_gate)
+        elif selected_state is not None:
             baseline_summary = selected_state["baseline_summary"]  # type: ignore[assignment]
             candidate_summary = selected_state["candidate_summary"]  # type: ignore[assignment]
             held_out_summary = selected_state["held_out_summary"]  # type: ignore[assignment]
@@ -5379,6 +5419,10 @@ class SelfEvolveRunner:
         representative_case_ids = tuple(
             case.case_id for case in screening_dataset.cases
         )
+        screening_max_steps = _candidate_screening_max_steps(
+            screening_dataset,
+            configured_max_steps=self.replay_max_steps,
+        )
         _emit_progress(
             self.progress_callback,
             "candidate_screening",
@@ -5502,6 +5546,7 @@ class SelfEvolveRunner:
                         timeout_seconds=_candidate_screening_timeout(
                             self.replay_timeout_seconds
                         ),
+                        max_steps=screening_max_steps,
                         lifecycle_callback=screening_lifecycle,
                     )
                 )
@@ -5794,6 +5839,7 @@ class SelfEvolveRunner:
                 "selection_reason": selection_reason,
                 "baseline_repetitions": 1,
                 "candidate_repetitions": 1,
+                "max_steps": screening_max_steps,
                 "progressive_repetition": True,
                 "screening_role": "qualification_and_ranking",
                 "single_candidate_qualification": (
@@ -8091,6 +8137,7 @@ class SelfEvolveRunner:
         candidate_repetitions: int | None = None,
         progress_stage: str = "candidate_replay",
         timeout_seconds: int | None = None,
+        max_steps: int | None = None,
         lifecycle_callback: Callable[[str, Mapping[str, object]], None] | None = None,
         source_disposition: CandidateSourceDisposition = CandidateSourceDisposition(),
         artifact_namespace: str | None = None,
@@ -8321,7 +8368,9 @@ class SelfEvolveRunner:
                 dataset=dataset,
                 agent=self.replay_agent,
                 timeout_seconds=effective_timeout_seconds,
-                max_steps=self.replay_max_steps,
+                max_steps=(
+                    self.replay_max_steps if max_steps is None else max_steps
+                ),
                 max_tokens=self.per_attempt_replay_token_limit,
                 baseline_repetitions=effective_baseline_repetitions,
                 candidate_repetitions=effective_candidate_repetitions,
@@ -12913,7 +12962,11 @@ def _replay_result_has_reusable_baseline(
         replay_result=replay_result,
     )
     return bool(normalized.members) and normalized.valid and all(
-        member.baseline.succeeded for member in normalized.members
+        _baseline_replay_is_reusable(
+            member.baseline,
+            requested_repetitions=member.request.baseline_repetitions,
+        )
+        for member in normalized.members
     )
 
 
@@ -12984,8 +13037,10 @@ def _find_reusable_baseline_replay_dir(
                     member_count=len(case_ids),
                 )
                 if all(
-                    member.baseline.succeeded
-                    and _successful_replay_count(member.baseline) == member_repetitions
+                    _baseline_replay_is_reusable(
+                        member.baseline,
+                        requested_repetitions=member_repetitions,
+                    )
                     for member in normalized.members
                 ):
                     members_dir = replay_dir / "members"
@@ -12994,9 +13049,9 @@ def _find_reusable_baseline_replay_dir(
                 continue
             if len(case_ids) != 1 or replay_result.request.task_id != case_ids[0]:
                 continue
-            if (
-                replay_result.baseline.succeeded
-                and _successful_replay_count(replay_result.baseline) == baseline_repetitions
+            if _baseline_replay_is_reusable(
+                replay_result.baseline,
+                requested_repetitions=baseline_repetitions,
             ):
                 baseline_dir = replay_dir / "baseline"
                 if baseline_dir.exists():
@@ -13059,7 +13114,10 @@ def _legacy_member_baseline_replay_dir(
             )
         except (FileNotFoundError, ValueError, json.JSONDecodeError, OSError):
             continue
-        if baseline.succeeded and _successful_replay_count(baseline) >= baseline_repetitions:
+        if _baseline_replay_is_reusable(
+            baseline,
+            requested_repetitions=baseline_repetitions,
+        ):
             reusable_by_case[task_id] = member_dir / "baseline"
     if len(case_ids) == 1:
         baseline_dir = reusable_by_case.get(case_ids[0])
@@ -13075,15 +13133,6 @@ def _replay_target_matches(stored: SelfEvolveTargetRef, current: SelfEvolveTarge
     if stored.path is None or current.path is None:
         return True
     return Path(stored.path).expanduser() == Path(current.path).expanduser()
-
-
-def _successful_replay_count(result: ReplayVariantResult) -> int:
-    count = result.metrics.get("successful_repetition_count")
-    if isinstance(count, (int, float)):
-        return int(count)
-    if result.repetition_results:
-        return sum(1 for repetition in result.repetition_results if repetition.succeeded)
-    return 1 if result.succeeded else 0
 
 
 def _evaluator_report_paths(
@@ -15036,7 +15085,16 @@ def _replay_gate_details(
             for member in normalized.members
             if not member.succeeded
         ]
-    if _candidate_replay_has_repairable_capability_failure(replay_result):
+    recovery_trace_details = details.get("recovery_trace")
+    intervention_unobserved = bool(
+        isinstance(recovery_trace_details, Mapping)
+        and recovery_trace_details.get("candidate_intervention_required") is True
+        and recovery_trace_details.get("candidate_intervention_observed") is False
+    )
+    if (
+        _candidate_replay_has_repairable_capability_failure(replay_result)
+        and not intervention_unobserved
+    ):
         details["failure_class"] = "candidate"
         details["repairable"] = True
         details["failure_stage"] = "replay_capability"
@@ -15089,7 +15147,7 @@ def _candidate_intervention_unobserved_failure_event(
         code="candidate_intervention_unobserved",
         owner=FailureOwner.FRAMEWORK,
         stage=FailureStage.ADAPTATION,
-        scope=FailureScope.CANDIDATE,
+        scope=FailureScope.SHARED_RUN,
         repairable=False,
         category="recovery_trace",
         summary=(
@@ -15257,6 +15315,7 @@ def _combined_candidate_validation_report(
             "representative_case_ids",
             "baseline_repetitions",
             "candidate_repetitions",
+            "max_steps",
             "progressive_repetition",
             "authoritative_baseline_repetitions",
             "authoritative_candidate_repetitions",
@@ -15317,6 +15376,68 @@ def _candidate_validation_stopped_by_shared_infrastructure(
         isinstance(stage_report, Mapping)
         and stage_report.get("stopped_by_shared_infrastructure") is True
         for stage_report in (report.get("conformance"), report.get("screening"))
+    )
+
+
+def _candidate_validation_shared_failure_gate(
+    report: Mapping[str, object] | None,
+) -> GateResult:
+    """Preserve the typed shared blocker instead of emitting no-candidate."""
+
+    if isinstance(report, Mapping):
+        for stage_name, gate_name in (
+            ("conformance", "candidate_repair_conformance"),
+            ("screening", "candidate_replay"),
+        ):
+            stage_report = report.get(stage_name)
+            attempts = (
+                stage_report.get("attempts")
+                if isinstance(stage_report, Mapping)
+                else None
+            )
+            if not isinstance(attempts, list):
+                continue
+            for attempt in attempts:
+                if not isinstance(attempt, Mapping):
+                    continue
+                details = attempt.get("details")
+                gate = GateResult(
+                    gate_name=gate_name,
+                    passed=False,
+                    reason=str(
+                        attempt.get("reason")
+                        or "candidate validation was blocked by a shared framework failure"
+                    ),
+                    details=(
+                        dict(details) if isinstance(details, Mapping) else None
+                    ),
+                )
+                if _gate_has_typed_shared_infrastructure_failure(gate):
+                    return gate
+
+    failure_event = ReplayFailureEvent(
+        code="candidate_validation_shared_blocked",
+        owner=FailureOwner.FRAMEWORK,
+        stage=FailureStage.ADAPTATION,
+        scope=FailureScope.SHARED_RUN,
+        repairable=False,
+        category="candidate_validation",
+        summary="candidate validation stopped on a shared framework blocker",
+    )
+    payload = failure_event.to_dict()
+    return GateResult(
+        gate_name="candidate_validation",
+        passed=False,
+        reason="candidate validation stopped on a shared framework blocker",
+        details={
+            "failure_class": "framework",
+            "failure_owner": "framework",
+            "failure_scope": "shared_run",
+            "repairable": False,
+            "code": failure_event.code,
+            "failure_event": payload,
+            "causal_failure_events": [payload],
+        },
     )
 
 
