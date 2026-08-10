@@ -8,6 +8,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import PurePosixPath
 from typing import Any, Iterable, Mapping, Sequence
 
+from aworld.self_evolve.counterexamples import normalize_counterexample
 from aworld.self_evolve.replay_capability import (
     FrozenReplayCapability,
     REPLAY_CAPABILITY_SCHEMA_VERSION,
@@ -161,6 +162,7 @@ class RepairConformanceContract:
     required_fixture_probe_operations: tuple[str, ...] = ()
     fixture_probe_constraints: tuple[FixtureDerivedProbeConstraint, ...] = ()
     schema_field_constraints: tuple[SchemaFieldRepairConstraint, ...] = ()
+    required_runtime_transitions: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, object]:
         """Return the private execution contract.
@@ -200,6 +202,9 @@ class RepairConformanceContract:
             "schema_field_constraints": [
                 item.to_dict() for item in self.schema_field_constraints
             ],
+            "required_runtime_transitions": list(
+                self.required_runtime_transitions
+            ),
         }
 
     def to_public_dict(self) -> dict[str, object]:
@@ -259,6 +264,9 @@ class RepairConformanceContract:
             "schema_field_constraints": [
                 item.to_dict() for item in self.schema_field_constraints
             ],
+            "required_runtime_transitions": list(
+                self.required_runtime_transitions
+            ),
         }
 
     @classmethod
@@ -354,6 +362,9 @@ class RepairConformanceContract:
             ),
             fixture_probe_constraints=probe_constraints,
             schema_field_constraints=schema_constraints,
+            required_runtime_transitions=_string_tuple(
+                value.get("required_runtime_transitions")
+            ),
         )
 
 
@@ -922,12 +933,26 @@ def compile_repair_conformance_contract(
         return None
 
     diagnostics = tuple(_diagnostic_mappings(repair_focus))
+    counterexamples = _repair_counterexamples(repair_focus)
     direct_failure_codes = _diagnostic_failure_codes(diagnostics)
+    counterexample_failure_codes = tuple(
+        str(item["failure_code"])
+        for item in counterexamples
+        if isinstance(item.get("failure_code"), str)
+    )
+    required_runtime_transitions = tuple(
+        dict.fromkeys(
+            str(item["required_transition"])
+            for item in counterexamples
+            if isinstance(item.get("required_transition"), str)
+        )
+    )
     inherited_contract = _inherited_repair_conformance_contract(diagnostics)
     failure_codes = tuple(
         dict.fromkeys(
             (
                 *direct_failure_codes,
+                *counterexample_failure_codes,
                 *(
                     inherited_contract.failure_codes
                     if inherited_contract is not None
@@ -1097,6 +1122,18 @@ def compile_repair_conformance_contract(
         required_fixture_probe_operations=required_fixture_probe_operations,
         fixture_probe_constraints=fixture_probe_constraints,
         schema_field_constraints=schema_field_constraints,
+        required_runtime_transitions=tuple(
+            dict.fromkeys(
+                (
+                    *(
+                        inherited_contract.required_runtime_transitions
+                        if inherited_contract is not None
+                        else ()
+                    ),
+                    *required_runtime_transitions,
+                )
+            )
+        ),
     )
 
 
@@ -3160,6 +3197,20 @@ def _diagnostic_mappings(value: Mapping[str, object]) -> Sequence[Mapping[str, o
     if not isinstance(raw, list):
         return ()
     return tuple(item for item in raw[:32] if isinstance(item, Mapping))
+
+
+def _repair_counterexamples(
+    value: Mapping[str, object],
+) -> tuple[dict[str, object], ...]:
+    raw = value.get("replay_counterexamples")
+    if not isinstance(raw, list):
+        return ()
+    result: list[dict[str, object]] = []
+    for item in raw[:16]:
+        normalized = normalize_counterexample(item)
+        if normalized is not None and normalized not in result:
+            result.append(normalized)
+    return tuple(result)
 
 
 def _inherited_repair_conformance_contract(

@@ -11,6 +11,7 @@ from aworld.self_evolve.candidate_protocol import (
 from aworld.self_evolve.capability_contracts import (
     discover_applicable_capability_contracts,
 )
+from aworld.self_evolve.counterexamples import REPLAY_COUNTEREXAMPLE_FIELDS
 from aworld.self_evolve.feedback import normalize_feedback_summary
 from aworld.self_evolve.evidence_diagnostics import (
     EvidenceRepairConstraint,
@@ -344,20 +345,7 @@ def _compact_prompt_feedback_item(
         compact["replay_counterexamples"] = [
             {
                 key: sanitize_metric_value(counterexample.get(key), max_chars=160)
-                for key in (
-                    "schema_version",
-                    "sequence",
-                    "failure_code",
-                    "stage",
-                    "state_before",
-                    "trigger",
-                    "tool_name",
-                    "action_name",
-                    "manifest_entry_count",
-                    "artifact_file_count",
-                    "artifact_bytes",
-                    "required_transition",
-                )
+                for key in REPLAY_COUNTEREXAMPLE_FIELDS
                 if counterexample.get(key) is not None
             }
             for counterexample in counterexamples[:4]

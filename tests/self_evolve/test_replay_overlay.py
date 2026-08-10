@@ -6122,6 +6122,9 @@ async def test_aworld_cli_replay_executor_requests_machine_readable_trajectory_a
         == "2000000"
     )
     assert captured["kwargs"]["env"][
+        "AWORLD_REPLAY_MAX_CONSECUTIVE_FAILED_ACTIONS"
+    ] == "2"
+    assert captured["kwargs"]["env"][
         "AWORLD_PROMPT_BUDGET_RESERVED_OUTPUT_TOKENS"
     ] == "4096"
     assert captured["kwargs"]["env"][
@@ -8114,6 +8117,9 @@ async def test_aworld_cli_replay_executor_preserves_timeout_with_recoverable_evi
     assert result.metrics["evidence_bundle_valid"] is True
     assert result.trajectory == []
     counterexample = result.failure["diagnostics"]["replay_counterexamples"][0]
+    assert counterexample["owner"] == (
+        "task" if variant_id == "baseline" else "candidate"
+    )
     assert counterexample["state_before"] == "evidence_ready"
     assert counterexample["required_transition"] == (
         "finalize_task_response_before_timeout"
@@ -8153,6 +8159,7 @@ async def test_aworld_cli_replay_executor_rejects_zero_exit_without_task_respons
     assert result.failure["code"] == "replay_task_completion_not_established"
     assert result.failure["outcome"] == "candidate_failure"
     assert result.metrics["task_completion_established"] is False
+    assert result.metrics["replay_counterexamples"][0]["owner"] == "candidate"
     assert result.metrics["replay_counterexamples"][0]["trigger"] == (
         "trajectory_unavailable"
     )

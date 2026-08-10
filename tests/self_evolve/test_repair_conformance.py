@@ -63,6 +63,40 @@ def _package(runtime_source: str = "def respond():\n    return {}\n") -> dict[st
     }
 
 
+def test_repair_contract_consumes_counterexample_runtime_transition() -> None:
+    repair_focus = {
+        "repair_candidate_package": _package(),
+        "replay_counterexamples": [
+            {
+                "schema_version": "aworld.replay.counterexample.v1",
+                "sequence": 1,
+                "failure_code": "repeated_failed_action_limit",
+                "owner": "candidate",
+                "stage": "task_rollout",
+                "state_before": "collecting",
+                "trigger": "tool_call",
+                "action_fingerprint": "sha256:" + "a" * 64,
+                "consecutive_failure_count": 2,
+                "required_transition": (
+                    "switch_strategy_or_fail_with_observed_reason"
+                ),
+            }
+        ],
+    }
+
+    contract = compile_repair_conformance_contract(repair_focus)
+
+    assert contract is not None
+    assert "repeated_failed_action_limit" in contract.failure_codes
+    assert contract.required_runtime_transitions == (
+        "switch_strategy_or_fail_with_observed_reason",
+    )
+    restored = RepairConformanceContract.from_dict(contract.to_dict())
+    assert restored.required_runtime_transitions == (
+        "switch_strategy_or_fail_with_observed_reason",
+    )
+
+
 def _candidate(*, runtime_source: str, compiler_source: str | None = None) -> CandidateVariant:
     files = [
         CandidateFileDelta(

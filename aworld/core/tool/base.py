@@ -26,7 +26,10 @@ from aworld.core.event.base import Message, AgentMessage, Constants, MemoryEvent
 from aworld.core.factory import Factory
 from aworld.core.tool.action import ToolAction
 from aworld.core.tool.action_factory import ActionFactory
-from aworld.core.tool.replay_policy import enforce_replay_evidence_runtime_policy
+from aworld.core.tool.replay_policy import (
+    enforce_replay_evidence_runtime_policy,
+    record_replay_runtime_tool_result,
+)
 from aworld.events import eventbus
 from aworld.events.util import send_message, send_message_with_future
 from aworld.logs.util import logger
@@ -567,6 +570,7 @@ class Tool(BaseTool[Observation, List[ActionModel]]):
             _apply_hook_headers_to_message(message, post_hook_events)
 
             final_res = self.post_step(res, action,message=message, **kwargs)
+            record_replay_runtime_tool_result(action, res, message)
             if isinstance(final_res, Message):
                 self._update_headers(final_res, message)
             self._internal_process(
@@ -855,6 +859,7 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
             _apply_hook_headers_to_message(message, post_hook_events)
 
             final_res = await self.post_step(res, action, message=message,**kwargs)
+            record_replay_runtime_tool_result(action, res, message)
             await self._internal_process(res, action, message, tool_id_mapping=tool_id_mapping, **kwargs)
             if isinstance(final_res, Message):
                 self._update_headers(final_res, message)

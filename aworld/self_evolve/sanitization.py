@@ -446,6 +446,11 @@ def _typed_repair_conformance_public_projection(
 
     add_text("focus_candidate_id", max_chars=160)
     add_text_sequence("failure_codes", max_items=100, max_chars=160)
+    add_text_sequence(
+        "required_runtime_transitions",
+        max_items=100,
+        max_chars=240,
+    )
     if "interaction_progress" in raw:
         interaction_progress = raw.get("interaction_progress")
         if (
