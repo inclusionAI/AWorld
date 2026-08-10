@@ -1950,7 +1950,19 @@ def _rejection_attribution(
             "candidate_generation_exhausted_by_semantic_dedup",
         }
     ]
-    primary = substantive[0] if substantive else failed[0]
+    # Gate execution order must not decide campaign ownership.  Prefer an
+    # actionable candidate repair over a simultaneous framework uncertainty
+    # signal (for example evidence_quality plus noisy score evidence).
+    actionable_candidate_failures = [
+        gate for gate in substantive if _gate_has_candidate_owned_repair(gate)
+    ]
+    primary = (
+        actionable_candidate_failures[0]
+        if actionable_candidate_failures
+        else substantive[0]
+        if substantive
+        else failed[0]
+    )
     details = primary.details if isinstance(primary.details, Mapping) else {}
     attribution: dict[str, object] = {
         "candidate_id": selected_candidate_id,
@@ -6503,9 +6515,21 @@ class SelfEvolveRunner:
                             baseline=baseline_summary,
                             candidate=candidate_summary,
                         )
+                        pre_tiebreak_evidence_gate = _evidence_quality_gate(
+                            candidate_summary,
+                            baseline=baseline_summary,
+                        )
+                        tiebreak_candidate_repair_required = bool(
+                            pre_tiebreak_evidence_gate is not None
+                            and not pre_tiebreak_evidence_gate.passed
+                            and _gate_has_candidate_owned_repair(
+                                pre_tiebreak_evidence_gate
+                            )
+                        )
                         if (
                             _is_verified_apply_policy(apply_policy)
                             and allow_score_tiebreak
+                            and not tiebreak_candidate_repair_required
                             and not score_gate.passed
                             and isinstance(score_gate.details, Mapping)
                             and score_gate.details.get("tiebreak_eligible") is True
@@ -6611,7 +6635,6 @@ class SelfEvolveRunner:
                                 )
                         elif (
                             _is_verified_apply_policy(apply_policy)
-                            and not allow_score_tiebreak
                             and not score_gate.passed
                             and isinstance(score_gate.details, Mapping)
                             and score_gate.details.get("tiebreak_eligible") is True
@@ -6622,7 +6645,9 @@ class SelfEvolveRunner:
                                     **dict(score_gate.details),
                                     "tiebreak_skipped": True,
                                     "tiebreak_skip_reason": (
-                                        "score_tiebreak_candidate_limit_reached"
+                                        "candidate_repair_required_before_tiebreak"
+                                        if tiebreak_candidate_repair_required
+                                        else "score_tiebreak_candidate_limit_reached"
                                     ),
                                 },
                             )

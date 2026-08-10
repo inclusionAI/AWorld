@@ -857,6 +857,13 @@ def compile_evolution_context(request: OptimizerRequest) -> EvolutionContext:
                 _repair_feedback_is_prerequisite_composition(item)
                 for item in feedback
             ),
+            requires_evidence_quality_repair=(
+                "evidence_quality" in observed_failures
+                and any(
+                    _feedback_has_candidate_owned_evidence_frontier(item)
+                    for item in feedback
+                )
+            ),
             consumed_mutation_families=request.consumed_mutation_families,
         ),
         acceptance_constraints=(
@@ -950,6 +957,40 @@ def _feedback_evidence_repair_constraints(
                 continue
         groups.append(tuple(constraints))
     return merge_evidence_repair_constraints(*groups)
+
+
+def _feedback_has_candidate_owned_evidence_frontier(
+    feedback: Mapping[str, object],
+) -> bool:
+    """Return whether evidence repair can be performed by the candidate.
+
+    The strategy decision is based on typed ownership, never on free-form judge
+    prose.  This prevents framework projection failures from expanding the
+    candidate mutation surface while giving candidate-output constraints a
+    dedicated, compositional repair pass.
+    """
+
+    constraints = _feedback_evidence_repair_constraints((feedback,))
+    if any(constraint.owner.value == "candidate" for constraint in constraints):
+        return True
+    failed_gates = feedback.get("failed_gates")
+    metrics = feedback.get("metrics")
+    typed_metrics = metrics if isinstance(metrics, Mapping) else {}
+    return bool(
+        isinstance(failed_gates, (list, tuple))
+        and "evidence_quality" in {str(value) for value in failed_gates}
+        and (
+            feedback.get("failure_owner")
+            or feedback.get("failure_class")
+            or typed_metrics.get("failure_owner")
+            or typed_metrics.get("failure_class")
+        )
+        == "candidate"
+        and (
+            feedback.get("repairable") is True
+            or typed_metrics.get("repairable") is True
+        )
+    )
 
 
 def _deduplicate_feedback(
@@ -1440,10 +1481,13 @@ def _population_strategies(
     has_current_validation_feedback: bool,
     has_capability_contracts: bool,
     requires_target_behavior_composition: bool = False,
+    requires_evidence_quality_repair: bool = False,
     consumed_mutation_families: tuple[str, ...] = (),
 ) -> tuple[str, ...]:
     if requires_target_behavior_composition:
         strategies = ["target_behavior_composition"]
+    elif requires_evidence_quality_repair:
+        strategies = ["evidence_quality_repair"]
     elif has_current_validation_feedback:
         strategies = ["quality_regression_repair"]
     else:

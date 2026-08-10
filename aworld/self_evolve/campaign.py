@@ -1236,6 +1236,27 @@ def derive_self_improvement_disposition(
     ):
         primary_failure = attribution
 
+    actionable_candidate = next(
+        (
+            item
+            for item in events
+            if item.get("owner") == "candidate"
+            and item.get("repairable") is True
+        ),
+        None,
+    )
+    if (
+        primary_failure is not None
+        and primary_failure.get("failure_class") == "framework"
+        and primary_failure.get("code") == "score_improvement_inconclusive"
+        and actionable_candidate is not None
+    ):
+        # Score uncertainty describes missing verification confidence; it is
+        # not a shared blocker while the same candidate has a typed repairable
+        # failure. Continue that causal frontier instead of handing framework
+        # work to an operator/Goal.
+        primary_failure = None
+
     if primary_failure is not None:
         primary_owner = str(primary_failure["failure_class"])
         primary_code = str(primary_failure.get("code") or "")
@@ -1336,14 +1357,7 @@ def derive_self_improvement_disposition(
             progress_delta_ids=delta,
         )
 
-    candidate = next(
-        (
-            item
-            for item in events
-            if item.get("owner") == "candidate" and item.get("repairable") is True
-        ),
-        None,
-    )
+    candidate = actionable_candidate
     if candidate is not None:
         if candidate.get("code") == "evaluation_support_bootstrap_only":
             return _event_disposition(

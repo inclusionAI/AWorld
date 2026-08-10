@@ -986,6 +986,44 @@ def test_prompt_payload_exposes_source_omitted_judged_sibling_as_support() -> No
     assert "repair_candidate_package" not in payload["repair_support"]
 
 
+def test_candidate_owned_evidence_frontier_uses_dedicated_strategy() -> None:
+    context = compile_evolution_context(
+        replace(
+            _request(),
+            validation_feedback=(
+                EvaluationSummary(
+                    variant_id="candidate-evidence",
+                    dataset_split="validation",
+                    metrics={
+                        "score": 88.0,
+                        "failed_gates": ["score_improvement", "evidence_quality"],
+                        "failure_class": "candidate",
+                        "failure_owner": "candidate",
+                        "repairable": True,
+                        "evidence_repair_constraints": [
+                            {
+                                "schema_version": (
+                                    "aworld.self_evolve.evidence_repair_constraint.v1"
+                                ),
+                                "constraint_identity_digest": "a" * 64,
+                                "owner": "candidate",
+                                "source_layer": "candidate_output",
+                                "subject_kind": "general_claim",
+                                "failure_mode": "unsupported_claim",
+                                "required_action": "support_or_omit",
+                                "occurrence_count": 1,
+                            }
+                        ],
+                    },
+                ),
+            ),
+            prior_feedback=(),
+        )
+    )
+
+    assert context.population_strategies[0] == "evidence_quality_repair"
+
+
 def test_judged_repair_does_not_inherit_sibling_schema_mutation_surface() -> None:
     judged = EvaluationSummary(
         variant_id="candidate-judged",

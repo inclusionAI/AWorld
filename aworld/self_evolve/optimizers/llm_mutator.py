@@ -1451,6 +1451,11 @@ def _population_strategy(
         "quality_regression_repair": (
             "repair the typed failed gates and required behaviors without unrelated scope"
         ),
+        "evidence_quality_repair": (
+            "preserve the verified parent behavior and repair only candidate-owned "
+            "typed evidence constraints: register or correct artifact references, "
+            "support claims from bounded canonical evidence, or omit unsupported claims"
+        ),
         "efficiency_and_robustness": (
             "improve reliability and resource economy while preserving required quality"
         ),

@@ -298,7 +298,12 @@ class ScoreImprovementGate:
                     **details,
                     "code": "score_improvement_inconclusive",
                     "decision": "inconclusive",
-                    "tiebreak_eligible": True,
+                    "tiebreak_eligible": paired_delta >= self.min_delta,
+                    "tiebreak_ineligible_reason": (
+                        None
+                        if paired_delta >= self.min_delta
+                        else "point_estimate_below_minimum_delta"
+                    ),
                     "failure_class": "framework",
                     "failure_owner": "framework",
                     "failure_scope": "shared_run",
@@ -356,7 +361,12 @@ class ScoreImprovementGate:
                     **details,
                     "code": "score_improvement_inconclusive",
                     "decision": "inconclusive",
-                    "tiebreak_eligible": True,
+                    "tiebreak_eligible": delta >= self.min_delta,
+                    "tiebreak_ineligible_reason": (
+                        None
+                        if delta >= self.min_delta
+                        else "point_estimate_below_minimum_delta"
+                    ),
                     "failure_class": "framework",
                     "failure_owner": "framework",
                     "failure_scope": "shared_run",

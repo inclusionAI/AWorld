@@ -317,7 +317,10 @@ def test_score_improvement_gate_treats_noisy_negative_delta_as_inconclusive() ->
 
     assert result.passed is False
     assert result.details["decision"] == "inconclusive"
-    assert result.details["tiebreak_eligible"] is True
+    assert result.details["tiebreak_eligible"] is False
+    assert result.details["tiebreak_ineligible_reason"] == (
+        "point_estimate_below_minimum_delta"
+    )
     assert result.details["delta_confidence_upper_bound"] > 0
 
 
