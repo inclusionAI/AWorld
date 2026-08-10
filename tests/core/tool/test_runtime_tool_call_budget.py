@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from aworld.core.common import ActionModel, ActionResult, Observation
@@ -107,6 +109,44 @@ def test_replay_runtime_policy_rejects_collection_after_artifact_quota(
     )
     assert '"code": "artifact_file_limit_exhausted"' in violation
     assert "screenshot" not in violation
+
+
+def test_replay_runtime_policy_ignores_seeded_workspace_outside_evidence_root(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    run_root = tmp_path / "run"
+    evidence_root = run_root / "evidence"
+    workspace_root = run_root / "workspace"
+    evidence_root.mkdir(parents=True)
+    workspace_root.mkdir(parents=True)
+    for index in range(32):
+        (workspace_root / f"seed-{index}.txt").write_bytes(b"x" * 100_000)
+    monkeypatch.setenv("AWORLD_REPLAY_EVIDENCE_POLICY", "1")
+    monkeypatch.setenv(
+        "AWORLD_SELF_EVOLVE_REPLAY_ARTIFACT_DIR", str(evidence_root)
+    )
+    monkeypatch.setenv(
+        "AWORLD_SELF_EVOLVE_EVIDENCE_MANIFEST",
+        str(evidence_root / "evidence_manifest.jsonl"),
+    )
+    monkeypatch.setenv("AWORLD_REPLAY_ARTIFACT_FILE_LIMIT", "8")
+    monkeypatch.setenv("AWORLD_REPLAY_ARTIFACT_BYTE_LIMIT", "2000000")
+
+    _enforce_replay_evidence_runtime_policy(
+        "bash",
+        _replay_action("agent-browser screenshot evidence.png"),
+        _Message(_Context()),
+    )
+
+    state = json.loads(
+        (evidence_root / "framework_evidence_state.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert state["artifact_file_count"] == 0
+    assert state["artifact_bytes"] == 0
+    assert not (evidence_root / "framework_evidence_policy.jsonl").exists()
 
 
 def test_replay_runtime_policy_rejects_collection_after_evidence_ready(

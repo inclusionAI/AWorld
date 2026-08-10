@@ -55,6 +55,7 @@ from aworld.self_evolve.replay import (
     _member_baseline_replay_dir,
     _probe_advertised_websockets,
     _attach_replay_service_protocol_diagnostics,
+    _baseline_replay_is_reusable,
     _classify_candidate_task_rollout_nontermination,
     _preserve_replay_service_protocol_trace,
     _reset_replay_service_protocol_trace,
@@ -123,6 +124,80 @@ from aworld.self_evolve.types import (
     SelfEvolveTargetRef,
 )
 from aworld.skills.compat_provider import build_compat_registry
+
+
+def test_task_failure_baseline_is_reusable_but_framework_failure_is_not() -> None:
+    task_failure = ReplayVariantResult(
+        variant_id="baseline",
+        status=ReplayExecutionStatus.FAILED,
+        trajectory=[{"action": {"content": "task failed"}}],
+        metrics={"repetition_count": 1, "failed_repetition_count": 1},
+        failure=ReplayFailureEvent(
+            code="task_outcome_failed",
+            owner=FailureOwner.TASK,
+            stage=FailureStage.TASK_ROLLOUT,
+            scope=FailureScope.MEMBER,
+            repairable=False,
+        ),
+    )
+    framework_failure = replace(
+        task_failure,
+        failure=ReplayFailureEvent(
+            code="framework_capture_failed",
+            owner=FailureOwner.FRAMEWORK,
+            stage=FailureStage.TASK_ROLLOUT,
+            scope=FailureScope.SHARED_RUN,
+            repairable=False,
+        ),
+    )
+
+    assert _baseline_replay_is_reusable(
+        task_failure, requested_repetitions=1
+    )
+    assert not _baseline_replay_is_reusable(
+        task_failure, requested_repetitions=2
+    )
+    assert _baseline_replay_is_reusable(
+        replace(
+            task_failure,
+            metrics={"repetition_count": 2, "failed_repetition_count": 2},
+        ),
+        requested_repetitions=1,
+    )
+    assert not _baseline_replay_is_reusable(
+        framework_failure, requested_repetitions=1
+    )
+
+    dataset = SelfEvolveDataset(
+        cases=(EvalCase(case_id="task-failure", input="recover task"),),
+        recipe=DatasetRecipe(
+            source={"kind": "trajectory_log"},
+            split_seed="task-failure",
+            splits={"train": ["task-failure"]},
+        ),
+    )
+    request = CandidateReplayRequest(
+        run_id="run-task-failure",
+        task_id="task-failure",
+        workspace_root="/tmp/replay",
+        target=SelfEvolveTargetRef("skill", "demo"),
+        candidate_id="candidate",
+        overlay_skill_root="/tmp/replay/overlay",
+        task_input="recover task",
+    )
+    replay_result = CandidateReplayResult(
+        request=request,
+        baseline=task_failure,
+        candidate=ReplayVariantResult(
+            variant_id="candidate",
+            status=ReplayExecutionStatus.SUCCEEDED,
+            trajectory=[{"action": {"content": "recovered"}}],
+        ),
+    )
+    assert _replay_result_has_reusable_baseline(
+        dataset=dataset,
+        replay_result=replay_result,
+    )
 
 
 def _candidate(content: str, candidate_id: str = "cand-1") -> CandidateVariant:
@@ -6105,10 +6180,13 @@ async def test_aworld_cli_replay_executor_requests_machine_readable_trajectory_a
     assert captured["kwargs"]["cwd"] == str(tmp_path)
     assert captured["kwargs"]["env"]["AWORLD_SELF_EVOLVE_AUTO_DRAIN"] == "0"
     assert captured["kwargs"]["env"]["AWORLD_SELF_EVOLVE_REPLAY_ARTIFACT_DIR"] == str(
-        tmp_path / "artifacts"
+        tmp_path / "artifacts" / "evidence"
+    )
+    assert captured["kwargs"]["env"]["AWORLD_REPLAY_ARTIFACT_DIR"] == str(
+        tmp_path / "artifacts" / "evidence"
     )
     assert captured["kwargs"]["env"]["AWORLD_SELF_EVOLVE_EVIDENCE_MANIFEST"] == str(
-        tmp_path / "artifacts" / "evidence_manifest.jsonl"
+        tmp_path / "artifacts" / "evidence" / "evidence_manifest.jsonl"
     )
     assert captured["kwargs"]["env"]["AWORLD_LOG_PATH"] == str(
         tmp_path / "artifacts" / "logs"
@@ -6166,7 +6244,9 @@ async def test_aworld_cli_replay_executor_requests_machine_readable_trajectory_a
     assert not runtime_root.exists()
     assert "AWORLD_SELF_EVOLVE_REPLAY_ARTIFACT_DIR" in task_text
     assert str(tmp_path / "artifacts") in task_text
-    assert str(tmp_path / "artifacts" / "evidence_manifest.jsonl") in task_text
+    assert str(
+        tmp_path / "artifacts" / "evidence" / "evidence_manifest.jsonl"
+    ) in task_text
     assert "evidence_manifest.jsonl" in task_text
 
 
@@ -6359,7 +6439,9 @@ async def test_aworld_cli_replay_executor_accepts_compacted_markers_with_valid_m
     ]
 
     def fake_run(command, **kwargs):
-        artifact_dir = tmp_path / "artifacts"
+        artifact_dir = Path(
+            kwargs["env"]["AWORLD_SELF_EVOLVE_REPLAY_ARTIFACT_DIR"]
+        )
         artifact_dir.mkdir(parents=True, exist_ok=True)
         evidence_path = artifact_dir / "episode_extract.txt"
         evidence_path.write_text("bounded non-compacted evidence excerpt", encoding="utf-8")
@@ -6422,7 +6504,9 @@ async def test_aworld_cli_replay_executor_accepts_compacted_markers_with_valid_m
     assert result.metrics["evidence_manifest_present"] is True
     assert result.metrics["evidence_manifest_entry_count"] == 2
     assert "evidence_manifest_invalid_entry_count" not in result.metrics
-    bundle = json.loads((tmp_path / "artifacts" / "evidence_bundle.json").read_text())
+    bundle = json.loads(
+        (tmp_path / "artifacts" / "evidence" / "evidence_bundle.json").read_text()
+    )
     assert bundle["valid"] is True
     assert bundle["entries"][0]["bounded_evidence"]["source"] == "artifact_preview"
     assert (
@@ -6586,7 +6670,9 @@ async def test_aworld_cli_replay_executor_writes_canonical_evidence_bundle(
     ]
 
     def fake_run(command, **kwargs):
-        artifact_dir = tmp_path / "artifacts"
+        artifact_dir = Path(
+            kwargs["env"]["AWORLD_SELF_EVOLVE_REPLAY_ARTIFACT_DIR"]
+        )
         artifact_dir.mkdir(parents=True, exist_ok=True)
         evidence_path = artifact_dir / "bounded_extract.txt"
         evidence_path.write_text("bounded non-compacted evidence excerpt", encoding="utf-8")
@@ -6632,8 +6718,8 @@ async def test_aworld_cli_replay_executor_writes_canonical_evidence_bundle(
         )
     )
 
-    bundle_path = tmp_path / "artifacts" / "evidence_bundle.json"
-    evidence_path = tmp_path / "artifacts" / "bounded_extract.txt"
+    bundle_path = tmp_path / "artifacts" / "evidence" / "evidence_bundle.json"
+    evidence_path = tmp_path / "artifacts" / "evidence" / "bounded_extract.txt"
     bundle = json.loads(bundle_path.read_text(encoding="utf-8"))
 
     assert result.succeeded is True
@@ -6648,7 +6734,9 @@ async def test_aworld_cli_replay_executor_writes_canonical_evidence_bundle(
     assert result.metrics["evidence_manifest_fingerprint"].startswith("sha256:")
     assert bundle["format"] == "aworld.self_evolve.evidence_bundle"
     assert bundle["manifest"] == {
-        "path": str(tmp_path / "artifacts" / "evidence_manifest.jsonl"),
+        "path": str(
+            tmp_path / "artifacts" / "evidence" / "evidence_manifest.jsonl"
+        ),
         "present": True,
         "readable": True,
         "valid": True,
@@ -6686,7 +6774,9 @@ async def test_aworld_cli_replay_executor_accepts_non_file_evidence_metadata(
     ]
 
     def fake_run(command, **kwargs):
-        artifact_dir = tmp_path / "artifacts"
+        artifact_dir = Path(
+            kwargs["env"]["AWORLD_SELF_EVOLVE_REPLAY_ARTIFACT_DIR"]
+        )
         artifact_dir.mkdir(parents=True, exist_ok=True)
         (artifact_dir / "evidence_manifest.jsonl").write_text(
             json.dumps(
@@ -6735,7 +6825,9 @@ async def test_aworld_cli_replay_executor_accepts_non_file_evidence_metadata(
 
     assert result.succeeded is True
     assert result.metrics["evidence_bundle_valid"] is True
-    bundle = json.loads((tmp_path / "artifacts" / "evidence_bundle.json").read_text())
+    bundle = json.loads(
+        (tmp_path / "artifacts" / "evidence" / "evidence_bundle.json").read_text()
+    )
     assert bundle["entries"] == [
         {
             "bounded_evidence": {},
@@ -6773,7 +6865,9 @@ async def test_aworld_cli_replay_executor_canonicalizes_bounded_metadata_evidenc
     ]
 
     def fake_run(command, **kwargs):
-        artifact_dir = tmp_path / "artifacts"
+        artifact_dir = Path(
+            kwargs["env"]["AWORLD_SELF_EVOLVE_REPLAY_ARTIFACT_DIR"]
+        )
         artifact_dir.mkdir(parents=True, exist_ok=True)
         (artifact_dir / "evidence_manifest.jsonl").write_text(
             json.dumps(
@@ -6823,7 +6917,9 @@ async def test_aworld_cli_replay_executor_canonicalizes_bounded_metadata_evidenc
     assert result.succeeded is True
     assert result.metrics["evidence_bundle_valid"] is True
     assert "evidence_manifest_invalid_entry_count" not in result.metrics
-    bundle = json.loads((tmp_path / "artifacts" / "evidence_bundle.json").read_text())
+    bundle = json.loads(
+        (tmp_path / "artifacts" / "evidence" / "evidence_bundle.json").read_text()
+    )
     assert bundle["entries"][0]["metadata"] == {
         "bounded_excerpt": {
             "sources_examined": 4,
@@ -6999,7 +7095,9 @@ async def test_aworld_cli_replay_executor_archives_workspace_manifest_artifact(
     def fake_run(command, **kwargs):
         workspace_root = tmp_path / "workspace"
         workspace_root.mkdir(parents=True, exist_ok=True)
-        artifact_dir = workspace_root / "artifacts"
+        artifact_dir = Path(
+            kwargs["env"]["AWORLD_SELF_EVOLVE_REPLAY_ARTIFACT_DIR"]
+        )
         artifact_dir.mkdir(parents=True, exist_ok=True)
         output_path = workspace_root / "x_ai_daily_extra.json"
         output_path.write_text(
@@ -7054,7 +7152,13 @@ async def test_aworld_cli_replay_executor_archives_workspace_manifest_artifact(
     assert "evidence_manifest_invalid_entry_count" not in result.metrics
 
     bundle = json.loads(
-        (tmp_path / "workspace" / "artifacts" / "evidence_bundle.json").read_text(
+        (
+            tmp_path
+            / "workspace"
+            / "artifacts"
+            / "evidence"
+            / "evidence_bundle.json"
+        ).read_text(
             encoding="utf-8"
         )
     )
@@ -7088,7 +7192,9 @@ async def test_aworld_cli_replay_executor_rejects_untrusted_manifest_artifact_ou
     def fake_run(command, **kwargs):
         workspace_root = tmp_path / "workspace"
         workspace_root.mkdir(parents=True, exist_ok=True)
-        artifact_dir = workspace_root / "artifacts"
+        artifact_dir = Path(
+            kwargs["env"]["AWORLD_SELF_EVOLVE_REPLAY_ARTIFACT_DIR"]
+        )
         artifact_dir.mkdir(parents=True, exist_ok=True)
         outside_path = tmp_path / "outside.txt"
         outside_path.write_text("secret should not be allowlisted", encoding="utf-8")
@@ -7166,7 +7272,9 @@ async def test_aworld_cli_replay_executor_accepts_bounded_excerpt_for_outside_ar
     def fake_run(command, **kwargs):
         workspace_root = tmp_path / "workspace"
         workspace_root.mkdir(parents=True, exist_ok=True)
-        artifact_dir = workspace_root / "artifacts"
+        artifact_dir = Path(
+            kwargs["env"]["AWORLD_SELF_EVOLVE_REPLAY_ARTIFACT_DIR"]
+        )
         artifact_dir.mkdir(parents=True, exist_ok=True)
         outside_path = tmp_path / "scrape_stderr.log"
         outside_path.write_text("large outside log should not be read", encoding="utf-8")
@@ -7220,7 +7328,13 @@ async def test_aworld_cli_replay_executor_accepts_bounded_excerpt_for_outside_ar
     assert result.metrics["evidence_manifest_entry_count"] == 1
     assert "evidence_manifest_invalid_entry_count" not in result.metrics
     bundle = json.loads(
-        (tmp_path / "workspace" / "artifacts" / "evidence_bundle.json").read_text(
+        (
+            tmp_path
+            / "workspace"
+            / "artifacts"
+            / "evidence"
+            / "evidence_bundle.json"
+        ).read_text(
             encoding="utf-8"
         )
     )
@@ -7995,7 +8109,9 @@ async def test_aworld_cli_replay_executor_trusts_scoped_task_protocol_artifact(
     tmp_path: Path,
 ) -> None:
     def fake_run(command, **kwargs):
-        artifact_dir = tmp_path / "artifacts"
+        artifact_dir = Path(
+            kwargs["env"]["AWORLD_SELF_EVOLVE_REPLAY_ARTIFACT_DIR"]
+        )
         artifact_dir.mkdir(parents=True, exist_ok=True)
         (artifact_dir / "scrape_output.log").write_text(
             "Failed to deserialize protocol response: missing field sessionId",
@@ -8048,7 +8164,9 @@ async def test_aworld_cli_replay_executor_preserves_timeout_with_recoverable_evi
     repairable: bool,
 ) -> None:
     def fake_run(command, **kwargs):
-        artifact_dir = tmp_path / "artifacts"
+        artifact_dir = Path(
+            kwargs["env"]["AWORLD_SELF_EVOLVE_REPLAY_ARTIFACT_DIR"]
+        )
         artifact_dir.mkdir(parents=True, exist_ok=True)
         evidence_path = artifact_dir / "x_ai_daily_extra.json"
         evidence_path.write_text(
@@ -8171,7 +8289,9 @@ async def test_aworld_cli_replay_executor_does_not_recover_dependency_mismatch_m
     tmp_path: Path,
 ) -> None:
     def fake_run(command, **kwargs):
-        artifact_dir = tmp_path / "artifacts"
+        artifact_dir = Path(
+            kwargs["env"]["AWORLD_SELF_EVOLVE_REPLAY_ARTIFACT_DIR"]
+        )
         artifact_dir.mkdir(parents=True, exist_ok=True)
         (artifact_dir / "diag_replay_capability_mismatch.json").write_text(
             json.dumps(
@@ -8230,7 +8350,7 @@ async def test_aworld_cli_replay_executor_does_not_recover_dependency_mismatch_m
     assert result.failure["failure_stage"] == "task_rollout"
     assert result.failure["repairable"] is True
     assert result.failure["diagnostics"]["task_artifacts"][0]["path"] == (
-        "artifact/diag_replay_capability_mismatch.json"
+        "artifact/evidence/diag_replay_capability_mismatch.json"
     )
 
 
