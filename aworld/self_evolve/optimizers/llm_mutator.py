@@ -760,9 +760,6 @@ def _focused_repair_prompt_instructions(
         for value in contract_mapping.get("failure_codes", ())
         if isinstance(value, str)
     }
-    requires_fixture_reconstruction = (
-        contract_mapping.get("requires_fixture_derived_probe") is True
-    )
     raw_fixture_probe_constraints = contract_mapping.get(
         "fixture_probe_constraints",
         (),
@@ -775,6 +772,11 @@ def _focused_repair_prompt_instructions(
         )
         if isinstance(raw_fixture_probe_constraints, (list, tuple))
         else ()
+    )
+    requires_fixture_reconstruction = bool(
+        contract_mapping.get("requires_compiler_fixture_reconstruction") is True
+        or contract_mapping.get("requires_fixture_derived_probe") is True
+        or fixture_probe_constraints
     )
     raw_schema_field_constraints = contract_mapping.get(
         "schema_field_constraints",
@@ -1044,7 +1046,9 @@ def _focused_repair_prompt_instructions(
             "or previews; those values are not descendants of the fixture payload. "
             "Use one generic selector for all listed constraints and all fixture "
             "shapes, including when multiple trajectory members contribute distinct "
-            "fixtures. "
+            "fixtures. Treat required_branch_paths as the producer repair boundary: "
+            "a schema constraint from another layer is a preservation invariant and "
+            "cannot substitute for materially changing the named failing branch. "
         )
     if schema_field_constraints:
         instructions += (

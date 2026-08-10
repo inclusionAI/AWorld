@@ -467,6 +467,8 @@ def _typed_repair_conformance_public_projection(
     add_text_mapping("base_branch_fingerprints", max_items=64)
     add_text_mapping("base_fixture_selector_fingerprints", max_items=64)
     add_text("manifest_path", max_chars=240)
+    add_text("compiler_path", max_chars=240)
+    add_text_sequence("runtime_paths", max_items=64, max_chars=240)
 
     if "exact_probe" in raw:
         exact_probe = raw.get("exact_probe")
@@ -527,6 +529,14 @@ def _typed_repair_conformance_public_projection(
             raise ValueError("public repair contract exact_probe must be a mapping")
 
     add_text_sequence("late_observed_operations", max_items=64, max_chars=240)
+    if "requires_compiler_fixture_reconstruction" in raw:
+        required = raw.get("requires_compiler_fixture_reconstruction")
+        if not isinstance(required, bool):
+            raise ValueError(
+                "public repair contract "
+                "requires_compiler_fixture_reconstruction must be boolean"
+            )
+        projected["requires_compiler_fixture_reconstruction"] = required
     if "requires_fixture_derived_probe" in raw:
         required = raw.get("requires_fixture_derived_probe")
         if not isinstance(required, bool):

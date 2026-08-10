@@ -95,6 +95,8 @@ from aworld.self_evolve.runner import (
     _default_post_apply_evaluator,
     _candidate_generation_limit,
     _candidate_generation_actual_usage,
+    _candidate_materialization_failures,
+    _candidate_materialization_stall_signature,
     _candidate_materialization_failure_events,
     _candidate_mutation_repair_prompt,
     _canonicalize_verified_prerequisite_files,
@@ -222,6 +224,61 @@ def test_evaluator_rerun_ids_are_unique_but_lineage_stable() -> None:
 
     assert first != second
     assert first.rsplit("-", 1)[0] == second.rsplit("-", 1)[0]
+
+
+def test_materialization_stall_signature_preserves_typed_repair_shape() -> None:
+    first = _candidate_materialization_failures(
+        {
+            "candidate_materialization_failures": [
+                {
+                    "candidate_index": 0,
+                    "code": "repair_branch_unchanged",
+                    "stage": "candidate_semantic_validation",
+                    "field_path": "files",
+                    "representation": "candidate_package",
+                    "repairable": True,
+                    "contract_fingerprint": "sha256:" + "a" * 64,
+                    "details": {
+                        "repair_conformance": {
+                            "code": "repair_branch_unchanged",
+                            "failure_fingerprint": "sha256:" + "b" * 64,
+                            "reason": "first wording",
+                        }
+                    },
+                }
+            ]
+        }
+    )
+    renamed = tuple(
+        {
+            **item,
+            "candidate_index": 7,
+            "reason": "different candidate wording",
+        }
+        for item in first
+    )
+    changed = tuple(
+        {
+            **item,
+            "details": {
+                "repair_conformance": {
+                    "code": "repair_branch_unchanged",
+                    "failure_fingerprint": "sha256:" + "c" * 64,
+                }
+            },
+        }
+        for item in first
+    )
+
+    assert first[0]["details"]["repair_conformance"][
+        "failure_fingerprint"
+    ] == "sha256:" + "b" * 64
+    assert _candidate_materialization_stall_signature(first) == (
+        _candidate_materialization_stall_signature(renamed)
+    )
+    assert _candidate_materialization_stall_signature(first) != (
+        _candidate_materialization_stall_signature(changed)
+    )
 
 
 def test_candidate_screening_depth_observes_bounded_source_trace_horizon() -> None:
@@ -4913,6 +4970,14 @@ async def test_candidate_materialization_failure_retries_as_typed_feedback(
                                 "candidate_index": 0,
                                 "representation": "patch_intent",
                                 "reason": "section not found",
+                                "details": {
+                                    "repair_conformance": {
+                                        "code": "repair_branch_unchanged",
+                                        "failure_fingerprint": (
+                                            "sha256:" + "d" * 64
+                                        ),
+                                    }
+                                },
                             }
                         ],
                     },
@@ -4950,6 +5015,11 @@ async def test_candidate_materialization_failure_retries_as_typed_feedback(
     assert optimizer.requests[1].validation_feedback[0].metrics[
         "candidate_materialization_invalid_count"
     ] == 1
+    assert optimizer.requests[1].validation_feedback[0].metrics[
+        "candidate_validation_diagnostics"
+    ][0]["details"]["repair_conformance"]["failure_fingerprint"] == (
+        "sha256:" + "d" * 64
+    )
     causal_events = optimizer.requests[1].validation_feedback[0].metrics[
         "causal_failure_events"
     ]
@@ -5102,29 +5172,35 @@ async def test_exhausted_candidate_materialization_has_typed_failure_event(
     )
 
     class InvalidMaterializationOptimizer:
+        def __init__(self) -> None:
+            self.call_count = 0
+
         async def propose(self, request: OptimizerRequest) -> OptimizerResult:
+            self.call_count += 1
             return OptimizerResult(
                 candidates=(),
                 diagnostics={
-                    "filtered_invalid_patch_candidates": 1,
+                    "filtered_invalid_patch_candidates": request.max_candidates,
                     "candidate_materialization_failures": [
                         {
                             "code": "candidate_materialization_invalid",
                             "stage": "candidate_generation",
                             "failure_class": "candidate",
                             "repairable": True,
-                            "candidate_index": 0,
+                            "candidate_index": index,
                             "representation": "patch_intent",
                             "reason": "section not found",
                         }
+                        for index in range(request.max_candidates)
                     ],
                 },
             )
 
+    optimizer = InvalidMaterializationOptimizer()
     result = await SelfEvolveRunner(
         store=FilesystemSelfEvolveStore(tmp_path),
-        optimizer=InvalidMaterializationOptimizer(),
-        max_iterations=1,
+        optimizer=optimizer,
+        max_iterations=4,
     ).run_explicit_target(
         run_id="run-materialization-terminal",
         target=SkillTextTarget(skill_path, allow_auto_apply=True),
@@ -5150,6 +5226,8 @@ async def test_exhausted_candidate_materialization_has_typed_failure_event(
         ).read_text(encoding="utf-8")
     )
     details = report["gate_results"][-1]["details"]
+    assert optimizer.call_count == 2
+    assert details["generation_materialization_frontier_exhausted"] is True
     assert details["code"] == "candidate_materialization_invalid"
     assert details["causal_failure_events"][0] == details["failure_event"]
     assert details["failure_event"]["owner"] == "candidate"

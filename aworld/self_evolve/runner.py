@@ -359,6 +359,7 @@ from aworld.skills.release import normalize_verified_skill_release
 _MAX_PROGRESS_REPAIR_EXTENSION_ITERATIONS = 6
 _MAX_CONSECUTIVE_DUPLICATE_POPULATION_STALLS = 1
 _MAX_CONSECUTIVE_POLICY_FILTER_STALLS = 2
+_MAX_CONSECUTIVE_MATERIALIZATION_STALLS = 2
 _SEMANTIC_DEDUP_IDENTITY_VERSION = "aworld.self_evolve.semantic_dedup.v2"
 _VERIFICATION_CONTRACT_VERSION = "aworld.self_evolve.verification_contract.v2"
 _VERIFIED_APPLY_POLICIES = frozenset({"auto_verified", "verified_only"})
@@ -1646,6 +1647,11 @@ def _candidate_materialization_failures(
         )
         if contract_fingerprint is not None:
             failure["contract_fingerprint"] = contract_fingerprint
+        raw_details = item.get("details")
+        if isinstance(raw_details, Mapping):
+            public_details = public_diagnostic_projection(raw_details)
+            if isinstance(public_details, Mapping):
+                failure["details"] = dict(public_details)
         raw_allowed_ids = item.get("allowed_improvement_signal_ids")
         if isinstance(raw_allowed_ids, (list, tuple)):
             failure["allowed_improvement_signal_ids"] = [
@@ -1655,6 +1661,48 @@ def _candidate_materialization_failures(
             ]
         failures.append(failure)
     return tuple(failures)
+
+
+def _candidate_materialization_stall_signature(
+    failures: Iterable[Mapping[str, object]],
+) -> str | None:
+    """Identify repeated typed generation failures without candidate identity."""
+
+    shapes: list[dict[str, object]] = []
+    for failure in failures:
+        details = failure.get("details")
+        typed_values = [
+            (key, value)
+            for key, value in _failure_signature_values(details)
+            if key
+            in {
+                "code",
+                "failure_fingerprint",
+                "proof_fingerprint",
+                "stage",
+            }
+        ]
+        shapes.append(
+            {
+                "code": failure.get("code"),
+                "stage": failure.get("stage"),
+                "representation": failure.get("representation"),
+                "field_path": failure.get("field_path"),
+                "contract_fingerprint": failure.get("contract_fingerprint"),
+                "typed_values": typed_values,
+            }
+        )
+    if not shapes:
+        return None
+    return hashlib.sha256(
+        json.dumps(
+            sorted(shapes, key=lambda item: json.dumps(item, sort_keys=True)),
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+            default=str,
+        ).encode("utf-8")
+    ).hexdigest()
 
 
 def _candidate_materialization_failure_event(
@@ -3116,9 +3164,12 @@ class SelfEvolveRunner:
         progress_repair_families: set[str] = set()
         duplicate_population_stalls = 0
         consecutive_policy_filter_stalls = 0
+        consecutive_materialization_stalls = 0
         last_policy_filter_signature: str | None = None
+        last_materialization_stall_signature: str | None = None
         last_policy_filter_outcomes: tuple[CandidateGenerationOutcome, ...] = ()
         generation_policy_frontier_exhausted = False
+        generation_materialization_frontier_exhausted = False
         candidate_generation_infrastructure_retries = 0
         raw_generation_attempt_count = 0
         semantic_lesson_duplicate_attempt_count = 0
@@ -4177,6 +4228,36 @@ class SelfEvolveRunner:
                             "failed_gates": [failed_gate],
                         }
                     )
+                    if (
+                        materialization_invalid_count
+                        >= max(1, generation_slot_count)
+                    ):
+                        materialization_signature = (
+                            _candidate_materialization_stall_signature(
+                                materialization_failures
+                            )
+                        )
+                        if (
+                            materialization_signature is not None
+                            and materialization_signature
+                            == last_materialization_stall_signature
+                        ):
+                            consecutive_materialization_stalls += 1
+                        else:
+                            last_materialization_stall_signature = (
+                                materialization_signature
+                            )
+                            consecutive_materialization_stalls = 1
+                        if (
+                            materialization_signature is not None
+                            and consecutive_materialization_stalls
+                            >= _MAX_CONSECUTIVE_MATERIALIZATION_STALLS
+                        ):
+                            generation_materialization_frontier_exhausted = True
+                            break
+                    else:
+                        consecutive_materialization_stalls = 0
+                        last_materialization_stall_signature = None
                     continue
                 if generation_duplicate_feedback:
                     continue
@@ -4283,7 +4364,9 @@ class SelfEvolveRunner:
 
             duplicate_population_stalls = 0
             consecutive_policy_filter_stalls = 0
+            consecutive_materialization_stalls = 0
             last_policy_filter_signature = None
+            last_materialization_stall_signature = None
             candidate_generation_infrastructure_retries = 0
 
             local_gate_results_by_candidate: dict[str, tuple[GateResult, ...]] = {}
@@ -4763,6 +4846,10 @@ class SelfEvolveRunner:
                 candidate_generation_details[
                     "generation_policy_frontier_exhausted"
                 ] = True
+            if generation_materialization_frontier_exhausted:
+                candidate_generation_details[
+                    "generation_materialization_frontier_exhausted"
+                ] = True
             if candidate_generation_failure_event is not None:
                 candidate_generation_details.update(
                     {
@@ -4796,6 +4883,11 @@ class SelfEvolveRunner:
                             "structural progress"
                         )
                         if generation_policy_frontier_exhausted
+                        else (
+                            "candidate generation repeated the same typed "
+                            "materialization failure without repair progress"
+                        )
+                        if generation_materialization_frontier_exhausted
                         else "optimizer did not produce a replayable candidate"
                         if _is_verified_apply_policy(apply_policy)
                         else "optimizer did not produce a candidate"
@@ -5083,6 +5175,13 @@ class SelfEvolveRunner:
                 "generation_frontier_exhausted": generation_frontier_exhausted,
                 "generation_policy_frontier_exhausted": (
                     generation_policy_frontier_exhausted
+                ),
+                **(
+                    {
+                        "generation_materialization_frontier_exhausted": True
+                    }
+                    if generation_materialization_frontier_exhausted
+                    else {}
                 ),
                 "policy_filtered_candidate_count": sum(
                     len(_candidate_policy_filter_outcomes(diagnostics))

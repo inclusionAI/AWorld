@@ -156,8 +156,11 @@ class RepairConformanceContract:
         default_factory=dict
     )
     manifest_path: str | None = None
+    compiler_path: str | None = None
+    runtime_paths: tuple[str, ...] = ()
     exact_probe: ExactRepairProbe | None = None
     late_observed_operations: tuple[str, ...] = ()
+    requires_compiler_fixture_reconstruction: bool = False
     requires_fixture_derived_probe: bool = False
     required_fixture_probe_operations: tuple[str, ...] = ()
     fixture_probe_constraints: tuple[FixtureDerivedProbeConstraint, ...] = ()
@@ -182,6 +185,8 @@ class RepairConformanceContract:
                 self.base_fixture_selector_fingerprints
             ),
             "manifest_path": self.manifest_path,
+            "compiler_path": self.compiler_path,
+            "runtime_paths": list(self.runtime_paths),
             "exact_probe": (
                 {
                     "kind": self.exact_probe.kind,
@@ -192,6 +197,9 @@ class RepairConformanceContract:
                 else None
             ),
             "late_observed_operations": list(self.late_observed_operations),
+            "requires_compiler_fixture_reconstruction": (
+                self.requires_compiler_fixture_reconstruction
+            ),
             "requires_fixture_derived_probe": self.requires_fixture_derived_probe,
             "required_fixture_probe_operations": list(
                 self.required_fixture_probe_operations
@@ -252,8 +260,13 @@ class RepairConformanceContract:
                 self.base_fixture_selector_fingerprints
             ),
             "manifest_path": self.manifest_path,
+            "compiler_path": self.compiler_path,
+            "runtime_paths": list(self.runtime_paths),
             "exact_probe": exact_probe,
             "late_observed_operations": list(self.late_observed_operations),
+            "requires_compiler_fixture_reconstruction": (
+                self.requires_compiler_fixture_reconstruction
+            ),
             "requires_fixture_derived_probe": self.requires_fixture_derived_probe,
             "required_fixture_probe_operations": list(
                 self.required_fixture_probe_operations
@@ -350,9 +363,18 @@ class RepairConformanceContract:
                 if isinstance(value.get("manifest_path"), str)
                 else None
             ),
+            compiler_path=(
+                str(value.get("compiler_path"))
+                if isinstance(value.get("compiler_path"), str)
+                else None
+            ),
+            runtime_paths=_string_tuple(value.get("runtime_paths")),
             exact_probe=exact_probe,
             late_observed_operations=_string_tuple(
                 value.get("late_observed_operations")
+            ),
+            requires_compiler_fixture_reconstruction=(
+                value.get("requires_compiler_fixture_reconstruction") is True
             ),
             requires_fixture_derived_probe=(
                 value.get("requires_fixture_derived_probe") is True
@@ -968,6 +990,7 @@ def compile_repair_conformance_contract(
         # force an unrelated protocol edit.
         return None
     manifest_path, branch_paths = _replay_implementation_paths(base_sources)
+    runtime_paths = branch_paths
     compiler_path = _replay_compiler_path(
         base_sources,
         manifest_path=manifest_path,
@@ -1116,8 +1139,13 @@ def compile_repair_conformance_contract(
             else {}
         ),
         manifest_path=manifest_path,
+        compiler_path=compiler_path,
+        runtime_paths=runtime_paths,
         exact_probe=exact_probe,
         late_observed_operations=observed_operations,
+        requires_compiler_fixture_reconstruction=bool(
+            exact_probe is not None or fixture_probe_constraints
+        ),
         requires_fixture_derived_probe=requires_fixture_probe,
         required_fixture_probe_operations=required_fixture_probe_operations,
         fixture_probe_constraints=fixture_probe_constraints,
@@ -1189,6 +1217,22 @@ def _compile_failure_branch_paths(
     ]
     if not compile_diagnostics:
         return ()
+    # A protocol assertion is emitted by the capability compiler.  Inherited
+    # runtime invariants may be nested in the same diagnostic, but they are
+    # preservation constraints rather than an alternative repair target.  If
+    # they select the change path here, candidates can repeatedly edit a valid
+    # runtime while leaving the failing compiler output unchanged.
+    fixture_assertion_compile_failure = any(
+        str(diagnostic.get("capability_error_code") or "")
+        == "protocol_probe_not_fixture_derived"
+        or (
+            str(diagnostic.get("code") or "")
+            == "protocol_probe_not_fixture_derived"
+        )
+        for diagnostic in compile_diagnostics
+    )
+    if fixture_assertion_compile_failure and compiler_path is not None:
+        return (compiler_path,)
     schema_layers = {
         constraint.schema_layer
         for constraint in _schema_field_constraints(compile_diagnostics)
@@ -1438,7 +1482,11 @@ def _source_behavior_constraint_failure(
         if analyzer is None:
             continue
         proofs: list[dict[str, object]] = []
-        for path in contract.required_branch_paths:
+        for path in _schema_constraint_source_paths(
+            candidate_sources,
+            contract=contract,
+            schema_layer=constraint.schema_layer,
+        ):
             source = candidate_sources.get(path)
             if not isinstance(source, str) or not source.strip():
                 continue
@@ -1489,6 +1537,32 @@ def _source_behavior_constraint_failure(
             },
         )
     return None
+
+
+def _schema_constraint_source_paths(
+    candidate_sources: Mapping[str, str],
+    *,
+    contract: RepairConformanceContract,
+    schema_layer: str,
+) -> tuple[str, ...]:
+    """Resolve invariant checks independently from the required change path."""
+
+    if schema_layer == "manifest" and contract.manifest_path is not None:
+        scoped = (contract.manifest_path,)
+    elif schema_layer in {"compile_result", "compiler_output"}:
+        scoped = (
+            (contract.compiler_path,)
+            if contract.compiler_path is not None
+            else contract.required_branch_paths
+        )
+    elif schema_layer == "runtime":
+        scoped = contract.runtime_paths or contract.required_branch_paths
+    else:
+        scoped = contract.required_branch_paths
+    present = tuple(path for path in scoped if path in candidate_sources)
+    return present or tuple(
+        path for path in contract.required_branch_paths if path in candidate_sources
+    )
 
 
 def _source_behavior_analyzer(

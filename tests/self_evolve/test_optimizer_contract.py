@@ -863,6 +863,9 @@ async def test_llm_mutator_carries_candidate_specific_repair_conformance() -> No
         "session.open",
         "records.query",
     ]
+    assert strategy["repair_conformance"][
+        "requires_compiler_fixture_reconstruction"
+    ] is True
     assert "Omit focused package files that do not change" in prompts[0]
     assert "must recurse through mapping values and sequence items" in prompts[0]
     assert "merely declaring it while traversing every gateway dict" in prompts[0]
@@ -874,6 +877,8 @@ async def test_llm_mutator_carries_candidate_specific_repair_conformance() -> No
     assert "runtime response must carry the surrounding decoded container" in prompts[0]
     assert "Never remove or relocate the contract's exact_probe" in prompts[0]
     assert "shape-complete compiler contract" in prompts[0]
+    assert "producer repair boundary" in prompts[0]
+    assert "preservation invariant" in prompts[0]
     assert "Do not serialize a metadata wrapper" in prompts[0]
     assert "executable, shape-complete contract" in prompts[0]
     assert "required_operations is a conjunctive structural" in prompts[0]
