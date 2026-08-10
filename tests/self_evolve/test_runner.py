@@ -8995,6 +8995,10 @@ async def test_verified_runner_bounds_authoritative_candidates_across_iterations
     } == {"candidate-frontier-1", "candidate-frontier-2"}
     assert report["verification_funnel"] == {
         "screening_max_cases": 3,
+        "max_generated_candidates": 6,
+        "generated_candidate_slot_count": 3,
+        "unique_generated_candidate_count": 2,
+        "generation_frontier_exhausted": False,
         "max_authoritative_candidates": 2,
         "authoritative_candidate_count": 2,
         "max_score_tiebreak_candidates": 0,
@@ -9002,6 +9006,64 @@ async def test_verified_runner_bounds_authoritative_candidates_across_iterations
         "frontier_exhausted": True,
         "authoritative_evaluation_uses_full_dataset": True,
     }
+
+
+@pytest.mark.asyncio
+async def test_verified_runner_bounds_generation_slots_before_authoritative_replay(
+    tmp_path: Path,
+) -> None:
+    skill_path, dataset = _cycle1_runner_fixture(tmp_path)
+    requested_candidate_counts: list[int] = []
+
+    class Optimizer:
+        async def propose(self, request: OptimizerRequest) -> OptimizerResult:
+            requested_candidate_counts.append(request.max_candidates)
+            start = sum(requested_candidate_counts[:-1])
+            return OptimizerResult(
+                candidates=tuple(
+                    CandidateVariant(
+                        candidate_id=f"invalid-candidate-{start + offset}",
+                        target=SelfEvolveTargetRef(
+                            "skill", "demo", str(skill_path)
+                        ),
+                        content=f"invalid skill package {start + offset}",
+                        rationale="exercise the bounded generation funnel",
+                    )
+                    for offset in range(request.max_candidates)
+                )
+            )
+
+    store = FilesystemSelfEvolveStore(tmp_path)
+    runner = SelfEvolveRunner(
+        store=store,
+        optimizer=Optimizer(),
+        max_iterations=10,
+        max_generated_candidates=3,
+        max_full_evaluation_candidates=3,
+    )
+
+    await runner.run_explicit_target(
+        run_id="run-bounded-generation-frontier",
+        target=SkillTextTarget(skill_path, allow_auto_apply=True),
+        dataset=dataset,
+        trace_packs=(),
+        apply_policy="verified_only",
+    )
+
+    report = json.loads(
+        (store.run_path("run-bounded-generation-frontier") / "report.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert sum(requested_candidate_counts) == 3
+    assert requested_candidate_counts[-1] == 1
+    assert report["verification_funnel"]["generated_candidate_slot_count"] == 3
+    assert report["verification_funnel"]["unique_generated_candidate_count"] == 3
+    assert report["verification_funnel"]["generation_frontier_exhausted"] is True
+    assert report["verification_funnel"]["authoritative_candidate_count"] == 0
+    scheduler_decisions = report["population"]["scheduler_decisions"]
+    assert scheduler_decisions[-1]["requested_slot_count"] >= 1
+    assert scheduler_decisions[-1]["admitted_slot_count"] == 0
 
 
 @pytest.mark.asyncio
@@ -10099,8 +10161,41 @@ async def test_population_screening_preserves_all_candidates_when_baseline_is_in
     assert report is not None
     assert report["selected_candidate_id"] is None
     assert report["selected_candidate_ids"] == ["candidate-1", "candidate-2"]
+    assert report["candidate_dispositions"] == {
+        "candidate-1": "promoted_to_authoritative",
+        "candidate-2": "promoted_to_authoritative",
+    }
     assert report["attempted_candidate_count"] == 2
     assert "preserved the ranked population" in report["selection_reason"]
+
+    async def passing_screening(**kwargs):
+        return (
+            InconclusiveReplay(),
+            dataset,
+            GateResult(
+                gate_name="candidate_replay",
+                passed=True,
+                reason="candidate produced a comparable representative replay",
+            ),
+        )
+
+    monkeypatch.setattr(runner, "_replay_selected_candidate", passing_screening)
+    screened, report = await runner._screen_candidate_population(
+        run_id="run-screening-ranked-frontier",
+        target=SkillTextTarget(skill_path, allow_auto_apply=True),
+        dataset=dataset,
+        candidates=candidates,
+        apply_policy="auto_verified",
+    )
+
+    assert screened == candidates[:1]
+    assert report is not None
+    assert report["attempted_candidate_count"] == 1
+    assert report["ranked_below_screening_candidate_ids"] == ["candidate-2"]
+    assert report["candidate_dispositions"] == {
+        "candidate-1": "promoted_to_authoritative",
+        "candidate-2": "ranked_below_screening_frontier",
+    }
 
     async def repairable_capability_replay(**kwargs):
         return (
@@ -10146,6 +10241,10 @@ async def test_population_screening_preserves_all_candidates_when_baseline_is_in
     assert screened == ()
     assert report is not None
     assert report["attempted_candidate_count"] == 2
+    assert report["candidate_dispositions"] == {
+        "candidate-1": "screening_rejected",
+        "candidate-2": "screening_rejected",
+    }
     assert "candidate repair" in report["selection_reason"]
     repair_feedback = _candidate_screening_repair_feedback(candidates, report)
     assert len(repair_feedback) == 2
