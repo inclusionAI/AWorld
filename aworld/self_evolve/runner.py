@@ -2146,6 +2146,7 @@ class SelfEvolveRunner:
         replay_max_steps: int | None = 1,
         replay_candidate_limit: int = 2,
         candidate_screening_max_cases: int = 3,
+        max_generated_candidates: int = 6,
         max_full_evaluation_candidates: int = 3,
         max_score_tiebreak_candidates: int = 1,
         baseline_replay_repetitions: int = 1,
@@ -2407,11 +2408,14 @@ class SelfEvolveRunner:
         self.replay_candidate_limit = replay_candidate_limit
         if candidate_screening_max_cases <= 0:
             raise ValueError("candidate_screening_max_cases must be positive")
+        if max_generated_candidates <= 0:
+            raise ValueError("max_generated_candidates must be positive")
         if max_full_evaluation_candidates <= 0:
             raise ValueError("max_full_evaluation_candidates must be positive")
         if max_score_tiebreak_candidates < 0:
             raise ValueError("max_score_tiebreak_candidates must be non-negative")
         self.candidate_screening_max_cases = candidate_screening_max_cases
+        self.max_generated_candidates = max_generated_candidates
         self.max_full_evaluation_candidates = max_full_evaluation_candidates
         self.max_score_tiebreak_candidates = max_score_tiebreak_candidates
         self.baseline_replay_repetitions = baseline_replay_repetitions
@@ -2880,6 +2884,7 @@ class SelfEvolveRunner:
             "min_eval_cases": self.min_eval_cases,
             "judge_repetitions": self.judge_repetitions,
             "candidate_screening_max_cases": self.candidate_screening_max_cases,
+            "max_generated_candidates": self.max_generated_candidates,
             "max_full_evaluation_candidates": (
                 self.max_full_evaluation_candidates
             ),
@@ -2901,6 +2906,8 @@ class SelfEvolveRunner:
         semantic_lesson_duplicate_attempt_count = 0
         authoritative_candidate_count = 0
         score_tiebreak_candidate_count = 0
+        generated_candidate_slot_count = 0
+        generation_frontier_exhausted = False
         verification_frontier_exhausted = False
         iteration_budget = (
             self.max_iterations + _MAX_PROGRESS_REPAIR_EXTENSION_ITERATIONS
@@ -3008,10 +3015,54 @@ class SelfEvolveRunner:
                 ),
             )
             scheduler_state = scheduler_decision.state
+            requested_generation_slot_count = len(scheduler_decision.slots)
+            scheduled_slots = scheduler_decision.slots
+            if _is_verified_apply_policy(apply_policy) and scheduled_slots:
+                remaining_generation_slots = max(
+                    0,
+                    self.max_generated_candidates
+                    - generated_candidate_slot_count,
+                )
+                remaining_authoritative_slots = max(
+                    0,
+                    self.max_full_evaluation_candidates
+                    - authoritative_candidate_count,
+                )
+                if remaining_generation_slots == 0:
+                    generation_frontier_exhausted = True
+                    scheduled_slots = ()
+                elif remaining_authoritative_slots == 0:
+                    verification_frontier_exhausted = True
+                    scheduled_slots = ()
+                else:
+                    screening_can_rank = bool(
+                        self.replay_enabled
+                        and self.candidate_replay_backend is not None
+                        and _candidate_screening_dataset(
+                            dataset,
+                            capability_requirements=replay_preflight.requirements,
+                            max_cases=self.candidate_screening_max_cases,
+                        )
+                        is not None
+                    )
+                    useful_oversubscription = 1 if screening_can_rank else 0
+                    admitted_slot_count = min(
+                        len(scheduled_slots),
+                        remaining_generation_slots,
+                        remaining_authoritative_slots
+                        + useful_oversubscription,
+                    )
+                    scheduled_slots = scheduled_slots[:admitted_slot_count]
+            scheduler_decision = replace(
+                scheduler_decision,
+                slots=tuple(scheduled_slots),
+            )
             scheduler_decisions.append(
                 {
                     "iteration": iteration_index + 1,
                     **scheduler_decision.to_dict(),
+                    "requested_slot_count": requested_generation_slot_count,
+                    "admitted_slot_count": len(scheduled_slots),
                 }
             )
             if scheduler_decision.stop or not scheduler_decision.slots:
@@ -3039,6 +3090,7 @@ class SelfEvolveRunner:
                         reason_code="generation_budget_denied",
                     )
                 break
+            generated_candidate_slot_count += generation_slot_count
             _emit_progress(
                 self.progress_callback,
                 "candidate_generation",
@@ -3584,7 +3636,7 @@ class SelfEvolveRunner:
                     for item in generation_duplicate_feedback
                 )
 
-            candidate_population = _rank_candidate_population(
+            ranked_candidate_population = _rank_candidate_population(
                 tuple(
                     candidate
                     for candidate in unique_generated
@@ -3603,7 +3655,36 @@ class SelfEvolveRunner:
                 ),
                 optimizer_diagnostics=optimizer_result.diagnostics,
                 current_content=target.load_current_content(),
-            )[: max(1, self.replay_candidate_limit)]
+            )
+            candidate_population = ranked_candidate_population[
+                : max(1, self.replay_candidate_limit)
+            ]
+            ranked_below_replay_frontier = ranked_candidate_population[
+                max(1, self.replay_candidate_limit) :
+            ]
+            for deferred_candidate in ranked_below_replay_frontier:
+                deferred_key = attempt_key_by_candidate_id.get(
+                    deferred_candidate.candidate_id
+                )
+                if (
+                    deferred_key is not None
+                    and not attempt_tracker.terminal(deferred_key)
+                ):
+                    attempt_tracker.emit(
+                        deferred_key,
+                        CandidateAttemptStage.NOT_RUN,
+                        reason_code="ranked_below_replay_frontier",
+                    )
+                iteration_reports.append(
+                    {
+                        "iteration": iteration_index + 1,
+                        "candidate_id": deferred_candidate.candidate_id,
+                        "status": "not_run",
+                        "failed_gates": [],
+                        "lifecycle_stage": "not_run",
+                        "reason_code": "ranked_below_replay_frontier",
+                    }
+                )
             _emit_progress(
                 self.progress_callback,
                 "population_generation",
@@ -4545,6 +4626,10 @@ class SelfEvolveRunner:
             ),
             "verification_funnel": {
                 "screening_max_cases": self.candidate_screening_max_cases,
+                "max_generated_candidates": self.max_generated_candidates,
+                "generated_candidate_slot_count": generated_candidate_slot_count,
+                "unique_generated_candidate_count": len(all_candidates),
+                "generation_frontier_exhausted": generation_frontier_exhausted,
                 "max_authoritative_candidates": (
                     self.max_full_evaluation_candidates
                 ),
@@ -5179,6 +5264,53 @@ class SelfEvolveRunner:
                 )
         else:
             selected_candidates = (selected_candidate,)
+        attempted_ids = {
+            str(attempt.get("candidate_id"))
+            for attempt in attempts
+            if isinstance(attempt.get("candidate_id"), str)
+        }
+        selected_ids = {
+            candidate.candidate_id for candidate in selected_candidates
+        }
+        ranked_below_screening_ids = tuple(
+            candidate.candidate_id
+            for candidate in conformance_candidates
+            if candidate.candidate_id not in attempted_ids
+            and candidate.candidate_id not in selected_ids
+            and not stopped_by_shared_screening
+        )
+        for candidate_id in ranked_below_screening_ids:
+            pending_key = (
+                attempt_keys.get(candidate_id)
+                if attempt_keys is not None
+                else None
+            )
+            if (
+                attempt_tracker is not None
+                and pending_key is not None
+                and not attempt_tracker.terminal(pending_key)
+            ):
+                attempt_tracker.emit(
+                    pending_key,
+                    CandidateAttemptStage.NOT_RUN,
+                    reason_code="ranked_below_screening_frontier",
+                )
+        candidate_dispositions = {
+            candidate.candidate_id: (
+                "promoted_to_authoritative"
+                if candidate.candidate_id in selected_ids
+                else (
+                    "ranked_below_screening_frontier"
+                    if candidate.candidate_id in ranked_below_screening_ids
+                    else (
+                        "screening_rejected"
+                        if candidate.candidate_id in attempted_ids
+                        else "not_promoted"
+                    )
+                )
+            )
+            for candidate in conformance_candidates
+        }
         screening_report = {
                 "representative_case_id": representative_case_ids[0],
                 "representative_case_ids": list(representative_case_ids),
@@ -5193,6 +5325,10 @@ class SelfEvolveRunner:
                 "selected_candidate_ids": [
                     candidate.candidate_id for candidate in selected_candidates
                 ],
+                "ranked_below_screening_candidate_ids": list(
+                    ranked_below_screening_ids
+                ),
+                "candidate_dispositions": candidate_dispositions,
                 "selection_reason": selection_reason,
                 "baseline_repetitions": 1,
                 "candidate_repetitions": 1,
@@ -9771,6 +9907,7 @@ def optimize_from_cli_request(
     replay_max_steps: int | None = 1,
     replay_candidate_limit: int = 2,
     candidate_screening_max_cases: int = 3,
+    max_generated_candidates: int = 6,
     max_full_evaluation_candidates: int = 3,
     max_score_tiebreak_candidates: int = 1,
     baseline_replay_repetitions: int = 1,
@@ -10587,6 +10724,7 @@ def optimize_from_cli_request(
         replay_max_steps=replay_max_steps,
         replay_candidate_limit=replay_candidate_limit,
         candidate_screening_max_cases=candidate_screening_max_cases,
+        max_generated_candidates=max_generated_candidates,
         max_full_evaluation_candidates=max_full_evaluation_candidates,
         max_score_tiebreak_candidates=max_score_tiebreak_candidates,
         baseline_replay_repetitions=baseline_replay_repetitions,
@@ -14388,8 +14526,11 @@ def _combined_candidate_validation_report(
     if isinstance(screening, Mapping):
         for key in (
             "representative_case_id",
+            "representative_case_ids",
             "baseline_repetitions",
             "candidate_repetitions",
+            "ranked_below_screening_candidate_ids",
+            "candidate_dispositions",
         ):
             if key in screening:
                 report[key] = screening[key]

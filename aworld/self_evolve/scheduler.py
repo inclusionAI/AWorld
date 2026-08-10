@@ -314,6 +314,7 @@ def _run_framework_job(
         replay_max_steps=config.replay_max_steps,
         replay_candidate_limit=config.replay_candidate_limit,
         candidate_screening_max_cases=config.candidate_screening_max_cases,
+        max_generated_candidates=config.max_generated_candidates,
         max_full_evaluation_candidates=config.max_full_evaluation_candidates,
         max_score_tiebreak_candidates=config.max_score_tiebreak_candidates,
         baseline_replay_repetitions=config.baseline_replay_repetitions,

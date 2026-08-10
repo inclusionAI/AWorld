@@ -259,6 +259,13 @@ class OptimizeTopLevelCommand:
             help="Maximum representative cases used by low-cost candidate screening.",
         )
         parser.add_argument(
+            "--max-generated-candidates",
+            type=int,
+            default=6,
+            dest="max_generated_candidates",
+            help="Maximum candidate-generation slots admitted by the verified funnel.",
+        )
+        parser.add_argument(
             "--max-full-evaluation-candidates",
             type=int,
             default=3,
@@ -383,6 +390,9 @@ class OptimizeTopLevelCommand:
                 candidate_replay_repetitions=getattr(args, "candidate_replay_repetitions", None),
                 candidate_screening_max_cases=getattr(
                     args, "candidate_screening_max_cases", 3
+                ),
+                max_generated_candidates=getattr(
+                    args, "max_generated_candidates", 6
                 ),
                 max_full_evaluation_candidates=getattr(
                     args, "max_full_evaluation_candidates", 3
@@ -589,6 +599,7 @@ def run_optimize_cli(
     baseline_replay_repetitions: int | None = None,
     candidate_replay_repetitions: int | None = None,
     candidate_screening_max_cases: int = 3,
+    max_generated_candidates: int = 6,
     max_full_evaluation_candidates: int = 3,
     max_score_tiebreak_candidates: int = 1,
     runtime_registry_refresher: Callable[[Any], Any] | None = None,
@@ -615,6 +626,7 @@ def run_optimize_cli(
 ) -> Mapping[str, Any]:
     for name, value, allow_zero in (
         ("--candidate-screening-max-cases", candidate_screening_max_cases, False),
+        ("--max-generated-candidates", max_generated_candidates, False),
         ("--max-full-evaluation-candidates", max_full_evaluation_candidates, False),
         ("--max-score-tiebreak-candidates", max_score_tiebreak_candidates, True),
     ):
@@ -714,6 +726,7 @@ def run_optimize_cli(
         "max_run_wall_seconds": max_run_wall_seconds,
         "per_attempt_replay_token_limit": per_attempt_replay_token_limit,
         "candidate_screening_max_cases": candidate_screening_max_cases,
+        "max_generated_candidates": max_generated_candidates,
         "max_full_evaluation_candidates": max_full_evaluation_candidates,
         "max_score_tiebreak_candidates": max_score_tiebreak_candidates,
         "apply_policy": runtime_apply,

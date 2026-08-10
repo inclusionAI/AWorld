@@ -260,6 +260,7 @@ class SelfEvolveConfig(BaseConfig):
     replay_max_steps: Optional[int] = 1
     replay_candidate_limit: int = 2
     candidate_screening_max_cases: int = 3
+    max_generated_candidates: int = 6
     max_full_evaluation_candidates: int = 3
     max_score_tiebreak_candidates: int = 1
     baseline_replay_repetitions: int = 1
@@ -281,6 +282,8 @@ class SelfEvolveConfig(BaseConfig):
             raise ValueError("replay_candidate_limit must be positive")
         if self.candidate_screening_max_cases <= 0:
             raise ValueError("candidate_screening_max_cases must be positive")
+        if self.max_generated_candidates <= 0:
+            raise ValueError("max_generated_candidates must be positive")
         if self.max_full_evaluation_candidates <= 0:
             raise ValueError("max_full_evaluation_candidates must be positive")
         if self.max_score_tiebreak_candidates < 0:

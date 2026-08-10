@@ -30,6 +30,7 @@ def test_agent_config_disables_self_evolve_by_default() -> None:
     assert config.self_evolve_config.replay_max_steps == 1
     assert config.self_evolve_config.replay_candidate_limit == 2
     assert config.self_evolve_config.candidate_screening_max_cases == 3
+    assert config.self_evolve_config.max_generated_candidates == 6
     assert config.self_evolve_config.max_full_evaluation_candidates == 3
     assert config.self_evolve_config.max_score_tiebreak_candidates == 1
     assert config.self_evolve_config.baseline_replay_repetitions == 1
@@ -48,6 +49,14 @@ def test_self_evolve_modes_accept_non_online_without_verified_apply(mode: str) -
 def test_self_evolve_online_requires_auto_verified_apply_policy() -> None:
     with pytest.raises(ValidationError, match="online self-evolve requires apply_policy='auto_verified'"):
         SelfEvolveConfig(mode="online")
+
+
+def test_self_evolve_rejects_non_positive_generated_candidate_limit() -> None:
+    with pytest.raises(
+        ValidationError,
+        match="max_generated_candidates must be positive",
+    ):
+        SelfEvolveConfig(max_generated_candidates=0)
 
     config = SelfEvolveConfig(mode="online", apply_policy="auto_verified")
 
