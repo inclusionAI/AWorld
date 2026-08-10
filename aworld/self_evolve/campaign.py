@@ -472,6 +472,7 @@ class SelfImprovementCampaign:
     cycle_index: int = 0
     run_ids: tuple[str, ...] = ()
     cumulative_usage: CampaignUsage = CampaignUsage()
+    cumulative_authoritative_candidates: int = 0
     latest_progress: SelfImprovementProgress | None = None
     latest_disposition: SelfImprovementDisposition | None = None
     latest_report_path: str | None = None
@@ -490,6 +491,13 @@ class SelfImprovementCampaign:
             raise ValueError("campaign run lineage must match its cycle index")
         for run_id in self.run_ids:
             _validate_id(run_id, "run_id")
+        if (
+            isinstance(self.cumulative_authoritative_candidates, bool)
+            or self.cumulative_authoritative_candidates < 0
+        ):
+            raise ValueError(
+                "campaign cumulative authoritative candidate count must be non-negative"
+            )
         for fingerprint in (
             self.request_fingerprint,
             self.source_fingerprint,
@@ -540,6 +548,9 @@ class SelfImprovementCampaign:
             "cycle_index": self.cycle_index,
             "run_ids": list(self.run_ids),
             "cumulative_usage": self.cumulative_usage.to_dict(),
+            "cumulative_authoritative_candidates": (
+                self.cumulative_authoritative_candidates
+            ),
             "latest_progress": (
                 self.latest_progress.to_dict() if self.latest_progress is not None else None
             ),
@@ -581,6 +592,10 @@ class SelfImprovementCampaign:
             cycle_index=_non_negative_int(value.get("cycle_index"), "cycle_index"),
             run_ids=_string_tuple(value.get("run_ids")),
             cumulative_usage=CampaignUsage.from_dict(raw_usage),
+            cumulative_authoritative_candidates=_non_negative_int(
+                value.get("cumulative_authoritative_candidates", 0),
+                "cumulative_authoritative_candidates",
+            ),
             latest_progress=(
                 SelfImprovementProgress.from_dict(raw_progress)
                 if isinstance(raw_progress, Mapping)
@@ -719,6 +734,26 @@ class SelfImprovementCampaignController:
             )
             self.store.write_campaign(limited)
             return limited, _campaign_summary(limited, {})
+        authoritative_limit = _campaign_authoritative_candidate_limit(campaign)
+        remaining_authoritative_candidates = (
+            authoritative_limit
+            - campaign.cumulative_authoritative_candidates
+        )
+        if remaining_authoritative_candidates <= 0:
+            exhausted = _exhaust_campaign(
+                campaign,
+                reason_code="campaign_authoritative_frontier_exhausted",
+            )
+            self.store.write_campaign(exhausted)
+            return exhausted, _campaign_summary(exhausted, {})
+        request["max_full_evaluation_candidates"] = min(
+            _positive_int(
+                request.get("max_full_evaluation_candidates")
+                or authoritative_limit,
+                "max_full_evaluation_candidates",
+            ),
+            remaining_authoritative_candidates,
+        )
         request.pop("_campaign_total_run_token_budget", None)
         next_cycle = campaign.cycle_index + 1
         run_id = f"{campaign.campaign_id}-cycle-{next_cycle:03d}"
@@ -818,12 +853,19 @@ class SelfImprovementCampaignController:
                     diagnostic_refs=disposition.diagnostic_refs,
                 )
         status = _status_for_disposition(disposition)
+        cumulative_authoritative_candidates = (
+            campaign.cumulative_authoritative_candidates
+            + _report_authoritative_candidate_count(report)
+        )
         advanced = replace(
             campaign,
             status=status,
             cycle_index=next_cycle,
             run_ids=(*campaign.run_ids, actual_run_id),
             cumulative_usage=usage,
+            cumulative_authoritative_candidates=(
+                cumulative_authoritative_candidates
+            ),
             latest_progress=progress,
             latest_disposition=disposition,
             latest_report_path=str(report_path),
@@ -842,10 +884,24 @@ class SelfImprovementCampaignController:
             )
             disposition = advanced.latest_disposition
             assert disposition is not None
+        elif (
+            disposition.continuable
+            and cumulative_authoritative_candidates >= authoritative_limit
+        ):
+            advanced = _exhaust_campaign(
+                advanced,
+                reason_code="campaign_authoritative_frontier_exhausted",
+            )
+            disposition = advanced.latest_disposition
+            assert disposition is not None
         report["campaign"] = {
             "campaign_id": advanced.campaign_id,
             "cycle": advanced.cycle_index,
             "max_cycles": advanced.max_cycles,
+            "authoritative_candidate_count": (
+                advanced.cumulative_authoritative_candidates
+            ),
+            "max_authoritative_candidates": authoritative_limit,
         }
         report["self_improvement_disposition"] = disposition.to_dict()
         self.store.write_report(actual_run_id, report)
@@ -1624,6 +1680,25 @@ def _status_for_disposition(
     return SelfImprovementCampaignStatus.PAUSED
 
 
+def _campaign_authoritative_candidate_limit(
+    campaign: SelfImprovementCampaign,
+) -> int:
+    return _positive_int(
+        campaign.request.get("max_full_evaluation_candidates") or 3,
+        "max_full_evaluation_candidates",
+    )
+
+
+def _report_authoritative_candidate_count(report: Mapping[str, Any]) -> int:
+    funnel = report.get("verification_funnel")
+    if not isinstance(funnel, Mapping):
+        return 0
+    value = funnel.get("authoritative_candidate_count")
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return 0
+    return max(0, int(value))
+
+
 def _campaign_summary(
     campaign: SelfImprovementCampaign,
     latest: Mapping[str, Any],
@@ -1643,6 +1718,12 @@ def _campaign_summary(
                 / "campaign.json"
             ),
             "goal_handoff_path": campaign.goal_handoff_path,
+            "campaign_authoritative_candidate_count": (
+                campaign.cumulative_authoritative_candidates
+            ),
+            "campaign_max_authoritative_candidates": (
+                _campaign_authoritative_candidate_limit(campaign)
+            ),
         }
     )
     if campaign.latest_disposition is not None:

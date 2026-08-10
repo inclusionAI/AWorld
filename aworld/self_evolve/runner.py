@@ -146,10 +146,12 @@ from aworld.self_evolve.lessons import LessonRecord, extract_lesson_records
 from aworld.self_evolve.candidate_package import (
     CandidateMutationKind,
     candidate_content_semantic_fingerprint,
+    candidate_file_semantic_fingerprint,
     candidate_package_fingerprint,
     candidate_package_reference_report,
     candidate_semantic_package_fingerprint,
     classify_candidate_mutation,
+    validate_candidate_files,
 )
 from aworld.self_evolve.candidate_errors import (
     candidate_materialization_requirement_id,
@@ -3529,6 +3531,34 @@ class SelfEvolveRunner:
                     filtered_semantic_lesson_duplicates
                 ),
             }
+            generated = (
+                ()
+                if candidate_protocol_overflow_count
+                else tuple(optimizer_result.candidates)
+            )
+            prerequisite_fidelity_gates: dict[str, GateResult] = {}
+            canonicalized_prerequisite_file_count = 0
+            canonicalized_generated: list[CandidateVariant] = []
+            for candidate in generated:
+                (
+                    canonical_candidate,
+                    fidelity_gate,
+                    canonicalized_count,
+                ) = _canonicalize_verified_prerequisite_files(
+                    candidate,
+                    cumulative_feedback,
+                )
+                canonicalized_generated.append(canonical_candidate)
+                canonicalized_prerequisite_file_count += canonicalized_count
+                if fidelity_gate is not None:
+                    prerequisite_fidelity_gates[
+                        canonical_candidate.candidate_id
+                    ] = fidelity_gate
+            generated = tuple(canonicalized_generated)
+            if canonicalized_prerequisite_file_count:
+                iteration_optimizer_diagnostics[
+                    "canonicalized_verified_prerequisite_file_count"
+                ] = canonicalized_prerequisite_file_count
             if candidate_protocol_overflow_count:
                 iteration_optimizer_diagnostics[
                     "candidate_protocol_overflow_count"
@@ -3555,11 +3585,6 @@ class SelfEvolveRunner:
                 scheduler_state,
                 decision=scheduler_decision,
                 optimizer_diagnostics=optimizer_result.diagnostics,
-            )
-            generated = (
-                ()
-                if candidate_protocol_overflow_count
-                else tuple(optimizer_result.candidates)
             )
             unique_generated: list[CandidateVariant] = []
             unique_candidate_ids: set[str] = set()
@@ -4246,6 +4271,14 @@ class SelfEvolveRunner:
                     inferred_new_skill_policy=self.inferred_new_skill_policy,
                     apply_policy=apply_policy,
                 )
+                prerequisite_fidelity_gate = prerequisite_fidelity_gates.get(
+                    candidate.candidate_id
+                )
+                if prerequisite_fidelity_gate is not None:
+                    raw_local_results = (
+                        *raw_local_results,
+                        prerequisite_fidelity_gate,
+                    )
                 local_results = tuple(
                     _with_typed_gate_failure_event(gate)
                     for gate in raw_local_results
@@ -5316,11 +5349,14 @@ class SelfEvolveRunner:
         screening_dataset = _candidate_screening_dataset(
             dataset,
             capability_requirements=capability_requirements,
-            max_cases=self.candidate_screening_max_cases,
+            max_cases=(
+                1
+                if len(conformance_candidates) == 1
+                else self.candidate_screening_max_cases
+            ),
         )
         if (
             not _is_verified_apply_policy(apply_policy)
-            or len(conformance_candidates) == 1
             or screening_dataset is None
         ):
             return conformance_candidates, _combined_candidate_validation_report(
@@ -5748,6 +5784,10 @@ class SelfEvolveRunner:
                 "baseline_repetitions": 1,
                 "candidate_repetitions": 1,
                 "progressive_repetition": True,
+                "screening_role": "qualification_and_ranking",
+                "single_candidate_qualification": (
+                    len(conformance_candidates) == 1
+                ),
                 "authoritative_baseline_repetitions": (
                     self.baseline_replay_repetitions
                 ),
@@ -14377,6 +14417,7 @@ def _stored_repair_candidate_package(
             sanitized_content = sanitize_source_text(
                 content,
                 max_chars=content_limit,
+                preserve_format=True,
             )
             file_payload["content"] = sanitized_content
             remaining_chars -= len(sanitized_content)
@@ -17200,7 +17241,11 @@ def _repair_candidate_package_feedback(
                 remaining_chars,
                 _MAX_REPAIR_CANDIDATE_FILE_CHARS,
             )
-            content = sanitize_source_text(item.content, max_chars=content_limit)
+            content = sanitize_source_text(
+                item.content,
+                max_chars=content_limit,
+                preserve_format=True,
+            )
             file_payload["content"] = content
             remaining_chars -= len(content)
         files.append(file_payload)
@@ -17210,6 +17255,117 @@ def _repair_candidate_package_feedback(
         "content": target_content,
         "files": files,
     }
+
+
+def _canonicalize_verified_prerequisite_files(
+    candidate: CandidateVariant,
+    feedback_items: Iterable[EvaluationSummary],
+) -> tuple[CandidateVariant, GateResult | None, int]:
+    """Freeze a verified support surface while composing target behavior.
+
+    Formatting-only transport differences are restored to the exact verified
+    package so replay evidence remains reusable. Material support changes are
+    rejected unless a later typed failure opens a non-prerequisite repair
+    frontier for those files.
+    """
+
+    expected_files = _verified_prerequisite_files(candidate, feedback_items)
+    if expected_files is None:
+        return candidate, None, 0
+    actual_files = validate_candidate_files(candidate.files)
+    expected_by_path = {item.path: item for item in expected_files}
+    actual_by_path = {item.path: item for item in actual_files}
+    changed_paths = sorted(set(expected_by_path) ^ set(actual_by_path))
+    for path in sorted(set(expected_by_path) & set(actual_by_path)):
+        if candidate_file_semantic_fingerprint(
+            expected_by_path[path]
+        ) != candidate_file_semantic_fingerprint(actual_by_path[path]):
+            changed_paths.append(path)
+    if changed_paths:
+        event = ReplayFailureEvent(
+            code="verified_prerequisite_support_mutation",
+            owner=FailureOwner.CANDIDATE,
+            stage=FailureStage.CANDIDATE_GENERATION,
+            scope=FailureScope.CANDIDATE,
+            repairable=True,
+            category="candidate_composition",
+            summary=(
+                "target-behavior composition changed a verified support surface"
+            ),
+            diagnostics={
+                "changed_file_count": len(changed_paths),
+                "changed_paths": changed_paths[:16],
+            },
+        )
+        return (
+            candidate,
+            GateResult(
+                gate_name="verified_prerequisite_fidelity",
+                passed=False,
+                reason=(
+                    "target-behavior composition must preserve verified "
+                    "candidate-owned support files"
+                ),
+                details={
+                    "failure_class": "candidate",
+                    "failure_owner": FailureOwner.CANDIDATE.value,
+                    "failure_scope": FailureScope.CANDIDATE.value,
+                    "repairable": True,
+                    "code": event.code,
+                    "changed_paths": changed_paths[:16],
+                    "failure_event": event.to_dict(),
+                    "causal_failure_events": [event.to_dict()],
+                },
+            ),
+            0,
+        )
+    canonicalized_count = sum(
+        expected_by_path[path] != actual_by_path[path]
+        for path in expected_by_path
+    )
+    if not canonicalized_count and actual_files == expected_files:
+        return candidate, None, 0
+    return replace(candidate, files=expected_files), None, canonicalized_count
+
+
+def _verified_prerequisite_files(
+    candidate: CandidateVariant,
+    feedback_items: Iterable[EvaluationSummary],
+) -> tuple[CandidateFileDelta, ...] | None:
+    parent_ids = set(candidate.parent_candidate_ids)
+    if not parent_ids:
+        return None
+    for feedback in reversed(tuple(feedback_items)):
+        metrics = feedback.metrics
+        if metrics.get("candidate_status") != "prerequisite":
+            continue
+        package = metrics.get("repair_candidate_package")
+        if not isinstance(package, Mapping):
+            continue
+        candidate_id = package.get("candidate_id")
+        if not isinstance(candidate_id, str) or candidate_id not in parent_ids:
+            continue
+        raw_files = package.get("files")
+        if not isinstance(raw_files, list):
+            continue
+        try:
+            return validate_candidate_files(
+                CandidateFileDelta(
+                    path=str(item.get("path") or ""),
+                    operation=str(item.get("operation") or "upsert"),
+                    content=(
+                        item.get("content")
+                        if isinstance(item.get("content"), str)
+                        else None
+                    ),
+                    executable=item.get("executable") is True,
+                )
+                for item in raw_files
+                if isinstance(item, Mapping)
+            )
+        except ValueError:
+            return None
+    return None
 
 
 def _gate_has_candidate_owned_repair(gate: GateResult) -> bool:

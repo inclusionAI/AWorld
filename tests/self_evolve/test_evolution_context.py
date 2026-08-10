@@ -346,7 +346,7 @@ def test_compiler_preserves_bounded_repair_candidate_package_source() -> None:
     package = compiled_feedback["repair_candidate_package"]
     assert package["candidate_id"] == "candidate-runtime"
     assert package["files"][0]["path"] == "replay/runtime.py"
-    assert package["files"][0]["content"] == runtime_source.strip()
+    assert package["files"][0]["content"] == runtime_source
     assert len(package["files"][0]["content"]) > 240
 
 
@@ -388,8 +388,8 @@ def test_compiler_preserves_complete_large_repair_runtime_source() -> None:
     preserved = context.validation_feedback[0]["repair_candidate_package"][
         "files"
     ][0]["content"]
-    assert preserved == runtime_source.strip()
-    assert preserved.endswith("return 'runtime-tail-preserved'")
+    assert preserved == runtime_source
+    assert preserved.endswith("return 'runtime-tail-preserved'\n")
 
 
 def test_source_sanitizer_preserves_expressions_and_redacts_literals() -> None:
@@ -709,7 +709,7 @@ def test_prompt_payload_compiles_machine_checked_repair_as_focused_context() -> 
     assert payload["lesson_records"] == []
     assert payload["repair_focus"]["repair_candidate_package"]["files"][0][
         "content"
-    ] == runtime_source.strip()
+    ] == runtime_source
     assert serialized.count("def handle(value)") == 1
 
 

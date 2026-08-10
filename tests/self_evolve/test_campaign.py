@@ -825,6 +825,64 @@ def test_campaign_repairs_then_completes_without_operator_relaunch(tmp_path: Pat
     assert calls[1]["total_run_token_budget"] == 990
 
 
+def test_campaign_bounds_authoritative_candidates_across_cycles(
+    tmp_path: Path,
+) -> None:
+    calls: list[dict] = []
+
+    def run_once(**request):
+        calls.append(request)
+        run_id = f"{request['campaign_id']}-cycle-{request['campaign_cycle']:03d}"
+        report = _report(
+            _event(
+                constraint=(
+                    "payload.items[*].kind"
+                    if request["campaign_cycle"] == 1
+                    else "payload.items[*].value"
+                )
+            )
+        )
+        report.update(
+            {
+                "run_id": run_id,
+                "verification_funnel": {
+                    "authoritative_candidate_count": (
+                        2 if request["campaign_cycle"] == 1 else 1
+                    )
+                },
+            }
+        )
+        report_path = tmp_path / ".aworld" / "self_evolve" / run_id / "report.json"
+        report_path.parent.mkdir(parents=True)
+        report_path.write_text(json.dumps(report), encoding="utf-8")
+        return {
+            "run_id": run_id,
+            "status": report["status"],
+            "report_path": str(report_path),
+        }
+
+    result = run_self_improvement_campaign(
+        workspace_root=tmp_path,
+        request={
+            "from_trajectory": "trajectory.log",
+            "apply_policy": "verified_only",
+            "infer_target": True,
+            "max_full_evaluation_candidates": 3,
+        },
+        max_improvement_cycles=3,
+        run_once=run_once,
+    )
+
+    assert [call["max_full_evaluation_candidates"] for call in calls] == [3, 1]
+    assert len(calls) == 2
+    assert result["campaign_status"] == "exhausted"
+    assert result["campaign_authoritative_candidate_count"] == 3
+    assert result["campaign_max_authoritative_candidates"] == 3
+    assert result["self_improvement_disposition"]["reason_code"] == (
+        "campaign_authoritative_frontier_exhausted"
+    )
+
+
 def test_campaign_has_no_implicit_default_budget_per_cycle(
     tmp_path: Path,
 ) -> None:

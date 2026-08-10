@@ -73,7 +73,12 @@ def sanitize_text(value: Any, *, max_chars: int | None = None) -> str:
     return text
 
 
-def sanitize_source_text(value: Any, *, max_chars: int | None = None) -> str:
+def sanitize_source_text(
+    value: Any,
+    *,
+    max_chars: int | None = None,
+    preserve_format: bool = False,
+) -> str:
     """Sanitize bounded source code without destroying executable expressions.
 
     Candidate repair packages are already generated artifacts, but can still
@@ -91,9 +96,15 @@ def sanitize_source_text(value: Any, *, max_chars: int | None = None) -> str:
         text = pattern.sub("<LOCAL_PATH>", text)
     for pattern in _UNTRUSTED_INSTRUCTION_PATTERNS:
         text = pattern.sub("<UNTRUSTED_INSTRUCTION>", text)
-    text = _normalize_control_chars(text).strip()
+    text = _normalize_control_chars(
+        text,
+        preserve_carriage_return=preserve_format,
+    )
+    if not preserve_format:
+        text = text.strip()
     if max_chars is not None and len(text) > max_chars:
-        return text[: max_chars - 1].rstrip() + "…"
+        prefix = text[: max_chars - 1]
+        return (prefix if preserve_format else prefix.rstrip()) + "…"
     return text
 
 
@@ -792,8 +803,19 @@ def _looks_private_path(value: str) -> bool:
     )
 
 
-def _normalize_control_chars(value: str) -> str:
+def _normalize_control_chars(
+    value: str,
+    *,
+    preserve_carriage_return: bool = False,
+) -> str:
     return "".join(
-        character if character == "\n" or character == "\t" or ord(character) >= 32 else " "
+        character
+        if (
+            character == "\n"
+            or character == "\t"
+            or (preserve_carriage_return and character == "\r")
+            or ord(character) >= 32
+        )
+        else " "
         for character in value
     )

@@ -658,7 +658,7 @@ async def test_llm_mutator_composes_target_delta_over_verified_support() -> None
         CandidateFileDelta(
             path="replay/runtime.py",
             operation="upsert",
-            content="def respond():\n    return {'verified': True}",
+            content="def respond():\n    return {'verified': True}\n",
         ),
     )
     assert result.diagnostics["candidate_strategies"][0][
@@ -916,7 +916,7 @@ async def test_llm_mutator_carries_candidate_specific_repair_conformance() -> No
     assert result.candidates[0].files == (
         CandidateFileDelta(
             path="replay/compiler.py",
-            content="def compile_fixture():\n    return 'preserved'",
+            content="def compile_fixture():\n    return 'preserved'\n",
         ),
         CandidateFileDelta(
             path="replay/runtime.py",
@@ -1000,7 +1000,7 @@ async def test_llm_mutator_judge_stage_repair_freezes_verified_replay_files() ->
         "replay/runtime.py",
     ]
     assert result.candidates[0].files[1].content == (
-        "def respond():\n    return {'verified': True}"
+        "def respond():\n    return {'verified': True}\n"
     )
 
 
@@ -1182,7 +1182,7 @@ async def test_llm_mutator_focused_compile_repair_ignores_stale_finalization_fee
         ),
         CandidateFileDelta(
             path="replay/runtime.py",
-            content="def respond():\n    return {'recorded': True}",
+            content="def respond():\n    return {'recorded': True}\n",
         ),
     )
 

@@ -284,6 +284,30 @@ def candidate_content_semantic_fingerprint(content: str) -> str:
     ).hexdigest()
 
 
+def candidate_file_semantic_fingerprint(item: CandidateFileDelta) -> str:
+    """Fingerprint executable meaning while ignoring text transport trivia."""
+
+    normalized = validate_candidate_files((item,))[0]
+    payload = {
+        "path": normalized.path,
+        "operation": normalized.operation,
+        "content": (
+            _semantic_candidate_file_content(normalized.content)
+            if normalized.content is not None
+            else None
+        ),
+        "executable": normalized.executable,
+    }
+    return "sha256:" + hashlib.sha256(
+        json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+
+
 def candidate_semantic_package_fingerprint(
     candidate: CandidateVariant,
     *,

@@ -844,6 +844,23 @@ def test_render_optimize_summary_explains_generation_policy_frontier() -> None:
     assert "No candidate generated:" not in summary
 
 
+def test_render_optimize_summary_reports_campaign_authoritative_frontier() -> None:
+    summary = render_optimize_summary(
+        {
+            "status": "rejected",
+            "campaign_id": "campaign-1",
+            "campaign_status": "exhausted",
+            "campaign_cycle": 2,
+            "campaign_max_cycles": 3,
+            "campaign_authoritative_candidate_count": 3,
+            "campaign_max_authoritative_candidates": 3,
+        }
+    )
+
+    assert "Campaign cycle: 2/3" in summary
+    assert "Campaign authoritative candidates: 3/3" in summary
+
+
 def test_run_optimize_cli_uses_interactive_auto_verified_defaults(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
