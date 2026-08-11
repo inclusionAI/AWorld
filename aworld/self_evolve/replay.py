@@ -187,7 +187,18 @@ class CandidateReplayRequest:
     task_input_fingerprint: str | None = None
     verified_candidate_package_fingerprint: str | None = None
     artifact_namespace: str | None = None
+    invalid_control_patience: int = 2
+    measurement_early_stop_enabled: bool = False
     repetition_semantics: str = _PER_MEMBER_REPETITION_SEMANTICS
+
+    def __post_init__(self) -> None:
+        if (
+            isinstance(self.invalid_control_patience, bool)
+            or self.invalid_control_patience <= 0
+        ):
+            raise ValueError("invalid_control_patience must be positive")
+        if not isinstance(self.measurement_early_stop_enabled, bool):
+            raise ValueError("measurement_early_stop_enabled must be boolean")
 
 
 @dataclass(frozen=True)
@@ -864,6 +875,20 @@ def _baseline_failure_blocks_candidate(
             and event.scope is FailureScope.MEMBER
             and event.stage is FailureStage.EVALUATION
         )
+    )
+
+
+def _baseline_invalid_for_measurement(result: ReplayVariantResult) -> bool:
+    if result.status is ReplayExecutionStatus.SUCCEEDED:
+        return False
+    if result.status is not ReplayExecutionStatus.FAILED or result.failure is None:
+        return True
+    return result.failure.owner in {
+        FailureOwner.FRAMEWORK,
+        FailureOwner.INFRASTRUCTURE,
+    } or (
+        result.failure.owner is FailureOwner.CANDIDATE
+        and result.failure.stage is not FailureStage.TASK_ROLLOUT
     )
 
 
@@ -1751,6 +1776,7 @@ class ReplayRepetitionTaskInput:
     variant_id: str
     skill_root: str | None
     artifact_dir: Path
+    progress_callback: Callable[[Mapping[str, Any]], None] | None = None
 
     async def execute(self) -> ReplayVariantResult:
         return await self.backend._run_variant_with_evidence_retries(
@@ -1758,6 +1784,7 @@ class ReplayRepetitionTaskInput:
             variant_id=self.variant_id,
             skill_root=self.skill_root,
             artifact_dir=self.artifact_dir,
+            progress_callback=self.progress_callback,
         )
 
 
@@ -2438,6 +2465,87 @@ def _emit_replay_member_progress(
         )
 
 
+def _emit_replay_attempt_progress(
+    progress_callback: Callable[[Mapping[str, Any]], None] | None,
+    **payload: Any,
+) -> None:
+    _emit_replay_member_progress(progress_callback, **payload)
+
+
+def _scoped_replay_attempt_callback(
+    progress_callback: Callable[[Mapping[str, Any]], None] | None,
+    **scope: Any,
+) -> Callable[[Mapping[str, Any]], None] | None:
+    if progress_callback is None:
+        return None
+
+    def emit(payload: Mapping[str, Any]) -> None:
+        _emit_replay_attempt_progress(
+            progress_callback,
+            **{**scope, **dict(payload)},
+        )
+
+    return emit
+
+
+def _member_phase_timeout_result(
+    *,
+    variant_id: str,
+    phase: str,
+    timeout_seconds: float | None,
+) -> ReplayVariantResult:
+    return ReplayVariantResult(
+        variant_id=variant_id,
+        status=ReplayExecutionStatus.FAILED,
+        trajectory=[],
+        metrics={
+            "member_phase_timeout": True,
+            "member_phase": phase,
+            "member_phase_timeout_seconds": timeout_seconds,
+        },
+        failure=ReplayFailureEvent(
+            code="replay_member_phase_timeout",
+            owner=FailureOwner.FRAMEWORK,
+            stage=FailureStage.EVALUATION,
+            scope=FailureScope.MEMBER,
+            repairable=True,
+            category="replay_timeout",
+            summary=(
+                f"{phase} replay member phase exceeded its hard deadline"
+            ),
+            diagnostics={
+                "phase": phase,
+                "timeout_seconds": timeout_seconds,
+            },
+        ),
+    )
+
+
+def _write_incremental_baseline_manifest(
+    members_root: Path,
+    *,
+    prepared_members: Sequence[tuple[EvalCase, CandidateReplayRequest, Path]],
+    completed_case_ids: Sequence[str],
+) -> None:
+    completed = set(completed_case_ids)
+    _write_json(
+        members_root / "baseline_cache_manifest.json",
+        {
+            "schema_version": "aworld.self_evolve.baseline_cache.v1",
+            "repetition_semantics": _PER_MEMBER_REPETITION_SEMANTICS,
+            "members": [
+                {
+                    "case_id": case.case_id,
+                    "path": _member_artifact_name(case.case_id),
+                    "baseline_complete": True,
+                }
+                for case, _request, _member_dir in prepared_members
+                if case.case_id in completed
+            ],
+        },
+    )
+
+
 class AWorldCliCandidateReplayBackend:
     supports_member_progress = True
 
@@ -2531,6 +2639,8 @@ class AWorldCliCandidateReplayBackend:
 
         baselines: list[ReplayVariantResult] = []
         member_count = len(prepared_members)
+        invalid_control_streak = 0
+        replay_measurement_stop: Mapping[str, Any] | None = None
         for member_index, (case, member_request, member_dir) in enumerate(
             prepared_members,
             start=1,
@@ -2547,6 +2657,7 @@ class AWorldCliCandidateReplayBackend:
                 baseline_cache_offered=(
                     member_request.baseline_replay_dir is not None
                 ),
+                phase_timeout_seconds=member_request.timeout_seconds,
             )
             if candidate_blocking_event is not None:
                 baseline = _blocked_variant_result(
@@ -2554,10 +2665,34 @@ class AWorldCliCandidateReplayBackend:
                 )
                 _persist_variant_lifecycle(member_dir / "baseline", baseline)
             else:
-                baseline = await self._load_or_run_baseline(
-                    member_request,
-                    candidate=candidate,
-                    replay_dir=member_dir,
+                try:
+                    async with asyncio.timeout(member_request.timeout_seconds):
+                        baseline = await self._load_or_run_baseline(
+                            member_request,
+                            candidate=candidate,
+                            replay_dir=member_dir,
+                            progress_callback=_scoped_replay_attempt_callback(
+                                progress_callback,
+                                candidate_id=candidate.candidate_id,
+                                case_id=case.case_id,
+                                case_index=member_index,
+                                case_count=member_count,
+                                phase="baseline",
+                            ),
+                        )
+                except TimeoutError:
+                    baseline = _member_phase_timeout_result(
+                        variant_id="baseline",
+                        phase="baseline",
+                        timeout_seconds=member_request.timeout_seconds,
+                    )
+                    _persist_variant_lifecycle(member_dir / "baseline", baseline)
+                _write_incremental_baseline_manifest(
+                    members_root,
+                    prepared_members=prepared_members,
+                    completed_case_ids=tuple(
+                        item.case_id for item in replay_cases[:member_index]
+                    ),
                 )
                 if (
                     baseline.status is ReplayExecutionStatus.FAILED
@@ -2570,6 +2705,57 @@ class AWorldCliCandidateReplayBackend:
                     }:
                         candidate_blocking_event = baseline.failure
             baselines.append(baseline)
+            if _baseline_invalid_for_measurement(baseline):
+                invalid_control_streak += 1
+            else:
+                invalid_control_streak = 0
+            if (
+                member_request.measurement_early_stop_enabled
+                and candidate_blocking_event is None
+                and invalid_control_streak
+                >= member_request.invalid_control_patience
+            ):
+                candidate_blocking_event = ReplayFailureEvent(
+                    code="trusted_measurement_invalid_control_frontier",
+                    owner=FailureOwner.FRAMEWORK,
+                    stage=FailureStage.EVALUATION,
+                    scope=FailureScope.SHARED_RUN,
+                    repairable=True,
+                    category="measurement_stopping",
+                    summary=(
+                        "replay stopped after repeated invalid control members"
+                    ),
+                    diagnostics={
+                        "trigger": "repeated_control_invalidity",
+                        "patience": member_request.invalid_control_patience,
+                        "case_index": member_index,
+                        "case_count": member_count,
+                        "unused_case_count": member_count - member_index,
+                    },
+                )
+                replay_measurement_stop = {
+                    "trigger": "repeated_control_invalidity",
+                    "patience": member_request.invalid_control_patience,
+                    "case_index": member_index,
+                    "case_count": member_count,
+                    "unused_case_count": member_count - member_index,
+                    "resume_safe": True,
+                }
+                _emit_replay_member_progress(
+                    progress_callback,
+                    event="measurement_stop_triggered",
+                    candidate_id=candidate.candidate_id,
+                    case_id=case.case_id,
+                    case_index=member_index,
+                    case_count=member_count,
+                    phase="baseline",
+                    trigger=replay_measurement_stop["trigger"],
+                    patience=replay_measurement_stop["patience"],
+                    unused_case_count=replay_measurement_stop[
+                        "unused_case_count"
+                    ],
+                    resume_safe=replay_measurement_stop["resume_safe"],
+                )
             _emit_replay_member_progress(
                 progress_callback,
                 event="member_phase_completed",
@@ -2598,6 +2784,7 @@ class AWorldCliCandidateReplayBackend:
                 case_count=member_count,
                 phase="candidate",
                 repetition_count=member_request.candidate_repetitions,
+                phase_timeout_seconds=member_request.timeout_seconds,
             )
             blocking_event = candidate_blocking_event
             if (
@@ -2614,13 +2801,33 @@ class AWorldCliCandidateReplayBackend:
                     member_dir / _safe_path(candidate.candidate_id), candidate_result
                 )
             else:
-                candidate_result = await self._run_repetitions(
-                    member_request,
-                    base_variant_id=candidate.candidate_id,
-                    skill_root=member_request.overlay_skill_root,
-                    artifact_dir=member_dir / _safe_path(candidate.candidate_id),
-                    repetitions=member_request.candidate_repetitions,
-                )
+                try:
+                    async with asyncio.timeout(member_request.timeout_seconds):
+                        candidate_result = await self._run_repetitions(
+                            member_request,
+                            base_variant_id=candidate.candidate_id,
+                            skill_root=member_request.overlay_skill_root,
+                            artifact_dir=member_dir / _safe_path(candidate.candidate_id),
+                            repetitions=member_request.candidate_repetitions,
+                            progress_callback=_scoped_replay_attempt_callback(
+                                progress_callback,
+                                candidate_id=candidate.candidate_id,
+                                case_id=case.case_id,
+                                case_index=member_index,
+                                case_count=member_count,
+                                phase="candidate",
+                            ),
+                        )
+                except TimeoutError:
+                    candidate_result = _member_phase_timeout_result(
+                        variant_id=candidate.candidate_id,
+                        phase="candidate",
+                        timeout_seconds=member_request.timeout_seconds,
+                    )
+                    _persist_variant_lifecycle(
+                        member_dir / _safe_path(candidate.candidate_id),
+                        candidate_result,
+                    )
                 if (
                     candidate_result.status is ReplayExecutionStatus.FAILED
                     and candidate_result.failure is not None
@@ -2656,6 +2863,7 @@ class AWorldCliCandidateReplayBackend:
             {
                 "schema_version": _MEMBER_REPLAY_SCHEMA_V3,
                 "repetition_semantics": _PER_MEMBER_REPETITION_SEMANTICS,
+                "measurement_stop": replay_measurement_stop,
                 "members": [
                     {
                         "case_id": member.case_id,
@@ -2707,6 +2915,7 @@ class AWorldCliCandidateReplayBackend:
         *,
         candidate: CandidateVariant,
         replay_dir: Path,
+        progress_callback: Callable[[Mapping[str, Any]], None] | None = None,
     ) -> ReplayVariantResult:
         baseline_cache_status = "not_offered"
         if request.baseline_replay_dir and _stored_baseline_matches_request(request):
@@ -2736,6 +2945,7 @@ class AWorldCliCandidateReplayBackend:
                 skill_root=request.baseline_skill_root or _infer_baseline_skill_root(request),
                 artifact_dir=replay_dir / "baseline",
                 repetitions=request.baseline_repetitions,
+                progress_callback=progress_callback,
             )
         return replace(
             baseline,
@@ -2753,6 +2963,7 @@ class AWorldCliCandidateReplayBackend:
         skill_root: str | None,
         artifact_dir: Path,
         repetitions: int,
+        progress_callback: Callable[[Mapping[str, Any]], None] | None = None,
     ) -> ReplayVariantResult:
         if repetitions <= 0:
             raise ValueError("replay repetitions must be positive")
@@ -2776,6 +2987,7 @@ class AWorldCliCandidateReplayBackend:
                 variant_id=variant_id,
                 skill_root=skill_root,
                 artifact_dir=repetition_dir,
+                progress_callback=progress_callback,
             )
             task_id = (
                 f"self-evolve-replay-{_safe_path(request.run_id)}-"
@@ -2853,6 +3065,7 @@ class AWorldCliCandidateReplayBackend:
         variant_id: str,
         skill_root: str | None,
         artifact_dir: Path,
+        progress_callback: Callable[[Mapping[str, Any]], None] | None = None,
     ) -> ReplayVariantResult:
         attempts: list[ReplayVariantResult] = []
         retry_attempt_limit = max(
@@ -2870,6 +3083,14 @@ class AWorldCliCandidateReplayBackend:
                 if attempt_index == 1
                 else artifact_dir / f"evidence_retry_{attempt_index}"
             )
+            _emit_replay_attempt_progress(
+                progress_callback,
+                event="replay_attempt_started",
+                variant_id=variant_id,
+                attempt_index=attempt_index,
+                attempt_limit=retry_attempt_limit + 1,
+                attempt_timeout_seconds=request.timeout_seconds,
+            )
             result = await self._run_variant(
                 request,
                 variant_id=attempt_variant_id,
@@ -2877,6 +3098,15 @@ class AWorldCliCandidateReplayBackend:
                 artifact_dir=attempt_dir,
             )
             attempts.append(result)
+            _emit_replay_attempt_progress(
+                progress_callback,
+                event="replay_attempt_completed",
+                variant_id=variant_id,
+                attempt_index=attempt_index,
+                attempt_limit=retry_attempt_limit + 1,
+                attempt_timeout_seconds=request.timeout_seconds,
+                status=result.status.value,
+            )
             evidence_failure = _is_evidence_quality_failure(result)
             framework_capture_failure = (
                 _is_retryable_framework_capture_failure(result)
@@ -4366,6 +4596,8 @@ def build_replay_request(
     replay_adaptation: ReplayAdaptationBundle | None = None,
     verified_candidate_package_fingerprint: str | None = None,
     artifact_namespace: str | None = None,
+    invalid_control_patience: int = 2,
+    measurement_early_stop_enabled: bool = False,
 ) -> CandidateReplayRequest:
     if not dataset.cases:
         raise ValueError("candidate replay requires at least one eval case")
@@ -4420,6 +4652,8 @@ def build_replay_request(
             verified_candidate_package_fingerprint
         ),
         artifact_namespace=artifact_namespace,
+        invalid_control_patience=invalid_control_patience,
+        measurement_early_stop_enabled=measurement_early_stop_enabled,
     )
 
 
@@ -6634,6 +6868,10 @@ def _member_baseline_replay_dir(
     root = Path(baseline_replay_dir)
     manifest_path = root / "manifest.json"
     if not manifest_path.exists():
+        incremental_manifest = root / "baseline_cache_manifest.json"
+        if incremental_manifest.exists():
+            manifest_path = incremental_manifest
+    if not manifest_path.exists():
         legacy_member_dir = _legacy_member_replay_dir(root, case_id)
         if legacy_member_dir is not None:
             return str(legacy_member_dir / "baseline")
@@ -8612,6 +8850,13 @@ def _candidate_replay_request_from_mapping(payload: Mapping[str, Any]) -> Candid
         max_cost_usd=_optional_float(payload.get("max_cost_usd")),
         baseline_repetitions=_positive_int(payload.get("baseline_repetitions"), default=1),
         candidate_repetitions=_positive_int(payload.get("candidate_repetitions"), default=1),
+        invalid_control_patience=_positive_int(
+            payload.get("invalid_control_patience"),
+            default=2,
+        ),
+        measurement_early_stop_enabled=(
+            payload.get("measurement_early_stop_enabled") is True
+        ),
         repetition_semantics=(
             str(payload.get("repetition_semantics"))
             if payload.get("repetition_semantics") is not None

@@ -406,6 +406,18 @@ Only the paired replay baseline/candidate comparison is used to attribute an
 improvement to the skill change. The historical trajectory is not substituted for a
 missing replay baseline.
 
+Authoritative replay expands only candidates admitted by representative
+screening. Within that expansion, the rollout timeout is a hard per-member phase
+deadline across retries, not a fresh allowance for every retry. Baseline members
+are committed to an incremental cache as soon as they complete. If repeated
+framework or infrastructure failures make the control group invalid,
+`advisory` and `required` modes use the frozen trusted-measurement patience
+policy to stop the remaining panel and record unused members as blocked. `off`
+and `shadow` do not alter replay decisions. Operators may also set
+`--replay-total-timeout` as a
+hard deadline for the complete paired replay; completed control evidence remains
+available for a compatible retry.
+
 Before `build_replay_request()`, `ReplayAdaptationCompiler` rewrites workspace paths
 to `${AWORLD_REPLAY_WORKSPACE}`, creates a filtered workspace seed and environment
 snapshot, fingerprints both, and classifies external dependencies. Explicit bounded

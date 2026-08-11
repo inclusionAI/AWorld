@@ -295,6 +295,7 @@ from aworld.self_evolve.replay import (
     _baseline_replay_is_reusable,
     _distributed_member_repetitions,
     _load_variant_result_from_dir,
+    _member_artifact_name,
     _is_replayable_user_task_case,
     _select_replay_case,
 )
@@ -1436,6 +1437,26 @@ def _replay_member_progress_message(
         return (
             f"{prefix} completed with status {payload.get('status')}"
             f"{cache_text}"
+        )
+    if event in {"replay_attempt_started", "replay_attempt_completed"}:
+        status = (
+            f"; status {payload.get('status')}"
+            if event == "replay_attempt_completed"
+            else ""
+        )
+        return (
+            f"{prefix}; attempt {payload.get('attempt_index')}/"
+            f"{payload.get('attempt_limit')} "
+            f"{'completed' if event == 'replay_attempt_completed' else 'started'}"
+            f"; attempt timeout {payload.get('attempt_timeout_seconds')}s"
+            f"{status}"
+        )
+    if event == "measurement_stop_triggered":
+        return (
+            f"{prefix}; trusted measurement stopped replay after "
+            f"{payload.get('patience')} invalid control member(s); "
+            f"unused cases {payload.get('unused_case_count')}; resume safe "
+            f"{payload.get('resume_safe')}"
         )
     return prefix
 
@@ -2834,6 +2855,7 @@ class SelfEvolveRunner:
         candidate_replay_backend: CandidateReplayBackend | None = None,
         regression_replay_backend: CandidateReplayBackend | None = None,
         replay_timeout_seconds: int = 600,
+        replay_total_timeout_seconds: int | None = None,
         replay_max_steps: int | None = 1,
         replay_candidate_limit: int = 2,
         candidate_screening_max_cases: int = 3,
@@ -3104,6 +3126,12 @@ class SelfEvolveRunner:
             else candidate_replay_backend
         )
         self.replay_timeout_seconds = replay_timeout_seconds
+        if (
+            replay_total_timeout_seconds is not None
+            and replay_total_timeout_seconds <= 0
+        ):
+            raise ValueError("replay_total_timeout_seconds must be positive")
+        self.replay_total_timeout_seconds = replay_total_timeout_seconds
         self.replay_max_steps = replay_max_steps
         self.replay_candidate_limit = replay_candidate_limit
         if candidate_screening_max_cases <= 0:
@@ -3656,6 +3684,8 @@ class SelfEvolveRunner:
             "baseline_replay_repetitions": self.baseline_replay_repetitions,
             "candidate_replay_repetitions": self.candidate_replay_repetitions,
             "replay_stability_margin": self.replay_stability_margin,
+            "replay_timeout_seconds": self.replay_timeout_seconds,
+            "replay_total_timeout_seconds": self.replay_total_timeout_seconds,
             "measurement_mode": self.measurement_mode.value,
             "measurement_primary_metric": self.measurement_primary_metric,
             "measurement_minimum_effect": self.measurement_minimum_effect,
@@ -3664,6 +3694,9 @@ class SelfEvolveRunner:
             ),
             "measurement_min_independent_cases": (
                 self.measurement_min_independent_cases
+            ),
+            "measurement_invalid_control_patience": (
+                self.measurement_early_stop_policy.invalid_control_patience
             ),
         }
 
@@ -10303,6 +10336,16 @@ class SelfEvolveRunner:
                     overlay.candidate_skill_package_fingerprint
                 ),
                 artifact_namespace=artifact_namespace,
+                invalid_control_patience=(
+                    self.measurement_early_stop_policy.invalid_control_patience
+                ),
+                measurement_early_stop_enabled=(
+                    self.measurement_mode
+                    in {
+                        MeasurementPolicyMode.ADVISORY,
+                        MeasurementPolicyMode.REQUIRED,
+                    }
+                ),
             )
         except ValueError as exc:
             return (
@@ -10348,14 +10391,18 @@ class SelfEvolveRunner:
                 "phase": "preparing",
             }
             phase_started_at = time.monotonic()
+            completed_phase_durations: list[float] = []
 
             def replay_progress_callback(
                 payload: Mapping[str, object],
             ) -> None:
                 nonlocal phase_started_at
+                now = time.monotonic()
+                if payload.get("event") == "member_phase_completed":
+                    completed_phase_durations.append(now - phase_started_at)
                 replay_progress.update(payload)
                 if payload.get("event") == "member_phase_started":
-                    phase_started_at = time.monotonic()
+                    phase_started_at = now
                 _emit_progress(
                     self.progress_callback,
                     progress_stage,
@@ -10363,24 +10410,30 @@ class SelfEvolveRunner:
                 )
 
             async def execute_replay() -> CandidateReplayResult:
-                if bool(
-                    getattr(
-                        effective_replay_backend,
-                        "supports_member_progress",
-                        False,
-                    )
-                ):
+                async def execute_backend() -> CandidateReplayResult:
+                    if bool(
+                        getattr(
+                            effective_replay_backend,
+                            "supports_member_progress",
+                            False,
+                        )
+                    ):
+                        return await effective_replay_backend.replay_candidate(
+                            request,
+                            candidate=selected_candidate,
+                            dataset=dataset,
+                            progress_callback=replay_progress_callback,
+                        )
                     return await effective_replay_backend.replay_candidate(
                         request,
                         candidate=selected_candidate,
                         dataset=dataset,
-                        progress_callback=replay_progress_callback,
                     )
-                return await effective_replay_backend.replay_candidate(
-                    request,
-                    candidate=selected_candidate,
-                    dataset=dataset,
-                )
+
+                if self.replay_total_timeout_seconds is None:
+                    return await execute_backend()
+                async with asyncio.timeout(self.replay_total_timeout_seconds):
+                    return await execute_backend()
 
             if self.progress_callback is None:
                 replay_result = await execute_replay()
@@ -10397,6 +10450,27 @@ class SelfEvolveRunner:
                             replay_result = replay_task.result()
                             break
                         now = time.monotonic()
+                        phase_elapsed = now - phase_started_at
+                        phase_timeout = replay_progress.get(
+                            "phase_timeout_seconds"
+                        )
+                        phase_remaining = (
+                            max(0, int(float(phase_timeout) - phase_elapsed))
+                            if isinstance(phase_timeout, (int, float))
+                            else None
+                        )
+                        completed_phases = len(completed_phase_durations)
+                        total_phases = int(replay_progress.get("case_count") or 0) * 2
+                        estimated_remaining = (
+                            int(
+                                statistics.mean(completed_phase_durations)
+                                * max(0, total_phases - completed_phases)
+                            )
+                            if completed_phase_durations and total_phases
+                            else None
+                        )
+                        attempt_index = replay_progress.get("attempt_index")
+                        attempt_limit = replay_progress.get("attempt_limit")
                         _emit_progress(
                             self.progress_callback,
                             progress_stage,
@@ -10406,8 +10480,24 @@ class SelfEvolveRunner:
                                 )
                                 + "; still running; total elapsed "
                                 f"{int(now - replay_started_at)}s; phase elapsed "
-                                f"{int(now - phase_started_at)}s; per-member "
-                                f"timeout {effective_timeout_seconds}s"
+                                f"{int(phase_elapsed)}s; member hard deadline "
+                                f"{phase_timeout}s"
+                                + (
+                                    f"; member remaining {phase_remaining}s"
+                                    if phase_remaining is not None
+                                    else ""
+                                )
+                                + (
+                                    f"; attempt {attempt_index}/{attempt_limit}"
+                                    if attempt_index is not None
+                                    else ""
+                                )
+                                + (
+                                    f"; estimated replay remaining "
+                                    f"{estimated_remaining}s"
+                                    if estimated_remaining is not None
+                                    else ""
+                                )
                             ),
                         )
                 finally:
@@ -10417,6 +10507,31 @@ class SelfEvolveRunner:
                             replay_task,
                             return_exceptions=True,
                         )
+        except TimeoutError:
+            if lifecycle_callback is not None:
+                lifecycle_callback(
+                    "replay_timed_out",
+                    {
+                        "timeout_seconds": self.replay_total_timeout_seconds,
+                    },
+                )
+            return (
+                None,
+                None,
+                GateResult(
+                    gate_name="candidate_replay",
+                    passed=False,
+                    reason="candidate replay exceeded the total hard deadline",
+                    details={
+                        "failure_class": "measurement",
+                        "failure_owner": FailureOwner.FRAMEWORK.value,
+                        "repairable": True,
+                        "code": "replay_total_timeout",
+                        "timeout_seconds": self.replay_total_timeout_seconds,
+                        "partial_baseline_cache_preserved": True,
+                    },
+                ),
+            )
         finally:
             if isinstance(replay_history, list):
                 for observability in replay_history[replay_history_start:]:
@@ -12619,6 +12734,7 @@ def optimize_from_cli_request(
     candidate_replay_backend: CandidateReplayBackend | None = None,
     regression_replay_backend: CandidateReplayBackend | None = None,
     replay_timeout_seconds: int = 600,
+    replay_total_timeout_seconds: int | None = None,
     replay_max_steps: int | None = 1,
     replay_candidate_limit: int = 2,
     candidate_screening_max_cases: int = 3,
@@ -12695,6 +12811,7 @@ def optimize_from_cli_request(
             allow_external_target_mutation=allow_external_target_mutation,
             judge_config=judge_config,
             replay_timeout_seconds=replay_timeout_seconds,
+            replay_total_timeout_seconds=replay_total_timeout_seconds,
             replay_max_steps=replay_max_steps,
             replay_candidate_limit=replay_candidate_limit,
             baseline_replay_repetitions=baseline_replay_repetitions,
@@ -13458,6 +13575,7 @@ def optimize_from_cli_request(
         candidate_replay_backend=candidate_replay_backend,
         regression_replay_backend=regression_replay_backend,
         replay_timeout_seconds=replay_timeout_seconds,
+        replay_total_timeout_seconds=replay_total_timeout_seconds,
         replay_max_steps=replay_max_steps,
         replay_candidate_limit=replay_candidate_limit,
         candidate_screening_max_cases=candidate_screening_max_cases,
@@ -14231,6 +14349,7 @@ def _rerun_evaluator_from_stored_run(
     allow_external_target_mutation: bool,
     judge_config: SelfEvolveJudgeConfig | Mapping[str, Any] | None,
     replay_timeout_seconds: int,
+    replay_total_timeout_seconds: int | None,
     replay_max_steps: int | None,
     replay_candidate_limit: int,
     baseline_replay_repetitions: int,
@@ -14436,6 +14555,7 @@ def _rerun_evaluator_from_stored_run(
         ),
         regression_replay_backend=regression_replay_backend,
         replay_timeout_seconds=replay_timeout_seconds,
+        replay_total_timeout_seconds=replay_total_timeout_seconds,
         replay_max_steps=replay_max_steps,
         replay_candidate_limit=replay_candidate_limit,
         baseline_replay_repetitions=baseline_replay_repetitions,
@@ -15136,6 +15256,15 @@ def _find_reusable_baseline_replay_dir(
             continue
         replay_dirs = [path for path in replay_root.iterdir() if path.is_dir()]
         for replay_dir in sorted(replay_dirs, key=lambda path: path.stat().st_mtime, reverse=True):
+            incremental_members = _incremental_baseline_cache_dir(
+                replay_dir=replay_dir,
+                target=target,
+                case_ids=case_ids,
+                baseline_repetitions=baseline_repetitions,
+                expected_provenance=expected_provenance,
+            )
+            if incremental_members is not None:
+                return incremental_members
             try:
                 replay_result = load_candidate_replay_result(replay_dir)
             except (FileNotFoundError, ValueError, json.JSONDecodeError, OSError):
@@ -15183,6 +15312,71 @@ def _find_reusable_baseline_replay_dir(
                 baseline_dir = replay_dir / "baseline"
                 if baseline_dir.exists():
                     return str(baseline_dir)
+    return None
+
+
+def _incremental_baseline_cache_dir(
+    *,
+    replay_dir: Path,
+    target: SelfEvolveTargetRef,
+    case_ids: tuple[str, ...],
+    baseline_repetitions: int,
+    expected_provenance: Mapping[str, str | None],
+) -> str | None:
+    members_root = replay_dir / "members"
+    manifest_path = members_root / "baseline_cache_manifest.json"
+    if not manifest_path.exists():
+        return None
+    try:
+        manifest = _load_json_mapping(manifest_path)
+    except (ValueError, json.JSONDecodeError, OSError):
+        return None
+    members = manifest.get("members")
+    if not isinstance(members, list):
+        return None
+    eligible = set(case_ids)
+    for item in members:
+        if not isinstance(item, Mapping):
+            continue
+        case_id = str(item.get("case_id") or "")
+        relative_path = str(item.get("path") or "")
+        if case_id not in eligible or relative_path != _member_artifact_name(case_id):
+            continue
+        member_root = members_root / relative_path
+        try:
+            request = _load_json_mapping(member_root / "request.json")
+            raw_target = request.get("target")
+            if not isinstance(raw_target, Mapping):
+                continue
+            stored_target = SelfEvolveTargetRef(
+                target_type=str(raw_target.get("target_type") or ""),
+                target_id=str(raw_target.get("target_id") or ""),
+                path=(
+                    str(raw_target.get("path"))
+                    if raw_target.get("path") is not None
+                    else None
+                ),
+            )
+            if not _replay_target_matches(stored_target, target):
+                continue
+            if int(request.get("baseline_repetitions") or 0) != baseline_repetitions:
+                continue
+            if not all(
+                value is not None and request.get(key) == value
+                for key, value in expected_provenance.items()
+            ):
+                continue
+            baseline = _load_variant_result_from_dir(
+                member_root / "baseline",
+                base_variant_id="baseline",
+            )
+        except (FileNotFoundError, TypeError, ValueError, json.JSONDecodeError, OSError):
+            continue
+        if _baseline_replay_is_reusable(
+            baseline,
+            requested_repetitions=baseline_repetitions,
+        ):
+            return str(members_root)
     return None
 
 

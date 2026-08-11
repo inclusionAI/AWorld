@@ -622,6 +622,8 @@ def test_optimize_command_passes_replay_runtime_limits(
             "auto_verified",
             "--replay-timeout",
             "300",
+            "--replay-total-timeout",
+            "1800",
             "--replay-max-runs",
             "1",
             "--judge-repetitions",
@@ -638,6 +640,7 @@ def test_optimize_command_passes_replay_runtime_limits(
     assert handled is True
     assert calls["agent"] is None
     assert calls["replay_timeout_seconds"] == 300
+    assert calls["replay_total_timeout_seconds"] == 1800
     assert calls["replay_max_steps"] == 1
     assert calls["judge_repetitions"] == 5
     assert calls["judge_timeout_seconds"] == 120

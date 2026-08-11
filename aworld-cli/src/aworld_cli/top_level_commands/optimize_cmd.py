@@ -223,6 +223,12 @@ class OptimizeTopLevelCommand:
             help="Timeout in seconds for each self-evolve replay rollout.",
         )
         parser.add_argument(
+            "--replay-total-timeout",
+            type=int,
+            dest="replay_total_timeout_seconds",
+            help="Hard wall-time deadline for one complete paired replay.",
+        )
+        parser.add_argument(
             "--replay-max-runs",
             type=int,
             dest="replay_max_steps",
@@ -439,6 +445,9 @@ class OptimizeTopLevelCommand:
                 judge_repetitions=getattr(args, "judge_repetitions", None),
                 judge_timeout_seconds=getattr(args, "judge_timeout_seconds", None),
                 replay_timeout_seconds=getattr(args, "replay_timeout_seconds", None),
+                replay_total_timeout_seconds=getattr(
+                    args, "replay_total_timeout_seconds", None
+                ),
                 replay_max_steps=getattr(args, "replay_max_steps", None),
                 baseline_replay_repetitions=getattr(args, "baseline_replay_repetitions", None),
                 candidate_replay_repetitions=getattr(args, "candidate_replay_repetitions", None),
@@ -758,6 +767,7 @@ def run_optimize_cli(
     judge_repetitions: int | None = None,
     judge_timeout_seconds: int | None = None,
     replay_timeout_seconds: int | None = None,
+    replay_total_timeout_seconds: int | None = None,
     replay_max_steps: int | None = None,
     baseline_replay_repetitions: int | None = None,
     candidate_replay_repetitions: int | None = None,
@@ -947,6 +957,7 @@ def run_optimize_cli(
         "progress_callback": progress_callback,
         **_replay_options(
             replay_timeout_seconds=replay_timeout_seconds,
+            replay_total_timeout_seconds=replay_total_timeout_seconds,
             replay_max_steps=replay_max_steps,
             baseline_replay_repetitions=baseline_replay_repetitions,
             candidate_replay_repetitions=candidate_replay_repetitions,
@@ -1151,6 +1162,7 @@ def _judge_options(
 def _replay_options(
     *,
     replay_timeout_seconds: int | None,
+    replay_total_timeout_seconds: int | None,
     replay_max_steps: int | None,
     baseline_replay_repetitions: int | None,
     candidate_replay_repetitions: int | None,
@@ -1158,6 +1170,8 @@ def _replay_options(
     options: dict[str, int] = {}
     if replay_timeout_seconds is not None:
         options["replay_timeout_seconds"] = replay_timeout_seconds
+    if replay_total_timeout_seconds is not None:
+        options["replay_total_timeout_seconds"] = replay_total_timeout_seconds
     if replay_max_steps is not None:
         options["replay_max_steps"] = replay_max_steps
     if baseline_replay_repetitions is not None:

@@ -27,6 +27,7 @@ def test_agent_config_disables_self_evolve_by_default() -> None:
     assert config.self_evolve_config.max_improvement_cycles == 3
     assert config.self_evolve_config.replay_enabled is True
     assert config.self_evolve_config.replay_timeout_seconds == 600
+    assert config.self_evolve_config.replay_total_timeout_seconds is None
     assert config.self_evolve_config.replay_max_steps == 1
     assert config.self_evolve_config.replay_candidate_limit == 2
     assert config.self_evolve_config.candidate_screening_max_cases == 3
@@ -66,6 +67,7 @@ def test_self_evolve_measurement_modes_parse(mode: str) -> None:
         ({"measurement_minimum_effect": float("nan")}, "must be finite"),
         ({"measurement_zero_yield_patience": 0}, "must be positive"),
         ({"measurement_invalid_control_patience": 0}, "must be positive"),
+        ({"replay_total_timeout_seconds": 0}, "must be positive"),
         (
             {"measurement_maximum_interval_width": -0.1},
             "must be non-negative and finite",
@@ -180,6 +182,7 @@ def test_self_evolve_budget_fields_parse() -> None:
         eval_sources=("jsonl", "trajectory_log"),
         max_background_jobs=2,
         replay_timeout_seconds=120,
+        replay_total_timeout_seconds=900,
         replay_max_steps=2,
         replay_candidate_limit=2,
         baseline_replay_repetitions=2,
@@ -220,6 +223,7 @@ def test_self_evolve_budget_fields_parse() -> None:
     assert config.eval_sources == ("jsonl", "trajectory_log")
     assert config.max_background_jobs == 2
     assert config.replay_timeout_seconds == 120
+    assert config.replay_total_timeout_seconds == 900
     assert config.replay_max_steps == 2
     assert config.replay_candidate_limit == 2
     assert config.baseline_replay_repetitions == 2

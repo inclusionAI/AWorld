@@ -311,6 +311,7 @@ def _run_framework_job(
         judge_config=config.judge_config,
         replay_enabled=config.replay_enabled,
         replay_timeout_seconds=config.replay_timeout_seconds,
+        replay_total_timeout_seconds=config.replay_total_timeout_seconds,
         replay_max_steps=config.replay_max_steps,
         replay_candidate_limit=config.replay_candidate_limit,
         candidate_screening_max_cases=config.candidate_screening_max_cases,
