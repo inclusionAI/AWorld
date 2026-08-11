@@ -2519,6 +2519,7 @@ def _verification_request(request: Mapping[str, Any]) -> dict[str, Any]:
         "replay_max_steps",
         "replay_stability_margin",
         "replay_timeout_seconds",
+        "replay_total_timeout_seconds",
     )
     return {key: request.get(key) for key in keys}
 

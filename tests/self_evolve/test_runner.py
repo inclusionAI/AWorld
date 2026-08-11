@@ -20338,6 +20338,66 @@ async def test_adaptation_only_failure_never_counts_as_replay(
 
 
 @pytest.mark.asyncio
+async def test_paired_replay_total_deadline_returns_typed_gate(
+    tmp_path: Path,
+) -> None:
+    skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("---\nname: demo\n---\n# Demo\n", encoding="utf-8")
+    dataset = SelfEvolveDataset(
+        cases=(EvalCase(case_id="case-1", input={"content": "task"}),),
+        recipe=DatasetRecipe(
+            source={"kind": "replay-total-timeout"},
+            split_seed="seed",
+            splits={"train": ["case-1"]},
+            trainable_case_ids=("case-1",),
+        ),
+    )
+    candidate = CandidateVariant(
+        candidate_id="candidate-timeout",
+        target=SelfEvolveTargetRef("skill", "demo", str(skill_path)),
+        content="---\nname: demo\n---\n# Demo\n\nCandidate.\n",
+        rationale="deadline test",
+    )
+
+    class Backend:
+        async def replay_candidate(self, request, *, candidate, dataset):
+            await asyncio.sleep(1)
+            raise AssertionError("total replay deadline did not cancel backend")
+
+    runner = SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=SimpleNamespace(),
+        replay_enabled=True,
+        candidate_replay_backend=Backend(),
+        replay_total_timeout_seconds=0.01,
+    )
+    lifecycle: list[tuple[str, Mapping[str, object]]] = []
+
+    replay_result, replay_dataset, gate = await runner._replay_selected_candidate(
+        run_id="run-total-deadline",
+        target=SkillTextTarget(skill_path),
+        dataset=dataset,
+        selected_candidate=candidate,
+        apply_policy="auto_verified",
+        lifecycle_callback=lambda stage, payload: lifecycle.append(
+            (stage, payload)
+        ),
+    )
+
+    assert replay_result is None
+    assert replay_dataset is None
+    assert gate is not None and gate.gate_name == "candidate_replay"
+    assert gate.details["code"] == "replay_total_timeout"
+    assert gate.details["partial_baseline_cache_preserved"] is True
+    assert [stage for stage, _payload in lifecycle] == [
+        "adaptation_completed",
+        "replay_started",
+        "replay_timed_out",
+    ]
+
+
+@pytest.mark.asyncio
 async def test_per_attempt_replay_budget_denial_skips_backend(tmp_path: Path) -> None:
     skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
     skill_path.parent.mkdir(parents=True)

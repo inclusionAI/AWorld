@@ -212,6 +212,7 @@ class SelfEvolveConfig(BaseConfig):
     measurement_zero_yield_patience: int = 2
     measurement_invalid_control_patience: int = 2
     measurement_maximum_interval_width: Optional[float] = None
+    replay_total_timeout_seconds: Optional[int] = None
     apply_policy: Literal["proposal", "auto_verified", "verified_only"] = "proposal"
     inferred_new_skill_policy: Literal[
         "disabled", "draft_only", "auto_verified"
@@ -306,6 +307,11 @@ class SelfEvolveConfig(BaseConfig):
             raise ValueError("judge_timeout_seconds must be positive")
         if self.replay_timeout_seconds <= 0:
             raise ValueError("replay_timeout_seconds must be positive")
+        if (
+            self.replay_total_timeout_seconds is not None
+            and self.replay_total_timeout_seconds <= 0
+        ):
+            raise ValueError("replay_total_timeout_seconds must be positive")
         if self.replay_stability_margin < 0:
             raise ValueError("replay_stability_margin must be non-negative")
         if not self.measurement_primary_metric.strip():

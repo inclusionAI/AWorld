@@ -431,6 +431,9 @@ Candidate repair gate diagnostics are summarized in a separate population `confo
 - `--judge-backend-ref`: evaluator backend reference.
 - `--judge-model-profile`: named model profile for the judge. This is useful when the task agent uses the default `.env` model but the evaluator needs a separate model. It applies to markdown judges and local named judge agents. For `--judge-agent <agent.md>`, the same profile can also be declared in markdown front matter as `model_profile: judge`; the CLI option takes precedence.
 - `--replay-timeout`: timeout in seconds for each replay rollout.
+- `--replay-total-timeout`: optional hard wall-time deadline for the complete
+  paired replay. A timeout preserves completed baseline members for a safe
+  retry instead of discarding the partial control experiment.
 - `--replay-max-runs`: maximum `aworld-cli run` iterations per replay rollout.
 - `--judge-repetitions`: successful judge samples to aggregate per evaluator call.
 - `--judge-timeout`: timeout in seconds for each judge attempt.
@@ -549,6 +552,18 @@ their case before resampling; they never increase the independent-case count.
 `--measurement-invalid-control-patience`, and
 `--measurement-maximum-interval-width` freeze the early-stop policy into the
 experiment identity before observations are collected.
+
+The same trusted-measurement policy is enforced while authoritative replay is
+still running. Each baseline or candidate member has a hard phase deadline
+covering all evidence retries, and progress reports expose both the member
+deadline and the current retry. Completed baselines are indexed incrementally,
+so an interrupted multi-case replay can reuse valid controls. In `advisory` and
+`required` modes, repeated invalid controls stop expansion after
+`measurement-invalid-control-patience`; remaining members are recorded as
+blocked rather than consuming more authoritative work. `off` and `shadow`
+retain their existing decision behavior.
+Representative screening remains the bounded admission plane, while paired
+replay remains the authoritative full-panel experiment.
 
 For each measured candidate, AWorld freezes the task model/executor, generator,
 scheduler, evaluator, dataset, environment, runtime, prompt context, and budget

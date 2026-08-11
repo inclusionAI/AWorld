@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import json
@@ -298,6 +299,127 @@ async def test_replay_backend_reports_member_phase_progress(
         "succeeded",
     ]
     assert completed[0]["baseline_cache_status"] == "not_offered"
+
+
+@pytest.mark.asyncio
+async def test_replay_member_deadline_stops_invalid_control_frontier(
+    tmp_path: Path,
+) -> None:
+    calls: list[tuple[str, str]] = []
+
+    async def slow_executor(
+        request: ReplayExecutionRequest,
+    ) -> ReplayExecutionResult:
+        calls.append((request.task_id, request.variant_id))
+        await asyncio.sleep(1)
+        return ReplayExecutionResult(status="succeeded", trajectory=[])
+
+    dataset = SelfEvolveDataset(
+        cases=tuple(
+            EvalCase(case_id=f"task-{suffix}", input=f"Replay task {suffix}")
+            for suffix in ("a", "b", "c")
+        ),
+        recipe=DatasetRecipe(
+            source={"kind": "deadline-test", "case_count": 3},
+            split_seed="seed",
+            splits={
+                "train": ["task-a", "task-b", "task-c"],
+                "validation": [],
+                "held_out": [],
+            },
+        ),
+    )
+    candidate = _candidate(
+        "---\nname: demo\n---\n# Demo\nCandidate.\n",
+        candidate_id="deadline-candidate",
+    )
+    request = CandidateReplayRequest(
+        run_id="run-member-deadline",
+        task_id="task-a",
+        workspace_root=str(tmp_path),
+        target=candidate.target,
+        candidate_id=candidate.candidate_id,
+        overlay_skill_root=str(tmp_path / "overlay"),
+        task_input=dataset.cases[0].input,
+        timeout_seconds=0.01,
+        invalid_control_patience=2,
+        measurement_early_stop_enabled=True,
+    )
+    events: list[dict[str, object]] = []
+
+    result = await AWorldCliCandidateReplayBackend(
+        executor=slow_executor
+    ).replay_candidate(
+        request,
+        candidate=candidate,
+        dataset=dataset,
+        progress_callback=events.append,
+    )
+
+    assert calls == [("task-a", "baseline"), ("task-b", "baseline")]
+    assert [
+        member.baseline.status for member in result.member_results
+    ] == [
+        ReplayExecutionStatus.FAILED,
+        ReplayExecutionStatus.FAILED,
+        ReplayExecutionStatus.BLOCKED,
+    ]
+    assert all(
+        member.candidate.status is ReplayExecutionStatus.BLOCKED
+        for member in result.member_results
+    )
+    assert result.member_results[0].baseline.failure is not None
+    assert (
+        result.member_results[0].baseline.failure.code
+        == "replay_member_phase_timeout"
+    )
+    stop_events = [
+        event
+        for event in events
+        if event.get("event") == "measurement_stop_triggered"
+    ]
+    assert len(stop_events) == 1
+    assert stop_events[0]["trigger"] == "repeated_control_invalidity"
+    assert stop_events[0]["unused_case_count"] == 1
+    manifest = json.loads(
+        (
+            tmp_path
+            / ".aworld"
+            / "self_evolve"
+            / "run-member-deadline"
+            / "replay"
+            / "deadline-candidate"
+            / "members"
+            / "manifest.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert manifest["measurement_stop"]["resume_safe"] is True
+
+    calls.clear()
+    shadow_events: list[dict[str, object]] = []
+    shadow_result = await AWorldCliCandidateReplayBackend(
+        executor=slow_executor
+    ).replay_candidate(
+        replace(
+            request,
+            run_id="run-member-deadline-shadow",
+            measurement_early_stop_enabled=False,
+        ),
+        candidate=candidate,
+        dataset=dataset,
+        progress_callback=shadow_events.append,
+    )
+
+    assert len(calls) == 6
+    assert all(
+        member.baseline.status is ReplayExecutionStatus.FAILED
+        and member.candidate.status is ReplayExecutionStatus.FAILED
+        for member in shadow_result.member_results
+    )
+    assert not any(
+        event.get("event") == "measurement_stop_triggered"
+        for event in shadow_events
+    )
 
 
 @pytest.mark.asyncio
@@ -5377,6 +5499,9 @@ async def test_multi_member_replay_reuses_each_members_baseline(
         / "cand-1"
         / "members"
     )
+    incremental_manifest = members_root / "baseline_cache_manifest.json"
+    assert incremental_manifest.exists()
+    (members_root / "manifest.json").unlink()
     second_request = build_replay_request(
         run_id="run-reuse-members",
         workspace_root=tmp_path,
