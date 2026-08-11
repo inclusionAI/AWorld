@@ -5426,7 +5426,7 @@ async def test_multi_member_replay_reuses_each_members_baseline(
 
 
 @pytest.mark.asyncio
-async def test_multi_member_replay_reuses_successful_baselines_and_retries_failed_member(
+async def test_multi_member_replay_reuses_complete_task_failure_baselines(
     tmp_path: Path,
 ) -> None:
     calls: list[tuple[str, str]] = []
@@ -5529,12 +5529,15 @@ async def test_multi_member_replay_reuses_successful_baselines_and_retries_faile
         dataset=dataset,
     )
 
-    assert second_result.baseline.succeeded is True
+    assert second_result.baseline.succeeded is False
     assert calls == [
-        ("task-b", "baseline"),
         ("task-a", "cand-2"),
         ("task-b", "cand-2"),
     ]
+    assert [
+        member.baseline.metrics["baseline_cache_status"]
+        for member in second_result.member_results
+    ] == ["hit", "hit"]
 
 
 @pytest.mark.asyncio

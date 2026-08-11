@@ -6593,9 +6593,13 @@ def _stored_member_baseline_replay_dir(
         return None
     if member_request.get("task_id") != case_id:
         return None
+    requested_repetitions = _stored_requested_baseline_repetitions(member_request)
 
     local_baseline = member_root / "baseline"
-    if _stored_replay_variant_succeeded(local_baseline):
+    if _stored_replay_baseline_is_reusable(
+        local_baseline,
+        requested_repetitions=requested_repetitions,
+    ):
         return str(local_baseline)
 
     raw_baseline_dir = member_request.get("baseline_replay_dir")
@@ -6614,12 +6618,28 @@ def _stored_member_baseline_replay_dir(
         return None
     if owner_request.get("task_id") != case_id:
         return None
-    if _stored_replay_variant_succeeded(baseline_dir):
+    if _stored_replay_baseline_is_reusable(
+        baseline_dir,
+        requested_repetitions=requested_repetitions,
+    ):
         return str(baseline_dir)
     return None
 
 
-def _stored_replay_variant_succeeded(variant_dir: Path) -> bool:
+def _stored_requested_baseline_repetitions(
+    request: Mapping[str, Any],
+) -> int:
+    value = request.get("baseline_repetitions", 1)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return 1
+    return max(1, int(value))
+
+
+def _stored_replay_baseline_is_reusable(
+    variant_dir: Path,
+    *,
+    requested_repetitions: int,
+) -> bool:
     if not variant_dir.is_dir():
         return False
     try:
@@ -6629,7 +6649,10 @@ def _stored_replay_variant_succeeded(variant_dir: Path) -> bool:
         )
     except (FileNotFoundError, ValueError, json.JSONDecodeError, OSError):
         return False
-    return result.succeeded
+    return _baseline_replay_is_reusable(
+        result,
+        requested_repetitions=requested_repetitions,
+    )
 
 
 def _legacy_member_replay_dir(root: Path, case_id: str) -> Path | None:
