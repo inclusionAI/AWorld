@@ -5097,7 +5097,11 @@ def test_candidate_repair_prompt_preserves_typed_semantic_diagnostic() -> None:
         allowed_improvement_signal_ids=("signal-visible",),
     )
 
-    prompt = _candidate_mutation_repair_prompt('{"content":"valid"}', error)
+    prompt = _candidate_mutation_repair_prompt(
+        '{"content":"valid"}',
+        error,
+        original_prompt="source-complete original generation context",
+    )
     payload = json.loads(prompt.split("\n", 1)[1])
     diagnostic = payload["diagnostics"][0]
 
@@ -5106,6 +5110,9 @@ def test_candidate_repair_prompt_preserves_typed_semantic_diagnostic() -> None:
     assert diagnostic["field_path"] == "addressed_improvement_signal_ids"
     assert diagnostic["contract_fingerprint"] == error.contract_fingerprint
     assert diagnostic["representation"] == "candidate_package"
+    assert payload["original_generation_context"] == (
+        "source-complete original generation context"
+    )
 
 
 def test_candidate_repair_prompt_explains_fixture_conformance_violation() -> None:
@@ -5276,6 +5283,100 @@ async def test_exhausted_candidate_materialization_has_typed_failure_event(
     assert details["failure_event"]["owner"] == "candidate"
     assert details["failure_event"]["stage"] == "candidate_generation"
     assert details["failure_event"]["repairable"] is True
+
+
+@pytest.mark.asyncio
+async def test_non_repairable_protocol_failure_stops_generation_immediately(
+    tmp_path,
+) -> None:
+    skill_path = tmp_path / "aworld-skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text(
+        "---\nname: demo\n---\n# Demo\n",
+        encoding="utf-8",
+    )
+    trajectory = [
+        {
+            "meta": {"step": 1, "agent_id": "agent", "pre_agent": "runner"},
+            "state": {"input": {"content": "Improve reusable behavior."}},
+            "action": {"content": "Candidate protocol failed."},
+            "reward": {"status": "failed"},
+        }
+    ]
+    dataset = build_dataset_from_source(
+        SelfEvolveEvalSourceConfig(kind="current_trajectory"),
+        current_trajectory=trajectory,
+        task_id="non-repairable-protocol",
+    )
+
+    class NonRepairableProtocolOptimizer:
+        def __init__(self) -> None:
+            self.call_count = 0
+
+        async def propose(self, request: OptimizerRequest) -> OptimizerResult:
+            self.call_count += 1
+            outcomes = tuple(
+                CandidateGenerationOutcome(
+                    candidate_index=index,
+                    kind=CandidateGenerationOutcomeKind.PROTOCOL_INVALID,
+                    repairable=False,
+                    reason_codes=("multiple_json_objects",),
+                    active_frontier_key=(
+                        request.active_repair_frontier_keys[index]
+                        if index < len(request.active_repair_frontier_keys)
+                        else None
+                    ),
+                )
+                for index in range(request.max_candidates)
+            )
+            return OptimizerResult(
+                candidates=(),
+                generation_outcomes=outcomes,
+                diagnostics={
+                    "candidate_protocol_invalid_count": len(outcomes),
+                    "candidate_generation_outcomes": [
+                        outcome.to_dict() for outcome in outcomes
+                    ],
+                },
+            )
+
+    optimizer = NonRepairableProtocolOptimizer()
+    result = await SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=optimizer,
+        max_iterations=8,
+    ).run_explicit_target(
+        run_id="run-non-repairable-protocol",
+        target=SkillTextTarget(skill_path, allow_auto_apply=True),
+        dataset=dataset,
+        trace_packs=(
+            build_trace_pack(
+                trajectory,
+                source_kind="current_trajectory",
+                task_id="non-repairable-protocol",
+            ),
+        ),
+        apply_policy="auto_verified",
+    )
+
+    assert result.run.status is SelfEvolveRunStatus.REJECTED
+    assert optimizer.call_count == 1
+    report = json.loads(
+        (
+            tmp_path
+            / ".aworld"
+            / "self_evolve"
+            / "run-non-repairable-protocol"
+            / "report.json"
+        ).read_text(encoding="utf-8")
+    )
+    details = report["gate_results"][-1]["details"]
+    assert details["generation_protocol_frontier_exhausted"] is True
+    assert details["code"] == "multiple_json_objects"
+    assert details["failure_event"]["repairable"] is False
+    assert report["verification_funnel"][
+        "generation_protocol_frontier_exhausted"
+    ] is True
 
 
 @pytest.mark.asyncio

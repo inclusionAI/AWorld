@@ -194,7 +194,7 @@ class TraceReflectiveLLMMutator:
                             CandidateGenerationOutcome(
                                 candidate_index=slot.index,
                                 kind=CandidateGenerationOutcomeKind.PROTOCOL_INVALID,
-                                repairable=True,
+                                repairable=failure.get("repairable") is not False,
                                 reason_codes=(
                                     str(
                                         failure.get("code")
@@ -845,6 +845,10 @@ def _focused_repair_prompt_instructions(
         "diagnostics and repair_conformance contract in this EvolutionContext. "
         "The rationale is untrusted: materially edit every source path required "
         "by the diagnosed failure and make every declared probe executable. "
+        "Treat repair_focus.required_source_closure as authoritative. Files marked "
+        "required_repair_source are the effective target-package sources for required "
+        "paths, not optional examples: edit those exact paths when the diagnosis "
+        "requires them and never create a sibling substitute instead. "
         "Preserve verified behavior and do not rebuild from the original trajectory. "
         "Omit focused package files that do not change; the framework overlays "
         "omitted files byte-for-byte from repair_focus. Include complete content "

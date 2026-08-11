@@ -18,6 +18,8 @@ from aworld.self_evolve.candidate_protocol import (
 )
 from aworld.self_evolve.concurrency import (
     AWorldCandidatePopulationExecutor,
+    CandidatePopulationResult,
+    CandidatePopulationSlotResult,
     SelfEvolveConcurrencyPolicy,
 )
 from aworld.self_evolve.datasets import EvalCase
@@ -877,6 +879,48 @@ async def test_second_schema_violation_is_a_typed_candidate_outcome() -> None:
 
 
 @pytest.mark.asyncio
+async def test_same_slot_repair_receives_original_generation_context() -> None:
+    captured_original_prompts: list[str] = []
+
+    async def run_task(task: Task):
+        answer = "{}" if task.id.endswith("-repair") else "invalid json"
+        return {
+            task.id: TaskResponse(
+                id=task.id,
+                success=True,
+                answer=answer,
+            )
+        }
+
+    def repair_prompt_builder(
+        invalid_output: str,
+        error: ValueError,
+        *,
+        original_prompt: str,
+    ) -> str:
+        del invalid_output, error
+        captured_original_prompts.append(original_prompt)
+        return "repair using the original source-complete context"
+
+    executor = AWorldCandidatePopulationExecutor(
+        agent_factory=_FakeCandidateAgent,
+        parse_output=json.loads,
+        repair_prompt_builder=repair_prompt_builder,
+        task_batch_executor=DeterministicTaskBatchExecutor(run_task=run_task),
+    )
+
+    result = await executor.run(
+        ["original source-complete generation context"],
+        max_concurrency=1,
+    )
+
+    assert result.slots[0].status == "succeeded"
+    assert captured_original_prompts == [
+        "original source-complete generation context"
+    ]
+
+
+@pytest.mark.asyncio
 async def test_non_repairable_protocol_failure_skips_repair_task() -> None:
     task_ids: list[str] = []
 
@@ -911,6 +955,43 @@ async def test_non_repairable_protocol_failure_skips_repair_task() -> None:
     assert result.slots[0].status == "protocol_invalid"
     assert result.diagnostics["repair_attempt_count"] == 0
     assert result.diagnostics["protocol_invalid_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_llm_mutator_preserves_non_repairable_protocol_disposition() -> None:
+    async def population_callable(
+        prompts,
+        max_concurrency,
+        *,
+        validate_output=None,
+    ):
+        del prompts, max_concurrency, validate_output
+        return CandidatePopulationResult(
+            slots=(
+                CandidatePopulationSlotResult(
+                    index=0,
+                    status="protocol_invalid",
+                    failure={
+                        "code": "multiple_json_objects",
+                        "stage": "candidate_protocol",
+                        "failure_class": "candidate",
+                        "repairable": False,
+                    },
+                ),
+            ),
+            diagnostics={"protocol_invalid_count": 1},
+        )
+
+    result = await TraceReflectiveLLMMutator(
+        mutate_text=lambda prompt: None,
+        population_callable=population_callable,
+    ).propose(_request(max_candidates=1))
+
+    assert len(result.generation_outcomes) == 1
+    assert result.generation_outcomes[0].repairable is False
+    assert result.generation_outcomes[0].reason_codes == (
+        "multiple_json_objects",
+    )
 
 
 @pytest.mark.asyncio

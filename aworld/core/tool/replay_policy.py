@@ -96,6 +96,9 @@ _REPLAY_OWNED_BROWSER_CLEANUP_BINARIES = frozenset(
 _REPLAY_OWNED_BROWSER_CLEANUP_ACTIONS = frozenset(
     {"close", "quit"}
 )
+_SAFE_CLEANUP_REDIRECTION = re.compile(
+    r"^(?:(?:[012])?(?:>>?|<)/dev/null|[012]?>&[012]|[012]?<&[012])$"
+)
 
 
 @dataclass(frozen=True)
@@ -307,13 +310,17 @@ def _is_replay_owned_browser_cleanup(action: Any) -> bool:
         tokens = shlex.split(command_texts[0])
     except ValueError:
         return False
-    if len(tokens) != 2:
+    if len(tokens) < 2 or len(tokens) > 5:
         return False
     binary = Path(tokens[0]).name.casefold()
     cleanup_action = tokens[1].casefold()
     return bool(
         binary in _REPLAY_OWNED_BROWSER_CLEANUP_BINARIES
         and cleanup_action in _REPLAY_OWNED_BROWSER_CLEANUP_ACTIONS
+        and all(
+            _SAFE_CLEANUP_REDIRECTION.fullmatch(token) is not None
+            for token in tokens[2:]
+        )
     )
 
 

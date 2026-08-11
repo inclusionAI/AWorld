@@ -1886,13 +1886,57 @@ def _candidate_generation_failure_events(
 ) -> tuple[dict[str, object], ...]:
     failures: list[dict[str, object]] = []
     policy_events: list[dict[str, object]] = []
+    protocol_events: list[dict[str, object]] = []
     for item in _optimizer_iteration_diagnostics(optimizer_diagnostics):
         failures.extend(_candidate_materialization_failures(item))
         policy_events.extend(_candidate_policy_filter_events(item))
+        protocol_events.extend(_candidate_protocol_failure_events(item))
     materialization_events = _candidate_materialization_failure_events(failures)
     events: list[dict[str, object]] = []
     seen_semantic_keys: set[str] = set()
-    for event in (*materialization_events, *policy_events):
+    for event in (*materialization_events, *policy_events, *protocol_events):
+        semantic_key = str(event["semantic_key"])
+        if semantic_key in seen_semantic_keys:
+            continue
+        seen_semantic_keys.add(semantic_key)
+        events.append(event)
+    return tuple(events)
+
+
+def _candidate_protocol_failure_events(
+    diagnostics: Mapping[str, object],
+) -> tuple[dict[str, object], ...]:
+    raw_outcomes = diagnostics.get("candidate_generation_outcomes")
+    if not isinstance(raw_outcomes, (list, tuple)):
+        return ()
+    events: list[dict[str, object]] = []
+    seen_semantic_keys: set[str] = set()
+    for item in raw_outcomes[:64]:
+        if not isinstance(item, Mapping):
+            continue
+        try:
+            outcome = CandidateGenerationOutcome.from_dict(item)
+        except (TypeError, ValueError):
+            continue
+        if outcome.kind is not CandidateGenerationOutcomeKind.PROTOCOL_INVALID:
+            continue
+        code = outcome.reason_codes[0] if outcome.reason_codes else (
+            "candidate_protocol_invalid"
+        )
+        event = ReplayFailureEvent(
+            code=code,
+            owner=FailureOwner.CANDIDATE,
+            stage=FailureStage.CANDIDATE_GENERATION,
+            scope=FailureScope.CANDIDATE,
+            repairable=outcome.repairable,
+            category="candidate_generation",
+            summary="candidate response violated the generation protocol",
+            diagnostics={
+                "candidate_index": outcome.candidate_index,
+                "active_frontier_key": outcome.active_frontier_key,
+            },
+            requirement_id=f"candidate-protocol/{code}",
+        ).to_dict()
         semantic_key = str(event["semantic_key"])
         if semantic_key in seen_semantic_keys:
             continue
@@ -3297,6 +3341,10 @@ class SelfEvolveRunner:
         )
         self.store.write_replay_requirements(run_id, replay_preflight)
         target_package_inventory = _target_package_inventory(target)
+        target_package_sources = _target_package_sources(
+            target,
+            inventory=target_package_inventory,
+        )
         verification_settings: dict[str, object] = {
             "min_score_delta": self.min_score_delta,
             "min_eval_cases": self.min_eval_cases,
@@ -3327,6 +3375,7 @@ class SelfEvolveRunner:
         last_policy_filter_outcomes: tuple[CandidateGenerationOutcome, ...] = ()
         generation_policy_frontier_exhausted = False
         generation_materialization_frontier_exhausted = False
+        generation_protocol_frontier_exhausted = False
         generation_conformance_frontier_exhausted = False
         conformance_strategy_switch_count = 0
         conformance_strategy_attempts: dict[str, int] = {}
@@ -3651,6 +3700,7 @@ class SelfEvolveRunner:
                 max_candidates=generation_slot_count,
                 replay_requirements=replay_preflight.requirements,
                 target_package_inventory=target_package_inventory,
+                target_package_sources=target_package_sources,
                 handbook_slice=handbook_payload,
                 consumed_mutation_families=tuple(
                     sorted(
@@ -4357,6 +4407,26 @@ class SelfEvolveRunner:
                     materialization_failures
                 )
                 if protocol_invalid_count or materialization_invalid_count:
+                    protocol_outcomes = tuple(
+                        outcome
+                        for outcome in generation_outcomes
+                        if outcome.kind
+                        is CandidateGenerationOutcomeKind.PROTOCOL_INVALID
+                    )
+                    unattributed_protocol_failures = max(
+                        0,
+                        protocol_invalid_count - len(protocol_outcomes),
+                    )
+                    generation_failure_repairable = bool(
+                        any(
+                            failure.get("repairable") is not False
+                            for failure in materialization_failures
+                        )
+                        or any(
+                            outcome.repairable for outcome in protocol_outcomes
+                        )
+                        or unattributed_protocol_failures
+                    )
                     causal_failure_events = (
                         _candidate_materialization_failure_events(
                             materialization_failures
@@ -4380,7 +4450,7 @@ class SelfEvolveRunner:
                                     "failed_gates": [failed_gate],
                                     "candidate_status": "rejected",
                                     "failure_class": "candidate",
-                                    "repairable": True,
+                                    "repairable": generation_failure_repairable,
                                     "candidate_protocol_invalid_count": (
                                         protocol_invalid_count
                                     ),
@@ -4412,6 +4482,9 @@ class SelfEvolveRunner:
                             "failed_gates": [failed_gate],
                         }
                     )
+                    if not generation_failure_repairable:
+                        generation_protocol_frontier_exhausted = True
+                        break
                     if (
                         materialization_invalid_count
                         >= max(1, generation_slot_count)
@@ -5081,6 +5154,10 @@ class SelfEvolveRunner:
                 candidate_generation_details[
                     "generation_materialization_frontier_exhausted"
                 ] = True
+            if generation_protocol_frontier_exhausted:
+                candidate_generation_details[
+                    "generation_protocol_frontier_exhausted"
+                ] = True
             if candidate_generation_failure_event is not None:
                 candidate_generation_details.update(
                     {
@@ -5119,6 +5196,11 @@ class SelfEvolveRunner:
                             "materialization failure without repair progress"
                         )
                         if generation_materialization_frontier_exhausted
+                        else (
+                            "candidate generation produced a non-repairable "
+                            "protocol failure"
+                        )
+                        if generation_protocol_frontier_exhausted
                         else "optimizer did not produce a replayable candidate"
                         if _is_verified_apply_policy(apply_policy)
                         else "optimizer did not produce a candidate"
@@ -5429,6 +5511,13 @@ class SelfEvolveRunner:
                         "generation_materialization_frontier_exhausted": True
                     }
                     if generation_materialization_frontier_exhausted
+                    else {}
+                ),
+                **(
+                    {
+                        "generation_protocol_frontier_exhausted": True
+                    }
+                    if generation_protocol_frontier_exhausted
                     else {}
                 ),
                 **(
@@ -12079,6 +12168,8 @@ async def _run_candidate_generation_agent(
 def _candidate_mutation_repair_prompt(
     invalid_output: str,
     error: ValueError,
+    *,
+    original_prompt: str | None = None,
 ) -> str:
     diagnostic = (
         error.to_diagnostic()
@@ -12114,6 +12205,12 @@ def _candidate_mutation_repair_prompt(
         # does not reconstruct missing file tails from a small prefix.
         "invalid_response": sanitize_text(invalid_output, max_chars=64_000),
     }
+    if isinstance(original_prompt, str) and original_prompt:
+        payload["original_generation_context"] = sanitize_source_text(
+            original_prompt,
+            max_chars=96_000,
+            preserve_format=True,
+        )
     repair_instruction = (
         "Repair representation only using the supplied schema and diagnostic. "
         if isinstance(error, CandidateProtocolError)
@@ -12331,6 +12428,56 @@ def _target_package_inventory(target: SelfEvolveTarget) -> tuple[str, ...]:
             if path.is_file() and not path.is_symlink()
         )
     )
+
+
+def _target_package_sources(
+    target: SelfEvolveTarget,
+    *,
+    inventory: Sequence[str],
+    max_file_chars: int = 128_000,
+    max_total_chars: int = 512_000,
+) -> dict[str, Mapping[str, object]]:
+    """Load a bounded source inventory for later focused-repair closure.
+
+    The mapping remains private until a conformance contract names a required
+    branch path. Binary, oversized, symlinked, and out-of-package files are
+    excluded so focused repair cannot broaden its mutation surface implicitly.
+    """
+
+    target_path = _target_runtime_skill_path(target)
+    if target_path is None or not target_path.exists():
+        return {}
+    root = target_path.parent.resolve()
+    remaining_chars = max_total_chars
+    sources: dict[str, Mapping[str, object]] = {}
+    for relative_path in inventory:
+        if remaining_chars <= 0:
+            break
+        candidate = root.joinpath(*Path(relative_path).parts)
+        try:
+            resolved = candidate.resolve(strict=True)
+        except OSError:
+            continue
+        if (
+            not resolved.is_relative_to(root)
+            or candidate.is_symlink()
+            or not resolved.is_file()
+        ):
+            continue
+        try:
+            if resolved.stat().st_size > max_file_chars * 4:
+                continue
+            content = resolved.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        if len(content) > max_file_chars or len(content) > remaining_chars:
+            continue
+        sources[relative_path] = {
+            "content": content,
+            "executable": bool(resolved.stat().st_mode & 0o111),
+        }
+        remaining_chars -= len(content)
+    return sources
 
 
 def _safe_artifact_name(value: str) -> str:
