@@ -1889,10 +1889,9 @@ def test_prompt_payload_merges_typed_constraints_across_repair_lineages() -> Non
     assert {
         item["schema_layer"] for item in contract["schema_field_constraints"]
     } == {"compiler_output", "runtime"}
-    assert set(contract["required_branch_paths"]) == {
-        "replay/compiler.py",
-        "replay/runtime.py",
-    }
+    # Compiler constraints from the sibling lineage remain validation
+    # invariants, but the selected runtime failure alone owns this mutation.
+    assert contract["required_branch_paths"] == ["replay/runtime.py"]
 
 
 def test_prompt_payload_prioritizes_conformance_that_inherits_task_plane_frontier() -> None:

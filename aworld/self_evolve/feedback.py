@@ -173,6 +173,14 @@ def normalize_feedback_summary(feedback: EvaluationSummary) -> dict[str, Any]:
     )
     if repair_candidate_package is not None:
         result["repair_candidate_package"] = repair_candidate_package
+    repair_conformance = metrics.get("repair_conformance")
+    if isinstance(repair_conformance, Mapping):
+        projected_contract = public_diagnostic_projection(
+            repair_conformance,
+            max_chars=8_192,
+        )
+        if isinstance(projected_contract, Mapping):
+            result["repair_conformance"] = dict(projected_contract)
     return result
 
 
