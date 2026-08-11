@@ -41,6 +41,11 @@ from aworld.self_evolve.replay_adaptation import ReplayPreflightReport
 from aworld.self_evolve.regression import RegressionEvidence, RegressionSuiteSpec
 from aworld.self_evolve.challenger import ChallengeReport
 from aworld.self_evolve.judge import JudgeRecord
+from aworld.self_evolve.measurement import (
+    AttributionReport,
+    ControlledExperimentSpec,
+    MeasurementObservation,
+)
 from aworld.self_evolve.sanitization import public_diagnostic_projection
 from aworld.self_evolve.credit_assignment import TargetSelectionReport
 from aworld.self_evolve.types import (
@@ -121,6 +126,254 @@ class FilesystemSelfEvolveStore:
         if not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9._-]{0,159}", campaign_id):
             raise ValueError(f"invalid campaign_id: {campaign_id!r}")
         return self.artifact_root / "campaigns" / campaign_id
+
+    def measurement_experiment_path(
+        self,
+        run_id: str,
+        experiment_id: str,
+    ) -> Path:
+        """Return the bounded artifact root for one controlled experiment."""
+
+        self._validate_id(run_id, "run_id")
+        if not re.fullmatch(r"experiment-[0-9a-f]{32}", experiment_id):
+            raise ValueError(f"invalid experiment_id: {experiment_id!r}")
+        return self.run_path(run_id) / "experiments" / experiment_id
+
+    def measurement_attribution_ref(
+        self,
+        run_id: str,
+        experiment_id: str,
+    ) -> str:
+        self.measurement_experiment_path(run_id, experiment_id)
+        return (
+            Path("experiments")
+            / experiment_id
+            / "attribution_report.json"
+        ).as_posix()
+
+    def write_measurement_experiment(
+        self,
+        experiment: ControlledExperimentSpec,
+    ) -> Path:
+        if not isinstance(experiment, ControlledExperimentSpec):
+            raise TypeError("measurement experiment must be typed")
+        root = self.measurement_experiment_path(
+            experiment.run_id,
+            experiment.experiment_id,
+        )
+        path = root / "experiment.json"
+        if path.exists():
+            if path.is_symlink() or not path.is_file():
+                raise ValueError("measurement experiment destination is unsafe")
+            existing = self.read_measurement_experiment(
+                experiment.run_id,
+                experiment.experiment_id,
+            )
+            if existing.to_dict() != experiment.to_dict():
+                raise ValueError(
+                    "immutable experiment id already exists with different content"
+                )
+            return path
+        self._write_json_atomic(path, experiment.to_dict())
+        reloaded = self.read_measurement_experiment(
+            experiment.run_id,
+            experiment.experiment_id,
+        )
+        if reloaded.to_dict() != experiment.to_dict():
+            raise ValueError("persisted measurement experiment did not round trip")
+        return path
+
+    def read_measurement_experiment(
+        self,
+        run_id: str,
+        experiment_id: str,
+    ) -> ControlledExperimentSpec:
+        path = (
+            self.measurement_experiment_path(run_id, experiment_id)
+            / "experiment.json"
+        )
+        if not path.is_file() or path.is_symlink():
+            raise FileNotFoundError(
+                f"measurement experiment not found: {experiment_id}"
+            )
+        experiment = ControlledExperimentSpec.from_dict(self._read_json(path))
+        if experiment.run_id != run_id or experiment.experiment_id != experiment_id:
+            raise ValueError("measurement experiment identity does not match its path")
+        return experiment
+
+    def append_measurement_observations(
+        self,
+        run_id: str,
+        experiment_id: str,
+        observations: tuple[MeasurementObservation, ...],
+    ) -> Path:
+        """Idempotently append immutable, coordinate-addressed observations."""
+
+        experiment = self.read_measurement_experiment(run_id, experiment_id)
+        if any(not isinstance(item, MeasurementObservation) for item in observations):
+            raise TypeError("measurement observations must be typed")
+        for observation in observations:
+            if (
+                observation.run_id != run_id
+                or observation.experiment_id != experiment_id
+                or observation.swap_axis != experiment.swap_axis
+            ):
+                raise ValueError(
+                    "measurement observation does not belong to the experiment"
+                )
+        path = self.measurement_experiment_path(run_id, experiment_id) / (
+            "observations.jsonl"
+        )
+        self._reject_symlink_components(path.parent)
+        if path.is_symlink():
+            raise ValueError("measurement observation destination cannot be a symlink")
+        existing = {
+            item.observation_id: item
+            for item in self.read_measurement_observations(
+                run_id,
+                experiment_id,
+                missing_ok=True,
+            )
+        }
+        additions: list[MeasurementObservation] = []
+        pending: dict[str, MeasurementObservation] = {}
+        for observation in observations:
+            prior = existing.get(observation.observation_id) or pending.get(
+                observation.observation_id
+            )
+            if prior is not None:
+                if prior.to_dict() != observation.to_dict():
+                    raise ValueError(
+                        "immutable observation id already exists with different content"
+                    )
+                continue
+            pending[observation.observation_id] = observation
+            additions.append(observation)
+        if not additions:
+            return path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        encoded = "".join(
+            json.dumps(
+                item.to_dict(),
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            + "\n"
+            for item in additions
+        ).encode("utf-8")
+        descriptor = os.open(
+            path,
+            os.O_APPEND | os.O_CREAT | os.O_WRONLY,
+            0o600,
+        )
+        try:
+            os.write(descriptor, encoded)
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        path.chmod(0o600)
+        return path
+
+    def read_measurement_observations(
+        self,
+        run_id: str,
+        experiment_id: str,
+        *,
+        missing_ok: bool = False,
+    ) -> tuple[MeasurementObservation, ...]:
+        self.read_measurement_experiment(run_id, experiment_id)
+        path = self.measurement_experiment_path(run_id, experiment_id) / (
+            "observations.jsonl"
+        )
+        if not path.exists():
+            if missing_ok:
+                return ()
+            raise FileNotFoundError(
+                f"measurement observations not found: {experiment_id}"
+            )
+        if path.is_symlink() or not path.is_file():
+            raise ValueError("measurement observation artifact is unsafe")
+        result: list[MeasurementObservation] = []
+        identities: set[str] = set()
+        for line_number, raw_line in enumerate(
+            path.read_text(encoding="utf-8").splitlines(),
+            start=1,
+        ):
+            if not raw_line.strip():
+                continue
+            try:
+                payload = json.loads(raw_line)
+            except json.JSONDecodeError as exc:
+                raise ValueError(
+                    f"invalid measurement observation JSON at line {line_number}"
+                ) from exc
+            if not isinstance(payload, Mapping):
+                raise ValueError(
+                    f"measurement observation line {line_number} must be an object"
+                )
+            observation = MeasurementObservation.from_dict(payload)
+            if observation.observation_id in identities:
+                raise ValueError("measurement observation ids must be unique")
+            if (
+                observation.run_id != run_id
+                or observation.experiment_id != experiment_id
+            ):
+                raise ValueError(
+                    "measurement observation identity does not match its path"
+                )
+            identities.add(observation.observation_id)
+            result.append(observation)
+        return tuple(result)
+
+    def write_measurement_attribution_report(
+        self,
+        report: AttributionReport,
+    ) -> Path:
+        if not isinstance(report, AttributionReport):
+            raise TypeError("measurement attribution report must be typed")
+        experiment = self.read_measurement_experiment(
+            report.run_id,
+            report.experiment_id,
+        )
+        if (
+            report.mode != experiment.mode
+            or report.swap_axis != experiment.swap_axis
+        ):
+            raise ValueError(
+                "measurement attribution report does not match its experiment"
+            )
+        path = self.measurement_experiment_path(
+            report.run_id,
+            report.experiment_id,
+        ) / "attribution_report.json"
+        self._write_json_atomic(path, report.to_dict())
+        reloaded = self.read_measurement_attribution_report(
+            report.run_id,
+            report.experiment_id,
+        )
+        if reloaded.to_dict() != report.to_dict():
+            raise ValueError("persisted attribution report did not round trip")
+        return path
+
+    def read_measurement_attribution_report(
+        self,
+        run_id: str,
+        experiment_id: str,
+    ) -> AttributionReport:
+        self.read_measurement_experiment(run_id, experiment_id)
+        path = self.measurement_experiment_path(
+            run_id,
+            experiment_id,
+        ) / "attribution_report.json"
+        if not path.is_file() or path.is_symlink():
+            raise FileNotFoundError(
+                f"measurement attribution report not found: {experiment_id}"
+            )
+        report = AttributionReport.from_dict(self._read_json(path))
+        if report.run_id != run_id or report.experiment_id != experiment_id:
+            raise ValueError("measurement attribution identity does not match its path")
+        return report
 
     def ingestion_path(self, ingestion_id: str) -> Path:
         if not re.fullmatch(r"ingestion-[0-9a-f]{32}", ingestion_id):
@@ -1721,6 +1974,7 @@ _DYNAMIC_REPORT_FIELDS = frozenset(
         "content_quality_diagnostics",
         "gate_results",
         "held_out_metrics",
+        "measurement",
         "no_op",
         "optimizer_diagnostics",
         "population",

@@ -483,6 +483,27 @@ Modes:
 
 `online` requires `apply_policy="auto_verified"`. `auto_verified` also requires `requires_post_apply_reevaluation=True`, which is the default. Useful verification knobs include `replay_timeout_seconds`, `replay_max_steps`, `baseline_replay_repetitions`, `candidate_replay_repetitions`, `replay_candidate_limit`, `replay_stability_margin`, `judge_repetitions`, and `judge_timeout_seconds`.
 
+Trusted improvement measurement is a separate, disabled-by-default policy:
+
+```python
+SelfEvolveConfig(
+    mode="shadow",
+    measurement_mode="shadow",
+    measurement_primary_metric="task_success",
+    measurement_minimum_effect=0.02,
+    measurement_confidence_level=0.95,
+    measurement_min_independent_cases=10,
+)
+```
+
+`measurement_mode` accepts `off`, `shadow`, `advisory`, and `required`.
+`shadow` and `advisory` record controlled evidence without changing the existing
+promotion decision. `required` adds a fail-closed promotion gate: the control and
+treatment must differ on exactly one declared axis, frozen identities must match,
+independent cases must meet the configured floor, the confidence interval must
+support the minimum effect, and token/wall usage must be complete. Repetitions
+estimate stability within a case; they never increase the independent-case count.
+
 `max_improvement_cycles` is the cross-run hard cap and defaults to `3`.
 `max_background_jobs` still limits how many queued generations one drain call
 executes; a continuable Campaign remains checkpointed for a later drain.
@@ -727,6 +748,34 @@ Each run writes durable artifacts under `.aworld/self_evolve/<run_id>/`:
 - `repair_conformance/<candidate_id>/`: bounded service stdout/stderr, probe traces, and frozen-capability diagnostics produced by pre-rollout repair validation.
 - `population` in `report.json`: candidate generation, screening attempts, selection reason, repair telemetry, and token/concurrency usage.
 - `artifact_retention` in `report.json`: cleanup policy, protected runs, skipped runs, and removed paths from startup and terminal cleanup.
+- `experiments/<experiment_id>/experiment.json`: immutable controlled-swap plan written before screening/replay observations.
+- `experiments/<experiment_id>/observations.jsonl`: idempotent arm/case/repetition observations with comparability and bounded usage metadata. A blocked run does not synthesize observation rows.
+- `experiments/<experiment_id>/attribution_report.json`: experiment validity, paired effect and confidence interval, measurement yield, best/pass-at-K search performance, budget curves when per-candidate usage is available, transfer audits, and the typed next action.
+- `measurement` in `report.json`: bounded promotion-facing summary and relative attribution report reference; raw observations remain in the experiment directory.
+
+The measurement contract separates three questions that older aggregate reports
+could conflate: whether target selection was credible, whether the controlled
+experiment was valid, and whether the treatment effect was positive with adequate
+confidence. Invalid controls route to measurement repair and never become evidence
+for another Skill mutation. In Campaign mode, measurement readiness and measured
+effect are tracked separately from raw candidate score; `collect_more_evidence`,
+`repair_measurement`, `stop_no_effect`, and `stop_negative_effect` are typed
+cross-cycle outcomes.
+
+Measurement policy has four modes. `off` preserves historical behavior;
+`shadow` writes counterfactual evidence without changing release or Campaign
+selection; `advisory` may route future measurement work but cannot independently
+accept or reject a release; `required` adds a fail-closed promotion gate. Historical
+reports without a `measurement` section are interpreted as `off` and are never
+upgraded into controlled evidence.
+
+The detailed contracts use `tokens` as an integer token count, `cost_usd` as USD,
+`wall_seconds` as elapsed seconds, and confidence/effect fields as finite metric
+units. `null` means the producer did not obtain trustworthy telemetry or evidence;
+zero is retained only when it was actually observed. Search and controlled
+measurement usage are separate in `budget_ledger`, and raw observations contain
+only scalar metrics plus safe relative artifact references—never prompts,
+trajectories, credentials, or absolute local paths.
 
 Artifact retention runs both when a self-evolve run starts and when it reaches a
 terminal report. The two newest runs, lineage-referenced runs, interrupted apply

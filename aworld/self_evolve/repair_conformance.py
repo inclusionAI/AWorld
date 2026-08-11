@@ -1243,7 +1243,10 @@ def compile_repair_conformance_contract(
             )
         )
     )
-    if "finalize_after_successful_endpoint_interaction" in direct_failure_codes:
+    if {
+        "finalize_after_successful_endpoint_interaction",
+        "target_behavior_completion_missing",
+    } & set(direct_failure_codes):
         # The replay implementation already completed a bidirectional data-plane
         # interaction. This repair belongs to the target skill content, not to a
         # candidate-owned compiler/runtime branch, so source conformance must not

@@ -788,6 +788,36 @@ class TestOptimizeCommand:
         assert "Selected candidate: cand-1" in result
 
     @pytest.mark.asyncio
+    async def test_optimize_forwards_measurement_options(self, monkeypatch, tmp_path):
+        cmd = CommandRegistry.get("optimize")
+        calls = {}
+
+        def fake_run_optimize_cli(**kwargs):
+            calls.update(kwargs)
+            return {"status": "rejected"}
+
+        monkeypatch.setattr(
+            "aworld_cli.commands.optimize_cmd.run_optimize_cli",
+            fake_run_optimize_cli,
+        )
+
+        await cmd.execute(
+            CommandContext(
+                cwd=str(tmp_path),
+                user_args=(
+                    "--from-trajectory trajectory.log "
+                    "--measurement-mode advisory "
+                    "--measurement-primary-metric score "
+                    "--measurement-minimum-effect 0.1"
+                ),
+            )
+        )
+
+        assert calls["measurement_mode"] == "advisory"
+        assert calls["measurement_primary_metric"] == "score"
+        assert calls["measurement_minimum_effect"] == pytest.approx(0.1)
+
+    @pytest.mark.asyncio
     async def test_optimize_defaults_source_ingestor_to_auto(self, monkeypatch, tmp_path):
         cmd = CommandRegistry.get("optimize")
         calls = {}

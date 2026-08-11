@@ -36,6 +36,38 @@ def test_agent_config_disables_self_evolve_by_default() -> None:
     assert config.self_evolve_config.baseline_replay_repetitions == 1
     assert config.self_evolve_config.candidate_replay_repetitions == 1
     assert config.self_evolve_config.replay_stability_margin == 0.0
+    assert config.self_evolve_config.measurement_mode == "off"
+    assert config.self_evolve_config.measurement_primary_metric == "task_success"
+    assert config.self_evolve_config.measurement_minimum_effect == 0.0
+    assert config.self_evolve_config.measurement_confidence_level == 0.95
+    assert config.self_evolve_config.measurement_min_independent_cases == 2
+    assert config.self_evolve_config.measurement_bootstrap_samples == 2_000
+
+
+@pytest.mark.parametrize(
+    "mode",
+    ("off", "shadow", "advisory", "required"),
+)
+def test_self_evolve_measurement_modes_parse(mode: str) -> None:
+    assert SelfEvolveConfig(measurement_mode=mode).measurement_mode == mode
+
+
+@pytest.mark.parametrize(
+    ("payload", "message"),
+    [
+        ({"measurement_primary_metric": "  "}, "must be non-empty"),
+        ({"measurement_confidence_level": 0}, "between 0 and 1"),
+        ({"measurement_confidence_level": 1}, "between 0 and 1"),
+        ({"measurement_min_independent_cases": 0}, "must be positive"),
+        ({"measurement_bootstrap_samples": 0}, "between 200 and 100000"),
+    ],
+)
+def test_self_evolve_measurement_config_rejects_invalid_values(
+    payload: dict,
+    message: str,
+) -> None:
+    with pytest.raises(ValidationError, match=message):
+        SelfEvolveConfig(**payload)
 
 
 @pytest.mark.parametrize("mode", ["off", "offline", "shadow"])

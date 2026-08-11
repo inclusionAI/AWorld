@@ -525,6 +525,38 @@ Reports expose those decisions as `max_run_tokens_to_total_run_token_budget` and
 `deprecated_config_mappings`. New callers should set both fields directly; these
 mappings are deprecated compatibility paths, not additional independent budgets.
 
+## Trusted Improvement Measurement
+
+SDK callers and background `SelfEvolveConfig` jobs can enable controlled
+measurement with `measurement_mode="shadow"`, `"advisory"`, or `"required"`.
+The CLI exposes the same policy through `--measurement-mode`; the default is
+`off`, so existing runs and reports are unchanged. For example:
+
+```bash
+aworld-cli optimize \
+  --from-trajectory trajectory.log \
+  --measurement-mode shadow \
+  --measurement-primary-metric task_success \
+  --measurement-minimum-effect 0.02 \
+  --measurement-confidence-level 0.95 \
+  --measurement-min-independent-cases 4
+```
+
+`--measurement-bootstrap-samples` controls deterministic case-level bootstrap
+resampling and must be between 200 and 100000. Repetitions are aggregated within
+their case before resampling; they never increase the independent-case count.
+
+For each measured candidate, AWorld freezes the task model/executor, generator,
+scheduler, evaluator, dataset, environment, runtime, prompt context, and budget
+identities while changing only the candidate artifact. The full experiment lives
+under `.aworld/self_evolve/<run_id>/experiments/<experiment_id>/`; `report.json`
+contains only the bounded `measurement` summary. Use the referenced
+`attribution_report.json` for paired confidence intervals, comparable-pair counts,
+best/pass-at-K values, separate actual search/measurement ledgers, and token/wall
+curves. Missing values mean “not measured,” never numeric zero. Missing controls or
+incomplete usage remain explicitly invalid/inconclusive; the runner does not replace
+them with the best candidate score.
+
 ## Output
 
 The command prints the stable artifact paths returned by the framework:

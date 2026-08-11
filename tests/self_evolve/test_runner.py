@@ -2011,6 +2011,74 @@ def test_candidate_screening_prefers_lower_cost_executable_case() -> None:
     }
 
 
+def test_candidate_screening_learns_from_censored_case_cost() -> None:
+    dataset = SelfEvolveDataset(
+        cases=(
+            EvalCase(case_id="slow-case", input={"content": "slow"}),
+            EvalCase(case_id="fresh-case", input={"content": "fresh"}),
+        ),
+        recipe=DatasetRecipe(
+            source={"kind": "trajectory_set"},
+            split_seed="empirical-screening-cost",
+            splits={"train": ["slow-case", "fresh-case"]},
+            trainable_case_ids=("slow-case", "fresh-case"),
+        ),
+    )
+    observations = {
+        "slow-case": {
+            "attempt_count": 1,
+            "total_wall_seconds": 180.0,
+            "right_censored_count": 1,
+        }
+    }
+
+    screening = _candidate_screening_dataset(
+        dataset,
+        empirical_observations=observations,
+    )
+
+    assert screening is not None
+    assert screening.cases[0].case_id == "fresh-case"
+    assert screening.recipe.source["screening_case_observations"] == {
+        "fresh-case": {}
+    }
+
+
+def test_candidate_screening_observation_tracks_physical_termination_axis() -> None:
+    observations: dict[str, dict[str, float | int]] = {}
+
+    runner_module._record_candidate_screening_observation(
+        observations,
+        case_ids=("case-a",),
+        attempt={
+            "passed": False,
+            "wall_seconds": 180.0,
+            "details": {
+                "code": "screening_budget_censored",
+                "screening_budget_censored": True,
+                "screening_outcome": "right_censored",
+                "causal_failure_events": [
+                    {
+                        "diagnostics": {
+                            "termination_budget_axis": "wall_time"
+                        }
+                    }
+                ],
+            },
+        },
+    )
+
+    assert observations == {
+        "case-a": {
+            "attempt_count": 1,
+            "total_wall_seconds": 180.0,
+            "right_censored_count": 1,
+            "passed_count": 0,
+            "termination_wall_time_count": 1,
+        }
+    }
+
+
 def test_candidate_screening_uses_single_case_as_low_cost_promotion_stage() -> None:
     dataset = SelfEvolveDataset(
         cases=(EvalCase(case_id="only-case", input="single user task"),),
@@ -2027,6 +2095,68 @@ def test_candidate_screening_uses_single_case_as_low_cost_promotion_stage() -> N
     assert screening is not None
     assert tuple(case.case_id for case in screening.cases) == ("only-case",)
     assert screening.recipe.source["candidate_screening"] is True
+
+
+def test_conformance_phenotype_dedupes_equivalent_support_source_variants() -> None:
+    target = SelfEvolveTargetRef(target_type="skill", target_id="demo")
+    current = "# Demo\n\nCurrent behavior.\n"
+    first = CandidateVariant(
+        candidate_id="support-a",
+        target=target,
+        content=current,
+        rationale="runtime variant a",
+        files=(
+            CandidateFileDelta(
+                path="replay/runtime.py",
+                content="def handle():\n    return {'ok': True}\n",
+            ),
+        ),
+    )
+    second = replace(
+        first,
+        candidate_id="support-b",
+        rationale="runtime variant b",
+        files=(
+            CandidateFileDelta(
+                path="replay/runtime.py",
+                content="def handle():\n    value = True\n    return {'ok': value}\n",
+            ),
+        ),
+    )
+    common_details = {
+        "code": "repair_conformance_passed",
+        "probe_group_results": [
+            {
+                "passed": True,
+                "code": "repair_probe_group_passed",
+                "requirement_id": "browser-runtime",
+                "case_ids": ["case-a"],
+            }
+        ],
+    }
+    report = {
+        "attempts": [
+            {
+                "candidate_id": candidate_id,
+                "gate_name": "candidate_repair_conformance",
+                "passed": True,
+                "details": common_details,
+            }
+            for candidate_id in (first.candidate_id, second.candidate_id)
+        ]
+    }
+
+    representatives, duplicate_of, fingerprints = (
+        runner_module._deduplicate_conformance_phenotypes(
+            (first, second),
+            conformance_report=report,
+            current_content=current,
+        )
+    )
+
+    assert representatives == (first,)
+    assert duplicate_of == {second.candidate_id: first.candidate_id}
+    assert fingerprints[first.candidate_id] == fingerprints[second.candidate_id]
 
 
 def test_replay_adaptation_cache_reuses_behavior_only_sibling_capability(
@@ -6604,6 +6734,81 @@ def test_bounded_screening_treats_paired_timeouts_as_right_censored(
     )
 
 
+def test_bounded_screening_censors_candidate_timeout_with_data_plane_progress(
+    tmp_path: Path,
+) -> None:
+    target = SelfEvolveTargetRef(target_type="skill", target_id="screening")
+    request = CandidateReplayRequest(
+        run_id="run-progress-censor",
+        task_id="case-progress-censor",
+        workspace_root=str(tmp_path),
+        target=target,
+        candidate_id="candidate-progress-censor",
+        overlay_skill_root=str(tmp_path / "overlay"),
+        task_input="complete this task",
+        timeout_seconds=90,
+        max_steps=3,
+        max_tool_calls=8,
+    )
+    baseline = ReplayVariantResult(
+        variant_id="baseline",
+        status=ReplayExecutionStatus.FAILED,
+        trajectory=[],
+        failure={
+            "type": "TimeoutExpired",
+            "failure_stage": "task_rollout",
+            "reason": "replay timed out",
+        },
+    )
+    candidate = ReplayVariantResult(
+        variant_id="candidate-progress-censor",
+        status=ReplayExecutionStatus.FAILED,
+        trajectory=[],
+        failure={
+            "type": "TimeoutExpired",
+            "outcome": "candidate_failure",
+            "failure_class": "candidate_task_behavior",
+            "failure_stage": "task_rollout",
+            "repairable": True,
+            "reason": "replay timed out",
+            "completed_data_plane_operations": ["/"],
+        },
+    )
+    replay_result = _CandidateReplayResult(
+        request=request,
+        baseline=baseline,
+        candidate=candidate,
+    )
+    dataset = SelfEvolveDataset(
+        cases=(
+            EvalCase(
+                case_id="case-progress-censor",
+                input="complete this task",
+            ),
+        ),
+        recipe=DatasetRecipe(
+            source={"kind": "trajectory_log"},
+            split_seed="progress-censor",
+            splits={"train": ["case-progress-censor"]},
+            trainable_case_ids=("case-progress-censor",),
+        ),
+    )
+
+    details = _replay_gate_details(
+        replay_result,
+        dataset=dataset,
+        bounded_screening=True,
+    )
+
+    assert details["screening_outcome"] == "right_censored"
+    assert details["failure_class"] == "framework"
+    assert "paired_candidate_completion_evidence" not in details
+    assert not any(
+        event["code"] == "target_behavior_completion_missing"
+        for event in details["causal_failure_events"]
+    )
+
+
 def test_replay_gate_does_not_blame_candidate_for_framework_capture_repetition(
     tmp_path: Path,
 ) -> None:
@@ -7689,6 +7894,67 @@ def test_completed_candidate_interaction_requires_bounded_finalization() -> None
     assert metrics["authoritative_replay_failure"] is True
 
 
+def test_typed_completion_event_preserves_progress_and_switches_repair_plane() -> None:
+    candidate = CandidateVariant(
+        candidate_id="cand-typed-completion",
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo"),
+        content="# Demo\n\nPreserve grounded evidence.\n",
+        rationale="complete after verified support interaction",
+        files=(
+            CandidateFileDelta(
+                path="replay/runtime.py",
+                content="def handle(request):\n    return {'content': 'recorded'}\n",
+            ),
+        ),
+    )
+    event = ReplayFailureEvent(
+        code="target_behavior_completion_missing",
+        owner=FailureOwner.CANDIDATE,
+        stage=FailureStage.TASK_ROLLOUT,
+        scope=FailureScope.CANDIDATE,
+        repairable=True,
+        category="target_behavior",
+        diagnostics={"completed_data_plane_operations": ["content"]},
+    )
+
+    feedback = _iteration_validation_feedback(
+        candidate=candidate,
+        baseline_summary=None,
+        candidate_summary=None,
+        held_out_summary=None,
+        failed_gates=[
+            GateResult(
+                gate_name="candidate_replay",
+                passed=False,
+                reason="candidate did not complete after paired interaction",
+                details={
+                    "failure_class": "candidate",
+                    "repairable": True,
+                    "causal_failure_events": [event.to_dict()],
+                    "paired_candidate_completion_evidence": {
+                        "completed_data_plane_operations": ["content"],
+                        "termination_budget_axes": ["tool_calls"],
+                        "terminal_synthesis_attempted": False,
+                    },
+                    "candidate_failure": {
+                        "type": "TimeoutExpired",
+                        "reason": "replay timed out",
+                        "completed_data_plane_operations": ["content"],
+                    },
+                },
+            )
+        ],
+    )
+
+    metrics = feedback[0].metrics
+    assert metrics["interaction_progress"] >= 4
+    diagnostic = metrics["candidate_validation_diagnostics"][0]
+    assert diagnostic["code"] == "finalize_after_successful_endpoint_interaction"
+    assert diagnostic["completed_data_plane_operations"] == ["content"]
+    contract = compile_repair_conformance_contract(metrics)
+    assert contract is None
+
+
 def test_progressing_timeout_extracts_operations_nested_in_trace_fields() -> None:
     candidate = CandidateVariant(
         candidate_id="cand-runtime",
@@ -8362,6 +8628,249 @@ async def test_runner_persists_proposal_artifacts_without_mutating_skill_target(
     assert report["apply_policy"] == "proposal"
     assert report["optimizer_lineage"]["count"] == 1
     assert report["optimizer_lineage"]["paths"] == [str(lineage_path)]
+
+
+@pytest.mark.asyncio
+async def test_runner_persists_trusted_measurement_artifacts_in_shadow_mode(
+    tmp_path,
+) -> None:
+    skill_path, dataset = _cycle1_runner_fixture(tmp_path)
+
+    class Optimizer:
+        async def propose(self, request: OptimizerRequest) -> OptimizerResult:
+            return OptimizerResult(
+                candidates=(
+                    CandidateVariant(
+                        candidate_id="candidate-measured-shadow",
+                        target=request.target,
+                        content=(
+                            "---\nname: demo\n---\n# Demo\n\n"
+                            "Use the repaired workflow.\n"
+                        ),
+                        rationale="measurable candidate",
+                        target_fingerprint=request.target_fingerprint,
+                    ),
+                )
+            )
+
+    class EvaluationBackend:
+        async def evaluate_variant(self, request):
+            candidate = request.candidate is not None
+            return EvaluationSummary(
+                variant_id=request.variant_id,
+                dataset_split=request.dataset_split,
+                metrics={
+                    "score": 1.0 if candidate else 0.0,
+                    "score_samples": [1.0 if candidate else 0.0],
+                    "total_tokens": 120 if candidate else 100,
+                    "wall_seconds": 1.2 if candidate else 1.0,
+                    "deterministic_signal": True,
+                },
+            )
+
+    store = FilesystemSelfEvolveStore(tmp_path)
+    runner = SelfEvolveRunner(
+        store=store,
+        optimizer=Optimizer(),
+        evaluation_backend=EvaluationBackend(),
+        judge_repetitions=1,
+        measurement_mode="shadow",
+        measurement_primary_metric="score",
+        measurement_minimum_effect=0.1,
+        measurement_min_independent_cases=1,
+    )
+
+    result = await runner.run_explicit_target(
+        run_id="run-measured-shadow",
+        target=SkillTextTarget(skill_path),
+        dataset=dataset,
+        trace_packs=(),
+        apply_policy="proposal",
+    )
+
+    report = json.loads(
+        (store.run_path("run-measured-shadow") / "report.json").read_text()
+    )
+    summary = report["measurement"]
+    experiment_root = (
+        store.run_path("run-measured-shadow")
+        / "experiments"
+        / summary["experiment_id"]
+    )
+    assert result.run.status is SelfEvolveRunStatus.SUCCEEDED
+    assert summary["mode"] == "shadow"
+    assert summary["effect_direction"] == "positive"
+    assert summary["promotion_eligible"] is True
+    assert (experiment_root / "experiment.json").exists()
+    assert (experiment_root / "observations.jsonl").exists()
+    assert (experiment_root / "attribution_report.json").exists()
+    attribution = json.loads(
+        (experiment_root / "attribution_report.json").read_text()
+    )
+    assert attribution["search_performance"]["k_points"][0] == {
+        "actual_k": 1,
+        "authoritative_candidate_count": 1,
+        "best_score": 1.0,
+        "pass_probability": 1.0,
+        "requested_k": 1,
+        "valid_candidate_count": 1,
+    }
+    assert attribution["search_performance"]["token_curve"]
+    assert attribution["search_performance"]["wall_time_curve"]
+    assert len(store.read_measurement_observations(
+        "run-measured-shadow", summary["experiment_id"]
+    )) == 2
+
+
+@pytest.mark.asyncio
+async def test_required_measurement_fails_closed_without_usage_telemetry(
+    tmp_path,
+) -> None:
+    skill_path, dataset = _cycle1_runner_fixture(tmp_path)
+
+    class Optimizer:
+        async def propose(self, request: OptimizerRequest) -> OptimizerResult:
+            return OptimizerResult(
+                candidates=(
+                    CandidateVariant(
+                        candidate_id="candidate-measured-required",
+                        target=request.target,
+                        content=(
+                            "---\nname: demo\n---\n# Demo\n\n"
+                            "Use the repaired workflow.\n"
+                        ),
+                        rationale="candidate without resource telemetry",
+                        target_fingerprint=request.target_fingerprint,
+                    ),
+                )
+            )
+
+    class EvaluationBackend:
+        async def evaluate_variant(self, request):
+            candidate = request.candidate is not None
+            return EvaluationSummary(
+                variant_id=request.variant_id,
+                dataset_split=request.dataset_split,
+                metrics={
+                    "score": 1.0 if candidate else 0.0,
+                    "score_samples": [1.0 if candidate else 0.0],
+                    "deterministic_signal": True,
+                },
+            )
+
+    store = FilesystemSelfEvolveStore(tmp_path)
+    runner = SelfEvolveRunner(
+        store=store,
+        optimizer=Optimizer(),
+        evaluation_backend=EvaluationBackend(),
+        judge_repetitions=1,
+        measurement_mode="required",
+        measurement_primary_metric="score",
+        measurement_minimum_effect=0.1,
+        measurement_min_independent_cases=1,
+    )
+
+    result = await runner.run_explicit_target(
+        run_id="run-measured-required",
+        target=SkillTextTarget(skill_path),
+        dataset=dataset,
+        trace_packs=(),
+        apply_policy="proposal",
+    )
+
+    report = json.loads(
+        (store.run_path("run-measured-required") / "report.json").read_text()
+    )
+    assert result.run.status is SelfEvolveRunStatus.REJECTED
+    assert report["measurement"]["effect_direction"] == "positive"
+    assert report["measurement"]["budget_normalized"] is False
+    assert report["measurement"]["promotion_eligible"] is False
+    assert report["measurement"]["next_action"] == "repair_measurement"
+    gate = next(
+        item
+        for item in report["gate_results"]
+        if item["gate_name"] == "trusted_improvement_measurement"
+    )
+    assert gate["passed"] is False
+
+
+@pytest.mark.asyncio
+async def test_shadow_measurement_reports_invalid_control_after_shared_screening_block(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    skill_path, dataset = _cycle1_runner_fixture(tmp_path)
+
+    class Optimizer:
+        async def propose(self, request: OptimizerRequest) -> OptimizerResult:
+            return OptimizerResult(
+                candidates=(
+                    CandidateVariant(
+                        candidate_id="candidate-screening-blocked",
+                        target=request.target,
+                        content=(
+                            "---\nname: demo\n---\n# Demo\n\n"
+                            "Attempt the recovered workflow.\n"
+                        ),
+                        rationale="screening characterization",
+                        target_fingerprint=request.target_fingerprint,
+                    ),
+                )
+            )
+
+    runner = SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=Optimizer(),
+        replay_enabled=True,
+        candidate_replay_backend=object(),
+        measurement_mode="shadow",
+        measurement_min_independent_cases=1,
+    )
+
+    async def shared_screening_block(**kwargs):
+        return (), {
+            "generated_candidate_count": len(kwargs["candidates"]),
+            "selected_candidate_ids": [],
+            "attempts": [],
+            "screening": {
+                "generated_candidate_count": len(kwargs["candidates"]),
+                "attempted_candidate_count": 1,
+                "passed_candidate_ids": [],
+                "stopped_by_shared_infrastructure": True,
+                "attempts": [],
+            },
+        }
+
+    monkeypatch.setattr(
+        runner,
+        "_screen_candidate_population",
+        shared_screening_block,
+    )
+
+    await runner.run_explicit_target(
+        run_id="run-measured-screening-block",
+        target=SkillTextTarget(skill_path),
+        dataset=dataset,
+        trace_packs=(),
+        apply_policy="proposal",
+    )
+
+    report = runner.store.read_report("run-measured-screening-block")
+    summary = report["measurement"]
+    experiment_root = runner.store.measurement_experiment_path(
+        "run-measured-screening-block",
+        summary["experiment_id"],
+    )
+    attribution = json.loads(
+        (experiment_root / "attribution_report.json").read_text()
+    )
+    assert summary["validity_status"] == "invalid"
+    assert summary["effect_direction"] == "unmeasured"
+    assert summary["next_action"] == "repair_measurement"
+    assert attribution["validity"]["comparable_pair_count"] == 0
+    assert attribution["measurement_yield"]["authoritative_candidate_count"] == 0
+    assert attribution["effect"] is None
+    assert not (experiment_root / "observations.jsonl").exists()
 
 
 @pytest.mark.asyncio
@@ -10576,6 +11085,135 @@ async def test_runner_carries_verified_support_prerequisite_into_composite_candi
     ] == 1
 
 
+@pytest.mark.asyncio
+async def test_verified_support_prerequisite_skips_full_task_replay(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    skill_path, dataset = _cycle1_runner_fixture(tmp_path)
+    current_content = skill_path.read_text(encoding="utf-8")
+    candidate = CandidateVariant(
+        candidate_id="support-preflight-only",
+        target=SelfEvolveTargetRef("skill", "demo", str(skill_path)),
+        content=current_content,
+        files=(
+            CandidateFileDelta(
+                path="replay/runtime.py",
+                content="def replay():\n    return {'verified': True}\n",
+            ),
+        ),
+        rationale="freeze deterministic replay support",
+    )
+
+    class Optimizer:
+        async def propose(self, request: OptimizerRequest) -> OptimizerResult:
+            return OptimizerResult(candidates=(candidate,))
+
+    runner = SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=Optimizer(),
+        replay_enabled=True,
+        candidate_replay_backend=object(),
+        min_eval_cases=0,
+    )
+
+    async def validate_capabilities(**kwargs):
+        return [
+            GateResult(
+                gate_name="candidate_capability_replay",
+                passed=True,
+                reason="operational preflight passed",
+                details={
+                    "operational_preflight": True,
+                    "capability_id": "replay-support",
+                },
+            )
+        ]
+
+    async def fail_if_replayed(**kwargs):
+        raise AssertionError("support-only prerequisite must not run full task replay")
+
+    monkeypatch.setattr(
+        runner,
+        "_validate_candidate_capabilities",
+        validate_capabilities,
+    )
+    monkeypatch.setattr(runner, "_replay_selected_candidate", fail_if_replayed)
+
+    state, _, feedback = await runner._evaluate_iteration_candidate(
+        run_id="run-support-preflight-lane",
+        target=SkillTextTarget(skill_path, allow_auto_apply=True),
+        dataset=dataset,
+        candidate=candidate,
+        apply_policy="verified_only",
+        target_provenance=None,
+        iteration_number=1,
+        candidate_number=1,
+        candidate_count=1,
+        rejected_candidate_ids=set(),
+        accepted_candidate_ids=set(),
+        precomputed_gate_results=(
+            GateResult(
+                gate_name="local_candidate_contracts",
+                passed=True,
+                reason="local gates passed",
+            ),
+        ),
+    )
+
+    assert state["status"] == "prerequisite"
+    assert state["replay_result"] is None
+    assert any(
+        gate.gate_name == "evaluation_support_prerequisite" and gate.passed
+        for gate in state["gate_results"]
+    )
+    assert feedback[0].metrics["candidate_status"] == "prerequisite"
+
+
+@pytest.mark.asyncio
+async def test_verified_single_candidate_skips_comparative_screening(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    skill_path, dataset = _cycle1_runner_fixture(tmp_path)
+    candidate = CandidateVariant(
+        candidate_id="sole-behavior-candidate",
+        target=SelfEvolveTargetRef("skill", "demo", str(skill_path)),
+        content=(
+            skill_path.read_text(encoding="utf-8")
+            + "\n## Runtime Behavior\nComplete the requested task.\n"
+        ),
+        rationale="single authoritative candidate",
+    )
+    runner = SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=SimpleNamespace(),
+        replay_enabled=True,
+        candidate_replay_backend=object(),
+    )
+
+    async def fail_if_replayed(**kwargs):
+        raise AssertionError("a sole candidate must not run ranking replay")
+
+    monkeypatch.setattr(runner, "_replay_selected_candidate", fail_if_replayed)
+
+    selected, report = await runner._screen_candidate_population(
+        run_id="run-single-direct-authoritative",
+        target=SkillTextTarget(skill_path, allow_auto_apply=True),
+        dataset=dataset,
+        candidates=(candidate,),
+        apply_policy="verified_only",
+    )
+
+    assert selected == (candidate,)
+    assert report is not None
+    screening = report["screening"]
+    assert screening["screening_strategy"] == (
+        "single_candidate_direct_authoritative"
+    )
+    assert screening["physical_pair_execution_count"] == 0
+
+
 def test_verified_prerequisite_files_restore_format_only_differences() -> None:
     target = SelfEvolveTargetRef(target_type="skill", target_id="demo")
     feedback = EvaluationSummary(
@@ -11430,12 +12068,10 @@ async def test_runner_validates_registered_capability_before_replay(
     capability_gate = next(
         gate
         for gate in report["gate_results"]
-        if gate["gate_name"] == "candidate_replay"
+        if gate["gate_name"] == "candidate_capability_replay"
     )
     assert capability_gate["passed"] is False
-    assert capability_gate["details"]["code"] == (
-        "candidate_replay_capability_missing"
-    )
+    assert capability_gate["details"]["code"] == "missing_capability_manifest"
 
 
 @pytest.mark.asyncio
@@ -11595,6 +12231,12 @@ async def test_runner_screens_population_on_representative_member_before_full_re
     assert report["population"]["screening"]["screening_strategy"] == (
         "adaptive_qualification_then_authoritative"
     )
+    assert report["population"]["screening_execution"][
+        "physical_pair_execution_count"
+    ] == 2
+    assert report["population"]["screening_execution"]["strategy_counts"] == {
+        "adaptive_qualification_then_authoritative": 1
+    }
     assert report["population"]["screening"]["max_tool_calls"] == 8
     stage_counts = report["population"]["lifecycle"]["stage_counts"]
     assert stage_counts["representative_screening"] == 2
@@ -11917,14 +12559,15 @@ async def test_population_screening_preserves_all_candidates_when_baseline_is_in
     )
 
     assert screening_calls == 1
-    assert screened == candidates
+    assert screened == candidates[:1]
     assert report is not None
     assert report["attempted_candidate_count"] == 1
     assert report["stopped_after_budget_censor"] is True
     assert report["screening_outcome"] == "right_censored"
+    assert report["selected_candidate_id"] == "candidate-1"
     assert report["candidate_dispositions"] == {
         "candidate-1": "promoted_to_authoritative",
-        "candidate-2": "promoted_to_authoritative",
+        "candidate-2": "not_run_after_right_censor",
     }
 
     async def passing_screening(**kwargs):
@@ -12090,10 +12733,12 @@ async def test_population_screening_preserves_all_candidates_when_baseline_is_in
         ),
     )
 
-    assert screened == ()
+    assert screened == candidates[:1]
     assert report is not None
-    assert report["screening"]["single_candidate_qualification"] is True
-    assert report["screening"]["attempted_candidate_count"] == 1
+    assert report["screening"]["screening_strategy"] == (
+        "single_candidate_direct_authoritative"
+    )
+    assert report["screening"]["attempted_candidate_count"] == 0
 
 
 @pytest.mark.asyncio
@@ -13167,7 +13812,7 @@ async def test_population_screening_rejects_unchanged_repair_branch_before_rollo
 
 
 @pytest.mark.asyncio
-async def test_single_candidate_conformance_runs_qualification_rollout(
+async def test_single_support_conformance_defers_rollout_to_prerequisite_plane(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -13305,13 +13950,15 @@ async def test_single_candidate_conformance_runs_qualification_rollout(
         repair_conformance_contracts={candidate.candidate_id: contract},
     )
 
-    assert screened == ()
+    assert screened == (candidate,)
     assert report is not None
     assert preflight_case_ids == ("task-a", "task-b")
-    assert rollout_case_ids == ("task-a",)
-    assert report["screening"]["single_candidate_qualification"] is True
+    assert rollout_case_ids == ()
+    assert report["screening"]["screening_strategy"] == (
+        "evaluation_support_prerequisite_lane"
+    )
     assert report["screening"]["screening_role"] == (
-        "qualification_and_ranking"
+        "deferred_to_deterministic_support_preflight"
     )
     assert report["conformance"]["passed_candidate_ids"] == [candidate.candidate_id]
 
@@ -13567,7 +14214,7 @@ async def test_runner_does_not_reuse_legacy_member_baseline_without_provenance(t
     )
 
     assert result.run.status.value == "succeeded"
-    assert replay_backend.baseline_replay_dirs == [None, None, None, None]
+    assert replay_backend.baseline_replay_dirs == [None, None, None]
 
 
 @pytest.mark.asyncio
@@ -13751,7 +14398,6 @@ async def test_runner_filters_quality_rejection_but_retries_replay_only_candidat
     assert result.run.status.value == "succeeded"
     assert optimizer.requests[0].max_candidates == 2
     assert replay_backend.candidate_ids == [
-        "candidate-dup-2--screening",
         "candidate-dup-2",
         "candidate-dup-2",
     ]
@@ -14705,9 +15351,9 @@ async def test_runner_emits_progress_events_for_long_optimize_phases(tmp_path) -
         "trajectory_set_loading",
         "candidate_generation",
         "population_generation",
-        "candidate_screening",
+        "replay_adaptation",
     ]
-    assert stages.index("candidate_screening") < stages.index("candidate_replay")
+    assert "candidate_screening" not in stages
     assert stages.index("candidate_replay") < stages.index("evaluation")
     assert "lesson_extraction" in stages
     assert "regression" in stages
@@ -16514,8 +17160,8 @@ async def test_runner_auto_verified_uses_candidate_replay_dataset_for_evaluation
     assert "verified_run_id: run-replay-eval" in applied_content
     assert "# Demo\n\nReplay verified guidance." in applied_content
     assert replay_backend.requests
-    assert replay_backend.requests[0].baseline_repetitions == 1
-    assert replay_backend.requests[0].candidate_repetitions == 1
+    assert replay_backend.requests[0].baseline_repetitions == 2
+    assert replay_backend.requests[0].candidate_repetitions == 3
     authoritative_request = next(
         request
         for request in replay_backend.requests
@@ -18676,8 +19322,7 @@ def test_inferred_new_skill_policy_controls_draft_retention_and_publication(
     if apply_policy == "proposal":
         assert replay_backend.requests[0] is authoritative_request
     else:
-        assert replay_backend.requests[0].baseline_repetitions == 1
-        assert replay_backend.requests[0].candidate_repetitions == 1
+        assert replay_backend.requests[0] is authoritative_request
     assert authoritative_request.candidate_repetitions == 3
     assert authoritative_request.baseline_skill_root is None
     candidate_record_path = (
@@ -19258,10 +19903,8 @@ def test_optimize_cli_request_uses_framework_default_replay_backend_when_enabled
     )
 
     assert created["count"] == 1
-    assert replay_agents == ["Aworld", "Aworld"]
-    # Screening reserves one terminal synthesis turn after the observed action;
-    # authoritative replay retains the configured limit.
-    assert replay_max_steps == [2, 1]
+    assert replay_agents == ["Aworld"]
+    assert replay_max_steps == [1]
     assert report_summary["best_candidate_id"] is None
     assert report_summary["selected_candidate_id"] is not None
     assert any(
@@ -19400,9 +20043,8 @@ def test_optimize_cli_request_auto_verified_smoke_applies_and_loads_real_skill(t
     candidate_id = report_summary["best_candidate_id"]
 
     assert report_summary["status"] == "succeeded"
-    assert len(selection_replay_backend.requests) == 2
-    assert selection_replay_backend.requests[0].candidate_id.endswith("--screening")
-    assert not selection_replay_backend.requests[1].candidate_id.endswith("--screening")
+    assert len(selection_replay_backend.requests) == 1
+    assert not selection_replay_backend.requests[0].candidate_id.endswith("--screening")
     assert all(
         request.artifact_namespace is None
         for request in selection_replay_backend.requests
