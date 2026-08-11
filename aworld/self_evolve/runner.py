@@ -105,6 +105,7 @@ from aworld.self_evolve.measurement import (
     ExperimentBudget,
     FrozenIdentities,
     MeasurementObservation,
+    MeasurementEarlyStopPolicy,
     MeasurementPolicyMode,
     MeasurementSummary,
     MeasurementUsage,
@@ -2827,6 +2828,9 @@ class SelfEvolveRunner:
         measurement_confidence_level: float = 0.95,
         measurement_min_independent_cases: int = 2,
         measurement_bootstrap_samples: int = 2_000,
+        measurement_zero_yield_patience: int = 2,
+        measurement_invalid_control_patience: int = 2,
+        measurement_maximum_interval_width: float | None = None,
         replay_agent: str | None = None,
         runtime_registry_refresher: Callable[[CandidateVariant], Any] | None = None,
         runtime_skill_activator: Callable[[CandidateVariant], Any] | None = None,
@@ -3120,6 +3124,11 @@ class SelfEvolveRunner:
             measurement_min_independent_cases
         )
         self.measurement_bootstrap_samples = measurement_bootstrap_samples
+        self.measurement_early_stop_policy = MeasurementEarlyStopPolicy(
+            zero_yield_patience=measurement_zero_yield_patience,
+            invalid_control_patience=measurement_invalid_control_patience,
+            maximum_interval_width=measurement_maximum_interval_width,
+        )
         self._measurement_experiments: dict[
             tuple[str, str], ControlledExperimentSpec
         ] = {}
@@ -5683,7 +5692,7 @@ class SelfEvolveRunner:
 
         if measurement_summary is not None:
             try:
-                self._attach_measurement_search_performance(
+                measurement_summary = self._attach_measurement_search_performance(
                     run_id=run_id,
                     summary=measurement_summary,
                     candidates=all_candidates,
@@ -7815,7 +7824,9 @@ class SelfEvolveRunner:
                     ),
                 ),
             ),
+            search_visible_case_ids=tuple(dataset.recipe.trainable_case_ids),
             selection_protocol="predeclared_authoritative_candidate",
+            stopping_policy=self.measurement_early_stop_policy,
         )
         self.store.write_measurement_experiment(experiment)
         self._measurement_experiments[key] = experiment
@@ -7898,7 +7909,7 @@ class SelfEvolveRunner:
         summary: MeasurementSummary,
         candidates: Sequence[CandidateVariant],
         iteration_reports: Sequence[Mapping[str, object]],
-    ) -> None:
+    ) -> MeasurementSummary:
         reports_by_candidate = {
             str(item.get("candidate_id")): item
             for item in iteration_reports
@@ -7983,23 +7994,40 @@ class SelfEvolveRunner:
             ),
             candidate_opportunities=len(results),
         )
-        self.store.write_measurement_attribution_report(
-            replace(
-                attribution,
-                search_performance=search_performance,
-                budget_ledger=BudgetLedger(
-                    search=search_usage,
-                    measurement=attribution.budget_ledger.measurement,
+        updated = replace(
+            attribution,
+            search_performance=search_performance,
+            budget_ledger=BudgetLedger(
+                search=search_usage,
+                measurement=attribution.budget_ledger.measurement,
+            ),
+            measurement_yield=replace(
+                attribution.measurement_yield,
+                search_tokens=search_usage.tokens,
+                authoritative_candidate_count=sum(
+                    1 for item in results if item.authoritative
                 ),
-                measurement_yield=replace(
-                    attribution.measurement_yield,
-                    search_tokens=search_usage.tokens,
-                    authoritative_candidate_count=sum(
-                        1 for item in results if item.authoritative
-                    ),
-                ),
+            ),
+        )
+        self.store.write_measurement_attribution_report(updated)
+        refreshed_summary = updated.summary(
+            attribution_report_path=self.store.measurement_attribution_ref(
+                run_id,
+                summary.experiment_id,
             )
         )
+        candidate_key = next(
+            (
+                key
+                for key, cached in self._measurement_summaries.items()
+                if key[0] == run_id
+                and cached.experiment_id == summary.experiment_id
+            ),
+            None,
+        )
+        if candidate_key is not None:
+            self._measurement_summaries[candidate_key] = refreshed_summary
+        return refreshed_summary
 
     async def _evaluate_iteration_candidate(
         self,
@@ -12510,6 +12538,9 @@ def optimize_from_cli_request(
     measurement_confidence_level: float = 0.95,
     measurement_min_independent_cases: int = 2,
     measurement_bootstrap_samples: int = 2_000,
+    measurement_zero_yield_patience: int = 2,
+    measurement_invalid_control_patience: int = 2,
+    measurement_maximum_interval_width: float | None = None,
     replay_adaptation_compiler: ReplayAdaptationCompiler | None = None,
     runtime_registry_refresher: Callable[[CandidateVariant], Any] | None = None,
     runtime_skill_activator: Callable[[CandidateVariant], Any] | None = None,
@@ -12581,6 +12612,13 @@ def optimize_from_cli_request(
                 measurement_min_independent_cases
             ),
             measurement_bootstrap_samples=measurement_bootstrap_samples,
+            measurement_zero_yield_patience=measurement_zero_yield_patience,
+            measurement_invalid_control_patience=(
+                measurement_invalid_control_patience
+            ),
+            measurement_maximum_interval_width=(
+                measurement_maximum_interval_width
+            ),
             regression_replay_backend=regression_replay_backend,
             runtime_registry_refresher=runtime_registry_refresher,
             runtime_skill_activator=runtime_skill_activator,
@@ -13339,6 +13377,13 @@ def optimize_from_cli_request(
         measurement_confidence_level=measurement_confidence_level,
         measurement_min_independent_cases=measurement_min_independent_cases,
         measurement_bootstrap_samples=measurement_bootstrap_samples,
+        measurement_zero_yield_patience=measurement_zero_yield_patience,
+        measurement_invalid_control_patience=(
+            measurement_invalid_control_patience
+        ),
+        measurement_maximum_interval_width=(
+            measurement_maximum_interval_width
+        ),
         replay_adaptation_compiler=replay_adaptation_compiler,
         replay_agent=agent,
         runtime_registry_refresher=runtime_registry_refresher,
@@ -14101,6 +14146,9 @@ def _rerun_evaluator_from_stored_run(
     measurement_confidence_level: float,
     measurement_min_independent_cases: int,
     measurement_bootstrap_samples: int,
+    measurement_zero_yield_patience: int,
+    measurement_invalid_control_patience: int,
+    measurement_maximum_interval_width: float | None,
     regression_replay_backend: CandidateReplayBackend | None,
     runtime_registry_refresher: Callable[[CandidateVariant], Any] | None,
     runtime_skill_activator: Callable[[CandidateVariant], Any] | None,
@@ -14303,6 +14351,13 @@ def _rerun_evaluator_from_stored_run(
         measurement_confidence_level=measurement_confidence_level,
         measurement_min_independent_cases=measurement_min_independent_cases,
         measurement_bootstrap_samples=measurement_bootstrap_samples,
+        measurement_zero_yield_patience=measurement_zero_yield_patience,
+        measurement_invalid_control_patience=(
+            measurement_invalid_control_patience
+        ),
+        measurement_maximum_interval_width=(
+            measurement_maximum_interval_width
+        ),
         replay_agent=agent,
         runtime_registry_refresher=runtime_registry_refresher,
         runtime_skill_activator=runtime_skill_activator,

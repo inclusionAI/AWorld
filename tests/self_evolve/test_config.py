@@ -42,6 +42,9 @@ def test_agent_config_disables_self_evolve_by_default() -> None:
     assert config.self_evolve_config.measurement_confidence_level == 0.95
     assert config.self_evolve_config.measurement_min_independent_cases == 2
     assert config.self_evolve_config.measurement_bootstrap_samples == 2_000
+    assert config.self_evolve_config.measurement_zero_yield_patience == 2
+    assert config.self_evolve_config.measurement_invalid_control_patience == 2
+    assert config.self_evolve_config.measurement_maximum_interval_width is None
 
 
 @pytest.mark.parametrize(
@@ -60,6 +63,13 @@ def test_self_evolve_measurement_modes_parse(mode: str) -> None:
         ({"measurement_confidence_level": 1}, "between 0 and 1"),
         ({"measurement_min_independent_cases": 0}, "must be positive"),
         ({"measurement_bootstrap_samples": 0}, "between 200 and 100000"),
+        ({"measurement_minimum_effect": float("nan")}, "must be finite"),
+        ({"measurement_zero_yield_patience": 0}, "must be positive"),
+        ({"measurement_invalid_control_patience": 0}, "must be positive"),
+        (
+            {"measurement_maximum_interval_width": -0.1},
+            "must be non-negative and finite",
+        ),
     ],
 )
 def test_self_evolve_measurement_config_rejects_invalid_values(

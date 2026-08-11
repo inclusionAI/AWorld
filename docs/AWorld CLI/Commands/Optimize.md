@@ -545,6 +545,10 @@ aworld-cli optimize \
 `--measurement-bootstrap-samples` controls deterministic case-level bootstrap
 resampling and must be between 200 and 100000. Repetitions are aggregated within
 their case before resampling; they never increase the independent-case count.
+`--measurement-zero-yield-patience`,
+`--measurement-invalid-control-patience`, and
+`--measurement-maximum-interval-width` freeze the early-stop policy into the
+experiment identity before observations are collected.
 
 For each measured candidate, AWorld freezes the task model/executor, generator,
 scheduler, evaluator, dataset, environment, runtime, prompt context, and budget
@@ -556,6 +560,11 @@ best/pass-at-K values, separate actual search/measurement ledgers, and token/wal
 curves. Missing values mean “not measured,” never numeric zero. Missing controls or
 incomplete usage remain explicitly invalid/inconclusive; the runner does not replace
 them with the best candidate score.
+
+The declared swap axis is the attribution boundary: artifact swaps measure harness
+gain, task-model swaps measure model gain, and generator/scheduler swaps require
+equal opportunity and compare distributions plus best/pass-at-K curves. A larger N
+is reported as search opportunity, not as component improvement.
 
 ## Output
 

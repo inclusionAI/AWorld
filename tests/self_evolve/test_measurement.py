@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -19,9 +20,11 @@ from aworld.self_evolve.measurement import (
     ExperimentValidityStatus,
     FrozenIdentities,
     MeasurementObservation,
+    MeasurementEarlyStopPolicy,
     MeasurementPolicyMode,
     MeasurementReadiness,
     MeasurementUsage,
+    MeasurementStopTrigger,
     ObservationExecutionStatus,
     OutcomePlan,
     SamplingPlan,
@@ -37,6 +40,7 @@ from aworld.self_evolve.measurement import (
     build_search_performance,
     compare_search_performance,
     estimate_paired_effect,
+    evaluate_measurement_stopping,
     measurement_summary_from_report,
     observations_from_evaluation,
     observations_from_replay,
@@ -62,6 +66,12 @@ def _fp(label: str) -> str:
     import hashlib
 
     return "sha256:" + hashlib.sha256(label.encode()).hexdigest()
+
+
+def test_measurement_runtime_has_no_external_reference_dependency() -> None:
+    source = Path(__file__).parents[2] / "aworld" / "self_evolve" / "measurement.py"
+
+    assert "openrsi" not in source.read_text(encoding="utf-8").lower()
 
 
 def _identities(**overrides: str | None) -> FrozenIdentities:
@@ -182,9 +192,90 @@ def test_controlled_experiment_rejects_multiple_swap_axes() -> None:
         )
 
 
+@pytest.mark.parametrize("axis", tuple(SwapAxis))
+def test_controlled_experiment_supports_each_single_swap_axis(
+    axis: SwapAxis,
+) -> None:
+    spec = ControlledExperimentSpec.create(
+        run_id=f"run-{axis.value.replace('_', '-')}",
+        mode=MeasurementPolicyMode.SHADOW,
+        swap_axis=axis,
+        control=ComponentIdentity(f"{axis.value}:control", _fp("control")),
+        treatment=ComponentIdentity(
+            f"{axis.value}:treatment",
+            _fp("treatment"),
+        ),
+        frozen_identities=_identities(),
+        sampling=SamplingPlan(independent_case_ids=("case-1",)),
+        outcomes=OutcomePlan(primary_metric="task_success"),
+        budgets=ExperimentBudget(),
+    )
+
+    assert spec.swap_axis is axis
+    assert spec.changed_axes == (axis,)
+
+
+@pytest.mark.parametrize("axis", (SwapAxis.ARTIFACT, SwapAxis.TASK_MODEL))
+def test_artifact_and_task_model_effects_keep_distinct_attribution_axes(
+    axis: SwapAxis,
+) -> None:
+    spec = ControlledExperimentSpec.create(
+        run_id=f"run-effect-{axis.value.replace('_', '-')}",
+        mode=MeasurementPolicyMode.REQUIRED,
+        swap_axis=axis,
+        control=ComponentIdentity(f"{axis.value}:control", _fp("control")),
+        treatment=ComponentIdentity(
+            f"{axis.value}:treatment",
+            _fp("treatment"),
+        ),
+        frozen_identities=_identities(),
+        sampling=SamplingPlan(independent_case_ids=("case-1", "case-2")),
+        outcomes=OutcomePlan(
+            primary_metric="task_success",
+            minimum_effect=0.1,
+            minimum_independent_cases=2,
+        ),
+        budgets=ExperimentBudget(),
+    )
+    observations = tuple(
+        _observation(
+            spec,
+            case_id=case_id,
+            arm=arm,
+            success=(arm is ArmRole.TREATMENT),
+        )
+        for case_id in spec.sampling.independent_case_ids
+        for arm in (ArmRole.CONTROL, ArmRole.TREATMENT)
+    )
+
+    effect = estimate_paired_effect(spec, observations)
+
+    assert effect is not None
+    assert effect.direction is EffectDirection.POSITIVE
+    assert spec.swap_axis is axis
+
+
 def test_experiment_id_changes_when_a_frozen_identity_changes() -> None:
     original = _spec()
     changed = _spec(identities=_identities(task_model=_fp("new-model")))
+
+    assert original.experiment_id != changed.experiment_id
+
+
+def test_experiment_id_freezes_early_stop_policy() -> None:
+    original = _spec()
+    changed = ControlledExperimentSpec.create(
+        run_id=original.run_id,
+        mode=original.mode,
+        swap_axis=original.swap_axis,
+        control=original.control,
+        treatment=original.treatment,
+        frozen_identities=original.frozen_identities,
+        sampling=original.sampling,
+        outcomes=original.outcomes,
+        budgets=original.budgets,
+        stopping_policy=MeasurementEarlyStopPolicy(zero_yield_patience=3),
+    )
 
     assert original.experiment_id != changed.experiment_id
 
@@ -359,6 +450,81 @@ def test_small_independent_sample_is_valid_limited_and_inconclusive() -> None:
     assert effect.confidence_lower_bound is None
 
 
+def test_candidate_failure_routes_to_candidate_only_after_valid_control() -> None:
+    spec = _spec(
+        case_ids=("case-1",),
+        minimum_cases=1,
+        primary_metric="score",
+    )
+    control = _observation(
+        spec,
+        case_id="case-1",
+        arm=ArmRole.CONTROL,
+        success=True,
+        score=0.5,
+    )
+    treatment = _observation(
+        spec,
+        case_id="case-1",
+        arm=ArmRole.TREATMENT,
+        success=False,
+        failure_owner="candidate",
+    )
+
+    report = build_attribution_report(
+        spec,
+        (control, treatment),
+        target_resolution=TargetResolutionConfidence(
+            confidence=1.0,
+            origin="operator_explicit",
+            inference_bypassed=True,
+        ),
+        total_usage=MeasurementUsage(tokens=200, wall_seconds=2.0),
+    )
+
+    assert report.validity.status is ExperimentValidityStatus.VALID
+    assert report.effect is None
+    assert report.decision.next_action.value == "continue_candidate_repair"
+    assert report.decision.owner == "candidate"
+
+
+def test_infrastructure_failure_under_valid_control_repairs_measurement() -> None:
+    spec = _spec(
+        case_ids=("case-1",),
+        minimum_cases=1,
+        primary_metric="score",
+    )
+    control = _observation(
+        spec,
+        case_id="case-1",
+        arm=ArmRole.CONTROL,
+        success=True,
+        score=0.5,
+    )
+    treatment = _observation(
+        spec,
+        case_id="case-1",
+        arm=ArmRole.TREATMENT,
+        success=False,
+        failure_owner="infrastructure",
+    )
+
+    report = build_attribution_report(
+        spec,
+        (control, treatment),
+        target_resolution=TargetResolutionConfidence(
+            confidence=1.0,
+            origin="operator_explicit",
+            inference_bypassed=True,
+        ),
+        total_usage=MeasurementUsage(tokens=200, wall_seconds=2.0),
+    )
+
+    assert report.effect is None
+    assert report.decision.next_action.value == "repair_measurement"
+    assert report.decision.owner == "evaluation_harness"
+
+
 def test_case_bootstrap_is_deterministic_and_reports_positive_effect() -> None:
     spec = _spec(case_ids=("case-1", "case-2", "case-3", "case-4"))
     observations = tuple(
@@ -402,10 +568,33 @@ def test_observation_identity_drift_invalidates_experiment() -> None:
 
 def test_search_performance_reports_actual_k_and_budget_curves() -> None:
     results = (
-        SearchCandidateResult("candidate-1", score=0.1, passed=False, tokens=100),
-        SearchCandidateResult("candidate-2", score=0.8, passed=True, tokens=200),
         SearchCandidateResult(
-            "candidate-3", score=0.6, passed=True, valid=False, tokens=300
+            "candidate-1",
+            score=0.1,
+            passed=False,
+            tokens=100,
+            wall_seconds=1.0,
+            cost_usd=0.01,
+            regression_passed=True,
+        ),
+        SearchCandidateResult(
+            "candidate-2",
+            score=0.8,
+            passed=True,
+            tokens=200,
+            wall_seconds=2.0,
+            cost_usd=0.02,
+            regression_passed=True,
+        ),
+        SearchCandidateResult(
+            "candidate-3",
+            score=0.6,
+            passed=True,
+            valid=False,
+            tokens=300,
+            wall_seconds=3.0,
+            cost_usd=0.03,
+            regression_passed=False,
         ),
     )
 
@@ -413,7 +602,9 @@ def test_search_performance_reports_actual_k_and_budget_curves() -> None:
         results,
         k_values=(1, 2, 4),
         token_budget_points=(100, 300, 1_000),
+        wall_time_budget_points=(1.0, 3.0, 10.0),
         selection_protocol="highest_valid_score",
+        quality_threshold=0.75,
     )
 
     assert performance.candidate_count == 3
@@ -423,6 +614,10 @@ def test_search_performance_reports_actual_k_and_budget_curves() -> None:
     assert performance.validity_rate == pytest.approx(2 / 3)
     assert performance.token_curve[-1].actual_budget == 600
     assert performance.token_curve[-1].candidate_count == 3
+    assert performance.token_curve[-1].cumulative_cost_usd == pytest.approx(0.06)
+    assert performance.token_curve[-1].regression_pass_rate == pytest.approx(2 / 3)
+    assert performance.tokens_to_threshold == 300
+    assert performance.wall_seconds_to_threshold == pytest.approx(3.0)
 
 
 def test_unequal_search_opportunity_is_descriptive() -> None:
@@ -447,6 +642,36 @@ def test_unequal_search_opportunity_is_descriptive() -> None:
     assert comparison.shared_k == (1,)
 
 
+@pytest.mark.parametrize("axis", (SwapAxis.GENERATOR, SwapAxis.SCHEDULER))
+def test_component_search_swap_allows_only_equal_opportunity_attribution(
+    axis: SwapAxis,
+) -> None:
+    control = build_search_performance(
+        (
+            SearchCandidateResult("c1", score=0.2, passed=False, tokens=100),
+            SearchCandidateResult("c2", score=0.4, passed=False, tokens=100),
+        ),
+        k_values=(1, 2),
+        token_budget_points=(100, 200),
+        selection_protocol=f"{axis.value}-equal-budget",
+    )
+    treatment = build_search_performance(
+        (
+            SearchCandidateResult("t1", score=0.3, passed=False, tokens=100),
+            SearchCandidateResult("t2", score=0.8, passed=True, tokens=100),
+        ),
+        k_values=(1, 2),
+        token_budget_points=(100, 200),
+        selection_protocol=f"{axis.value}-equal-budget",
+    )
+
+    comparison = compare_search_performance(control, treatment)
+
+    assert comparison.opportunity_matched is True
+    assert comparison.attribution_allowed is True
+    assert comparison.shared_k == (1, 2)
+
+
 def test_temporal_panel_rejects_leakage_and_pre_cutoff_cases() -> None:
     panel = TransferPanel.create(
         panel_id="temporal-2026q3",
@@ -463,6 +688,46 @@ def test_temporal_panel_rejects_leakage_and_pre_cutoff_cases() -> None:
 
     assert audit.passed is False
     assert set(audit.reason_codes) == {"held_out_leakage", "temporal_cutoff_violation"}
+
+
+def test_transfer_panel_rejects_fingerprint_drift() -> None:
+    panel = TransferPanel.create(
+        panel_id="cross-task",
+        role=TransferPanelRole.CROSS_TASK,
+        case_ids=("case-a",),
+    )
+    payload = panel.to_dict()
+    payload["case_ids"] = ["case-b"]
+
+    with pytest.raises(ValueError, match="fingerprint"):
+        TransferPanel.from_dict(payload)
+
+
+def test_hidden_transfer_case_cannot_enter_search_context() -> None:
+    panel = TransferPanel.create(
+        panel_id="hidden-cross-task",
+        role=TransferPanelRole.CROSS_TASK,
+        case_ids=("hidden-case",),
+        visibility=VisibilityClass.HIDDEN,
+    )
+
+    with pytest.raises(ValueError, match="held_out_leakage"):
+        ControlledExperimentSpec.create(
+            run_id="run-hidden-leakage",
+            mode=MeasurementPolicyMode.SHADOW,
+            swap_axis=SwapAxis.ARTIFACT,
+            control=ComponentIdentity("artifact:control", _fp("control")),
+            treatment=ComponentIdentity(
+                "artifact:treatment",
+                _fp("treatment"),
+            ),
+            frozen_identities=_identities(),
+            sampling=SamplingPlan(independent_case_ids=("case-1",)),
+            outcomes=OutcomePlan(primary_metric="task_success"),
+            budgets=ExperimentBudget(),
+            transfer_panels=(panel,),
+            search_visible_case_ids=("hidden-case",),
+        )
 
 
 def test_optional_transfer_audit_does_not_block_positive_effect() -> None:
@@ -537,6 +802,43 @@ def test_required_transfer_leakage_routes_to_measurement_repair() -> None:
 
     assert report.decision.next_action.value == "repair_measurement"
     assert report.decision.owner == "evaluation_harness"
+
+
+def test_required_transfer_regression_blocks_in_domain_improvement() -> None:
+    spec = _spec(case_ids=("case-1", "case-2"))
+    observations = tuple(
+        _observation(
+            spec,
+            case_id=case_id,
+            arm=arm,
+            success=(arm is ArmRole.TREATMENT),
+        )
+        for case_id in spec.sampling.independent_case_ids
+        for arm in (ArmRole.CONTROL, ArmRole.TREATMENT)
+    )
+    report = build_attribution_report(
+        spec,
+        observations,
+        target_resolution=TargetResolutionConfidence(
+            confidence=1.0,
+            origin="operator_explicit",
+            inference_bypassed=True,
+        ),
+        total_usage=MeasurementUsage(tokens=1_000, wall_seconds=10.0),
+        transfer_audits=(
+            TransferAudit(
+                panel_id="required-cross-skill",
+                role=TransferPanelRole.CROSS_SKILL_FAMILY,
+                passed=False,
+                reason_codes=("transfer_regression",),
+            ),
+        ),
+    )
+
+    assert report.effect is not None
+    assert report.effect.direction is EffectDirection.POSITIVE
+    assert report.decision.next_action.value == "stop_negative_effect"
+    assert report.summary().required_transfer_failure_count == 1
 
 
 def test_attribution_round_trip_and_bounded_summary() -> None:
@@ -624,6 +926,19 @@ def test_synthetic_agent_browser_shape_keeps_effect_unmeasured() -> None:
     assert report.measurement_readiness.progressed is True
     assert report.decision.next_action.value == "repair_measurement"
     assert report.decision.owner == "evaluation_harness"
+
+    stopping = evaluate_measurement_stopping(
+        (report, report),
+        policy=MeasurementEarlyStopPolicy(
+            zero_yield_patience=2,
+            invalid_control_patience=2,
+        ),
+        unused_budget=MeasurementUsage(tokens=10_000, wall_seconds=60.0),
+    )
+    assert stopping.triggered is True
+    assert stopping.trigger is MeasurementStopTrigger.REPEATED_CONTROL_INVALIDITY
+    assert stopping.resume_safe is True
+    assert stopping.unused_budget.tokens == 10_000
 
 
 def test_replay_adapter_preserves_case_and_repetition_coordinates(tmp_path) -> None:

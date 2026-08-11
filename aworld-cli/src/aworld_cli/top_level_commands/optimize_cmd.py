@@ -317,6 +317,23 @@ class OptimizeTopLevelCommand:
             dest="measurement_bootstrap_samples",
         )
         parser.add_argument(
+            "--measurement-zero-yield-patience",
+            type=int,
+            default=2,
+            dest="measurement_zero_yield_patience",
+        )
+        parser.add_argument(
+            "--measurement-invalid-control-patience",
+            type=int,
+            default=2,
+            dest="measurement_invalid_control_patience",
+        )
+        parser.add_argument(
+            "--measurement-maximum-interval-width",
+            type=float,
+            dest="measurement_maximum_interval_width",
+        )
+        parser.add_argument(
             "--drain-pending",
             action="store_true",
             dest="drain_pending",
@@ -452,6 +469,15 @@ class OptimizeTopLevelCommand:
                 ),
                 measurement_bootstrap_samples=getattr(
                     args, "measurement_bootstrap_samples", 2_000
+                ),
+                measurement_zero_yield_patience=getattr(
+                    args, "measurement_zero_yield_patience", 2
+                ),
+                measurement_invalid_control_patience=getattr(
+                    args, "measurement_invalid_control_patience", 2
+                ),
+                measurement_maximum_interval_width=getattr(
+                    args, "measurement_maximum_interval_width", None
                 ),
                 progress_callback=_print_optimize_progress,
             )
@@ -595,8 +621,32 @@ def render_optimize_summary(report: Any) -> str:
                 "Measurement: "
                 f"{validity or 'unknown'} / {effect or 'unmeasured'}"
             )
+        lower = measurement.get("confidence_lower_bound")
+        upper = measurement.get("confidence_upper_bound")
+        if isinstance(lower, (int, float)) and isinstance(upper, (int, float)):
+            lines.append(
+                "Measurement confidence interval: "
+                f"[{float(lower):.6g}, {float(upper):.6g}]"
+            )
         if isinstance(comparable, int):
             lines.append(f"Measurement comparable pairs: {comparable}")
+        yield_per_100k = measurement.get("comparable_pairs_per_100k_tokens")
+        if isinstance(yield_per_100k, (int, float)):
+            lines.append(
+                "Measurement yield: "
+                f"{float(yield_per_100k):.3f} comparable pairs/100k tokens"
+            )
+        dominant_budget = measurement.get("dominant_budget_use")
+        if dominant_budget:
+            lines.append(f"Measurement dominant budget use: {dominant_budget}")
+        transfer_failures = measurement.get(
+            "required_transfer_failure_count"
+        )
+        if isinstance(transfer_failures, int) and transfer_failures > 0:
+            lines.append(
+                "Measurement required transfer failures: "
+                f"{transfer_failures}"
+            )
         if next_action:
             lines.append(f"Measurement next action: {next_action}")
         attribution_path = measurement.get("attribution_report_path")
@@ -742,6 +792,9 @@ def run_optimize_cli(
     measurement_confidence_level: float = 0.95,
     measurement_min_independent_cases: int = 2,
     measurement_bootstrap_samples: int = 2_000,
+    measurement_zero_yield_patience: int = 2,
+    measurement_invalid_control_patience: int = 2,
+    measurement_maximum_interval_width: float | None = None,
 ) -> Mapping[str, Any]:
     for name, value, allow_zero in (
         ("--candidate-screening-max-cases", candidate_screening_max_cases, False),
@@ -764,6 +817,13 @@ def run_optimize_cli(
         measurement_confidence_level=measurement_confidence_level,
         measurement_min_independent_cases=measurement_min_independent_cases,
         measurement_bootstrap_samples=measurement_bootstrap_samples,
+        measurement_zero_yield_patience=measurement_zero_yield_patience,
+        measurement_invalid_control_patience=(
+            measurement_invalid_control_patience
+        ),
+        measurement_maximum_interval_width=(
+            measurement_maximum_interval_width
+        ),
     )
     _validate_ingestion_cli_options(
         dataset=dataset,
@@ -862,6 +922,13 @@ def run_optimize_cli(
         "measurement_confidence_level": measurement_confidence_level,
         "measurement_min_independent_cases": measurement_min_independent_cases,
         "measurement_bootstrap_samples": measurement_bootstrap_samples,
+        "measurement_zero_yield_patience": measurement_zero_yield_patience,
+        "measurement_invalid_control_patience": (
+            measurement_invalid_control_patience
+        ),
+        "measurement_maximum_interval_width": (
+            measurement_maximum_interval_width
+        ),
         "apply_policy": runtime_apply,
         "inferred_new_skill_policy": new_skill_policy,
         "infer_target": infer_target,
@@ -926,6 +993,9 @@ def _validate_measurement_cli_options(
     measurement_confidence_level: float,
     measurement_min_independent_cases: int,
     measurement_bootstrap_samples: int,
+    measurement_zero_yield_patience: int,
+    measurement_invalid_control_patience: int,
+    measurement_maximum_interval_width: float | None,
 ) -> None:
     if measurement_mode not in {"off", "shadow", "advisory", "required"}:
         raise ValueError("--measurement-mode is unsupported")
@@ -940,6 +1010,24 @@ def _validate_measurement_cli_options(
     if not 200 <= measurement_bootstrap_samples <= 100_000:
         raise ValueError(
             "--measurement-bootstrap-samples must be between 200 and 100000"
+        )
+    if measurement_zero_yield_patience <= 0:
+        raise ValueError(
+            "--measurement-zero-yield-patience must be positive"
+        )
+    if measurement_invalid_control_patience <= 0:
+        raise ValueError(
+            "--measurement-invalid-control-patience must be positive"
+        )
+    if (
+        measurement_maximum_interval_width is not None
+        and (
+            not math.isfinite(measurement_maximum_interval_width)
+            or measurement_maximum_interval_width < 0
+        )
+    ):
+        raise ValueError(
+            "--measurement-maximum-interval-width must be non-negative and finite"
         )
 
 

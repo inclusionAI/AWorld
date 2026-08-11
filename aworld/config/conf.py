@@ -1,6 +1,7 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 import copy
+import math
 import os
 import traceback
 import uuid
@@ -208,6 +209,9 @@ class SelfEvolveConfig(BaseConfig):
     measurement_confidence_level: float = 0.95
     measurement_min_independent_cases: int = 2
     measurement_bootstrap_samples: int = 2_000
+    measurement_zero_yield_patience: int = 2
+    measurement_invalid_control_patience: int = 2
+    measurement_maximum_interval_width: Optional[float] = None
     apply_policy: Literal["proposal", "auto_verified", "verified_only"] = "proposal"
     inferred_new_skill_policy: Literal[
         "disabled", "draft_only", "auto_verified"
@@ -317,6 +321,24 @@ class SelfEvolveConfig(BaseConfig):
         if not 200 <= self.measurement_bootstrap_samples <= 100_000:
             raise ValueError(
                 "measurement_bootstrap_samples must be between 200 and 100000"
+            )
+        if not math.isfinite(self.measurement_minimum_effect):
+            raise ValueError("measurement_minimum_effect must be finite")
+        if self.measurement_zero_yield_patience <= 0:
+            raise ValueError("measurement_zero_yield_patience must be positive")
+        if self.measurement_invalid_control_patience <= 0:
+            raise ValueError(
+                "measurement_invalid_control_patience must be positive"
+            )
+        if (
+            self.measurement_maximum_interval_width is not None
+            and (
+                not math.isfinite(self.measurement_maximum_interval_width)
+                or self.measurement_maximum_interval_width < 0
+            )
+        ):
+            raise ValueError(
+                "measurement_maximum_interval_width must be non-negative and finite"
             )
         if not 0 < self.challenger_max_cases <= 8:
             raise ValueError("challenger_max_cases must be between 1 and 8")
