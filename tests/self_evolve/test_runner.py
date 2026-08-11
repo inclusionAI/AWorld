@@ -95,6 +95,7 @@ from aworld.self_evolve.runner import (
     _default_post_apply_evaluator,
     _candidate_generation_limit,
     _candidate_generation_actual_usage,
+    _candidate_conformance_stall_signature,
     _candidate_materialization_failures,
     _candidate_materialization_stall_signature,
     _candidate_materialization_failure_events,
@@ -279,6 +280,47 @@ def test_materialization_stall_signature_preserves_typed_repair_shape() -> None:
     assert _candidate_materialization_stall_signature(first) != (
         _candidate_materialization_stall_signature(changed)
     )
+
+
+def test_conformance_stall_signature_ignores_candidate_ids_and_batch_size() -> None:
+    target = SelfEvolveTargetRef("skill", "demo", "/skills/demo/SKILL.md")
+    candidates = tuple(
+        CandidateVariant(
+            candidate_id=f"candidate-{index}",
+            target=target,
+            content="# Demo\n",
+            rationale="repair",
+        )
+        for index in (1, 2)
+    )
+
+    def failed_gate(fingerprint: str) -> GateResult:
+        return GateResult(
+            gate_name="candidate_repair_conformance",
+            passed=False,
+            reason="typed runtime response constraint failed",
+            details={
+                "code": "repair_probe_execution_failed",
+                "stage": "repair_conformance",
+                "failure_fingerprint": fingerprint,
+            },
+        )
+
+    first = _candidate_conformance_stall_signature(
+        ((candidates[0], failed_gate("sha256:" + "a" * 64)),)
+    )
+    repeated_population = _candidate_conformance_stall_signature(
+        (
+            (candidates[0], failed_gate("sha256:" + "a" * 64)),
+            (candidates[1], failed_gate("sha256:" + "a" * 64)),
+        )
+    )
+    changed = _candidate_conformance_stall_signature(
+        ((candidates[1], failed_gate("sha256:" + "b" * 64)),)
+    )
+
+    assert first == repeated_population
+    assert first != changed
 
 
 def test_candidate_screening_depth_observes_bounded_source_trace_horizon() -> None:
@@ -9740,11 +9782,14 @@ async def test_verified_runner_bounds_authoritative_candidates_across_iterations
     } == {"candidate-frontier-1", "candidate-frontier-2"}
     assert report["verification_funnel"] == {
         "screening_max_cases": 3,
+        "repair_iteration_horizon": 11,
+        "candidate_generation_batch_count": 2,
         "max_generated_candidates": 6,
         "generated_candidate_slot_count": 3,
         "unique_generated_candidate_count": 2,
         "generation_frontier_exhausted": False,
         "generation_policy_frontier_exhausted": False,
+        "generation_stop_reason": "authoritative_candidate_limit_reached",
         "policy_filtered_candidate_count": 0,
         "max_authoritative_candidates": 2,
         "authoritative_candidate_count": 2,
@@ -9762,6 +9807,7 @@ async def test_verified_runner_bounds_generation_slots_before_authoritative_repl
 ) -> None:
     skill_path, dataset = _cycle1_runner_fixture(tmp_path)
     requested_candidate_counts: list[int] = []
+    progress_events: list[tuple[str, str]] = []
 
     class Optimizer:
         async def propose(self, request: OptimizerRequest) -> OptimizerResult:
@@ -9788,6 +9834,9 @@ async def test_verified_runner_bounds_generation_slots_before_authoritative_repl
         max_iterations=10,
         max_generated_candidates=3,
         max_full_evaluation_candidates=3,
+        progress_callback=lambda stage, message: progress_events.append(
+            (stage, message)
+        ),
     )
 
     await runner.run_explicit_target(
@@ -9809,9 +9858,173 @@ async def test_verified_runner_bounds_generation_slots_before_authoritative_repl
     assert report["verification_funnel"]["unique_generated_candidate_count"] == 3
     assert report["verification_funnel"]["generation_frontier_exhausted"] is True
     assert report["verification_funnel"]["authoritative_candidate_count"] == 0
+    assert report["verification_funnel"]["repair_iteration_horizon"] == 16
+    assert report["verification_funnel"]["candidate_generation_batch_count"] == 2
+    assert report["verification_funnel"]["generation_stop_reason"] == (
+        "generated_candidate_slot_limit_reached"
+    )
+    generation_messages = [
+        message
+        for stage, message in progress_events
+        if stage == "candidate_generation"
+    ]
+    assert any(
+        "candidate slots" in message and "repair horizon" in message
+        for message in generation_messages
+    )
+    assert any(
+        "slot limit reached (3/3)" in message
+        and "was not a required iteration count" in message
+        for message in generation_messages
+    )
+    assert all(
+        "Generating candidate iteration" not in message
+        for message in generation_messages
+    )
     scheduler_decisions = report["population"]["scheduler_decisions"]
     assert scheduler_decisions[-1]["requested_slot_count"] >= 1
     assert scheduler_decisions[-1]["admitted_slot_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_verified_runner_stops_repeated_conformance_after_one_strategy_switch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    skill_path, dataset = _cycle1_runner_fixture(tmp_path)
+    requests: list[OptimizerRequest] = []
+    progress_events: list[tuple[str, str]] = []
+    candidate_sequence = 0
+
+    class Optimizer:
+        async def propose(self, request: OptimizerRequest) -> OptimizerResult:
+            nonlocal candidate_sequence
+            requests.append(request)
+            candidates: list[CandidateVariant] = []
+            for _ in range(request.max_candidates):
+                candidate_sequence += 1
+                candidates.append(
+                    CandidateVariant(
+                        candidate_id=f"conformance-candidate-{candidate_sequence}",
+                        target=SelfEvolveTargetRef(
+                            "skill", "demo", str(skill_path)
+                        ),
+                        content=(
+                            "---\nname: demo\n---\n# Demo\n\n"
+                            f"Structural repair {candidate_sequence}.\n"
+                        ),
+                        rationale="exercise typed conformance convergence",
+                    )
+                )
+            return OptimizerResult(candidates=tuple(candidates))
+
+    runner = SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=Optimizer(),
+        replay_enabled=True,
+        candidate_replay_backend=object(),
+        max_iterations=10,
+        max_generated_candidates=6,
+        max_full_evaluation_candidates=3,
+        progress_callback=lambda stage, message: progress_events.append(
+            (stage, message)
+        ),
+    )
+    failure_fingerprint = "sha256:" + "c" * 64
+
+    async def reject_with_same_typed_conformance_failure(**kwargs):
+        candidates = kwargs["candidates"]
+        attempts = []
+        for candidate in candidates:
+            failure_event = ReplayFailureEvent(
+                code="repair_probe_execution_failed",
+                owner=FailureOwner.CANDIDATE,
+                stage=FailureStage.CAPABILITY_PREFLIGHT,
+                scope=FailureScope.CANDIDATE,
+                repairable=True,
+                category="repair_conformance",
+                summary="typed response contract still fails",
+            ).to_dict()
+            attempts.append(
+                {
+                    "candidate_id": candidate.candidate_id,
+                    "screening_candidate_id": None,
+                    "stage": "conformance",
+                    "passed": False,
+                    "reason": "typed response contract still fails",
+                    "details": {
+                        "failure_class": "candidate",
+                        "repairable": True,
+                        "code": "repair_probe_execution_failed",
+                        "stage": "repair_conformance",
+                        "failure_fingerprint": failure_fingerprint,
+                        "failure_event": failure_event,
+                        "causal_failure_events": [failure_event],
+                    },
+                }
+            )
+        report = {
+            "generated_candidate_count": len(candidates),
+            "attempted_candidate_count": len(candidates),
+            "selected_candidate_id": None,
+            "selected_candidate_ids": [],
+            "selection_reason": "typed conformance rejected population",
+            "attempts": attempts,
+            "conformance": {
+                "attempts": attempts,
+                "passed_candidate_ids": [],
+            },
+            "screening": None,
+        }
+        return (), report
+
+    monkeypatch.setattr(
+        runner,
+        "_screen_candidate_population",
+        reject_with_same_typed_conformance_failure,
+    )
+
+    await runner.run_explicit_target(
+        run_id="run-conformance-strategy-switch-bound",
+        target=SkillTextTarget(skill_path, allow_auto_apply=True),
+        dataset=dataset,
+        trace_packs=(),
+        apply_policy="verified_only",
+    )
+
+    assert len(requests) == 2
+    second_feedback = json.dumps(
+        [dict(item.metrics) for item in requests[1].validation_feedback],
+        sort_keys=True,
+    )
+    assert "candidate_conformance_strategy_switch_required" in second_feedback
+    report = json.loads(
+        (
+            runner.store.run_path("run-conformance-strategy-switch-bound")
+            / "report.json"
+        ).read_text(encoding="utf-8")
+    )
+    funnel = report["verification_funnel"]
+    assert funnel["generated_candidate_slot_count"] < 6
+    assert funnel["candidate_generation_batch_count"] == 2
+    assert funnel["generation_conformance_frontier_exhausted"] is True
+    assert funnel["conformance_strategy_switch_count"] == 1
+    assert funnel["generation_stop_reason"] == (
+        "conformance_frontier_repeated_after_strategy_switch"
+    )
+    conformance_messages = [
+        message
+        for stage, message in progress_events
+        if stage == "candidate_conformance"
+    ]
+    assert any(
+        "scheduling one structural strategy switch" in message
+        for message in conformance_messages
+    )
+    assert any(
+        "remained after the allowed" in message
+        for message in conformance_messages
+    )
 
 
 @pytest.mark.asyncio
@@ -11935,7 +12148,39 @@ async def test_conformance_executes_each_projected_group_once_and_attributes_fai
         service_id = frozen.services[0].service_id
         calls.append(service_id)
         if service_id == "service-b":
-            raise RuntimeError("generic group failure")
+            raise ReplayServiceProtocolError(
+                "recorded response context is incomplete",
+                code="recorded_response_context_incomplete",
+                details={
+                    "runtime_response_constraints": [
+                        {
+                            "schema_version": (
+                                "aworld.self_evolve."
+                                "runtime_response_constraint.v1"
+                            ),
+                            "constraint_kind": "recorded_response_context",
+                            "response_source": "AWORLD_REPLAY_RESPONSE_INDEX",
+                            "minimum_recorded_value_matches": 2,
+                            "maximum_response_bytes": 48 * 1024,
+                            "preserve_decoded_container": True,
+                            "allow_bounded_projection": True,
+                            "projection_minimum_scalar_descendants": 2,
+                            "probe_kind": "http",
+                            "probe_path": "/query-b",
+                        }
+                    ],
+                    "runtime_response_observation": {
+                        "schema_version": (
+                            "aworld.self_evolve."
+                            "runtime_response_observation.v1"
+                        ),
+                        "constraint_kind": "recorded_response_context",
+                        "observed_recorded_value_matches": 1,
+                        "response_payload_bytes": 2048,
+                        "response_shape": "json_object",
+                    },
+                },
+            )
 
     monkeypatch.setattr(
         runner_module,
@@ -11955,6 +12200,18 @@ async def test_conformance_executes_each_projected_group_once_and_attributes_fai
     assert sorted(calls) == ["service-a", "service-b"]
     assert len(calls) == 2
     assert gate.passed is False
+    assert gate.details["diagnostics"][0]["code"] == (
+        "recorded_response_context_incomplete"
+    )
+    assert gate.details["runtime_response_constraints"][0][
+        "constraint_kind"
+    ] == "recorded_response_context"
+    assert gate.details["runtime_response_observations"][0][
+        "observed_recorded_value_matches"
+    ] == 1
+    assert gate.details["repair_conformance"][
+        "runtime_response_constraints"
+    ][0]["maximum_response_bytes"] == 48 * 1024
     events = gate.details["causal_failure_events"]
     assert len(events) == 1
     assert events[0]["affected_member_count"] == 3

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from dataclasses import replace
 
 import pytest
 
@@ -1227,12 +1228,30 @@ async def test_llm_mutator_focused_context_repair_explains_bounded_projection() 
                     "authoritative_replay_failure": True,
                     "candidate_validation_diagnostics": [
                         {
-                            "code": "repair_probe_execution_failed",
+                            "code": "recorded_response_context_incomplete",
                             "stage": "repair_conformance",
-                            "reason": (
-                                "HTTP data-plane probe must return surrounding "
-                                "recorded response context"
-                            ),
+                            "reason": "typed runtime response constraint failed",
+                            "runtime_response_constraints": [
+                                {
+                                    "schema_version": (
+                                        "aworld.self_evolve."
+                                        "runtime_response_constraint.v1"
+                                    ),
+                                    "constraint_kind": (
+                                        "recorded_response_context"
+                                    ),
+                                    "response_source": (
+                                        "AWORLD_REPLAY_RESPONSE_INDEX"
+                                    ),
+                                    "minimum_recorded_value_matches": 2,
+                                    "maximum_response_bytes": 48 * 1024,
+                                    "preserve_decoded_container": True,
+                                    "allow_bounded_projection": True,
+                                    "projection_minimum_scalar_descendants": 2,
+                                    "probe_kind": "http",
+                                    "probe_path": "/",
+                                }
+                            ],
                         }
                     ],
                     "repair_candidate_package": {
@@ -1252,6 +1271,29 @@ async def test_llm_mutator_focused_context_repair_explains_bounded_projection() 
         max_candidates=1,
     )
 
+    request = replace(
+        request,
+        validation_feedback=(
+            *request.validation_feedback,
+            EvaluationSummary(
+                variant_id="candidate-conformance-strategy-switch",
+                dataset_split="validation",
+                metrics={
+                    "failed_gates": ["candidate_repair_conformance"],
+                    "candidate_validation_diagnostics": [
+                        {
+                            "code": (
+                                "candidate_conformance_"
+                                "strategy_switch_required"
+                            ),
+                            "stage": "repair_conformance",
+                            "failure_fingerprint": "sha256:" + "a" * 64,
+                        }
+                    ],
+                },
+            ),
+        ),
+    )
     result = await TraceReflectiveLLMMutator(mutate_text=mutate).propose(request)
 
     assert len(result.candidates) == 1
@@ -1259,6 +1301,7 @@ async def test_llm_mutator_focused_context_repair_explains_bounded_projection() 
     assert "at least two non-empty scalar descendants" in prompts[0]
     assert "below 48 KiB" in prompts[0]
     assert "body larger than the 64 KiB protocol reader" in prompts[0]
+    assert "same typed conformance fingerprint survived" in prompts[0]
 
 
 @pytest.mark.asyncio

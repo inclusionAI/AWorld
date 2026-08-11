@@ -89,6 +89,13 @@ _MAX_EVIDENCE_MANIFEST_ENTRIES = 256
 _REPLAY_SERVICE_PROTOCOL_TRACE_NAME = "protocol_trace.jsonl"
 _MAX_REPLAY_SERVICE_PROTOCOL_TRACE_BYTES = 64 * 1024
 _MAX_REPLAY_SERVICE_PROTOCOL_TRACE_EXCERPT_CHARS = 4_000
+_RUNTIME_RESPONSE_CONSTRAINT_SCHEMA_VERSION = (
+    "aworld.self_evolve.runtime_response_constraint.v1"
+)
+_RECORDED_RESPONSE_CONTEXT_INCOMPLETE = (
+    "recorded_response_context_incomplete"
+)
+_RECORDED_RESPONSE_TARGET_MAX_BYTES = 48 * 1024
 _LOOPBACK_HTTP_ENDPOINT_PATTERN = re.compile(
     r"(?i)https?://(?:localhost|127(?:\.\d{1,3}){3}|\[::1\])"
     r"(?::\d{1,5})?(?![:\d])"
@@ -5675,13 +5682,19 @@ def _probe_replay_service(
         required_recorded_response_values
     )
     required_matches = min(2, len(recorded_values))
-    if required_matches and sum(
+    observed_matches = sum(
         1
         for value in recorded_values
         if replay_payload_contains_expected_value(value, match_payload)
-    ) < required_matches:
-        raise ReplayServiceProtocolError(
-            "HTTP data-plane probe must return surrounding recorded response context"
+    )
+    if required_matches and observed_matches < required_matches:
+        raise _recorded_response_context_protocol_error(
+            "HTTP data-plane probe must return surrounding recorded response context",
+            probe_kind=kind,
+            probe_path=path,
+            required_matches=required_matches,
+            observed_matches=observed_matches,
+            response_payload=match_payload,
         )
     if kind == "http" and (
         validate_advertised_websockets or b"ws://" in response
@@ -6036,14 +6049,69 @@ def _validate_nonempty_correlated_json_response(
         required_recorded_response_values
     )
     required_matches = min(2, len(recorded_values))
-    if required_matches and sum(
+    observed_matches = sum(
         1
         for value in recorded_values
         if _protocol_result_contains(result, value)
-    ) < required_matches:
-        raise ReplayServiceProtocolError(
-            "task-plane probe must return surrounding recorded response context"
+    )
+    if required_matches and observed_matches < required_matches:
+        serialized_result = json.dumps(
+            result,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+            default=str,
+        ).encode("utf-8")
+        raise _recorded_response_context_protocol_error(
+            "task-plane probe must return surrounding recorded response context",
+            probe_kind="task_plane_json",
+            probe_path="/",
+            required_matches=required_matches,
+            observed_matches=observed_matches,
+            response_payload=serialized_result,
         )
+
+
+def _recorded_response_context_protocol_error(
+    message: str,
+    *,
+    probe_kind: str,
+    probe_path: str,
+    required_matches: int,
+    observed_matches: int,
+    response_payload: bytes,
+) -> ReplayServiceProtocolError:
+    """Describe response-context loss without retaining recorded payload values."""
+
+    constraint = {
+        "schema_version": _RUNTIME_RESPONSE_CONSTRAINT_SCHEMA_VERSION,
+        "constraint_kind": "recorded_response_context",
+        "response_source": "AWORLD_REPLAY_RESPONSE_INDEX",
+        "minimum_recorded_value_matches": required_matches,
+        "maximum_response_bytes": _RECORDED_RESPONSE_TARGET_MAX_BYTES,
+        "preserve_decoded_container": True,
+        "allow_bounded_projection": True,
+        "projection_minimum_scalar_descendants": required_matches,
+        "probe_kind": sanitize_text(probe_kind, max_chars=40),
+        "probe_path": sanitize_text(probe_path, max_chars=160),
+    }
+    observation = {
+        "schema_version": (
+            "aworld.self_evolve.runtime_response_observation.v1"
+        ),
+        "constraint_kind": "recorded_response_context",
+        "observed_recorded_value_matches": max(0, observed_matches),
+        "response_payload_bytes": len(response_payload),
+        "response_shape": _protocol_payload_shape(response_payload),
+    }
+    return ReplayServiceProtocolError(
+        message,
+        code=_RECORDED_RESPONSE_CONTEXT_INCOMPLETE,
+        details={
+            "runtime_response_constraints": [constraint],
+            "runtime_response_observation": observation,
+        },
+    )
 
 
 def _bounded_recorded_response_probe_values(

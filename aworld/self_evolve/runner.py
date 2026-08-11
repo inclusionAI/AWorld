@@ -360,6 +360,7 @@ _MAX_PROGRESS_REPAIR_EXTENSION_ITERATIONS = 6
 _MAX_CONSECUTIVE_DUPLICATE_POPULATION_STALLS = 1
 _MAX_CONSECUTIVE_POLICY_FILTER_STALLS = 2
 _MAX_CONSECUTIVE_MATERIALIZATION_STALLS = 2
+_MAX_CONFORMANCE_STRATEGY_SWITCH_ATTEMPTS = 1
 _SEMANTIC_DEDUP_IDENTITY_VERSION = "aworld.self_evolve.semantic_dedup.v2"
 _VERIFICATION_CONTRACT_VERSION = "aworld.self_evolve.verification_contract.v2"
 _VERIFIED_APPLY_POLICIES = frozenset({"auto_verified", "verified_only"})
@@ -1705,6 +1706,89 @@ def _candidate_materialization_stall_signature(
     ).hexdigest()
 
 
+def _candidate_conformance_stall_signature(
+    failures: Iterable[tuple[CandidateVariant, GateResult]],
+) -> str | None:
+    """Group repeated typed conformance failures independently of candidate ids."""
+
+    shapes: dict[str, dict[str, object]] = {}
+    for _, gate in failures:
+        if gate.gate_name != "candidate_repair_conformance":
+            continue
+        details = gate.details
+        if not isinstance(details, Mapping):
+            continue
+        failure_fingerprint = details.get("failure_fingerprint")
+        shape = {
+            "code": details.get("code"),
+            "stage": details.get("stage"),
+            "failure_fingerprint": failure_fingerprint,
+            "contract_fingerprint": _schema_field_contract_fingerprint(
+                details
+            ),
+        }
+        if any(value is not None for value in shape.values()):
+            identity = json.dumps(
+                shape,
+                ensure_ascii=True,
+                separators=(",", ":"),
+                sort_keys=True,
+                default=str,
+            )
+            shapes[identity] = shape
+    if not shapes:
+        return None
+    encoded = json.dumps(
+        [shapes[key] for key in sorted(shapes)],
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+        default=str,
+    ).encode("utf-8")
+    return "sha256:" + hashlib.sha256(encoded).hexdigest()
+
+
+def _candidate_conformance_strategy_switch_feedback(
+    *,
+    signature: str,
+) -> EvaluationSummary:
+    event = ReplayFailureEvent(
+        code="candidate_conformance_strategy_switch_required",
+        owner=FailureOwner.CANDIDATE,
+        stage=FailureStage.CAPABILITY_PREFLIGHT,
+        scope=FailureScope.CANDIDATE,
+        repairable=True,
+        category="repair_conformance",
+        summary="typed conformance failure requires a structural strategy switch",
+        contract_fingerprint=signature,
+    ).to_dict()
+    return EvaluationSummary(
+        variant_id=(
+            "candidate-conformance-strategy-switch-"
+            f"{signature.removeprefix('sha256:')[:16]}"
+        ),
+        dataset_split="validation",
+        metrics={
+            "failed_gates": ["candidate_repair_conformance"],
+            "candidate_status": "repair_strategy_switch",
+            "failure_class": "candidate",
+            "repairable": True,
+            "candidate_validation_diagnostics": [
+                {
+                    "code": "candidate_conformance_strategy_switch_required",
+                    "stage": "repair_conformance",
+                    "failure_fingerprint": signature,
+                    "required_action": (
+                        "change the failing data-flow or control-flow topology"
+                    ),
+                }
+            ],
+            "failure_event": event,
+            "causal_failure_events": [event],
+        },
+    )
+
+
 def _candidate_materialization_failure_event(
     failure: Mapping[str, object],
 ) -> dict[str, object]:
@@ -2076,8 +2160,6 @@ def _schema_field_contract_fingerprint(
     details: Mapping[str, object],
 ) -> str | None:
     raw_constraints = details.get("schema_field_constraints")
-    if not isinstance(raw_constraints, (list, tuple)):
-        return None
     constraints = [
         {
             "schema_layer": item.get("schema_layer"),
@@ -2088,22 +2170,58 @@ def _schema_field_contract_fingerprint(
             "required_operations": item.get("required_operations", ()),
             "forbidden_operations": item.get("forbidden_operations", ()),
         }
-        for item in raw_constraints[:100]
+        for item in (
+            raw_constraints[:100]
+            if isinstance(raw_constraints, (list, tuple))
+            else ()
+        )
         if isinstance(item, Mapping)
     ]
-    if not constraints:
+    raw_runtime_constraints = details.get("runtime_response_constraints")
+    runtime_constraints = [
+        dict(item)
+        for item in (
+            raw_runtime_constraints[:64]
+            if isinstance(raw_runtime_constraints, (list, tuple))
+            else ()
+        )
+        if isinstance(item, Mapping)
+    ]
+    if not constraints and not runtime_constraints:
         return None
+    sorted_schema_constraints = sorted(
+        constraints,
+        key=lambda item: json.dumps(item, sort_keys=True, default=str),
+    )
+    sorted_runtime_constraints = sorted(
+        runtime_constraints,
+        key=lambda item: json.dumps(item, sort_keys=True, default=str),
+    )
+    payload: object = (
+        sorted_schema_constraints
+        if constraints and not runtime_constraints
+        else sorted_runtime_constraints
+        if runtime_constraints and not constraints
+        else {
+            "schema_field_constraints": sorted_schema_constraints,
+            "runtime_response_constraints": sorted_runtime_constraints,
+        }
+    )
     encoded = json.dumps(
-        sorted(
-            constraints,
-            key=lambda item: json.dumps(item, sort_keys=True, default=str),
-        ),
+        payload,
         ensure_ascii=True,
         separators=(",", ":"),
         sort_keys=True,
         default=str,
     ).encode("utf-8")
-    return "schema-fields:sha256:" + hashlib.sha256(encoded).hexdigest()
+    prefix = (
+        "schema-fields"
+        if constraints and not runtime_constraints
+        else "runtime-response"
+        if runtime_constraints and not constraints
+        else "typed-repair"
+    )
+    return f"{prefix}:sha256:" + hashlib.sha256(encoded).hexdigest()
 
 
 def _terminal_cause(
@@ -3170,6 +3288,9 @@ class SelfEvolveRunner:
         last_policy_filter_outcomes: tuple[CandidateGenerationOutcome, ...] = ()
         generation_policy_frontier_exhausted = False
         generation_materialization_frontier_exhausted = False
+        generation_conformance_frontier_exhausted = False
+        conformance_strategy_switch_count = 0
+        conformance_strategy_attempts: dict[str, int] = {}
         candidate_generation_infrastructure_retries = 0
         raw_generation_attempt_count = 0
         semantic_lesson_duplicate_attempt_count = 0
@@ -3300,6 +3421,18 @@ class SelfEvolveRunner:
                 )
                 if remaining_generation_slots == 0:
                     generation_frontier_exhausted = True
+                    _emit_progress(
+                        self.progress_callback,
+                        "candidate_generation",
+                        (
+                            "Stopped candidate generation: generated candidate "
+                            "slot limit reached "
+                            f"({generated_candidate_slot_count}/"
+                            f"{self.max_generated_candidates}); repair horizon "
+                            f"{iteration_index + 1}/{iteration_budget} was not "
+                            "a required iteration count"
+                        ),
+                    )
                     scheduled_slots = ()
                 elif remaining_authoritative_slots == 0:
                     verification_frontier_exhausted = True
@@ -3360,11 +3493,23 @@ class SelfEvolveRunner:
                         reason_code="generation_budget_denied",
                     )
                 break
+            first_generation_slot = generated_candidate_slot_count + 1
             generated_candidate_slot_count += generation_slot_count
             _emit_progress(
                 self.progress_callback,
                 "candidate_generation",
-                f"Generating candidate iteration {iteration_index + 1}/{iteration_budget}",
+                (
+                    f"Generating candidate batch {iteration_index + 1}; "
+                    f"candidate slots {first_generation_slot}-"
+                    f"{generated_candidate_slot_count}/"
+                    f"{self.max_generated_candidates}; repair horizon "
+                    f"{iteration_index + 1}/{iteration_budget}"
+                    if _is_verified_apply_policy(apply_policy)
+                    else (
+                        "Generating candidate iteration "
+                        f"{iteration_index + 1}/{iteration_budget}"
+                    )
+                ),
             )
             iteration_lesson_records = generation_lesson_records
             if validation_feedback:
@@ -4596,7 +4741,54 @@ class SelfEvolveRunner:
                             status="rejected",
                         )
                     )
+            conformance_stall_signature = (
+                _candidate_conformance_stall_signature(screening_failures)
+                if screening_feedback and not candidate_population
+                else None
+            )
+            if conformance_stall_signature is not None:
+                prior_strategy_attempts = conformance_strategy_attempts.get(
+                    conformance_stall_signature,
+                    0,
+                )
+                if prior_strategy_attempts >= (
+                    _MAX_CONFORMANCE_STRATEGY_SWITCH_ATTEMPTS
+                ):
+                    generation_conformance_frontier_exhausted = True
+                    _emit_progress(
+                        self.progress_callback,
+                        "candidate_conformance",
+                        (
+                            "Stopped candidate generation: the same typed "
+                            "conformance failure remained after the allowed "
+                            "structural strategy switch"
+                        ),
+                    )
+                else:
+                    conformance_strategy_attempts[
+                        conformance_stall_signature
+                    ] = prior_strategy_attempts + 1
+                    conformance_strategy_switch_count += 1
+                    validation_feedback = _merge_validation_feedback(
+                        validation_feedback,
+                        (
+                            _candidate_conformance_strategy_switch_feedback(
+                                signature=conformance_stall_signature,
+                            ),
+                        ),
+                    )
+                    _emit_progress(
+                        self.progress_callback,
+                        "candidate_conformance",
+                        (
+                            "Typed conformance failure captured; scheduling "
+                            "one structural strategy switch for this "
+                            "failure fingerprint"
+                        ),
+                    )
             if screening_feedback and not candidate_population:
+                if generation_conformance_frontier_exhausted:
+                    break
                 continue
 
             accepted_in_iteration = False
@@ -5115,6 +5307,19 @@ class SelfEvolveRunner:
             )
 
         execution_stages = self.execution_telemetry.to_report()
+        generation_stop_reason = (
+            "conformance_frontier_repeated_after_strategy_switch"
+            if generation_conformance_frontier_exhausted
+            else "materialization_frontier_repeated"
+            if generation_materialization_frontier_exhausted
+            else "generation_policy_frontier_repeated"
+            if generation_policy_frontier_exhausted
+            else "generated_candidate_slot_limit_reached"
+            if generation_frontier_exhausted
+            else "authoritative_candidate_limit_reached"
+            if verification_frontier_exhausted
+            else None
+        )
         report = {
             "run_id": run_id,
             "target": {
@@ -5169,6 +5374,10 @@ class SelfEvolveRunner:
             ],
             "verification_funnel": {
                 "screening_max_cases": self.candidate_screening_max_cases,
+                "repair_iteration_horizon": iteration_budget,
+                "candidate_generation_batch_count": len(
+                    optimizer_diagnostics
+                ),
                 "max_generated_candidates": self.max_generated_candidates,
                 "generated_candidate_slot_count": generated_candidate_slot_count,
                 "unique_generated_candidate_count": len(all_candidates),
@@ -5181,6 +5390,27 @@ class SelfEvolveRunner:
                         "generation_materialization_frontier_exhausted": True
                     }
                     if generation_materialization_frontier_exhausted
+                    else {}
+                ),
+                **(
+                    {
+                        "generation_conformance_frontier_exhausted": True,
+                    }
+                    if generation_conformance_frontier_exhausted
+                    else {}
+                ),
+                **(
+                    {
+                        "conformance_strategy_switch_count": (
+                            conformance_strategy_switch_count
+                        )
+                    }
+                    if conformance_strategy_switch_count
+                    else {}
+                ),
+                **(
+                    {"generation_stop_reason": generation_stop_reason}
+                    if generation_stop_reason is not None
                     else {}
                 ),
                 "policy_filtered_candidate_count": sum(
@@ -6356,6 +6586,8 @@ class SelfEvolveRunner:
                     )
                     if key
                     in {
+                        "runtime_response_constraints",
+                        "runtime_response_observation",
                         "schema_field_constraints",
                         "schema_field_violations",
                         "schema_field_violation_count",
@@ -15562,6 +15794,8 @@ def _failed_probe_typed_feedback(
     """Merge payload-free exception diagnostics across every failed probe shape."""
 
     constraints: dict[str, dict[str, object]] = {}
+    runtime_response_constraints: dict[str, dict[str, object]] = {}
+    runtime_response_observations: list[dict[str, object]] = []
     violations: list[dict[str, object]] = []
     diagnostics: list[dict[str, object]] = []
     violation_count = 0
@@ -15600,6 +15834,31 @@ def _failed_probe_typed_feedback(
         raw_count = result.get("schema_field_violation_count")
         if isinstance(raw_count, int) and not isinstance(raw_count, bool):
             violation_count += max(0, raw_count)
+        raw_runtime_constraints = result.get("runtime_response_constraints")
+        if isinstance(raw_runtime_constraints, (list, tuple)):
+            projected_runtime_constraints: list[dict[str, object]] = []
+            for item in raw_runtime_constraints[:64]:
+                if not isinstance(item, Mapping):
+                    continue
+                value = dict(item)
+                identity = json.dumps(
+                    value,
+                    ensure_ascii=True,
+                    separators=(",", ":"),
+                    sort_keys=True,
+                    default=str,
+                )
+                runtime_response_constraints[identity] = value
+                projected_runtime_constraints.append(value)
+            if projected_runtime_constraints:
+                diagnostic["runtime_response_constraints"] = (
+                    projected_runtime_constraints
+                )
+        raw_runtime_observation = result.get("runtime_response_observation")
+        if isinstance(raw_runtime_observation, Mapping):
+            observation = dict(raw_runtime_observation)
+            runtime_response_observations.append(observation)
+            diagnostic["runtime_response_observation"] = observation
         diagnostics.append(diagnostic)
     feedback: dict[str, object] = {"diagnostics": diagnostics[:32]}
     if constraints:
@@ -15610,6 +15869,15 @@ def _failed_probe_typed_feedback(
         feedback["schema_field_violations"] = violations[:100]
         feedback["schema_field_violation_count"] = (
             violation_count if violation_count else len(violations)
+        )
+    if runtime_response_constraints:
+        feedback["runtime_response_constraints"] = [
+            runtime_response_constraints[key]
+            for key in sorted(runtime_response_constraints)
+        ]
+    if runtime_response_observations:
+        feedback["runtime_response_observations"] = (
+            runtime_response_observations[:32]
         )
     return feedback
 
@@ -15676,7 +15944,13 @@ def _repair_conformance_gate(
         # distinct failed group through the causal feedback channel.
         details["causal_failure_events"] = causal_events
     if contract is not None:
-        details["repair_conformance"] = contract.to_public_dict()
+        details["repair_conformance"] = (
+            merge_repair_conformance_constraint_context(
+                contract.to_public_dict(),
+                details,
+            )
+            or contract.to_public_dict()
+        )
     return GateResult(
         gate_name="candidate_repair_conformance",
         passed=result.passed,

@@ -396,6 +396,7 @@ def _typed_repair_conformance_public_projection(
     # initialization, so this keeps the dependency boundary acyclic.
     from aworld.self_evolve.repair_conformance import (
         FixtureDerivedProbeConstraint,
+        RuntimeResponseConstraint,
     )
     from aworld.self_evolve.schema_diagnostics import (
         SchemaFieldRepairConstraint,
@@ -580,6 +581,22 @@ def _typed_repair_conformance_public_projection(
             constraint = SchemaFieldRepairConstraint.from_dict(item)
             public_schema_constraints.append(constraint.to_dict())
         projected["schema_field_constraints"] = public_schema_constraints
+
+    if "runtime_response_constraints" in raw:
+        constraints = raw.get("runtime_response_constraints")
+        if not isinstance(constraints, (list, tuple)) or len(constraints) > 64:
+            raise ValueError("public runtime response constraints must be bounded")
+        public_runtime_constraints: list[dict[str, object]] = []
+        for item in constraints:
+            if not isinstance(item, Mapping):
+                raise ValueError(
+                    "public runtime response constraint must be a mapping"
+                )
+            constraint = RuntimeResponseConstraint.from_dict(item)
+            public_runtime_constraints.append(constraint.to_dict())
+        projected["runtime_response_constraints"] = (
+            public_runtime_constraints
+        )
     return projected
 
 

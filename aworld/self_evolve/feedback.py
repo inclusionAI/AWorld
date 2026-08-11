@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Any, Mapping
 
 from aworld.self_evolve.evidence_diagnostics import (
@@ -7,6 +8,7 @@ from aworld.self_evolve.evidence_diagnostics import (
     public_evidence_constraint_payload,
 )
 from aworld.self_evolve.sanitization import (
+    public_diagnostic_projection,
     sanitize_metric_value,
     sanitize_source_text,
     sanitize_text,
@@ -148,11 +150,9 @@ def normalize_feedback_summary(feedback: EvaluationSummary) -> dict[str, Any]:
         result["evidence_repair_constraints"] = evidence_constraints
     diagnostics = metrics.get("candidate_validation_diagnostics")
     if isinstance(diagnostics, list):
-        result["candidate_validation_diagnostics"] = [
-            sanitize_metric_value(item)
-            for item in diagnostics[:16]
-            if isinstance(item, Mapping)
-        ]
+        result["candidate_validation_diagnostics"] = (
+            _bounded_candidate_validation_diagnostics(diagnostics)
+        )
     replay_counterexamples = metrics.get("replay_counterexamples")
     if isinstance(replay_counterexamples, list):
         result["replay_counterexamples"] = [
@@ -174,6 +174,143 @@ def normalize_feedback_summary(feedback: EvaluationSummary) -> dict[str, Any]:
     if repair_candidate_package is not None:
         result["repair_candidate_package"] = repair_candidate_package
     return result
+
+
+def _bounded_candidate_validation_diagnostics(
+    diagnostics: list[object],
+) -> list[object]:
+    """Bound diagnostics without discarding typed causes near the tail."""
+
+    indexed = [
+        (index, item)
+        for index, item in enumerate(diagnostics[:128])
+        if isinstance(item, Mapping)
+    ]
+    selected_indices = {
+        index
+        for index, _ in sorted(
+            indexed,
+            key=lambda pair: (
+                -_candidate_validation_diagnostic_priority(pair[1]),
+                pair[0],
+            ),
+        )[:16]
+    }
+    selected: list[object] = []
+    seen: set[str] = set()
+    for item in _nested_typed_candidate_validation_causes(
+        tuple(item for _, item in indexed)
+    ):
+        try:
+            projected = public_diagnostic_projection(item, max_chars=240)
+        except (TypeError, ValueError):
+            continue
+        identity = json.dumps(
+            projected,
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+            default=str,
+        )
+        if identity in seen:
+            continue
+        seen.add(identity)
+        selected.append(projected)
+        if len(selected) >= 16:
+            return selected
+    for index, item in indexed:
+        if index not in selected_indices:
+            continue
+        projected = sanitize_metric_value(item)
+        identity = json.dumps(
+            projected,
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+            default=str,
+        )
+        if identity in seen:
+            continue
+        seen.add(identity)
+        selected.append(projected)
+        if len(selected) >= 16:
+            break
+    return selected
+
+
+def _nested_typed_candidate_validation_causes(
+    diagnostics: object,
+) -> list[Mapping[str, object]]:
+    """Surface executable typed causes hidden below report wrappers."""
+
+    causes: list[Mapping[str, object]] = []
+    pending: list[tuple[object, int]] = [(diagnostics, 0)]
+    visited = 0
+    while pending and visited < 512:
+        current, depth = pending.pop()
+        visited += 1
+        if isinstance(current, Mapping):
+            schema_version = str(current.get("schema_version") or "")
+            if (
+                current.get("runtime_response_constraints")
+                or current.get("schema_field_constraints")
+                or schema_version.startswith(
+                    "aworld.self_evolve.replay_failure"
+                )
+            ):
+                causes.append(current)
+            if depth < 10:
+                pending.extend(
+                    (value, depth + 1)
+                    for value in reversed(tuple(current.values()))
+                    if isinstance(value, (Mapping, list, tuple))
+                )
+        elif isinstance(current, (list, tuple)) and depth < 10:
+            pending.extend(
+                (value, depth + 1)
+                for value in reversed(current[:128])
+                if isinstance(value, (Mapping, list, tuple))
+            )
+    return causes
+
+
+def _candidate_validation_diagnostic_priority(
+    diagnostic: Mapping[str, object],
+) -> int:
+    """Rank machine-actionable causal evidence above outer gate wrappers."""
+
+    priority = 0
+    pending: list[tuple[object, int]] = [(diagnostic, 0)]
+    visited = 0
+    while pending and visited < 512:
+        current, depth = pending.pop()
+        visited += 1
+        if isinstance(current, Mapping):
+            if current.get("runtime_response_constraints"):
+                priority = max(priority, 1_000)
+            if current.get("schema_field_constraints"):
+                priority = max(priority, 900)
+            schema_version = str(current.get("schema_version") or "")
+            if schema_version.startswith("aworld.self_evolve.replay_failure"):
+                priority = max(priority, 800)
+            code = str(current.get("code") or "")
+            if code and code not in {"failed_gate", "candidate_rejected"}:
+                priority = max(priority, 500)
+            if current.get("failure_fingerprint"):
+                priority = max(priority, 300)
+            if depth < 10:
+                pending.extend(
+                    (value, depth + 1)
+                    for value in current.values()
+                    if isinstance(value, (Mapping, list, tuple))
+                )
+        elif isinstance(current, (list, tuple)) and depth < 10:
+            pending.extend(
+                (value, depth + 1)
+                for value in current[:128]
+                if isinstance(value, (Mapping, list, tuple))
+            )
+    return priority
 
 
 def _repair_candidate_package_summary(value: Any) -> dict[str, Any] | None:
