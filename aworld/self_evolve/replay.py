@@ -174,6 +174,7 @@ class CandidateReplayRequest:
     agent: str | None = None
     timeout_seconds: float | None = None
     max_steps: int | None = None
+    max_tool_calls: int | None = None
     max_tokens: int | None = None
     max_cost_usd: float | None = None
     baseline_repetitions: int = 1
@@ -1688,6 +1689,7 @@ class ReplayExecutionRequest:
     agent: str | None = None
     timeout_seconds: float | None = None
     max_steps: int | None = None
+    max_tool_calls: int | None = None
     max_tokens: int | None = None
     max_cost_usd: float | None = None
     environment: Mapping[str, str] = field(default_factory=dict)
@@ -3002,6 +3004,7 @@ class AWorldCliCandidateReplayBackend:
             agent=request.agent,
             timeout_seconds=request.timeout_seconds,
             max_steps=request.max_steps,
+            max_tool_calls=request.max_tool_calls,
             max_tokens=request.max_tokens,
             max_cost_usd=request.max_cost_usd,
             environment=environment,
@@ -3580,7 +3583,9 @@ class AWorldCliReplayExecutor:
                 ),
                 "AWORLD_LOG_PATH": str(artifact_dir / "logs"),
                 "AWORLD_TRAJECTORY_LOG_DISABLED": "1",
-                "AWORLD_TOOL_CALL_LIMIT": str(self._DEFAULT_TOOL_CALL_LIMIT),
+                "AWORLD_TOOL_CALL_LIMIT": str(
+                    request.max_tool_calls or self._DEFAULT_TOOL_CALL_LIMIT
+                ),
                 "AWORLD_PROMPT_BUDGET_RESERVED_OUTPUT_TOKENS": str(
                     self._DEFAULT_RESERVED_OUTPUT_TOKENS
                 ),
@@ -4274,6 +4279,7 @@ def build_replay_request(
     agent: str | None = None,
     timeout_seconds: float | None = None,
     max_steps: int | None = None,
+    max_tool_calls: int | None = None,
     max_tokens: int | None = None,
     max_cost_usd: float | None = None,
     baseline_repetitions: int = 1,
@@ -4285,6 +4291,10 @@ def build_replay_request(
 ) -> CandidateReplayRequest:
     if not dataset.cases:
         raise ValueError("candidate replay requires at least one eval case")
+    if max_tool_calls is not None and (
+        isinstance(max_tool_calls, bool) or max_tool_calls <= 0
+    ):
+        raise ValueError("candidate replay max_tool_calls must be positive")
     case = _select_replay_case(dataset)
     if replay_adaptation is not None:
         for replay_case in dataset.cases:
@@ -4317,6 +4327,7 @@ def build_replay_request(
         agent=agent,
         timeout_seconds=timeout_seconds,
         max_steps=max_steps,
+        max_tool_calls=max_tool_calls,
         max_tokens=max_tokens,
         max_cost_usd=max_cost_usd,
         baseline_repetitions=baseline_repetitions,
@@ -8497,6 +8508,7 @@ def _candidate_replay_request_from_mapping(payload: Mapping[str, Any]) -> Candid
         agent=str(payload.get("agent")) if payload.get("agent") is not None else None,
         timeout_seconds=_optional_float(payload.get("timeout_seconds")),
         max_steps=_optional_int(payload.get("max_steps")),
+        max_tool_calls=_optional_int(payload.get("max_tool_calls")),
         max_tokens=_optional_int(payload.get("max_tokens")),
         max_cost_usd=_optional_float(payload.get("max_cost_usd")),
         baseline_repetitions=_positive_int(payload.get("baseline_repetitions"), default=1),

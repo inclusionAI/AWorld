@@ -6326,6 +6326,7 @@ async def test_aworld_cli_replay_executor_requests_machine_readable_trajectory_a
             artifact_dir=str(tmp_path / "artifacts"),
             skill_names=("demo",),
             agent="Aworld",
+            max_tool_calls=8,
         )
     )
 
@@ -6383,7 +6384,7 @@ async def test_aworld_cli_replay_executor_requests_machine_readable_trajectory_a
         tmp_path / "artifacts" / "logs"
     )
     assert captured["kwargs"]["env"]["AWORLD_TRAJECTORY_LOG_DISABLED"] == "1"
-    assert captured["kwargs"]["env"]["AWORLD_TOOL_CALL_LIMIT"] == "24"
+    assert captured["kwargs"]["env"]["AWORLD_TOOL_CALL_LIMIT"] == "8"
     assert captured["kwargs"]["env"]["AWORLD_REPLAY_EVIDENCE_POLICY"] == "1"
     assert captured["kwargs"]["env"]["AWORLD_REPLAY_ARTIFACT_FILE_LIMIT"] == "8"
     assert (

@@ -136,6 +136,7 @@ from aworld.self_evolve.runner import (
     _summary_with_replay_evidence_metrics,
     _stage_telemetry_usage_delta,
     _stage_telemetry_usage_snapshot,
+    _telemetry_usage_with_observed_wall,
     _shared_replay_failure_blocks_population,
     _infer_target_from_trace_packs,
     optimize_explicit_target,
@@ -1463,6 +1464,87 @@ def test_environment_fingerprint_drift_is_shared_infrastructure_failure() -> Non
     assert events[0]["code"] == "environment_fingerprint_drift"
 
 
+@pytest.mark.asyncio
+async def test_repair_conformance_preserves_shared_adaptation_gate_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("# Demo\n", encoding="utf-8")
+    target = SkillTextTarget(skill_path, allow_auto_apply=True)
+    candidate = CandidateVariant(
+        candidate_id="candidate-repair",
+        target=target.identity,
+        content="# Demo\n\nRepair.\n",
+        rationale="repair",
+    )
+    dataset = SelfEvolveDataset(
+        cases=(EvalCase(case_id="case-1", input="task"),),
+        recipe=DatasetRecipe(
+            source={"kind": "test"},
+            split_seed="test",
+            splits={"train": ["case-1"]},
+        ),
+    )
+    contract = RepairConformanceContract(
+        focus_candidate_id="candidate-parent",
+        failure_codes=("candidate_recovery_incomplete",),
+        interaction_progress=0,
+        base_file_fingerprints={"replay/runtime.py": "sha256:base"},
+        required_branch_paths=("replay/runtime.py",),
+        base_branch_fingerprints={},
+    )
+    drift_gate = runner_module._environment_fingerprint_drift_gate(
+        "sha256:before",
+        "sha256:after",
+    )
+    assert drift_gate is not None
+
+    class NoopOptimizer:
+        async def propose(self, request: OptimizerRequest) -> OptimizerResult:
+            return OptimizerResult(candidates=())
+
+    runner = SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=NoopOptimizer(),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_prepare_replay_adaptation",
+        lambda **kwargs: (None, drift_gate),
+    )
+
+    gate = await runner._preflight_candidate_repair_conformance(
+        run_id="run-shared-gate-identity",
+        target=target,
+        dataset=dataset,
+        candidate=candidate,
+        contract=contract,
+    )
+
+    assert gate.gate_name == "replay_environment_health"
+    assert gate.details is not None
+    assert gate.details["code"] == "environment_fingerprint_drift"
+    assert gate.details["failure_event"] == drift_gate.details["failure_event"]
+    report = {
+        "conformance": {
+            "stopped_by_shared_infrastructure": True,
+            "attempts": [
+                {
+                    "gate_name": gate.gate_name,
+                    "passed": False,
+                    "reason": gate.reason,
+                    "details": gate.details,
+                }
+            ],
+        }
+    }
+    selected = runner_module._candidate_validation_shared_failure_gate(report)
+    assert selected.gate_name == "replay_environment_health"
+    assert selected.details["code"] == "environment_fingerprint_drift"
+
+
 def test_synthetic_summaries_do_not_hide_incomparable_evaluation_runtime() -> None:
     synthetic_failure = EvaluationSummary(
         variant_id="candidate",
@@ -2196,10 +2278,11 @@ def test_auto_verified_default_iteration_budget_allows_multi_stage_capability_re
 
 
 def test_candidate_screening_timeout_is_bounded_without_extending_short_timeouts() -> None:
-    assert _candidate_screening_timeout(600) == 240
-    assert _candidate_screening_timeout(240) == 240
-    assert _candidate_screening_timeout(180) == 180
-    assert _candidate_screening_timeout(120) == 120
+    assert _candidate_screening_timeout(600) == 90
+    assert _candidate_screening_timeout(240) == 90
+    assert _candidate_screening_timeout(180) == 90
+    assert _candidate_screening_timeout(90) == 90
+    assert _candidate_screening_timeout(60) == 60
 
 
 def test_candidate_generation_retries_only_transient_provider_failures() -> None:
@@ -8966,6 +9049,23 @@ def test_local_stage_can_configure_zero_tokens_with_bounded_wall_time() -> None:
     assert decision.estimate.wall_seconds == Decimal("30")
 
 
+def test_stage_elapsed_time_completes_missing_screening_wall_telemetry() -> None:
+    missing = _stage_telemetry_usage_delta(
+        _TelemetryUsageSnapshot(),
+        _TelemetryUsageSnapshot(),
+    )
+
+    observed = _telemetry_usage_with_observed_wall(
+        missing,
+        elapsed_seconds=12.5,
+    )
+
+    assert observed.observation.known_lower_bound.wall_seconds == Decimal("12.5")
+    assert observed.observation.completeness.wall_seconds is True
+    assert observed.observation.completeness.tokens is False
+    assert observed.source == "observed_stage_elapsed_seconds"
+
+
 def test_workflow_budget_fit_requires_complete_verification_loop() -> None:
     context = _RunBudgetContext(
         ledger=RunBudgetLedger(
@@ -11145,11 +11245,20 @@ async def test_runner_screens_population_on_representative_member_before_full_re
 
     class ReplayBackend:
         def __init__(self) -> None:
-            self.calls: list[tuple[str, tuple[str, ...]]] = []
+            self.calls: list[
+                tuple[str, tuple[str, ...], float | None, int | None]
+            ] = []
 
         async def replay_candidate(self, request, *, candidate, dataset):
             case_ids = tuple(case.case_id for case in dataset.cases)
-            self.calls.append((candidate.candidate_id, case_ids))
+            self.calls.append(
+                (
+                    candidate.candidate_id,
+                    case_ids,
+                    request.timeout_seconds,
+                    request.max_tool_calls,
+                )
+            )
             baseline = ReplayVariantResult(
                 variant_id="baseline",
                 status="succeeded",
@@ -11216,9 +11325,9 @@ async def test_runner_screens_population_on_representative_member_before_full_re
 
     assert result.run.status.value == "rejected"
     assert replay_backend.calls == [
-        ("candidate-1--screening", ("task-a",)),
-        ("candidate-2--screening", ("task-a",)),
-        ("candidate-1", ("task-a", "task-b")),
+        ("candidate-1--screening", ("task-a",), 90, 8),
+        ("candidate-2--screening", ("task-a",), 90, 8),
+        ("candidate-1", ("task-a", "task-b"), 600, None),
     ]
     report = json.loads(
         (tmp_path / ".aworld" / "self_evolve" / "run-population-screening" / "report.json").read_text(
@@ -11236,6 +11345,7 @@ async def test_runner_screens_population_on_representative_member_before_full_re
     assert report["population"]["screening"]["screening_strategy"] == (
         "adaptive_qualification_then_authoritative"
     )
+    assert report["population"]["screening"]["max_tool_calls"] == 8
     stage_counts = report["population"]["lifecycle"]["stage_counts"]
     assert stage_counts["representative_screening"] == 2
     assert stage_counts["paired_replay_started"] == 1

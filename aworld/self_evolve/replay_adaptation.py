@@ -369,7 +369,9 @@ class ReplayAdaptationCompiler:
         environment_snapshot_path = artifact / "environment_snapshot.json"
         environment_snapshot = _environment_snapshot(cases)
         _write_json_atomic(environment_snapshot_path, environment_snapshot)
-        environment_fingerprint = _json_fingerprint(environment_snapshot)
+        environment_fingerprint = _environment_identity_fingerprint(
+            environment_snapshot
+        )
         adaptation_payload = {
             "schema_version": REPLAY_ADAPTATION_SCHEMA_VERSION,
             "source_workspace_root": str(workspace),
@@ -1299,6 +1301,26 @@ def _environment_snapshot(
             }
         ),
     }
+
+
+def _environment_identity_fingerprint(
+    snapshot: Mapping[str, Any],
+) -> str:
+    """Fingerprint immutable runtime identity, not workload requirements.
+
+    ``tool_names`` describes the selected dataset/case panel. Staged screening
+    intentionally expands that panel, so treating its tools as environment
+    identity creates false drift within a healthy run. Tool requirements remain
+    protected by the adaptation fingerprint, which includes every compiled case.
+    """
+
+    return _json_fingerprint(
+        {
+            "schema_version": snapshot.get("schema_version"),
+            "runtime": snapshot.get("runtime"),
+            "environment": snapshot.get("environment"),
+        }
+    )
 
 
 def _json_fingerprint(value: Any) -> str:
