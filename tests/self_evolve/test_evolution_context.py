@@ -809,6 +809,160 @@ def test_generation_policy_feedback_compacts_history_but_keeps_current_base() ->
     ]
 
 
+def test_focused_feedback_compaction_retains_deep_typed_runtime_cause() -> None:
+    runtime_constraint = {
+        "schema_version": "aworld.self_evolve.runtime_response_constraint.v1",
+        "constraint_kind": "recorded_response_context",
+        "response_source": "AWORLD_REPLAY_RESPONSE_INDEX",
+        "minimum_recorded_value_matches": 2,
+        "maximum_response_bytes": 48 * 1024,
+        "preserve_decoded_container": True,
+        "allow_bounded_projection": True,
+        "projection_minimum_scalar_descendants": 2,
+        "probe_kind": "http",
+        "probe_path": "/",
+    }
+    outer_diagnostics = [
+        {
+            "code": "failed_gate",
+            "stage": "candidate_repair_conformance",
+            "reason": f"outer diagnostic {index} " + "x" * 900,
+        }
+        for index in range(20)
+    ]
+    outer_diagnostics.append(
+        {
+            "code": "failed_gate",
+            "details": {
+                "code": "repair_probe_execution_failed",
+                "diagnostics": [
+                    {
+                        "code": "recorded_response_context_incomplete",
+                        "stage": "capability_preflight",
+                        "reason": (
+                            "HTTP data-plane probe must return surrounding "
+                            "recorded response context"
+                        ),
+                        "runtime_response_constraints": [runtime_constraint],
+                        "runtime_response_observation": {
+                            "observed_recorded_value_matches": 1,
+                            "response_payload_bytes": 2048,
+                            "response_shape": "json_object",
+                        },
+                    }
+                ],
+            },
+        }
+    )
+    feedback = EvaluationSummary(
+        variant_id="candidate-deep-runtime-cause",
+        dataset_split="validation",
+        metrics={
+            "failed_gates": ["candidate_repair_conformance"],
+            "candidate_validation_diagnostics": outer_diagnostics,
+            "repair_candidate_package": {
+                "candidate_id": "candidate-deep-runtime-cause",
+                "files": [
+                    {
+                        "path": "replay/runtime.py",
+                        "operation": "upsert",
+                        "content": "def respond():\n    return {}\n",
+                    }
+                ],
+            },
+        },
+    )
+    context = compile_evolution_context(
+        replace(
+            _request(),
+            validation_feedback=(feedback,),
+            prior_feedback=(),
+        )
+    )
+
+    payload = context.to_prompt_payload(candidate_index=0)
+    diagnostics = payload["validation_feedback"][0][
+        "candidate_validation_diagnostics"
+    ]
+
+    assert diagnostics[0]["code"] == (
+        "recorded_response_context_incomplete"
+    )
+    assert diagnostics[0]["runtime_response_constraints"] == [
+        runtime_constraint
+    ]
+    assert diagnostics[0]["runtime_response_observation"][
+        "observed_recorded_value_matches"
+    ] == 1
+
+
+def test_typed_runtime_constraint_is_inherited_by_focused_repair_package() -> None:
+    runtime_constraint = {
+        "schema_version": "aworld.self_evolve.runtime_response_constraint.v1",
+        "constraint_kind": "recorded_response_context",
+        "response_source": "AWORLD_REPLAY_RESPONSE_INDEX",
+        "minimum_recorded_value_matches": 2,
+        "maximum_response_bytes": 48 * 1024,
+        "preserve_decoded_container": True,
+        "allow_bounded_projection": True,
+        "projection_minimum_scalar_descendants": 2,
+        "probe_kind": "http",
+        "probe_path": "/",
+    }
+    typed_cause = EvaluationSummary(
+        variant_id="candidate-runtime-cause",
+        dataset_split="validation",
+        metrics={
+            "failed_gates": ["candidate_repair_conformance"],
+            "candidate_validation_diagnostics": [
+                {
+                    "code": "recorded_response_context_incomplete",
+                    "stage": "capability_preflight",
+                    "runtime_response_constraints": [runtime_constraint],
+                }
+            ],
+        },
+    )
+    focused_package = EvaluationSummary(
+        variant_id="candidate-focused-package",
+        dataset_split="validation",
+        metrics={
+            "failed_gates": ["candidate_repair_conformance"],
+            "failure_class": "candidate",
+            "repairable": True,
+            "candidate_validation_diagnostics": [
+                {
+                    "code": "repair_probe_execution_failed",
+                    "stage": "repair_conformance",
+                }
+            ],
+            "repair_candidate_package": {
+                "candidate_id": "candidate-focused-package",
+                "files": [
+                    {
+                        "path": "replay/runtime.py",
+                        "operation": "upsert",
+                        "content": "def respond():\n    return {}\n",
+                    }
+                ],
+            },
+        },
+    )
+
+    payload = compile_evolution_context(
+        replace(
+            _request(),
+            validation_feedback=(focused_package, typed_cause),
+            prior_feedback=(),
+        )
+    ).to_prompt_payload(candidate_index=0)
+
+    assert payload["repair_context_mode"] == "focused_candidate_delta"
+    assert payload["repair_conformance"]["runtime_response_constraints"] == [
+        runtime_constraint
+    ]
+
+
 def test_prompt_payload_omits_support_that_failed_same_specific_repair_gate() -> None:
     def repair_feedback(candidate_id: str, code: str) -> EvaluationSummary:
         return EvaluationSummary(

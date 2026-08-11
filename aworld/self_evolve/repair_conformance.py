@@ -145,6 +145,129 @@ class FixtureDerivedProbeConstraint:
 
 
 @dataclass(frozen=True)
+class RuntimeResponseConstraint:
+    """Payload-free runtime response semantics discovered by an executable probe."""
+
+    constraint_kind: str
+    response_source: str
+    minimum_recorded_value_matches: int
+    maximum_response_bytes: int
+    preserve_decoded_container: bool
+    allow_bounded_projection: bool
+    projection_minimum_scalar_descendants: int
+    probe_kind: str
+    probe_path: str
+
+    def __post_init__(self) -> None:
+        if self.constraint_kind != "recorded_response_context":
+            raise ValueError("runtime response constraint kind is unsupported")
+        if self.response_source != "AWORLD_REPLAY_RESPONSE_INDEX":
+            raise ValueError("runtime response constraint source is unsupported")
+        if self.preserve_decoded_container is not True:
+            raise ValueError(
+                "runtime response constraint must preserve the decoded container"
+            )
+        if self.allow_bounded_projection is not True:
+            raise ValueError(
+                "runtime response constraint must allow a bounded projection"
+            )
+        for field_name, value, upper_bound in (
+            (
+                "minimum_recorded_value_matches",
+                self.minimum_recorded_value_matches,
+                16,
+            ),
+            ("maximum_response_bytes", self.maximum_response_bytes, 1024 * 1024),
+            (
+                "projection_minimum_scalar_descendants",
+                self.projection_minimum_scalar_descendants,
+                16,
+            ),
+        ):
+            if (
+                not isinstance(value, int)
+                or isinstance(value, bool)
+                or value <= 0
+                or value > upper_bound
+            ):
+                raise ValueError(f"runtime response constraint {field_name} is invalid")
+        if self.probe_kind not in {
+            "http",
+            "tcp",
+            "websocket",
+            "task_plane_json",
+        }:
+            raise ValueError("runtime response constraint probe kind is unsupported")
+        if not self.probe_path.startswith("/") or len(self.probe_path) > 2_048:
+            raise ValueError("runtime response constraint probe path is invalid")
+
+    @property
+    def identity_digest(self) -> str:
+        encoded = json.dumps(
+            self.to_dict(),
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "schema_version": "aworld.self_evolve.runtime_response_constraint.v1",
+            "constraint_kind": self.constraint_kind,
+            "response_source": self.response_source,
+            "minimum_recorded_value_matches": (
+                self.minimum_recorded_value_matches
+            ),
+            "maximum_response_bytes": self.maximum_response_bytes,
+            "preserve_decoded_container": self.preserve_decoded_container,
+            "allow_bounded_projection": self.allow_bounded_projection,
+            "projection_minimum_scalar_descendants": (
+                self.projection_minimum_scalar_descendants
+            ),
+            "probe_kind": self.probe_kind,
+            "probe_path": self.probe_path,
+        }
+
+    @classmethod
+    def from_dict(
+        cls,
+        value: Mapping[str, object],
+    ) -> "RuntimeResponseConstraint":
+        expected_schema = "aworld.self_evolve.runtime_response_constraint.v1"
+        if value.get("schema_version") not in {None, expected_schema}:
+            raise ValueError("runtime response constraint schema is unsupported")
+
+        def required_int(field_name: str) -> int:
+            raw = value.get(field_name)
+            if not isinstance(raw, int) or isinstance(raw, bool):
+                raise ValueError(
+                    f"runtime response constraint {field_name} is invalid"
+                )
+            return raw
+
+        return cls(
+            constraint_kind=str(value.get("constraint_kind") or ""),
+            response_source=str(value.get("response_source") or ""),
+            minimum_recorded_value_matches=required_int(
+                "minimum_recorded_value_matches"
+            ),
+            maximum_response_bytes=required_int("maximum_response_bytes"),
+            preserve_decoded_container=(
+                value.get("preserve_decoded_container") is True
+            ),
+            allow_bounded_projection=(
+                value.get("allow_bounded_projection") is True
+            ),
+            projection_minimum_scalar_descendants=required_int(
+                "projection_minimum_scalar_descendants"
+            ),
+            probe_kind=str(value.get("probe_kind") or ""),
+            probe_path=str(value.get("probe_path") or ""),
+        )
+
+
+@dataclass(frozen=True)
 class RepairConformanceContract:
     focus_candidate_id: str
     failure_codes: tuple[str, ...]
@@ -165,6 +288,7 @@ class RepairConformanceContract:
     required_fixture_probe_operations: tuple[str, ...] = ()
     fixture_probe_constraints: tuple[FixtureDerivedProbeConstraint, ...] = ()
     schema_field_constraints: tuple[SchemaFieldRepairConstraint, ...] = ()
+    runtime_response_constraints: tuple[RuntimeResponseConstraint, ...] = ()
     required_runtime_transitions: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, object]:
@@ -209,6 +333,9 @@ class RepairConformanceContract:
             ],
             "schema_field_constraints": [
                 item.to_dict() for item in self.schema_field_constraints
+            ],
+            "runtime_response_constraints": [
+                item.to_dict() for item in self.runtime_response_constraints
             ],
             "required_runtime_transitions": list(
                 self.required_runtime_transitions
@@ -276,6 +403,9 @@ class RepairConformanceContract:
             ],
             "schema_field_constraints": [
                 item.to_dict() for item in self.schema_field_constraints
+            ],
+            "runtime_response_constraints": [
+                item.to_dict() for item in self.runtime_response_constraints
             ],
             "required_runtime_transitions": list(
                 self.required_runtime_transitions
@@ -350,6 +480,21 @@ class RepairConformanceContract:
         )
         if len(schema_constraints) != len(raw_schema_constraints):
             raise ValueError("schema field constraints contain invalid entries")
+        raw_runtime_response_constraints = value.get(
+            "runtime_response_constraints",
+            (),
+        )
+        if not isinstance(raw_runtime_response_constraints, (list, tuple)):
+            raise ValueError("runtime response constraints must be an array")
+        runtime_response_constraints = tuple(
+            RuntimeResponseConstraint.from_dict(item)
+            for item in raw_runtime_response_constraints
+            if isinstance(item, Mapping)
+        )
+        if len(runtime_response_constraints) != len(
+            raw_runtime_response_constraints
+        ):
+            raise ValueError("runtime response constraints contain invalid entries")
         return cls(
             focus_candidate_id=str(value.get("focus_candidate_id") or ""),
             failure_codes=_string_tuple(value.get("failure_codes")),
@@ -384,6 +529,7 @@ class RepairConformanceContract:
             ),
             fixture_probe_constraints=probe_constraints,
             schema_field_constraints=schema_constraints,
+            runtime_response_constraints=runtime_response_constraints,
             required_runtime_transitions=_string_tuple(
                 value.get("required_runtime_transitions")
             ),
@@ -509,6 +655,29 @@ def repair_conformance_failure_fingerprint(
                             (
                                 "schema_field_constraint",
                                 hashlib.sha256(encoded.encode("utf-8")).hexdigest(),
+                            )
+                        )
+                    continue
+                if key == "runtime_response_constraints" and isinstance(
+                    nested,
+                    (list, tuple),
+                ):
+                    for item in nested:
+                        if not isinstance(item, Mapping):
+                            continue
+                        encoded = json.dumps(
+                            dict(item),
+                            ensure_ascii=True,
+                            separators=(",", ":"),
+                            sort_keys=True,
+                            default=str,
+                        )
+                        atoms.add(
+                            (
+                                "runtime_response_constraint",
+                                hashlib.sha256(
+                                    encoded.encode("utf-8")
+                                ).hexdigest(),
                             )
                         )
                     continue
@@ -1051,6 +1220,23 @@ def compile_repair_conformance_contract(
             )
         }.values()
     )
+    direct_runtime_response_constraints = _runtime_response_constraints(
+        diagnostics
+    )
+    inherited_runtime_response_constraints = (
+        inherited_contract.runtime_response_constraints
+        if inherited_contract is not None
+        else ()
+    )
+    runtime_response_constraints = tuple(
+        {
+            item.identity_digest: item
+            for item in (
+                *inherited_runtime_response_constraints,
+                *direct_runtime_response_constraints,
+            )
+        }.values()
+    )
     schema_constraint_paths: list[str] = []
     schema_layers = {
         constraint.schema_layer for constraint in schema_field_constraints
@@ -1064,7 +1250,12 @@ def compile_repair_conformance_contract(
         schema_constraint_paths.append(compiler_path)
     if "runtime" in schema_layers:
         schema_constraint_paths.extend(branch_paths)
-    if schema_constraint_paths:
+    if direct_runtime_response_constraints and runtime_paths:
+        # An executable runtime probe is the deepest direct evidence. Inherited
+        # compiler or manifest invariants remain validation constraints, but
+        # cannot redirect the repair away from the response-producing runtime.
+        branch_paths = runtime_paths
+    elif schema_constraint_paths:
         branch_paths = tuple(dict.fromkeys(schema_constraint_paths))
     directly_observed_operations = _observed_operations(diagnostics)
     observed_operations = directly_observed_operations or (
@@ -1150,6 +1341,7 @@ def compile_repair_conformance_contract(
         required_fixture_probe_operations=required_fixture_probe_operations,
         fixture_probe_constraints=fixture_probe_constraints,
         schema_field_constraints=schema_field_constraints,
+        runtime_response_constraints=runtime_response_constraints,
         required_runtime_transitions=tuple(
             dict.fromkeys(
                 (
@@ -1159,6 +1351,11 @@ def compile_repair_conformance_contract(
                         else ()
                     ),
                     *required_runtime_transitions,
+                    *(
+                        ("preserve_recorded_response_context",)
+                        if runtime_response_constraints
+                        else ()
+                    ),
                 )
             )
         ),
@@ -1184,7 +1381,13 @@ def merge_repair_conformance_constraint_context(
     )
     fixture_constraints = _fixture_probe_constraints(sources)
     schema_constraints = _schema_field_constraints(sources)
-    if inherited is None and not fixture_constraints and not schema_constraints:
+    runtime_response_constraints = _runtime_response_constraints(sources)
+    if (
+        inherited is None
+        and not fixture_constraints
+        and not schema_constraints
+        and not runtime_response_constraints
+    ):
         return None
     merged = dict(inherited or {})
     if fixture_constraints:
@@ -1194,6 +1397,10 @@ def merge_repair_conformance_constraint_context(
     if schema_constraints:
         merged["schema_field_constraints"] = [
             item.to_dict() for item in schema_constraints
+        ]
+    if runtime_response_constraints:
+        merged["runtime_response_constraints"] = [
+            item.to_dict() for item in runtime_response_constraints
         ]
     return merged
 
@@ -1989,6 +2196,36 @@ def _schema_field_constraints(
                         continue
                     try:
                         constraint = SchemaFieldRepairConstraint.from_dict(
+                            raw_constraint
+                        )
+                    except ValueError:
+                        continue
+                    collected[constraint.identity_digest] = constraint
+            pending.extend(current.values())
+        elif isinstance(current, (list, tuple)):
+            pending.extend(current)
+    return tuple(collected[key] for key in sorted(collected))
+
+
+def _runtime_response_constraints(
+    diagnostics: Sequence[Mapping[str, object]],
+) -> tuple[RuntimeResponseConstraint, ...]:
+    """Collect payload-free runtime response semantics from nested feedback."""
+
+    collected: dict[str, RuntimeResponseConstraint] = {}
+    pending: list[object] = list(diagnostics)
+    visited = 0
+    while pending and visited < 512 and len(collected) < 64:
+        current = pending.pop()
+        visited += 1
+        if isinstance(current, Mapping):
+            raw_constraints = current.get("runtime_response_constraints")
+            if isinstance(raw_constraints, (list, tuple)):
+                for raw_constraint in raw_constraints[:64]:
+                    if not isinstance(raw_constraint, Mapping):
+                        continue
+                    try:
+                        constraint = RuntimeResponseConstraint.from_dict(
                             raw_constraint
                         )
                     except ValueError:

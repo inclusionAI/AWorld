@@ -1822,7 +1822,7 @@ def test_correlated_probe_matches_encoded_record_container_semantically() -> Non
     with pytest.raises(
         ReplayServiceProtocolError,
         match="surrounding recorded response context",
-    ):
+    ) as exc_info:
         _validate_nonempty_correlated_json_response(
             request_text='{"id":7,"method":"records.alpha"}',
             response_payload=json.dumps(
@@ -1834,6 +1834,25 @@ def test_correlated_probe_matches_encoded_record_container_semantically() -> Non
                 "alpha recorded",
             ),
         )
+    assert exc_info.value.code == "recorded_response_context_incomplete"
+    constraint = exc_info.value.details["runtime_response_constraints"][0]
+    assert constraint["constraint_kind"] == "recorded_response_context"
+    assert constraint["minimum_recorded_value_matches"] == 2
+    assert constraint["maximum_response_bytes"] == 48 * 1024
+    assert exc_info.value.details["runtime_response_observation"] == {
+        "schema_version": "aworld.self_evolve.runtime_response_observation.v1",
+        "constraint_kind": "recorded_response_context",
+        "observed_recorded_value_matches": 1,
+        "response_payload_bytes": len(
+            json.dumps(
+                {"message": "alpha recorded"},
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            ).encode("utf-8")
+        ),
+        "response_shape": "json_object",
+    }
 
 
 def test_http_probe_requires_surrounding_recorded_response_context() -> None:
@@ -1873,7 +1892,7 @@ def test_http_probe_requires_surrounding_recorded_response_context() -> None:
         with pytest.raises(
             ReplayServiceProtocolError,
             match="surrounding recorded response context",
-        ):
+        ) as exc_info:
             _probe_replay_service(
                 "127.0.0.1",
                 server.server_port,
@@ -1884,6 +1903,18 @@ def test_http_probe_requires_surrounding_recorded_response_context() -> None:
                     "missing recorded sibling",
                 ),
             )
+        assert exc_info.value.code == "recorded_response_context_incomplete"
+        constraint = exc_info.value.details[
+            "runtime_response_constraints"
+        ][0]
+        assert constraint["probe_kind"] == "http"
+        assert constraint["probe_path"] == "/"
+        assert constraint["projection_minimum_scalar_descendants"] == 2
+        observation = exc_info.value.details[
+            "runtime_response_observation"
+        ]
+        assert observation["observed_recorded_value_matches"] == 1
+        assert observation["response_shape"] == "json_object"
     finally:
         server.shutdown()
         server.server_close()

@@ -320,26 +320,9 @@ def _compact_prompt_feedback_item(
         compact["metrics"] = sanitize_metric_value(metrics, max_chars=120)
     diagnostics = item.get("candidate_validation_diagnostics")
     if isinstance(diagnostics, list):
-        compact["candidate_validation_diagnostics"] = [
-            {
-                key: sanitize_metric_value(diagnostic.get(key), max_chars=160)
-                for key in (
-                    "code",
-                    "stage",
-                    "reason",
-                    "field_path",
-                    "policy_id",
-                    "enforcement",
-                    "reason_codes",
-                    "constraint_ids",
-                    "active_frontier_key",
-                    "affected_case_ids",
-                )
-                if diagnostic.get(key) is not None
-            }
-            for diagnostic in diagnostics[:4]
-            if isinstance(diagnostic, Mapping)
-        ]
+        compact["candidate_validation_diagnostics"] = (
+            _compact_prompt_causal_diagnostics(diagnostics)
+        )
     counterexamples = item.get("replay_counterexamples")
     if isinstance(counterexamples, list):
         compact["replay_counterexamples"] = [
@@ -371,6 +354,96 @@ def _compact_prompt_feedback_item(
             if isinstance((raw := repair_plan.get(key)), list)
         }
     return compact
+
+
+_PROMPT_CAUSAL_DIAGNOSTIC_FIELDS = (
+    "code",
+    "stage",
+    "reason",
+    "error_type",
+    "failure_fingerprint",
+    "field_path",
+    "policy_id",
+    "enforcement",
+    "reason_codes",
+    "constraint_ids",
+    "active_frontier_key",
+    "affected_case_ids",
+    "required_action",
+    "runtime_response_constraints",
+    "runtime_response_observation",
+    "runtime_response_observations",
+    "schema_field_constraints",
+    "schema_field_violations",
+)
+
+
+def _compact_prompt_causal_diagnostics(
+    diagnostics: Sequence[object],
+) -> list[dict[str, object]]:
+    """Retain deepest typed causes instead of only outer gate wrappers."""
+
+    candidates: list[tuple[int, int, dict[str, object]]] = []
+    pending: list[tuple[object, int]] = [
+        (item, 0) for item in reversed(diagnostics[:32])
+    ]
+    visited = 0
+    ordinal = 0
+    while pending and visited < 512:
+        current, depth = pending.pop()
+        visited += 1
+        if isinstance(current, Mapping):
+            projected = {
+                key: sanitize_metric_value(
+                    current.get(key),
+                    max_chars=(320 if key == "reason" else 240),
+                )
+                for key in _PROMPT_CAUSAL_DIAGNOSTIC_FIELDS
+                if current.get(key) is not None
+            }
+            if projected:
+                typed_weight = 0
+                if projected.get("runtime_response_constraints"):
+                    typed_weight += 1_000
+                if projected.get("schema_field_constraints"):
+                    typed_weight += 500
+                code = str(projected.get("code") or "")
+                if code and code not in {"failed_gate", "candidate_rejected"}:
+                    typed_weight += 200
+                if projected.get("failure_fingerprint"):
+                    typed_weight += 100
+                candidates.append(
+                    (typed_weight + min(depth, 32), ordinal, projected)
+                )
+                ordinal += 1
+            if depth < 10:
+                for nested in reversed(list(current.values())[:128]):
+                    if isinstance(nested, (Mapping, list, tuple)):
+                        pending.append((nested, depth + 1))
+        elif isinstance(current, (list, tuple)) and depth < 10:
+            for nested in reversed(current[:128]):
+                pending.append((nested, depth + 1))
+
+    selected: list[dict[str, object]] = []
+    seen: set[str] = set()
+    for _, _, projected in sorted(
+        candidates,
+        key=lambda item: (-item[0], item[1]),
+    ):
+        identity = json.dumps(
+            projected,
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+            default=str,
+        )
+        if identity in seen:
+            continue
+        seen.add(identity)
+        selected.append(projected)
+        if len(selected) >= 8:
+            break
+    return selected
 
 
 def _bounded_repair_focus_for_prompt(
@@ -967,7 +1040,12 @@ def _merge_typed_repair_constraints_across_feedback(
     constraint_context = {
         key: value
         for key, value in (merged or {}).items()
-        if key in {"fixture_probe_constraints", "schema_field_constraints"}
+        if key
+        in {
+            "fixture_probe_constraints",
+            "schema_field_constraints",
+            "runtime_response_constraints",
+        }
     }
     evidence_context = [
         constraint.to_dict() for constraint in evidence_constraints

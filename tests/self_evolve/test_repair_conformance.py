@@ -10,6 +10,7 @@ from aworld.self_evolve.repair_conformance import (
     FixtureDerivedProbeConstraint,
     RepairConformanceContract,
     RepairConformanceResult,
+    RuntimeResponseConstraint,
     build_repair_conformance_probe_plan,
     compile_repair_conformance_contract,
     evaluate_candidate_source_conformance,
@@ -662,6 +663,69 @@ def test_fixture_compile_failure_is_not_redirected_by_inherited_runtime_constrai
     assert result.code == "repair_branch_unchanged"
     assert result.details["required_changed_paths"] == [
         "replay/compiler.py"
+    ]
+
+
+def test_runtime_response_constraint_targets_response_producer_and_round_trips() -> None:
+    runtime_constraint = RuntimeResponseConstraint(
+        constraint_kind="recorded_response_context",
+        response_source="AWORLD_REPLAY_RESPONSE_INDEX",
+        minimum_recorded_value_matches=2,
+        maximum_response_bytes=48 * 1024,
+        preserve_decoded_container=True,
+        allow_bounded_projection=True,
+        projection_minimum_scalar_descendants=2,
+        probe_kind="http",
+        probe_path="/",
+    )
+    inherited_compile_constraint = SchemaFieldRepairConstraint(
+        schema_layer="compile_result",
+        field_path="services[*].protocol_probes[*].response_contains",
+        rule="enum",
+        expected=("fixture_derived_scalar",),
+    )
+    contract = compile_repair_conformance_contract(
+        {
+            "repair_candidate_package": _package(),
+            "candidate_validation_diagnostics": [
+                {
+                    "code": "repair_probe_execution_failed",
+                    "details": {
+                        "diagnostics": [
+                            {
+                                "code": "recorded_response_context_incomplete",
+                                "stage": "capability_preflight",
+                                "runtime_response_constraints": [
+                                    runtime_constraint.to_dict()
+                                ],
+                                "runtime_response_observation": {
+                                    "observed_recorded_value_matches": 1,
+                                    "response_payload_bytes": 2048,
+                                    "response_shape": "json_object",
+                                },
+                            }
+                        ],
+                        "schema_field_constraints": [
+                            inherited_compile_constraint.to_dict()
+                        ],
+                    },
+                }
+            ],
+        }
+    )
+
+    assert contract is not None
+    assert contract.required_branch_paths == ("replay/runtime.py",)
+    assert contract.runtime_response_constraints == (runtime_constraint,)
+    assert "recorded_response_context_incomplete" in contract.failure_codes
+    assert "preserve_recorded_response_context" in (
+        contract.required_runtime_transitions
+    )
+    restored = RepairConformanceContract.from_dict(contract.to_dict())
+    assert restored.runtime_response_constraints == (runtime_constraint,)
+    public = public_diagnostic_projection(contract.to_public_dict())
+    assert public["runtime_response_constraints"] == [
+        runtime_constraint.to_dict()
     ]
 
 
