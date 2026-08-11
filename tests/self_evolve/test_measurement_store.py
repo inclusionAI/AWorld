@@ -221,3 +221,87 @@ def test_trusted_measurement_service_plans_resumes_and_runs_idempotently(
     assert first == second
     assert complete.attribution == second
     assert complete.observations == observations
+
+
+@pytest.mark.parametrize("axis", tuple(SwapAxis))
+def test_trusted_measurement_service_executes_each_swap_axis_symmetrically(
+    tmp_path,
+    axis: SwapAxis,
+) -> None:
+    service = TrustedMeasurementService(FilesystemSelfEvolveStore(tmp_path))
+    base = _spec()
+    spec = ControlledExperimentSpec.create(
+        run_id=f"run-execute-{axis.value.replace('_', '-')}",
+        mode=MeasurementPolicyMode.SHADOW,
+        swap_axis=axis,
+        control=ComponentIdentity(f"{axis.value}:control", _fp("control")),
+        treatment=ComponentIdentity(
+            f"{axis.value}:treatment",
+            _fp("treatment"),
+        ),
+        frozen_identities=base.frozen_identities,
+        sampling=SamplingPlan(
+            independent_case_ids=("case-1",),
+            repetitions_per_case=2,
+            seeds=(11, 22),
+        ),
+        outcomes=base.outcomes,
+        budgets=base.budgets,
+    )
+    calls: list[tuple[ArmRole, str, int, int | None]] = []
+
+    def execute_arm(
+        experiment: ControlledExperimentSpec,
+        arm: ArmRole,
+        case_id: str,
+        repetition: int,
+        seed: int | None,
+    ) -> MeasurementObservation:
+        calls.append((arm, case_id, repetition, seed))
+        return MeasurementObservation.create(
+            experiment=experiment,
+            arm=arm,
+            case_id=case_id,
+            case_fingerprint=_fp(case_id),
+            split="validation",
+            repetition_index=repetition,
+            seed=seed,
+            component_fingerprint=(
+                experiment.control.fingerprint
+                if arm is ArmRole.CONTROL
+                else experiment.treatment.fingerprint
+            ),
+            execution_status=ObservationExecutionStatus.SUCCEEDED,
+            comparability=ComparabilityStatus.COMPARABLE,
+            task_success=(arm is ArmRole.TREATMENT),
+            usage=MeasurementUsage(tokens=10, wall_seconds=0.1),
+        )
+
+    report = service.execute(
+        spec,
+        execute_arm,
+        target_resolution=TargetResolutionConfidence(
+            confidence=1.0,
+            origin="operator_explicit",
+            inference_bypassed=True,
+        ),
+        measurement_usage=MeasurementUsage(tokens=40, wall_seconds=0.4),
+    )
+    service.execute(
+        spec,
+        execute_arm,
+        target_resolution=TargetResolutionConfidence(
+            confidence=1.0,
+            origin="operator_explicit",
+            inference_bypassed=True,
+        ),
+        measurement_usage=MeasurementUsage(tokens=40, wall_seconds=0.4),
+    )
+
+    assert report.swap_axis is axis
+    assert calls == [
+        (ArmRole.CONTROL, "case-1", 1, 11),
+        (ArmRole.TREATMENT, "case-1", 1, 11),
+        (ArmRole.CONTROL, "case-1", 2, 22),
+        (ArmRole.TREATMENT, "case-1", 2, 22),
+    ]

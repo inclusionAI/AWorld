@@ -405,7 +405,7 @@ def test_required_negative_effect_stops_even_when_raw_score_is_high() -> None:
     assert disposition.continuable is False
 
 
-def test_advisory_measurement_routes_measurement_repair() -> None:
+def test_advisory_measurement_preserves_legacy_candidate_disposition() -> None:
     report = _report(_event(), status="rejected")
     report["measurement"] = {
         "mode": "advisory",
@@ -421,8 +421,27 @@ def test_advisory_measurement_routes_measurement_repair() -> None:
 
     disposition = derive_self_improvement_disposition(report)
 
-    assert disposition.kind is SelfImprovementDispositionKind.REPAIR_MEASUREMENT
-    assert disposition.owner == "evaluation_harness"
+    assert disposition.kind is SelfImprovementDispositionKind.CONTINUE_CANDIDATE
+    assert disposition.owner == "candidate"
+
+
+def test_advisory_measurement_cannot_override_success() -> None:
+    report = _report(_event(), status="succeeded")
+    report["measurement"] = {
+        "mode": "advisory",
+        "measurement_readiness_stage": "task_rollout",
+        "independent_case_count": 0,
+        "comparable_pair_count": 0,
+        "validity_status": "invalid",
+        "effect_direction": "unmeasured",
+        "confidence_lower_bound": None,
+        "promotion_eligible": False,
+        "next_action": "repair_measurement",
+    }
+
+    disposition = derive_self_improvement_disposition(report)
+
+    assert disposition.kind is SelfImprovementDispositionKind.COMPLETE
 
 
 def test_shadow_measurement_does_not_override_candidate_disposition() -> None:
@@ -484,7 +503,7 @@ def test_agent_browser_shaped_cycles_record_readiness_not_candidate_effect() -> 
         previous_progress=previous,
     )
 
-    assert disposition.kind is SelfImprovementDispositionKind.REPAIR_MEASUREMENT
+    assert disposition.kind is SelfImprovementDispositionKind.RETRY_INFRASTRUCTURE
     assert "measurement-readiness:6" in disposition.progress_delta_ids
     assert not any(
         item.startswith(("quality-score", "measurement-effect"))

@@ -1384,7 +1384,10 @@ def _measurement_policy_disposition(
             progress_delta_ids=progress_delta_ids,
         )
     mode = str(raw.get("mode") or "off")
-    if mode not in {"advisory", "required"} or raw.get("promotion_eligible") is True:
+    # Advisory measurement is diagnostic only.  It may be surfaced in the
+    # report, but it must never replace the legacy release/Campaign authority.
+    # Required mode is the only mode allowed to steer campaign disposition.
+    if mode != "required" or raw.get("promotion_eligible") is True:
         return None
     next_action = str(raw.get("next_action") or "repair_measurement")
     kinds = {
