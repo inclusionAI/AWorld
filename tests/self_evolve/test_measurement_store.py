@@ -20,6 +20,7 @@ from aworld.self_evolve.measurement import (
     SamplingPlan,
     SwapAxis,
     TargetResolutionConfidence,
+    TrustedMeasurementService,
     build_attribution_report,
 )
 from aworld.self_evolve.store import FilesystemSelfEvolveStore
@@ -180,3 +181,43 @@ def test_measurement_store_partial_run_has_no_synthetic_attribution(tmp_path) ->
 
     with pytest.raises(FileNotFoundError):
         store.read_measurement_attribution_report(spec.run_id, spec.experiment_id)
+
+
+def test_trusted_measurement_service_plans_resumes_and_runs_idempotently(
+    tmp_path,
+) -> None:
+    service = TrustedMeasurementService(FilesystemSelfEvolveStore(tmp_path))
+    spec = _spec()
+    observations = _observations(spec)
+
+    service.plan(spec)
+    partial = service.resume(spec.run_id, spec.experiment_id)
+    assert partial.experiment == spec
+    assert partial.observations == ()
+    assert partial.attribution is None
+
+    first = service.run(
+        spec,
+        observations,
+        target_resolution=TargetResolutionConfidence(
+            confidence=1.0,
+            origin="operator_explicit",
+            inference_bypassed=True,
+        ),
+        measurement_usage=MeasurementUsage(tokens=200, wall_seconds=2.0),
+    )
+    second = service.run(
+        spec,
+        observations,
+        target_resolution=TargetResolutionConfidence(
+            confidence=1.0,
+            origin="operator_explicit",
+            inference_bypassed=True,
+        ),
+        measurement_usage=MeasurementUsage(tokens=200, wall_seconds=2.0),
+    )
+
+    complete = service.inspect(spec.run_id, spec.experiment_id)
+    assert first == second
+    assert complete.attribution == second
+    assert complete.observations == observations

@@ -167,6 +167,23 @@ def _build_parser() -> argparse.ArgumentParser:
         default=2_000,
         dest="measurement_bootstrap_samples",
     )
+    parser.add_argument(
+        "--measurement-zero-yield-patience",
+        type=int,
+        default=2,
+        dest="measurement_zero_yield_patience",
+    )
+    parser.add_argument(
+        "--measurement-invalid-control-patience",
+        type=int,
+        default=2,
+        dest="measurement_invalid_control_patience",
+    )
+    parser.add_argument(
+        "--measurement-maximum-interval-width",
+        type=float,
+        dest="measurement_maximum_interval_width",
+    )
     parser.add_argument("--drain-pending", action="store_true", dest="drain_pending")
     parser.add_argument("--help", action="store_true")
     return parser
@@ -301,6 +318,15 @@ class OptimizeCommand(Command):
                 ),
                 measurement_bootstrap_samples=(
                     args.measurement_bootstrap_samples
+                ),
+                measurement_zero_yield_patience=(
+                    args.measurement_zero_yield_patience
+                ),
+                measurement_invalid_control_patience=(
+                    args.measurement_invalid_control_patience
+                ),
+                measurement_maximum_interval_width=(
+                    args.measurement_maximum_interval_width
                 ),
                 runtime_registry_refresher=runtime_registry_refresher,
             )

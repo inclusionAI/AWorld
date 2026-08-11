@@ -328,6 +328,15 @@ def _run_framework_job(
             config.measurement_min_independent_cases
         ),
         measurement_bootstrap_samples=config.measurement_bootstrap_samples,
+        measurement_zero_yield_patience=(
+            config.measurement_zero_yield_patience
+        ),
+        measurement_invalid_control_patience=(
+            config.measurement_invalid_control_patience
+        ),
+        measurement_maximum_interval_width=(
+            config.measurement_maximum_interval_width
+        ),
         regression_benchmarks=config.regression_benchmarks,
         challenger_enabled=config.challenger_enabled,
         challenger_max_cases=config.challenger_max_cases,

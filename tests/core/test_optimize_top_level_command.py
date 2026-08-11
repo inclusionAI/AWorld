@@ -456,6 +456,12 @@ def test_optimize_command_forwards_trusted_measurement_options(
             "4",
             "--measurement-bootstrap-samples",
             "800",
+            "--measurement-zero-yield-patience",
+            "3",
+            "--measurement-invalid-control-patience",
+            "4",
+            "--measurement-maximum-interval-width",
+            "0.08",
         ]
     )
 
@@ -466,6 +472,9 @@ def test_optimize_command_forwards_trusted_measurement_options(
     assert calls["measurement_confidence_level"] == pytest.approx(0.9)
     assert calls["measurement_min_independent_cases"] == 4
     assert calls["measurement_bootstrap_samples"] == 800
+    assert calls["measurement_zero_yield_patience"] == 3
+    assert calls["measurement_invalid_control_patience"] == 4
+    assert calls["measurement_maximum_interval_width"] == pytest.approx(0.08)
 
 
 def test_optimize_command_rejects_proposal_campaign_resume(

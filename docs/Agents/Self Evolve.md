@@ -762,6 +762,13 @@ effect are tracked separately from raw candidate score; `collect_more_evidence`,
 `repair_measurement`, `stop_no_effect`, and `stop_negative_effect` are typed
 cross-cycle outcomes.
 
+Attribution always names one swap axis. An `artifact` swap measures harness/Skill
+gain while the task model and search machinery are frozen; a `task_model` swap
+measures model gain under one fixed harness; `generator` and `scheduler` swaps
+compare candidate distributions under equal opportunity budgets. Improvements that
+appear only after increasing candidate count remain best-of-N search gain and are
+not credited to the artifact, model, generator, or scheduler.
+
 Measurement policy has four modes. `off` preserves historical behavior;
 `shadow` writes counterfactual evidence without changing release or Campaign
 selection; `advisory` may route future measurement work but cannot independently

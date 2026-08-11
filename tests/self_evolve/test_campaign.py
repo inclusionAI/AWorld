@@ -445,6 +445,55 @@ def test_shadow_measurement_does_not_override_candidate_disposition() -> None:
     assert disposition.owner == "candidate"
 
 
+def test_agent_browser_shaped_cycles_record_readiness_not_candidate_effect() -> None:
+    first = _report(
+        _event(code="capability_compile_incomplete"),
+        status="rejected",
+        tokens=200_000,
+    )
+    first["target_selection"] = {
+        "selection_origin": "operator_explicit",
+        "confidence": 1.0,
+        "inference_bypassed": True,
+        "causal_confidence": None,
+    }
+    first["measurement"] = {
+        "mode": "advisory",
+        "measurement_readiness_stage": "capability_compile",
+        "independent_case_count": 0,
+        "comparable_pair_count": 0,
+        "validity_status": "invalid",
+        "effect_direction": "unmeasured",
+        "effect_estimate": None,
+        "confidence_lower_bound": None,
+        "promotion_eligible": False,
+        "next_action": "repair_measurement",
+    }
+    second_event = _event(code="two_arm_task_timeout", owner="infrastructure")
+    second_event["stage"] = "task_rollout"
+    second = _report(second_event, status="rejected", tokens=265_993)
+    second["target_selection"] = dict(first["target_selection"])
+    second["measurement"] = {
+        **first["measurement"],
+        "measurement_readiness_stage": "task_rollout",
+    }
+
+    previous = self_improvement_progress(first)
+    disposition = derive_self_improvement_disposition(
+        second,
+        previous_progress=previous,
+    )
+
+    assert disposition.kind is SelfImprovementDispositionKind.REPAIR_MEASUREMENT
+    assert "measurement-readiness:6" in disposition.progress_delta_ids
+    assert not any(
+        item.startswith(("quality-score", "measurement-effect"))
+        for item in disposition.progress_delta_ids
+    )
+    assert second["measurement"]["effect_estimate"] is None
+    assert second["measurement"]["promotion_eligible"] is False
+
+
 def test_recovery_trace_advances_campaign_frontier_without_new_failure_code() -> None:
     identity = "sha256:" + "a" * 64
     first_report = _report(_event())

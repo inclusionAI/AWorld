@@ -53,7 +53,9 @@ _CONTROLLED_EXPERIMENT_KNOWN_FIELDS = frozenset(
         "outcomes",
         "budgets",
         "transfer_panels",
+        "search_visible_case_ids",
         "selection_protocol",
+        "stopping_policy",
         "created_at",
     }
 )
@@ -131,6 +133,14 @@ class MeasurementNextAction(str, Enum):
     STOP_NO_EFFECT = "stop_no_effect"
     STOP_NEGATIVE_EFFECT = "stop_negative_effect"
     PAUSE_OPERATOR = "pause_operator"
+
+
+class MeasurementStopTrigger(str, Enum):
+    ZERO_COMPARABLE_PAIRS = "zero_comparable_pairs"
+    REPEATED_CONTROL_INVALIDITY = "repeated_control_invalidity"
+    BUDGET_EXHAUSTED = "budget_exhausted"
+    DECISIVE_REGRESSION = "decisive_regression"
+    SUFFICIENTLY_PRECISE = "sufficiently_precise"
 
 
 class TransferPanelRole(str, Enum):
@@ -625,7 +635,11 @@ class ControlledExperimentSpec:
     outcomes: OutcomePlan
     budgets: ExperimentBudget
     transfer_panels: tuple[TransferPanel, ...] = ()
+    search_visible_case_ids: tuple[str, ...] = ()
     selection_protocol: str = "predeclared_candidate"
+    stopping_policy: "MeasurementEarlyStopPolicy" = field(
+        default_factory=lambda: MeasurementEarlyStopPolicy()
+    )
     created_at: str | None = None
     extensions: Mapping[str, object] = field(default_factory=dict, compare=False)
     schema_version: str = CONTROLLED_EXPERIMENT_SCHEMA_VERSION
@@ -650,6 +664,21 @@ class ControlledExperimentSpec:
             self.transfer_panels
         ):
             raise ValueError("transfer panel ids must be unique")
+        visible_case_ids = tuple(dict.fromkeys(self.search_visible_case_ids))
+        for case_id in visible_case_ids:
+            _safe_id(case_id, "search-visible case id")
+        hidden_transfer_cases = {
+            case_id
+            for panel in self.transfer_panels
+            if panel.visibility
+            in {VisibilityClass.HIDDEN, VisibilityClass.FINAL_ONLY}
+            for case_id in panel.case_ids
+        }
+        if hidden_transfer_cases & set(visible_case_ids):
+            raise ValueError("held_out_leakage: hidden transfer case exposed to search")
+        object.__setattr__(self, "search_visible_case_ids", visible_case_ids)
+        if not isinstance(self.stopping_policy, MeasurementEarlyStopPolicy):
+            raise TypeError("stopping_policy must be a typed measurement policy")
         if self.created_at is not None:
             _utc_datetime(self.created_at, "created_at")
         if any(key in _CONTROLLED_EXPERIMENT_KNOWN_FIELDS for key in self.extensions):
@@ -670,7 +699,9 @@ class ControlledExperimentSpec:
         budgets: ExperimentBudget,
         changed_axes: Sequence[SwapAxis | str] | None = None,
         transfer_panels: Sequence[TransferPanel] = (),
+        search_visible_case_ids: Sequence[str] = (),
         selection_protocol: str = "predeclared_candidate",
+        stopping_policy: "MeasurementEarlyStopPolicy | None" = None,
         created_at: str | None = None,
     ) -> "ControlledExperimentSpec":
         axis = SwapAxis(swap_axis)
@@ -688,7 +719,11 @@ class ControlledExperimentSpec:
             "outcomes": outcomes.to_dict(),
             "budgets": budgets.to_dict(),
             "transfer_panels": [panel.to_dict() for panel in transfer_panels],
+            "search_visible_case_ids": list(search_visible_case_ids),
             "selection_protocol": selection_protocol,
+            "stopping_policy": (
+                stopping_policy or MeasurementEarlyStopPolicy()
+            ).to_dict(),
         }
         experiment_id = "experiment-" + _digest(identity_payload)[:32]
         return cls(
@@ -704,7 +739,9 @@ class ControlledExperimentSpec:
             outcomes=outcomes,
             budgets=budgets,
             transfer_panels=tuple(transfer_panels),
+            search_visible_case_ids=tuple(search_visible_case_ids),
             selection_protocol=selection_protocol,
+            stopping_policy=stopping_policy or MeasurementEarlyStopPolicy(),
             created_at=created_at,
         )
 
@@ -723,7 +760,9 @@ class ControlledExperimentSpec:
             "outcomes": self.outcomes.to_dict(),
             "budgets": self.budgets.to_dict(),
             "transfer_panels": [panel.to_dict() for panel in self.transfer_panels],
+            "search_visible_case_ids": list(self.search_visible_case_ids),
             "selection_protocol": self.selection_protocol,
+            "stopping_policy": self.stopping_policy.to_dict(),
             "created_at": self.created_at,
             **dict(self.extensions),
         }
@@ -737,6 +776,10 @@ class ControlledExperimentSpec:
         sampling = _mapping(value.get("sampling"), "sampling")
         outcomes = _mapping(value.get("outcomes"), "outcomes")
         budgets = _mapping(value.get("budgets"), "budgets")
+        stopping_policy = _mapping(
+            value.get("stopping_policy", {}),
+            "stopping_policy",
+        )
         raw_panels = _sequence(value.get("transfer_panels", ()), "transfer_panels")
         loaded = cls(
             experiment_id=_required_text(value.get("experiment_id"), "experiment_id"),
@@ -756,8 +799,14 @@ class ControlledExperimentSpec:
                 TransferPanel.from_dict(_mapping(item, "transfer panel"))
                 for item in raw_panels
             ),
+            search_visible_case_ids=_string_tuple(
+                value.get("search_visible_case_ids")
+            ),
             selection_protocol=str(
                 value.get("selection_protocol") or "predeclared_candidate"
+            ),
+            stopping_policy=MeasurementEarlyStopPolicy.from_dict(
+                stopping_policy
             ),
             created_at=_optional_text(value.get("created_at")),
             extensions={
@@ -778,7 +827,9 @@ class ControlledExperimentSpec:
             outcomes=loaded.outcomes,
             budgets=loaded.budgets,
             transfer_panels=loaded.transfer_panels,
+            search_visible_case_ids=loaded.search_visible_case_ids,
             selection_protocol=loaded.selection_protocol,
+            stopping_policy=loaded.stopping_policy,
             created_at=loaded.created_at,
         ).experiment_id
         if loaded.experiment_id != expected:
@@ -1231,6 +1282,20 @@ class SearchKPoint:
     valid_candidate_count: int
     authoritative_candidate_count: int
 
+    def __post_init__(self) -> None:
+        for name in (
+            "requested_k",
+            "actual_k",
+            "valid_candidate_count",
+            "authoritative_candidate_count",
+        ):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError(f"{name} must be a non-negative integer")
+        if self.requested_k == 0:
+            raise ValueError("requested_k must be positive")
+        _probability(self.pass_probability, "pass_probability")
+
     def to_dict(self) -> dict[str, object]:
         return {
             "requested_k": self.requested_k,
@@ -1265,6 +1330,27 @@ class SearchBudgetPoint:
     candidate_count: int
     best_score: float | None
     passed: bool
+    validity_rate: float = 0.0
+    regression_pass_rate: float | None = None
+    cumulative_tokens: int | None = None
+    cumulative_cost_usd: float | None = None
+    cumulative_wall_seconds: float | None = None
+
+    def __post_init__(self) -> None:
+        for name in ("requested_budget", "actual_budget"):
+            value = float(getattr(self, name))
+            if not math.isfinite(value) or value < 0:
+                raise ValueError(f"{name} must be non-negative and finite")
+            object.__setattr__(self, name, value)
+        if (
+            isinstance(self.candidate_count, bool)
+            or not isinstance(self.candidate_count, int)
+            or self.candidate_count < 0
+        ):
+            raise ValueError("candidate_count must be a non-negative integer")
+        _probability(self.validity_rate, "validity_rate")
+        if self.regression_pass_rate is not None:
+            _probability(self.regression_pass_rate, "regression_pass_rate")
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -1273,6 +1359,11 @@ class SearchBudgetPoint:
             "candidate_count": self.candidate_count,
             "best_score": self.best_score,
             "passed": self.passed,
+            "validity_rate": self.validity_rate,
+            "regression_pass_rate": self.regression_pass_rate,
+            "cumulative_tokens": self.cumulative_tokens,
+            "cumulative_cost_usd": self.cumulative_cost_usd,
+            "cumulative_wall_seconds": self.cumulative_wall_seconds,
         }
 
     @classmethod
@@ -1285,6 +1376,19 @@ class SearchBudgetPoint:
             ),
             best_score=_optional_finite_number(value.get("best_score")),
             passed=value.get("passed") is True,
+            validity_rate=_finite_number(value.get("validity_rate", 0.0)),
+            regression_pass_rate=_optional_probability(
+                value.get("regression_pass_rate")
+            ),
+            cumulative_tokens=_optional_non_negative_int(
+                value.get("cumulative_tokens")
+            ),
+            cumulative_cost_usd=_optional_non_negative_number(
+                value.get("cumulative_cost_usd")
+            ),
+            cumulative_wall_seconds=_optional_non_negative_number(
+                value.get("cumulative_wall_seconds")
+            ),
         )
 
 
@@ -1297,7 +1401,16 @@ class SearchPerformance:
     validity_rate: float
     authoritative_yield: float
     selection_protocol: str
+    quality_threshold: float | None = None
+    tokens_to_threshold: int | None = None
+    wall_seconds_to_threshold: float | None = None
     schema_version: str = SEARCH_PERFORMANCE_SCHEMA_VERSION
+
+    def __post_init__(self) -> None:
+        if self.schema_version != SEARCH_PERFORMANCE_SCHEMA_VERSION:
+            raise ValueError("unsupported search performance schema")
+        _probability(self.validity_rate, "validity_rate")
+        _probability(self.authoritative_yield, "authoritative_yield")
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -1309,6 +1422,9 @@ class SearchPerformance:
             "validity_rate": self.validity_rate,
             "authoritative_yield": self.authoritative_yield,
             "selection_protocol": self.selection_protocol,
+            "quality_threshold": self.quality_threshold,
+            "tokens_to_threshold": self.tokens_to_threshold,
+            "wall_seconds_to_threshold": self.wall_seconds_to_threshold,
         }
 
     @classmethod
@@ -1341,6 +1457,15 @@ class SearchPerformance:
             ),
             selection_protocol=_required_text(
                 value.get("selection_protocol"), "selection_protocol"
+            ),
+            quality_threshold=_optional_finite_number(
+                value.get("quality_threshold")
+            ),
+            tokens_to_threshold=_optional_non_negative_int(
+                value.get("tokens_to_threshold")
+            ),
+            wall_seconds_to_threshold=_optional_non_negative_number(
+                value.get("wall_seconds_to_threshold")
             ),
         )
 
@@ -1438,6 +1563,97 @@ class MeasurementDecision:
 
 
 @dataclass(frozen=True)
+class MeasurementEarlyStopPolicy:
+    zero_yield_patience: int = 2
+    invalid_control_patience: int = 2
+    stop_on_decisive_regression: bool = True
+    maximum_interval_width: float | None = None
+
+    def __post_init__(self) -> None:
+        for name in ("zero_yield_patience", "invalid_control_patience"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+                raise ValueError(f"{name} must be a positive integer")
+        if self.maximum_interval_width is not None:
+            width = float(self.maximum_interval_width)
+            if not math.isfinite(width) or width < 0:
+                raise ValueError(
+                    "maximum_interval_width must be non-negative and finite"
+                )
+            object.__setattr__(self, "maximum_interval_width", width)
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "zero_yield_patience": self.zero_yield_patience,
+            "invalid_control_patience": self.invalid_control_patience,
+            "stop_on_decisive_regression": self.stop_on_decisive_regression,
+            "maximum_interval_width": self.maximum_interval_width,
+        }
+
+    @classmethod
+    def from_dict(
+        cls,
+        value: Mapping[str, object],
+    ) -> "MeasurementEarlyStopPolicy":
+        return cls(
+            zero_yield_patience=_positive_int(
+                value.get("zero_yield_patience", 2),
+                "zero_yield_patience",
+            ),
+            invalid_control_patience=_positive_int(
+                value.get("invalid_control_patience", 2),
+                "invalid_control_patience",
+            ),
+            stop_on_decisive_regression=(
+                value.get("stop_on_decisive_regression") is not False
+            ),
+            maximum_interval_width=_optional_non_negative_number(
+                value.get("maximum_interval_width")
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class MeasurementStopRecord:
+    triggered: bool
+    trigger: MeasurementStopTrigger | None
+    evidence_experiment_ids: tuple[str, ...]
+    unused_budget: MeasurementUsage
+    resume_safe: bool
+    reason: str
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "triggered": self.triggered,
+            "trigger": self.trigger.value if self.trigger is not None else None,
+            "evidence_experiment_ids": list(self.evidence_experiment_ids),
+            "unused_budget": self.unused_budget.to_dict(),
+            "resume_safe": self.resume_safe,
+            "reason": self.reason,
+        }
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, object]) -> "MeasurementStopRecord":
+        raw_trigger = value.get("trigger")
+        return cls(
+            triggered=value.get("triggered") is True,
+            trigger=(
+                MeasurementStopTrigger(str(raw_trigger))
+                if raw_trigger is not None
+                else None
+            ),
+            evidence_experiment_ids=_string_tuple(
+                value.get("evidence_experiment_ids")
+            ),
+            unused_budget=MeasurementUsage.from_dict(
+                _mapping(value.get("unused_budget", {}), "unused_budget")
+            ),
+            resume_safe=value.get("resume_safe") is True,
+            reason=_required_text(value.get("reason"), "stop reason"),
+        )
+
+
+@dataclass(frozen=True)
 class MeasurementSummary:
     experiment_id: str
     mode: MeasurementPolicyMode
@@ -1446,6 +1662,7 @@ class MeasurementSummary:
     effect_direction: EffectDirection
     effect_estimate: float | None
     confidence_lower_bound: float | None
+    confidence_upper_bound: float | None
     budget_normalized: bool
     promotion_eligible: bool
     decision_reason: str
@@ -1454,6 +1671,10 @@ class MeasurementSummary:
     independent_case_count: int
     comparable_pair_count: int
     measurement_readiness_stage: str
+    comparable_pairs_per_100k_tokens: float | None = None
+    dominant_budget_use: str | None = None
+    required_transfer_failure_count: int = 0
+    stopping_trigger: MeasurementStopTrigger | None = None
     schema_version: str = MEASUREMENT_SUMMARY_SCHEMA_VERSION
 
     def __post_init__(self) -> None:
@@ -1473,6 +1694,7 @@ class MeasurementSummary:
             "effect_direction": self.effect_direction.value,
             "effect_estimate": self.effect_estimate,
             "confidence_lower_bound": self.confidence_lower_bound,
+            "confidence_upper_bound": self.confidence_upper_bound,
             "budget_normalized": self.budget_normalized,
             "promotion_eligible": self.promotion_eligible,
             "decision_reason": self.decision_reason,
@@ -1481,6 +1703,18 @@ class MeasurementSummary:
             "independent_case_count": self.independent_case_count,
             "comparable_pair_count": self.comparable_pair_count,
             "measurement_readiness_stage": self.measurement_readiness_stage,
+            "comparable_pairs_per_100k_tokens": (
+                self.comparable_pairs_per_100k_tokens
+            ),
+            "dominant_budget_use": self.dominant_budget_use,
+            "required_transfer_failure_count": (
+                self.required_transfer_failure_count
+            ),
+            "stopping_trigger": (
+                self.stopping_trigger.value
+                if self.stopping_trigger is not None
+                else None
+            ),
         }
 
     @classmethod
@@ -1494,6 +1728,9 @@ class MeasurementSummary:
             effect_direction=EffectDirection(str(value.get("effect_direction"))),
             effect_estimate=_optional_finite_number(value.get("effect_estimate")),
             confidence_lower_bound=_optional_finite_number(value.get("confidence_lower_bound")),
+            confidence_upper_bound=_optional_finite_number(
+                value.get("confidence_upper_bound")
+            ),
             budget_normalized=value.get("budget_normalized") is True,
             promotion_eligible=value.get("promotion_eligible") is True,
             decision_reason=_required_text(value.get("decision_reason"), "decision_reason"),
@@ -1502,6 +1739,19 @@ class MeasurementSummary:
             independent_case_count=_non_negative_int(value.get("independent_case_count", 0), "independent_case_count"),
             comparable_pair_count=_non_negative_int(value.get("comparable_pair_count", 0), "comparable_pair_count"),
             measurement_readiness_stage=str(value.get("measurement_readiness_stage") or "unplanned"),
+            comparable_pairs_per_100k_tokens=_optional_non_negative_number(
+                value.get("comparable_pairs_per_100k_tokens")
+            ),
+            dominant_budget_use=_optional_text(value.get("dominant_budget_use")),
+            required_transfer_failure_count=_non_negative_int(
+                value.get("required_transfer_failure_count", 0),
+                "required_transfer_failure_count",
+            ),
+            stopping_trigger=(
+                MeasurementStopTrigger(str(value.get("stopping_trigger")))
+                if value.get("stopping_trigger") is not None
+                else None
+            ),
         )
 
 
@@ -1523,6 +1773,7 @@ class AttributionReport:
     budget_normalized: bool
     transfer: tuple[TransferAudit, ...] = ()
     search_performance: SearchPerformance | None = None
+    stopping: MeasurementStopRecord | None = None
     schema_version: str = ATTRIBUTION_REPORT_SCHEMA_VERSION
 
     def __post_init__(self) -> None:
@@ -1547,6 +1798,7 @@ class AttributionReport:
             "budget_normalized": self.budget_normalized,
             "transfer": [panel.to_dict() for panel in self.transfer],
             "search_performance": self.search_performance.to_dict() if self.search_performance is not None else None,
+            "stopping": self.stopping.to_dict() if self.stopping is not None else None,
             "decision": self.decision.to_dict(),
         }
 
@@ -1563,6 +1815,7 @@ class AttributionReport:
         secondary = _sequence(value.get("secondary_effects", ()), "secondary_effects")
         transfer = _sequence(value.get("transfer", ()), "transfer")
         search_performance = value.get("search_performance")
+        stopping = value.get("stopping")
         return cls(
             experiment_id=_required_text(value.get("experiment_id"), "experiment_id"),
             run_id=_required_text(value.get("run_id"), "run_id"),
@@ -1592,6 +1845,11 @@ class AttributionReport:
                 if isinstance(search_performance, Mapping)
                 else None
             ),
+            stopping=(
+                MeasurementStopRecord.from_dict(stopping)
+                if isinstance(stopping, Mapping)
+                else None
+            ),
         )
 
     def summary(self, *, attribution_report_path: str | None = None) -> MeasurementSummary:
@@ -1603,6 +1861,11 @@ class AttributionReport:
             effect_direction=(self.effect.direction if self.effect is not None else EffectDirection.UNMEASURED),
             effect_estimate=(self.effect.point_estimate if self.effect is not None else None),
             confidence_lower_bound=(self.effect.confidence_lower_bound if self.effect is not None else None),
+            confidence_upper_bound=(
+                self.effect.confidence_upper_bound
+                if self.effect is not None
+                else None
+            ),
             budget_normalized=self.budget_normalized,
             promotion_eligible=self.decision.promotion_eligible,
             decision_reason=self.decision.reason,
@@ -1611,6 +1874,139 @@ class AttributionReport:
             independent_case_count=self.validity.independent_case_count,
             comparable_pair_count=self.validity.comparable_pair_count,
             measurement_readiness_stage=self.measurement_readiness.current_stage,
+            comparable_pairs_per_100k_tokens=(
+                self.measurement_yield.comparable_pairs_per_100k_tokens
+            ),
+            dominant_budget_use=self.budget_ledger.dominant_use,
+            required_transfer_failure_count=sum(
+                1 for item in self.transfer if item.required and not item.passed
+            ),
+            stopping_trigger=(
+                self.stopping.trigger
+                if self.stopping is not None and self.stopping.triggered
+                else None
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class MeasurementArtifactSnapshot:
+    experiment: ControlledExperimentSpec
+    observations: tuple[MeasurementObservation, ...]
+    attribution: AttributionReport | None
+
+
+class TrustedMeasurementService:
+    """Thin framework API for plan, run/resume, inspect, and compare workflows."""
+
+    def __init__(self, store: object) -> None:
+        required = (
+            "write_measurement_experiment",
+            "read_measurement_experiment",
+            "append_measurement_observations",
+            "read_measurement_observations",
+            "write_measurement_attribution_report",
+            "read_measurement_attribution_report",
+        )
+        if any(not callable(getattr(store, name, None)) for name in required):
+            raise TypeError("trusted measurement service requires an AWorld store")
+        self.store = store
+
+    def plan(self, experiment: ControlledExperimentSpec) -> ControlledExperimentSpec:
+        self.store.write_measurement_experiment(experiment)
+        return self.store.read_measurement_experiment(
+            experiment.run_id,
+            experiment.experiment_id,
+        )
+
+    def resume(
+        self,
+        run_id: str,
+        experiment_id: str,
+    ) -> MeasurementArtifactSnapshot:
+        experiment = self.store.read_measurement_experiment(run_id, experiment_id)
+        observations = self.store.read_measurement_observations(
+            run_id,
+            experiment_id,
+            missing_ok=True,
+        )
+        try:
+            attribution = self.store.read_measurement_attribution_report(
+                run_id,
+                experiment_id,
+            )
+        except FileNotFoundError:
+            attribution = None
+        return MeasurementArtifactSnapshot(
+            experiment=experiment,
+            observations=observations,
+            attribution=attribution,
+        )
+
+    inspect = resume
+
+    def run(
+        self,
+        experiment: ControlledExperimentSpec,
+        observations: Sequence[MeasurementObservation],
+        *,
+        target_resolution: TargetResolutionConfidence,
+        readiness: MeasurementReadiness | None = None,
+        search_usage: MeasurementUsage | None = None,
+        measurement_usage: MeasurementUsage | None = None,
+        generated_candidate_count: int = 0,
+        authoritative_candidate_count: int = 0,
+        transfer_audits: Sequence[TransferAudit] | None = None,
+        search_performance: SearchPerformance | None = None,
+        stopping: MeasurementStopRecord | None = None,
+    ) -> AttributionReport:
+        self.plan(experiment)
+        self.store.append_measurement_observations(
+            experiment.run_id,
+            experiment.experiment_id,
+            tuple(observations),
+        )
+        complete_observations = self.store.read_measurement_observations(
+            experiment.run_id,
+            experiment.experiment_id,
+            missing_ok=True,
+        )
+        report = build_attribution_report(
+            experiment,
+            complete_observations,
+            target_resolution=target_resolution,
+            readiness=readiness,
+            search_usage=search_usage,
+            measurement_usage=measurement_usage,
+            generated_candidate_count=generated_candidate_count,
+            authoritative_candidate_count=authoritative_candidate_count,
+            transfer_audits=transfer_audits,
+            search_performance=search_performance,
+            stopping=stopping,
+        )
+        self.store.write_measurement_attribution_report(report)
+        return report
+
+    def compare(
+        self,
+        control_run_id: str,
+        control_experiment_id: str,
+        treatment_run_id: str,
+        treatment_experiment_id: str,
+    ) -> SearchPerformanceComparison:
+        control = self.store.read_measurement_attribution_report(
+            control_run_id,
+            control_experiment_id,
+        )
+        treatment = self.store.read_measurement_attribution_report(
+            treatment_run_id,
+            treatment_experiment_id,
+        )
+        if control.search_performance is None or treatment.search_performance is None:
+            raise ValueError("both attribution reports require search performance")
+        return compare_search_performance(
+            control.search_performance,
+            treatment.search_performance,
         )
 
 
@@ -1852,6 +2248,7 @@ def build_search_performance(
     token_budget_points: Sequence[int] = (),
     wall_time_budget_points: Sequence[float] = (),
     selection_protocol: str,
+    quality_threshold: float | None = None,
 ) -> SearchPerformance:
     candidates = tuple(results)
     if any(k <= 0 for k in k_values):
@@ -1871,6 +2268,10 @@ def build_search_performance(
                 authoritative_candidate_count=sum(1 for item in prefix if item.authoritative),
             )
         )
+    tokens_to_threshold, wall_seconds_to_threshold = _budget_to_threshold(
+        candidates,
+        quality_threshold=quality_threshold,
+    )
     return SearchPerformance(
         candidate_count=len(candidates),
         k_points=tuple(k_points),
@@ -1879,6 +2280,9 @@ def build_search_performance(
         validity_rate=(sum(1 for item in candidates if item.valid) / len(candidates) if candidates else 0.0),
         authoritative_yield=(sum(1 for item in candidates if item.authoritative) / len(candidates) if candidates else 0.0),
         selection_protocol=selection_protocol,
+        quality_threshold=quality_threshold,
+        tokens_to_threshold=tokens_to_threshold,
+        wall_seconds_to_threshold=wall_seconds_to_threshold,
     )
 
 
@@ -1942,6 +2346,7 @@ def build_attribution_report(
     authoritative_candidate_count: int = 0,
     transfer_audits: Sequence[TransferAudit] | None = None,
     search_performance: SearchPerformance | None = None,
+    stopping: MeasurementStopRecord | None = None,
 ) -> AttributionReport:
     validity = assess_experiment_validity(experiment, observations)
     effect = estimate_paired_effect(experiment, observations, validity=validity)
@@ -1997,6 +2402,7 @@ def build_attribution_report(
         budget_normalized=budget_normalized,
         transfer=audits,
         search_performance=search_performance,
+        stopping=stopping,
     )
 
 
@@ -2009,6 +2415,101 @@ def measurement_summary_from_report(
     if not isinstance(raw, Mapping):
         raise ValueError("report measurement summary must be an object")
     return MeasurementSummary.from_dict(raw)
+
+
+def evaluate_measurement_stopping(
+    reports: Sequence[AttributionReport],
+    *,
+    policy: MeasurementEarlyStopPolicy,
+    unused_budget: MeasurementUsage | None = None,
+) -> MeasurementStopRecord:
+    history = tuple(reports)
+    remaining = unused_budget or MeasurementUsage()
+    evidence_ids = tuple(item.experiment_id for item in history[-16:])
+    if not history:
+        return MeasurementStopRecord(
+            triggered=False,
+            trigger=None,
+            evidence_experiment_ids=(),
+            unused_budget=remaining,
+            resume_safe=True,
+            reason="no_measurement_evidence",
+        )
+    latest = history[-1]
+    if policy.stop_on_decisive_regression and (
+        latest.effect is not None
+        and latest.effect.direction is EffectDirection.NEGATIVE
+    ):
+        return MeasurementStopRecord(
+            True,
+            MeasurementStopTrigger.DECISIVE_REGRESSION,
+            evidence_ids,
+            remaining,
+            False,
+            "effect interval establishes regression",
+        )
+    if (
+        policy.maximum_interval_width is not None
+        and latest.effect is not None
+        and latest.effect.confidence_lower_bound is not None
+        and latest.effect.confidence_upper_bound is not None
+        and latest.effect.confidence_upper_bound
+        - latest.effect.confidence_lower_bound
+        <= policy.maximum_interval_width
+    ):
+        return MeasurementStopRecord(
+            True,
+            MeasurementStopTrigger.SUFFICIENTLY_PRECISE,
+            evidence_ids,
+            remaining,
+            False,
+            "configured effect precision reached",
+        )
+    if _usage_exhausted(remaining):
+        return MeasurementStopRecord(
+            True,
+            MeasurementStopTrigger.BUDGET_EXHAUSTED,
+            evidence_ids,
+            remaining,
+            False,
+            "measurement budget exhausted",
+        )
+    invalid_tail = history[-policy.invalid_control_patience :]
+    if len(invalid_tail) == policy.invalid_control_patience and all(
+        item.validity.status
+        in {ExperimentValidityStatus.INVALID, ExperimentValidityStatus.FAILED}
+        and not item.validity.control_viable
+        for item in invalid_tail
+    ):
+        return MeasurementStopRecord(
+            True,
+            MeasurementStopTrigger.REPEATED_CONTROL_INVALIDITY,
+            tuple(item.experiment_id for item in invalid_tail),
+            remaining,
+            True,
+            "control remained invalid across the configured patience window",
+        )
+    zero_yield_tail = history[-policy.zero_yield_patience :]
+    if len(zero_yield_tail) == policy.zero_yield_patience and all(
+        item.measurement_yield.comparable_pair_count == 0
+        for item in zero_yield_tail
+    ):
+        return MeasurementStopRecord(
+            True,
+            MeasurementStopTrigger.ZERO_COMPARABLE_PAIRS,
+            tuple(item.experiment_id for item in zero_yield_tail),
+            remaining,
+            True,
+            "no comparable evidence was produced within the patience window",
+        )
+    return MeasurementStopRecord(
+        triggered=False,
+        trigger=None,
+        evidence_experiment_ids=evidence_ids,
+        unused_budget=remaining,
+        resume_safe=True,
+        reason="additional measurement may still be informative",
+    )
 
 
 def observations_from_replay(
@@ -2763,6 +3264,11 @@ def _budget_curve(
             consumed += value
             selected.append(candidate)
         scores = [float(item.score) for item in selected if item.valid and item.score is not None]
+        regression_results = tuple(
+            item.regression_passed
+            for item in selected
+            if item.regression_passed is not None
+        )
         result.append(
             SearchBudgetPoint(
                 requested_budget=requested,
@@ -2770,9 +3276,79 @@ def _budget_curve(
                 candidate_count=len(selected),
                 best_score=max(scores) if scores else None,
                 passed=any(item.valid and item.passed for item in selected),
+                validity_rate=(
+                    sum(1 for item in selected if item.valid) / len(selected)
+                    if selected
+                    else 0.0
+                ),
+                regression_pass_rate=(
+                    sum(1 for passed in regression_results if passed)
+                    / len(regression_results)
+                    if regression_results
+                    else None
+                ),
+                cumulative_tokens=_sum_candidate_usage(selected, "tokens", int),
+                cumulative_cost_usd=_sum_candidate_usage(
+                    selected,
+                    "cost_usd",
+                    float,
+                ),
+                cumulative_wall_seconds=_sum_candidate_usage(
+                    selected,
+                    "wall_seconds",
+                    float,
+                ),
             )
         )
     return tuple(result)
+
+
+def _budget_to_threshold(
+    candidates: Sequence[SearchCandidateResult],
+    *,
+    quality_threshold: float | None,
+) -> tuple[int | None, float | None]:
+    if quality_threshold is None:
+        return None, None
+    threshold = float(quality_threshold)
+    if not math.isfinite(threshold):
+        raise ValueError("quality threshold must be finite")
+    tokens = 0
+    wall_seconds = 0.0
+    tokens_complete = True
+    wall_complete = True
+    for candidate in candidates:
+        if candidate.tokens is None:
+            tokens_complete = False
+        else:
+            tokens += candidate.tokens
+        if candidate.wall_seconds is None:
+            wall_complete = False
+        else:
+            wall_seconds += candidate.wall_seconds
+        if (
+            candidate.valid
+            and candidate.score is not None
+            and candidate.score >= threshold
+        ):
+            return (
+                tokens if tokens_complete else None,
+                wall_seconds if wall_complete else None,
+            )
+    return None, None
+
+
+def _sum_candidate_usage(
+    candidates: Sequence[SearchCandidateResult],
+    field_name: str,
+    cast: type[int] | type[float],
+) -> int | float | None:
+    if not candidates:
+        return cast(0)
+    values = tuple(getattr(candidate, field_name) for candidate in candidates)
+    if any(value is None for value in values):
+        return None
+    return cast(sum(float(value) for value in values if value is not None))
 
 
 def _digest(value: object) -> str:
@@ -2799,6 +3375,14 @@ def _sum_optional_float(
     if left is None or right is None:
         return None
     return left + right
+
+
+def _usage_exhausted(usage: MeasurementUsage) -> bool:
+    return any(
+        value == 0
+        for value in (usage.tokens, usage.cost_usd, usage.wall_seconds)
+        if value is not None
+    )
 
 
 def _json_default(value: object) -> object:
@@ -2945,6 +3529,13 @@ def _optional_probability(value: object) -> float | None:
     parsed = _finite_number(value)
     if not 0 <= parsed <= 1:
         raise ValueError("probability must be between zero and one")
+    return parsed
+
+
+def _probability(value: object, field_name: str) -> float:
+    parsed = _finite_number(value)
+    if not 0 <= parsed <= 1:
+        raise ValueError(f"{field_name} must be between zero and one")
     return parsed
 
 

@@ -8701,6 +8701,10 @@ async def test_runner_persists_trusted_measurement_artifacts_in_shadow_mode(
     assert summary["mode"] == "shadow"
     assert summary["effect_direction"] == "positive"
     assert summary["promotion_eligible"] is True
+    assert summary["dominant_budget_use"] == "measurement"
+    assert summary["comparable_pairs_per_100k_tokens"] == pytest.approx(
+        100_000 / 220
+    )
     assert (experiment_root / "experiment.json").exists()
     assert (experiment_root / "observations.jsonl").exists()
     assert (experiment_root / "attribution_report.json").exists()
