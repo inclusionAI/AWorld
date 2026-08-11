@@ -361,6 +361,7 @@ _MAX_CONSECUTIVE_DUPLICATE_POPULATION_STALLS = 1
 _MAX_CONSECUTIVE_POLICY_FILTER_STALLS = 2
 _MAX_CONSECUTIVE_MATERIALIZATION_STALLS = 2
 _MAX_CONFORMANCE_STRATEGY_SWITCH_ATTEMPTS = 1
+_REPLAY_PROGRESS_HEARTBEAT_SECONDS = 30.0
 _SEMANTIC_DEDUP_IDENTITY_VERSION = "aworld.self_evolve.semantic_dedup.v2"
 _VERIFICATION_CONTRACT_VERSION = "aworld.self_evolve.verification_contract.v2"
 _VERIFIED_APPLY_POLICIES = frozenset({"auto_verified", "verified_only"})
@@ -1319,6 +1320,44 @@ def _emit_progress(
         progress_callback(stage, message)
     except Exception as exc:
         logger.debug(f"self_evolve.progress_callback_failed stage={stage} error={exc}")
+
+
+def _replay_member_progress_message(
+    payload: Mapping[str, object],
+) -> str:
+    event = str(payload.get("event") or "member_progress")
+    candidate_id = str(payload.get("candidate_id") or "candidate")
+    case_id = str(payload.get("case_id") or "unknown-case")
+    case_index = payload.get("case_index")
+    case_count = payload.get("case_count")
+    phase = str(payload.get("phase") or "replay")
+    prefix = (
+        f"Replay candidate {candidate_id}; case {case_index}/{case_count} "
+        f"({case_id}); phase {phase}"
+    )
+    if event == "member_phase_started":
+        cache = payload.get("baseline_cache_offered")
+        cache_text = (
+            f"; baseline cache {'offered' if cache is True else 'miss'}"
+            if phase == "baseline"
+            else ""
+        )
+        return (
+            f"{prefix} started; repetitions "
+            f"{payload.get('repetition_count')}{cache_text}"
+        )
+    if event == "member_phase_completed":
+        cache_status = payload.get("baseline_cache_status")
+        cache_text = (
+            f"; baseline cache {cache_status}"
+            if phase == "baseline" and cache_status is not None
+            else ""
+        )
+        return (
+            f"{prefix} completed with status {payload.get('status')}"
+            f"{cache_text}"
+        )
+    return prefix
 
 
 def _execution_usage_report(
@@ -5726,14 +5765,19 @@ class SelfEvolveRunner:
                 screening=None,
             )
 
+        configured_screening_panel = _candidate_screening_dataset(
+            dataset,
+            capability_requirements=capability_requirements,
+            max_cases=self.candidate_screening_max_cases,
+        )
+        qualification_case_limit = _candidate_screening_qualification_case_limit(
+            candidate_count=len(conformance_candidates),
+            configured_max_cases=self.candidate_screening_max_cases,
+        )
         screening_dataset = _candidate_screening_dataset(
             dataset,
             capability_requirements=capability_requirements,
-            max_cases=(
-                1
-                if len(conformance_candidates) == 1
-                else self.candidate_screening_max_cases
-            ),
+            max_cases=qualification_case_limit,
         )
         if (
             not _is_verified_apply_policy(apply_policy)
@@ -5748,6 +5792,11 @@ class SelfEvolveRunner:
         representative_case_ids = tuple(
             case.case_id for case in screening_dataset.cases
         )
+        configured_representative_case_ids = (
+            tuple(case.case_id for case in configured_screening_panel.cases)
+            if configured_screening_panel is not None
+            else representative_case_ids
+        )
         screening_max_steps = _candidate_screening_max_steps(
             screening_dataset,
             configured_max_steps=self.replay_max_steps,
@@ -5758,7 +5807,9 @@ class SelfEvolveRunner:
             (
                 "Screening candidate population on representative case panel "
                 f"{','.join(representative_case_ids)} "
-                f"({len(conformance_candidates)} candidate(s))"
+                f"({len(conformance_candidates)} candidate(s)); staged "
+                f"qualification {len(representative_case_ids)}/"
+                f"{len(configured_representative_case_ids)} configured case(s)"
             ),
         )
         attempts: list[dict[str, object]] = []
@@ -5781,13 +5832,29 @@ class SelfEvolveRunner:
         screening_budget_denied_ids: set[str] = set()
         screening_terminal_ids: set[str] = set()
         stopped_by_shared_screening = False
-        for candidate in conformance_candidates:
+        for candidate_index, candidate in enumerate(
+            conformance_candidates,
+            start=1,
+        ):
             conformance_contract = repair_conformance_contracts.get(
                 candidate.candidate_id
             )
             screening_candidate = replace(
                 candidate,
                 candidate_id=f"{candidate.candidate_id}--screening",
+            )
+            baseline_cache_offered = screening_baseline_replay_dir is not None
+            _emit_progress(
+                self.progress_callback,
+                "candidate_screening",
+                (
+                    f"Screening candidate {candidate_index}/"
+                    f"{len(conformance_candidates)} "
+                    f"({candidate.candidate_id}) across "
+                    f"{len(screening_dataset.cases)} qualification case(s); "
+                    "baseline cache "
+                    f"{'offered' if baseline_cache_offered else 'miss'}"
+                ),
             )
             screening_budget: BudgetDecision | None = None
             if budget_context is not None:
@@ -6006,6 +6073,8 @@ class SelfEvolveRunner:
                     "screening_rank": _candidate_screening_rank_details(
                         screening_rank
                     ),
+                    "qualification_case_ids": list(representative_case_ids),
+                    "baseline_cache_offered": baseline_cache_offered,
                 }
             )
             if passed:
@@ -6151,6 +6220,14 @@ class SelfEvolveRunner:
                 "representative_case_id": representative_case_ids[0],
                 "representative_case_ids": list(representative_case_ids),
                 "representative_case_count": len(representative_case_ids),
+                "configured_representative_case_ids": list(
+                    configured_representative_case_ids
+                ),
+                "configured_representative_case_count": len(
+                    configured_representative_case_ids
+                ),
+                "qualification_case_limit": qualification_case_limit,
+                "screening_strategy": "adaptive_qualification_then_authoritative",
                 "generated_candidate_count": len(conformance_candidates),
                 "attempted_candidate_count": len(attempts),
                 "selected_candidate_id": (
@@ -6171,6 +6248,11 @@ class SelfEvolveRunner:
                 "max_steps": screening_max_steps,
                 "progressive_repetition": True,
                 "screening_role": "qualification_and_ranking",
+                "baseline_cache_offered_count": sum(
+                    1
+                    for attempt in attempts
+                    if attempt.get("baseline_cache_offered") is True
+                ),
                 "single_candidate_qualification": (
                     len(conformance_candidates) == 1
                 ),
@@ -8744,11 +8826,87 @@ class SelfEvolveRunner:
                         "candidate_repetitions": effective_candidate_repetitions,
                     },
                 )
-            replay_result = await effective_replay_backend.replay_candidate(
-                request,
-                candidate=selected_candidate,
-                dataset=dataset,
-            )
+            replay_progress: dict[str, object] = {
+                "candidate_id": selected_candidate.candidate_id,
+                "case_index": 0,
+                "case_count": sum(
+                    1
+                    for case in dataset.cases
+                    if _is_replayable_user_task_case(case)
+                ),
+                "case_id": "pending",
+                "phase": "preparing",
+            }
+            phase_started_at = time.monotonic()
+
+            def replay_progress_callback(
+                payload: Mapping[str, object],
+            ) -> None:
+                nonlocal phase_started_at
+                replay_progress.update(payload)
+                if payload.get("event") == "member_phase_started":
+                    phase_started_at = time.monotonic()
+                _emit_progress(
+                    self.progress_callback,
+                    progress_stage,
+                    _replay_member_progress_message(payload),
+                )
+
+            async def execute_replay() -> CandidateReplayResult:
+                if bool(
+                    getattr(
+                        effective_replay_backend,
+                        "supports_member_progress",
+                        False,
+                    )
+                ):
+                    return await effective_replay_backend.replay_candidate(
+                        request,
+                        candidate=selected_candidate,
+                        dataset=dataset,
+                        progress_callback=replay_progress_callback,
+                    )
+                return await effective_replay_backend.replay_candidate(
+                    request,
+                    candidate=selected_candidate,
+                    dataset=dataset,
+                )
+
+            if self.progress_callback is None:
+                replay_result = await execute_replay()
+            else:
+                replay_started_at = time.monotonic()
+                replay_task = asyncio.create_task(execute_replay())
+                try:
+                    while True:
+                        done, _ = await asyncio.wait(
+                            {replay_task},
+                            timeout=_REPLAY_PROGRESS_HEARTBEAT_SECONDS,
+                        )
+                        if done:
+                            replay_result = replay_task.result()
+                            break
+                        now = time.monotonic()
+                        _emit_progress(
+                            self.progress_callback,
+                            progress_stage,
+                            (
+                                _replay_member_progress_message(
+                                    replay_progress
+                                )
+                                + "; still running; total elapsed "
+                                f"{int(now - replay_started_at)}s; phase elapsed "
+                                f"{int(now - phase_started_at)}s; per-member "
+                                f"timeout {effective_timeout_seconds}s"
+                            ),
+                        )
+                finally:
+                    if not replay_task.done():
+                        replay_task.cancel()
+                        await asyncio.gather(
+                            replay_task,
+                            return_exceptions=True,
+                        )
         finally:
             if isinstance(replay_history, list):
                 for observability in replay_history[replay_history_start:]:
@@ -13329,11 +13487,11 @@ def _find_reusable_baseline_replay_dir(
     )
     if not case_ids:
         case_ids = tuple(case.case_id for case in dataset.cases)
-    run_dirs = [
-        path
-        for path in root.iterdir()
-        if path.is_dir() and path.name != run_id
-    ]
+    # Completed replay artifacts in the current run are valid cache sources.
+    # Excluding ``run_id`` forced every generation batch to repeat an identical
+    # screening baseline. Incomplete replay directories fail closed below when
+    # loading or validating their lifecycle and provenance.
+    run_dirs = [path for path in root.iterdir() if path.is_dir()]
     for prior_run_dir in sorted(run_dirs, key=lambda path: path.stat().st_mtime, reverse=True):
         replay_root = prior_run_dir / "replay"
         if not replay_root.exists():
@@ -18742,6 +18900,27 @@ def _candidate_screening_dataset(
             held_out_case_ids=(),
         ),
     )
+
+
+def _candidate_screening_qualification_case_limit(
+    *,
+    candidate_count: int,
+    configured_max_cases: int,
+) -> int:
+    """Bound early screening while preserving multi-case authoritative proof.
+
+    Screening is a ranking stage, not acceptance.  Growing the qualification
+    panel logarithmically avoids running every generated candidate over the
+    complete representative panel; the promoted candidate must still pass the
+    authoritative full-dataset replay later in the pipeline.
+    """
+
+    if candidate_count <= 0:
+        raise ValueError("candidate screening requires a positive candidate count")
+    if configured_max_cases <= 0:
+        raise ValueError("candidate screening max cases must be positive")
+    adaptive_limit = max(1, math.ceil(math.log2(candidate_count)))
+    return min(configured_max_cases, adaptive_limit)
 
 
 def _candidate_screening_case_strata(case: EvalCase) -> set[str]:

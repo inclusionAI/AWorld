@@ -130,6 +130,7 @@ from aworld.self_evolve.runner import (
     _retryable_candidate_generation_failure,
     _select_iteration_state,
     _candidate_screening_dataset,
+    _candidate_screening_qualification_case_limit,
     _explicit_target_selection_report,
     _source_config_from_stored_dataset_recipe,
     _summary_with_replay_evidence_metrics,
@@ -11114,8 +11115,8 @@ async def test_runner_screens_population_on_representative_member_before_full_re
 
     assert result.run.status.value == "rejected"
     assert replay_backend.calls == [
-        ("candidate-1--screening", ("task-a", "task-b")),
-        ("candidate-2--screening", ("task-a", "task-b")),
+        ("candidate-1--screening", ("task-a",)),
+        ("candidate-2--screening", ("task-a",)),
         ("candidate-1", ("task-a", "task-b")),
     ]
     report = json.loads(
@@ -11127,8 +11128,13 @@ async def test_runner_screens_population_on_representative_member_before_full_re
     assert report["population"]["screening"]["representative_case_id"] == "task-a"
     assert report["population"]["screening"]["representative_case_ids"] == [
         "task-a",
-        "task-b",
     ]
+    assert report["population"]["screening"][
+        "configured_representative_case_ids"
+    ] == ["task-a", "task-b"]
+    assert report["population"]["screening"]["screening_strategy"] == (
+        "adaptive_qualification_then_authoritative"
+    )
     stage_counts = report["population"]["lifecycle"]["stage_counts"]
     assert stage_counts["representative_screening"] == 2
     assert stage_counts["paired_replay_started"] == 1
@@ -11136,6 +11142,28 @@ async def test_runner_screens_population_on_representative_member_before_full_re
         stage_counts[stage]
         for stage in ("representative_screening", "paired_replay_started")
     ) == len(replay_backend.calls)
+
+
+@pytest.mark.parametrize(
+    ("candidate_count", "configured_max_cases", "expected_limit"),
+    (
+        (1, 3, 1),
+        (2, 3, 1),
+        (3, 3, 2),
+        (4, 3, 2),
+        (8, 3, 3),
+        (32, 2, 2),
+    ),
+)
+def test_candidate_screening_qualification_panel_grows_logarithmically(
+    candidate_count: int,
+    configured_max_cases: int,
+    expected_limit: int,
+) -> None:
+    assert _candidate_screening_qualification_case_limit(
+        candidate_count=candidate_count,
+        configured_max_cases=configured_max_cases,
+    ) == expected_limit
 
 
 @pytest.mark.asyncio

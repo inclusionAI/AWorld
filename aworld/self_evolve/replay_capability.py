@@ -303,12 +303,11 @@ def fingerprint_replay_capability_package(
             "replay capability manifest must be contained by the skill root"
         ) from exc
 
-    surface_paths: set[Path] = set()
-    for path in sorted(capability_root.rglob("*")):
-        if path.is_symlink():
-            raise ReplayCapabilityError("replay capability cannot contain symlinks")
-        if path.is_file():
-            surface_paths.add(path.resolve())
+    # Only declared executable inputs may invalidate a compiled adaptation.
+    # Including every sibling under ``replay/`` made documentation, diagnostics,
+    # and undeclared proposal files look like baseline-affecting changes.  That
+    # prevented safe baseline reuse across behavior candidates and batches.
+    surface_paths: set[Path] = {resolved_manifest}
     for declared_path in (entrypoint, *runtime_files):
         resolved = Path(declared_path).expanduser().resolve()
         try:

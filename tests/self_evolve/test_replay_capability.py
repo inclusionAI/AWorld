@@ -402,6 +402,14 @@ def test_discovered_capability_fingerprint_excludes_behavior_guidance(
         encoding="utf-8",
     )
     (skill / "examples.md").write_text("release-only example\n", encoding="utf-8")
+    (skill / "replay" / "diagnostic_notes.md").write_text(
+        "non-executable replay notes\n",
+        encoding="utf-8",
+    )
+    (skill / "replay" / "undeclared_proposal.py").write_text(
+        "PROPOSAL_ONLY = True\n",
+        encoding="utf-8",
+    )
     behavior_only = discover_replay_capability(skill)
 
     assert behavior_only is not None
