@@ -730,6 +730,47 @@ def test_hidden_transfer_case_cannot_enter_search_context() -> None:
         )
 
 
+def test_declared_required_transfer_panel_without_effect_fails_closed() -> None:
+    panel = TransferPanel.create(
+        panel_id="required-cross-task",
+        role=TransferPanelRole.CROSS_TASK,
+        case_ids=("hidden-case",),
+        visibility=VisibilityClass.HIDDEN,
+    )
+    spec = replace(
+        _spec(case_ids=("case-1", "case-2")),
+        transfer_panels=(panel,),
+    )
+    observations = tuple(
+        _observation(
+            spec,
+            case_id=case_id,
+            arm=arm,
+            success=(arm is ArmRole.TREATMENT),
+        )
+        for case_id in spec.sampling.independent_case_ids
+        for arm in (ArmRole.CONTROL, ArmRole.TREATMENT)
+    )
+
+    report = build_attribution_report(
+        spec,
+        observations,
+        target_resolution=TargetResolutionConfidence(
+            confidence=1.0,
+            origin="operator_explicit",
+            inference_bypassed=True,
+        ),
+        total_usage=MeasurementUsage(tokens=1_000, wall_seconds=10.0),
+    )
+
+    assert report.effect is not None
+    assert report.effect.direction is EffectDirection.POSITIVE
+    assert report.transfer[0].passed is False
+    assert "transfer_evidence_missing" in report.transfer[0].reason_codes
+    assert report.decision.promotion_eligible is False
+    assert report.decision.next_action.value == "repair_measurement"
+
+
 def test_optional_transfer_audit_does_not_block_positive_effect() -> None:
     spec = _spec(case_ids=("case-1", "case-2"))
     observations = tuple(

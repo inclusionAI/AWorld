@@ -10,7 +10,7 @@ from dataclasses import asdict, dataclass, field, is_dataclass
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path, PurePosixPath
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
 
 CONTROLLED_EXPERIMENT_SCHEMA_VERSION = (
@@ -1945,6 +1945,97 @@ class TrustedMeasurementService:
 
     inspect = resume
 
+    def execute(
+        self,
+        experiment: ControlledExperimentSpec,
+        executor: Callable[
+            [ControlledExperimentSpec, ArmRole, str, int, int | None],
+            MeasurementObservation,
+        ],
+        *,
+        target_resolution: TargetResolutionConfidence,
+        readiness: MeasurementReadiness | None = None,
+        search_usage: MeasurementUsage | None = None,
+        measurement_usage: MeasurementUsage | None = None,
+        generated_candidate_count: int = 0,
+        authoritative_candidate_count: int = 0,
+        transfer_audits: Sequence[TransferAudit] | None = None,
+        search_performance: SearchPerformance | None = None,
+        stopping: MeasurementStopRecord | None = None,
+    ) -> AttributionReport:
+        """Execute a frozen two-arm experiment for any declared swap axis.
+
+        The executor receives no observation from the opposite arm, and both
+        arms are invoked with the same case/repetition/seed coordinates.  This
+        keeps generator, scheduler, task-model, and artifact experiments on one
+        symmetric execution contract instead of relabeling artifact replay.
+        """
+
+        self.plan(experiment)
+        existing = self.store.read_measurement_observations(
+            experiment.run_id,
+            experiment.experiment_id,
+            missing_ok=True,
+        )
+        completed = {
+            (
+                observation.arm,
+                observation.case_id,
+                observation.repetition_index,
+                observation.seed,
+            )
+            for observation in existing
+        }
+        collected: list[MeasurementObservation] = []
+        for case_id in experiment.sampling.independent_case_ids:
+            for repetition in range(
+                1,
+                experiment.sampling.repetitions_per_case + 1,
+            ):
+                seed = (
+                    experiment.sampling.seeds[repetition - 1]
+                    if repetition <= len(experiment.sampling.seeds)
+                    else None
+                )
+                for arm in (ArmRole.CONTROL, ArmRole.TREATMENT):
+                    coordinate = (arm, case_id, repetition, seed)
+                    if coordinate in completed:
+                        continue
+                    observation = executor(
+                        experiment,
+                        arm,
+                        case_id,
+                        repetition,
+                        seed,
+                    )
+                    if not isinstance(observation, MeasurementObservation):
+                        raise TypeError(
+                            "controlled arm executor must return a measurement observation"
+                        )
+                    if (
+                        observation.arm,
+                        observation.case_id,
+                        observation.repetition_index,
+                        observation.seed,
+                    ) != coordinate:
+                        raise ValueError(
+                            "controlled arm executor changed frozen sampling coordinates"
+                        )
+                    collected.append(observation)
+        return self.run(
+            experiment,
+            collected,
+            target_resolution=target_resolution,
+            readiness=readiness,
+            search_usage=search_usage,
+            measurement_usage=measurement_usage,
+            generated_candidate_count=generated_candidate_count,
+            authoritative_candidate_count=authoritative_candidate_count,
+            transfer_audits=transfer_audits,
+            search_performance=search_performance,
+            stopping=stopping,
+        )
+
     def run(
         self,
         experiment: ControlledExperimentSpec,
@@ -2363,7 +2454,10 @@ def build_attribution_report(
         measurement=usage,
     )
     budget_normalized = usage.complete
-    audits = tuple(transfer_audits or (validate_transfer_panel(panel) for panel in experiment.transfer_panels))
+    audits = _effective_transfer_audits(
+        experiment.transfer_panels,
+        transfer_audits,
+    )
     measurement_yield = MeasurementYield(
         generated_candidate_count=generated_candidate_count,
         total_usage=usage,
@@ -2510,6 +2604,65 @@ def evaluate_measurement_stopping(
         resume_safe=True,
         reason="additional measurement may still be informative",
     )
+
+
+def _effective_transfer_audits(
+    panels: Sequence[TransferPanel],
+    supplied: Sequence[TransferAudit] | None,
+) -> tuple[TransferAudit, ...]:
+    """Fail closed when a declared transfer panel has no measured effect.
+
+    Manifest validity only proves that a panel is sealed and hidden.  It is not
+    evidence that the treatment preserved behavior on that panel.
+    """
+
+    supplied_by_id = {
+        audit.panel_id: audit for audit in supplied or ()
+    }
+    audits: list[TransferAudit] = []
+    for panel in panels:
+        manifest = validate_transfer_panel(panel)
+        audit = supplied_by_id.pop(panel.panel_id, None)
+        if audit is None:
+            reasons = set(manifest.reason_codes)
+            reasons.add("transfer_evidence_missing")
+            audits.append(
+                TransferAudit(
+                    panel_id=panel.panel_id,
+                    role=panel.role,
+                    passed=False,
+                    required=panel.required,
+                    reason_codes=tuple(sorted(reasons)),
+                    effect=None,
+                )
+            )
+            continue
+        reasons = set(manifest.reason_codes) | set(audit.reason_codes)
+        if audit.role is not panel.role:
+            reasons.add("transfer_panel_role_mismatch")
+        if audit.effect is None:
+            reasons.add("transfer_effect_missing")
+        elif audit.effect.direction is EffectDirection.NEGATIVE:
+            reasons.add("transfer_non_regression_failed")
+        elif audit.effect.direction in {
+            EffectDirection.INCONCLUSIVE,
+            EffectDirection.UNMEASURED,
+        }:
+            reasons.add("transfer_effect_inconclusive")
+        audits.append(
+            TransferAudit(
+                panel_id=panel.panel_id,
+                role=panel.role,
+                passed=audit.passed and not reasons,
+                required=panel.required,
+                reason_codes=tuple(sorted(reasons)),
+                effect=audit.effect,
+            )
+        )
+    # Preserve explicitly supplied diagnostics for undeclared optional panels,
+    # but never let them satisfy a declared panel by position.
+    audits.extend(supplied_by_id.values())
+    return tuple(audits)
 
 
 def observations_from_replay(
@@ -3122,6 +3275,14 @@ def _measurement_decision(
         None,
     )
     if failed_transfer is not None:
+        if "transfer_effect_inconclusive" in failed_transfer.reason_codes:
+            return MeasurementDecision(
+                False,
+                MeasurementNextAction.COLLECT_MORE_EVIDENCE,
+                "required_transfer_panel_inconclusive",
+                "evaluation_harness",
+                authoritative,
+            )
         measurement_failure = bool(
             set(failed_transfer.reason_codes)
             & {
@@ -3129,6 +3290,9 @@ def _measurement_decision(
                 "temporal_cutoff_missing",
                 "temporal_cutoff_violation",
                 "panel_fingerprint_drift",
+                "transfer_evidence_missing",
+                "transfer_effect_missing",
+                "transfer_panel_role_mismatch",
             }
         )
         return MeasurementDecision(

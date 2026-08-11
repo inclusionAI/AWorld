@@ -8665,6 +8665,7 @@ async def test_runner_persists_trusted_measurement_artifacts_in_shadow_mode(
                     "total_tokens": 120 if candidate else 100,
                     "wall_seconds": 1.2 if candidate else 1.0,
                     "deterministic_signal": True,
+                    "global_regression_passed": True,
                 },
             )
 
@@ -8721,6 +8722,11 @@ async def test_runner_persists_trusted_measurement_artifacts_in_shadow_mode(
     }
     assert attribution["search_performance"]["token_curve"]
     assert attribution["search_performance"]["wall_time_curve"]
+    assert attribution["search_performance"]["quality_threshold"] == 0.0
+    assert attribution["search_performance"]["tokens_to_threshold"] == 120
+    assert attribution["search_performance"]["token_curve"][-1][
+        "regression_pass_rate"
+    ] == 1.0
     assert len(store.read_measurement_observations(
         "run-measured-shadow", summary["experiment_id"]
     )) == 2
@@ -8796,6 +8802,79 @@ async def test_required_measurement_fails_closed_without_usage_telemetry(
         if item["gate_name"] == "trusted_improvement_measurement"
     )
     assert gate["passed"] is False
+
+
+@pytest.mark.asyncio
+async def test_advisory_measurement_stops_zero_yield_candidate_scheduling(
+    tmp_path,
+) -> None:
+    skill_path, dataset = _cycle1_runner_fixture(tmp_path)
+    optimizer_calls = 0
+
+    class Optimizer:
+        async def propose(self, request: OptimizerRequest) -> OptimizerResult:
+            nonlocal optimizer_calls
+            optimizer_calls += 1
+            return OptimizerResult(
+                candidates=(
+                    CandidateVariant(
+                        candidate_id=f"candidate-zero-yield-{optimizer_calls}",
+                        target=request.target,
+                        content=(
+                            "---\nname: demo\n---\n# Demo\n\n"
+                            f"Attempt {optimizer_calls}.\n"
+                        ),
+                        rationale="exercise measurement stopping",
+                        target_fingerprint=request.target_fingerprint,
+                    ),
+                )
+            )
+
+    class EvaluationBackend:
+        async def evaluate_variant(self, request):
+            return EvaluationSummary(
+                variant_id=request.variant_id,
+                dataset_split=request.dataset_split,
+                metrics={
+                    "total_tokens": 100,
+                    "wall_seconds": 1.0,
+                    "deterministic_signal": True,
+                },
+            )
+
+    store = FilesystemSelfEvolveStore(tmp_path)
+    runner = SelfEvolveRunner(
+        store=store,
+        optimizer=Optimizer(),
+        evaluation_backend=EvaluationBackend(),
+        max_iterations=5,
+        judge_repetitions=1,
+        measurement_mode="advisory",
+        measurement_primary_metric="score",
+        measurement_min_independent_cases=1,
+        measurement_zero_yield_patience=2,
+        measurement_invalid_control_patience=2,
+    )
+
+    await runner.run_explicit_target(
+        run_id="run-measurement-zero-yield-stop",
+        target=SkillTextTarget(skill_path),
+        dataset=dataset,
+        trace_packs=(),
+        apply_policy="verified_only",
+    )
+
+    report = json.loads(
+        (
+            store.run_path("run-measurement-zero-yield-stop")
+            / "report.json"
+        ).read_text()
+    )
+    assert optimizer_calls == 2
+    assert report["measurement"]["stopping_trigger"] in {
+        "repeated_control_invalidity",
+        "zero_comparable_pairs",
+    }
 
 
 @pytest.mark.asyncio

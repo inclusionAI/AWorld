@@ -99,6 +99,7 @@ from aworld.self_evolve.lifecycle import (
     read_self_evolve_retention_transactions,
 )
 from aworld.self_evolve.measurement import (
+    AttributionReport,
     BudgetLedger,
     ComponentIdentity,
     ControlledExperimentSpec,
@@ -116,6 +117,7 @@ from aworld.self_evolve.measurement import (
     TargetResolutionConfidence,
     build_attribution_report,
     build_search_performance,
+    evaluate_measurement_stopping,
     observations_from_evaluation,
     observations_from_replay,
     stable_measurement_fingerprint,
@@ -559,6 +561,25 @@ class _RunBudgetContext:
             "debits": list(self.debits),
             "releases": list(self.releases),
         }
+
+
+def _remaining_measurement_budget(
+    context: _RunBudgetContext,
+) -> MeasurementUsage:
+    remaining = context.ledger.remaining()
+    return MeasurementUsage(
+        tokens=remaining.tokens,
+        cost_usd=(
+            float(remaining.cost_usd)
+            if remaining.cost_usd is not None
+            else None
+        ),
+        wall_seconds=(
+            float(remaining.wall_seconds)
+            if remaining.wall_seconds is not None
+            else None
+        ),
+    )
 
 
 @dataclass
@@ -3547,6 +3568,8 @@ class SelfEvolveRunner:
         optimizer_lineage_paths_by_candidate: dict[str, str] = {}
         iteration_reports: list[dict[str, object]] = []
         iteration_states: list[dict[str, object]] = []
+        measurement_attributions: list[AttributionReport] = []
+        measurement_frontier_stopped = False
         population_screening_reports: list[dict[str, object]] = []
         baseline_summary: EvaluationSummary | None = None
         candidate_summary: EvaluationSummary | None = None
@@ -5349,6 +5372,44 @@ class SelfEvolveRunner:
                 )
                 iteration_reports.append(report_item)
                 iteration_states.append(state)
+                state_measurement = state.get("measurement_summary")
+                if (
+                    self.measurement_mode
+                    in {MeasurementPolicyMode.ADVISORY, MeasurementPolicyMode.REQUIRED}
+                    and isinstance(state_measurement, MeasurementSummary)
+                ):
+                    attribution = self.store.read_measurement_attribution_report(
+                        run_id,
+                        state_measurement.experiment_id,
+                    )
+                    measurement_attributions.append(attribution)
+                    stop_record = evaluate_measurement_stopping(
+                        measurement_attributions,
+                        policy=self.measurement_early_stop_policy,
+                        unused_budget=_remaining_measurement_budget(budget_context),
+                    )
+                    updated_attribution = replace(
+                        attribution,
+                        stopping=stop_record,
+                    )
+                    self.store.write_measurement_attribution_report(
+                        updated_attribution
+                    )
+                    updated_summary = updated_attribution.summary(
+                        attribution_report_path=(
+                            self.store.measurement_attribution_ref(
+                                run_id,
+                                state_measurement.experiment_id,
+                            )
+                        )
+                    )
+                    state["measurement_summary"] = updated_summary
+                    self._measurement_summaries[
+                        (run_id, iteration_candidate.candidate_id)
+                    ] = updated_summary
+                    if stop_record.triggered:
+                        measurement_frontier_stopped = True
+                        report_item["measurement_stop"] = stop_record.to_dict()
                 replay_state = state.get("replay_result")
                 if isinstance(
                     replay_state,
@@ -5388,6 +5449,8 @@ class SelfEvolveRunner:
                 if state["status"] == "accepted":
                     accepted_in_iteration = True
                     break
+                if measurement_frontier_stopped:
+                    break
             if (
                 _is_verified_apply_policy(apply_policy)
                 and not accepted_in_iteration
@@ -5400,6 +5463,7 @@ class SelfEvolveRunner:
                 or baseline_preflight_blocked
                 or infrastructure_blocked
                 or verification_frontier_exhausted
+                or measurement_frontier_stopped
             ):
                 break
         attempt_tracker.finalize_open(
@@ -7916,6 +7980,7 @@ class SelfEvolveRunner:
             if isinstance(item.get("candidate_id"), str)
         }
         results: list[SearchCandidateResult] = []
+        baseline_scores: list[float] = []
         for candidate in candidates:
             item = reports_by_candidate.get(candidate.candidate_id, {})
             metrics = (
@@ -7924,6 +7989,27 @@ class SelfEvolveRunner:
                 else {}
             )
             score = _finite_measurement_metric(metrics.get("score"))
+            baseline_metrics = (
+                item.get("baseline_metrics")
+                if isinstance(item.get("baseline_metrics"), Mapping)
+                else {}
+            )
+            baseline_score = _finite_measurement_metric(
+                baseline_metrics.get("score")
+            )
+            if baseline_score is not None:
+                baseline_scores.append(baseline_score)
+            held_out_metrics = (
+                item.get("held_out_metrics")
+                if isinstance(item.get("held_out_metrics"), Mapping)
+                else {}
+            )
+            regression_passed = _optional_measurement_bool(
+                held_out_metrics.get(
+                    "global_regression_passed",
+                    metrics.get("global_regression_passed"),
+                )
+            )
             status = str(item.get("status") or "not_run")
             tokens = _non_negative_measurement_int(
                 metrics.get("search_total_tokens", metrics.get("total_tokens"))
@@ -7951,6 +8037,7 @@ class SelfEvolveRunner:
                     cost_usd=_non_negative_measurement_float(
                         metrics.get("search_cost_usd", metrics.get("cost_usd"))
                     ),
+                    regression_passed=regression_passed,
                 )
             )
         token_total = sum(item.tokens or 0 for item in results)
@@ -7970,6 +8057,15 @@ class SelfEvolveRunner:
                 else ()
             ),
             selection_protocol="generation_order_authoritative_funnel",
+            quality_threshold=(
+                baseline_scores[0] + self.min_score_delta
+                if baseline_scores
+                and all(
+                    math.isclose(value, baseline_scores[0])
+                    for value in baseline_scores[1:]
+                )
+                else None
+            ),
         )
         attribution = self.store.read_measurement_attribution_report(
             run_id,
@@ -20449,6 +20545,10 @@ def _finite_measurement_metric(value: object) -> float | None:
     ):
         return float(value)
     return None
+
+
+def _optional_measurement_bool(value: object) -> bool | None:
+    return value if isinstance(value, bool) else None
 
 
 def _non_negative_measurement_int(value: object) -> int | None:
