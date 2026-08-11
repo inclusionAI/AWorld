@@ -1498,15 +1498,29 @@ def _default_iteration_budget(
 
 
 _DEFAULT_CANDIDATE_SCREENING_TIMEOUT_SECONDS = 90
-_DEFAULT_CANDIDATE_SCREENING_TRACE_HORIZON = 3
+_MAX_CANDIDATE_SCREENING_TIMEOUT_SECONDS = 180
+_DEFAULT_CANDIDATE_SCREENING_TRACE_HORIZON = 4
 _DEFAULT_CANDIDATE_SCREENING_TOOL_CALL_LIMIT = 8
+_SCREENING_STEP_TIMEOUT_SECONDS = 30
+_SCREENING_BUDGET_CENSORED_CODE = "screening_budget_censored"
 
 
-def _candidate_screening_timeout(authoritative_timeout_seconds: int) -> int:
-    """Bound representative screening without weakening authoritative replay."""
+def _candidate_screening_timeout(
+    authoritative_timeout_seconds: int,
+    *,
+    max_steps: int | None = None,
+) -> int:
+    """Bound screening while giving every planned step a completion window."""
+
+    planned_seconds = (
+        max(1, max_steps) * _SCREENING_STEP_TIMEOUT_SECONDS
+        if max_steps is not None
+        else _DEFAULT_CANDIDATE_SCREENING_TIMEOUT_SECONDS
+    )
     return min(
         authoritative_timeout_seconds,
-        _DEFAULT_CANDIDATE_SCREENING_TIMEOUT_SECONDS,
+        _MAX_CANDIDATE_SCREENING_TIMEOUT_SECONDS,
+        max(_DEFAULT_CANDIDATE_SCREENING_TIMEOUT_SECONDS, planned_seconds),
     )
 
 
@@ -1532,9 +1546,12 @@ def _candidate_screening_max_steps(
         ),
         default=1,
     )
+    # A source trace records actions, while a replay also needs one final model
+    # turn to synthesize the task result.  Reserving that terminal turn avoids
+    # deterministically censoring otherwise healthy multi-tool trajectories.
     return max(
         configured_floor,
-        min(observed_depth, _DEFAULT_CANDIDATE_SCREENING_TRACE_HORIZON),
+        min(observed_depth + 1, _DEFAULT_CANDIDATE_SCREENING_TRACE_HORIZON),
     )
 
 
@@ -6102,6 +6119,7 @@ class SelfEvolveRunner:
         screening_budget_denied_ids: set[str] = set()
         screening_terminal_ids: set[str] = set()
         stopped_by_shared_screening = False
+        stopped_after_budget_censor = False
         for candidate_index, candidate in enumerate(
             conformance_candidates,
             start=1,
@@ -6211,7 +6229,8 @@ class SelfEvolveRunner:
                         candidate_repetitions=1,
                         progress_stage="candidate_screening",
                         timeout_seconds=_candidate_screening_timeout(
-                            self.replay_timeout_seconds
+                            self.replay_timeout_seconds,
+                            max_steps=screening_max_steps,
                         ),
                         max_steps=screening_max_steps,
                         max_tool_calls=(
@@ -6362,6 +6381,14 @@ class SelfEvolveRunner:
             )
             if passed:
                 passing_candidates.append((candidate, screening_rank))
+            if _screening_attempt_is_budget_censored(attempts[-1]):
+                # A bounded qualification replay is a ranking experiment.  When
+                # both paired variants hit the same screening horizon it contains
+                # no directional evidence, so repeating it for every candidate
+                # only multiplies cost.  Preserve the ranked population for the
+                # authoritative replay, which owns the full execution budget.
+                stopped_after_budget_censor = True
+                break
             if shared_screening_failure and not _screening_attempt_requires_candidate_repair(
                 attempts[-1]
             ):
@@ -6421,6 +6448,17 @@ class SelfEvolveRunner:
                     "screening stopped after a shared infrastructure failure"
                 )
                 selected_candidates = ()
+            elif stopped_after_budget_censor:
+                selection_reason = (
+                    "bounded screening right-censored both paired variants; "
+                    "authoritative full replay preserved the ranked population"
+                )
+                selected_candidates = tuple(
+                    candidate
+                    for candidate in conformance_candidates
+                    if candidate.candidate_id not in screening_budget_denied_ids
+                    and candidate.candidate_id not in screening_terminal_ids
+                )
             elif any(_screening_attempt_requires_candidate_repair(item) for item in attempts):
                 selection_reason = (
                     "screening isolated a repairable candidate replay capability "
@@ -6550,6 +6588,12 @@ class SelfEvolveRunner:
                 ),
                 "attempts": attempts,
                 "stopped_by_shared_infrastructure": stopped_by_shared_screening,
+                "stopped_after_budget_censor": stopped_after_budget_censor,
+                "screening_outcome": (
+                    "right_censored"
+                    if stopped_after_budget_censor
+                    else "completed"
+                ),
             }
         return (
             selected_candidates,
@@ -8968,6 +9012,7 @@ class SelfEvolveRunner:
                     candidate_requires_intervention_exposure=(
                         candidate_requires_intervention_exposure
                     ),
+                    bounded_screening=(progress_stage == "candidate_screening"),
                 ),
             }
             if not comparable:
@@ -9249,6 +9294,9 @@ class SelfEvolveRunner:
                         candidate_requires_intervention_exposure=(
                             candidate_requires_intervention_exposure
                         ),
+                        bounded_screening=(
+                            progress_stage == "candidate_screening"
+                        ),
                     ),
                 ),
             )
@@ -9283,6 +9331,7 @@ class SelfEvolveRunner:
                     candidate_requires_intervention_exposure=(
                         candidate_requires_intervention_exposure
                     ),
+                    bounded_screening=(progress_stage == "candidate_screening"),
                 ),
             ),
         )
@@ -15814,6 +15863,7 @@ def _replay_gate_details(
     dataset: SelfEvolveDataset,
     normalized: NormalizedReplayMembers | None = None,
     candidate_requires_intervention_exposure: bool = False,
+    bounded_screening: bool = False,
 ) -> dict[str, object]:
     normalized = normalized or normalize_replay_members(
         dataset=dataset,
@@ -15870,6 +15920,32 @@ def _replay_gate_details(
         details["causal_failure_events"] = [
             event.to_dict() for event in causal_failures
         ]
+    screening_budget_censored = bool(
+        bounded_screening and _screening_pair_is_budget_censored(normalized)
+    )
+    if screening_budget_censored:
+        censor_event = ReplayFailureEvent(
+            code=_SCREENING_BUDGET_CENSORED_CODE,
+            owner=FailureOwner.FRAMEWORK,
+            stage=FailureStage.TASK_ROLLOUT,
+            scope=FailureScope.MEMBER,
+            repairable=False,
+            category="candidate_screening",
+            summary=(
+                "bounded screening ended before either paired variant reached "
+                "a terminal task result"
+            ),
+            diagnostics={
+                "member_count": len(normalized.members),
+                "timeout_seconds": replay_result.request.timeout_seconds,
+                "max_steps": replay_result.request.max_steps,
+                "max_tool_calls": replay_result.request.max_tool_calls,
+            },
+        )
+        raw_events = details.get("causal_failure_events")
+        event_payloads = list(raw_events) if isinstance(raw_events, list) else []
+        event_payloads.append(censor_event.to_dict())
+        details["causal_failure_events"] = event_payloads
     recovery_trace = replay_recovery_trace(normalized.members)
     if recovery_trace is not None:
         intervention_observed = (
@@ -15895,7 +15971,7 @@ def _replay_gate_details(
         )
         recovery_failure = (
             None
-            if candidate_system_failures
+            if candidate_system_failures or screening_budget_censored
             else (
                 _candidate_recovery_failure_event(recovery_trace)
                 if intervention_observed
@@ -15950,11 +16026,55 @@ def _replay_gate_details(
     if (
         _candidate_replay_has_repairable_capability_failure(replay_result)
         and not intervention_unobserved
+        and not screening_budget_censored
     ):
         details["failure_class"] = "candidate"
         details["repairable"] = True
         details["failure_stage"] = "replay_capability"
+    if screening_budget_censored:
+        details.update(
+            {
+                "code": _SCREENING_BUDGET_CENSORED_CODE,
+                "failure_class": "framework",
+                "failure_owner": FailureOwner.FRAMEWORK.value,
+                "failure_scope": FailureScope.MEMBER.value,
+                "failure_stage": FailureStage.TASK_ROLLOUT.value,
+                "repairable": False,
+                "screening_outcome": "right_censored",
+                "screening_budget_censored": True,
+            }
+        )
     return details
+
+
+def _variant_is_screening_timeout(variant: ReplayVariantResult) -> bool:
+    repetitions = variant.repetition_results or (variant,)
+    if not repetitions:
+        return False
+    for repetition in repetitions:
+        failure = repetition.failure
+        if not isinstance(failure, ReplayFailureEvent):
+            return False
+        if (
+            repetition.status is not ReplayExecutionStatus.FAILED
+            or failure.owner is not FailureOwner.TASK
+            or failure.repairable
+            or failure.code not in {"timeoutexpired", "task_rollout_timeout"}
+        ):
+            return False
+    return True
+
+
+def _screening_pair_is_budget_censored(
+    normalized: NormalizedReplayMembers,
+) -> bool:
+    """Return true only when every paired outcome hit the screening horizon."""
+
+    return bool(normalized.valid and normalized.members) and all(
+        _variant_is_screening_timeout(member.baseline)
+        and _variant_is_screening_timeout(member.candidate)
+        for member in normalized.members
+    )
 
 
 def _candidate_recovery_failure_event(
@@ -16110,6 +16230,17 @@ def _screening_attempt_requires_candidate_repair(
     )
 
 
+def _screening_attempt_is_budget_censored(
+    attempt: Mapping[str, object],
+) -> bool:
+    details = attempt.get("details")
+    return bool(
+        isinstance(details, Mapping)
+        and details.get("code") == _SCREENING_BUDGET_CENSORED_CODE
+        and details.get("screening_outcome") == "right_censored"
+    )
+
+
 def _combined_candidate_validation_report(
     *,
     candidates: tuple[CandidateVariant, ...],
@@ -16178,6 +16309,8 @@ def _combined_candidate_validation_report(
             "authoritative_candidate_repetitions",
             "ranked_below_screening_candidate_ids",
             "candidate_dispositions",
+            "stopped_after_budget_censor",
+            "screening_outcome",
         ):
             if key in screening:
                 report[key] = screening[key]
@@ -19238,8 +19371,14 @@ def _candidate_screening_dataset(
     if not ordered_candidates:
         ordered_candidates = list(replayable_cases)
     requirement_ids_by_case: dict[str, set[str]] = {}
+    context_requirement_count_by_case: dict[str, int] = {}
     for requirement in capability_requirements:
         for case_id in requirement.case_ids:
+            if requirement.kind == "conversation_context":
+                context_requirement_count_by_case[case_id] = (
+                    context_requirement_count_by_case.get(case_id, 0) + 1
+                )
+                continue
             requirement_ids_by_case.setdefault(case_id, set()).add(
                 requirement.requirement_id
             )
@@ -19257,6 +19396,12 @@ def _candidate_screening_dataset(
                 len(
                     requirement_ids_by_case.get(case.case_id, set())
                     - covered_requirements
+                ),
+                -_candidate_screening_case_cost(
+                    case,
+                    context_requirement_count=(
+                        context_requirement_count_by_case.get(case.case_id, 0)
+                    ),
                 ),
                 len(_candidate_screening_case_strata(case) - covered_strata),
                 _candidate_screening_case_distance(
@@ -19285,6 +19430,15 @@ def _candidate_screening_dataset(
                 "screening_case_id": representative_ids[0],
                 "screening_case_ids": list(representative_ids),
                 "screening_case_count": len(representative_ids),
+                "screening_case_costs": {
+                    case.case_id: _candidate_screening_case_cost(
+                        case,
+                        context_requirement_count=(
+                            context_requirement_count_by_case.get(case.case_id, 0)
+                        ),
+                    )
+                    for case in selected
+                },
                 "original_case_count": len(dataset.cases),
             },
             splits={
@@ -19296,6 +19450,32 @@ def _candidate_screening_dataset(
             held_out_case_ids=(),
         ),
     )
+
+
+def _candidate_screening_case_cost(
+    case: EvalCase,
+    *,
+    context_requirement_count: int = 0,
+) -> int:
+    """Estimate relative qualification cost without inspecting task semantics."""
+
+    trace_depth = len(case.trace_pack.steps) if case.trace_pack is not None else 1
+    try:
+        input_bytes = len(
+            json.dumps(
+                case.input,
+                ensure_ascii=False,
+                sort_keys=True,
+                default=str,
+            ).encode("utf-8")
+        )
+    except (TypeError, ValueError):
+        input_bytes = len(str(case.input).encode("utf-8"))
+    input_kib = max(1, math.ceil(input_bytes / 1024))
+    # Conversation reconstruction expands fixtures and prompt context but does
+    # not directly exercise a candidate-owned data-plane requirement.  Penalize
+    # it strongly enough that an equally representative executable case wins.
+    return max(0, context_requirement_count) * 100 + trace_depth * 10 + input_kib
 
 
 def _candidate_screening_qualification_case_limit(

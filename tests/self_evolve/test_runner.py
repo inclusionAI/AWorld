@@ -359,7 +359,7 @@ def test_candidate_screening_depth_observes_bounded_source_trace_horizon() -> No
 
     assert _candidate_screening_max_steps(
         dataset, configured_max_steps=1
-    ) == 3
+    ) == 4
     assert _candidate_screening_max_steps(
         dataset, configured_max_steps=5
     ) == 5
@@ -1967,6 +1967,50 @@ def test_candidate_screening_prefers_case_exercising_replay_requirements() -> No
     assert screening.cases[0].case_id == "capability-case"
 
 
+def test_candidate_screening_prefers_lower_cost_executable_case() -> None:
+    dataset = SelfEvolveDataset(
+        cases=(
+            EvalCase(case_id="context-heavy", input={"content": "task" * 500}),
+            EvalCase(case_id="executable-only", input={"content": "task"}),
+        ),
+        recipe=DatasetRecipe(
+            source={"kind": "trajectory_set"},
+            split_seed="screening-cost",
+            splits={"train": ["context-heavy", "executable-only"]},
+            trainable_case_ids=("context-heavy", "executable-only"),
+        ),
+    )
+    requirements = (
+        ReplayCapabilityRequirement(
+            requirement_id="shared-endpoint",
+            kind="local_endpoint",
+            identifier="http://127.0.0.1:9222",
+            case_ids=("context-heavy", "executable-only"),
+            evidence_refs=("context:1",),
+            status="unbound",
+        ),
+        ReplayCapabilityRequirement(
+            requirement_id="conversation-fixture",
+            kind="conversation_context",
+            identifier="recorded conversation",
+            case_ids=("context-heavy",),
+            evidence_refs=("context:2",),
+            status="unbound",
+        ),
+    )
+
+    screening = _candidate_screening_dataset(
+        dataset,
+        capability_requirements=requirements,
+    )
+
+    assert screening is not None
+    assert screening.cases[0].case_id == "executable-only"
+    assert screening.recipe.source["screening_case_costs"] == {
+        "executable-only": 11
+    }
+
+
 def test_candidate_screening_uses_single_case_as_low_cost_promotion_stage() -> None:
     dataset = SelfEvolveDataset(
         cases=(EvalCase(case_id="only-case", input="single user task"),),
@@ -2342,6 +2386,8 @@ def test_candidate_screening_timeout_is_bounded_without_extending_short_timeouts
     assert _candidate_screening_timeout(180) == 90
     assert _candidate_screening_timeout(90) == 90
     assert _candidate_screening_timeout(60) == 60
+    assert _candidate_screening_timeout(600, max_steps=4) == 120
+    assert _candidate_screening_timeout(600, max_steps=8) == 180
 
 
 def test_candidate_generation_retries_only_transient_provider_failures() -> None:
@@ -6499,6 +6545,63 @@ def test_replay_gate_adds_candidate_recovery_cause_without_rewriting_task_timeou
     assert details["failure_class"] == "candidate"
     assert details["repairable"] is True
     assert details["recovery_trace"]["candidate_success_rate"] == 0.0
+
+
+def test_bounded_screening_treats_paired_timeouts_as_right_censored(
+    tmp_path: Path,
+) -> None:
+    target = SelfEvolveTargetRef(target_type="skill", target_id="screening")
+    request = CandidateReplayRequest(
+        run_id="run-bounded-screening",
+        task_id="case-screening",
+        workspace_root=str(tmp_path),
+        target=target,
+        candidate_id="candidate-screening",
+        overlay_skill_root=str(tmp_path / "overlay"),
+        task_input="complete this task",
+        timeout_seconds=120,
+        max_steps=4,
+        max_tool_calls=8,
+    )
+    timeout = ReplayVariantResult(
+        variant_id="baseline",
+        status=ReplayExecutionStatus.FAILED,
+        trajectory=[],
+        failure={"type": "TimeoutExpired", "reason": "replay timed out"},
+    )
+    replay_result = _CandidateReplayResult(
+        request=request,
+        baseline=timeout,
+        candidate=replace(timeout, variant_id="candidate-screening"),
+    )
+    dataset = SelfEvolveDataset(
+        cases=(EvalCase(case_id="case-screening", input="complete this task"),),
+        recipe=DatasetRecipe(
+            source={"kind": "trajectory_log"},
+            split_seed="screening",
+            splits={"train": ["case-screening"]},
+            trainable_case_ids=("case-screening",),
+        ),
+    )
+
+    details = _replay_gate_details(
+        replay_result,
+        dataset=dataset,
+        bounded_screening=True,
+    )
+
+    assert details["code"] == "screening_budget_censored"
+    assert details["screening_outcome"] == "right_censored"
+    assert details["failure_class"] == "framework"
+    assert details["repairable"] is False
+    assert any(
+        event["code"] == "screening_budget_censored"
+        for event in details["causal_failure_events"]
+    )
+    assert not any(
+        event["code"] == "candidate_recovery_incomplete"
+        for event in details["causal_failure_events"]
+    )
 
 
 def test_replay_gate_does_not_blame_candidate_for_framework_capture_repetition(
@@ -11778,6 +11881,51 @@ async def test_population_screening_preserves_all_candidates_when_baseline_is_in
     }
     assert report["attempted_candidate_count"] == 2
     assert "preserved the ranked population" in report["selection_reason"]
+
+    screening_calls = 0
+
+    async def right_censored_screening(**kwargs):
+        nonlocal screening_calls
+        screening_calls += 1
+        return (
+            None,
+            None,
+            GateResult(
+                gate_name="candidate_replay",
+                passed=False,
+                reason="bounded screening did not reach terminal outcomes",
+                details={
+                    "code": "screening_budget_censored",
+                    "failure_class": "framework",
+                    "repairable": False,
+                    "screening_outcome": "right_censored",
+                },
+            ),
+        )
+
+    monkeypatch.setattr(
+        runner,
+        "_replay_selected_candidate",
+        right_censored_screening,
+    )
+    screened, report = await runner._screen_candidate_population(
+        run_id="run-screening-right-censored",
+        target=SkillTextTarget(skill_path, allow_auto_apply=True),
+        dataset=dataset,
+        candidates=candidates,
+        apply_policy="auto_verified",
+    )
+
+    assert screening_calls == 1
+    assert screened == candidates
+    assert report is not None
+    assert report["attempted_candidate_count"] == 1
+    assert report["stopped_after_budget_censor"] is True
+    assert report["screening_outcome"] == "right_censored"
+    assert report["candidate_dispositions"] == {
+        "candidate-1": "promoted_to_authoritative",
+        "candidate-2": "promoted_to_authoritative",
+    }
 
     async def passing_screening(**kwargs):
         return (
@@ -19111,7 +19259,9 @@ def test_optimize_cli_request_uses_framework_default_replay_backend_when_enabled
 
     assert created["count"] == 1
     assert replay_agents == ["Aworld", "Aworld"]
-    assert replay_max_steps == [1, 1]
+    # Screening reserves one terminal synthesis turn after the observed action;
+    # authoritative replay retains the configured limit.
+    assert replay_max_steps == [2, 1]
     assert report_summary["best_candidate_id"] is None
     assert report_summary["selected_candidate_id"] is not None
     assert any(
