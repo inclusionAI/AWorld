@@ -8,6 +8,7 @@ from aworld.self_evolve.datasets import EvalCase
 from aworld.self_evolve.evolution_context import (
     EVOLUTION_CONTEXT_SCHEMA_VERSION,
     MAX_CONTEXT_TRACE_CHARS,
+    _bounded_repair_focus_for_prompt,
     compile_evolution_context,
 )
 from aworld.self_evolve.failure_events import (
@@ -637,6 +638,95 @@ def test_focused_repair_prompt_budgets_source_without_affecting_overlay_base() -
         for item in overlay_focus["repair_candidate_package"]["files"]
     }
     assert overlay_files["SKILL.md"]["content"].startswith("# Skill")
+
+
+def test_repair_prompt_inherits_required_effective_target_sources() -> None:
+    prompt_focus = _bounded_repair_focus_for_prompt(
+        {
+            "repair_candidate_package": {
+                "candidate_id": "candidate-missing-runtime-delta",
+                "files": [
+                    {
+                        "path": "replay/proposal.py",
+                        "operation": "upsert",
+                        "content": "def propose():\n    return 'candidate delta'\n",
+                    }
+                ],
+            }
+        },
+        required_branch_paths=("replay/runtime.py",),
+        target_package_sources={
+            "replay/runtime.py": {
+                "content": "def run():\n    return 'effective target source'\n",
+                "executable": True,
+            }
+        },
+    )
+
+    package = prompt_focus["repair_candidate_package"]
+    files = {item["path"]: item for item in package["files"]}
+    assert files["replay/runtime.py"] == {
+        "path": "replay/runtime.py",
+        "operation": "upsert",
+        "content": "def run():\n    return 'effective target source'\n",
+        "executable": True,
+        "source_origin": "target_package_overlay",
+        "required_repair_source": True,
+    }
+    assert prompt_focus["required_source_closure"] == {
+        "complete": True,
+        "required_paths": ["replay/runtime.py"],
+        "inherited_target_paths": ["replay/runtime.py"],
+        "missing_paths": [],
+        "omitted_paths": [],
+    }
+
+
+def test_repair_prompt_reports_incomplete_required_source_closure() -> None:
+    prompt_focus = _bounded_repair_focus_for_prompt(
+        {
+            "repair_candidate_package": {
+                "candidate_id": "candidate-missing-runtime-source",
+                "files": [],
+            }
+        },
+        required_branch_paths=("replay/runtime.py",),
+        target_package_sources={},
+    )
+
+    assert prompt_focus["required_source_closure"] == {
+        "complete": False,
+        "required_paths": ["replay/runtime.py"],
+        "inherited_target_paths": [],
+        "missing_paths": ["replay/runtime.py"],
+        "omitted_paths": [],
+    }
+
+
+def test_repair_prompt_does_not_claim_omitted_large_source_is_complete() -> None:
+    prompt_focus = _bounded_repair_focus_for_prompt(
+        {
+            "repair_candidate_package": {
+                "candidate_id": "candidate-large-runtime-source",
+                "files": [],
+            }
+        },
+        required_branch_paths=("replay/runtime.py",),
+        target_package_sources={
+            "replay/runtime.py": {
+                "content": "x" * 40_001,
+                "executable": False,
+            }
+        },
+    )
+
+    closure = prompt_focus["required_source_closure"]
+    assert closure["complete"] is False
+    assert closure["missing_paths"] == []
+    assert closure["omitted_paths"] == ["replay/runtime.py"]
+    runtime_file = prompt_focus["repair_candidate_package"]["files"][0]
+    assert runtime_file["content_omitted"] is True
+    assert "content" not in runtime_file
 
 
 def test_prompt_payload_budgets_accumulated_historical_feedback() -> None:

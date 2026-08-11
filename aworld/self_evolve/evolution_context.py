@@ -74,6 +74,9 @@ class EvolutionContext:
     population_strategies: tuple[str, ...]
     acceptance_constraints: tuple[str, ...]
     expected_output: Mapping[str, object]
+    target_package_sources: Mapping[str, Mapping[str, object]] = field(
+        default_factory=dict
+    )
     handbook: Mapping[str, object] = field(default_factory=dict)
 
     def repair_focus_for_candidate(
@@ -137,6 +140,7 @@ class EvolutionContext:
                     if repair_conformance is not None
                     else ()
                 ),
+                target_package_sources=self.target_package_sources,
             )
             if repair_focus is not None
             else None
@@ -450,16 +454,57 @@ def _bounded_repair_focus_for_prompt(
     repair_focus: Mapping[str, object],
     *,
     required_branch_paths: Sequence[str],
+    target_package_sources: Mapping[str, Mapping[str, object]] | None = None,
 ) -> Mapping[str, object]:
-    """Keep complete high-value source files and inventory omitted overlay files."""
+    """Keep a source-complete, bounded view of the required repair surface."""
 
     package = repair_focus.get("repair_candidate_package")
     if not isinstance(package, Mapping):
         return repair_focus
-    raw_files = package.get("files")
-    if not isinstance(raw_files, list):
+    package_files = package.get("files")
+    if not isinstance(package_files, list):
         return repair_focus
     required = frozenset(required_branch_paths)
+    raw_files = [
+        dict(item) for item in package_files if isinstance(item, Mapping)
+    ]
+    inherited_required_paths: list[str] = []
+    missing_required_paths: list[str] = []
+    source_inventory = target_package_sources or {}
+    for path in sorted(required):
+        matching_file = next(
+            (
+                item
+                for item in raw_files
+                if str(item.get("path") or "") == path
+            ),
+            None,
+        )
+        if (
+            isinstance(matching_file, Mapping)
+            and isinstance(matching_file.get("content"), str)
+            and bool(matching_file.get("content"))
+        ):
+            continue
+        source = source_inventory.get(path)
+        content = source.get("content") if isinstance(source, Mapping) else None
+        if not isinstance(content, str) or not content:
+            missing_required_paths.append(path)
+            continue
+        inherited_file = {
+            "path": path,
+            "operation": "upsert",
+            "content": content,
+            "executable": source.get("executable") is True,
+            "source_origin": "target_package_overlay",
+            "required_repair_source": True,
+        }
+        if matching_file is None:
+            raw_files.append(inherited_file)
+        else:
+            matching_file.clear()
+            matching_file.update(inherited_file)
+        inherited_required_paths.append(path)
     ranked_files = sorted(
         (
             (index, item)
@@ -516,6 +561,16 @@ def _bounded_repair_focus_for_prompt(
     prompt_focus = _public_repair_value(repair_focus)
     assert isinstance(prompt_focus, dict)
     prompt_focus["repair_candidate_package"] = prompt_package
+    omitted_required_paths = sorted(
+        required - included_paths - set(missing_required_paths)
+    )
+    prompt_focus["required_source_closure"] = {
+        "complete": not missing_required_paths and not omitted_required_paths,
+        "required_paths": sorted(required),
+        "inherited_target_paths": inherited_required_paths,
+        "missing_paths": missing_required_paths,
+        "omitted_paths": omitted_required_paths,
+    }
     return prompt_focus
 
 
@@ -981,6 +1036,20 @@ def compile_evolution_context(request: OptimizerRequest) -> EvolutionContext:
             sanitize_path_ref(item)
             for item in request.target_package_inventory[:256]
         ),
+        target_package_sources={
+            sanitize_path_ref(path): {
+                "content": sanitize_source_text(
+                    source.get("content"),
+                    max_chars=128_000,
+                    preserve_format=True,
+                ),
+                "executable": source.get("executable") is True,
+            }
+            for path, source in list(request.target_package_sources.items())[:256]
+            if isinstance(path, str)
+            and isinstance(source, Mapping)
+            and isinstance(source.get("content"), str)
+        },
         trainable_cases=_trainable_case_payloads(request.trainable_cases),
         trace_evidence=_trace_evidence_payloads(request.trace_packs),
         validation_feedback=feedback,

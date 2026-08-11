@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import time
 import uuid
 from dataclasses import dataclass
@@ -264,7 +265,7 @@ class CandidateTaskAgent(Protocol):
 
 CandidateAgentFactory = Callable[[int], CandidateTaskAgent]
 CandidateOutputParser = Callable[[str], Mapping[str, Any]]
-CandidateRepairPromptBuilder = Callable[[str, ValueError], str]
+CandidateRepairPromptBuilder = Callable[..., str]
 CandidateRepairOutputMerger = Callable[[str, str, ValueError], str]
 CandidateOutputValidator = Callable[
     [int, Mapping[str, Any]],
@@ -400,7 +401,12 @@ class AWorldCandidatePopulationExecutor:
         if eligible_repairs:
             repair_tasks = {
                 index: agents[index].build_task(
-                    self._repair_prompt_builder(invalid_output, error),
+                    _build_candidate_repair_prompt(
+                        self._repair_prompt_builder,
+                        invalid_output=invalid_output,
+                        error=error,
+                        original_prompt=prompts[index],
+                    ),
                     task_id=(
                         f"self-evolve-candidate-{population_id}-{index}-repair"
                     ),
@@ -579,6 +585,33 @@ def _candidate_protocol_diagnostic(error: ValueError) -> Mapping[str, Any]:
         "failure_class": "candidate",
         "repairable": True,
     }
+
+
+def _build_candidate_repair_prompt(
+    builder: CandidateRepairPromptBuilder,
+    *,
+    invalid_output: str,
+    error: ValueError,
+    original_prompt: str,
+) -> str:
+    """Pass source-complete generation context when the builder supports it."""
+
+    try:
+        parameters = inspect.signature(builder).parameters.values()
+    except (TypeError, ValueError):
+        parameters = ()
+    accepts_original_prompt = any(
+        parameter.name == "original_prompt"
+        or parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters
+    )
+    if accepts_original_prompt:
+        return builder(
+            invalid_output,
+            error,
+            original_prompt=original_prompt,
+        )
+    return builder(invalid_output, error)
 
 
 def _read_candidate_task_result(

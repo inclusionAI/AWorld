@@ -193,7 +193,7 @@ def test_replay_runtime_policy_allows_one_browser_cleanup_after_evidence_ready(
 
     _enforce_replay_evidence_runtime_policy(
         "bash",
-        _replay_action("agent-browser close"),
+        _replay_action("agent-browser close 2>&1"),
         message,
     )
 
@@ -212,6 +212,38 @@ def test_replay_runtime_policy_allows_one_browser_cleanup_after_evidence_ready(
             "bash",
             _replay_action("agent-browser close"),
             message,
+        )
+
+
+@pytest.mark.parametrize(
+    "command",
+    (
+        "agent-browser close 2>&1 | head -5",
+        "agent-browser close 2>cleanup.log",
+    ),
+)
+def test_replay_runtime_policy_rejects_unsafe_browser_cleanup_suffixes(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+    command: str,
+) -> None:
+    _enable_replay_policy(monkeypatch, tmp_path)
+    artifact_dir = tmp_path / "artifacts"
+    (artifact_dir / "evidence.json").write_text("{}", encoding="utf-8")
+    (artifact_dir / "evidence_manifest.jsonl").write_text(
+        '{"source_id":"one","extraction_method":"json_fields",'
+        '"artifact_path":"evidence.json","fields":["title"]}\n',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        ToolExecutionDenied,
+        match="tool_call_after_evidence_ready",
+    ):
+        _enforce_replay_evidence_runtime_policy(
+            "bash",
+            _replay_action(command),
+            _Message(_Context()),
         )
 
 
