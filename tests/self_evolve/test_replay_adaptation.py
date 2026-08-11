@@ -95,6 +95,54 @@ def test_compiler_normalizes_workspace_paths_and_persists_bundle(tmp_path: Path)
     assert not any("token" in key.lower() for key in environment["environment"])
 
 
+def test_environment_identity_excludes_staged_workload_tool_names(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    def dataset(tool_name: str, task_id: str) -> SelfEvolveDataset:
+        return build_dataset_from_source(
+            SelfEvolveEvalSourceConfig(kind="current_trajectory"),
+            current_trajectory=(
+                {
+                    "meta": {"task_id": task_id, "step": 1},
+                    "state": {"input": {"content": "Inspect the fixture."}},
+                    "action": {
+                        "content": "historical result",
+                        "tool_calls": [
+                            {"function": {"name": tool_name}}
+                        ],
+                    },
+                    "reward": {"status": "success"},
+                },
+            ),
+            task_id=task_id,
+        )
+
+    screening = ReplayAdaptationCompiler().compile(
+        dataset=dataset("mcp", "screening-case"),
+        workspace_root=workspace,
+        artifact_root=tmp_path / "screening-adaptation",
+    )
+    expanded = ReplayAdaptationCompiler().compile(
+        dataset=dataset("CAST_SEARCH", "expanded-case"),
+        workspace_root=workspace,
+        artifact_root=tmp_path / "expanded-adaptation",
+    )
+
+    screening_snapshot = json.loads(
+        Path(screening.environment_snapshot_path).read_text(encoding="utf-8")
+    )
+    expanded_snapshot = json.loads(
+        Path(expanded.environment_snapshot_path).read_text(encoding="utf-8")
+    )
+    assert screening_snapshot["tool_names"] == ["mcp"]
+    assert expanded_snapshot["tool_names"] == ["CAST_SEARCH"]
+    assert screening.environment_fingerprint == expanded.environment_fingerprint
+    assert screening.adaptation_fingerprint != expanded.adaptation_fingerprint
+
+
 def test_compiler_seeds_git_workspace_from_tracked_files_only(tmp_path: Path) -> None:
     workspace = tmp_path / "demo"
     workspace.mkdir()

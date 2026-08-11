@@ -960,6 +960,41 @@ def _stage_telemetry_usage_delta(
     )
 
 
+def _telemetry_usage_with_observed_wall(
+    usage: _TelemetryUsageDelta,
+    *,
+    elapsed_seconds: float,
+) -> _TelemetryUsageDelta:
+    """Complete wall accounting even when a stage exits before telemetry starts."""
+
+    observation = usage.observation
+    lower_bound = observation.known_lower_bound
+    observed_wall = Decimal(str(max(0.0, elapsed_seconds)))
+    complete_wall = max(lower_bound.wall_seconds, observed_wall)
+    source = usage.source
+    if not observation.completeness.wall_seconds:
+        source = (
+            "observed_stage_elapsed_seconds"
+            if source == "reserved_fallback_missing_stage_telemetry_delta"
+            else f"{source}+observed_stage_elapsed_seconds"
+        )
+    return _TelemetryUsageDelta(
+        observation=BudgetUsageObservation(
+            known_lower_bound=BudgetUsage(
+                tokens=lower_bound.tokens,
+                cost_usd=lower_bound.cost_usd,
+                wall_seconds=complete_wall,
+            ),
+            completeness=BudgetUsageCompleteness(
+                tokens=observation.completeness.tokens,
+                cost_usd=observation.completeness.cost_usd,
+                wall_seconds=True,
+            ),
+        ),
+        source=source,
+    )
+
+
 def _judge_actual_token_usage(
     *summaries: EvaluationSummary | None,
     expected_summary_count: int | None = None,
@@ -1462,8 +1497,9 @@ def _default_iteration_budget(
     return 10 if _is_verified_apply_policy(apply_policy) else 1
 
 
-_DEFAULT_CANDIDATE_SCREENING_TIMEOUT_SECONDS = 240
+_DEFAULT_CANDIDATE_SCREENING_TIMEOUT_SECONDS = 90
 _DEFAULT_CANDIDATE_SCREENING_TRACE_HORIZON = 3
+_DEFAULT_CANDIDATE_SCREENING_TOOL_CALL_LIMIT = 8
 
 
 def _candidate_screening_timeout(authoritative_timeout_seconds: int) -> int:
@@ -2589,7 +2625,9 @@ class SelfEvolveRunner:
         candidate_generation_wall_seconds_per_unit: float | Decimal | None = Decimal("120"),
         candidate_screening_tokens_per_unit: int | None = 4_096,
         candidate_screening_cost_usd_per_unit: float | Decimal | None = Decimal("0.05"),
-        candidate_screening_wall_seconds_per_unit: float | Decimal | None = Decimal("600"),
+        candidate_screening_wall_seconds_per_unit: float | Decimal | None = (
+            Decimal("210")
+        ),
         replay_tokens_per_unit: int | None = 4_096,
         replay_cost_usd_per_unit: float | Decimal | None = Decimal("0.05"),
         replay_wall_seconds_per_unit: float | Decimal | None = Decimal("600"),
@@ -2745,7 +2783,7 @@ class SelfEvolveRunner:
             else candidate_screening_cost_usd_per_unit
         )
         candidate_screening_wall_seconds_per_unit = (
-            Decimal("600")
+            Decimal("210")
             if candidate_screening_wall_seconds_per_unit is None
             else candidate_screening_wall_seconds_per_unit
         )
@@ -6016,6 +6054,7 @@ class SelfEvolveRunner:
                 self.execution_telemetry,
                 "replay",
             )
+            screening_started_at = time.monotonic()
             try:
                 replay_result, replay_dataset, replay_gate = (
                     await self._replay_selected_candidate(
@@ -6032,6 +6071,9 @@ class SelfEvolveRunner:
                             self.replay_timeout_seconds
                         ),
                         max_steps=screening_max_steps,
+                        max_tool_calls=(
+                            _DEFAULT_CANDIDATE_SCREENING_TOOL_CALL_LIMIT
+                        ),
                         lifecycle_callback=screening_lifecycle,
                     )
                 )
@@ -6068,6 +6110,10 @@ class SelfEvolveRunner:
                 screening_usage = _stage_telemetry_usage_delta(
                     screening_telemetry_before,
                     screening_telemetry_after,
+                )
+                screening_usage = _telemetry_usage_with_observed_wall(
+                    screening_usage,
+                    elapsed_seconds=time.monotonic() - screening_started_at,
                 )
                 budget_context.debit(
                     screening_budget,
@@ -6152,6 +6198,11 @@ class SelfEvolveRunner:
                 {
                     "candidate_id": candidate.candidate_id,
                     "screening_candidate_id": screening_candidate.candidate_id,
+                    "gate_name": (
+                        replay_gate.gate_name
+                        if replay_gate is not None
+                        else "candidate_screening"
+                    ),
                     "passed": passed,
                     "reason": (
                         replay_gate.reason
@@ -6335,6 +6386,9 @@ class SelfEvolveRunner:
                 "baseline_repetitions": 1,
                 "candidate_repetitions": 1,
                 "max_steps": screening_max_steps,
+                "max_tool_calls": (
+                    _DEFAULT_CANDIDATE_SCREENING_TOOL_CALL_LIMIT
+                ),
                 "progressive_repetition": True,
                 "screening_role": "qualification_and_ranking",
                 "baseline_cache_offered_count": sum(
@@ -6480,6 +6534,7 @@ class SelfEvolveRunner:
                 "candidate_id": candidate.candidate_id,
                 "screening_candidate_id": None,
                 "stage": "conformance",
+                "gate_name": gate.gate_name,
                 "passed": gate.passed,
                 "reason": gate.reason,
                 "details": gate.details,
@@ -6580,6 +6635,19 @@ class SelfEvolveRunner:
                 )
                 or contract.to_public_dict()
             )
+            if proven_shared:
+                return replace(
+                    adaptation_gate,
+                    details={
+                        **adaptation_details,
+                        "stage": (
+                            adaptation_details.get("stage")
+                            or "repair_conformance_compile"
+                        ),
+                        "repair_conformance": repair_conformance,
+                        "source_gate_name": adaptation_gate.gate_name,
+                    },
+                )
             failure_event = ReplayFailureEvent(
                 code=(
                     capability_error_code
@@ -8640,6 +8708,7 @@ class SelfEvolveRunner:
         progress_stage: str = "candidate_replay",
         timeout_seconds: int | None = None,
         max_steps: int | None = None,
+        max_tool_calls: int | None = None,
         lifecycle_callback: Callable[[str, Mapping[str, object]], None] | None = None,
         source_disposition: CandidateSourceDisposition = CandidateSourceDisposition(),
         artifact_namespace: str | None = None,
@@ -8873,6 +8942,7 @@ class SelfEvolveRunner:
                 max_steps=(
                     self.replay_max_steps if max_steps is None else max_steps
                 ),
+                max_tool_calls=max_tool_calls,
                 max_tokens=self.per_attempt_replay_token_limit,
                 baseline_repetitions=effective_baseline_repetitions,
                 candidate_repetitions=effective_candidate_repetitions,
@@ -15952,6 +16022,7 @@ def _combined_candidate_validation_report(
             "baseline_repetitions",
             "candidate_repetitions",
             "max_steps",
+            "max_tool_calls",
             "progressive_repetition",
             "authoritative_baseline_repetitions",
             "authoritative_candidate_repetitions",
@@ -16038,7 +16109,12 @@ def _candidate_validation_shared_failure_gate(
                     continue
                 details = attempt.get("details")
                 gate = GateResult(
-                    gate_name=gate_name,
+                    gate_name=(
+                        str(attempt.get("gate_name"))
+                        if isinstance(attempt.get("gate_name"), str)
+                        and attempt.get("gate_name")
+                        else gate_name
+                    ),
                     passed=False,
                     reason=str(
                         attempt.get("reason")
@@ -16296,6 +16372,7 @@ def _repair_conformance_screening_attempt(
         "candidate_id": candidate.candidate_id,
         "screening_candidate_id": None,
         "stage": "conformance",
+        "gate_name": gate.gate_name,
         "passed": False,
         "reason": gate.reason,
         "details": gate.details,
