@@ -424,6 +424,50 @@ def test_optimize_command_forwards_campaign_cycle_override(
     assert calls["max_improvement_cycles"] == 5
 
 
+def test_optimize_command_forwards_trusted_measurement_options(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = {}
+
+    def fake_run_optimize_cli(**kwargs):
+        calls.update(kwargs)
+        return {"status": "rejected"}
+
+    monkeypatch.setattr(
+        "aworld_cli.top_level_commands.optimize_cmd.run_optimize_cli",
+        fake_run_optimize_cli,
+    )
+
+    handled = main_module._maybe_dispatch_top_level_command(
+        [
+            "aworld-cli",
+            "optimize",
+            "--from-trajectory",
+            "trajectory.log",
+            "--measurement-mode",
+            "shadow",
+            "--measurement-primary-metric",
+            "score",
+            "--measurement-minimum-effect",
+            "0.05",
+            "--measurement-confidence-level",
+            "0.9",
+            "--measurement-min-independent-cases",
+            "4",
+            "--measurement-bootstrap-samples",
+            "800",
+        ]
+    )
+
+    assert handled is True
+    assert calls["measurement_mode"] == "shadow"
+    assert calls["measurement_primary_metric"] == "score"
+    assert calls["measurement_minimum_effect"] == pytest.approx(0.05)
+    assert calls["measurement_confidence_level"] == pytest.approx(0.9)
+    assert calls["measurement_min_independent_cases"] == 4
+    assert calls["measurement_bootstrap_samples"] == 800
+
+
 def test_optimize_command_rejects_proposal_campaign_resume(
     capsys: pytest.CaptureFixture[str],
 ) -> None:

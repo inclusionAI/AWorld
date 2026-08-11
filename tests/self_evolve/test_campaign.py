@@ -328,6 +328,123 @@ def test_progress_ranks_typed_lifecycle_stages() -> None:
     assert replay_progress.deepest_stage_rank == 5
 
 
+def test_required_measurement_progress_is_separate_from_candidate_quality() -> None:
+    report = _report(_event())
+    report["candidate_metrics"] = {"score": 99.0}
+    report["measurement"] = {
+        "mode": "required",
+        "measurement_readiness_stage": "first_comparable_pair",
+        "independent_case_count": 1,
+        "comparable_pair_count": 3,
+        "validity_status": "valid_limited",
+        "effect_direction": "inconclusive",
+        "confidence_lower_bound": -0.1,
+        "promotion_eligible": False,
+        "next_action": "collect_more_evidence",
+        "attribution_report_path": (
+            "experiments/experiment-abc/attribution_report.json"
+        ),
+    }
+
+    progress = self_improvement_progress(report)
+
+    assert progress.candidate_quality is not None
+    assert progress.measurement is not None
+    assert progress.measurement.authoritative is True
+    assert progress.measurement.readiness_rank == 8
+    assert progress.measurement.comparable_pair_count == 3
+
+
+def test_required_measurement_routes_more_evidence_before_candidate_repair() -> None:
+    report = _report(_event(), status="rejected")
+    report["measurement"] = {
+        "mode": "required",
+        "measurement_readiness_stage": "first_comparable_pair",
+        "independent_case_count": 1,
+        "comparable_pair_count": 1,
+        "validity_status": "valid_limited",
+        "effect_direction": "inconclusive",
+        "confidence_lower_bound": None,
+        "promotion_eligible": False,
+        "next_action": "collect_more_evidence",
+        "attribution_report_path": (
+            "experiments/experiment-abc/attribution_report.json"
+        ),
+    }
+
+    disposition = derive_self_improvement_disposition(report)
+
+    assert disposition.kind is (
+        SelfImprovementDispositionKind.COLLECT_MORE_EVIDENCE
+    )
+    assert disposition.owner == "evaluation_harness"
+    assert disposition.continuable is True
+
+
+def test_required_negative_effect_stops_even_when_raw_score_is_high() -> None:
+    report = _report(_event(), status="rejected")
+    report["candidate_metrics"] = {"score": 100.0}
+    report["measurement"] = {
+        "mode": "required",
+        "measurement_readiness_stage": "minimum_independent_evidence",
+        "independent_case_count": 30,
+        "comparable_pair_count": 30,
+        "validity_status": "valid",
+        "effect_direction": "negative",
+        "confidence_lower_bound": -0.2,
+        "promotion_eligible": False,
+        "next_action": "stop_negative_effect",
+        "attribution_report_path": (
+            "experiments/experiment-abc/attribution_report.json"
+        ),
+    }
+
+    disposition = derive_self_improvement_disposition(report)
+
+    assert disposition.kind is SelfImprovementDispositionKind.STOP_NEGATIVE_EFFECT
+    assert disposition.continuable is False
+
+
+def test_advisory_measurement_routes_measurement_repair() -> None:
+    report = _report(_event(), status="rejected")
+    report["measurement"] = {
+        "mode": "advisory",
+        "measurement_readiness_stage": "task_rollout",
+        "independent_case_count": 0,
+        "comparable_pair_count": 0,
+        "validity_status": "invalid",
+        "effect_direction": "unmeasured",
+        "confidence_lower_bound": None,
+        "promotion_eligible": False,
+        "next_action": "repair_measurement",
+    }
+
+    disposition = derive_self_improvement_disposition(report)
+
+    assert disposition.kind is SelfImprovementDispositionKind.REPAIR_MEASUREMENT
+    assert disposition.owner == "evaluation_harness"
+
+
+def test_shadow_measurement_does_not_override_candidate_disposition() -> None:
+    report = _report(_event(), status="rejected")
+    report["measurement"] = {
+        "mode": "shadow",
+        "measurement_readiness_stage": "task_rollout",
+        "independent_case_count": 0,
+        "comparable_pair_count": 0,
+        "validity_status": "invalid",
+        "effect_direction": "unmeasured",
+        "confidence_lower_bound": None,
+        "promotion_eligible": False,
+        "next_action": "repair_measurement",
+    }
+
+    disposition = derive_self_improvement_disposition(report)
+
+    assert disposition.kind is SelfImprovementDispositionKind.CONTINUE_CANDIDATE
+    assert disposition.owner == "candidate"
+
+
 def test_recovery_trace_advances_campaign_frontier_without_new_failure_code() -> None:
     identity = "sha256:" + "a" * 64
     first_report = _report(_event())

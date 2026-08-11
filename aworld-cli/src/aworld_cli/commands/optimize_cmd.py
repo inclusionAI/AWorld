@@ -132,6 +132,41 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--judge-timeout", type=int, dest="judge_timeout_seconds")
     parser.add_argument("--baseline-replay-repetitions", type=int, dest="baseline_replay_repetitions")
     parser.add_argument("--candidate-replay-repetitions", type=int, dest="candidate_replay_repetitions")
+    parser.add_argument(
+        "--measurement-mode",
+        choices=("off", "shadow", "advisory", "required"),
+        default="off",
+        dest="measurement_mode",
+    )
+    parser.add_argument(
+        "--measurement-primary-metric",
+        default="task_success",
+        dest="measurement_primary_metric",
+    )
+    parser.add_argument(
+        "--measurement-minimum-effect",
+        type=float,
+        default=0.0,
+        dest="measurement_minimum_effect",
+    )
+    parser.add_argument(
+        "--measurement-confidence-level",
+        type=float,
+        default=0.95,
+        dest="measurement_confidence_level",
+    )
+    parser.add_argument(
+        "--measurement-min-independent-cases",
+        type=int,
+        default=2,
+        dest="measurement_min_independent_cases",
+    )
+    parser.add_argument(
+        "--measurement-bootstrap-samples",
+        type=int,
+        default=2_000,
+        dest="measurement_bootstrap_samples",
+    )
     parser.add_argument("--drain-pending", action="store_true", dest="drain_pending")
     parser.add_argument("--help", action="store_true")
     return parser
@@ -257,6 +292,16 @@ class OptimizeCommand(Command):
                 replay_max_steps=args.replay_max_steps,
                 baseline_replay_repetitions=args.baseline_replay_repetitions,
                 candidate_replay_repetitions=args.candidate_replay_repetitions,
+                measurement_mode=args.measurement_mode,
+                measurement_primary_metric=args.measurement_primary_metric,
+                measurement_minimum_effect=args.measurement_minimum_effect,
+                measurement_confidence_level=args.measurement_confidence_level,
+                measurement_min_independent_cases=(
+                    args.measurement_min_independent_cases
+                ),
+                measurement_bootstrap_samples=(
+                    args.measurement_bootstrap_samples
+                ),
                 runtime_registry_refresher=runtime_registry_refresher,
             )
         except (FileNotFoundError, ValueError, KeyError, NotImplementedError) as exc:

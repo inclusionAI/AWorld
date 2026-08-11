@@ -1559,12 +1559,7 @@ async def test_unresolved_adaptation_preserves_proposal_but_rejects_verified_app
             / "candidates"
             / "cand-policy.json"
         ).is_file()
-        expected_gate = (
-            "candidate_capability_replay"
-            if policy == "proposal"
-            else "candidate_replay"
-        )
         assert any(
-            gate.gate_name == expected_gate and not gate.passed
+            gate.gate_name == "candidate_capability_replay" and not gate.passed
             for gate in result.run.gate_results
         )

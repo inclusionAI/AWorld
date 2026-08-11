@@ -202,6 +202,12 @@ class SelfEvolveConfig(BaseConfig):
     """Disabled-by-default self-evolve configuration for harness optimization."""
 
     mode: Literal["off", "offline", "shadow", "online"] = "off"
+    measurement_mode: Literal["off", "shadow", "advisory", "required"] = "off"
+    measurement_primary_metric: str = "task_success"
+    measurement_minimum_effect: float = 0.0
+    measurement_confidence_level: float = 0.95
+    measurement_min_independent_cases: int = 2
+    measurement_bootstrap_samples: int = 2_000
     apply_policy: Literal["proposal", "auto_verified", "verified_only"] = "proposal"
     inferred_new_skill_policy: Literal[
         "disabled", "draft_only", "auto_verified"
@@ -298,6 +304,20 @@ class SelfEvolveConfig(BaseConfig):
             raise ValueError("replay_timeout_seconds must be positive")
         if self.replay_stability_margin < 0:
             raise ValueError("replay_stability_margin must be non-negative")
+        if not self.measurement_primary_metric.strip():
+            raise ValueError("measurement_primary_metric must be non-empty")
+        if not 0 < self.measurement_confidence_level < 1:
+            raise ValueError(
+                "measurement_confidence_level must be between 0 and 1"
+            )
+        if self.measurement_min_independent_cases <= 0:
+            raise ValueError(
+                "measurement_min_independent_cases must be positive"
+            )
+        if not 200 <= self.measurement_bootstrap_samples <= 100_000:
+            raise ValueError(
+                "measurement_bootstrap_samples must be between 200 and 100000"
+            )
         if not 0 < self.challenger_max_cases <= 8:
             raise ValueError("challenger_max_cases must be between 1 and 8")
         if self.max_improvement_cycles <= 0:

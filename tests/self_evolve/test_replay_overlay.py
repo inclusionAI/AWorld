@@ -3604,7 +3604,7 @@ def test_failed_replay_includes_preserved_protocol_trace_diagnostics(
     ]
 
 
-def test_candidate_timeout_after_completed_data_interaction_is_repairable() -> None:
+def test_timeout_after_completed_data_interaction_defers_causal_attribution() -> None:
     trace = "\n".join(
         (
             '{"direction":"received","sequence":0,"kind":"http",'
@@ -3638,18 +3638,18 @@ def test_candidate_timeout_after_completed_data_interaction_is_repairable() -> N
         variant_id="baseline",
     )
 
-    assert classified.failure == {
-        **result.failure,
-        "outcome": "candidate_failure",
-        "failure_class": "candidate_task_behavior",
-        "failure_stage": "task_rollout",
-        "repairable": True,
-        "completed_data_plane_operations": ["content"],
-    }
-    assert baseline.failure == result.failure
+    for observed in (classified, baseline):
+        assert observed.failure is not None
+        assert observed.failure["failure_stage"] == "task_rollout"
+        assert observed.failure["completed_data_plane_operations"] == ["content"]
+        assert observed.failure["diagnostics"][
+            "completed_data_plane_operations"
+        ] == ["content"]
+        assert "outcome" not in observed.failure
+        assert "failure_class" not in observed.failure
 
 
-def test_candidate_timeout_after_completed_root_http_interaction_is_repairable() -> None:
+def test_candidate_timeout_records_completed_root_http_interaction() -> None:
     trace = "\n".join(
         (
             '{"direction":"received","sequence":0,"kind":"http",'
@@ -3678,8 +3678,8 @@ def test_candidate_timeout_after_completed_root_http_interaction_is_repairable()
     )
 
     assert classified.failure is not None
-    assert classified.failure["failure_class"] == "candidate_task_behavior"
     assert classified.failure["completed_data_plane_operations"] == ["/"]
+    assert "outcome" not in classified.failure
 
 
 def test_candidate_readiness_only_timeout_is_not_task_behavior_failure() -> None:
@@ -7918,6 +7918,14 @@ async def test_aworld_cli_replay_executor_decodes_timeout_output_bytes(
         "failure_class": "candidate_replay_capability",
         "failure_stage": "task_rollout",
         "repairable": True,
+        "termination_kind": "budget_exhausted",
+        "termination_budget_axis": "wall_time",
+        "timeout_seconds": 1,
+        "max_steps": None,
+        "max_tool_calls": 24,
+        "tool_calls_used": 0,
+        "terminal_synthesis_attempted": False,
+        "evidence_phase": "collecting",
         "diagnostics": {
             "stdout_tail": "partial stdout: CDP discovery failed at <LOCAL_PATH>",
             "stderr_tail": "partial stderr <REDACTED_SECRET>",
@@ -7930,6 +7938,14 @@ async def test_aworld_cli_replay_executor_decodes_timeout_output_bytes(
                     ),
                 }
             ],
+            "termination_kind": "budget_exhausted",
+            "termination_budget_axis": "wall_time",
+            "timeout_seconds": 1,
+            "max_steps": None,
+            "max_tool_calls": 24,
+            "tool_calls_used": 0,
+            "terminal_synthesis_attempted": False,
+            "evidence_phase": "collecting",
         },
     }
 
@@ -8344,19 +8360,16 @@ async def test_aworld_cli_replay_executor_trusts_scoped_task_protocol_artifact(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("variant_id", "expected_outcome", "expected_failure_class", "repairable"),
+    "variant_id",
     (
-        ("candidate", "candidate_failure", "candidate_task_behavior", True),
-        ("baseline", "task_failure", "baseline_task_timeout", False),
+        "candidate",
+        "baseline",
     ),
 )
 async def test_aworld_cli_replay_executor_preserves_timeout_with_recoverable_evidence(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     variant_id: str,
-    expected_outcome: str,
-    expected_failure_class: str,
-    repairable: bool,
 ) -> None:
     def fake_run(command, **kwargs):
         artifact_dir = Path(
@@ -8419,9 +8432,14 @@ async def test_aworld_cli_replay_executor_preserves_timeout_with_recoverable_evi
     assert result.succeeded is False
     assert result.status == "failed"
     assert result.failure["code"] == "replay_task_timeout_with_recoverable_evidence"
-    assert result.failure["outcome"] == expected_outcome
-    assert result.failure["failure_class"] == expected_failure_class
-    assert result.failure["repairable"] is repairable
+    assert result.failure["outcome"] == "task_failure"
+    assert result.failure["failure_class"] == (
+        "task_timeout_with_recoverable_evidence"
+    )
+    assert result.failure["repairable"] is False
+    assert result.failure["termination_kind"] == "budget_exhausted"
+    assert result.failure["termination_budget_axis"] == "wall_time"
+    assert result.failure["terminal_synthesis_attempted"] is False
     assert result.failure["diagnostics"]["evidence_recoverable"] is True
     assert result.stdout == "partial stdout"
     assert result.stderr == "partial stderr"
@@ -8430,9 +8448,7 @@ async def test_aworld_cli_replay_executor_preserves_timeout_with_recoverable_evi
     assert result.metrics["evidence_bundle_valid"] is True
     assert result.trajectory == []
     counterexample = result.failure["diagnostics"]["replay_counterexamples"][0]
-    assert counterexample["owner"] == (
-        "task" if variant_id == "baseline" else "candidate"
-    )
+    assert counterexample["owner"] == "task"
     assert counterexample["state_before"] == "evidence_ready"
     assert counterexample["required_transition"] == (
         "finalize_task_response_before_timeout"

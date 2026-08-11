@@ -320,6 +320,14 @@ def _run_framework_job(
         baseline_replay_repetitions=config.baseline_replay_repetitions,
         candidate_replay_repetitions=config.candidate_replay_repetitions,
         replay_stability_margin=config.replay_stability_margin,
+        measurement_mode=config.measurement_mode,
+        measurement_primary_metric=config.measurement_primary_metric,
+        measurement_minimum_effect=config.measurement_minimum_effect,
+        measurement_confidence_level=config.measurement_confidence_level,
+        measurement_min_independent_cases=(
+            config.measurement_min_independent_cases
+        ),
+        measurement_bootstrap_samples=config.measurement_bootstrap_samples,
         regression_benchmarks=config.regression_benchmarks,
         challenger_enabled=config.challenger_enabled,
         challenger_max_cases=config.challenger_max_cases,

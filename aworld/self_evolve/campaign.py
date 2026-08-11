@@ -63,6 +63,7 @@ _STAGE_RANK = {
     "replay_confidence": 6,
     "evaluation": 7,
     "held_out_verification": 8,
+    "trusted_improvement_measurement": 9,
     "apply": 9,
     "post_apply": 10,
     # Typed causal events use lifecycle stage names rather than gate names.
@@ -71,6 +72,19 @@ _STAGE_RANK = {
     "task_rollout": 5,
     "evaluator": 7,
     "post_apply_verification": 10,
+}
+_MEASUREMENT_READINESS_RANK = {
+    "unplanned": 0,
+    "experiment_planned": 1,
+    "identity_contract_complete": 2,
+    "capability_compile": 3,
+    "capability_preflight": 4,
+    "control_executable": 5,
+    "task_rollout": 6,
+    "paired_observations": 7,
+    "first_comparable_pair": 8,
+    "minimum_independent_evidence": 9,
+    "transfer_panel_executable": 10,
 }
 
 
@@ -89,6 +103,12 @@ class SelfImprovementDispositionKind(str, Enum):
     RETRY_INFRASTRUCTURE = "retry_infrastructure"
     HANDOFF_GOAL = "handoff_goal"
     PAUSE_OPERATOR = "pause_operator"
+    COLLECT_MORE_EVIDENCE = "collect_more_evidence"
+    REPAIR_MEASUREMENT = "repair_measurement"
+    SWITCH_GENERATOR = "switch_generator"
+    SWITCH_SCHEDULER = "switch_scheduler"
+    STOP_NO_EFFECT = "stop_no_effect"
+    STOP_NEGATIVE_EFFECT = "stop_negative_effect"
     EXHAUSTED = "exhausted"
 
 
@@ -284,12 +304,138 @@ class CandidateQualityProgress:
 
 
 @dataclass(frozen=True)
+class TrustedMeasurementProgress:
+    """Campaign progress from controlled evidence, separate from candidate score."""
+
+    authoritative: bool = False
+    readiness_rank: int = 0
+    independent_case_count: int = 0
+    comparable_pair_count: int = 0
+    validity_status: str | None = None
+    effect_direction: str | None = None
+    confidence_lower_micros: int | None = None
+    promotion_eligible: bool = False
+
+    def __post_init__(self) -> None:
+        for field_name in (
+            "readiness_rank",
+            "independent_case_count",
+            "comparable_pair_count",
+        ):
+            value = getattr(self, field_name)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError(f"{field_name} must be a non-negative integer")
+        if self.confidence_lower_micros is not None and (
+            isinstance(self.confidence_lower_micros, bool)
+            or not isinstance(self.confidence_lower_micros, int)
+        ):
+            raise ValueError("confidence_lower_micros must be an integer")
+
+    def delta_from(
+        self,
+        previous: "TrustedMeasurementProgress | None",
+    ) -> tuple[str, ...] | None:
+        if previous is None:
+            return tuple(
+                item
+                for item in (
+                    f"measurement-readiness:{self.readiness_rank}",
+                    f"measurement-independent-cases:{self.independent_case_count}",
+                    f"measurement-comparable-pairs:{self.comparable_pair_count}",
+                    (
+                        "measurement-promotion-eligible"
+                        if self.promotion_eligible
+                        else None
+                    ),
+                )
+                if item is not None
+            )
+        if previous.authoritative and (
+            self.readiness_rank < previous.readiness_rank
+            or self.independent_case_count < previous.independent_case_count
+            or self.comparable_pair_count < previous.comparable_pair_count
+            or (previous.promotion_eligible and not self.promotion_eligible)
+            or (
+                previous.effect_direction == "positive"
+                and self.effect_direction in {"neutral", "negative", "unmeasured"}
+            )
+        ):
+            return None
+        delta: set[str] = set()
+        if self.readiness_rank > previous.readiness_rank:
+            delta.add(f"measurement-readiness:{self.readiness_rank}")
+        if self.independent_case_count > previous.independent_case_count:
+            delta.add(
+                f"measurement-independent-cases:{self.independent_case_count}"
+            )
+        if self.comparable_pair_count > previous.comparable_pair_count:
+            delta.add(
+                f"measurement-comparable-pairs:{self.comparable_pair_count}"
+            )
+        if self.promotion_eligible and not previous.promotion_eligible:
+            delta.add("measurement-promotion-eligible")
+        if (
+            self.confidence_lower_micros is not None
+            and previous.confidence_lower_micros is not None
+            and self.confidence_lower_micros
+            > previous.confidence_lower_micros
+        ):
+            delta.add(
+                "measurement-confidence-lower-micros:"
+                f"{self.confidence_lower_micros}"
+            )
+        return tuple(sorted(delta))
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "authoritative": self.authoritative,
+            "readiness_rank": self.readiness_rank,
+            "independent_case_count": self.independent_case_count,
+            "comparable_pair_count": self.comparable_pair_count,
+            "validity_status": self.validity_status,
+            "effect_direction": self.effect_direction,
+            "confidence_lower_micros": self.confidence_lower_micros,
+            "promotion_eligible": self.promotion_eligible,
+        }
+
+    @classmethod
+    def from_dict(
+        cls,
+        value: Mapping[str, object],
+    ) -> "TrustedMeasurementProgress":
+        raw_lower = value.get("confidence_lower_micros")
+        return cls(
+            authoritative=value.get("authoritative") is True,
+            readiness_rank=_non_negative_int(
+                value.get("readiness_rank"), "measurement readiness rank"
+            ),
+            independent_case_count=_non_negative_int(
+                value.get("independent_case_count"),
+                "measurement independent case count",
+            ),
+            comparable_pair_count=_non_negative_int(
+                value.get("comparable_pair_count"),
+                "measurement comparable pair count",
+            ),
+            validity_status=_optional_string(value.get("validity_status")),
+            effect_direction=_optional_string(value.get("effect_direction")),
+            confidence_lower_micros=(
+                int(raw_lower)
+                if isinstance(raw_lower, int) and not isinstance(raw_lower, bool)
+                else None
+            ),
+            promotion_eligible=value.get("promotion_eligible") is True,
+        )
+
+
+@dataclass(frozen=True)
 class SelfImprovementProgress:
     deepest_stage_rank: int = 0
     semantic_frontier_ids: tuple[str, ...] = ()
     constraint_ids: tuple[str, ...] = ()
     passed_gate_ids: tuple[str, ...] = ()
     candidate_quality: CandidateQualityProgress | None = None
+    measurement: "TrustedMeasurementProgress | None" = None
 
     def __post_init__(self) -> None:
         if isinstance(self.deepest_stage_rank, bool) or self.deepest_stage_rank < 0:
@@ -342,6 +488,16 @@ class SelfImprovementProgress:
             if quality_delta_result is None:
                 return ()
             quality_delta = quality_delta_result
+        measurement_delta: tuple[str, ...] = ()
+        if self.measurement is not None:
+            measurement_delta_result = self.measurement.delta_from(
+                previous.measurement
+            )
+            if measurement_delta_result is None:
+                return ()
+            measurement_delta = measurement_delta_result
+        elif previous.measurement is not None and previous.measurement.authoritative:
+            return ()
         # New failure-event identities are diagnostics, not achievements.
         # They seed the first cycle so a typed repair can start, but only
         # monotonic recovery or coarsely bucketed quality improvements may
@@ -349,6 +505,7 @@ class SelfImprovementProgress:
         delta = current_recovery - previous_recovery
         delta.update(set(self.constraint_ids) - set(previous.constraint_ids))
         delta.update(quality_delta)
+        delta.update(measurement_delta)
         delta.update(
             f"passed-gate:{item}"
             for item in set(self.passed_gate_ids) - set(previous.passed_gate_ids)
@@ -369,6 +526,11 @@ class SelfImprovementProgress:
                 if self.candidate_quality is not None
                 else None
             ),
+            "measurement": (
+                self.measurement.to_dict()
+                if self.measurement is not None
+                else None
+            ),
         }
 
     @classmethod
@@ -376,6 +538,7 @@ class SelfImprovementProgress:
         if value.get("schema_version") != PROGRESS_SCHEMA_VERSION:
             raise ValueError("unsupported self-improvement progress schema")
         raw_quality = value.get("candidate_quality")
+        raw_measurement = value.get("measurement")
         return cls(
             deepest_stage_rank=_non_negative_int(
                 value.get("deepest_stage_rank"), "deepest stage rank"
@@ -386,6 +549,11 @@ class SelfImprovementProgress:
             candidate_quality=(
                 CandidateQualityProgress.from_dict(raw_quality)
                 if isinstance(raw_quality, Mapping)
+                else None
+            ),
+            measurement=(
+                TrustedMeasurementProgress.from_dict(raw_measurement)
+                if isinstance(raw_measurement, Mapping)
                 else None
             ),
         )
@@ -425,6 +593,10 @@ class SelfImprovementDisposition:
             SelfImprovementDispositionKind.CONTINUE_CANDIDATE,
             SelfImprovementDispositionKind.CONTINUE_CAMPAIGN,
             SelfImprovementDispositionKind.RETRY_INFRASTRUCTURE,
+            SelfImprovementDispositionKind.COLLECT_MORE_EVIDENCE,
+            SelfImprovementDispositionKind.REPAIR_MEASUREMENT,
+            SelfImprovementDispositionKind.SWITCH_GENERATOR,
+            SelfImprovementDispositionKind.SWITCH_SCHEDULER,
         }
 
     def to_dict(self) -> dict[str, object]:
@@ -937,6 +1109,10 @@ class SelfImprovementCampaignController:
                     SelfImprovementDispositionKind.CONTINUE_CANDIDATE,
                     SelfImprovementDispositionKind.CONTINUE_CAMPAIGN,
                     SelfImprovementDispositionKind.RETRY_INFRASTRUCTURE,
+                    SelfImprovementDispositionKind.COLLECT_MORE_EVIDENCE,
+                    SelfImprovementDispositionKind.REPAIR_MEASUREMENT,
+                    SelfImprovementDispositionKind.SWITCH_GENERATOR,
+                    SelfImprovementDispositionKind.SWITCH_SCHEDULER,
                 }
             ):
                 break
@@ -1175,6 +1351,110 @@ def self_improvement_progress(report: Mapping[str, Any]) -> SelfImprovementProgr
         constraint_ids=constraint_ids,
         passed_gate_ids=tuple(passed_gates),
         candidate_quality=_candidate_quality_progress(report),
+        measurement=_trusted_measurement_progress(report),
+    )
+
+
+def _measurement_policy_disposition(
+    report: Mapping[str, Any],
+    *,
+    progress_delta_ids: tuple[str, ...],
+) -> SelfImprovementDisposition | None:
+    raw = report.get("measurement")
+    required_gate_failed = any(
+        isinstance(item, Mapping)
+        and item.get("gate_name") == "trusted_improvement_measurement"
+        and item.get("passed") is False
+        for item in (
+            report.get("gate_results")
+            if isinstance(report.get("gate_results"), list)
+            else ()
+        )
+    )
+    if not isinstance(raw, Mapping):
+        if not required_gate_failed:
+            return None
+        return SelfImprovementDisposition(
+            kind=SelfImprovementDispositionKind.REPAIR_MEASUREMENT,
+            reason_code="trusted_measurement_artifact_missing",
+            owner="evaluation_harness",
+            stage="measurement",
+            scope="shared_run",
+            repairable=True,
+            progress_delta_ids=progress_delta_ids,
+        )
+    mode = str(raw.get("mode") or "off")
+    if mode not in {"advisory", "required"} or raw.get("promotion_eligible") is True:
+        return None
+    next_action = str(raw.get("next_action") or "repair_measurement")
+    kinds = {
+        "continue_candidate_repair": (
+            SelfImprovementDispositionKind.CONTINUE_CANDIDATE,
+            "trusted_measurement_candidate_repair",
+            "candidate",
+            True,
+        ),
+        "collect_more_evidence": (
+            SelfImprovementDispositionKind.COLLECT_MORE_EVIDENCE,
+            "trusted_measurement_needs_more_evidence",
+            "evaluation_harness",
+            True,
+        ),
+        "repair_measurement": (
+            SelfImprovementDispositionKind.REPAIR_MEASUREMENT,
+            "trusted_measurement_invalid",
+            "evaluation_harness",
+            True,
+        ),
+        "switch_generator": (
+            SelfImprovementDispositionKind.SWITCH_GENERATOR,
+            "trusted_measurement_switch_generator",
+            "framework",
+            True,
+        ),
+        "switch_scheduler": (
+            SelfImprovementDispositionKind.SWITCH_SCHEDULER,
+            "trusted_measurement_switch_scheduler",
+            "framework",
+            True,
+        ),
+        "stop_no_effect": (
+            SelfImprovementDispositionKind.STOP_NO_EFFECT,
+            "trusted_measurement_no_effect",
+            "candidate",
+            False,
+        ),
+        "stop_negative_effect": (
+            SelfImprovementDispositionKind.STOP_NEGATIVE_EFFECT,
+            "trusted_measurement_negative_effect",
+            "candidate",
+            False,
+        ),
+        "pause_operator": (
+            SelfImprovementDispositionKind.PAUSE_OPERATOR,
+            "trusted_measurement_operator_review",
+            "operator",
+            False,
+        ),
+    }
+    kind, reason_code, owner, repairable = kinds.get(
+        next_action,
+        kinds["repair_measurement"],
+    )
+    attribution_ref = raw.get("attribution_report_path")
+    return SelfImprovementDisposition(
+        kind=kind,
+        reason_code=reason_code,
+        owner=owner,
+        stage="measurement",
+        scope="shared_run" if owner != "candidate" else "candidate",
+        repairable=repairable,
+        progress_delta_ids=progress_delta_ids,
+        diagnostic_refs=(
+            (str(attribution_ref),)
+            if isinstance(attribution_ref, str) and attribution_ref
+            else ()
+        ),
     )
 
 
@@ -1185,6 +1465,12 @@ def derive_self_improvement_disposition(
     status = str(report.get("status") or "")
     progress = self_improvement_progress(report)
     delta = progress.delta_from(previous_progress)
+    measurement_disposition = _measurement_policy_disposition(
+        report,
+        progress_delta_ids=delta,
+    )
+    if measurement_disposition is not None:
+        return measurement_disposition
     if status == "succeeded":
         return SelfImprovementDisposition(
             kind=SelfImprovementDispositionKind.COMPLETE,
@@ -1791,9 +2077,42 @@ def _campaign_report_quality(report: Mapping[str, Any]) -> tuple[object, ...]:
         for item in gates
         if isinstance(item, Mapping) and item.get("passed") is False
     ) if isinstance(gates, list) else 0
+    measurement = (
+        report.get("measurement")
+        if isinstance(report.get("measurement"), Mapping)
+        else {}
+    )
+    measurement_required = measurement.get("mode") == "required"
+    measurement_validity_rank = {
+        "failed": 0,
+        "invalid": 1,
+        "inconclusive": 2,
+        "valid_limited": 3,
+        "valid": 4,
+    }.get(str(measurement.get("validity_status") or ""), 0)
+    measurement_effect_rank = {
+        "negative": 0,
+        "unmeasured": 1,
+        "inconclusive": 2,
+        "neutral": 3,
+        "positive": 4,
+    }.get(str(measurement.get("effect_direction") or ""), 1)
+    trusted_measurement_quality = (
+        (
+            measurement.get("promotion_eligible") is True,
+            measurement_validity_rank,
+            measurement_effect_rank,
+            _finite_metric(measurement.get("confidence_lower_bound")),
+        )
+        if measurement_required
+        else (False, 0, 1, float("-inf"))
+    )
     return (
         str(report.get("status") or "") == "succeeded",
         post_apply.get("release_state") in {"verified", "verified_only"},
+        not measurement_required
+        or measurement.get("promotion_eligible") is True,
+        *trusted_measurement_quality,
         isinstance(report.get("selected_candidate_id"), str),
         confidence.get("passed") is True,
         metrics.get("evidence_incomplete") is False,
@@ -1857,6 +2176,45 @@ def _candidate_quality_progress(
         ),
     )
     return quality if any(value is not None for value in quality.to_dict().values()) else None
+
+
+def _trusted_measurement_progress(
+    report: Mapping[str, Any],
+) -> TrustedMeasurementProgress | None:
+    raw = report.get("measurement")
+    if not isinstance(raw, Mapping):
+        return None
+    mode = str(raw.get("mode") or "off")
+    stage = str(raw.get("measurement_readiness_stage") or "unplanned")
+    lower = _finite_metric(raw.get("confidence_lower_bound"))
+    independent_cases = raw.get("independent_case_count")
+    comparable_pairs = raw.get("comparable_pair_count")
+    return TrustedMeasurementProgress(
+        authoritative=mode == "required",
+        readiness_rank=_MEASUREMENT_READINESS_RANK.get(stage, 0),
+        independent_case_count=(
+            int(independent_cases)
+            if isinstance(independent_cases, int)
+            and not isinstance(independent_cases, bool)
+            and independent_cases >= 0
+            else 0
+        ),
+        comparable_pair_count=(
+            int(comparable_pairs)
+            if isinstance(comparable_pairs, int)
+            and not isinstance(comparable_pairs, bool)
+            and comparable_pairs >= 0
+            else 0
+        ),
+        validity_status=_optional_string(raw.get("validity_status")),
+        effect_direction=_optional_string(raw.get("effect_direction")),
+        confidence_lower_micros=(
+            int(round(lower * 1_000_000))
+            if lower != float("-inf")
+            else None
+        ),
+        promotion_eligible=raw.get("promotion_eligible") is True,
+    )
 
 
 def _finite_metric(value: Any) -> float:
@@ -2144,6 +2502,12 @@ def _verification_request(request: Mapping[str, Any]) -> dict[str, Any]:
         "judge_timeout_seconds",
         "min_eval_cases",
         "min_score_delta",
+        "measurement_bootstrap_samples",
+        "measurement_confidence_level",
+        "measurement_min_independent_cases",
+        "measurement_minimum_effect",
+        "measurement_mode",
+        "measurement_primary_metric",
         "replay_candidate_limit",
         "replay_enabled",
         "replay_max_steps",

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping
 from typing import Any, Callable
 
@@ -280,6 +281,42 @@ class OptimizeTopLevelCommand:
             help="Maximum candidates allowed to receive incremental score tie-break evidence.",
         )
         parser.add_argument(
+            "--measurement-mode",
+            choices=("off", "shadow", "advisory", "required"),
+            default="off",
+            dest="measurement_mode",
+            help="Controlled improvement measurement policy (default: off).",
+        )
+        parser.add_argument(
+            "--measurement-primary-metric",
+            default="task_success",
+            dest="measurement_primary_metric",
+        )
+        parser.add_argument(
+            "--measurement-minimum-effect",
+            type=float,
+            default=0.0,
+            dest="measurement_minimum_effect",
+        )
+        parser.add_argument(
+            "--measurement-confidence-level",
+            type=float,
+            default=0.95,
+            dest="measurement_confidence_level",
+        )
+        parser.add_argument(
+            "--measurement-min-independent-cases",
+            type=int,
+            default=2,
+            dest="measurement_min_independent_cases",
+        )
+        parser.add_argument(
+            "--measurement-bootstrap-samples",
+            type=int,
+            default=2_000,
+            dest="measurement_bootstrap_samples",
+        )
+        parser.add_argument(
             "--drain-pending",
             action="store_true",
             dest="drain_pending",
@@ -400,6 +437,22 @@ class OptimizeTopLevelCommand:
                 max_score_tiebreak_candidates=getattr(
                     args, "max_score_tiebreak_candidates", 1
                 ),
+                measurement_mode=getattr(args, "measurement_mode", "off"),
+                measurement_primary_metric=getattr(
+                    args, "measurement_primary_metric", "task_success"
+                ),
+                measurement_minimum_effect=getattr(
+                    args, "measurement_minimum_effect", 0.0
+                ),
+                measurement_confidence_level=getattr(
+                    args, "measurement_confidence_level", 0.95
+                ),
+                measurement_min_independent_cases=getattr(
+                    args, "measurement_min_independent_cases", 2
+                ),
+                measurement_bootstrap_samples=getattr(
+                    args, "measurement_bootstrap_samples", 2_000
+                ),
                 progress_callback=_print_optimize_progress,
             )
         except (FileNotFoundError, ValueError, KeyError, NotImplementedError) as exc:
@@ -460,6 +513,7 @@ def render_optimize_summary(report: Any) -> str:
         report,
         "campaign_failure_attribution",
     )
+    measurement = _read_report_value(report, "measurement")
 
     lines = [
         (
@@ -531,6 +585,23 @@ def render_optimize_summary(report: Any) -> str:
         lines.append(f"Target selection: {target_selection_path}")
     if replay_path:
         lines.append(f"Replay: {replay_path}")
+    if isinstance(measurement, Mapping):
+        validity = measurement.get("validity_status")
+        effect = measurement.get("effect_direction")
+        comparable = measurement.get("comparable_pair_count")
+        next_action = measurement.get("next_action")
+        if validity or effect:
+            lines.append(
+                "Measurement: "
+                f"{validity or 'unknown'} / {effect or 'unmeasured'}"
+            )
+        if isinstance(comparable, int):
+            lines.append(f"Measurement comparable pairs: {comparable}")
+        if next_action:
+            lines.append(f"Measurement next action: {next_action}")
+        attribution_path = measurement.get("attribution_report_path")
+        if attribution_path:
+            lines.append(f"Measurement attribution: {attribution_path}")
     if isinstance(evaluator_report_paths, (list, tuple)):
         for report_path_item in evaluator_report_paths:
             if report_path_item:
@@ -665,6 +736,12 @@ def run_optimize_cli(
     max_run_cost_usd: float | None = None,
     max_run_wall_seconds: float | None = None,
     per_attempt_replay_token_limit: int | None = None,
+    measurement_mode: str = "off",
+    measurement_primary_metric: str = "task_success",
+    measurement_minimum_effect: float = 0.0,
+    measurement_confidence_level: float = 0.95,
+    measurement_min_independent_cases: int = 2,
+    measurement_bootstrap_samples: int = 2_000,
 ) -> Mapping[str, Any]:
     for name, value, allow_zero in (
         ("--candidate-screening-max-cases", candidate_screening_max_cases, False),
@@ -679,6 +756,14 @@ def run_optimize_cli(
         max_run_cost_usd=max_run_cost_usd,
         max_run_wall_seconds=max_run_wall_seconds,
         per_attempt_replay_token_limit=per_attempt_replay_token_limit,
+    )
+    _validate_measurement_cli_options(
+        measurement_mode=measurement_mode,
+        measurement_primary_metric=measurement_primary_metric,
+        measurement_minimum_effect=measurement_minimum_effect,
+        measurement_confidence_level=measurement_confidence_level,
+        measurement_min_independent_cases=measurement_min_independent_cases,
+        measurement_bootstrap_samples=measurement_bootstrap_samples,
     )
     _validate_ingestion_cli_options(
         dataset=dataset,
@@ -771,6 +856,12 @@ def run_optimize_cli(
         "max_generated_candidates": max_generated_candidates,
         "max_full_evaluation_candidates": max_full_evaluation_candidates,
         "max_score_tiebreak_candidates": max_score_tiebreak_candidates,
+        "measurement_mode": measurement_mode,
+        "measurement_primary_metric": measurement_primary_metric,
+        "measurement_minimum_effect": measurement_minimum_effect,
+        "measurement_confidence_level": measurement_confidence_level,
+        "measurement_min_independent_cases": measurement_min_independent_cases,
+        "measurement_bootstrap_samples": measurement_bootstrap_samples,
         "apply_policy": runtime_apply,
         "inferred_new_skill_policy": new_skill_policy,
         "infer_target": infer_target,
@@ -825,6 +916,31 @@ def _validate_budget_cli_options(
     ):
         if value is not None and value <= 0:
             raise ValueError(f"{name} must be positive")
+
+
+def _validate_measurement_cli_options(
+    *,
+    measurement_mode: str,
+    measurement_primary_metric: str,
+    measurement_minimum_effect: float,
+    measurement_confidence_level: float,
+    measurement_min_independent_cases: int,
+    measurement_bootstrap_samples: int,
+) -> None:
+    if measurement_mode not in {"off", "shadow", "advisory", "required"}:
+        raise ValueError("--measurement-mode is unsupported")
+    if not measurement_primary_metric.strip():
+        raise ValueError("--measurement-primary-metric must be non-empty")
+    if not math.isfinite(measurement_minimum_effect):
+        raise ValueError("--measurement-minimum-effect must be finite")
+    if not 0 < measurement_confidence_level < 1:
+        raise ValueError("--measurement-confidence-level must be between 0 and 1")
+    if measurement_min_independent_cases <= 0:
+        raise ValueError("--measurement-min-independent-cases must be positive")
+    if not 200 <= measurement_bootstrap_samples <= 100_000:
+        raise ValueError(
+            "--measurement-bootstrap-samples must be between 200 and 100000"
+        )
 
 
 def _default_mutation_model_config():

@@ -926,6 +926,24 @@ def _execution_failure_event(
     code = legacy.code
     if code == "legacy_unclassified_failure":
         code = "unclassified_replay_execution_failure"
+    diagnostics = dict(legacy.diagnostics)
+    # Physical execution evidence may be produced before causal ownership is
+    # known.  Promote only bounded, typed termination fields into diagnostics so
+    # paired replay can perform attribution without scraping compatibility prose.
+    for key in (
+        "completed_data_plane_operations",
+        "termination_kind",
+        "termination_budget_axis",
+        "timeout_seconds",
+        "max_steps",
+        "max_tool_calls",
+        "tool_calls_used",
+        "terminal_synthesis_attempted",
+        "evidence_phase",
+    ):
+        value = payload.get(key)
+        if value is not None:
+            diagnostics[key] = value
     return ReplayFailureEvent(
         event_id=f"replay-event-{uuid.uuid4().hex}",
         code=code,
@@ -935,7 +953,7 @@ def _execution_failure_event(
         repairable=legacy.repairable,
         category=legacy.category,
         summary=legacy.summary,
-        diagnostics=legacy.diagnostics,
+        diagnostics=diagnostics,
         source=FailureEventSource.NATIVE,
         _compatibility=payload,
     )
@@ -2242,28 +2260,39 @@ def _classify_candidate_task_rollout_nontermination(
     *,
     variant_id: str,
 ) -> ReplayExecutionResult:
-    """Attribute a post-response timeout to reusable candidate behavior."""
+    """Record physical timeout progress without assigning causal ownership.
+
+    A single variant cannot prove that a timeout was introduced by a candidate.
+    Ownership is assigned only after the baseline and candidate executions are
+    paired.  Keeping the historical helper name avoids a persistence/API churn
+    while changing its contract from classification to observation.
+    """
 
     failure = result.failure
     if (
-        variant_id == "baseline"
-        or not isinstance(failure, Mapping)
+        not isinstance(failure, Mapping)
         or failure.get("type") != "TimeoutExpired"
-        or failure.get("outcome") is not None
     ):
         return result
     completed_operations = _completed_replay_data_plane_operations(failure)
     if not completed_operations:
         return result
-    classified = {
+    diagnostics = failure.get("diagnostics")
+    physical_diagnostics = dict(diagnostics) if isinstance(diagnostics, Mapping) else {}
+    physical_diagnostics["completed_data_plane_operations"] = list(
+        completed_operations
+    )
+    observed = {
         **dict(failure),
-        "outcome": "candidate_failure",
-        "failure_class": "candidate_task_behavior",
-        "failure_stage": "task_rollout",
-        "repairable": True,
+        "failure_stage": str(failure.get("failure_stage") or "task_rollout"),
         "completed_data_plane_operations": list(completed_operations),
+        "diagnostics": physical_diagnostics,
     }
-    return replace(result, failure=classified)
+    # Existing explicit capability attribution remains authoritative.  The
+    # generic timeout path, including a candidate variant, remains task-owned
+    # until paired comparison is available.
+    del variant_id
+    return replace(result, failure=observed)
 
 
 def _completed_replay_data_plane_operations(
@@ -3492,6 +3521,42 @@ def _terminal_replay_artifact_diagnostics(
     return {"diagnostics": {"task_artifacts": task_artifacts}}
 
 
+def _timeout_termination_diagnostics(
+    request: ReplayExecutionRequest,
+    evidence_metrics: Mapping[str, Any],
+    *,
+    default_tool_call_limit: int,
+) -> dict[str, Any]:
+    """Describe the exhausted execution envelope without inferring blame."""
+
+    raw_used = evidence_metrics.get(
+        "evidence_runtime_policy_tool_call_attempt_count"
+    )
+    tool_calls_used = (
+        int(raw_used)
+        if isinstance(raw_used, (int, float)) and not isinstance(raw_used, bool)
+        else 0
+    )
+    max_tool_calls = request.max_tool_calls or default_tool_call_limit
+    evidence_phase = str(
+        evidence_metrics.get("evidence_runtime_policy_phase") or "collecting"
+    )
+    if tool_calls_used >= max_tool_calls:
+        budget_axis = "tool_calls"
+    else:
+        budget_axis = "wall_time"
+    return {
+        "termination_kind": "budget_exhausted",
+        "termination_budget_axis": budget_axis,
+        "timeout_seconds": request.timeout_seconds,
+        "max_steps": request.max_steps,
+        "max_tool_calls": max_tool_calls,
+        "tool_calls_used": tool_calls_used,
+        "terminal_synthesis_attempted": evidence_phase == "finalizing",
+        "evidence_phase": evidence_phase,
+    }
+
+
 class AWorldCliReplayExecutor:
     _DEFAULT_TOOL_CALL_LIMIT = 24
     _DEFAULT_RESERVED_OUTPUT_TOKENS = 4096
@@ -3619,6 +3684,11 @@ class AWorldCliReplayExecutor:
                 workspace_root=Path(request.workspace_root),
                 variant_id=request.variant_id,
             )
+            termination_diagnostics = _timeout_termination_diagnostics(
+                request,
+                evidence_metrics,
+                default_tool_call_limit=self._DEFAULT_TOOL_CALL_LIMIT,
+            )
             compacted_argument_failure = _compacted_argument_replay_failure(
                 evidence_metrics
             )
@@ -3655,6 +3725,17 @@ class AWorldCliReplayExecutor:
                 artifact_dir=artifact_dir,
                 since=execution_started_at,
             )
+            process_diagnostics = {
+                **process_diagnostics,
+                "diagnostics": {
+                    **(
+                        dict(process_diagnostics.get("diagnostics", {}))
+                        if isinstance(process_diagnostics.get("diagnostics"), Mapping)
+                        else {}
+                    ),
+                    **termination_diagnostics,
+                },
+            }
             if _diagnostics_indicate_replay_dependency_failure(
                 process_diagnostics,
                 environment=request.environment,
@@ -3671,9 +3752,10 @@ class AWorldCliReplayExecutor:
                         "failure_class": "candidate_replay_capability",
                         "failure_stage": "task_rollout",
                         "repairable": True,
+                        **termination_diagnostics,
                         **process_diagnostics,
                     },
-                    metrics=evidence_metrics,
+                    metrics={**evidence_metrics, **termination_diagnostics},
                 )
             if _has_valid_artifact_backed_timeout_evidence(evidence_metrics):
                 metrics = {
@@ -3684,7 +3766,6 @@ class AWorldCliReplayExecutor:
                 }
                 counterexample = _timeout_evidence_counterexample(
                     metrics,
-                    variant_id=request.variant_id,
                 )
                 metrics = {
                     **metrics,
@@ -3698,18 +3779,10 @@ class AWorldCliReplayExecutor:
                     failure={
                         "code": "replay_task_timeout_with_recoverable_evidence",
                         "type": "TimeoutExpired",
-                        "outcome": (
-                            "task_failure"
-                            if request.variant_id == "baseline"
-                            else "candidate_failure"
-                        ),
-                        "failure_class": (
-                            "baseline_task_timeout"
-                            if request.variant_id == "baseline"
-                            else "candidate_task_behavior"
-                        ),
+                        "outcome": "task_failure",
+                        "failure_class": "task_timeout_with_recoverable_evidence",
                         "failure_stage": "task_rollout",
-                        "repairable": request.variant_id != "baseline",
+                        "repairable": False,
                         "category": "task_completion",
                         "reason": (
                             "replay timed out after persisting recoverable evidence; "
@@ -3719,13 +3792,17 @@ class AWorldCliReplayExecutor:
                             "evidence_recoverable": True,
                             "task_completion_established": False,
                             "replay_counterexamples": [counterexample],
+                            **termination_diagnostics,
                         },
+                        **termination_diagnostics,
                     },
-                    metrics=metrics,
+                    metrics={**metrics, **termination_diagnostics},
                 )
             failure: dict[str, Any] = {
                 "type": "TimeoutExpired",
                 "reason": "replay timed out",
+                "failure_stage": "task_rollout",
+                **termination_diagnostics,
             }
             if _diagnostics_indicate_replay_dependency_failure(
                 process_diagnostics,
@@ -3742,6 +3819,7 @@ class AWorldCliReplayExecutor:
                 stdout=stdout,
                 stderr=stderr,
                 failure=failure,
+                metrics={**evidence_metrics, **termination_diagnostics},
             )
         finally:
             shutil.rmtree(runtime_root, ignore_errors=True)
@@ -7892,17 +7970,15 @@ def _has_valid_artifact_backed_timeout_evidence(metrics: Mapping[str, Any]) -> b
 
 def _timeout_evidence_counterexample(
     metrics: Mapping[str, Any],
-    *,
-    variant_id: str,
 ) -> dict[str, Any]:
-    """Describe a timeout without copying task text, paths, or payloads."""
+    """Describe the physical timeout without assigning treatment blame."""
 
     return _task_completion_counterexample(
         metrics,
         failure_code="replay_task_timeout_with_recoverable_evidence",
         trigger="task_timeout",
         required_transition="finalize_task_response_before_timeout",
-        owner="task" if variant_id == "baseline" else "candidate",
+        owner="task",
     )
 
 

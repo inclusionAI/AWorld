@@ -8,8 +8,10 @@ import math
 import re
 import shutil
 import statistics
+import sys
 import time
 import uuid
+from collections import Counter
 from dataclasses import asdict, dataclass, field, replace
 from decimal import Decimal
 from typing import Callable, Any
@@ -95,6 +97,27 @@ from aworld.self_evolve.lifecycle import (
     acknowledge_self_evolve_retention_transactions,
     cleanup_self_evolve_artifacts,
     read_self_evolve_retention_transactions,
+)
+from aworld.self_evolve.measurement import (
+    BudgetLedger,
+    ComponentIdentity,
+    ControlledExperimentSpec,
+    ExperimentBudget,
+    FrozenIdentities,
+    MeasurementObservation,
+    MeasurementPolicyMode,
+    MeasurementSummary,
+    MeasurementUsage,
+    OutcomePlan,
+    SamplingPlan,
+    SearchCandidateResult,
+    SwapAxis,
+    TargetResolutionConfidence,
+    build_attribution_report,
+    build_search_performance,
+    observations_from_evaluation,
+    observations_from_replay,
+    stable_measurement_fingerprint,
 )
 from aworld.self_evolve.ingestion import (
     DEFAULT_INGESTION_REGISTRY,
@@ -2798,6 +2821,12 @@ class SelfEvolveRunner:
         baseline_replay_repetitions: int = 1,
         candidate_replay_repetitions: int = 1,
         replay_stability_margin: float = 0.0,
+        measurement_mode: MeasurementPolicyMode | str = MeasurementPolicyMode.OFF,
+        measurement_primary_metric: str = "task_success",
+        measurement_minimum_effect: float = 0.0,
+        measurement_confidence_level: float = 0.95,
+        measurement_min_independent_cases: int = 2,
+        measurement_bootstrap_samples: int = 2_000,
         replay_agent: str | None = None,
         runtime_registry_refresher: Callable[[CandidateVariant], Any] | None = None,
         runtime_skill_activator: Callable[[CandidateVariant], Any] | None = None,
@@ -3067,6 +3096,36 @@ class SelfEvolveRunner:
         self.baseline_replay_repetitions = baseline_replay_repetitions
         self.candidate_replay_repetitions = candidate_replay_repetitions
         self.replay_stability_margin = replay_stability_margin
+        self.measurement_mode = MeasurementPolicyMode(measurement_mode)
+        self.measurement_primary_metric = measurement_primary_metric.strip()
+        if not self.measurement_primary_metric:
+            raise ValueError("measurement_primary_metric must be non-empty")
+        self.measurement_minimum_effect = float(measurement_minimum_effect)
+        if not math.isfinite(self.measurement_minimum_effect):
+            raise ValueError("measurement_minimum_effect must be finite")
+        self.measurement_confidence_level = float(measurement_confidence_level)
+        if not 0 < self.measurement_confidence_level < 1:
+            raise ValueError(
+                "measurement_confidence_level must be between 0 and 1"
+            )
+        if measurement_min_independent_cases <= 0:
+            raise ValueError(
+                "measurement_min_independent_cases must be positive"
+            )
+        if not 200 <= measurement_bootstrap_samples <= 100_000:
+            raise ValueError(
+                "measurement_bootstrap_samples must be between 200 and 100000"
+            )
+        self.measurement_min_independent_cases = (
+            measurement_min_independent_cases
+        )
+        self.measurement_bootstrap_samples = measurement_bootstrap_samples
+        self._measurement_experiments: dict[
+            tuple[str, str], ControlledExperimentSpec
+        ] = {}
+        self._measurement_summaries: dict[
+            tuple[str, str], MeasurementSummary
+        ] = {}
         self.replay_agent = replay_agent
         self.runtime_registry_refresher = runtime_registry_refresher
         self.runtime_skill_activator = runtime_skill_activator
@@ -3085,6 +3144,16 @@ class SelfEvolveRunner:
             tuple[ReplayAdaptationBundle | None, GateResult],
         ] = {}
         self._run_environment_fingerprints: dict[str, str] = {}
+        # Screening is a comparative ranking plane.  Keep bounded empirical
+        # observations so later batches in the same campaign do not repeatedly
+        # select a representative case that already proved expensive and
+        # non-discriminative (for example, both paired members timed out).
+        self._candidate_screening_case_observations: dict[
+            str, dict[str, float | int]
+        ] = {}
+        self._candidate_screening_observation_dataset_fingerprint: str | None = (
+            None
+        )
 
     async def run_explicit_target(
         self,
@@ -3140,6 +3209,15 @@ class SelfEvolveRunner:
         failure_cleanup: _RunFailureCleanup,
     ) -> SelfEvolveRunnerResult:
         self.execution_telemetry = SelfEvolveExecutionTelemetry()
+        screening_dataset_fingerprint = replay_dataset_fingerprint(dataset)
+        if (
+            self._candidate_screening_observation_dataset_fingerprint
+            != screening_dataset_fingerprint
+        ):
+            self._candidate_screening_case_observations.clear()
+            self._candidate_screening_observation_dataset_fingerprint = (
+                screening_dataset_fingerprint
+            )
         budget_context = _RunBudgetContext(
             ledger=RunBudgetLedger(
                 BudgetCeilings(
@@ -3466,6 +3544,7 @@ class SelfEvolveRunner:
         held_out_summary: EvaluationSummary | None = None
         regression_evidence: RegressionEvidence | None = None
         challenge_report: ChallengeReport | None = None
+        measurement_summary: MeasurementSummary | None = None
         latest_handbook_slice: Mapping[str, object] | None = None
         replay_result: CandidateReplayResult | None = None
         replay_dataset: SelfEvolveDataset | None = None
@@ -3545,6 +3624,15 @@ class SelfEvolveRunner:
             "baseline_replay_repetitions": self.baseline_replay_repetitions,
             "candidate_replay_repetitions": self.candidate_replay_repetitions,
             "replay_stability_margin": self.replay_stability_margin,
+            "measurement_mode": self.measurement_mode.value,
+            "measurement_primary_metric": self.measurement_primary_metric,
+            "measurement_minimum_effect": self.measurement_minimum_effect,
+            "measurement_confidence_level": (
+                self.measurement_confidence_level
+            ),
+            "measurement_min_independent_cases": (
+                self.measurement_min_independent_cases
+            ),
         }
 
         baseline_preflight_blocked = False
@@ -4923,6 +5011,21 @@ class SelfEvolveRunner:
             screening_candidates = candidate_population
             if not candidate_population:
                 continue
+            if self.measurement_mode is not MeasurementPolicyMode.OFF:
+                for planned_candidate in candidate_population:
+                    try:
+                        self._plan_candidate_measurement(
+                            run_id=run_id,
+                            target=target,
+                            dataset=dataset,
+                            candidate=planned_candidate,
+                            candidate_count=len(candidate_population),
+                        )
+                    except (OSError, TypeError, ValueError):
+                        # Required mode fails closed when the candidate reaches
+                        # authoritative evaluation. Shadow/advisory collection
+                        # must not perturb the existing funnel.
+                        continue
             repair_conformance_contracts = (
                 _candidate_repair_conformance_contracts(
                     optimizer_result
@@ -5127,8 +5230,17 @@ class SelfEvolveRunner:
                         ),
                     )
             for candidate_index, iteration_candidate in enumerate(candidate_population):
+                iteration_mutation = classify_candidate_mutation(
+                    iteration_candidate,
+                    current_content=target.load_current_content(),
+                )
+                counts_toward_authoritative = (
+                    iteration_mutation.kind
+                    is not CandidateMutationKind.EVALUATION_SUPPORT
+                )
                 if (
                     _is_verified_apply_policy(apply_policy)
+                    and counts_toward_authoritative
                     and authoritative_candidate_count
                     >= self.max_full_evaluation_candidates
                 ):
@@ -5156,7 +5268,8 @@ class SelfEvolveRunner:
                         }
                     )
                     break
-                authoritative_candidate_count += 1
+                if counts_toward_authoritative:
+                    authoritative_candidate_count += 1
                 state, report_item, candidate_feedback = await self._evaluate_iteration_candidate(
                     run_id=run_id,
                     target=target,
@@ -5167,6 +5280,7 @@ class SelfEvolveRunner:
                     target_provenance_unresolved_reason=(
                         target_provenance_unresolved_reason
                     ),
+                    target_selection_report=target_selection_report,
                     iteration_number=iteration_index + 1,
                     candidate_number=candidate_index + 1,
                     candidate_count=len(candidate_population),
@@ -5423,6 +5537,163 @@ class SelfEvolveRunner:
                 )
             )
 
+        if selected_state is not None:
+            raw_measurement_summary = selected_state.get("measurement_summary")
+            if isinstance(raw_measurement_summary, MeasurementSummary):
+                measurement_summary = raw_measurement_summary
+            elif self.measurement_mode is not MeasurementPolicyMode.OFF:
+                state_candidate = selected_state.get("candidate")
+                if isinstance(state_candidate, CandidateVariant):
+                    experiment = self._measurement_experiments.get(
+                        (run_id, state_candidate.candidate_id)
+                    )
+                    if experiment is not None:
+                        try:
+                            measurement_summary = (
+                                self._materialize_candidate_measurement(
+                                    experiment=experiment,
+                                    candidate=state_candidate,
+                                    dataset=dataset,
+                                    replay_result=(
+                                        selected_state.get("replay_result")
+                                        if isinstance(
+                                            selected_state.get("replay_result"),
+                                            CandidateReplayResult,
+                                        )
+                                        else None
+                                    ),
+                                    replay_dataset=(
+                                        selected_state.get("replay_dataset")
+                                        if isinstance(
+                                            selected_state.get("replay_dataset"),
+                                            SelfEvolveDataset,
+                                        )
+                                        else None
+                                    ),
+                                    baseline_summary=(
+                                        selected_state.get("baseline_summary")
+                                        if isinstance(
+                                            selected_state.get("baseline_summary"),
+                                            EvaluationSummary,
+                                        )
+                                        else None
+                                    ),
+                                    candidate_summary=(
+                                        selected_state.get("candidate_summary")
+                                        if isinstance(
+                                            selected_state.get("candidate_summary"),
+                                            EvaluationSummary,
+                                        )
+                                        else None
+                                    ),
+                                    candidate_count=max(1, len(all_candidates)),
+                                    authoritative_candidate_count=1,
+                                    target_selection_report=(
+                                        target_selection_report
+                                    ),
+                                )
+                            )
+                            selected_state["measurement_summary"] = (
+                                measurement_summary
+                            )
+                            if (
+                                self.measurement_mode
+                                is MeasurementPolicyMode.REQUIRED
+                                and not any(
+                                    gate.gate_name
+                                    == "trusted_improvement_measurement"
+                                    for gate in gate_results
+                                )
+                            ):
+                                gate_results.append(
+                                    _measurement_promotion_gate(
+                                        measurement_summary
+                                    )
+                                )
+                        except (OSError, TypeError, ValueError):
+                            if (
+                                self.measurement_mode
+                                is MeasurementPolicyMode.REQUIRED
+                                and not any(
+                                    gate.gate_name
+                                    == "trusted_improvement_measurement"
+                                    for gate in gate_results
+                                )
+                            ):
+                                gate_results.append(
+                                    GateResult(
+                                        gate_name=(
+                                            "trusted_improvement_measurement"
+                                        ),
+                                        passed=False,
+                                        reason=(
+                                            "controlled measurement could not "
+                                            "be finalized"
+                                        ),
+                                        details={
+                                            "failure_class": "measurement",
+                                            "code": (
+                                                "measurement_materialization_failed"
+                                            ),
+                                        },
+                                    )
+                                )
+
+        elif (
+            self.measurement_mode is not MeasurementPolicyMode.OFF
+            and all_candidates
+        ):
+            fallback_candidate = all_candidates[-1]
+            fallback_experiment = self._measurement_experiments.get(
+                (run_id, fallback_candidate.candidate_id)
+            )
+            if fallback_experiment is not None:
+                try:
+                    measurement_summary = self._materialize_candidate_measurement(
+                        experiment=fallback_experiment,
+                        candidate=fallback_candidate,
+                        dataset=dataset,
+                        replay_result=None,
+                        replay_dataset=None,
+                        baseline_summary=None,
+                        candidate_summary=None,
+                        candidate_count=max(1, len(all_candidates)),
+                        authoritative_candidate_count=0,
+                        target_selection_report=target_selection_report,
+                    )
+                    if self.measurement_mode is MeasurementPolicyMode.REQUIRED:
+                        gate_results.append(
+                            _measurement_promotion_gate(measurement_summary)
+                        )
+                except (OSError, TypeError, ValueError):
+                    if self.measurement_mode is MeasurementPolicyMode.REQUIRED:
+                        gate_results.append(
+                            GateResult(
+                                gate_name="trusted_improvement_measurement",
+                                passed=False,
+                                reason=(
+                                    "controlled measurement could not be finalized"
+                                ),
+                                details={
+                                    "failure_class": "measurement",
+                                    "code": "measurement_materialization_failed",
+                                },
+                            )
+                        )
+
+        if measurement_summary is not None:
+            try:
+                self._attach_measurement_search_performance(
+                    run_id=run_id,
+                    summary=measurement_summary,
+                    candidates=all_candidates,
+                    iteration_reports=iteration_reports,
+                )
+            except (OSError, TypeError, ValueError):
+                # Search curves are diagnostic. The controlled effect report
+                # remains authoritative and already persisted.
+                pass
+
         post_apply: dict[str, object] | None = None
         promotion: dict[str, object] | None = None
         final_status = SelfEvolveRunStatus.SUCCEEDED
@@ -5430,7 +5701,16 @@ class SelfEvolveRunner:
             self._active_target_intent
             == TargetMutationIntent.INFERRED_DRAFT_CREATION
         )
-        if selected_candidate is None:
+        measurement_required_blocked = bool(
+            self.measurement_mode is MeasurementPolicyMode.REQUIRED
+            and (
+                measurement_summary is None
+                or not measurement_summary.promotion_eligible
+            )
+        )
+        if selected_candidate is not None and measurement_required_blocked:
+            final_status = SelfEvolveRunStatus.REJECTED
+        elif selected_candidate is None:
             failed_gates = [gate for gate in gate_results if not gate.passed]
             final_status = (
                 SelfEvolveRunStatus.FAILED
@@ -5779,6 +6059,8 @@ class SelfEvolveRunner:
                 )
             ],
         }
+        if measurement_summary is not None:
+            report["measurement"] = measurement_summary.to_dict()
         if candidate_source_dispositions:
             report["candidate_source_dispositions"] = {
                 candidate_id: disposition.to_dict()
@@ -6052,10 +6334,158 @@ class SelfEvolveRunner:
                 screening=None,
             )
 
+        (
+            conformance_candidates,
+            phenotype_duplicates,
+            phenotype_fingerprints,
+        ) = _deduplicate_conformance_phenotypes(
+            conformance_candidates,
+            conformance_report=conformance_report,
+            current_content=target.load_current_content(),
+        )
+        if phenotype_duplicates:
+            for duplicate_id in phenotype_duplicates:
+                duplicate_key = (
+                    attempt_keys.get(duplicate_id)
+                    if attempt_keys is not None
+                    else None
+                )
+                if (
+                    attempt_tracker is not None
+                    and duplicate_key is not None
+                    and not attempt_tracker.terminal(duplicate_key)
+                ):
+                    attempt_tracker.emit(
+                        duplicate_key,
+                        CandidateAttemptStage.NOT_RUN,
+                        reason_code="equivalent_conformance_phenotype",
+                    )
+        if phenotype_fingerprints:
+            conformance_report = {
+                **dict(conformance_report or {}),
+                "phenotype_representative_count": len(conformance_candidates),
+                "phenotype_duplicate_count": len(phenotype_duplicates),
+                "phenotype_duplicate_of": dict(phenotype_duplicates),
+                "phenotype_fingerprints": dict(phenotype_fingerprints),
+            }
+
+        support_prerequisites = tuple(
+            candidate
+            for candidate in conformance_candidates
+            if classify_candidate_mutation(
+                candidate,
+                current_content=target.load_current_content(),
+            ).kind
+            is CandidateMutationKind.EVALUATION_SUPPORT
+        )
+        if _is_verified_apply_policy(apply_policy) and support_prerequisites:
+            # A support-only package is certified by deterministic compilation and
+            # operational preflight in the prerequisite lane.  Running a complete
+            # user task here creates the circular requirement that support must
+            # already solve the task before a behavior candidate can inherit it.
+            support_ids = [item.candidate_id for item in support_prerequisites]
+            deferred_behavior_ids = {
+                candidate.candidate_id
+                for candidate in conformance_candidates
+                if candidate.candidate_id not in support_ids
+            }
+            for candidate_id in deferred_behavior_ids:
+                deferred_key = (
+                    attempt_keys.get(candidate_id)
+                    if attempt_keys is not None
+                    else None
+                )
+                if (
+                    attempt_tracker is not None
+                    and deferred_key is not None
+                    and not attempt_tracker.terminal(deferred_key)
+                ):
+                    attempt_tracker.emit(
+                        deferred_key,
+                        CandidateAttemptStage.NOT_RUN,
+                        reason_code="deferred_until_support_composition",
+                    )
+            screening_report = {
+                "screening_strategy": "evaluation_support_prerequisite_lane",
+                "screening_role": "deferred_to_deterministic_support_preflight",
+                "generated_candidate_count": len(conformance_candidates),
+                "attempted_candidate_count": 0,
+                "selected_candidate_id": support_ids[0],
+                "selected_candidate_ids": support_ids,
+                "candidate_dispositions": {
+                    candidate.candidate_id: (
+                        "promoted_to_prerequisite_preflight"
+                        if candidate.candidate_id in support_ids
+                        else "deferred_until_support_composition"
+                    )
+                    for candidate in conformance_candidates
+                },
+                "selection_reason": (
+                    "support-only candidates use deterministic prerequisite "
+                    "preflight before target-behavior composition"
+                ),
+                "attempts": [],
+                "stopped_by_shared_infrastructure": False,
+                "stopped_after_budget_censor": False,
+                "screening_outcome": "support_preflight",
+                "phenotype_duplicate_of": dict(phenotype_duplicates),
+            }
+            return (
+                support_prerequisites,
+                _combined_candidate_validation_report(
+                    candidates=candidates,
+                    conformance=conformance_report,
+                    screening=screening_report,
+                ),
+            )
+
+        if (
+            _is_verified_apply_policy(apply_policy)
+            and len(conformance_candidates) == 1
+        ):
+            # Screening only has evidentiary value when it can rank alternatives.
+            # Sending a sole candidate through a bounded paired replay and then
+            # repeating the same experiment authoritatively adds latency without
+            # changing the decision.  Preserve all cases for the authoritative
+            # plane instead.
+            sole_candidate = conformance_candidates[0]
+            screening_report = {
+                "screening_strategy": "single_candidate_direct_authoritative",
+                "screening_role": "ranking_not_required",
+                "generated_candidate_count": 1,
+                "attempted_candidate_count": 0,
+                "physical_pair_execution_count": 0,
+                "selected_candidate_id": sole_candidate.candidate_id,
+                "selected_candidate_ids": [sole_candidate.candidate_id],
+                "candidate_dispositions": {
+                    sole_candidate.candidate_id: "promoted_to_authoritative",
+                },
+                "selection_reason": (
+                    "a sole conforming candidate requires no comparative "
+                    "screening and proceeds directly to authoritative replay"
+                ),
+                "attempts": [],
+                "stopped_by_shared_infrastructure": False,
+                "stopped_after_budget_censor": False,
+                "screening_outcome": "not_required",
+                "phenotype_duplicate_of": dict(phenotype_duplicates),
+            }
+            return (
+                conformance_candidates,
+                _combined_candidate_validation_report(
+                    candidates=candidates,
+                    conformance=conformance_report,
+                    screening=screening_report,
+                ),
+            )
+
         configured_screening_panel = _candidate_screening_dataset(
             dataset,
             capability_requirements=capability_requirements,
             max_cases=self.candidate_screening_max_cases,
+            empirical_observations=(
+                self._candidate_screening_case_observations
+            ),
         )
         qualification_case_limit = _candidate_screening_qualification_case_limit(
             candidate_count=len(conformance_candidates),
@@ -6065,6 +6495,9 @@ class SelfEvolveRunner:
             dataset,
             capability_requirements=capability_requirements,
             max_cases=qualification_case_limit,
+            empirical_observations=(
+                self._candidate_screening_case_observations
+            ),
         )
         if (
             not _is_verified_apply_policy(apply_policy)
@@ -6183,11 +6616,15 @@ class SelfEvolveRunner:
                 if attempt_keys is not None
                 else None
             )
+            screening_replay_started = False
 
             def screening_lifecycle(
                 stage: str,
                 payload: Mapping[str, object],
             ) -> None:
+                nonlocal screening_replay_started
+                if stage == "replay_started":
+                    screening_replay_started = True
                 if attempt_tracker is None or attempt_key is None:
                     return
                 if (
@@ -6264,6 +6701,10 @@ class SelfEvolveRunner:
                         "causal_failure_events": [failure_event.to_dict()],
                     },
                 )
+            screening_elapsed_seconds = max(
+                0.0,
+                time.monotonic() - screening_started_at,
+            )
             if screening_budget is not None:
                 screening_telemetry_after = _stage_telemetry_usage_snapshot(
                     self.execution_telemetry,
@@ -6275,7 +6716,7 @@ class SelfEvolveRunner:
                 )
                 screening_usage = _telemetry_usage_with_observed_wall(
                     screening_usage,
-                    elapsed_seconds=time.monotonic() - screening_started_at,
+                    elapsed_seconds=screening_elapsed_seconds,
                 )
                 budget_context.debit(
                     screening_budget,
@@ -6377,7 +6818,14 @@ class SelfEvolveRunner:
                     ),
                     "qualification_case_ids": list(representative_case_ids),
                     "baseline_cache_offered": baseline_cache_offered,
+                    "wall_seconds": screening_elapsed_seconds,
+                    "physical_pair_executed": screening_replay_started,
                 }
+            )
+            _record_candidate_screening_observation(
+                self._candidate_screening_case_observations,
+                case_ids=representative_case_ids,
+                attempt=attempts[-1],
             )
             if passed:
                 passing_candidates.append((candidate, screening_rank))
@@ -6451,14 +6899,16 @@ class SelfEvolveRunner:
             elif stopped_after_budget_censor:
                 selection_reason = (
                     "bounded screening right-censored both paired variants; "
-                    "authoritative full replay preserved the ranked population"
+                    "one deterministic representative was promoted for the "
+                    "authoritative full replay"
                 )
-                selected_candidates = tuple(
+                eligible_candidates = tuple(
                     candidate
                     for candidate in conformance_candidates
                     if candidate.candidate_id not in screening_budget_denied_ids
                     and candidate.candidate_id not in screening_terminal_ids
                 )
+                selected_candidates = eligible_candidates[:1]
             elif any(_screening_attempt_requires_candidate_repair(item) for item in attempts):
                 selection_reason = (
                     "screening isolated a repairable candidate replay capability "
@@ -6491,6 +6941,25 @@ class SelfEvolveRunner:
         selected_ids = {
             candidate.candidate_id for candidate in selected_candidates
         }
+        if stopped_after_budget_censor:
+            for pending_candidate in conformance_candidates:
+                if pending_candidate.candidate_id in selected_ids:
+                    continue
+                pending_key = (
+                    attempt_keys.get(pending_candidate.candidate_id)
+                    if attempt_keys is not None
+                    else None
+                )
+                if (
+                    attempt_tracker is not None
+                    and pending_key is not None
+                    and not attempt_tracker.terminal(pending_key)
+                ):
+                    attempt_tracker.emit(
+                        pending_key,
+                        CandidateAttemptStage.NOT_RUN,
+                        reason_code="screening_right_censored_frontier",
+                    )
         passing_candidate_ids = {
             candidate.candidate_id for candidate, _ in passing_candidates
         }
@@ -6526,12 +6995,16 @@ class SelfEvolveRunner:
                 "promoted_to_authoritative"
                 if candidate.candidate_id in selected_ids
                 else (
-                    "ranked_below_screening_frontier"
-                    if candidate.candidate_id in ranked_below_screening_ids
+                    "not_run_after_right_censor"
+                    if stopped_after_budget_censor
                     else (
-                        "screening_rejected"
-                        if candidate.candidate_id in attempted_ids
-                        else "not_promoted"
+                        "ranked_below_screening_frontier"
+                        if candidate.candidate_id in ranked_below_screening_ids
+                        else (
+                            "screening_rejected"
+                            if candidate.candidate_id in attempted_ids
+                            else "not_promoted"
+                        )
                     )
                 )
             )
@@ -6551,10 +7024,35 @@ class SelfEvolveRunner:
                 "screening_strategy": "adaptive_qualification_then_authoritative",
                 "generated_candidate_count": len(conformance_candidates),
                 "attempted_candidate_count": len(attempts),
+                "physical_pair_execution_count": sum(
+                    int(attempt.get("physical_pair_executed") is True)
+                    for attempt in attempts
+                ),
+                "screening_wall_seconds": sum(
+                    float(attempt.get("wall_seconds") or 0.0)
+                    for attempt in attempts
+                    if not isinstance(attempt.get("wall_seconds"), bool)
+                ),
+                "termination_budget_axis_counts": (
+                    _screening_termination_axis_counts(attempts)
+                ),
+                "empirical_case_observations": {
+                    case_id: dict(
+                        self._candidate_screening_case_observations.get(
+                            case_id,
+                            {},
+                        )
+                    )
+                    for case_id in representative_case_ids
+                },
                 "selected_candidate_id": (
                     selected_candidate.candidate_id
                     if selected_candidate is not None
-                    else None
+                    else (
+                        selected_candidates[0].candidate_id
+                        if len(selected_candidates) == 1
+                        else None
+                    )
                 ),
                 "selected_candidate_ids": [
                     candidate.candidate_id for candidate in selected_candidates
@@ -7144,6 +7642,365 @@ class SelfEvolveRunner:
             contract=contract,
         )
 
+    def _plan_candidate_measurement(
+        self,
+        *,
+        run_id: str,
+        target: SelfEvolveTarget,
+        dataset: SelfEvolveDataset,
+        candidate: CandidateVariant,
+        candidate_count: int,
+    ) -> ControlledExperimentSpec | None:
+        if self.measurement_mode is MeasurementPolicyMode.OFF:
+            return None
+        key = (run_id, candidate.candidate_id)
+        existing = self._measurement_experiments.get(key)
+        if existing is not None:
+            return existing
+        replay_planned = bool(
+            self.replay_enabled
+            and candidate.target.target_type == "skill"
+            and self.candidate_replay_backend is not None
+        )
+        repetitions = (
+            max(
+                self.baseline_replay_repetitions,
+                self.candidate_replay_repetitions,
+            )
+            if replay_planned
+            else self.judge_repetitions
+            if self.evaluation_backend is not None
+            else 1
+        )
+        dataset_fingerprint = replay_dataset_fingerprint(dataset)
+        budget_identity = {
+            "total_run_token_budget": self.total_run_token_budget,
+            "per_attempt_replay_token_limit": (
+                self.per_attempt_replay_token_limit
+            ),
+            "max_run_cost_usd": (
+                str(self.max_run_cost_usd)
+                if self.max_run_cost_usd is not None
+                else None
+            ),
+            "max_run_wall_seconds": (
+                str(self.max_run_wall_seconds)
+                if self.max_run_wall_seconds is not None
+                else None
+            ),
+            "candidate_opportunities": candidate_count,
+        }
+        experiment = ControlledExperimentSpec.create(
+            run_id=run_id,
+            mode=self.measurement_mode,
+            swap_axis=SwapAxis.ARTIFACT,
+            control=ComponentIdentity(
+                component_id="artifact-control",
+                fingerprint=target.fingerprint_current_content(),
+            ),
+            treatment=ComponentIdentity(
+                component_id="artifact-treatment",
+                fingerprint=candidate_package_fingerprint(candidate),
+            ),
+            frozen_identities=FrozenIdentities(
+                task_model=stable_measurement_fingerprint(
+                    {
+                        "replay_agent": self.replay_agent,
+                        "execution_backend": _measurement_component_identity(
+                            self.candidate_replay_backend
+                        ),
+                    }
+                ),
+                generator=stable_measurement_fingerprint(
+                    _measurement_component_identity(self.optimizer)
+                ),
+                scheduler=stable_measurement_fingerprint(
+                    {
+                        "kind": "StageAwareCandidateScheduler",
+                        "max_generated_candidates": self.max_generated_candidates,
+                        "max_authoritative_candidates": (
+                            self.max_full_evaluation_candidates
+                        ),
+                        "replay_candidate_limit": self.replay_candidate_limit,
+                    }
+                ),
+                evaluator=stable_measurement_fingerprint(
+                    {
+                        "evaluation": _measurement_component_identity(
+                            self.evaluation_backend
+                        ),
+                        "regression": _measurement_component_identity(
+                            self.regression_backend
+                        ),
+                        "judge_repetitions": self.judge_repetitions,
+                    }
+                ),
+                dataset=dataset_fingerprint,
+                environment=(
+                    self._run_environment_fingerprints.get(run_id)
+                    or stable_measurement_fingerprint(
+                        {
+                            "workspace_contract": "aworld-local-workspace",
+                            "replay_enabled": self.replay_enabled,
+                        }
+                    )
+                ),
+                runtime=stable_measurement_fingerprint(
+                    {
+                        "python": list(sys.version_info[:3]),
+                        "platform": sys.platform,
+                        "runner": type(self).__name__,
+                    }
+                ),
+                prompt_context=stable_measurement_fingerprint(
+                    {
+                        "target_type": target.identity.target_type,
+                        "target_id": target.identity.target_id,
+                        "target_intent": (
+                            self._active_target_intent.value
+                            if self._active_target_intent is not None
+                            else None
+                        ),
+                        "dataset": dataset_fingerprint,
+                    }
+                ),
+                budget=stable_measurement_fingerprint(budget_identity),
+            ),
+            sampling=SamplingPlan(
+                independent_case_ids=tuple(case.case_id for case in dataset.cases),
+                repetitions_per_case=repetitions,
+                seeds=tuple(range(1, repetitions + 1)),
+            ),
+            outcomes=OutcomePlan(
+                primary_metric=self.measurement_primary_metric,
+                secondary_metrics=tuple(
+                    metric
+                    for metric in (
+                        "task_success",
+                        "score",
+                        "latency_ms",
+                        "total_tokens",
+                    )
+                    if metric != self.measurement_primary_metric
+                ),
+                minimum_effect=self.measurement_minimum_effect,
+                non_regression_threshold=0.0,
+                confidence_level=self.measurement_confidence_level,
+                minimum_independent_cases=(
+                    self.measurement_min_independent_cases
+                ),
+                bootstrap_samples=self.measurement_bootstrap_samples,
+            ),
+            budgets=ExperimentBudget(
+                search=MeasurementUsage(
+                    tokens=self.total_run_token_budget,
+                    cost_usd=(
+                        float(self.max_run_cost_usd)
+                        if self.max_run_cost_usd is not None
+                        else None
+                    ),
+                    wall_seconds=(
+                        float(self.max_run_wall_seconds)
+                        if self.max_run_wall_seconds is not None
+                        else None
+                    ),
+                    candidate_opportunities=candidate_count,
+                ),
+                measurement=MeasurementUsage(
+                    tokens=self.per_attempt_replay_token_limit,
+                    wall_seconds=(
+                        float(self.replay_timeout_seconds)
+                        if replay_planned
+                        else None
+                    ),
+                ),
+            ),
+            selection_protocol="predeclared_authoritative_candidate",
+        )
+        self.store.write_measurement_experiment(experiment)
+        self._measurement_experiments[key] = experiment
+        return experiment
+
+    def _materialize_candidate_measurement(
+        self,
+        *,
+        experiment: ControlledExperimentSpec,
+        candidate: CandidateVariant,
+        dataset: SelfEvolveDataset,
+        replay_result: CandidateReplayResult | None,
+        replay_dataset: SelfEvolveDataset | None,
+        baseline_summary: EvaluationSummary | None,
+        candidate_summary: EvaluationSummary | None,
+        candidate_count: int,
+        authoritative_candidate_count: int,
+        target_selection_report: TargetSelectionReport | None,
+    ) -> MeasurementSummary:
+        key = (experiment.run_id, candidate.candidate_id)
+        cached = self._measurement_summaries.get(key)
+        if cached is not None:
+            return cached
+        evidence_dataset = replay_dataset or dataset
+        replay_observations: tuple[MeasurementObservation, ...] = ()
+        if replay_result is not None:
+            replay_observations = observations_from_replay(
+                experiment,
+                dataset=evidence_dataset,
+                replay_result=replay_result,
+                run_root=self.store.run_path(experiment.run_id),
+            )
+        evaluation_observations = observations_from_evaluation(
+            experiment,
+            dataset=evidence_dataset,
+            baseline_summary=baseline_summary,
+            candidate_summary=candidate_summary,
+        )
+        observations = (
+            evaluation_observations
+            if self.measurement_primary_metric != "task_success"
+            and evaluation_observations
+            else replay_observations or evaluation_observations
+        )
+        if observations:
+            self.store.append_measurement_observations(
+                experiment.run_id,
+                experiment.experiment_id,
+                observations,
+            )
+        usage = _complete_measurement_usage(
+            observations,
+            candidate_opportunities=candidate_count,
+        )
+        target_resolution = _measurement_target_resolution(
+            target_selection_report
+        )
+        attribution = build_attribution_report(
+            experiment,
+            observations,
+            target_resolution=target_resolution,
+            total_usage=usage,
+            generated_candidate_count=candidate_count,
+            authoritative_candidate_count=authoritative_candidate_count,
+        )
+        self.store.write_measurement_attribution_report(attribution)
+        summary = attribution.summary(
+            attribution_report_path=self.store.measurement_attribution_ref(
+                experiment.run_id,
+                experiment.experiment_id,
+            )
+        )
+        self._measurement_summaries[key] = summary
+        return summary
+
+    def _attach_measurement_search_performance(
+        self,
+        *,
+        run_id: str,
+        summary: MeasurementSummary,
+        candidates: Sequence[CandidateVariant],
+        iteration_reports: Sequence[Mapping[str, object]],
+    ) -> None:
+        reports_by_candidate = {
+            str(item.get("candidate_id")): item
+            for item in iteration_reports
+            if isinstance(item.get("candidate_id"), str)
+        }
+        results: list[SearchCandidateResult] = []
+        for candidate in candidates:
+            item = reports_by_candidate.get(candidate.candidate_id, {})
+            metrics = (
+                item.get("candidate_metrics")
+                if isinstance(item.get("candidate_metrics"), Mapping)
+                else {}
+            )
+            score = _finite_measurement_metric(metrics.get("score"))
+            status = str(item.get("status") or "not_run")
+            tokens = _non_negative_measurement_int(
+                metrics.get("search_total_tokens", metrics.get("total_tokens"))
+            )
+            wall_seconds = _non_negative_measurement_float(
+                metrics.get("search_wall_seconds", metrics.get("wall_seconds"))
+            )
+            results.append(
+                SearchCandidateResult(
+                    candidate_id=candidate.candidate_id,
+                    score=score,
+                    passed=status == "accepted",
+                    valid=status not in {
+                        "local_gate_rejected",
+                        "screening_rejected",
+                        "not_run",
+                    },
+                    authoritative=(
+                        item.get("baseline_metrics") is not None
+                        or item.get("lifecycle_stage")
+                        == "authoritative_replay"
+                    ),
+                    tokens=tokens,
+                    wall_seconds=wall_seconds,
+                    cost_usd=_non_negative_measurement_float(
+                        metrics.get("search_cost_usd", metrics.get("cost_usd"))
+                    ),
+                )
+            )
+        token_total = sum(item.tokens or 0 for item in results)
+        wall_total = sum(item.wall_seconds or 0.0 for item in results)
+        search_performance = build_search_performance(
+            results,
+            k_values=(1, 2, 4, 8),
+            token_budget_points=(
+                _budget_curve_points(token_total)
+                if results and all(item.tokens is not None for item in results)
+                else ()
+            ),
+            wall_time_budget_points=(
+                _budget_curve_points(wall_total)
+                if results
+                and all(item.wall_seconds is not None for item in results)
+                else ()
+            ),
+            selection_protocol="generation_order_authoritative_funnel",
+        )
+        attribution = self.store.read_measurement_attribution_report(
+            run_id,
+            summary.experiment_id,
+        )
+        search_usage = MeasurementUsage(
+            tokens=(
+                token_total
+                if results and all(item.tokens is not None for item in results)
+                else None
+            ),
+            cost_usd=(
+                sum(item.cost_usd or 0.0 for item in results)
+                if results and all(item.cost_usd is not None for item in results)
+                else None
+            ),
+            wall_seconds=(
+                wall_total
+                if results
+                and all(item.wall_seconds is not None for item in results)
+                else None
+            ),
+            candidate_opportunities=len(results),
+        )
+        self.store.write_measurement_attribution_report(
+            replace(
+                attribution,
+                search_performance=search_performance,
+                budget_ledger=BudgetLedger(
+                    search=search_usage,
+                    measurement=attribution.budget_ledger.measurement,
+                ),
+                measurement_yield=replace(
+                    attribution.measurement_yield,
+                    search_tokens=search_usage.tokens,
+                    authoritative_candidate_count=sum(
+                        1 for item in results if item.authoritative
+                    ),
+                ),
+            )
+        )
+
     async def _evaluate_iteration_candidate(
         self,
         *,
@@ -7154,6 +8011,7 @@ class SelfEvolveRunner:
         apply_policy: str,
         target_provenance: TargetProvenance | None,
         target_provenance_unresolved_reason: str | None = None,
+        target_selection_report: TargetSelectionReport | None = None,
         iteration_number: int,
         candidate_number: int,
         candidate_count: int,
@@ -7281,6 +8139,32 @@ class SelfEvolveRunner:
                 status="rejected",
             )
             return state, report_item, feedback
+
+        measurement_experiment: ControlledExperimentSpec | None = None
+        if self.measurement_mode is not MeasurementPolicyMode.OFF:
+            try:
+                measurement_experiment = self._plan_candidate_measurement(
+                    run_id=run_id,
+                    target=target,
+                    dataset=dataset,
+                    candidate=candidate,
+                    candidate_count=candidate_count,
+                )
+            except (OSError, TypeError, ValueError) as exc:
+                if self.measurement_mode is MeasurementPolicyMode.REQUIRED:
+                    gate_results.append(
+                        GateResult(
+                            gate_name="trusted_improvement_measurement",
+                            passed=False,
+                            reason="controlled experiment contract could not be frozen",
+                            details={
+                                "failure_class": "measurement",
+                                "code": "measurement_contract_invalid",
+                                "type": type(exc).__name__,
+                                "reason": str(exc),
+                            },
+                        )
+                    )
 
         replay_case_count = sum(
             1
@@ -7413,6 +8297,99 @@ class SelfEvolveRunner:
         )
         gate_results.extend(capability_gates)
         capability_blocked = any(not gate.passed for gate in capability_gates)
+        mutation_classification = classify_candidate_mutation(
+            candidate,
+            current_content=target.load_current_content(),
+        )
+        if (
+            _is_verified_apply_policy(apply_policy)
+            and mutation_classification.kind
+            is CandidateMutationKind.EVALUATION_SUPPORT
+        ):
+            support_preflight_gates = tuple(
+                gate
+                for gate in capability_gates
+                if gate.gate_name == "candidate_capability_replay"
+                and gate.passed
+                and isinstance(gate.details, Mapping)
+                and gate.details.get("operational_preflight") is True
+            )
+            support_bootstrap_ready = bool(
+                support_preflight_gates
+                and all(gate.passed for gate in gate_results)
+            )
+            support_gate = GateResult(
+                gate_name="evaluation_support_prerequisite",
+                passed=support_bootstrap_ready,
+                reason=(
+                    "evaluation support passed deterministic capability preflight"
+                    if support_bootstrap_ready
+                    else (
+                        "evaluation support requires a successful deterministic "
+                        "capability preflight before composition"
+                    )
+                ),
+                details={
+                    "candidate_status": (
+                        "prerequisite" if support_bootstrap_ready else "rejected"
+                    ),
+                    "code": (
+                        "evaluation_support_prerequisite_ready"
+                        if support_bootstrap_ready
+                        else "evaluation_support_preflight_missing"
+                    ),
+                    "failure_class": (
+                        None if support_bootstrap_ready else "candidate"
+                    ),
+                    "repairable": not support_bootstrap_ready,
+                    "proof_gate_names": [
+                        gate.gate_name for gate in support_preflight_gates
+                    ],
+                    "mutation": mutation_classification.to_dict(),
+                },
+            )
+            # Put the typed disposition before the expected target-delta gate so
+            # feedback cannot mislabel an unverified support package as ready.
+            gate_results.append(support_gate)
+            target_behavior_gate = _with_typed_gate_failure_event(
+                TargetBehaviorDeltaGate().evaluate(
+                    current_content=target.load_current_content(),
+                    candidate=candidate,
+                )
+            )
+            gate_results.append(target_behavior_gate)
+            if replay_budget is not None:
+                budget_context.release(
+                    replay_budget,
+                    reason_code="evaluation_support_prerequisite_lane",
+                )
+                replay_budget = None
+            if (
+                attempt_tracker is not None
+                and attempt_key is not None
+                and not attempt_tracker.terminal(attempt_key)
+            ):
+                attempt_tracker.emit(
+                    attempt_key,
+                    (
+                        CandidateAttemptStage.PREREQUISITE_READY
+                        if support_bootstrap_ready
+                        else CandidateAttemptStage.REJECTED
+                    ),
+                    reason_code=(
+                        "evaluation_support_bootstrap_ready"
+                        if support_bootstrap_ready
+                        else "evaluation_support_preflight_missing"
+                    ),
+                )
+            return _terminal_candidate_evaluation_result(
+                candidate=candidate,
+                iteration_number=iteration_number,
+                candidate_number=candidate_number,
+                candidate_count=candidate_count,
+                gate_results=gate_results,
+                status=("prerequisite" if support_bootstrap_ready else "rejected"),
+            )
         replay_started = False
         replay_telemetry_before = _TelemetryUsageSnapshot()
         replay_telemetry_after = replay_telemetry_before
@@ -8227,6 +9204,41 @@ class SelfEvolveRunner:
                 )
             )
 
+        measurement_summary: MeasurementSummary | None = None
+        if measurement_experiment is not None:
+            try:
+                measurement_summary = self._materialize_candidate_measurement(
+                    experiment=measurement_experiment,
+                    candidate=candidate,
+                    dataset=dataset,
+                    replay_result=replay_result,
+                    replay_dataset=replay_dataset,
+                    baseline_summary=baseline_summary,
+                    candidate_summary=candidate_summary,
+                    candidate_count=candidate_count,
+                    authoritative_candidate_count=1,
+                    target_selection_report=target_selection_report,
+                )
+                if self.measurement_mode is MeasurementPolicyMode.REQUIRED:
+                    gate_results.append(
+                        _measurement_promotion_gate(measurement_summary)
+                    )
+            except (OSError, TypeError, ValueError) as exc:
+                if self.measurement_mode is MeasurementPolicyMode.REQUIRED:
+                    gate_results.append(
+                        GateResult(
+                            gate_name="trusted_improvement_measurement",
+                            passed=False,
+                            reason="controlled measurement could not be finalized",
+                            details={
+                                "failure_class": "measurement",
+                                "code": "measurement_materialization_failed",
+                                "type": type(exc).__name__,
+                                "reason": str(exc),
+                            },
+                        )
+                    )
+
         gate_results = [
             _with_typed_gate_failure_event(gate)
             for gate in gate_results
@@ -8319,6 +9331,9 @@ class SelfEvolveRunner:
             regression_evidence=regression_evidence,
             challenge_report=challenge_report,
         )
+        if measurement_summary is not None:
+            state["measurement_summary"] = measurement_summary
+            report_item["measurement"] = measurement_summary.to_dict()
         return state, report_item, feedback
 
     async def _validate_candidate_capabilities(
@@ -8361,6 +9376,15 @@ class SelfEvolveRunner:
         gates: list[GateResult] = []
         for result in results:
             diagnostics = [item.to_dict() for item in result.diagnostics]
+            diagnostic_events = [
+                event
+                for item in diagnostics
+                for event in (
+                    item.get("failure_event"),
+                    *(item.get("causal_failure_events") or ()),
+                )
+                if isinstance(event, Mapping)
+            ]
             gates.append(
                 GateResult(
                     gate_name=f"candidate_capability_{result.capability_type}",
@@ -8372,6 +9396,11 @@ class SelfEvolveRunner:
                     ),
                     details={
                         "capability_type": result.capability_type,
+                        "code": (
+                            diagnostics[0].get("code")
+                            if diagnostics
+                            else None
+                        ),
                         "failure_class": (
                             diagnostics[0]["failure_class"]
                             if diagnostics
@@ -8383,6 +9412,16 @@ class SelfEvolveRunner:
                             else False
                         ),
                         "diagnostics": diagnostics,
+                        **(
+                            {
+                                "failure_event": dict(diagnostic_events[0]),
+                                "causal_failure_events": [
+                                    dict(event) for event in diagnostic_events
+                                ],
+                            }
+                            if diagnostic_events
+                            else {}
+                        ),
                     },
                 )
             )
@@ -11465,6 +12504,12 @@ def optimize_from_cli_request(
     baseline_replay_repetitions: int = 1,
     candidate_replay_repetitions: int = 1,
     replay_stability_margin: float = 0.0,
+    measurement_mode: MeasurementPolicyMode | str = MeasurementPolicyMode.OFF,
+    measurement_primary_metric: str = "task_success",
+    measurement_minimum_effect: float = 0.0,
+    measurement_confidence_level: float = 0.95,
+    measurement_min_independent_cases: int = 2,
+    measurement_bootstrap_samples: int = 2_000,
     replay_adaptation_compiler: ReplayAdaptationCompiler | None = None,
     runtime_registry_refresher: Callable[[CandidateVariant], Any] | None = None,
     runtime_skill_activator: Callable[[CandidateVariant], Any] | None = None,
@@ -11528,6 +12573,14 @@ def optimize_from_cli_request(
             baseline_replay_repetitions=baseline_replay_repetitions,
             candidate_replay_repetitions=candidate_replay_repetitions,
             replay_stability_margin=replay_stability_margin,
+            measurement_mode=measurement_mode,
+            measurement_primary_metric=measurement_primary_metric,
+            measurement_minimum_effect=measurement_minimum_effect,
+            measurement_confidence_level=measurement_confidence_level,
+            measurement_min_independent_cases=(
+                measurement_min_independent_cases
+            ),
+            measurement_bootstrap_samples=measurement_bootstrap_samples,
             regression_replay_backend=regression_replay_backend,
             runtime_registry_refresher=runtime_registry_refresher,
             runtime_skill_activator=runtime_skill_activator,
@@ -12280,6 +13333,12 @@ def optimize_from_cli_request(
         baseline_replay_repetitions=baseline_replay_repetitions,
         candidate_replay_repetitions=candidate_replay_repetitions,
         replay_stability_margin=replay_stability_margin,
+        measurement_mode=measurement_mode,
+        measurement_primary_metric=measurement_primary_metric,
+        measurement_minimum_effect=measurement_minimum_effect,
+        measurement_confidence_level=measurement_confidence_level,
+        measurement_min_independent_cases=measurement_min_independent_cases,
+        measurement_bootstrap_samples=measurement_bootstrap_samples,
         replay_adaptation_compiler=replay_adaptation_compiler,
         replay_agent=agent,
         runtime_registry_refresher=runtime_registry_refresher,
@@ -13036,6 +14095,12 @@ def _rerun_evaluator_from_stored_run(
     baseline_replay_repetitions: int,
     candidate_replay_repetitions: int,
     replay_stability_margin: float,
+    measurement_mode: MeasurementPolicyMode | str,
+    measurement_primary_metric: str,
+    measurement_minimum_effect: float,
+    measurement_confidence_level: float,
+    measurement_min_independent_cases: int,
+    measurement_bootstrap_samples: int,
     regression_replay_backend: CandidateReplayBackend | None,
     runtime_registry_refresher: Callable[[CandidateVariant], Any] | None,
     runtime_skill_activator: Callable[[CandidateVariant], Any] | None,
@@ -13232,6 +14297,12 @@ def _rerun_evaluator_from_stored_run(
         baseline_replay_repetitions=baseline_replay_repetitions,
         candidate_replay_repetitions=candidate_replay_repetitions,
         replay_stability_margin=replay_stability_margin,
+        measurement_mode=measurement_mode,
+        measurement_primary_metric=measurement_primary_metric,
+        measurement_minimum_effect=measurement_minimum_effect,
+        measurement_confidence_level=measurement_confidence_level,
+        measurement_min_independent_cases=measurement_min_independent_cases,
+        measurement_bootstrap_samples=measurement_bootstrap_samples,
         replay_agent=agent,
         runtime_registry_refresher=runtime_registry_refresher,
         runtime_skill_activator=runtime_skill_activator,
@@ -15923,6 +16994,35 @@ def _replay_gate_details(
     screening_budget_censored = bool(
         bounded_screening and _screening_pair_is_budget_censored(normalized)
     )
+    completion_failure = (
+        None
+        if screening_budget_censored
+        else _paired_candidate_completion_failure(normalized)
+    )
+    if completion_failure is not None:
+        completion_event, completion_evidence = completion_failure
+        completion_observations = tuple(
+            ReplayFailureObservation(
+                event=completion_event,
+                case_id=member.case_id,
+                run_id=replay_result.request.run_id,
+                task_id=member.request.task_id,
+                candidate_id=replay_result.request.candidate_id,
+            )
+            for member in normalized.members
+            if _variant_has_progressing_task_timeout(member.candidate)
+        ) or (ReplayFailureObservation(event=completion_event),)
+        completion_aggregate = aggregate_replay_failure_observations(
+            completion_observations
+        )[0]
+        raw_events = details.get("causal_failure_events")
+        event_payloads = list(raw_events) if isinstance(raw_events, list) else []
+        event_payloads.append(completion_aggregate.to_dict())
+        details["causal_failure_events"] = event_payloads
+        details["paired_candidate_completion_evidence"] = completion_evidence
+        details["paired_candidate_completion_failure_event"] = (
+            completion_event.to_dict()
+        )
     if screening_budget_censored:
         censor_event = ReplayFailureEvent(
             code=_SCREENING_BUDGET_CENSORED_CODE,
@@ -15971,7 +17071,9 @@ def _replay_gate_details(
         )
         recovery_failure = (
             None
-            if candidate_system_failures or screening_budget_censored
+            if candidate_system_failures
+            or screening_budget_censored
+            or completion_failure is not None
             else (
                 _candidate_recovery_failure_event(recovery_trace)
                 if intervention_observed
@@ -16057,12 +17159,131 @@ def _variant_is_screening_timeout(variant: ReplayVariantResult) -> bool:
             return False
         if (
             repetition.status is not ReplayExecutionStatus.FAILED
-            or failure.owner is not FailureOwner.TASK
-            or failure.repairable
-            or failure.code not in {"timeoutexpired", "task_rollout_timeout"}
+            or failure.stage
+            not in {FailureStage.TASK_ROLLOUT, FailureStage.LEGACY_IMPORT}
+            or failure.code
+            not in {
+                "timeoutexpired",
+                "task_rollout_timeout",
+                "replay_task_timeout_with_recoverable_evidence",
+            }
+        ):
+            return False
+        if failure.owner is FailureOwner.TASK:
+            continue
+        # Compatibility for persisted artifacts written before paired causal
+        # attribution: a candidate-role timeout with proven data-plane progress
+        # is still a physical timeout, not a capability failure.
+        if not (
+            failure.owner is FailureOwner.CANDIDATE
+            and _failure_completed_data_plane_operations(failure)
         ):
             return False
     return True
+
+
+def _failure_completed_data_plane_operations(
+    failure: ReplayFailureEvent,
+) -> tuple[str, ...]:
+    raw = failure.diagnostics.get("completed_data_plane_operations")
+    if not isinstance(raw, (list, tuple)):
+        compatibility = failure.compatibility_dict()
+        raw = compatibility.get("completed_data_plane_operations")
+    if not isinstance(raw, (list, tuple)):
+        return ()
+    return tuple(
+        dict.fromkeys(
+            text
+            for item in raw[:32]
+            if (text := str(item or "").strip())
+        )
+    )
+
+
+def _variant_has_progressing_task_timeout(variant: ReplayVariantResult) -> bool:
+    repetitions = variant.repetition_results or (variant,)
+    return any(
+        repetition.status is ReplayExecutionStatus.FAILED
+        and isinstance(repetition.failure, ReplayFailureEvent)
+        and repetition.failure.stage is FailureStage.TASK_ROLLOUT
+        and repetition.failure.code
+        in {
+            "timeoutexpired",
+            "task_rollout_timeout",
+            "replay_task_timeout_with_recoverable_evidence",
+        }
+        and bool(_failure_completed_data_plane_operations(repetition.failure))
+        for repetition in repetitions
+    )
+
+
+def _paired_candidate_completion_failure(
+    normalized: NormalizedReplayMembers,
+) -> tuple[ReplayFailureEvent, dict[str, object]] | None:
+    """Derive task-completion repair only after paired executions exist."""
+
+    operations: list[str] = []
+    termination_axes: list[str] = []
+    candidate_timeout_count = 0
+    baseline_timeout_count = 0
+    terminal_synthesis_attempted = False
+    for member in normalized.members:
+        if _variant_is_screening_timeout(member.baseline):
+            baseline_timeout_count += 1
+        for repetition in member.candidate.repetition_results or (member.candidate,):
+            failure = repetition.failure
+            if (
+                repetition.status is not ReplayExecutionStatus.FAILED
+                or not isinstance(failure, ReplayFailureEvent)
+                or failure.stage is not FailureStage.TASK_ROLLOUT
+                or failure.code
+                not in {
+                    "timeoutexpired",
+                    "task_rollout_timeout",
+                    "replay_task_timeout_with_recoverable_evidence",
+                }
+            ):
+                continue
+            completed = _failure_completed_data_plane_operations(failure)
+            if not completed:
+                continue
+            candidate_timeout_count += 1
+            for operation in completed:
+                if operation not in operations:
+                    operations.append(operation)
+            axis = failure.diagnostics.get("termination_budget_axis")
+            if isinstance(axis, str) and axis and axis not in termination_axes:
+                termination_axes.append(axis)
+            terminal_synthesis_attempted = bool(
+                terminal_synthesis_attempted
+                or failure.diagnostics.get("terminal_synthesis_attempted") is True
+            )
+    if not operations:
+        return None
+    evidence: dict[str, object] = {
+        "completed_data_plane_operations": operations[:32],
+        "candidate_timeout_count": candidate_timeout_count,
+        "baseline_timeout_count": baseline_timeout_count,
+        "termination_budget_axes": termination_axes,
+        "terminal_synthesis_attempted": terminal_synthesis_attempted,
+        "causal_attribution_stage": "paired_replay",
+    }
+    return (
+        ReplayFailureEvent(
+            code="target_behavior_completion_missing",
+            owner=FailureOwner.CANDIDATE,
+            stage=FailureStage.TASK_ROLLOUT,
+            scope=FailureScope.CANDIDATE,
+            repairable=True,
+            category="target_behavior",
+            summary=(
+                "candidate completed data-plane interactions but did not produce "
+                "a terminal task result within the execution envelope"
+            ),
+            diagnostics=evidence,
+        ),
+        evidence,
+    )
 
 
 def _screening_pair_is_budget_censored(
@@ -16239,6 +17460,107 @@ def _screening_attempt_is_budget_censored(
         and details.get("code") == _SCREENING_BUDGET_CENSORED_CODE
         and details.get("screening_outcome") == "right_censored"
     )
+
+
+def _deduplicate_conformance_phenotypes(
+    candidates: tuple[CandidateVariant, ...],
+    *,
+    conformance_report: Mapping[str, object] | None,
+    current_content: str,
+) -> tuple[
+    tuple[CandidateVariant, ...],
+    dict[str, str],
+    dict[str, str],
+]:
+    """Keep one representative for each deterministically observed phenotype.
+
+    Source bytes remain part of generation-level semantic deduplication.  After a
+    repair candidate passes the same frozen probe contract, task screening should
+    compare observable behavior rather than repeatedly paying for source variants
+    with the same target surface and conformance outcome.
+    """
+
+    attempts = (
+        conformance_report.get("attempts")
+        if isinstance(conformance_report, Mapping)
+        else None
+    )
+    if not isinstance(attempts, list):
+        return candidates, {}, {}
+    passed_by_candidate = {
+        str(attempt.get("candidate_id")): attempt
+        for attempt in attempts
+        if isinstance(attempt, Mapping)
+        and attempt.get("passed") is True
+        and isinstance(attempt.get("candidate_id"), str)
+    }
+    representatives: list[CandidateVariant] = []
+    representative_by_fingerprint: dict[str, str] = {}
+    duplicate_of: dict[str, str] = {}
+    fingerprints: dict[str, str] = {}
+    for candidate in candidates:
+        attempt = passed_by_candidate.get(candidate.candidate_id)
+        if attempt is None:
+            representatives.append(candidate)
+            continue
+        details = attempt.get("details")
+        if not isinstance(details, Mapping):
+            representatives.append(candidate)
+            continue
+        probe_results = details.get("probe_group_results")
+        normalized_probes = []
+        if isinstance(probe_results, list):
+            normalized_probes = sorted(
+                (
+                    {
+                        "passed": item.get("passed") is True,
+                        "code": str(item.get("code") or ""),
+                        "requirement_id": str(
+                            item.get("requirement_id") or ""
+                        ),
+                        "case_ids": sorted(
+                            str(case_id)
+                            for case_id in item.get("case_ids", [])
+                            if isinstance(case_id, str)
+                        )
+                        if isinstance(item.get("case_ids"), list)
+                        else [],
+                    }
+                    for item in probe_results
+                    if isinstance(item, Mapping)
+                ),
+                key=lambda item: json.dumps(
+                    item,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+            )
+        mutation = classify_candidate_mutation(
+            candidate,
+            current_content=current_content,
+        )
+        fingerprint = _stable_json_fingerprint(
+            {
+                "schema_version": "aworld.self_evolve.conformance_phenotype.v1",
+                "mutation_kind": mutation.kind.value,
+                "target_behavior_fingerprint": (
+                    mutation.candidate_target_behavior_fingerprint
+                ),
+                "support_file_paths": list(mutation.support_file_paths),
+                "gate_name": str(attempt.get("gate_name") or ""),
+                "gate_code": str(details.get("code") or ""),
+                "probe_results": normalized_probes,
+            }
+        )
+        fingerprints[candidate.candidate_id] = fingerprint
+        representative_id = representative_by_fingerprint.get(fingerprint)
+        if representative_id is not None:
+            duplicate_of[candidate.candidate_id] = representative_id
+            continue
+        representative_by_fingerprint[fingerprint] = candidate.candidate_id
+        representatives.append(candidate)
+    return tuple(representatives), duplicate_of, fingerprints
 
 
 def _combined_candidate_validation_report(
@@ -17258,7 +18580,10 @@ def _iteration_validation_feedback(
                 **comparison_metrics,
                 **typed_gate_metrics,
                 "failed_gates": [gate.gate_name for gate in failed_gates],
-                "candidate_status": "rejected" if failed_gates else "accepted",
+                "candidate_status": (
+                    typed_candidate_status
+                    or ("rejected" if failed_gates else "accepted")
+                ),
             },
             dataset_split="validation",
         ),
@@ -17621,6 +18946,16 @@ def _candidate_repair_diagnostic_view(
                 "repairable": all(event.get("repairable") is True for event in candidate_causes),
                 "causal_failure_events": candidate_causes,
             }
+            completion_evidence = details.get(
+                "paired_candidate_completion_evidence"
+            )
+            if isinstance(completion_evidence, Mapping):
+                view["paired_candidate_completion_evidence"] = dict(
+                    completion_evidence
+                )
+            direct_failure = details.get("candidate_failure")
+            if isinstance(direct_failure, Mapping):
+                view["candidate_failure"] = dict(direct_failure)
             recovery_trace = validate_public_recovery_trace(
                 details.get("recovery_trace")
             )
@@ -17911,6 +19246,48 @@ def _typed_gate_feedback_metrics(
             if violated_schema_constraint_ids:
                 result["violated_schema_constraint_ids"] = sorted(
                     violated_schema_constraint_ids
+                )
+            completion_event_observed = any(
+                event.get("code") == "target_behavior_completion_missing"
+                for event in candidate_events
+            )
+            completed_operations = _diagnostic_completed_data_plane_operations(
+                tuple(classification_views)
+            )
+            if completion_event_observed and completed_operations:
+                result["interaction_progress"] = max(
+                    4,
+                    _diagnostic_interaction_progress(
+                        tuple(classification_views)
+                    ),
+                )
+                result["required_behaviors"] = [
+                    "persist_first_successful_structured_evidence",
+                    "write_manifest_before_additional_collection",
+                    "verify_task_semantic_sufficiency_before_finalizing",
+                    "do_not_treat_transport_success_as_task_completion",
+                    "continue_bounded_acquisition_when_payload_is_only_metadata_or_execution_summary",
+                    "stop_after_sufficient_evidence",
+                    "return_bounded_evidence_ledger",
+                ]
+                candidate_diagnostics.insert(
+                    0,
+                    {
+                        "code": "finalize_after_successful_endpoint_interaction",
+                        "stage": "candidate_task_behavior",
+                        "failure_class": "candidate",
+                        "repairable": True,
+                        "completed_data_plane_operations": list(
+                            completed_operations
+                        ),
+                        "reason": (
+                            "Paired replay proved that the supplied service completed "
+                            "a data-plane interaction, but the candidate exhausted its "
+                            "execution envelope before returning a bounded task result. "
+                            "Preserve the verified support surface and repair the reusable "
+                            "target instructions to persist sufficient evidence and finalize."
+                        ),
+                    },
                 )
         else:
             typed_owners = {
@@ -18907,6 +20284,145 @@ def _iteration_state(
     }
 
 
+def _measurement_component_identity(component: object | None) -> dict[str, object]:
+    if component is None:
+        return {"kind": "disabled"}
+    identity: dict[str, object] = {
+        "module": type(component).__module__,
+        "class": type(component).__qualname__,
+    }
+    for name in (
+        "optimizer_name",
+        "optimizer_version",
+        "model_profile",
+        "backend_ref",
+        "version",
+    ):
+        value = getattr(component, name, None)
+        if value is None or isinstance(value, (str, int, float, bool)):
+            if value is not None:
+                identity[name] = value
+    return identity
+
+
+def _complete_measurement_usage(
+    observations: Sequence[MeasurementObservation],
+    *,
+    candidate_opportunities: int,
+) -> MeasurementUsage:
+    if not observations or not all(item.usage.complete for item in observations):
+        return MeasurementUsage(
+            candidate_opportunities=candidate_opportunities,
+        )
+    cost_complete = all(item.usage.cost_usd is not None for item in observations)
+    return MeasurementUsage(
+        tokens=sum(item.usage.tokens or 0 for item in observations),
+        cost_usd=(
+            sum(item.usage.cost_usd or 0.0 for item in observations)
+            if cost_complete
+            else None
+        ),
+        wall_seconds=sum(
+            item.usage.wall_seconds or 0.0 for item in observations
+        ),
+        candidate_opportunities=candidate_opportunities,
+    )
+
+
+def _measurement_target_resolution(
+    report: TargetSelectionReport | None,
+) -> TargetResolutionConfidence:
+    if report is None:
+        return TargetResolutionConfidence(
+            confidence=1.0,
+            origin="direct_target_argument",
+            inference_bypassed=True,
+        )
+    raw_origin = report.selection_origin
+    origin = str(getattr(raw_origin, "value", raw_origin) or "unknown")
+    causal_confidence: float | None = None
+    diagnostics = report.diagnostics
+    if isinstance(diagnostics, Mapping):
+        raw_causal = diagnostics.get("causal_confidence")
+        if (
+            isinstance(raw_causal, (int, float))
+            and not isinstance(raw_causal, bool)
+            and 0 <= float(raw_causal) <= 1
+        ):
+            causal_confidence = float(raw_causal)
+    return TargetResolutionConfidence(
+        confidence=float(report.confidence),
+        origin=origin,
+        inference_bypassed=origin not in {"inferred", "model_inferred"},
+        causal_confidence=causal_confidence,
+    )
+
+
+def _measurement_promotion_gate(summary: MeasurementSummary) -> GateResult:
+    return GateResult(
+        gate_name="trusted_improvement_measurement",
+        passed=summary.promotion_eligible,
+        reason=(
+            "controlled measurement supports candidate promotion"
+            if summary.promotion_eligible
+            else f"controlled measurement blocked promotion: {summary.decision_reason}"
+        ),
+        details={
+            "failure_class": (
+                None if summary.promotion_eligible else "measurement"
+            ),
+            "code": (
+                None
+                if summary.promotion_eligible
+                else "trusted_improvement_not_established"
+            ),
+            "experiment_id": summary.experiment_id,
+            "validity_status": summary.validity_status.value,
+            "effect_direction": summary.effect_direction.value,
+            "confidence_lower_bound": summary.confidence_lower_bound,
+            "budget_normalized": summary.budget_normalized,
+            "next_action": summary.next_action.value,
+        },
+    )
+
+
+def _finite_measurement_metric(value: object) -> float | None:
+    if (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(float(value))
+    ):
+        return float(value)
+    return None
+
+
+def _non_negative_measurement_int(value: object) -> int | None:
+    numeric = _finite_measurement_metric(value)
+    if numeric is None or numeric < 0 or not numeric.is_integer():
+        return None
+    return int(numeric)
+
+
+def _non_negative_measurement_float(value: object) -> float | None:
+    numeric = _finite_measurement_metric(value)
+    return numeric if numeric is not None and numeric >= 0 else None
+
+
+def _budget_curve_points(total: int | float) -> tuple[int | float, ...]:
+    if total <= 0:
+        return (0,)
+    return tuple(
+        dict.fromkeys(
+            (
+                total * 0.25,
+                total * 0.5,
+                total * 0.75,
+                total,
+            )
+        )
+    )
+
+
 def _lesson_type_counts(lessons: tuple[LessonRecord, ...]) -> dict[str, int]:
     counts: dict[str, int] = {}
     for lesson in lessons:
@@ -19177,6 +20693,49 @@ def _population_report(
             for attempt in screening.get("attempts", ())
             if isinstance(attempt, Mapping)
         ]
+        screening_stage_reports = [
+            screening
+            for validation in screening_reports
+            for screening in (validation.get("screening"),)
+            if isinstance(screening, Mapping)
+        ]
+        termination_axis_counts: dict[str, int] = {}
+        for screening in screening_stage_reports:
+            raw_counts = screening.get("termination_budget_axis_counts")
+            if not isinstance(raw_counts, Mapping):
+                continue
+            for axis, count in raw_counts.items():
+                if not isinstance(axis, str):
+                    continue
+                termination_axis_counts[axis] = (
+                    termination_axis_counts.get(axis, 0)
+                    + _non_negative_int(count)
+                )
+        report["screening_execution"] = {
+            "physical_pair_execution_count": sum(
+                _non_negative_int(
+                    screening.get("physical_pair_execution_count")
+                )
+                for screening in screening_stage_reports
+            ),
+            "wall_seconds": sum(
+                _non_negative_screening_float(
+                    screening.get("screening_wall_seconds")
+                )
+                for screening in screening_stage_reports
+            ),
+            "right_censored_batch_count": sum(
+                int(screening.get("stopped_after_budget_censor") is True)
+                for screening in screening_stage_reports
+            ),
+            "termination_budget_axis_counts": termination_axis_counts,
+            "strategy_counts": dict(
+                Counter(
+                    str(screening.get("screening_strategy") or "unknown")
+                    for screening in screening_stage_reports
+                )
+            ),
+        }
         for stage_name, attempts in (
             ("conformance", conformance_attempts),
             ("screening", screening_attempts),
@@ -19340,6 +20899,9 @@ def _candidate_screening_dataset(
     *,
     capability_requirements: tuple[ReplayCapabilityRequirement, ...] = (),
     max_cases: int = 1,
+    empirical_observations: Mapping[
+        str, Mapping[str, float | int]
+    ] | None = None,
 ) -> SelfEvolveDataset | None:
     if max_cases <= 0:
         raise ValueError("candidate screening max_cases must be positive")
@@ -19402,6 +20964,11 @@ def _candidate_screening_dataset(
                     context_requirement_count=(
                         context_requirement_count_by_case.get(case.case_id, 0)
                     ),
+                    empirical_observation=(
+                        empirical_observations.get(case.case_id)
+                        if empirical_observations is not None
+                        else None
+                    ),
                 ),
                 len(_candidate_screening_case_strata(case) - covered_strata),
                 _candidate_screening_case_distance(
@@ -19436,8 +21003,20 @@ def _candidate_screening_dataset(
                         context_requirement_count=(
                             context_requirement_count_by_case.get(case.case_id, 0)
                         ),
+                        empirical_observation=(
+                            empirical_observations.get(case.case_id)
+                            if empirical_observations is not None
+                            else None
+                        ),
                     )
                     for case in selected
+                },
+                "screening_case_observations": {
+                    case.case_id: dict(
+                        empirical_observations.get(case.case_id, {})
+                    )
+                    for case in selected
+                    if empirical_observations is not None
                 },
                 "original_case_count": len(dataset.cases),
             },
@@ -19456,8 +21035,16 @@ def _candidate_screening_case_cost(
     case: EvalCase,
     *,
     context_requirement_count: int = 0,
+    empirical_observation: Mapping[str, float | int] | None = None,
 ) -> int:
-    """Estimate relative qualification cost without inspecting task semantics."""
+    """Estimate qualification cost from static shape and bounded observations.
+
+    The static estimate is a cold-start prior.  Once a case has participated in
+    screening, measured wall time and right-censor frequency become the stronger
+    signal.  Capability coverage still precedes cost in panel selection, so an
+    expensive case is retained when it is the only representative of a required
+    behavior.
+    """
 
     trace_depth = len(case.trace_pack.steps) if case.trace_pack is not None else 1
     try:
@@ -19475,7 +21062,105 @@ def _candidate_screening_case_cost(
     # Conversation reconstruction expands fixtures and prompt context but does
     # not directly exercise a candidate-owned data-plane requirement.  Penalize
     # it strongly enough that an equally representative executable case wins.
-    return max(0, context_requirement_count) * 100 + trace_depth * 10 + input_kib
+    static_cost = (
+        max(0, context_requirement_count) * 100
+        + trace_depth * 10
+        + input_kib
+    )
+    if not empirical_observation:
+        return static_cost
+    attempt_count = _non_negative_int(
+        empirical_observation.get("attempt_count")
+    )
+    total_wall_seconds = _non_negative_screening_float(
+        empirical_observation.get("total_wall_seconds")
+    )
+    censored_count = _non_negative_int(
+        empirical_observation.get("right_censored_count")
+    )
+    if attempt_count <= 0:
+        return static_cost
+    average_wall_seconds = total_wall_seconds / attempt_count
+    censor_penalty = math.ceil(
+        min(1.0, censored_count / attempt_count) * 500
+    )
+    return static_cost + math.ceil(average_wall_seconds) + censor_penalty
+
+
+def _record_candidate_screening_observation(
+    observations: dict[str, dict[str, float | int]],
+    *,
+    case_ids: tuple[str, ...],
+    attempt: Mapping[str, object],
+) -> None:
+    """Update campaign-local case cost without retaining replay payloads."""
+
+    wall_seconds = _non_negative_screening_float(attempt.get("wall_seconds"))
+    per_case_wall_seconds = wall_seconds / max(1, len(case_ids))
+    right_censored = _screening_attempt_is_budget_censored(attempt)
+    termination_axes = _screening_attempt_termination_axes(attempt)
+    for case_id in case_ids:
+        current = observations.setdefault(case_id, {})
+        current["attempt_count"] = (
+            _non_negative_int(current.get("attempt_count")) + 1
+        )
+        current["total_wall_seconds"] = (
+            _non_negative_screening_float(
+                current.get("total_wall_seconds")
+            )
+            + per_case_wall_seconds
+        )
+        current["right_censored_count"] = (
+            _non_negative_int(current.get("right_censored_count"))
+            + int(right_censored)
+        )
+        current["passed_count"] = (
+            _non_negative_int(current.get("passed_count"))
+            + int(attempt.get("passed") is True)
+        )
+        for axis in termination_axes:
+            field_name = f"termination_{axis}_count"
+            current[field_name] = (
+                _non_negative_int(current.get(field_name)) + 1
+            )
+
+
+def _screening_attempt_termination_axes(
+    attempt: Mapping[str, object],
+) -> tuple[str, ...]:
+    axes: set[str] = set()
+    stack: list[object] = [attempt.get("details")]
+    inspected = 0
+    while stack and inspected < 256:
+        current = stack.pop()
+        inspected += 1
+        if isinstance(current, Mapping):
+            axis = current.get("termination_budget_axis")
+            if isinstance(axis, str) and axis.strip():
+                axes.add(axis.strip())
+            stack.extend(current.values())
+        elif isinstance(current, (list, tuple)):
+            stack.extend(current)
+    return tuple(sorted(axes))
+
+
+def _screening_termination_axis_counts(
+    attempts: Iterable[Mapping[str, object]],
+) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for attempt in attempts:
+        for axis in _screening_attempt_termination_axes(attempt):
+            counts[axis] = counts.get(axis, 0) + 1
+    return counts
+
+
+def _non_negative_screening_float(value: object) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float, Decimal)):
+        return 0.0
+    result = float(value)
+    if not math.isfinite(result) or result < 0:
+        return 0.0
+    return result
 
 
 def _candidate_screening_qualification_case_limit(
