@@ -21,6 +21,7 @@ from aworld.self_evolve.optimizers.base import (
 from aworld.self_evolve.optimizers.dspy_adapter import DSPyGEPAOptimizer, DSPyMIPROOptimizer
 from aworld.self_evolve.optimizers.llm_mutator import (
     TraceReflectiveLLMMutator,
+    _validate_focused_repair_mutation_scope,
     _validate_prerequisite_composition_target_delta,
     _validate_mutator_output_context,
 )
@@ -110,6 +111,176 @@ def _evaluation_support_prerequisite_feedback(
                 ],
             },
         },
+    )
+
+
+def test_focused_support_repair_freezes_target_and_unowned_files() -> None:
+    current_content = "# Demo\n\nPreserve this guidance.\n"
+    request = OptimizerRequest(
+        target=_target(),
+        current_content=current_content,
+        target_fingerprint="sha256:old",
+        trace_packs=(_trace_pack(),),
+        trainable_cases=(EvalCase(case_id="train-1", input="web task"),),
+    )
+    repair_focus = {
+        "failed_gates": ["candidate_repair_conformance"],
+        "repair_candidate_package": {
+            "candidate_id": "candidate-parent",
+            "content": current_content,
+            "files": [
+                {
+                    "path": "replay/capability.json",
+                    "operation": "upsert",
+                    "content": json.dumps(
+                        {
+                            "schema_version": (
+                                "aworld.skill.replay_capability.v1"
+                            ),
+                            "capability_id": "generic.replay",
+                            "protocol": "aworld.replay.subprocess.v1",
+                            "entrypoint": "replay/compiler.py",
+                            "handles": ["local_endpoint"],
+                            "runtime_files": ["replay/runtime.py"],
+                        }
+                    ),
+                    "executable": False,
+                },
+                {
+                    "path": "replay/compiler.py",
+                    "operation": "upsert",
+                    "content": "def compile_request():\n    return {}\n",
+                    "executable": False,
+                },
+                {
+                    "path": "replay/runtime.py",
+                    "operation": "upsert",
+                    "content": "def respond():\n    return {}\n",
+                    "executable": False,
+                },
+            ],
+        },
+        "candidate_validation_diagnostics": [
+            {
+                "code": "schema_field_validation_failed",
+                "schema_field_constraints": [
+                    {
+                        "schema_layer": "compile_result",
+                        "field_path": "services[*].transport",
+                        "rule": "enum",
+                        "expected": ["skill_runtime"],
+                    }
+                ],
+            }
+        ],
+    }
+    parent_runtime = CandidateFileDelta(
+        path="replay/runtime.py",
+        content="def respond():\n    return {}\n",
+    )
+    repaired_compiler = CandidateFileDelta(
+        path="replay/compiler.py",
+        content="def compile_request():\n    return {'fixed': True}\n",
+    )
+    parent_manifest = CandidateFileDelta(
+        path="replay/capability.json",
+        content=json.dumps(
+            {
+                "schema_version": "aworld.skill.replay_capability.v1",
+                "capability_id": "generic.replay",
+                "protocol": "aworld.replay.subprocess.v1",
+                "entrypoint": "replay/compiler.py",
+                "handles": ["local_endpoint"],
+                "runtime_files": ["replay/runtime.py"],
+            }
+        ),
+    )
+
+    _validate_focused_repair_mutation_scope(
+        request,
+        repair_focus=repair_focus,
+        candidate_content=current_content,
+        candidate_files=(parent_manifest, repaired_compiler, parent_runtime),
+    )
+
+    with pytest.raises(
+        CandidateSemanticValidationError,
+        match="changed releasable target content",
+    ):
+        _validate_focused_repair_mutation_scope(
+            request,
+            repair_focus=repair_focus,
+            candidate_content=current_content + "\nUnrelated rewrite.\n",
+            candidate_files=(parent_manifest, repaired_compiler, parent_runtime),
+        )
+
+    with pytest.raises(
+        CandidateSemanticValidationError,
+        match="outside the typed source-owner boundary",
+    ):
+        _validate_focused_repair_mutation_scope(
+            request,
+            repair_focus=repair_focus,
+            candidate_content=current_content,
+            candidate_files=(
+                parent_manifest,
+                repaired_compiler,
+                replace(
+                    parent_runtime,
+                    content="def respond():\n    return {'unrelated': True}\n",
+                ),
+            ),
+        )
+
+
+def test_historical_support_constraints_do_not_own_new_target_repair() -> None:
+    current_content = "# Demo\n\nPreserve this guidance.\n"
+    request = OptimizerRequest(
+        target=_target(),
+        current_content=current_content,
+        target_fingerprint="sha256:old",
+        trace_packs=(_trace_pack(),),
+    )
+    repair_focus = {
+        "failed_gates": ["skill_markdown"],
+        "repair_candidate_package": {
+            "candidate_id": "candidate-parent",
+            "content": current_content,
+            "files": [
+                {
+                    "path": "replay/compiler.py",
+                    "operation": "upsert",
+                    "content": "def compile_request():\n    return {}\n",
+                }
+            ],
+        },
+        "candidate_validation_diagnostics": [
+            {
+                "code": "inherited_typed_repair_constraints",
+                "schema_field_constraints": [
+                    {
+                        "schema_layer": "compile_result",
+                        "field_path": "services[*].transport",
+                        "rule": "enum",
+                        "expected": ["skill_runtime"],
+                    }
+                ],
+            }
+        ],
+    }
+
+    # The constraint must still be available to later verification, but it is
+    # historical context and cannot freeze a new target-content repair.
+    _validate_focused_repair_mutation_scope(
+        request,
+        repair_focus=repair_focus,
+        candidate_content=current_content + "\nRepair the current target gate.\n",
+        candidate_files=(
+            CandidateFileDelta(
+                path="replay/compiler.py",
+                content="def compile_request():\n    return {'preserved': True}\n",
+            ),
+        ),
     )
 
 

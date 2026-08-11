@@ -307,6 +307,12 @@ class TraceReflectiveLLMMutator:
                     repair_focus=repair_focus,
                     candidate_content=content,
                 )
+                _validate_focused_repair_mutation_scope(
+                    request,
+                    repair_focus=repair_focus,
+                    candidate_content=content,
+                    candidate_files=files,
+                )
                 if (
                     isinstance(repair_focus, Mapping)
                     and _repair_feedback_is_prerequisite_composition(
@@ -1311,6 +1317,12 @@ def _validate_mutator_output_context(
             repair_focus=repair_focus,
             candidate_content=content,
         )
+        _validate_focused_repair_mutation_scope(
+            request,
+            repair_focus=repair_focus,
+            candidate_content=content,
+            candidate_files=files,
+        )
         private_contract = (
             None
             if (
@@ -1485,6 +1497,123 @@ def _validate_prerequisite_composition_target_delta(
             ),
         },
     )
+
+
+def _validate_focused_repair_mutation_scope(
+    request: OptimizerRequest,
+    *,
+    repair_focus: Mapping[str, object] | None,
+    candidate_content: str,
+    candidate_files: tuple[CandidateFileDelta, ...],
+) -> None:
+    """Enforce the typed producer boundary for support-package repairs.
+
+    A compiler/runtime conformance failure authorizes changes to the source
+    owners named by the contract.  It does not authorize a simultaneous rewrite
+    of releasable skill guidance or unrelated support files.  Judge-stage and
+    verified-prerequisite composition frontiers intentionally use different
+    mutation rules and are handled by their dedicated validators.
+    """
+
+    if not isinstance(repair_focus, Mapping):
+        return
+    if _repair_feedback_reached_judged_task_output(
+        repair_focus
+    ) or _repair_feedback_is_prerequisite_composition(repair_focus):
+        return
+    failed_gates = repair_focus.get("failed_gates")
+    active_source_frontier = isinstance(
+        repair_focus.get("repair_conformance"),
+        Mapping,
+    ) or (
+        isinstance(failed_gates, (list, tuple))
+        and "candidate_repair_conformance" in failed_gates
+    )
+    if not active_source_frontier:
+        # Cumulative contracts remain validation invariants for later repairs,
+        # but historical source failures must not seize ownership from a newer
+        # target-content or judge frontier.
+        return
+    contract = compile_repair_conformance_contract(repair_focus)
+    if contract is None or not contract.required_branch_paths:
+        return
+    package = repair_focus.get("repair_candidate_package")
+    if not isinstance(package, Mapping):
+        return
+
+    parent_content = package.get("content")
+    if (
+        isinstance(parent_content, str)
+        and parent_content.strip()
+        and candidate_content_semantic_fingerprint(candidate_content)
+        != candidate_content_semantic_fingerprint(parent_content)
+    ):
+        raise CandidateSemanticValidationError(
+            "focused_repair_target_scope_violation",
+            (
+                "support-package repair changed releasable target content; "
+                "preserve the focused target delta and edit only typed source owners"
+            ),
+            field_path=CandidateFailureField.CONTENT.value,
+            representation=CandidateRepresentation.CANDIDATE_PACKAGE.value,
+            repairable=True,
+            allowed_improvement_signal_ids=exposed_improvement_signal_ids(request),
+            details={
+                "focused_candidate_id": contract.focus_candidate_id,
+                "authorized_paths": list(contract.required_branch_paths),
+            },
+        )
+
+    raw_parent_files = package.get("files")
+    if not isinstance(raw_parent_files, list):
+        return
+    parent_files = {
+        item.path: item
+        for item in validate_candidate_files(
+            CandidateFileDelta(
+                path=str(raw.get("path") or ""),
+                operation=str(raw.get("operation") or "upsert"),
+                content=(
+                    raw.get("content")
+                    if isinstance(raw.get("content"), str)
+                    else None
+                ),
+                executable=bool(raw.get("executable", False)),
+            )
+            for raw in raw_parent_files
+            if isinstance(raw, Mapping)
+        )
+    }
+    authorized_paths = frozenset(contract.required_branch_paths)
+    unauthorized_changes: list[str] = []
+    for item in validate_candidate_files(candidate_files):
+        if item.path in authorized_paths:
+            continue
+        parent = parent_files.get(item.path)
+        if parent != item:
+            unauthorized_changes.append(item.path)
+    for path in parent_files:
+        if path not in authorized_paths and not any(
+            item.path == path for item in candidate_files
+        ):
+            unauthorized_changes.append(path)
+    if unauthorized_changes:
+        raise CandidateSemanticValidationError(
+            "focused_repair_file_scope_violation",
+            (
+                "support-package repair changed files outside the typed source-owner "
+                "boundary"
+            ),
+            field_path=CandidateFailureField.FILES.value,
+            representation=CandidateRepresentation.CANDIDATE_PACKAGE.value,
+            repairable=True,
+            allowed_improvement_signal_ids=exposed_improvement_signal_ids(request),
+            details={
+                "focused_candidate_id": contract.focus_candidate_id,
+                "authorized_paths": sorted(authorized_paths),
+                "unauthorized_changed_paths": sorted(set(unauthorized_changes)),
+            },
+        )
 
 
 def _repair_feedback_is_prerequisite_composition(

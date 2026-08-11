@@ -861,6 +861,31 @@ def test_render_optimize_summary_reports_campaign_authoritative_frontier() -> No
     assert "Campaign authoritative candidates: 3/3" in summary
 
 
+def test_render_optimize_summary_reports_campaign_primary_failure() -> None:
+    summary = render_optimize_summary(
+        {
+            "status": "rejected",
+            "gate_results": [
+                {
+                    "gate_name": "skill_release_fidelity",
+                    "passed": False,
+                }
+            ],
+            "campaign_failure_attribution": {
+                "primary_gate": "candidate_repair_conformance",
+                "code": "repair_capability_compile_failed",
+                "affected_candidate_count": 4,
+            },
+        }
+    )
+
+    assert "Rejected gates: skill_release_fidelity" in summary
+    assert (
+        "Campaign primary failure: candidate_repair_conformance "
+        "(repair_capability_compile_failed) across 4 candidate(s)"
+    ) in summary
+
+
 def test_run_optimize_cli_uses_interactive_auto_verified_defaults(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

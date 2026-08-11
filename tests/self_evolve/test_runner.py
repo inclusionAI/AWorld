@@ -34,6 +34,7 @@ from aworld.self_evolve.datasets import (
     build_dataset_from_source,
 )
 from aworld.self_evolve.evolution_context import compile_evolution_context
+from aworld.self_evolve.feedback import normalize_feedback_summary
 from aworld.self_evolve.optimizers.llm_mutator import TraceReflectiveLLMMutator
 from aworld.self_evolve.optimizers.base import (
     CandidateGenerationOutcome,
@@ -95,6 +96,8 @@ from aworld.self_evolve.runner import (
     _default_post_apply_evaluator,
     _candidate_generation_limit,
     _candidate_generation_actual_usage,
+    _campaign_failure_attribution,
+    _candidate_conformance_failure_signatures,
     _candidate_conformance_stall_signature,
     _candidate_materialization_failures,
     _candidate_materialization_stall_signature,
@@ -1014,6 +1017,62 @@ def test_skill_release_fidelity_failure_enters_typed_repair_frontier() -> None:
     assert frontiers[0].semantic_key == metrics["causal_failure_events"][0][
         "semantic_key"
     ]
+
+
+def test_typed_gate_feedback_exposes_first_class_repair_contract() -> None:
+    constraint = SchemaFieldRepairConstraint(
+        schema_layer="compile_result",
+        field_path="services[*].transport",
+        rule="enum",
+        expected=("skill_runtime",),
+    )
+    contract = RepairConformanceContract(
+        focus_candidate_id="candidate-parent",
+        failure_codes=("schema_field_validation_failed",),
+        interaction_progress=0,
+        base_file_fingerprints={"replay/compiler.py": "sha256:base"},
+        required_branch_paths=("replay/compiler.py",),
+        base_branch_fingerprints={},
+        manifest_path="replay/capability.json",
+        compiler_path="replay/compiler.py",
+        runtime_paths=("replay/runtime.py",),
+        schema_field_constraints=(constraint,),
+    )
+    event = ReplayFailureEvent(
+        code="schema_field_validation_failed",
+        owner=FailureOwner.CANDIDATE,
+        stage=FailureStage.CAPABILITY_COMPILE,
+        scope=FailureScope.CANDIDATE,
+        repairable=True,
+        category="repair_conformance",
+        summary="compiled schema failed",
+    ).to_dict()
+    gate = GateResult(
+        gate_name="candidate_repair_conformance",
+        passed=False,
+        reason="compiled schema failed",
+        details={
+            "failure_class": "candidate",
+            "repairable": True,
+            "repair_conformance": contract.to_public_dict(),
+            "failure_event": event,
+            "causal_failure_events": [event],
+        },
+    )
+
+    metrics = runner_module._typed_gate_feedback_metrics((gate,))
+    normalized = normalize_feedback_summary(
+        EvaluationSummary(
+            variant_id="candidate-child",
+            dataset_split="validation",
+            metrics=metrics,
+        )
+    )
+
+    assert metrics["repair_conformance"]["schema_field_constraints"] == [
+        constraint.to_dict()
+    ]
+    assert normalized["repair_conformance"] == metrics["repair_conformance"]
 
 
 def test_causal_lesson_memory_restores_typed_repair_frontier() -> None:
@@ -2555,6 +2614,94 @@ def test_rejection_attribution_prefers_actionable_candidate_evidence_failure() -
     assert attribution is not None
     assert attribution["primary_gate"] == "evidence_quality"
     assert attribution["failure_class"] == "candidate"
+
+
+def test_campaign_attribution_reports_modal_frontier_not_incidental_candidate() -> None:
+    candidates = [
+        CandidateVariant(
+            candidate_id=f"candidate-{index}",
+            target=SelfEvolveTargetRef(target_type="skill", target_id="demo"),
+            content="# Demo\n",
+            rationale="candidate",
+        )
+        for index in range(3)
+    ]
+    conformance_gate = GateResult(
+        gate_name="candidate_repair_conformance",
+        passed=False,
+        reason="compiled output violates its typed contract",
+        details={
+            "code": "repair_capability_compile_failed",
+            "failure_class": "candidate",
+            "schema_field_constraints": [
+                {
+                    "schema_layer": "compile_result",
+                    "field_path": "services[*].protocol_probes[*].path",
+                    "rule": "enum",
+                    "expected": ["data_plane_probe"],
+                }
+            ],
+        },
+    )
+    incidental_gate = GateResult(
+        gate_name="skill_release_fidelity",
+        passed=False,
+        reason="candidate moved an undeclared fenced block",
+        details={
+            "code": "skill_fenced_block_deleted",
+            "failure_class": "candidate",
+        },
+    )
+    states = (
+        {"candidate": candidates[0], "gate_results": [conformance_gate]},
+        {"candidate": candidates[1], "gate_results": [conformance_gate]},
+        {"candidate": candidates[2], "gate_results": [incidental_gate]},
+    )
+
+    attribution = _campaign_failure_attribution(
+        states,
+        generation_stop_reason=(
+            "conformance_frontier_repeated_after_strategy_switch"
+        ),
+    )
+
+    assert attribution is not None
+    assert attribution["primary_gate"] == "candidate_repair_conformance"
+    assert attribution["affected_candidate_count"] == 2
+    assert attribution["occurrence_count"] == 2
+
+
+def test_conformance_retry_identity_is_atomic_across_batch_composition() -> None:
+    candidate = CandidateVariant(
+        candidate_id="candidate",
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo"),
+        content="# Demo\n",
+        rationale="candidate",
+    )
+
+    def failure(code: str) -> tuple[CandidateVariant, GateResult]:
+        return (
+            candidate,
+            GateResult(
+                gate_name="candidate_repair_conformance",
+                passed=False,
+                reason="typed failure",
+                details={
+                    "code": code,
+                    "stage": "repair_conformance",
+                    "failure_fingerprint": "sha256:" + code[-1] * 64,
+                },
+            ),
+        )
+
+    first = _candidate_conformance_failure_signatures(
+        (failure("failure_a"), failure("failure_b"))
+    )
+    second = _candidate_conformance_failure_signatures((failure("failure_b"),))
+
+    assert len(first) == 2
+    assert len(second) == 1
+    assert second[0] in first
 
 
 def test_rejection_attribution_names_terminal_frontier_exhaustion() -> None:
@@ -12845,9 +12992,22 @@ async def test_population_screening_rejects_unchanged_repair_branch_before_rollo
     assert report["attempts"][0]["details"]["code"] == (
         "repair_branch_unchanged"
     )
-    assert report["attempts"][0]["details"]["repair_conformance"] == (
-        contract.to_public_dict()
-    )
+    repair_feedback_contract = report["attempts"][0]["details"][
+        "repair_conformance"
+    ]
+    assert set(repair_feedback_contract["failure_codes"]) == {
+        *contract.failure_codes,
+        "repair_branch_unchanged",
+    }
+    assert {
+        key: value
+        for key, value in repair_feedback_contract.items()
+        if key != "failure_codes"
+    } == {
+        key: value
+        for key, value in contract.to_public_dict().items()
+        if key != "failure_codes"
+    }
     feedback = _candidate_screening_repair_feedback((candidate,), report)
     assert len(feedback) == 1
     assert feedback[0].metrics["failure_class"] == "candidate"

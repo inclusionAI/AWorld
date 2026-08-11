@@ -1786,6 +1786,29 @@ def _candidate_conformance_stall_signature(
 ) -> str | None:
     """Group repeated typed conformance failures independently of candidate ids."""
 
+    signatures = _candidate_conformance_failure_signatures(failures)
+    if not signatures:
+        return None
+    encoded = json.dumps(
+        list(signatures),
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return "sha256:" + hashlib.sha256(encoded).hexdigest()
+
+
+def _candidate_conformance_failure_signatures(
+    failures: Iterable[tuple[CandidateVariant, GateResult]],
+) -> tuple[str, ...]:
+    """Return atomic typed failure identities for progress-aware retries.
+
+    Batch composition is not repair progress.  Tracking one hash for a whole
+    population lets the same failure receive another strategy switch whenever a
+    sibling failure appears or disappears.  Atomic identities bound retries per
+    actual failed contract instead.
+    """
+
     shapes: dict[str, dict[str, object]] = {}
     for _, gate in failures:
         if gate.gate_name != "candidate_repair_conformance":
@@ -1812,15 +1835,20 @@ def _candidate_conformance_stall_signature(
             )
             shapes[identity] = shape
     if not shapes:
-        return None
-    encoded = json.dumps(
-        [shapes[key] for key in sorted(shapes)],
-        ensure_ascii=True,
-        separators=(",", ":"),
-        sort_keys=True,
-        default=str,
-    ).encode("utf-8")
-    return "sha256:" + hashlib.sha256(encoded).hexdigest()
+        return ()
+    return tuple(
+        "sha256:"
+        + hashlib.sha256(
+            json.dumps(
+                shapes[key],
+                ensure_ascii=True,
+                separators=(",", ":"),
+                sort_keys=True,
+                default=str,
+            ).encode("utf-8")
+        ).hexdigest()
+        for key in sorted(shapes)
+    )
 
 
 def _candidate_conformance_strategy_switch_feedback(
@@ -2501,6 +2529,107 @@ _FRAMEWORK_SHARED_GATE_STAGES = {
     "judge_only_signal": FailureStage.EVALUATION,
     "global_regression_benchmark": FailureStage.EVALUATION,
 }
+
+
+def _campaign_failure_attribution(
+    iteration_states: Iterable[Mapping[str, object]],
+    *,
+    generation_stop_reason: str | None,
+) -> dict[str, object] | None:
+    """Attribute a rejected search to its dominant typed failure frontier.
+
+    ``rejection_attribution`` explains the selected representative candidate.
+    A campaign can reject many candidates before that selection, so using only
+    the representative can surface an incidental Markdown error while hiding a
+    repeated compiler/runtime frontier.  This aggregate is candidate-deduped and
+    keeps the two concepts separate.
+    """
+
+    groups: dict[
+        tuple[str, str, str, str | None],
+        dict[str, object],
+    ] = {}
+    seen_attempts: set[tuple[str, str, str, str | None]] = set()
+    for state in iteration_states:
+        candidate = state.get("candidate")
+        candidate_id = (
+            candidate.candidate_id
+            if isinstance(candidate, CandidateVariant)
+            else None
+        )
+        raw_gates = state.get("gate_results")
+        if not isinstance(raw_gates, (list, tuple)):
+            continue
+        for gate in raw_gates:
+            if not isinstance(gate, GateResult) or gate.passed:
+                continue
+            if gate.gate_name in {
+                "duplicate_accepted_candidate",
+                "duplicate_rejected_candidate",
+            }:
+                continue
+            details = gate.details if isinstance(gate.details, Mapping) else {}
+            code = str(details.get("code") or gate.gate_name)
+            contract_fingerprint = _schema_field_contract_fingerprint(details)
+            attempt_identity = (
+                candidate_id or "<none>",
+                gate.gate_name,
+                code,
+                contract_fingerprint,
+            )
+            if attempt_identity in seen_attempts:
+                continue
+            seen_attempts.add(attempt_identity)
+            key = (
+                gate.gate_name,
+                code,
+                str(details.get("failure_class") or "candidate"),
+                contract_fingerprint,
+            )
+            group = groups.setdefault(
+                key,
+                {
+                    "primary_gate": gate.gate_name,
+                    "code": code,
+                    "failure_class": str(
+                        details.get("failure_class") or "candidate"
+                    ),
+                    "primary_reason": sanitize_text(gate.reason, max_chars=400),
+                    "occurrence_count": 0,
+                    "candidate_ids": set(),
+                    "contract_fingerprint": contract_fingerprint,
+                },
+            )
+            group["occurrence_count"] = int(group["occurrence_count"]) + 1
+            if candidate_id is not None:
+                candidate_ids = group["candidate_ids"]
+                assert isinstance(candidate_ids, set)
+                candidate_ids.add(candidate_id)
+    if not groups:
+        return None
+    primary = dict(
+        max(
+            groups.values(),
+            key=lambda item: (
+                len(item["candidate_ids"]),
+                int(item["occurrence_count"]),
+                item["failure_class"] == "candidate",
+                str(item["primary_gate"]),
+            ),
+        )
+    )
+    candidate_ids = primary.pop("candidate_ids")
+    assert isinstance(candidate_ids, set)
+    result = {
+        **primary,
+        "affected_candidate_count": len(candidate_ids),
+        "affected_candidate_ids": sorted(candidate_ids)[:16],
+    }
+    if result.get("contract_fingerprint") is None:
+        result.pop("contract_fingerprint", None)
+    if generation_stop_reason is not None:
+        result["generation_stop_reason"] = generation_stop_reason
+    return result
 
 
 def _with_typed_gate_failure_event(gate: GateResult) -> GateResult:
@@ -4891,19 +5020,19 @@ class SelfEvolveRunner:
                             status="rejected",
                         )
                     )
-            conformance_stall_signature = (
-                _candidate_conformance_stall_signature(screening_failures)
+            conformance_failure_signatures = (
+                _candidate_conformance_failure_signatures(screening_failures)
                 if screening_feedback and not candidate_population
-                else None
+                else ()
             )
-            if conformance_stall_signature is not None:
-                prior_strategy_attempts = conformance_strategy_attempts.get(
-                    conformance_stall_signature,
-                    0,
+            if conformance_failure_signatures:
+                switchable_signatures = tuple(
+                    signature
+                    for signature in conformance_failure_signatures
+                    if conformance_strategy_attempts.get(signature, 0)
+                    < _MAX_CONFORMANCE_STRATEGY_SWITCH_ATTEMPTS
                 )
-                if prior_strategy_attempts >= (
-                    _MAX_CONFORMANCE_STRATEGY_SWITCH_ATTEMPTS
-                ):
+                if not switchable_signatures:
                     generation_conformance_frontier_exhausted = True
                     _emit_progress(
                         self.progress_callback,
@@ -4915,15 +5044,20 @@ class SelfEvolveRunner:
                         ),
                     )
                 else:
-                    conformance_strategy_attempts[
-                        conformance_stall_signature
-                    ] = prior_strategy_attempts + 1
+                    for signature in switchable_signatures:
+                        conformance_strategy_attempts[signature] = (
+                            conformance_strategy_attempts.get(signature, 0) + 1
+                        )
                     conformance_strategy_switch_count += 1
+                    switch_signature = _candidate_conformance_stall_signature(
+                        screening_failures
+                    )
+                    assert switch_signature is not None
                     validation_feedback = _merge_validation_feedback(
                         validation_feedback,
                         (
                             _candidate_conformance_strategy_switch_feedback(
-                                signature=conformance_stall_signature,
+                                signature=switch_signature,
                             ),
                         ),
                     )
@@ -5660,6 +5794,15 @@ class SelfEvolveRunner:
         )
         if rejection_attribution is not None:
             report["rejection_attribution"] = rejection_attribution
+        if final_status is SelfEvolveRunStatus.REJECTED:
+            campaign_failure_attribution = _campaign_failure_attribution(
+                iteration_states,
+                generation_stop_reason=generation_stop_reason,
+            )
+            if campaign_failure_attribution is not None:
+                report["campaign_failure_attribution"] = (
+                    campaign_failure_attribution
+                )
         trajectory_set_report = _trajectory_set_report(dataset)
         if trajectory_set_report is not None:
             report["trajectory_set"] = trajectory_set_report
@@ -12223,6 +12366,13 @@ def optimize_from_cli_request(
         rejection_attribution = report_payload.get("rejection_attribution")
         if isinstance(rejection_attribution, Mapping):
             summary["rejection_attribution"] = dict(rejection_attribution)
+        campaign_failure_attribution = report_payload.get(
+            "campaign_failure_attribution"
+        )
+        if isinstance(campaign_failure_attribution, Mapping):
+            summary["campaign_failure_attribution"] = dict(
+                campaign_failure_attribution
+            )
     return summary
 
 
@@ -17380,6 +17530,7 @@ def _typed_gate_feedback_metrics(
     repairable_values: list[bool] = []
     causal_events: dict[tuple[str, str], Mapping[str, object]] = {}
     candidate_causal_contexts: dict[str, Mapping[str, object]] = {}
+    repair_contract_contexts: list[Mapping[str, object]] = []
     recovery_traces: list[dict[str, object]] = []
     violated_schema_constraint_ids: set[str] = set()
     evidence_constraint_groups: list[
@@ -17413,6 +17564,14 @@ def _typed_gate_feedback_metrics(
         if not isinstance(details, Mapping):
             diagnostics.append(gate_diagnostic)
             continue
+        raw_repair_contract = details.get("repair_conformance")
+        if isinstance(raw_repair_contract, Mapping):
+            projected_contract = public_diagnostic_projection(
+                raw_repair_contract,
+                max_chars=8_192,
+            )
+            if isinstance(projected_contract, Mapping):
+                repair_contract_contexts.append(dict(projected_contract))
         for counterexample in _public_replay_counterexamples(details):
             add_replay_counterexample(counterexample)
         raw_schema_constraints = details.get("schema_field_constraints")
@@ -17558,6 +17717,19 @@ def _typed_gate_feedback_metrics(
             recovery_traces,
             key=_recovery_trace_frontier,
         )
+    if repair_contract_contexts:
+        merged_repair_contract: Mapping[str, object] = dict(
+            repair_contract_contexts[0]
+        )
+        for repair_contract in repair_contract_contexts[1:]:
+            merged_repair_contract = (
+                merge_repair_conformance_constraint_context(
+                    merged_repair_contract,
+                    repair_contract,
+                )
+                or merged_repair_contract
+            )
+        result["repair_conformance"] = dict(merged_repair_contract)
     if causal_events:
         ordered_events = [causal_events[key] for key in sorted(causal_events)]
         result["causal_failure_events"] = ordered_events

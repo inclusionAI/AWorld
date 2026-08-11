@@ -456,6 +456,10 @@ def render_optimize_summary(report: Any) -> str:
     regression_evidence_path = _read_report_value(
         report, "regression_evidence_path"
     )
+    campaign_failure_attribution = _read_report_value(
+        report,
+        "campaign_failure_attribution",
+    )
 
     lines = [
         (
@@ -541,6 +545,22 @@ def render_optimize_summary(report: Any) -> str:
         lines.append(f"New skill: {promotion['status']}")
     if status == "rejected" and failed_gate_names:
         lines.append(f"Rejected gates: {', '.join(failed_gate_names)}")
+    if status == "rejected" and isinstance(
+        campaign_failure_attribution,
+        Mapping,
+    ):
+        primary_gate = campaign_failure_attribution.get("primary_gate")
+        failure_code = campaign_failure_attribution.get("code")
+        affected_count = campaign_failure_attribution.get(
+            "affected_candidate_count"
+        )
+        if primary_gate:
+            summary = f"Campaign primary failure: {primary_gate}"
+            if failure_code:
+                summary += f" ({failure_code})"
+            if isinstance(affected_count, int):
+                summary += f" across {affected_count} candidate(s)"
+            lines.append(summary)
     if status == "rejected" and _has_missing_independent_regression(report):
         lines.append(
             "Regression required: the target has no usable baseline contract; "

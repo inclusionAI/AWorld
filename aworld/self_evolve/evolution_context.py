@@ -1136,6 +1136,14 @@ def _merge_typed_repair_constraints_across_feedback(
             # mutation surface back into replay implementation files.
             result.append(updated)
             continue
+        raw_repair_contract = item.get("repair_conformance")
+        if isinstance(raw_repair_contract, Mapping):
+            updated_contract = merge_repair_conformance_constraint_context(
+                raw_repair_contract,
+                constraint_context,
+            )
+            if updated_contract is not None:
+                updated["repair_conformance"] = updated_contract
         raw_diagnostics = updated.get("candidate_validation_diagnostics")
         diagnostics = (
             [dict(value) for value in raw_diagnostics if isinstance(value, Mapping)]
@@ -1289,6 +1297,12 @@ def _bounded_feedback_summary(
         # sanitizer. Running the generic metric sanitizer again would replace
         # executable assignments such as ``token = expression``.
         normalized["repair_candidate_package"] = repair_candidate_package
+    repair_conformance = summary.get("repair_conformance")
+    if isinstance(repair_conformance, Mapping):
+        # Typed repair contracts are execution context, not display diagnostics.
+        # Preserve their validated public projection instead of re-budgeting the
+        # nested constraint arrays through the generic metric sanitizer.
+        normalized["repair_conformance"] = dict(repair_conformance)
     return normalized
 
 

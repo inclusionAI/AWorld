@@ -2059,6 +2059,144 @@ def test_compile_contract_preserves_schema_field_constraints_across_repairs() ->
     assert inherited.required_branch_paths == ("replay/compiler.py",)
 
 
+def test_compile_contract_joins_complete_and_bounded_feedback_copies() -> None:
+    constraint = SchemaFieldRepairConstraint(
+        schema_layer="compile_result",
+        field_path="services[*].protocol_probes[*].path",
+        rule="enum",
+        expected=("fixture_derived_data_plane_probe",),
+    )
+    original = compile_repair_conformance_contract(
+        {
+            "repair_candidate_package": _package(),
+            "candidate_validation_diagnostics": [
+                {
+                    "code": "invalid_replay_capability_compile",
+                    "capability_error_code": "schema_field_validation_failed",
+                    "schema_field_constraints": [constraint.to_dict()],
+                }
+            ],
+        }
+    )
+    assert original is not None
+    complete = original.to_public_dict()
+    bounded = {
+        **complete,
+        "schema_field_constraints": [],
+    }
+
+    inherited = compile_repair_conformance_contract(
+        {
+            "repair_candidate_package": _package(
+                "def respond():\n    return {'changed': True}\n"
+            ),
+            "repair_conformance": complete,
+            "candidate_validation_diagnostics": [
+                {
+                    "code": "repair_branch_unchanged",
+                    "details": {"repair_conformance": bounded},
+                }
+            ],
+        }
+    )
+
+    assert inherited is not None
+    assert inherited.schema_field_constraints == (constraint,)
+    assert inherited.required_branch_paths == ("replay/compiler.py",)
+
+
+def test_current_typed_failure_owns_mutation_surface_and_preserves_history() -> None:
+    runtime_constraint = SchemaFieldRepairConstraint(
+        schema_layer="runtime",
+        field_path="environment.RESPONSE_INDEX.consumer",
+        rule="enum",
+        expected=("record_projector",),
+    )
+    compiler_constraint = SchemaFieldRepairConstraint(
+        schema_layer="compile_result",
+        field_path="services[*].protocol_probes[*].path",
+        rule="enum",
+        expected=("fixture_derived_data_plane_probe",),
+    )
+    inherited = RepairConformanceContract(
+        focus_candidate_id="candidate-parent",
+        failure_codes=("runtime_response_incomplete",),
+        interaction_progress=1,
+        base_file_fingerprints={
+            "replay/compiler.py": "sha256:compiler",
+            "replay/runtime.py": "sha256:runtime",
+        },
+        required_branch_paths=("replay/runtime.py",),
+        base_branch_fingerprints={},
+        manifest_path="replay/capability.json",
+        compiler_path="replay/compiler.py",
+        runtime_paths=("replay/runtime.py",),
+        schema_field_constraints=(runtime_constraint,),
+    )
+
+    contract = compile_repair_conformance_contract(
+        {
+            "repair_candidate_package": _package(),
+            "repair_conformance": inherited.to_public_dict(),
+            "candidate_validation_diagnostics": [
+                {
+                    "code": "repair_capability_compile_failed",
+                    "capability_error_code": "schema_field_validation_failed",
+                    "constraint_failure_codes": [
+                        "protocol_probe_duplicates_readiness"
+                    ],
+                    "schema_field_constraints": [compiler_constraint.to_dict()],
+                }
+            ],
+        }
+    )
+
+    assert contract is not None
+    assert contract.required_branch_paths == ("replay/compiler.py",)
+    assert contract.schema_field_constraints == (
+        runtime_constraint,
+        compiler_constraint,
+    )
+    assert "protocol_probe_duplicates_readiness" in contract.failure_codes
+
+
+def test_same_failure_with_multiple_typed_layers_authorizes_owner_union() -> None:
+    constraints = (
+        SchemaFieldRepairConstraint(
+            schema_layer="compile_result",
+            field_path="services[*].transport",
+            rule="enum",
+            expected=("skill_runtime",),
+        ),
+        SchemaFieldRepairConstraint(
+            schema_layer="runtime",
+            field_path="environment.RESPONSE_INDEX.consumer",
+            rule="enum",
+            expected=("record_projector",),
+        ),
+    )
+
+    contract = compile_repair_conformance_contract(
+        {
+            "repair_candidate_package": _package(),
+            "candidate_validation_diagnostics": [
+                {
+                    "code": "schema_field_validation_failed",
+                    "schema_field_constraints": [
+                        constraint.to_dict() for constraint in constraints
+                    ],
+                }
+            ],
+        }
+    )
+
+    assert contract is not None
+    assert contract.required_branch_paths == (
+        "replay/compiler.py",
+        "replay/runtime.py",
+    )
+
+
 def test_public_projection_preserves_nested_typed_repair_contract() -> None:
     schema_constraint = SchemaFieldRepairConstraint(
         schema_layer="compile_result",

@@ -535,6 +535,29 @@ class RepairConformanceContract:
             ),
         )
 
+    @classmethod
+    def from_public_dict(
+        cls,
+        value: Mapping[str, object],
+    ) -> "RepairConformanceContract":
+        """Restore the executable, payload-free part of a public contract.
+
+        Exact response assertions intentionally remain private and therefore
+        cannot be reconstructed here.  Every typed structural constraint and
+        source-owner locator is safe to restore and must survive feedback,
+        report, and Campaign boundaries without depending on diagnostic nesting.
+        """
+
+        if (
+            value.get("projection_schema_version")
+            != "aworld.self_evolve.repair_conformance.public.v1"
+        ):
+            raise ValueError("unsupported public repair conformance projection")
+        private_shape = dict(value)
+        private_shape.pop("projection_schema_version", None)
+        private_shape["exact_probe"] = None
+        return cls.from_dict(private_shape)
+
 
 @dataclass(frozen=True)
 class RepairConformanceResult:
@@ -1093,6 +1116,73 @@ def _repair_probe_operation(request_text: str | None) -> str | None:
     return None
 
 
+def _typed_constraint_owner_paths(
+    *,
+    manifest_path: str | None,
+    compiler_path: str | None,
+    runtime_paths: Sequence[str],
+    schema_field_constraints: Sequence[SchemaFieldRepairConstraint],
+    runtime_response_constraints: Sequence[RuntimeResponseConstraint],
+) -> tuple[str, ...]:
+    """Resolve every typed constraint to its source-producing layer.
+
+    A repair may carry preservation constraints from an older frontier together
+    with a newly observed failure.  Returning the owner union keeps both layers
+    visible; choosing one by diagnostic order can send the next mutation to a
+    valid runtime while hiding the compiler that produced the failing schema (or
+    vice versa).
+    """
+
+    owners: list[str] = []
+    layers = {
+        constraint.schema_layer for constraint in schema_field_constraints
+    }
+    if "manifest" in layers and manifest_path is not None:
+        owners.append(manifest_path)
+    if layers & {"compile_result", "compiler_output"} and compiler_path is not None:
+        owners.append(compiler_path)
+    if "runtime" in layers or runtime_response_constraints:
+        owners.extend(runtime_paths)
+    return tuple(dict.fromkeys(path for path in owners if path))
+
+
+def _direct_repair_diagnostics(
+    diagnostics: Sequence[Mapping[str, object]],
+) -> tuple[Mapping[str, object], ...]:
+    """Remove inherited contract envelopes from current failure evidence."""
+
+    def strip_inherited_contracts(value: object) -> object | None:
+        if isinstance(value, Mapping):
+            if (
+                value.get("projection_schema_version")
+                == "aworld.self_evolve.repair_conformance.public.v1"
+                or value.get("code") == "inherited_typed_repair_constraints"
+            ):
+                return None
+            stripped: dict[str, object] = {}
+            for key, nested in value.items():
+                if key == "repair_conformance":
+                    continue
+                projected = strip_inherited_contracts(nested)
+                if projected is not None:
+                    stripped[str(key)] = projected
+            return stripped
+        if isinstance(value, (list, tuple)):
+            return [
+                projected
+                for nested in value
+                if (projected := strip_inherited_contracts(nested)) is not None
+            ]
+        return value
+
+    direct: list[Mapping[str, object]] = []
+    for diagnostic in diagnostics:
+        stripped = strip_inherited_contracts(diagnostic)
+        if isinstance(stripped, Mapping) and stripped:
+            direct.append(stripped)
+    return tuple(direct)
+
+
 def compile_repair_conformance_contract(
     repair_focus: Mapping[str, object] | None,
 ) -> RepairConformanceContract | None:
@@ -1124,8 +1214,9 @@ def compile_repair_conformance_contract(
         return None
 
     diagnostics = tuple(_diagnostic_mappings(repair_focus))
+    direct_diagnostics = _direct_repair_diagnostics(diagnostics)
     counterexamples = _repair_counterexamples(repair_focus)
-    direct_failure_codes = _diagnostic_failure_codes(diagnostics)
+    direct_failure_codes = _diagnostic_failure_codes(direct_diagnostics)
     counterexample_failure_codes = tuple(
         str(item["failure_code"])
         for item in counterexamples
@@ -1152,7 +1243,7 @@ def compile_repair_conformance_contract(
             )
         )
     )
-    if "finalize_after_successful_endpoint_interaction" in failure_codes:
+    if "finalize_after_successful_endpoint_interaction" in direct_failure_codes:
         # The replay implementation already completed a bidirectional data-plane
         # interaction. This repair belongs to the target skill content, not to a
         # candidate-owned compiler/runtime branch, so source conformance must not
@@ -1164,28 +1255,32 @@ def compile_repair_conformance_contract(
         base_sources,
         manifest_path=manifest_path,
     )
+    direct_failure_paths: tuple[str, ...] = ()
     requires_selector_alignment = (
-        "align_compiler_runtime_recorded_response_selection" in failure_codes
+        "align_compiler_runtime_recorded_response_selection"
+        in direct_failure_codes
     )
     if requires_selector_alignment and compiler_path is not None:
         branch_paths = tuple(
             dict.fromkeys((compiler_path, *branch_paths))
         )
+        direct_failure_paths = branch_paths
     else:
         compile_failure_paths = _compile_failure_branch_paths(
-            diagnostics,
+            direct_diagnostics,
             manifest_path=manifest_path,
             compiler_path=compiler_path,
             runtime_paths=branch_paths,
         )
         if compile_failure_paths:
             branch_paths = compile_failure_paths
+            direct_failure_paths = compile_failure_paths
     exact_probe = _exact_probe_constraint(diagnostics) or (
         inherited_contract.exact_probe
         if inherited_contract is not None
         else None
     )
-    direct_probe_constraints = _fixture_probe_constraints(diagnostics)
+    direct_probe_constraints = _fixture_probe_constraints(direct_diagnostics)
     inherited_probe_constraints = (
         inherited_contract.fixture_probe_constraints
         if inherited_contract is not None
@@ -1205,11 +1300,20 @@ def compile_repair_conformance_contract(
             )
         }.values()
     )
-    direct_schema_constraints = _schema_field_constraints(diagnostics)
-    inherited_schema_constraints = (
-        inherited_contract.schema_field_constraints
-        if inherited_contract is not None
-        else ()
+    direct_schema_constraints = _schema_field_constraints(direct_diagnostics)
+    transported_schema_constraints = _schema_field_constraints(diagnostics)
+    inherited_schema_constraints = tuple(
+        {
+            item.identity_digest: item
+            for item in (
+                *(
+                    inherited_contract.schema_field_constraints
+                    if inherited_contract is not None
+                    else ()
+                ),
+                *transported_schema_constraints,
+            )
+        }.values()
     )
     schema_field_constraints = tuple(
         {
@@ -1221,12 +1325,23 @@ def compile_repair_conformance_contract(
         }.values()
     )
     direct_runtime_response_constraints = _runtime_response_constraints(
+        direct_diagnostics
+    )
+    transported_runtime_response_constraints = _runtime_response_constraints(
         diagnostics
     )
-    inherited_runtime_response_constraints = (
-        inherited_contract.runtime_response_constraints
-        if inherited_contract is not None
-        else ()
+    inherited_runtime_response_constraints = tuple(
+        {
+            item.identity_digest: item
+            for item in (
+                *(
+                    inherited_contract.runtime_response_constraints
+                    if inherited_contract is not None
+                    else ()
+                ),
+                *transported_runtime_response_constraints,
+            )
+        }.values()
     )
     runtime_response_constraints = tuple(
         {
@@ -1237,34 +1352,45 @@ def compile_repair_conformance_contract(
             )
         }.values()
     )
-    schema_constraint_paths: list[str] = []
-    schema_layers = {
-        constraint.schema_layer for constraint in schema_field_constraints
-    }
-    if "manifest" in schema_layers and manifest_path is not None:
-        schema_constraint_paths.append(manifest_path)
-    if (
-        schema_layers & {"compile_result", "compiler_output"}
-        and compiler_path is not None
-    ):
-        schema_constraint_paths.append(compiler_path)
-    if "runtime" in schema_layers:
-        schema_constraint_paths.extend(branch_paths)
-    if direct_runtime_response_constraints and runtime_paths:
-        # An executable runtime probe is the deepest direct evidence. Inherited
-        # compiler or manifest invariants remain validation constraints, but
-        # cannot redirect the repair away from the response-producing runtime.
-        branch_paths = runtime_paths
-    elif schema_constraint_paths:
-        branch_paths = tuple(dict.fromkeys(schema_constraint_paths))
-    directly_observed_operations = _observed_operations(diagnostics)
+    direct_owner_paths = _typed_constraint_owner_paths(
+        manifest_path=manifest_path,
+        compiler_path=compiler_path,
+        runtime_paths=runtime_paths,
+        schema_field_constraints=(
+            ()
+            if direct_runtime_response_constraints
+            else direct_schema_constraints
+        ),
+        runtime_response_constraints=direct_runtime_response_constraints,
+    )
+    inherited_owner_paths = _typed_constraint_owner_paths(
+        manifest_path=manifest_path,
+        compiler_path=compiler_path,
+        runtime_paths=runtime_paths,
+        schema_field_constraints=schema_field_constraints,
+        runtime_response_constraints=runtime_response_constraints,
+    )
+    if direct_failure_paths:
+        branch_paths = tuple(
+            dict.fromkeys((*direct_failure_paths, *direct_owner_paths))
+        )
+    elif direct_owner_paths:
+        # Multiple constraints discovered by the same failure are co-owners.
+        # Historical constraints remain validation invariants but cannot redirect
+        # the active mutation away from the current failure producer.
+        branch_paths = direct_owner_paths
+    elif inherited_contract is not None and inherited_owner_paths:
+        branch_paths = inherited_owner_paths
+    elif inherited_contract is not None and inherited_contract.required_branch_paths:
+        branch_paths = inherited_contract.required_branch_paths
+    directly_observed_operations = _observed_operations(direct_diagnostics)
     observed_operations = directly_observed_operations or (
         inherited_contract.late_observed_operations
         if inherited_contract is not None
         else ()
     )
     requires_fixture_probe = (
-        "implement_observed_endpoint_interactions" in failure_codes
+        "implement_observed_endpoint_interactions" in direct_failure_codes
         or bool(
             inherited_contract is not None
             and inherited_contract.requires_fixture_derived_probe
@@ -1382,6 +1508,13 @@ def merge_repair_conformance_constraint_context(
     fixture_constraints = _fixture_probe_constraints(sources)
     schema_constraints = _schema_field_constraints(sources)
     runtime_response_constraints = _runtime_response_constraints(sources)
+    direct_diagnostics = _direct_repair_diagnostics(
+        tuple(value for value in diagnostics if isinstance(value, Mapping))
+    )
+    direct_schema_constraints = _schema_field_constraints(direct_diagnostics)
+    direct_runtime_response_constraints = _runtime_response_constraints(
+        direct_diagnostics
+    )
     if (
         inherited is None
         and not fixture_constraints
@@ -1390,6 +1523,22 @@ def merge_repair_conformance_constraint_context(
     ):
         return None
     merged = dict(inherited or {})
+    failure_codes = _diagnostic_failure_codes(sources)
+    if failure_codes:
+        merged["failure_codes"] = list(failure_codes)
+    required_runtime_transitions = tuple(
+        dict.fromkeys(
+            transition
+            for source in sources
+            for transition in _string_tuple(
+                source.get("required_runtime_transitions")
+            )
+        )
+    )
+    if required_runtime_transitions:
+        merged["required_runtime_transitions"] = list(
+            required_runtime_transitions
+        )
     if fixture_constraints:
         merged["fixture_probe_constraints"] = [
             item.to_public_dict() for item in fixture_constraints
@@ -1402,6 +1551,38 @@ def merge_repair_conformance_constraint_context(
         merged["runtime_response_constraints"] = [
             item.to_dict() for item in runtime_response_constraints
         ]
+    manifest_path = (
+        str(merged.get("manifest_path"))
+        if isinstance(merged.get("manifest_path"), str)
+        else None
+    )
+    compiler_path = (
+        str(merged.get("compiler_path"))
+        if isinstance(merged.get("compiler_path"), str)
+        else None
+    )
+    runtime_paths = _string_tuple(merged.get("runtime_paths"))
+    owner_paths = _typed_constraint_owner_paths(
+        manifest_path=manifest_path,
+        compiler_path=compiler_path,
+        runtime_paths=runtime_paths,
+        schema_field_constraints=(
+            ()
+            if direct_runtime_response_constraints
+            else direct_schema_constraints
+        ),
+        runtime_response_constraints=direct_runtime_response_constraints,
+    )
+    if not owner_paths and not _string_tuple(merged.get("required_branch_paths")):
+        owner_paths = _typed_constraint_owner_paths(
+            manifest_path=manifest_path,
+            compiler_path=compiler_path,
+            runtime_paths=runtime_paths,
+            schema_field_constraints=schema_constraints,
+            runtime_response_constraints=runtime_response_constraints,
+        )
+    if owner_paths:
+        merged["required_branch_paths"] = list(owner_paths)
     return merged
 
 
@@ -2129,6 +2310,16 @@ def _diagnostic_failure_codes(
             for field_name in ("code", "capability_error_code"):
                 code = current.get(field_name)
                 if isinstance(code, str) and code and code != "failed_gate":
+                    normalized = sanitize_text(code, max_chars=120)
+                    if normalized not in codes:
+                        codes.append(normalized)
+            for field_name in ("failure_codes", "constraint_failure_codes"):
+                raw_codes = current.get(field_name)
+                if not isinstance(raw_codes, (list, tuple)):
+                    continue
+                for code in raw_codes[:64]:
+                    if not isinstance(code, str) or not code or code == "failed_gate":
+                        continue
                     normalized = sanitize_text(code, max_chars=120)
                     if normalized not in codes:
                         codes.append(normalized)
@@ -3505,9 +3696,17 @@ def evaluate_compiled_probe_conformance(
 
 def _diagnostic_mappings(value: Mapping[str, object]) -> Sequence[Mapping[str, object]]:
     raw = value.get("candidate_validation_diagnostics")
-    if not isinstance(raw, list):
-        return ()
-    return tuple(item for item in raw[:32] if isinstance(item, Mapping))
+    diagnostics = (
+        [item for item in raw[:32] if isinstance(item, Mapping)]
+        if isinstance(raw, list)
+        else []
+    )
+    # New feedback transports the typed contract as a first-class field.  Keep
+    # reading diagnostic-embedded contracts for reports produced by older runs.
+    first_class_contract = value.get("repair_conformance")
+    if isinstance(first_class_contract, Mapping):
+        diagnostics.insert(0, {"repair_conformance": first_class_contract})
+    return tuple(diagnostics)
 
 
 def _repair_counterexamples(
@@ -3534,11 +3733,31 @@ def _inherited_repair_conformance_contract(
             raw_contract = value.get("repair_conformance")
             if isinstance(raw_contract, Mapping):
                 try:
-                    contract = RepairConformanceContract.from_dict(raw_contract)
+                    contract = (
+                        RepairConformanceContract.from_public_dict(raw_contract)
+                        if raw_contract.get("projection_schema_version")
+                        is not None
+                        else RepairConformanceContract.from_dict(raw_contract)
+                    )
                 except ValueError:
                     contract = None
                 if contract is not None and contract.focus_candidate_id:
                     inherited.append(contract)
+            if (
+                value.get("projection_schema_version")
+                == "aworld.self_evolve.repair_conformance.public.v1"
+            ):
+                try:
+                    direct_contract = RepairConformanceContract.from_public_dict(
+                        value
+                    )
+                except ValueError:
+                    direct_contract = None
+                if (
+                    direct_contract is not None
+                    and direct_contract.focus_candidate_id
+                ):
+                    inherited.append(direct_contract)
             for key, nested in value.items():
                 if key == "repair_conformance":
                     continue
@@ -3549,7 +3768,117 @@ def _inherited_repair_conformance_contract(
                 collect(nested)
 
     collect(diagnostics)
-    return inherited[-1] if inherited else None
+    if not inherited:
+        return None
+
+    # Feedback is deliberately projected at several causal boundaries.  A
+    # complete first-class contract and one or more bounded diagnostic copies
+    # can therefore coexist in the same summary.  Treating the last copy as
+    # authoritative is lossy: the bounded copy may retain routing metadata but
+    # omit schema or runtime constraints.  Keep the newest contract as the
+    # lineage/routing base while losslessly joining every typed invariant.
+    base = inherited[-1]
+    fixture_constraints: dict[
+        tuple[str, str, str, int],
+        FixtureDerivedProbeConstraint,
+    ] = {}
+    schema_constraints: dict[str, SchemaFieldRepairConstraint] = {}
+    runtime_constraints: dict[str, RuntimeResponseConstraint] = {}
+    for contract in inherited:
+        for constraint in contract.fixture_probe_constraints:
+            fixture_constraints[
+                (
+                    str(constraint.requirement_identity_digest),
+                    constraint.kind,
+                    constraint.path,
+                    constraint.max_response_chars,
+                )
+            ] = constraint
+        for constraint in contract.schema_field_constraints:
+            schema_constraints[constraint.identity_digest] = constraint
+        for constraint in contract.runtime_response_constraints:
+            runtime_constraints[constraint.identity_digest] = constraint
+
+    return replace(
+        base,
+        failure_codes=tuple(
+            dict.fromkeys(
+                code
+                for contract in inherited
+                for code in contract.failure_codes
+            )
+        ),
+        interaction_progress=max(
+            contract.interaction_progress for contract in inherited
+        ),
+        manifest_path=next(
+            (
+                contract.manifest_path
+                for contract in reversed(inherited)
+                if contract.manifest_path
+            ),
+            None,
+        ),
+        compiler_path=next(
+            (
+                contract.compiler_path
+                for contract in reversed(inherited)
+                if contract.compiler_path
+            ),
+            None,
+        ),
+        runtime_paths=next(
+            (
+                contract.runtime_paths
+                for contract in reversed(inherited)
+                if contract.runtime_paths
+            ),
+            (),
+        ),
+        exact_probe=next(
+            (
+                contract.exact_probe
+                for contract in reversed(inherited)
+                if contract.exact_probe is not None
+            ),
+            None,
+        ),
+        late_observed_operations=tuple(
+            dict.fromkeys(
+                operation
+                for contract in inherited
+                for operation in contract.late_observed_operations
+            )
+        )[-_MAX_OBSERVED_OPERATIONS:],
+        requires_compiler_fixture_reconstruction=any(
+            contract.requires_compiler_fixture_reconstruction
+            for contract in inherited
+        ),
+        requires_fixture_derived_probe=any(
+            contract.requires_fixture_derived_probe for contract in inherited
+        ),
+        required_fixture_probe_operations=tuple(
+            dict.fromkeys(
+                operation
+                for contract in inherited
+                for operation in contract.required_fixture_probe_operations
+            )
+        )[-_MAX_OBSERVED_OPERATIONS:],
+        fixture_probe_constraints=tuple(fixture_constraints.values()),
+        schema_field_constraints=tuple(
+            schema_constraints[key] for key in sorted(schema_constraints)
+        ),
+        runtime_response_constraints=tuple(
+            runtime_constraints[key] for key in sorted(runtime_constraints)
+        ),
+        required_runtime_transitions=tuple(
+            dict.fromkeys(
+                transition
+                for contract in inherited
+                for transition in contract.required_runtime_transitions
+            )
+        ),
+    )
 
 
 def _exact_probe_constraint(
