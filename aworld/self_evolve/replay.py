@@ -2392,7 +2392,24 @@ def _protocol_trace_operation_names(record: Mapping[str, Any]) -> tuple[str, ...
     return tuple(values)
 
 
+def _emit_replay_member_progress(
+    progress_callback: Callable[[Mapping[str, Any]], None] | None,
+    **payload: Any,
+) -> None:
+    if progress_callback is None:
+        return
+    try:
+        progress_callback(dict(payload))
+    except Exception as exc:
+        logger.debug(
+            "self_evolve.replay.progress_callback_failed "
+            f"error_type={type(exc).__name__}"
+        )
+
+
 class AWorldCliCandidateReplayBackend:
+    supports_member_progress = True
+
     def __init__(
         self,
         *,
@@ -2414,6 +2431,7 @@ class AWorldCliCandidateReplayBackend:
         *,
         candidate: CandidateVariant,
         dataset: SelfEvolveDataset,
+        progress_callback: Callable[[Mapping[str, Any]], None] | None = None,
     ) -> CandidateReplayResult:
         if not _has_authoritative_per_member_repetitions(request):
             raise ValueError(
@@ -2481,7 +2499,24 @@ class AWorldCliCandidateReplayBackend:
             prepared_members.append((case, member_request, member_dir))
 
         baselines: list[ReplayVariantResult] = []
-        for _, member_request, member_dir in prepared_members:
+        member_count = len(prepared_members)
+        for member_index, (case, member_request, member_dir) in enumerate(
+            prepared_members,
+            start=1,
+        ):
+            _emit_replay_member_progress(
+                progress_callback,
+                event="member_phase_started",
+                candidate_id=candidate.candidate_id,
+                case_id=case.case_id,
+                case_index=member_index,
+                case_count=member_count,
+                phase="baseline",
+                repetition_count=member_request.baseline_repetitions,
+                baseline_cache_offered=(
+                    member_request.baseline_replay_dir is not None
+                ),
+            )
             if candidate_blocking_event is not None:
                 baseline = _blocked_variant_result(
                     "baseline", blocked_by=candidate_blocking_event
@@ -2504,10 +2539,35 @@ class AWorldCliCandidateReplayBackend:
                     }:
                         candidate_blocking_event = baseline.failure
             baselines.append(baseline)
+            _emit_replay_member_progress(
+                progress_callback,
+                event="member_phase_completed",
+                candidate_id=candidate.candidate_id,
+                case_id=case.case_id,
+                case_index=member_index,
+                case_count=member_count,
+                phase="baseline",
+                status=baseline.status.value,
+                baseline_cache_status=str(
+                    baseline.metrics.get("baseline_cache_status") or "unknown"
+                ),
+            )
 
-        for (case, member_request, member_dir), baseline in zip(
-            prepared_members, baselines, strict=True
-        ):
+        candidate_members = zip(prepared_members, baselines, strict=True)
+        for member_index, (
+            (case, member_request, member_dir),
+            baseline,
+        ) in enumerate(candidate_members, start=1):
+            _emit_replay_member_progress(
+                progress_callback,
+                event="member_phase_started",
+                candidate_id=candidate.candidate_id,
+                case_id=case.case_id,
+                case_index=member_index,
+                case_count=member_count,
+                phase="candidate",
+                repetition_count=member_request.candidate_repetitions,
+            )
             blocking_event = candidate_blocking_event
             if (
                 baseline.status is ReplayExecutionStatus.FAILED
@@ -2541,6 +2601,16 @@ class AWorldCliCandidateReplayBackend:
                     is not FailureStage.TASK_ROLLOUT
                 ):
                     candidate_blocking_event = candidate_result.failure
+            _emit_replay_member_progress(
+                progress_callback,
+                event="member_phase_completed",
+                candidate_id=candidate.candidate_id,
+                case_id=case.case_id,
+                case_index=member_index,
+                case_count=member_count,
+                phase="candidate",
+                status=candidate_result.status.value,
+            )
             member_items.append(
                 CandidateReplayMemberResult(
                     case_id=case.case_id,
@@ -2607,7 +2677,9 @@ class AWorldCliCandidateReplayBackend:
         candidate: CandidateVariant,
         replay_dir: Path,
     ) -> ReplayVariantResult:
+        baseline_cache_status = "not_offered"
         if request.baseline_replay_dir and _stored_baseline_matches_request(request):
+            baseline_cache_status = "hit"
             baseline = _load_variant_result_from_dir(
                 Path(request.baseline_replay_dir),
                 base_variant_id="baseline",
@@ -2620,6 +2692,7 @@ class AWorldCliCandidateReplayBackend:
             )
         else:
             if request.baseline_replay_dir:
+                baseline_cache_status = "rejected"
                 logger.info(
                     "self_evolve.replay.baseline.reuse_skip "
                     f"run_id={request.run_id} task_id={request.task_id} "
@@ -2633,7 +2706,14 @@ class AWorldCliCandidateReplayBackend:
                 artifact_dir=replay_dir / "baseline",
                 repetitions=request.baseline_repetitions,
             )
-        return baseline
+        return replace(
+            baseline,
+            metrics={
+                **dict(baseline.metrics),
+                "baseline_cache_status": baseline_cache_status,
+            },
+        )
+
     async def _run_repetitions(
         self,
         request: CandidateReplayRequest,

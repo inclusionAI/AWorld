@@ -116,7 +116,11 @@ from aworld.self_evolve.replay_capability import (
     ReplayReadinessProbe,
     ReplayServiceSpec,
 )
-from aworld.self_evolve.runner import _replay_result_has_reusable_baseline
+from aworld.self_evolve.runner import (
+    _find_reusable_baseline_replay_dir,
+    _replay_result_has_reusable_baseline,
+)
+from aworld.self_evolve.store import FilesystemSelfEvolveStore
 from aworld.self_evolve.types import (
     CandidateFileDelta,
     CandidateVariant,
@@ -207,6 +211,162 @@ def _candidate(content: str, candidate_id: str = "cand-1") -> CandidateVariant:
         content=content,
         rationale="test candidate",
         target_fingerprint="sha256:old",
+    )
+
+
+@pytest.mark.asyncio
+async def test_replay_backend_reports_member_phase_progress(
+    tmp_path: Path,
+) -> None:
+    async def fake_executor(
+        request: ReplayExecutionRequest,
+    ) -> ReplayExecutionResult:
+        return ReplayExecutionResult(
+            status="succeeded",
+            trajectory=[
+                {
+                    "state": {"input": request.task_input},
+                    "action": {"content": request.variant_id},
+                }
+            ],
+        )
+
+    dataset = SelfEvolveDataset(
+        cases=(
+            EvalCase(case_id="task-a", input="Replay task A"),
+            EvalCase(case_id="task-b", input="Replay task B"),
+        ),
+        recipe=DatasetRecipe(
+            source={"kind": "progress-test", "case_count": 2},
+            split_seed="seed",
+            splits={
+                "train": ["task-a", "task-b"],
+                "validation": [],
+                "held_out": [],
+            },
+        ),
+    )
+    candidate = _candidate(
+        "---\nname: demo\n---\n# Demo\nCandidate.\n",
+        candidate_id="progress-candidate",
+    )
+    request = CandidateReplayRequest(
+        run_id="run-member-progress",
+        task_id="task-a",
+        workspace_root=str(tmp_path),
+        target=candidate.target,
+        candidate_id=candidate.candidate_id,
+        overlay_skill_root=str(tmp_path / "overlay"),
+        task_input=dataset.cases[0].input,
+        baseline_repetitions=1,
+        candidate_repetitions=1,
+    )
+    events: list[dict[str, object]] = []
+
+    await AWorldCliCandidateReplayBackend(
+        executor=fake_executor
+    ).replay_candidate(
+        request,
+        candidate=candidate,
+        dataset=dataset,
+        progress_callback=events.append,
+    )
+
+    started = [
+        event
+        for event in events
+        if event["event"] == "member_phase_started"
+    ]
+    completed = [
+        event
+        for event in events
+        if event["event"] == "member_phase_completed"
+    ]
+    assert [
+        (event["phase"], event["case_index"], event["case_id"])
+        for event in started
+    ] == [
+        ("baseline", 1, "task-a"),
+        ("baseline", 2, "task-b"),
+        ("candidate", 1, "task-a"),
+        ("candidate", 2, "task-b"),
+    ]
+    assert [event["status"] for event in completed] == [
+        "succeeded",
+        "succeeded",
+        "succeeded",
+        "succeeded",
+    ]
+    assert completed[0]["baseline_cache_status"] == "not_offered"
+
+
+@pytest.mark.asyncio
+async def test_current_run_completed_replay_is_available_for_baseline_reuse(
+    tmp_path: Path,
+) -> None:
+    async def fake_executor(
+        request: ReplayExecutionRequest,
+    ) -> ReplayExecutionResult:
+        return ReplayExecutionResult(
+            status="succeeded",
+            trajectory=[{"action": {"content": request.variant_id}}],
+        )
+
+    dataset = SelfEvolveDataset(
+        cases=(EvalCase(case_id="task-a", input="Replay task A"),),
+        recipe=DatasetRecipe(
+            source={"kind": "baseline-cache-test", "case_count": 1},
+            split_seed="seed",
+            splits={"train": ["task-a"], "validation": [], "held_out": []},
+        ),
+    )
+    candidate = _candidate(
+        "---\nname: demo\n---\n# Demo\nCandidate.\n",
+        candidate_id="cached-candidate",
+    )
+    provenance = {
+        "baseline_skill_fingerprint": "sha256:baseline",
+        "dataset_fingerprint": "sha256:dataset",
+        "adaptation_fingerprint": "sha256:adaptation",
+        "workspace_seed_fingerprint": "sha256:workspace",
+    }
+    request = CandidateReplayRequest(
+        run_id="run-current-cache",
+        task_id="task-a",
+        workspace_root=str(tmp_path),
+        target=candidate.target,
+        candidate_id=candidate.candidate_id,
+        overlay_skill_root=str(tmp_path / "overlay"),
+        task_input=dataset.cases[0].input,
+        baseline_repetitions=1,
+        candidate_repetitions=1,
+        **provenance,
+    )
+    await AWorldCliCandidateReplayBackend(
+        executor=fake_executor
+    ).replay_candidate(
+        request,
+        candidate=candidate,
+        dataset=dataset,
+    )
+
+    reusable = _find_reusable_baseline_replay_dir(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        run_id=request.run_id,
+        target=candidate.target,
+        dataset=dataset,
+        baseline_repetitions=1,
+        **provenance,
+    )
+
+    assert reusable == str(
+        tmp_path
+        / ".aworld"
+        / "self_evolve"
+        / request.run_id
+        / "replay"
+        / candidate.candidate_id
+        / "members"
     )
 
 

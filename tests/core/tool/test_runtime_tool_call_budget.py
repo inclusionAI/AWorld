@@ -176,6 +176,45 @@ def test_replay_runtime_policy_rejects_collection_after_evidence_ready(
     assert '"phase": "evidence_ready"' in state
 
 
+def test_replay_runtime_policy_allows_one_browser_cleanup_after_evidence_ready(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    _enable_replay_policy(monkeypatch, tmp_path)
+    artifact_dir = tmp_path / "artifacts"
+    evidence = artifact_dir / "evidence.json"
+    evidence.write_text("{}", encoding="utf-8")
+    (artifact_dir / "evidence_manifest.jsonl").write_text(
+        '{"source_id":"one","extraction_method":"json_fields",'
+        '"artifact_path":"evidence.json","fields":["title"]}\n',
+        encoding="utf-8",
+    )
+    message = _Message(_Context())
+
+    _enforce_replay_evidence_runtime_policy(
+        "bash",
+        _replay_action("agent-browser close"),
+        message,
+    )
+
+    state = json.loads(
+        (artifact_dir / "framework_evidence_state.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert state["phase"] == "finalizing"
+    assert state["finalization_action_count"] == 1
+    with pytest.raises(
+        ToolExecutionDenied,
+        match="tool_call_after_evidence_ready",
+    ):
+        _enforce_replay_evidence_runtime_policy(
+            "bash",
+            _replay_action("agent-browser close"),
+            message,
+        )
+
+
 def test_replay_runtime_policy_enforces_declared_loopback_endpoints(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,

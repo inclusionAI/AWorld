@@ -9,6 +9,7 @@ import json
 import hashlib
 import os
 import re
+import shlex
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping
@@ -88,6 +89,12 @@ _PROTECTED_RUNTIME_ROOT_KEYS = frozenset(
         "xdg_state_home",
         "aworld_memory_root",
     }
+)
+_REPLAY_OWNED_BROWSER_CLEANUP_BINARIES = frozenset(
+    {"agent-browser", "browser-use"}
+)
+_REPLAY_OWNED_BROWSER_CLEANUP_ACTIONS = frozenset(
+    {"close", "quit"}
 )
 
 
@@ -217,6 +224,18 @@ def enforce_replay_evidence_runtime_policy(
 
     violation_code: str | None = None
     violation_metadata: dict[str, Any] = {}
+    if manifest_entry_count and _allow_single_evidence_ready_cleanup(
+        action_items,
+        owner=owner,
+    ):
+        state.update(
+            {
+                "phase": "finalizing",
+                "finalization_action_count": 1,
+            }
+        )
+        _write_state(artifact_root, state)
+        return None
     if manifest_entry_count:
         violation_code = "tool_call_after_evidence_ready"
     elif artifact_file_count >= policy.artifact_file_limit:
@@ -251,6 +270,51 @@ def enforce_replay_evidence_runtime_policy(
     }
     _append_violation(artifact_root, violation)
     return violation_code
+
+
+def _allow_single_evidence_ready_cleanup(
+    actions: tuple[Any, ...],
+    *,
+    owner: Any,
+) -> bool:
+    """Allow one narrow cleanup of a replay-owned browser after evidence.
+
+    Evidence-ready blocks further collection, but replay-created resources may
+    still be released.  The prior blanket denial converted ``agent-browser
+    close`` into a task failure and triggered an expensive evidence retry.  A
+    single exact cleanup action is safe because replay subprocesses use isolated
+    runtime roots; arbitrary shell, host-control, and repeated actions remain
+    denied.
+    """
+
+    if len(actions) != 1:
+        return False
+    if int(
+        getattr(owner, "_aworld_replay_finalization_action_count", 0) or 0
+    ):
+        return False
+    if not _is_replay_owned_browser_cleanup(actions[0]):
+        return False
+    setattr(owner, "_aworld_replay_finalization_action_count", 1)
+    return True
+
+
+def _is_replay_owned_browser_cleanup(action: Any) -> bool:
+    command_texts = _command_texts(action)
+    if len(command_texts) != 1:
+        return False
+    try:
+        tokens = shlex.split(command_texts[0])
+    except ValueError:
+        return False
+    if len(tokens) != 2:
+        return False
+    binary = Path(tokens[0]).name.casefold()
+    cleanup_action = tokens[1].casefold()
+    return bool(
+        binary in _REPLAY_OWNED_BROWSER_CLEANUP_BINARIES
+        and cleanup_action in _REPLAY_OWNED_BROWSER_CLEANUP_ACTIONS
+    )
 
 
 def record_replay_runtime_tool_result(
