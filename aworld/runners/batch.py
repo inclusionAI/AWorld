@@ -230,23 +230,16 @@ class DeterministicTaskBatchExecutor:
                         await record_failure(item.index)
                     return result
             except asyncio.CancelledError:
-                return TaskBatchResult(
-                    index=item.index,
-                    task_id=item.task.id,
-                    status=(
-                        "discarded"
-                        if failure_cutoff is not None and item.index > failure_cutoff
-                        else "cancelled"
-                    ),
-                    error_type="CancelledError",
-                    queue_wait_seconds=max(0.0, time.monotonic() - queued_at),
-                    execution_seconds=(
-                        max(0.0, time.monotonic() - execution_started)
-                        if execution_started
-                        else 0.0
-                    ),
-                    serialized_by_resource=serialized_by_resource,
-                )
+                # Cancellation is control flow, not a batch item result.  In
+                # particular, an enclosing ``asyncio.timeout`` cancels this
+                # task to enforce a hard deadline.  Converting that signal to
+                # a normal result makes the timeout context believe the work
+                # completed and lets the batch run beyond its deadline.
+                #
+                # Indexed fail-fast cancellation is still reduced below by
+                # ``gather(return_exceptions=True)`` while external
+                # cancellation now propagates through the gather as intended.
+                raise
             except BaseException as exc:
                 result = TaskBatchResult(
                     index=item.index,

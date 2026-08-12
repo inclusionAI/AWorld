@@ -1693,6 +1693,32 @@ def test_synthetic_summaries_do_not_hide_incomparable_evaluation_runtime() -> No
     ) is True
 
 
+def test_declared_shared_measurement_gate_publishes_typed_causal_event() -> None:
+    gate = _with_typed_gate_failure_event(
+        GateResult(
+            gate_name="candidate_replay",
+            passed=False,
+            reason="candidate replay exceeded the total hard deadline",
+            details={
+                "code": "replay_total_timeout",
+                "failure_class": "measurement",
+                "failure_owner": "framework",
+                "failure_scope": "shared_run",
+                "failure_stage": "evaluation",
+                "repairable": True,
+            },
+        )
+    )
+
+    event = gate.details["failure_event"]
+    assert event["code"] == "replay_total_timeout"
+    assert event["owner"] == "framework"
+    assert event["scope"] == "shared_run"
+    assert event["stage"] == "evaluation"
+    assert runner_module._gate_has_typed_shared_infrastructure_failure(gate)
+    assert runner_module._gate_has_typed_shared_measurement_failure(gate)
+
+
 def test_iteration_selection_prefers_fewer_failed_gates_without_scores() -> None:
     target = SelfEvolveTargetRef(target_type="skill", target_id="demo")
     first = CandidateVariant(

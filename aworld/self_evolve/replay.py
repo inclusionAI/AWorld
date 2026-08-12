@@ -14,6 +14,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import uuid
 from collections.abc import Sequence
@@ -2730,6 +2731,57 @@ class AWorldCliCandidateReplayBackend:
             else:
                 invalid_control_streak = 0
             if (
+                member_request.stop_on_incomparable_member
+                and baseline.status is ReplayExecutionStatus.FAILED
+                and _baseline_invalid_for_measurement(baseline)
+            ):
+                underlying_failure = baseline.failure
+                candidate_blocking_event = ReplayFailureEvent(
+                    code="authoritative_replay_invalid_control",
+                    owner=FailureOwner.FRAMEWORK,
+                    stage=FailureStage.EVALUATION,
+                    scope=FailureScope.SHARED_RUN,
+                    repairable=True,
+                    category="measurement_stopping",
+                    summary=(
+                        "authoritative replay stopped because the control "
+                        "member is not comparable"
+                    ),
+                    diagnostics={
+                        "trigger": "invalid_control_member",
+                        "case_index": member_index,
+                        "case_count": member_count,
+                        "unused_case_count": member_count - member_index,
+                    },
+                    causes=(
+                        (underlying_failure.event_id,)
+                        if isinstance(underlying_failure, ReplayFailureEvent)
+                        else ()
+                    ),
+                )
+                authoritative_stop = {
+                    "trigger": "invalid_control_member",
+                    "owner": FailureOwner.FRAMEWORK.value,
+                    "case_index": member_index,
+                    "case_count": member_count,
+                    "unused_case_count": member_count - member_index,
+                    "resume_safe": True,
+                }
+                _emit_replay_member_progress(
+                    progress_callback,
+                    event="authoritative_stop_triggered",
+                    candidate_id=candidate.candidate_id,
+                    case_id=case.case_id,
+                    case_index=member_index,
+                    case_count=member_count,
+                    phase="baseline",
+                    trigger=authoritative_stop["trigger"],
+                    unused_case_count=authoritative_stop[
+                        "unused_case_count"
+                    ],
+                    resume_safe=authoritative_stop["resume_safe"],
+                )
+            elif (
                 member_request.measurement_early_stop_enabled
                 and candidate_blocking_event is None
                 and invalid_control_streak
@@ -2810,6 +2862,7 @@ class AWorldCliCandidateReplayBackend:
             blocking_event = candidate_frontier_stop_event
             if (
                 blocking_event is None
+                and candidate_blocking_event is None
                 and member_request.stop_on_incomparable_member
                 and _baseline_invalid_for_measurement(baseline)
             ):
@@ -3706,6 +3759,7 @@ def _run_replay_cli(
     artifact_dir: Path,
     execution_started_at: float,
     replay_environment: Mapping[str, str],
+    cancellation_event: threading.Event | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Run a replay CLI process while supervising terminal task diagnostics."""
 
@@ -3722,6 +3776,17 @@ def _run_replay_cli(
     )
     deadline = time.monotonic() + max(float(timeout), 0.0)
     while True:
+        if cancellation_event is not None and cancellation_event.is_set():
+            stdout, stderr = _stop_replay_cli_process(
+                process,
+                start_new_session=start_new_session,
+            )
+            raise subprocess.TimeoutExpired(
+                cmd=list(command),
+                timeout=timeout,
+                output=stdout,
+                stderr=stderr,
+            )
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             stdout, stderr = _stop_replay_cli_process(
@@ -4013,20 +4078,37 @@ class AWorldCliReplayExecutor:
             }
         )
         execution_started_at = time.time()
+        cancellation_event = threading.Event()
         try:
-            completed = await asyncio.to_thread(
-                _run_replay_cli,
-                command,
-                cwd=request.workspace_root,
-                text=True,
-                capture_output=True,
-                timeout=request.timeout_seconds,
-                start_new_session=True,
-                env=execution_environment,
-                artifact_dir=artifact_dir,
-                execution_started_at=execution_started_at,
-                replay_environment=request.environment,
+            execution_task = asyncio.create_task(
+                asyncio.to_thread(
+                    _run_replay_cli,
+                    command,
+                    cwd=request.workspace_root,
+                    text=True,
+                    capture_output=True,
+                    timeout=request.timeout_seconds,
+                    start_new_session=True,
+                    env=execution_environment,
+                    artifact_dir=artifact_dir,
+                    execution_started_at=execution_started_at,
+                    replay_environment=request.environment,
+                    cancellation_event=cancellation_event,
+                )
             )
+            try:
+                # Shield the worker so cancellation can first signal the
+                # subprocess supervisor and then wait for process-group
+                # teardown instead of leaving replay work behind.
+                completed = await asyncio.shield(execution_task)
+            except asyncio.CancelledError:
+                cancellation_event.set()
+                with contextlib.suppress(Exception):
+                    await asyncio.wait_for(
+                        asyncio.shield(execution_task),
+                        timeout=3.5,
+                    )
+                raise
         except subprocess.TimeoutExpired as exc:
             stdout = _text_output(exc.stdout)
             stderr = _text_output(exc.stderr)

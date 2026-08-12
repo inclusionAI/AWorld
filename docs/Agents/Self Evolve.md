@@ -454,7 +454,13 @@ and `shadow` do not alter replay decisions. Operators may also set
 hard deadline for the complete paired replay; completed control evidence remains
 available for a compatible retry. Verified runs that omit it receive a framework
 safety horizon of six per-member timeout windows, which bounds a candidate
-experiment without turning campaign search budget back on.
+experiment without turning campaign search budget back on. Cancellation crosses
+the batch boundary and tears down the replay process group, so a displayed hard
+deadline cannot be converted into a normal batch result or leave an orphaned
+rollout. In verified mode, the first non-comparable baseline member makes the
+full paired panel unreachable: remaining baseline and candidate members are
+recorded as blocked, and a shared measurement timeout terminates the current
+candidate population rather than triggering more mutations.
 
 On datasets meeting the frozen minimum independent-case count, verified replay
 defaults to one baseline and one candidate observation per case. Confidence is

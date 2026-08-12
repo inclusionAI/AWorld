@@ -2947,21 +2947,26 @@ def _with_typed_gate_failure_event(gate: GateResult) -> GateResult:
 
     owner: FailureOwner | None = None
     scope: FailureScope | None = None
+    stage: FailureStage | None = None
     declared_owner = details.get("failure_owner")
     declared_scope = details.get("failure_scope")
+    declared_stage = details.get("failure_stage")
     try:
         if declared_owner is not None:
             owner = FailureOwner(str(declared_owner))
         if declared_scope is not None:
             scope = FailureScope(str(declared_scope))
+        if declared_stage is not None:
+            stage = FailureStage(str(declared_stage))
     except ValueError:
         owner = None
         scope = None
+        stage = None
     candidate_stage = _CANDIDATE_REPAIRABLE_GATE_STAGES.get(
         gate.gate_name
     )
     framework_stage = _FRAMEWORK_SHARED_GATE_STAGES.get(gate.gate_name)
-    stage = candidate_stage or framework_stage
+    stage = stage or candidate_stage or framework_stage
     if candidate_stage is not None and owner is None:
         owner = FailureOwner.CANDIDATE
         scope = FailureScope.CANDIDATE
@@ -3008,7 +3013,10 @@ def _with_typed_gate_failure_event(gate: GateResult) -> GateResult:
     ).to_dict()
     details.update(
         {
-            "failure_class": owner.value,
+            # Failure class describes the failed plane (for example,
+            # measurement), while failure owner describes who can repair it.
+            # Preserve an explicit class instead of collapsing both axes.
+            "failure_class": details.get("failure_class") or owner.value,
             "failure_owner": owner.value,
             "failure_scope": scope.value,
             "repairable": repairable,
@@ -5792,6 +5800,16 @@ class SelfEvolveRunner:
                     isinstance(replay_state, CandidateReplayResult)
                     and _shared_replay_failure_blocks_population(replay_state)
                 ):
+                    baseline_preflight_blocked = True
+                    break
+                if any(
+                    _gate_has_typed_shared_measurement_failure(gate)
+                    for gate in failed_gates
+                ):
+                    # A shared framework/infrastructure measurement failure
+                    # invalidates the experiment, not the candidate. Further
+                    # mutation cannot repair that control plane, so do not
+                    # spend another authoritative candidate slot.
                     baseline_preflight_blocked = True
                     break
                 failed_state_gates = [
@@ -9189,6 +9207,7 @@ class SelfEvolveRunner:
                     },
                 )
             if replay_gate is not None:
+                replay_gate = _with_typed_gate_failure_event(replay_gate)
                 gate_results.append(replay_gate)
             replay_telemetry_after = _stage_telemetry_usage_snapshot(
                 self.execution_telemetry,
@@ -11124,6 +11143,8 @@ class SelfEvolveRunner:
                     details={
                         "failure_class": "measurement",
                         "failure_owner": FailureOwner.FRAMEWORK.value,
+                        "failure_scope": FailureScope.SHARED_RUN.value,
+                        "failure_stage": FailureStage.EVALUATION.value,
                         "repairable": True,
                         "code": "replay_total_timeout",
                         "timeout_seconds": effective_total_timeout_seconds,
@@ -18728,6 +18749,20 @@ def _gate_has_typed_shared_infrastructure_failure(gate: GateResult) -> bool:
         ):
             return True
     return False
+
+
+def _gate_has_typed_shared_measurement_failure(gate: GateResult) -> bool:
+    """Return true only when the shared measurement experiment is invalid."""
+
+    details = gate.details
+    if not isinstance(details, Mapping):
+        return False
+    return bool(
+        details.get("failure_class") == "measurement"
+        and details.get("failure_owner") == FailureOwner.FRAMEWORK.value
+        and details.get("failure_scope") == FailureScope.SHARED_RUN.value
+        and details.get("repairable") is True
+    )
 
 
 def _candidate_validation_stopped_by_shared_infrastructure(
