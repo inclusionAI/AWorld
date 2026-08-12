@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import asyncio
 import hashlib
 import inspect
@@ -1942,9 +1943,107 @@ def _candidate_conformance_failure_signatures(
     )
 
 
+def _candidate_conformance_repair_topologies(
+    failures: Iterable[tuple[CandidateVariant, GateResult]],
+) -> dict[str, tuple[str, ...]]:
+    """Describe actual repair topology per typed failure identity.
+
+    Candidate-family labels are intent, not evidence of a structural switch.
+    This fingerprint records the authorized owners, edited package paths, and
+    source control/data-flow shape while deliberately ignoring identifiers and
+    literal values.
+    """
+
+    topologies: dict[str, set[str]] = {}
+    for candidate, gate in failures:
+        signatures = _candidate_conformance_failure_signatures(
+            ((candidate, gate),)
+        )
+        if not signatures:
+            continue
+        details = gate.details if isinstance(gate.details, Mapping) else {}
+        raw_contract = details.get("repair_conformance")
+        contract = raw_contract if isinstance(raw_contract, Mapping) else {}
+        owner_paths = sorted(
+            str(path)
+            for path in tuple(contract.get("required_branch_paths") or ())
+            if isinstance(path, str) and path
+        )
+        edited_files: list[dict[str, object]] = []
+        for item in sorted(candidate.files, key=lambda value: value.path):
+            source_shape: object | None = None
+            if item.operation == "upsert" and isinstance(item.content, str):
+                source_shape = _source_control_flow_shape(
+                    item.path,
+                    item.content,
+                )
+            edited_files.append(
+                {
+                    "path": item.path,
+                    "operation": item.operation,
+                    "source_shape": source_shape,
+                }
+            )
+        payload = {
+            "owner_paths": owner_paths,
+            "edited_files": edited_files,
+            "structural_authorization": (
+                candidate.structural_edit_intent.authorization
+                if candidate.structural_edit_intent is not None
+                else None
+            ),
+        }
+        fingerprint = "sha256:" + hashlib.sha256(
+            json.dumps(
+                payload,
+                ensure_ascii=True,
+                separators=(",", ":"),
+                sort_keys=True,
+                default=str,
+            ).encode("utf-8")
+        ).hexdigest()
+        for signature in signatures:
+            topologies.setdefault(signature, set()).add(fingerprint)
+    return {
+        signature: tuple(sorted(values))
+        for signature, values in sorted(topologies.items())
+    }
+
+
+def _source_control_flow_shape(path: str, source: str) -> object:
+    """Return a bounded, value-free source topology for switch accounting."""
+
+    if Path(path).suffix.casefold() != ".py":
+        headings = [
+            len(line) - len(line.lstrip("#"))
+            for line in source.splitlines()
+            if line.startswith("#")
+        ]
+        return {"kind": "text", "heading_depths": headings[:128]}
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return {"kind": "python_invalid"}
+    node_counts = Counter(type(node).__name__ for node in ast.walk(tree))
+    edges = Counter(
+        (type(parent).__name__, type(child).__name__)
+        for parent in ast.walk(tree)
+        for child in ast.iter_child_nodes(parent)
+    )
+    return {
+        "kind": "python_ast",
+        "nodes": sorted(node_counts.items()),
+        "edges": [
+            [parent, child, count]
+            for (parent, child), count in sorted(edges.items())
+        ],
+    }
+
+
 def _candidate_conformance_strategy_switch_feedback(
     *,
     signature: str,
+    prior_topology_fingerprints: Sequence[str] = (),
 ) -> EvaluationSummary:
     event = ReplayFailureEvent(
         code="candidate_conformance_strategy_switch_required",
@@ -1974,6 +2073,9 @@ def _candidate_conformance_strategy_switch_feedback(
                     "failure_fingerprint": signature,
                     "required_action": (
                         "change the failing data-flow or control-flow topology"
+                    ),
+                    "prior_topology_fingerprints": list(
+                        prior_topology_fingerprints
                     ),
                 }
             ],
@@ -3725,7 +3827,10 @@ class SelfEvolveRunner:
         generation_protocol_frontier_exhausted = False
         generation_conformance_frontier_exhausted = False
         conformance_strategy_switch_count = 0
+        conformance_strategy_switch_request_count = 0
         conformance_strategy_attempts: dict[str, int] = {}
+        conformance_strategy_topologies: dict[str, set[str]] = {}
+        conformance_strategy_switch_not_materialized = False
         candidate_generation_infrastructure_retries = 0
         raw_generation_attempt_count = 0
         semantic_lesson_duplicate_attempt_count = 0
@@ -5226,38 +5331,93 @@ class SelfEvolveRunner:
                 else ()
             )
             if conformance_failure_signatures:
-                switchable_signatures = tuple(
-                    signature
-                    for signature in conformance_failure_signatures
-                    if conformance_strategy_attempts.get(signature, 0)
-                    < _MAX_CONFORMANCE_STRATEGY_SWITCH_ATTEMPTS
+                topology_by_signature = (
+                    _candidate_conformance_repair_topologies(
+                        screening_failures
+                    )
                 )
-                if not switchable_signatures:
+                new_switch_requests: list[str] = []
+                materialized_switches: list[str] = []
+                unmaterialized_switches: list[str] = []
+                for signature in conformance_failure_signatures:
+                    current_topologies = set(
+                        topology_by_signature.get(signature, ())
+                    )
+                    prior_topologies = conformance_strategy_topologies.get(
+                        signature
+                    )
+                    if prior_topologies is None:
+                        conformance_strategy_topologies[signature] = set(
+                            current_topologies
+                        )
+                        new_switch_requests.append(signature)
+                        continue
+                    new_topologies = current_topologies - prior_topologies
+                    if new_topologies:
+                        prior_topologies.update(new_topologies)
+                        conformance_strategy_attempts[signature] = (
+                            conformance_strategy_attempts.get(signature, 0) + 1
+                        )
+                        materialized_switches.append(signature)
+                    else:
+                        unmaterialized_switches.append(signature)
+                exhausted_materialized = tuple(
+                    signature
+                    for signature in materialized_switches
+                    if conformance_strategy_attempts.get(signature, 0)
+                    >= _MAX_CONFORMANCE_STRATEGY_SWITCH_ATTEMPTS
+                )
+                if exhausted_materialized or unmaterialized_switches:
                     generation_conformance_frontier_exhausted = True
+                    conformance_strategy_switch_count += len(
+                        materialized_switches
+                    )
+                    conformance_strategy_switch_not_materialized = bool(
+                        unmaterialized_switches
+                    )
                     _emit_progress(
                         self.progress_callback,
                         "candidate_conformance",
                         (
-                            "Stopped candidate generation: the same typed "
-                            "conformance failure remained after the allowed "
-                            "structural strategy switch"
+                            "Stopped candidate generation: the requested "
+                            "structural strategy switch did not change the "
+                            "authorized owner/edit topology"
+                            if unmaterialized_switches
+                            else (
+                                "Stopped candidate generation: the same typed "
+                                "conformance failure remained after a verified "
+                                "structural strategy switch"
+                            )
                         ),
                     )
                 else:
-                    for signature in switchable_signatures:
-                        conformance_strategy_attempts[signature] = (
-                            conformance_strategy_attempts.get(signature, 0) + 1
-                        )
-                    conformance_strategy_switch_count += 1
+                    conformance_strategy_switch_request_count += len(
+                        new_switch_requests
+                    )
                     switch_signature = _candidate_conformance_stall_signature(
                         screening_failures
                     )
                     assert switch_signature is not None
+                    prior_topology_fingerprints = tuple(
+                        sorted(
+                            {
+                                topology
+                                for signature in new_switch_requests
+                                for topology in conformance_strategy_topologies.get(
+                                    signature,
+                                    set(),
+                                )
+                            }
+                        )
+                    )
                     validation_feedback = _merge_validation_feedback(
                         validation_feedback,
                         (
                             _candidate_conformance_strategy_switch_feedback(
                                 signature=switch_signature,
+                                prior_topology_fingerprints=(
+                                    prior_topology_fingerprints
+                                ),
                             ),
                         ),
                     )
@@ -5265,9 +5425,9 @@ class SelfEvolveRunner:
                         self.progress_callback,
                         "candidate_conformance",
                         (
-                            "Typed conformance failure captured; scheduling "
-                            "one structural strategy switch for this "
-                            "failure fingerprint"
+                            "Typed conformance failure captured; requesting "
+                            "a structural strategy switch and recording its "
+                            "authorized owner/edit topology"
                         ),
                     )
             if screening_feedback and not candidate_population:
@@ -6050,7 +6210,9 @@ class SelfEvolveRunner:
 
         execution_stages = self.execution_telemetry.to_report()
         generation_stop_reason = (
-            "conformance_frontier_repeated_after_strategy_switch"
+            "conformance_strategy_switch_not_materialized"
+            if conformance_strategy_switch_not_materialized
+            else "conformance_frontier_repeated_after_strategy_switch"
             if generation_conformance_frontier_exhausted
             else "materialization_frontier_repeated"
             if generation_materialization_frontier_exhausted
@@ -6154,7 +6316,19 @@ class SelfEvolveRunner:
                             conformance_strategy_switch_count
                         )
                     }
-                    if conformance_strategy_switch_count
+                    if conformance_strategy_switch_request_count
+                    else {}
+                ),
+                **(
+                    {
+                        "conformance_strategy_switch_request_count": (
+                            conformance_strategy_switch_request_count
+                        ),
+                        "conformance_strategy_switch_not_materialized": (
+                            conformance_strategy_switch_not_materialized
+                        ),
+                    }
+                    if conformance_strategy_switch_request_count
                     else {}
                 ),
                 **(
@@ -7469,6 +7643,13 @@ class SelfEvolveRunner:
                         contract=contract,
                     )
                 )
+                if source_conformance.failure_class in {
+                    "framework",
+                    "infrastructure",
+                }:
+                    stopped_by_shared_infrastructure = True
+                    passed_candidates.clear()
+                    break
                 continue
             gate = await self._preflight_candidate_repair_conformance(
                 run_id=run_id,

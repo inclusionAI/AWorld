@@ -1373,15 +1373,44 @@ def compile_repair_conformance_contract(
         schema_field_constraints=schema_field_constraints,
         runtime_response_constraints=runtime_response_constraints,
     )
+    inherited_failure_codes = set(
+        inherited_contract.failure_codes
+        if inherited_contract is not None
+        else ()
+    )
+    compiler_fixture_failure_active = bool(
+        {
+            "protocol_probe_not_fixture_derived",
+            "align_compiler_runtime_recorded_response_selection",
+        }
+        & (set(direct_failure_codes) | inherited_failure_codes)
+    )
+    unresolved_owner_paths = (
+        (compiler_path,)
+        if compiler_fixture_failure_active and compiler_path is not None
+        else ()
+    )
     if direct_failure_paths:
         branch_paths = tuple(
-            dict.fromkeys((*direct_failure_paths, *direct_owner_paths))
+            dict.fromkeys(
+                (
+                    *direct_failure_paths,
+                    *direct_owner_paths,
+                    *unresolved_owner_paths,
+                )
+            )
         )
     elif direct_owner_paths:
         # Multiple constraints discovered by the same failure are co-owners.
         # Historical constraints remain validation invariants but cannot redirect
         # the active mutation away from the current failure producer.
-        branch_paths = direct_owner_paths
+        branch_paths = tuple(
+            dict.fromkeys((*direct_owner_paths, *unresolved_owner_paths))
+        )
+    elif unresolved_owner_paths:
+        branch_paths = tuple(
+            dict.fromkeys((*unresolved_owner_paths, *inherited_owner_paths))
+        )
     elif inherited_contract is not None and inherited_owner_paths:
         branch_paths = inherited_owner_paths
     elif inherited_contract is not None and inherited_contract.required_branch_paths:
@@ -1464,7 +1493,9 @@ def compile_repair_conformance_contract(
         exact_probe=exact_probe,
         late_observed_operations=observed_operations,
         requires_compiler_fixture_reconstruction=bool(
-            exact_probe is not None or fixture_probe_constraints
+            exact_probe is not None
+            or fixture_probe_constraints
+            or compiler_fixture_failure_active
         ),
         requires_fixture_derived_probe=requires_fixture_probe,
         required_fixture_probe_operations=required_fixture_probe_operations,
@@ -1670,10 +1701,64 @@ def _compile_failure_branch_paths(
     return ()
 
 
+def _repair_contract_consistency_failure(
+    contract: RepairConformanceContract,
+) -> RepairConformanceResult | None:
+    """Fail closed when a framework-authored contract hides its failure owner.
+
+    A candidate cannot repair a compiler-produced assertion when the contract
+    only authorizes runtime files.  Treat that shape as a shared framework
+    defect so it does not consume candidate or Campaign repair frontiers.
+    ``requires_fixture_derived_probe`` intentionally remains a task-plane flag;
+    compiler reconstruction is represented by the dedicated reconstruction
+    flag and typed fixture constraints.
+    """
+
+    failures = set(contract.failure_codes)
+    protocol_fixture_failure = "protocol_probe_not_fixture_derived" in failures
+    selector_alignment_failure = (
+        "align_compiler_runtime_recorded_response_selection" in failures
+    )
+    if not protocol_fixture_failure and not selector_alignment_failure:
+        return None
+    missing: list[str] = []
+    if contract.compiler_path is None:
+        missing.append("compiler_path")
+    elif contract.compiler_path not in contract.required_branch_paths:
+        missing.append("required_branch_paths.compiler")
+    if (
+        protocol_fixture_failure
+        and not contract.requires_compiler_fixture_reconstruction
+    ):
+        missing.append("requires_compiler_fixture_reconstruction")
+    if not missing:
+        return None
+    return RepairConformanceResult(
+        passed=False,
+        code="repair_contract_owner_inconsistent",
+        reason=(
+            "framework repair contract does not authorize the source owner or "
+            "typed reconstruction evidence required by its unresolved compiler "
+            "failure"
+        ),
+        details={
+            "failure_codes": sorted(failures),
+            "compiler_path": contract.compiler_path,
+            "required_branch_paths": list(contract.required_branch_paths),
+            "missing_contract_fields": missing,
+        },
+        failure_class="framework",
+        repairable=False,
+    )
+
+
 def evaluate_candidate_source_conformance(
     candidate: CandidateVariant,
     contract: RepairConformanceContract,
 ) -> RepairConformanceResult:
+    consistency_failure = _repair_contract_consistency_failure(contract)
+    if consistency_failure is not None:
+        return consistency_failure
     # ``CandidateVariant.files`` is a delta, not a materialized package.  A
     # missing runtime path therefore means that the candidate inherited the
     # baseline implementation.  Treating a missing path as an empty source

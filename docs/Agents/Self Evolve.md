@@ -399,6 +399,10 @@ For a repairable skill-owned replay failure, the framework validates a candidate
 
 Failures in the first four layers are reported through the `candidate_repair_conformance` gate. When execution preflight is reached, bounded service/probe artifacts are stored under `repair_conformance/<candidate_id>/`. The failure becomes generic repair feedback for the next iteration and does not enter the full task rollout. The contracts are derived from observed operations, package structure, fixture provenance, and protocol traces; they do not contain target-specific fixes for a particular training case.
 
+Unresolved typed failures retain their source owners when a later failure adds a second owner. For example, a compiler-side fixture reconstruction failure and a runtime-side source invariant authorize both branches instead of allowing the latest diagnostic to hide the compiler. A contract that names a compiler failure without authorizing its compiler is classified as a shared framework failure and does not consume the candidate repair frontier.
+
+Structural strategy switches are evidence-based. The runner fingerprints the authorized owner paths, edited package paths, and value-free source control-flow shape before requesting a switch. `conformance_strategy_switch_request_count` records requests, while `conformance_strategy_switch_count` increases only after a different topology is observed. `conformance_strategy_switch_not_materialized=true` explains an early stop where only the strategy label changed.
+
 A candidate package that reached judge-scored task output is a deeper causal
 frontier than rejected sibling compiler/runtime candidates. Its replay-file set
 is frozen byte-for-byte, including an intentionally empty set, while the next

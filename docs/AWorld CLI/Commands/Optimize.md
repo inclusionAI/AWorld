@@ -399,6 +399,7 @@ members; it does not encode task- or artifact-specific repair rules.
 The framework ranks the generated population and validates repair candidates before an expensive task rollout:
 
 1. `candidate_repair_conformance` first proves that the candidate materially changed the failed source branch and that the request operation participates in the response data flow.
+   Unresolved compiler/runtime owners are preserved together, and an internally inconsistent owner contract fails as a framework error rather than consuming candidate attempts. Strategy-switch telemetry distinguishes a requested switch from a verified change in owner, edited-path, or control-flow topology.
 2. The candidate-owned replay capability is compiled and frozen with immutable fixture and package fingerprints. Recorded operation responses are exposed through `AWORLD_REPLAY_RESPONSE_INDEX`.
 3. Compiled probe declarations must cover the observed operation and assert a non-empty value derived from the recorded response payload.
 4. The frozen runtime is started in the replay subprocess sandbox and every declared HTTP/TCP/WebSocket readiness and protocol probe is executed. Required WebSocket probes validate handshake, ping/text exchange, operation correlation, non-empty result, and recorded-response binding.
