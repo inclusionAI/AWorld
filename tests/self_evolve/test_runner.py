@@ -161,6 +161,7 @@ from aworld.self_evolve.provenance import (
     TargetSelectionOrigin,
 )
 from aworld.self_evolve.repair_conformance import (
+    ArtifactLifecycleConstraint,
     ExactRepairProbe,
     RepairConformanceContract,
     RepairConformanceResult,
@@ -1154,6 +1155,75 @@ def test_causal_lesson_memory_restores_typed_repair_frontier() -> None:
     assert frontiers[0].scope is FailureScope.CANDIDATE
     assert frontiers[0].repairable is True
     assert frontiers[0].progress == 2
+
+
+def test_derived_replay_events_do_not_drive_repair_frontiers() -> None:
+    physical = aggregate_replay_failure_observations(
+        (
+            ReplayFailureObservation(
+                event=ReplayFailureEvent(
+                    code="artifact_file_limit_exhausted",
+                    owner=FailureOwner.CANDIDATE,
+                    stage=FailureStage.TASK_ROLLOUT,
+                    scope=FailureScope.MEMBER,
+                    repairable=True,
+                    category="replay_runtime_policy",
+                ),
+                case_id="case-1",
+            ),
+        )
+    )[0]
+    derived = aggregate_replay_failure_observations(
+        tuple(
+            ReplayFailureObservation(
+                event=ReplayFailureEvent(
+                    code="authoritative_candidate_frontier_unreachable",
+                    owner=FailureOwner.CANDIDATE,
+                    stage=FailureStage.TASK_ROLLOUT,
+                    scope=FailureScope.CANDIDATE,
+                    repairable=True,
+                    category="authoritative_early_stop",
+                ),
+                case_id=f"case-{index}",
+            )
+            for index in range(2, 12)
+        )
+    )[0]
+    feedback = EvaluationSummary(
+        variant_id="candidate",
+        dataset_split="validation",
+        metrics={
+            "causal_failure_events": [
+                physical.to_dict(),
+                derived.to_dict(),
+            ]
+        },
+    )
+    derived_lesson = EvaluationSummary(
+        variant_id="derived-lesson",
+        dataset_split="lesson_memory",
+        metrics={
+            "lesson_type": "causal_failure_memory",
+            "causal_semantic_key": derived.semantic_key,
+            "causal_owner": FailureOwner.CANDIDATE.value,
+            "causal_scope": FailureScope.CANDIDATE.value,
+            "causal_stage": FailureStage.TASK_ROLLOUT.value,
+            "causal_code": derived.code,
+            "causal_category": derived.category,
+            "repairable": True,
+            "occurrence_count": 1,
+            "distinct_source_count": 10,
+        },
+    )
+
+    frontiers = runner_module._typed_repair_frontiers(
+        (feedback, derived_lesson)
+    )
+
+    assert [frontier.semantic_key for frontier in frontiers] == [
+        physical.semantic_key
+    ]
+    assert frontiers[0].progress == 1
 
 
 def test_typed_gate_feedback_uses_only_relative_evidence_regressions() -> None:
@@ -3906,6 +3976,17 @@ def test_replay_confidence_rejects_infrastructure_failure_pair() -> None:
     assert gate.reason == "replay comparison contains incomparable member outcomes"
     assert gate.details["infrastructure_failure_count"] == 1
     assert gate.details["incomparable_pair_count"] == 1
+    assert gate.details["code"] == "control_not_comparable"
+    assert gate.details["failure_class"] == "measurement"
+    assert gate.details["failure_owner"] == "framework"
+    assert gate.details["failure_scope"] == "shared_run"
+    assert gate.details["next_action"] == "repair_measurement"
+    assert gate.details["effect"] is None
+    assert gate.details["failure_event"]["category"] == "measurement_validity"
+    assert gate.details["causal_failure_events"] == [
+        gate.details["failure_event"]
+    ]
+    assert runner_module._gate_has_typed_shared_measurement_failure(gate) is True
 
 
 def test_stored_dataset_recipe_restores_auto_grouped_member_ids(
@@ -11619,7 +11700,6 @@ async def test_verified_single_candidate_skips_comparative_screening(
         replay_enabled=True,
         candidate_replay_backend=object(),
     )
-
     async def fail_if_replayed(**kwargs):
         raise AssertionError("a sole candidate must not run ranking replay")
 
@@ -11697,6 +11777,359 @@ async def test_verified_single_candidate_with_prior_counterexample_requires_scre
     assert calls == ["candidate_screening"]
     assert report is not None
     assert report["screening"]["attempted_candidate_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_artifact_lifecycle_repair_fails_closed_before_authoritative_replay(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    skill_path, dataset = _cycle1_runner_fixture(tmp_path)
+    candidate = CandidateVariant(
+        candidate_id="artifact-lifecycle-repair",
+        target=SelfEvolveTargetRef("skill", "demo", str(skill_path)),
+        content=(
+            skill_path.read_text(encoding="utf-8")
+            + "\n## Evidence Lifecycle\nPersist once, reuse, then finalize.\n"
+        ),
+        rationale="bounded artifact lifecycle repair",
+    )
+    contract = RepairConformanceContract(
+        focus_candidate_id="prior-candidate",
+        failure_codes=("artifact_file_limit_exhausted",),
+        interaction_progress=1,
+        base_file_fingerprints={},
+        required_branch_paths=(),
+        base_branch_fingerprints={},
+        artifact_lifecycle_constraint=ArtifactLifecycleConstraint(),
+    )
+    runner = SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=SimpleNamespace(),
+        replay_enabled=True,
+        candidate_replay_backend=object(),
+    )
+    artifact_file_count = {"value": 2}
+
+    async def preserve_conformance_population(**kwargs):
+        return kwargs["candidates"], None
+
+    async def replay_with_excess_artifacts(**kwargs):
+        active_dataset = kwargs["dataset"]
+        request = CandidateReplayRequest(
+            run_id=kwargs["run_id"],
+            task_id=active_dataset.cases[0].case_id,
+            workspace_root=str(tmp_path),
+            target=SelfEvolveTargetRef("skill", "demo", str(skill_path)),
+            candidate_id=kwargs["selected_candidate"].candidate_id,
+            overlay_skill_root=str(tmp_path / "overlay"),
+            task_input=active_dataset.cases[0].input,
+        )
+        baseline = ReplayVariantResult(
+            variant_id="baseline",
+            status=ReplayExecutionStatus.SUCCEEDED,
+            trajectory=[{"action": {"content": "baseline"}}],
+        )
+        candidate_result = ReplayVariantResult(
+            variant_id=request.candidate_id,
+            status=ReplayExecutionStatus.SUCCEEDED,
+            trajectory=[{"action": {"content": "candidate"}}],
+            metrics={
+                "evidence_runtime_policy_active": True,
+                "evidence_runtime_policy_passed": True,
+                "evidence_runtime_policy_artifact_file_count": (
+                    artifact_file_count["value"]
+                ),
+                "evidence_runtime_policy_artifact_bytes": 1_024,
+                "evidence_runtime_policy_tool_call_attempt_count": 4,
+                "evidence_manifest_entry_count": 1,
+                "evidence_manifest_valid": True,
+            },
+        )
+        replay = _CandidateReplayResult(
+            request=request,
+            baseline=baseline,
+            candidate=candidate_result,
+            member_results=(
+                CandidateReplayMemberResult(
+                    case_id=active_dataset.cases[0].case_id,
+                    request=request,
+                    baseline=baseline,
+                    candidate=candidate_result,
+                ),
+            ),
+        )
+        return (
+            replay,
+            active_dataset,
+            GateResult(
+                gate_name="candidate_replay",
+                passed=True,
+                reason="paired replay completed",
+                details={},
+            ),
+        )
+
+    monkeypatch.setattr(
+        runner,
+        "_validate_candidate_repair_conformance_population",
+        preserve_conformance_population,
+    )
+    monkeypatch.setattr(
+        runner,
+        "_replay_selected_candidate",
+        replay_with_excess_artifacts,
+    )
+    monkeypatch.setattr(
+        runner_module,
+        "_replay_evaluator_admission_gate",
+        lambda *args, **kwargs: None,
+    )
+
+    selected, report = await runner._screen_candidate_population(
+        run_id="run-artifact-lifecycle-admission",
+        target=SkillTextTarget(skill_path, allow_auto_apply=True),
+        dataset=dataset,
+        candidates=(candidate,),
+        apply_policy="verified_only",
+        repair_conformance_contracts={candidate.candidate_id: contract},
+    )
+
+    assert selected == ()
+    assert report is not None
+    screening = report["screening"]
+    assert screening["selection_reason"] == (
+        "artifact lifecycle repair lacked behavioral screening proof; "
+        "authoritative replay admission failed closed"
+    )
+    attempt = screening["attempts"][0]
+    assert attempt["artifact_lifecycle_proof_required"] is True
+    assert attempt["details"]["code"] == (
+        "artifact_lifecycle_conformance_failed"
+    )
+
+    artifact_file_count["value"] = 1
+    admitted, admitted_report = await runner._screen_candidate_population(
+        run_id="run-artifact-lifecycle-admitted",
+        target=SkillTextTarget(skill_path, allow_auto_apply=True),
+        dataset=dataset,
+        candidates=(candidate,),
+        apply_policy="verified_only",
+        repair_conformance_contracts={candidate.candidate_id: contract},
+    )
+
+    assert admitted == (candidate,)
+    assert admitted_report is not None
+    admitted_attempt = admitted_report["screening"]["attempts"][0]
+    assert admitted_attempt["details"]["artifact_lifecycle_conformance"][
+        "passed"
+    ] is True
+
+
+@pytest.mark.asyncio
+async def test_runner_requires_single_candidate_screening_from_prior_cycle_feedback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    skill_path, dataset = _cycle1_runner_fixture(tmp_path)
+    store = FilesystemSelfEvolveStore(tmp_path)
+    prior_run_id = "campaign-demo-cycle-001"
+    prior_dir = store.run_path(prior_run_id)
+    prior_dir.mkdir(parents=True)
+    (prior_dir / "report.json").write_text(
+        json.dumps(
+            {
+                "run_id": prior_run_id,
+                "target": {
+                    "target_type": "skill",
+                    "target_id": "demo",
+                    "path": str(skill_path),
+                },
+                "status": "rejected",
+                "candidate_ids": ["prior-candidate"],
+                "iterations": [
+                    {
+                        "iteration": 1,
+                        "candidate_id": "prior-candidate",
+                        "status": "rejected",
+                        "failed_gates": ["candidate_replay"],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    candidate = CandidateVariant(
+        candidate_id="counterexample-repair",
+        target=SelfEvolveTargetRef(
+            target_type="skill",
+            target_id="demo",
+            path=str(skill_path),
+        ),
+        content=(
+            skill_path.read_text(encoding="utf-8")
+            + "\n## Runtime Behavior\nRepair the replay counterexample.\n"
+        ),
+        rationale="repair prior replay counterexample",
+    )
+
+    class Optimizer:
+        async def propose(self, request: OptimizerRequest) -> OptimizerResult:
+            return OptimizerResult(candidates=(candidate,))
+
+    runner = SelfEvolveRunner(
+        store=store,
+        optimizer=Optimizer(),
+        replay_enabled=False,
+        max_iterations=1,
+    )
+    screening_requirements: list[bool] = []
+
+    async def capture_screening_requirement(**kwargs):
+        screening_requirements.append(
+            kwargs["require_single_candidate_screening"]
+        )
+        return (), {
+            "screening": {
+                "attempts": [],
+                "stopped_by_shared_infrastructure": False,
+            }
+        }
+
+    monkeypatch.setattr(
+        runner,
+        "_screen_candidate_population",
+        capture_screening_requirement,
+    )
+
+    await runner.run_explicit_target(
+        run_id="campaign-demo-cycle-002",
+        target=SkillTextTarget(skill_path, allow_auto_apply=True),
+        dataset=dataset,
+        trace_packs=(),
+        apply_policy="verified_only",
+        campaign_prior_run_ids=(prior_run_id,),
+        campaign_id="campaign-demo",
+        campaign_cycle=2,
+    )
+
+    assert screening_requirements == [True]
+
+
+def test_authoritative_failure_case_is_persisted_and_restored_for_screening(
+    tmp_path: Path,
+) -> None:
+    _, dataset = _cycle1_runner_fixture(tmp_path, case_count=2)
+    request = CandidateReplayRequest(
+        run_id="campaign-demo-cycle-001",
+        task_id="case-1",
+        workspace_root=str(tmp_path),
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo"),
+        candidate_id="candidate",
+        overlay_skill_root=str(tmp_path / "overlay"),
+        task_input=dataset.cases[0].input,
+    )
+    baseline = ReplayVariantResult(
+        variant_id="baseline",
+        status=ReplayExecutionStatus.SUCCEEDED,
+        trajectory=[{"action": {"content": "baseline"}}],
+    )
+    candidate_failure = ReplayFailureEvent(
+        code="artifact_file_limit_exhausted",
+        owner=FailureOwner.CANDIDATE,
+        stage=FailureStage.TASK_ROLLOUT,
+        scope=FailureScope.MEMBER,
+        repairable=True,
+        category="replay_runtime_policy",
+    )
+    failed = ReplayVariantResult(
+        variant_id="candidate",
+        status=ReplayExecutionStatus.FAILED,
+        trajectory=[],
+        failure=candidate_failure,
+    )
+    blocked = ReplayVariantResult(
+        variant_id="candidate",
+        status=ReplayExecutionStatus.BLOCKED,
+        trajectory=[],
+        blocked_by=(
+            ReplayFailureEvent(
+                code="authoritative_candidate_frontier_unreachable",
+                owner=FailureOwner.CANDIDATE,
+                stage=FailureStage.TASK_ROLLOUT,
+                scope=FailureScope.CANDIDATE,
+                repairable=True,
+                category="authoritative_early_stop",
+            ),
+        ),
+    )
+    replay = _CandidateReplayResult(
+        request=request,
+        baseline=baseline,
+        candidate=failed,
+        member_results=(
+            CandidateReplayMemberResult(
+                case_id="case-1",
+                request=request,
+                baseline=baseline,
+                candidate=failed,
+            ),
+            CandidateReplayMemberResult(
+                case_id="case-2",
+                request=replace(
+                    request,
+                    task_id="case-2",
+                    task_input=dataset.cases[1].input,
+                ),
+                baseline=blocked,
+                candidate=blocked,
+            ),
+        ),
+    )
+    cumulative: dict[str, dict[str, float | int]] = {}
+    current_run: dict[str, dict[str, int]] = {}
+
+    runner_module._record_authoritative_replay_observations(
+        cumulative,
+        dataset=dataset,
+        replay_result=replay,
+        run_observations=current_run,
+    )
+
+    assert cumulative == {
+        "case-1": {"authoritative_failure_count": 1}
+    }
+    assert current_run == cumulative
+
+    store = FilesystemSelfEvolveStore(tmp_path)
+    prior_run_id = "campaign-demo-cycle-001"
+    prior_dir = store.run_path(prior_run_id)
+    prior_dir.mkdir(parents=True, exist_ok=True)
+    (prior_dir / "report.json").write_text(
+        json.dumps(
+            {
+                "verification_funnel": {
+                    "authoritative_case_observations": current_run
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    restored: dict[str, dict[str, float | int]] = {}
+    runner_module._restore_campaign_screening_case_observations(
+        restored,
+        store=store,
+        prior_run_ids=(prior_run_id,),
+        loaded_run_ids=set(),
+    )
+    screening_dataset = _candidate_screening_dataset(
+        replace(dataset, cases=tuple(reversed(dataset.cases))),
+        empirical_observations=restored,
+    )
+
+    assert restored == cumulative
+    assert screening_dataset is not None
+    assert screening_dataset.cases[0].case_id == "case-1"
 
 
 def test_verified_prerequisite_files_restore_format_only_differences() -> None:
@@ -15078,6 +15511,7 @@ async def test_runner_filters_quality_rejection_but_retries_replay_only_candidat
     assert result.run.status.value == "succeeded"
     assert optimizer.requests[0].max_candidates == 2
     assert replay_backend.candidate_ids == [
+        "candidate-dup-2--screening",
         "candidate-dup-2",
         "candidate-dup-2",
     ]
@@ -20595,17 +21029,17 @@ def test_optimize_cli_request_uses_framework_default_replay_backend_when_enabled
     report = json.loads(Path(report_summary["report_path"]).read_text(encoding="utf-8"))
     assert report["status"] == "rejected"
     optimizer_diagnostics = report["optimizer_diagnostics"]
-    iteration_diagnostics = optimizer_diagnostics["iterations"]
-    assert any(
-        item["diagnostics"]["filtered_duplicate_candidates"] == 1
-        for item in iteration_diagnostics
-    )
+    assert optimizer_diagnostics["filtered_duplicate_candidates"] == 1
     assert report["population"]["generated_candidate_count"] == 1
-    assert report["population"]["generation_attempt_count"] >= 2
-    assert len(report["population"]["scheduler_decisions"]) >= 2
-    assert report["population"]["scheduler_decisions"][-1]["reason_code"] == (
-        "repair_frontier_stalled"
+    assert report["population"]["generation_attempt_count"] == 2
+    assert len(report["population"]["scheduler_decisions"]) == 1
+    confidence_gate = next(
+        gate
+        for gate in report["gate_results"]
+        if gate["gate_name"] == "replay_confidence"
     )
+    assert confidence_gate["details"]["failure_class"] == "measurement"
+    assert confidence_gate["details"]["next_action"] == "repair_measurement"
     assert report["replay"]["candidate"]["failure"] == {"reason": "fake replay rejection"}
 
 

@@ -7667,6 +7667,10 @@ def _replay_evidence_runtime_policy_metrics(
                 "artifact_bytes": artifact_bytes,
                 "artifact_file_limit": artifact_file_limit,
                 "artifact_byte_limit": artifact_byte_limit,
+                "tool_call_attempt_count": state.get(
+                    "tool_call_attempt_count",
+                    0,
+                ),
                 "manifest_entry_count": state.get("manifest_entry_count", 0),
                 "required_transition": "reduce_collection_and_persist_evidence",
             }
@@ -7682,6 +7686,10 @@ def _replay_evidence_runtime_policy_metrics(
                 "artifact_bytes": artifact_bytes,
                 "artifact_file_limit": artifact_file_limit,
                 "artifact_byte_limit": artifact_byte_limit,
+                "tool_call_attempt_count": state.get(
+                    "tool_call_attempt_count",
+                    0,
+                ),
                 "manifest_entry_count": state.get("manifest_entry_count", 0),
                 "required_transition": "reduce_collection_and_persist_evidence",
             }
@@ -7809,6 +7817,15 @@ def _replay_policy_counterexample(
             0, int(violation.get("artifact_file_count") or 0)
         ),
         "artifact_bytes": max(0, int(violation.get("artifact_bytes") or 0)),
+        **{
+            key: max(0, int(violation.get(key) or 0))
+            for key in (
+                "artifact_file_limit",
+                "artifact_byte_limit",
+                "tool_call_attempt_count",
+            )
+            if violation.get(key) is not None
+        },
         "required_transition": str(
             violation.get("required_transition")
             or "finalize_or_reduce_collection"

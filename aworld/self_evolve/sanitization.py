@@ -395,6 +395,7 @@ def _typed_repair_conformance_public_projection(
     # its private construction path.  Projection is invoked only after module
     # initialization, so this keeps the dependency boundary acyclic.
     from aworld.self_evolve.repair_conformance import (
+        ArtifactLifecycleConstraint,
         FixtureDerivedProbeConstraint,
         RuntimeResponseConstraint,
     )
@@ -597,6 +598,18 @@ def _typed_repair_conformance_public_projection(
         projected["runtime_response_constraints"] = (
             public_runtime_constraints
         )
+    if "artifact_lifecycle_constraint" in raw:
+        raw_constraint = raw.get("artifact_lifecycle_constraint")
+        if raw_constraint is None:
+            projected["artifact_lifecycle_constraint"] = None
+        elif isinstance(raw_constraint, Mapping):
+            projected["artifact_lifecycle_constraint"] = (
+                ArtifactLifecycleConstraint.from_dict(raw_constraint).to_dict()
+            )
+        else:
+            raise ValueError(
+                "public artifact lifecycle constraint must be a mapping"
+            )
     return projected
 
 

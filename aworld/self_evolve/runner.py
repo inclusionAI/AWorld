@@ -326,6 +326,7 @@ from aworld.self_evolve.repair_conformance import (
     RepairConformanceContract,
     RepairConformanceResult,
     build_repair_conformance_probe_plan,
+    evaluate_artifact_lifecycle_conformance,
     evaluate_candidate_source_conformance,
     evaluate_compiled_probe_conformance,
     merge_repair_conformance_constraint_context,
@@ -1201,6 +1202,11 @@ def _typed_repair_frontiers(
                 event = _typed_causal_feedback_event(payload)
             except (TypeError, ValueError):
                 continue
+            if not _causal_event_drives_repair_frontier(
+                code=event.code,
+                category=event.category,
+            ):
+                continue
             frontier = RepairFrontier(
                 semantic_key=event.semantic_key,
                 progress=max(
@@ -1227,6 +1233,8 @@ def _typed_repair_frontiers(
         ):
             continue
         semantic_key = summary.metrics.get("causal_semantic_key")
+        causal_code = summary.metrics.get("causal_code")
+        causal_category = summary.metrics.get("causal_category")
         raw_owner = summary.metrics.get("causal_owner")
         raw_scope = summary.metrics.get("causal_scope")
         repairable = summary.metrics.get("repairable")
@@ -1234,6 +1242,14 @@ def _typed_repair_frontiers(
             not isinstance(semantic_key, str)
             or not semantic_key
             or not isinstance(repairable, bool)
+            or not _causal_event_drives_repair_frontier(
+                code=(str(causal_code) if causal_code is not None else ""),
+                category=(
+                    str(causal_category)
+                    if causal_category is not None
+                    else ""
+                ),
+            )
         ):
             continue
         try:
@@ -1260,6 +1276,25 @@ def _typed_repair_frontiers(
         if previous is None or frontier.progress > previous.progress:
             frontiers[frontier.semantic_key] = frontier
     return tuple(frontiers[key] for key in sorted(frontiers))
+
+
+def _causal_event_drives_repair_frontier(*, code: str, category: str) -> bool:
+    """Keep propagation and verification summaries out of repair scheduling.
+
+    These events describe why downstream work did not run or why evidence could
+    not be consumed.  Their affected-member counts are useful diagnostics, but
+    treating them as physical repair progress lets one failed member masquerade
+    as progress across every subsequently blocked member.
+    """
+
+    return bool(
+        category != "authoritative_early_stop"
+        and code
+        not in {
+            "authoritative_candidate_frontier_unreachable",
+            "replay_confidence",
+        }
+    )
 
 
 def _feedback_failure_reference(
@@ -3553,6 +3588,9 @@ class SelfEvolveRunner:
             None
         )
         self._candidate_screening_loaded_run_ids: set[str] = set()
+        self._current_run_authoritative_case_observations: dict[
+            str, dict[str, int]
+        ] = {}
 
     async def run_explicit_target(
         self,
@@ -3608,6 +3646,7 @@ class SelfEvolveRunner:
         failure_cleanup: _RunFailureCleanup,
     ) -> SelfEvolveRunnerResult:
         self.execution_telemetry = SelfEvolveExecutionTelemetry()
+        self._current_run_authoritative_case_observations.clear()
         screening_dataset_fingerprint = _screening_observation_scope_fingerprint(
             dataset=dataset,
             target=target,
@@ -5478,7 +5517,7 @@ class SelfEvolveRunner:
                 budget_context=budget_context,
                 require_single_candidate_screening=(
                     _feedback_requires_counterexample_screening(
-                        validation_feedback
+                        (*prior_feedback, *validation_feedback)
                     )
                 ),
             )
@@ -5888,6 +5927,9 @@ class SelfEvolveRunner:
                         self._candidate_screening_case_observations,
                         dataset=dataset,
                         replay_result=replay_state,
+                        run_observations=(
+                            self._current_run_authoritative_case_observations
+                        ),
                     )
                     if _replay_result_has_reusable_baseline(
                         dataset=dataset,
@@ -6609,6 +6651,20 @@ class SelfEvolveRunner:
                 "authoritative_candidate_attempt_count": (
                     authoritative_candidate_attempt_count
                 ),
+                **(
+                    {
+                        "authoritative_case_observations": {
+                            case_id: dict(observation)
+                            for case_id, observation in sorted(
+                                (
+                                    self._current_run_authoritative_case_observations
+                                ).items()
+                            )
+                        }
+                    }
+                    if self._current_run_authoritative_case_observations
+                    else {}
+                ),
                 "max_score_tiebreak_candidates": (
                     self.max_score_tiebreak_candidates
                 ),
@@ -7050,6 +7106,17 @@ class SelfEvolveRunner:
             _is_verified_apply_policy(apply_policy)
             and len(conformance_candidates) == 1
             and not require_single_candidate_screening
+            and not any(
+                (
+                    repair_conformance_contracts.get(candidate.candidate_id)
+                    is not None
+                    and repair_conformance_contracts[
+                        candidate.candidate_id
+                    ].artifact_lifecycle_constraint
+                    is not None
+                )
+                for candidate in conformance_candidates
+            )
         ):
             sole_candidate = conformance_candidates[0]
             screening_report = {
@@ -7504,6 +7571,47 @@ class SelfEvolveRunner:
                 replay_gate = _with_typed_gate_failure_event(
                     screening_admission_gate
                 )
+            artifact_lifecycle_conformance: RepairConformanceResult | None = None
+            if (
+                conformance_contract is not None
+                and conformance_contract.artifact_lifecycle_constraint is not None
+                and replay_result is not None
+            ):
+                artifact_lifecycle_conformance = (
+                    evaluate_artifact_lifecycle_conformance(
+                        _candidate_artifact_lifecycle_observations(
+                            replay_result,
+                            dataset=active_screening_dataset,
+                        ),
+                        conformance_contract,
+                    )
+                )
+                if (
+                    replay_gate is not None
+                    and replay_gate.passed
+                    and artifact_lifecycle_conformance is not None
+                    and not artifact_lifecycle_conformance.passed
+                ):
+                    replay_gate = _repair_conformance_gate(
+                        artifact_lifecycle_conformance,
+                        contract=conformance_contract,
+                    )
+                elif (
+                    replay_gate is not None
+                    and artifact_lifecycle_conformance is not None
+                ):
+                    replay_gate = replace(
+                        replay_gate,
+                        details={
+                            **dict(replay_gate.details or {}),
+                            "artifact_lifecycle_conformance": (
+                                artifact_lifecycle_conformance.to_dict()
+                            ),
+                            "repair_conformance": (
+                                conformance_contract.to_public_dict()
+                            ),
+                        },
+                    )
             if (
                 conformance_contract is not None
                 and replay_gate is not None
@@ -7562,6 +7670,11 @@ class SelfEvolveRunner:
                         else "candidate_screening"
                     ),
                     "passed": passed,
+                    "artifact_lifecycle_proof_required": bool(
+                        conformance_contract is not None
+                        and conformance_contract.artifact_lifecycle_constraint
+                        is not None
+                    ),
                     "reason": (
                         replay_gate.reason
                         if replay_gate is not None
@@ -7622,6 +7735,11 @@ class SelfEvolveRunner:
                 passing_candidates,
                 key=lambda item: item[1],
             )[0]
+        artifact_lifecycle_admission_failed = any(
+            _screening_attempt_requires_artifact_lifecycle_proof(item)
+            and not _screening_attempt_has_artifact_lifecycle_proof(item)
+            for item in attempts
+        )
 
         if stopped_by_shared_screening:
             attempted_ids = {
@@ -7657,6 +7775,12 @@ class SelfEvolveRunner:
             if stopped_by_shared_screening:
                 selection_reason = (
                     "screening stopped after a shared infrastructure failure"
+                )
+                selected_candidates = ()
+            elif artifact_lifecycle_admission_failed:
+                selection_reason = (
+                    "artifact lifecycle repair lacked behavioral screening proof; "
+                    "authoritative replay admission failed closed"
                 )
                 selected_candidates = ()
             elif stopped_after_budget_censor:
@@ -18868,6 +18992,79 @@ def _screening_attempt_is_candidate_failure(
     )
 
 
+def _screening_attempt_requires_artifact_lifecycle_proof(
+    attempt: Mapping[str, object],
+) -> bool:
+    return attempt.get("artifact_lifecycle_proof_required") is True
+
+
+def _screening_attempt_has_artifact_lifecycle_proof(
+    attempt: Mapping[str, object],
+) -> bool:
+    details = attempt.get("details")
+    conformance = (
+        details.get("artifact_lifecycle_conformance")
+        if isinstance(details, Mapping)
+        else None
+    )
+    return bool(
+        isinstance(conformance, Mapping)
+        and conformance.get("passed") is True
+    )
+
+
+def _candidate_artifact_lifecycle_observations(
+    replay_result: CandidateReplayResult,
+    *,
+    dataset: SelfEvolveDataset,
+) -> tuple[dict[str, object], ...]:
+    normalized = normalize_replay_members(
+        dataset=dataset,
+        replay_result=replay_result,
+    )
+    observations: list[dict[str, object]] = []
+    for member in normalized.members:
+        repetitions = (
+            member.candidate.repetition_results or (member.candidate,)
+        )
+        for repetition_index, repetition in enumerate(repetitions, start=1):
+            if not repetition.executed:
+                continue
+            metrics = repetition.metrics
+            observations.append(
+                {
+                    "case_id": member.case_id,
+                    "repetition_index": repetition_index,
+                    "execution_succeeded": (
+                        repetition.status is ReplayExecutionStatus.SUCCEEDED
+                    ),
+                    "policy_active": metrics.get(
+                        "evidence_runtime_policy_active"
+                    ),
+                    "policy_passed": metrics.get(
+                        "evidence_runtime_policy_passed"
+                    ),
+                    "artifact_file_count": metrics.get(
+                        "evidence_runtime_policy_artifact_file_count"
+                    ),
+                    "artifact_bytes": metrics.get(
+                        "evidence_runtime_policy_artifact_bytes"
+                    ),
+                    "tool_call_attempt_count": metrics.get(
+                        "evidence_runtime_policy_tool_call_attempt_count"
+                    ),
+                    "manifest_entry_count": metrics.get(
+                        "evidence_manifest_entry_count"
+                    ),
+                    "manifest_valid": metrics.get("evidence_manifest_valid"),
+                    "policy_phase": metrics.get(
+                        "evidence_runtime_policy_phase"
+                    ),
+                }
+            )
+    return tuple(observations)
+
+
 def _screening_gate_has_invalid_control(
     gate: GateResult | None,
 ) -> bool:
@@ -19797,24 +19994,48 @@ def _replay_confidence_gate(
         replay_result,
         normalized=normalized,
     )
-    if any(
+    invalid_control = any(
         event.owner is FailureOwner.FRAMEWORK
         and event.code in {
             "authoritative_replay_invalid_control",
             "trusted_measurement_invalid_control_frontier",
         }
         for event in causal_failures
-    ):
+    )
+    zero_comparable_pairs = coverage["comparable_pair_count"] == 0
+    if invalid_control or zero_comparable_pairs:
+        measurement_event = ReplayFailureEvent(
+            code="control_not_comparable",
+            owner=FailureOwner.FRAMEWORK,
+            stage=FailureStage.EVALUATION,
+            scope=FailureScope.SHARED_RUN,
+            repairable=True,
+            category="measurement_validity",
+            summary=(
+                "paired replay produced no comparable task-level evidence"
+                if zero_comparable_pairs
+                else "paired replay control was not comparable"
+            ),
+            diagnostics={
+                "comparable_pair_count": coverage["comparable_pair_count"],
+                "incomparable_pair_count": coverage["incomparable_pair_count"],
+                "candidate_executed_count": coverage["candidate_executed_count"],
+            },
+        )
+        measurement_payload = measurement_event.to_dict()
         base_details.update(
             {
                 "code": "control_not_comparable",
                 "failure_class": "measurement",
                 "failure_owner": FailureOwner.FRAMEWORK.value,
                 "failure_scope": FailureScope.SHARED_RUN.value,
+                "failure_stage": FailureStage.EVALUATION.value,
                 "repairable": True,
                 "next_action": "repair_measurement",
                 "effect": None,
-                "causal_failure_events": [
+                "failure_event": measurement_payload,
+                "causal_failure_events": [measurement_payload],
+                "observed_replay_failure_events": [
                     event.to_dict() for event in causal_failures
                 ],
             }
@@ -22528,6 +22749,30 @@ def _restore_campaign_screening_case_observations(
             report = store.read_report(prior_run_id)
         except (FileNotFoundError, OSError, TypeError, ValueError):
             continue
+        verification_funnel = report.get("verification_funnel")
+        authoritative_observations = (
+            verification_funnel.get("authoritative_case_observations")
+            if isinstance(verification_funnel, Mapping)
+            else None
+        )
+        if isinstance(authoritative_observations, Mapping):
+            for case_id, raw_observation in authoritative_observations.items():
+                if not isinstance(case_id, str) or not isinstance(
+                    raw_observation, Mapping
+                ):
+                    continue
+                failure_count = _non_negative_int(
+                    raw_observation.get("authoritative_failure_count")
+                )
+                if failure_count <= 0:
+                    continue
+                current = observations.setdefault(case_id, {})
+                current["authoritative_failure_count"] = (
+                    _non_negative_int(
+                        current.get("authoritative_failure_count")
+                    )
+                    + failure_count
+                )
         population = report.get("population")
         screening = (
             population.get("screening")
@@ -22903,6 +23148,7 @@ def _record_authoritative_replay_observations(
     *,
     dataset: SelfEvolveDataset,
     replay_result: CandidateReplayResult,
+    run_observations: dict[str, dict[str, int]] | None = None,
 ) -> None:
     """Prioritize bounded counterexample cases in later screening panels."""
 
@@ -22911,16 +23157,23 @@ def _record_authoritative_replay_observations(
         replay_result=replay_result,
     )
     for member in normalized.members:
-        if _replay_member_pair_is_comparable(
-            member.case,
-            member.baseline,
-            member.candidate,
+        if (
+            member.candidate.status is not ReplayExecutionStatus.FAILED
+            or _replay_member_pair_is_comparable(
+                member.case,
+                member.baseline,
+                member.candidate,
+            )
         ):
             continue
-        current = observations.setdefault(member.case_id, {})
-        current["authoritative_failure_count"] = (
-            _non_negative_int(current.get("authoritative_failure_count")) + 1
-        )
+        for destination in (
+            observations,
+            *((run_observations,) if run_observations is not None else ()),
+        ):
+            current = destination.setdefault(member.case_id, {})
+            current["authoritative_failure_count"] = (
+                _non_negative_int(current.get("authoritative_failure_count")) + 1
+            )
 
 
 def _screening_attempt_termination_axes(

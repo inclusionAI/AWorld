@@ -29,6 +29,103 @@ _MAX_CONTRACT_FILES = 16
 _MAX_OBSERVED_OPERATIONS = 8
 _MAX_CONFORMANCE_REPORT_CASES = 100
 _MAX_CONFORMANCE_REPORT_GROUPS = 64
+_ARTIFACT_LIFECYCLE_CONSTRAINT_SCHEMA_VERSION = (
+    "aworld.self_evolve.artifact_lifecycle_constraint.v1"
+)
+
+
+@dataclass(frozen=True)
+class ArtifactLifecycleConstraint:
+    """Executable admission limits learned from an evidence-policy failure.
+
+    The constraint contains only bounded lifecycle counters.  It deliberately
+    excludes artifact paths and payloads so it can cross report and Campaign
+    boundaries, while the screening replay supplies the behavioral proof.
+    """
+
+    max_artifact_files: int = 1
+    max_artifact_bytes: int = 2_000_000
+    max_collection_tool_calls: int = 8
+    require_manifest: bool = True
+    require_artifact_reuse: bool = True
+    require_stop_after_evidence_ready: bool = True
+    schema_version: str = _ARTIFACT_LIFECYCLE_CONSTRAINT_SCHEMA_VERSION
+
+    def __post_init__(self) -> None:
+        if self.schema_version != _ARTIFACT_LIFECYCLE_CONSTRAINT_SCHEMA_VERSION:
+            raise ValueError("artifact lifecycle constraint schema is unsupported")
+        for field_name, value, upper_bound in (
+            ("max_artifact_files", self.max_artifact_files, 256),
+            ("max_artifact_bytes", self.max_artifact_bytes, 128 * 1024 * 1024),
+            ("max_collection_tool_calls", self.max_collection_tool_calls, 1_024),
+        ):
+            if (
+                not isinstance(value, int)
+                or isinstance(value, bool)
+                or value <= 0
+                or value > upper_bound
+            ):
+                raise ValueError(
+                    f"artifact lifecycle constraint {field_name} is invalid"
+                )
+        for field_name in (
+            "require_manifest",
+            "require_artifact_reuse",
+            "require_stop_after_evidence_ready",
+        ):
+            if not isinstance(getattr(self, field_name), bool):
+                raise ValueError(
+                    f"artifact lifecycle constraint {field_name} must be boolean"
+                )
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "schema_version": self.schema_version,
+            "max_artifact_files": self.max_artifact_files,
+            "max_artifact_bytes": self.max_artifact_bytes,
+            "max_collection_tool_calls": self.max_collection_tool_calls,
+            "require_manifest": self.require_manifest,
+            "require_artifact_reuse": self.require_artifact_reuse,
+            "require_stop_after_evidence_ready": (
+                self.require_stop_after_evidence_ready
+            ),
+        }
+
+    @classmethod
+    def from_dict(
+        cls,
+        value: Mapping[str, object],
+    ) -> "ArtifactLifecycleConstraint":
+        def required_int(field_name: str, default: int) -> int:
+            raw = value.get(field_name, default)
+            if not isinstance(raw, int) or isinstance(raw, bool):
+                raise ValueError(
+                    f"artifact lifecycle constraint {field_name} is invalid"
+                )
+            return raw
+
+        return cls(
+            schema_version=str(
+                value.get("schema_version")
+                or _ARTIFACT_LIFECYCLE_CONSTRAINT_SCHEMA_VERSION
+            ),
+            max_artifact_files=required_int("max_artifact_files", 1),
+            max_artifact_bytes=required_int(
+                "max_artifact_bytes",
+                2_000_000,
+            ),
+            max_collection_tool_calls=required_int(
+                "max_collection_tool_calls",
+                8,
+            ),
+            require_manifest=value.get("require_manifest", True) is True,
+            require_artifact_reuse=(
+                value.get("require_artifact_reuse", True) is True
+            ),
+            require_stop_after_evidence_ready=(
+                value.get("require_stop_after_evidence_ready", True) is True
+            ),
+        )
 
 
 @dataclass(frozen=True)
@@ -290,6 +387,7 @@ class RepairConformanceContract:
     schema_field_constraints: tuple[SchemaFieldRepairConstraint, ...] = ()
     runtime_response_constraints: tuple[RuntimeResponseConstraint, ...] = ()
     required_runtime_transitions: tuple[str, ...] = ()
+    artifact_lifecycle_constraint: ArtifactLifecycleConstraint | None = None
 
     def to_dict(self) -> dict[str, object]:
         """Return the private execution contract.
@@ -339,6 +437,11 @@ class RepairConformanceContract:
             ],
             "required_runtime_transitions": list(
                 self.required_runtime_transitions
+            ),
+            "artifact_lifecycle_constraint": (
+                self.artifact_lifecycle_constraint.to_dict()
+                if self.artifact_lifecycle_constraint is not None
+                else None
             ),
         }
 
@@ -409,6 +512,11 @@ class RepairConformanceContract:
             ],
             "required_runtime_transitions": list(
                 self.required_runtime_transitions
+            ),
+            "artifact_lifecycle_constraint": (
+                self.artifact_lifecycle_constraint.to_dict()
+                if self.artifact_lifecycle_constraint is not None
+                else None
             ),
         }
 
@@ -495,6 +603,20 @@ class RepairConformanceContract:
             raw_runtime_response_constraints
         ):
             raise ValueError("runtime response constraints contain invalid entries")
+        raw_artifact_lifecycle_constraint = value.get(
+            "artifact_lifecycle_constraint"
+        )
+        artifact_lifecycle_constraint = (
+            ArtifactLifecycleConstraint.from_dict(
+                raw_artifact_lifecycle_constraint
+            )
+            if isinstance(raw_artifact_lifecycle_constraint, Mapping)
+            else None
+        )
+        if raw_artifact_lifecycle_constraint is not None and (
+            artifact_lifecycle_constraint is None
+        ):
+            raise ValueError("artifact lifecycle constraint must be a mapping")
         return cls(
             focus_candidate_id=str(value.get("focus_candidate_id") or ""),
             failure_codes=_string_tuple(value.get("failure_codes")),
@@ -533,6 +655,7 @@ class RepairConformanceContract:
             required_runtime_transitions=_string_tuple(
                 value.get("required_runtime_transitions")
             ),
+            artifact_lifecycle_constraint=artifact_lifecycle_constraint,
         )
 
     @classmethod
@@ -601,6 +724,154 @@ class RepairConformanceResult:
         if self.failure_fingerprint is not None:
             result["failure_fingerprint"] = self.failure_fingerprint
         return result
+
+
+def evaluate_artifact_lifecycle_conformance(
+    observations: Sequence[Mapping[str, object]],
+    contract: RepairConformanceContract,
+) -> RepairConformanceResult | None:
+    """Validate a repaired evidence lifecycle from bounded screening telemetry.
+
+    Source edits cannot prove that an agent will stop collecting.  This gate
+    therefore consumes only framework-emitted runtime counters from an executed
+    representative replay.  Missing telemetry is a measurement defect; observed
+    limit or lifecycle violations remain candidate-owned repair failures.
+    """
+
+    constraint = contract.artifact_lifecycle_constraint
+    if constraint is None:
+        return None
+    if not observations:
+        return RepairConformanceResult(
+            passed=False,
+            code="artifact_lifecycle_evidence_unavailable",
+            reason=(
+                "artifact lifecycle admission requires an executed screening "
+                "member with runtime-policy telemetry"
+            ),
+            details={
+                "artifact_lifecycle_constraint": constraint.to_dict(),
+                "observation_count": 0,
+            },
+            failure_class="framework",
+            repairable=False,
+        )
+
+    violations: list[dict[str, object]] = []
+    unavailable: list[dict[str, object]] = []
+    for index, observation in enumerate(observations):
+        identity = {
+            "observation_index": index,
+            **(
+                {"case_id": observation["case_id"]}
+                if isinstance(observation.get("case_id"), str)
+                else {}
+            ),
+        }
+        required_fields = (
+            "policy_active",
+            "policy_passed",
+            "artifact_file_count",
+            "artifact_bytes",
+            "tool_call_attempt_count",
+            "manifest_entry_count",
+            "manifest_valid",
+            "execution_succeeded",
+        )
+        missing = [
+            field_name
+            for field_name in required_fields
+            if observation.get(field_name) is None
+        ]
+        if missing:
+            unavailable.append({**identity, "missing_fields": missing})
+            continue
+
+        artifact_file_count = _non_negative_int(
+            observation.get("artifact_file_count")
+        )
+        artifact_bytes = _non_negative_int(observation.get("artifact_bytes"))
+        tool_call_attempt_count = _non_negative_int(
+            observation.get("tool_call_attempt_count")
+        )
+        manifest_entry_count = _non_negative_int(
+            observation.get("manifest_entry_count")
+        )
+        failed_checks: list[str] = []
+        if observation.get("policy_active") is not True:
+            failed_checks.append("runtime_policy_inactive")
+        if observation.get("policy_passed") is not True:
+            failed_checks.append("runtime_policy_violation")
+        if artifact_file_count > constraint.max_artifact_files:
+            failed_checks.append("artifact_reuse_not_proven")
+        if artifact_bytes > constraint.max_artifact_bytes:
+            failed_checks.append("artifact_byte_bound_exceeded")
+        if tool_call_attempt_count > constraint.max_collection_tool_calls:
+            failed_checks.append("collection_attempt_bound_exceeded")
+        if constraint.require_manifest and (
+            manifest_entry_count <= 0
+            or observation.get("manifest_valid") is not True
+        ):
+            failed_checks.append("valid_manifest_missing")
+        if constraint.require_artifact_reuse and artifact_file_count != 1:
+            failed_checks.append("single_reusable_artifact_not_observed")
+        if constraint.require_stop_after_evidence_ready and (
+            observation.get("execution_succeeded") is not True
+            or observation.get("policy_passed") is not True
+            or manifest_entry_count <= 0
+        ):
+            failed_checks.append("evidence_ready_finalization_not_proven")
+        if failed_checks:
+            violations.append(
+                {
+                    **identity,
+                    "failed_checks": failed_checks,
+                    "artifact_file_count": artifact_file_count,
+                    "artifact_bytes": artifact_bytes,
+                    "tool_call_attempt_count": tool_call_attempt_count,
+                    "manifest_entry_count": manifest_entry_count,
+                }
+            )
+
+    if unavailable:
+        return RepairConformanceResult(
+            passed=False,
+            code="artifact_lifecycle_evidence_unavailable",
+            reason=(
+                "screening did not expose the complete framework-owned artifact "
+                "lifecycle telemetry required for admission"
+            ),
+            details={
+                "artifact_lifecycle_constraint": constraint.to_dict(),
+                "observation_count": len(observations),
+                "unavailable_observations": unavailable[:32],
+            },
+            failure_class="framework",
+            repairable=False,
+        )
+    if violations:
+        return RepairConformanceResult(
+            passed=False,
+            code="artifact_lifecycle_conformance_failed",
+            reason=(
+                "candidate screening did not prove bounded collection, one "
+                "reusable artifact, and finalization after evidence became ready"
+            ),
+            details={
+                "artifact_lifecycle_constraint": constraint.to_dict(),
+                "observation_count": len(observations),
+                "violations": violations[:32],
+            },
+        )
+    return _passed(
+        "artifact_lifecycle_conformance_passed",
+        (
+            "screening proved bounded collection, one reusable artifact, and "
+            "finalization after evidence became ready"
+        ),
+        artifact_lifecycle_constraint=constraint.to_dict(),
+        observation_count=len(observations),
+    )
 
 
 def repair_conformance_failure_fingerprint(
@@ -1197,7 +1468,18 @@ def compile_repair_conformance_contract(
         not isinstance(focus_candidate_id, str)
         or not focus_candidate_id
         or not isinstance(raw_files, list)
-        or not raw_files
+    ):
+        return None
+
+    counterexamples = _repair_counterexamples(repair_focus)
+    direct_artifact_lifecycle_constraint = (
+        _artifact_lifecycle_constraint_from_counterexamples(counterexamples)
+    )
+    package_content = package.get("content")
+    if not raw_files and not (
+        direct_artifact_lifecycle_constraint is not None
+        and isinstance(package_content, str)
+        and package_content.strip()
     ):
         return None
 
@@ -1210,12 +1492,17 @@ def compile_repair_conformance_contract(
         if path is None or not isinstance(content, str):
             continue
         base_sources[path] = content
+    if (
+        direct_artifact_lifecycle_constraint is not None
+        and isinstance(package_content, str)
+        and package_content.strip()
+    ):
+        base_sources.setdefault("SKILL.md", package_content)
     if not base_sources:
         return None
 
     diagnostics = tuple(_diagnostic_mappings(repair_focus))
     direct_diagnostics = _direct_repair_diagnostics(diagnostics)
-    counterexamples = _repair_counterexamples(repair_focus)
     direct_failure_codes = _diagnostic_failure_codes(direct_diagnostics)
     counterexample_failure_codes = tuple(
         str(item["failure_code"])
@@ -1230,6 +1517,14 @@ def compile_repair_conformance_contract(
         )
     )
     inherited_contract = _inherited_repair_conformance_contract(diagnostics)
+    artifact_lifecycle_constraint = _merge_artifact_lifecycle_constraints(
+        (
+            inherited_contract.artifact_lifecycle_constraint
+            if inherited_contract is not None
+            else None
+        ),
+        direct_artifact_lifecycle_constraint,
+    )
     failure_codes = tuple(
         dict.fromkeys(
             (
@@ -1254,6 +1549,11 @@ def compile_repair_conformance_contract(
         return None
     manifest_path, branch_paths = _replay_implementation_paths(base_sources)
     runtime_paths = branch_paths
+    if (
+        artifact_lifecycle_constraint is not None
+        and "SKILL.md" in base_sources
+    ):
+        branch_paths = tuple(dict.fromkeys((*branch_paths, "SKILL.md")))
     compiler_path = _replay_compiler_path(
         base_sources,
         manifest_path=manifest_path,
@@ -1519,6 +1819,74 @@ def compile_repair_conformance_contract(
                 )
             )
         ),
+        artifact_lifecycle_constraint=artifact_lifecycle_constraint,
+    )
+
+
+def _artifact_lifecycle_constraint_from_counterexamples(
+    counterexamples: Sequence[Mapping[str, object]],
+) -> ArtifactLifecycleConstraint | None:
+    """Compile evidence-policy failures into a behavioral admission contract."""
+
+    relevant = tuple(
+        item
+        for item in counterexamples
+        if item.get("failure_code")
+        in {
+            "artifact_file_limit_exhausted",
+            "artifact_byte_limit_exhausted",
+            "tool_call_after_evidence_ready",
+        }
+    )
+    if not relevant:
+        return None
+
+    def positive_values(field_name: str) -> tuple[int, ...]:
+        return tuple(
+            int(value)
+            for item in relevant
+            if isinstance((value := item.get(field_name)), int)
+            and not isinstance(value, bool)
+            and value > 0
+        )
+
+    artifact_byte_limits = positive_values("artifact_byte_limit")
+    collection_attempts = positive_values("tool_call_attempt_count")
+    # An exhaustion repair must demonstrate reuse rather than merely stopping
+    # one file below the previous quota. Screening admits one reusable evidence
+    # artifact, a bounded manifest, and no collection after evidence is ready.
+    return ArtifactLifecycleConstraint(
+        max_artifact_files=1,
+        max_artifact_bytes=(
+            min(artifact_byte_limits) if artifact_byte_limits else 2_000_000
+        ),
+        max_collection_tool_calls=(
+            min(max(1, value - 1) for value in collection_attempts)
+            if collection_attempts
+            else 8
+        ),
+    )
+
+
+def _merge_artifact_lifecycle_constraints(
+    *constraints: ArtifactLifecycleConstraint | None,
+) -> ArtifactLifecycleConstraint | None:
+    active = tuple(item for item in constraints if item is not None)
+    if not active:
+        return None
+    return ArtifactLifecycleConstraint(
+        max_artifact_files=min(item.max_artifact_files for item in active),
+        max_artifact_bytes=min(item.max_artifact_bytes for item in active),
+        max_collection_tool_calls=min(
+            item.max_collection_tool_calls for item in active
+        ),
+        require_manifest=any(item.require_manifest for item in active),
+        require_artifact_reuse=any(
+            item.require_artifact_reuse for item in active
+        ),
+        require_stop_after_evidence_ready=any(
+            item.require_stop_after_evidence_ready for item in active
+        ),
     )
 
 
@@ -1542,6 +1910,12 @@ def merge_repair_conformance_constraint_context(
     fixture_constraints = _fixture_probe_constraints(sources)
     schema_constraints = _schema_field_constraints(sources)
     runtime_response_constraints = _runtime_response_constraints(sources)
+    artifact_lifecycle_constraints = list(
+        _artifact_lifecycle_constraints(sources)
+    )
+    artifact_lifecycle_constraint = _merge_artifact_lifecycle_constraints(
+        *artifact_lifecycle_constraints
+    )
     direct_diagnostics = _direct_repair_diagnostics(
         tuple(value for value in diagnostics if isinstance(value, Mapping))
     )
@@ -1554,6 +1928,7 @@ def merge_repair_conformance_constraint_context(
         and not fixture_constraints
         and not schema_constraints
         and not runtime_response_constraints
+        and artifact_lifecycle_constraint is None
     ):
         return None
     merged = dict(inherited or {})
@@ -1585,6 +1960,10 @@ def merge_repair_conformance_constraint_context(
         merged["runtime_response_constraints"] = [
             item.to_dict() for item in runtime_response_constraints
         ]
+    if artifact_lifecycle_constraint is not None:
+        merged["artifact_lifecycle_constraint"] = (
+            artifact_lifecycle_constraint.to_dict()
+        )
     manifest_path = (
         str(merged.get("manifest_path"))
         if isinstance(merged.get("manifest_path"), str)
@@ -1618,6 +1997,31 @@ def merge_repair_conformance_constraint_context(
     if owner_paths:
         merged["required_branch_paths"] = list(owner_paths)
     return merged
+
+
+def _artifact_lifecycle_constraints(
+    values: Sequence[Mapping[str, object]],
+) -> tuple[ArtifactLifecycleConstraint, ...]:
+    constraints: list[ArtifactLifecycleConstraint] = []
+    pending: list[object] = list(values)
+    inspected = 0
+    while pending and inspected < 512:
+        current = pending.pop()
+        inspected += 1
+        if isinstance(current, Mapping):
+            raw_constraint = current.get("artifact_lifecycle_constraint")
+            if isinstance(raw_constraint, Mapping):
+                constraint = ArtifactLifecycleConstraint.from_dict(raw_constraint)
+                if constraint not in constraints:
+                    constraints.append(constraint)
+            pending.extend(
+                nested
+                for nested in current.values()
+                if isinstance(nested, (Mapping, list, tuple))
+            )
+        elif isinstance(current, (list, tuple)):
+            pending.extend(current[:64])
+    return tuple(constraints)
 
 
 def _compile_failure_branch_paths(
@@ -1769,6 +2173,7 @@ def evaluate_candidate_source_conformance(
         for item in candidate.files
         if item.operation == "upsert" and isinstance(item.content, str)
     }
+    candidate_sources.setdefault("SKILL.md", candidate.content)
     removed_branch_paths = sorted(
         path
         for path in contract.required_branch_paths
@@ -3964,6 +4369,12 @@ def _inherited_repair_conformance_contract(
                 transition
                 for contract in inherited
                 for transition in contract.required_runtime_transitions
+            )
+        ),
+        artifact_lifecycle_constraint=_merge_artifact_lifecycle_constraints(
+            *(
+                contract.artifact_lifecycle_constraint
+                for contract in inherited
             )
         ),
     )
