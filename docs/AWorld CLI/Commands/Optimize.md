@@ -584,10 +584,13 @@ so an interrupted multi-case replay can reuse valid controls. In `advisory` and
 `measurement-invalid-control-patience`; remaining members are recorded as
 blocked rather than consuming more authoritative work. `off` and `shadow`
 retain their existing decision behavior.
-During representative screening, a framework-owned invalid control advances to
-the next predeclared representative case until the frozen invalid-control
-patience is reached. Candidate-owned failures do not use this fallback and
-return directly to focused repair.
+During representative screening, a framework-owned invalid control advances
+through every distinct case in the already-bounded representative panel.
+Invalid controls are remembered across Campaign cycles for the same frozen
+dataset and target baseline, so a later cycle suppresses the repeated control
+and selects a fresh case. Reports expose `invalid_control_case_ids` and
+`control_case_retry_suppressed_count`. Candidate-owned failures do not use this
+fallback and return directly to focused repair.
 For a verified dataset with at least the configured minimum number of independent
 cases, the default replay policy uses one baseline and one candidate observation
 per case; independent cases provide the measurement sample, so duplicating every
