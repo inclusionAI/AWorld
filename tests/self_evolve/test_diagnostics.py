@@ -5,6 +5,7 @@ import json
 
 import pytest
 
+from aworld.self_evolve.counterexamples import normalize_counterexample
 from aworld.self_evolve.diagnostics import (
     HarnessDiagnosticKind,
     extract_harness_diagnostics,
@@ -19,6 +20,61 @@ from aworld.self_evolve.failure_events import (
     aggregate_replay_failure_observations,
 )
 from aworld.self_evolve.types import EvaluationSummary, GateResult
+
+
+def test_failure_event_preserves_typed_counterexample_scalars_at_depth_limit() -> None:
+    counterexample = {
+        "schema_version": "aworld.replay.counterexample.v1",
+        "sequence": 1,
+        "failure_code": "tool_call_after_evidence_ready",
+        "owner": "candidate",
+        "stage": "task_rollout",
+        "state_before": "evidence_ready",
+        "trigger": "tool_call",
+        "artifact_file_count": 4,
+        "artifact_file_limit": 8,
+        "tool_call_attempt_count": 1,
+        "required_transition": "finalize_task_response",
+    }
+    event = ReplayFailureEvent.from_legacy_mapping(
+        {
+            "code": "replay_evidence_runtime_policy_violation",
+            "outcome": "candidate_failure",
+            "failure_stage": "task_rollout",
+            "repairable": True,
+            "diagnostics": {"replay_counterexamples": [counterexample]},
+        }
+    )
+
+    persisted = event.compatibility_dict()
+    restored = persisted["diagnostics"]["replay_counterexamples"][0]
+
+    assert restored == {**counterexample, "occurrence_count": 1}
+    assert isinstance(restored["sequence"], int)
+    assert isinstance(restored["artifact_file_count"], int)
+
+
+def test_counterexample_migrates_legacy_numeric_strings_only() -> None:
+    legacy = {
+        "schema_version": "aworld.replay.counterexample.v1",
+        "sequence": "1",
+        "failure_code": "tool_call_after_evidence_ready",
+        "owner": "candidate",
+        "stage": "task_rollout",
+        "state_before": "evidence_ready",
+        "trigger": "tool_call",
+        "artifact_file_count": "4",
+        "required_transition": "finalize_task_response",
+    }
+
+    normalized = normalize_counterexample(legacy)
+
+    assert normalized is not None
+    assert normalized["sequence"] == 1
+    assert normalized["artifact_file_count"] == 4
+    assert normalize_counterexample({**legacy, "sequence": "01"}) is None
+    assert normalize_counterexample({**legacy, "sequence": "1.0"}) is None
+
 
 
 def test_extract_harness_diagnostics_covers_context_tool_and_evaluation_signals() -> None:

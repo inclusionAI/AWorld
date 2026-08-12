@@ -12,6 +12,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping
 
+from aworld.self_evolve.counterexamples import normalize_counterexample
 from aworld.self_evolve.recovery_trace import (
     RECOVERY_TRACE_SCHEMA_VERSION,
     validate_public_recovery_trace,
@@ -645,6 +646,7 @@ class SelfImprovementCampaign:
     run_ids: tuple[str, ...] = ()
     cumulative_usage: CampaignUsage = CampaignUsage()
     cumulative_authoritative_candidates: int = 0
+    repair_continuation_used: bool = False
     latest_progress: SelfImprovementProgress | None = None
     latest_disposition: SelfImprovementDisposition | None = None
     latest_report_path: str | None = None
@@ -657,7 +659,13 @@ class SelfImprovementCampaign:
             raise ValueError("campaign objective must be non-empty")
         if isinstance(self.max_cycles, bool) or self.max_cycles <= 0:
             raise ValueError("max_cycles must be positive")
-        if isinstance(self.cycle_index, bool) or not 0 <= self.cycle_index <= self.max_cycles:
+        if not isinstance(self.repair_continuation_used, bool):
+            raise ValueError("repair_continuation_used must be boolean")
+        effective_max_cycles = self.max_cycles + int(self.repair_continuation_used)
+        if (
+            isinstance(self.cycle_index, bool)
+            or not 0 <= self.cycle_index <= effective_max_cycles
+        ):
             raise ValueError("campaign cycle index is outside its bound")
         if len(self.run_ids) != self.cycle_index:
             raise ValueError("campaign run lineage must match its cycle index")
@@ -723,6 +731,7 @@ class SelfImprovementCampaign:
             "cumulative_authoritative_candidates": (
                 self.cumulative_authoritative_candidates
             ),
+            "repair_continuation_used": self.repair_continuation_used,
             "latest_progress": (
                 self.latest_progress.to_dict() if self.latest_progress is not None else None
             ),
@@ -767,6 +776,9 @@ class SelfImprovementCampaign:
             cumulative_authoritative_candidates=_non_negative_int(
                 value.get("cumulative_authoritative_candidates", 0),
                 "cumulative_authoritative_candidates",
+            ),
+            repair_continuation_used=(
+                value.get("repair_continuation_used") is True
             ),
             latest_progress=(
                 SelfImprovementProgress.from_dict(raw_progress)
@@ -880,10 +892,10 @@ class SelfImprovementCampaignController:
         stored = self.store.read_campaign(campaign.campaign_id)
         if stored.to_dict() != campaign.to_dict():
             raise ValueError("campaign checkpoint changed before advance")
-        if campaign.cycle_index >= campaign.max_cycles:
+        if campaign.cycle_index >= _campaign_effective_max_cycles(campaign):
             exhausted = _exhaust_campaign(
                 campaign,
-                reason_code="campaign_cycle_limit_reached",
+                reason_code=_campaign_exhaustion_reason(campaign),
             )
             self.store.write_campaign(exhausted)
             return exhausted, _campaign_summary(exhausted, {})
@@ -906,7 +918,9 @@ class SelfImprovementCampaignController:
             )
             self.store.write_campaign(limited)
             return limited, _campaign_summary(limited, {})
-        authoritative_limit = _campaign_authoritative_candidate_limit(campaign)
+        authoritative_limit = _campaign_effective_authoritative_candidate_limit(
+            campaign
+        )
         remaining_authoritative_candidates = (
             authoritative_limit
             - campaign.cumulative_authoritative_candidates
@@ -1043,12 +1057,41 @@ class SelfImprovementCampaignController:
             latest_report_path=str(report_path),
             goal_handoff_path=None,
         )
-        if disposition.continuable and next_cycle >= campaign.max_cycles:
+        grant_repair_continuation = (
+            disposition.kind is SelfImprovementDispositionKind.CONTINUE_CANDIDATE
+            and disposition.owner == "candidate"
+            and disposition.repairable
+            and next_cycle >= _campaign_effective_max_cycles(campaign)
+            and not campaign.repair_continuation_used
+            and _report_has_new_candidate_counterexample(
+                report,
+                prior_reports=(
+                    self.store.read_report(run_id)
+                    for run_id in campaign.run_ids
+                ),
+            )
+        )
+        if grant_repair_continuation:
+            # A newly observed authoritative counterexample on the final
+            # configured cycle needs one bounded repair opportunity.  This is
+            # not an open-ended budget increase: both the cycle and
+            # authoritative frontiers receive exactly one auditable reserve.
+            advanced = replace(
+                advanced,
+                status=SelfImprovementCampaignStatus.ACTIVE,
+                repair_continuation_used=True,
+            )
+            disposition = advanced.latest_disposition
+            assert disposition is not None
+        elif (
+            disposition.continuable
+            and next_cycle >= _campaign_effective_max_cycles(advanced)
+        ):
             exhaustion_reason = (
                 "campaign_infrastructure_retry_limit_reached"
                 if disposition.kind
                 is SelfImprovementDispositionKind.RETRY_INFRASTRUCTURE
-                else "campaign_cycle_limit_reached"
+                else _campaign_exhaustion_reason(advanced)
             )
             advanced = _exhaust_campaign(
                 advanced,
@@ -1058,7 +1101,8 @@ class SelfImprovementCampaignController:
             assert disposition is not None
         elif (
             disposition.continuable
-            and cumulative_authoritative_candidates >= authoritative_limit
+            and cumulative_authoritative_candidates
+            >= _campaign_effective_authoritative_candidate_limit(advanced)
         ):
             advanced = _exhaust_campaign(
                 advanced,
@@ -1069,11 +1113,19 @@ class SelfImprovementCampaignController:
         report["campaign"] = {
             "campaign_id": advanced.campaign_id,
             "cycle": advanced.cycle_index,
-            "max_cycles": advanced.max_cycles,
+            "max_cycles": _campaign_effective_max_cycles(advanced),
+            "configured_max_cycles": advanced.max_cycles,
+            "repair_continuation_used": advanced.repair_continuation_used,
             "authoritative_candidate_count": (
                 advanced.cumulative_authoritative_candidates
             ),
-            "max_authoritative_candidates": authoritative_limit,
+            "max_authoritative_candidates": (
+                _campaign_effective_authoritative_candidate_limit(advanced)
+            ),
+            "configured_max_authoritative_candidates": (
+                _campaign_authoritative_candidate_limit(advanced)
+            ),
+            "exhaustion_axes": list(_campaign_exhaustion_axes(advanced)),
         }
         report["self_improvement_disposition"] = disposition.to_dict()
         self.store.write_report(actual_run_id, report)
@@ -2025,6 +2077,94 @@ def _campaign_authoritative_candidate_limit(
     )
 
 
+def _campaign_effective_max_cycles(campaign: SelfImprovementCampaign) -> int:
+    return campaign.max_cycles + int(campaign.repair_continuation_used)
+
+
+def _campaign_effective_authoritative_candidate_limit(
+    campaign: SelfImprovementCampaign,
+) -> int:
+    return _campaign_authoritative_candidate_limit(campaign) + int(
+        campaign.repair_continuation_used
+    )
+
+
+def _campaign_limit_axes(
+    campaign: SelfImprovementCampaign,
+) -> tuple[str, ...]:
+    axes: list[str] = []
+    if campaign.cycle_index >= _campaign_effective_max_cycles(campaign):
+        axes.append("cycle")
+    if (
+        campaign.cumulative_authoritative_candidates
+        >= _campaign_effective_authoritative_candidate_limit(campaign)
+    ):
+        axes.append("authoritative_candidate")
+    return tuple(axes)
+
+
+def _campaign_exhaustion_axes(
+    campaign: SelfImprovementCampaign,
+) -> tuple[str, ...]:
+    if campaign.status is not SelfImprovementCampaignStatus.EXHAUSTED:
+        return ()
+    return _campaign_limit_axes(campaign)
+
+
+def _campaign_exhaustion_reason(campaign: SelfImprovementCampaign) -> str:
+    axes = _campaign_limit_axes(campaign)
+    if axes == ("cycle", "authoritative_candidate"):
+        return "campaign_cycle_and_authoritative_frontier_exhausted"
+    if axes == ("authoritative_candidate",):
+        return "campaign_authoritative_frontier_exhausted"
+    return "campaign_cycle_limit_reached"
+
+
+def _report_candidate_counterexample_fingerprints(
+    report: Mapping[str, Any],
+) -> frozenset[str]:
+    fingerprints: set[str] = set()
+    pending: list[tuple[object, int]] = [(report.get("gate_results"), 0)]
+    visited = 0
+    while pending and visited < 4096:
+        current, depth = pending.pop()
+        visited += 1
+        if depth > 12:
+            continue
+        if isinstance(current, Mapping):
+            normalized = normalize_counterexample(current)
+            if normalized is not None and normalized.get("owner") == "candidate":
+                fingerprints.add(
+                    hashlib.sha256(
+                        json.dumps(
+                            normalized,
+                            ensure_ascii=False,
+                            sort_keys=True,
+                            separators=(",", ":"),
+                        ).encode("utf-8")
+                    ).hexdigest()
+                )
+                continue
+            pending.extend((value, depth + 1) for value in current.values())
+        elif isinstance(current, (list, tuple)):
+            pending.extend((value, depth + 1) for value in current[:256])
+    return frozenset(fingerprints)
+
+
+def _report_has_new_candidate_counterexample(
+    report: Mapping[str, Any],
+    *,
+    prior_reports: Iterable[Mapping[str, Any]],
+) -> bool:
+    current = _report_candidate_counterexample_fingerprints(report)
+    if not current:
+        return False
+    prior: set[str] = set()
+    for prior_report in prior_reports:
+        prior.update(_report_candidate_counterexample_fingerprints(prior_report))
+    return bool(current - prior)
+
+
 def _report_authoritative_candidate_count(report: Mapping[str, Any]) -> int:
     funnel = report.get("verification_funnel")
     if not isinstance(funnel, Mapping):
@@ -2032,7 +2172,20 @@ def _report_authoritative_candidate_count(report: Mapping[str, Any]) -> int:
     value = funnel.get("authoritative_candidate_count")
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return 0
-    return max(0, int(value))
+    count = max(0, int(value))
+    attribution = report.get("campaign_failure_attribution")
+    if (
+        count > 0
+        and isinstance(attribution, Mapping)
+        and attribution.get("failure_class") == "measurement"
+        and attribution.get("failure_owner") == "framework"
+        and attribution.get("failure_scope") == "shared_run"
+        and attribution.get("repairable") is True
+    ):
+        # The invalid experiment consumed wall time, but did not release an
+        # authoritative conclusion about its candidate.
+        count -= 1
+    return count
 
 
 def _campaign_summary(
@@ -2045,7 +2198,11 @@ def _campaign_summary(
             "campaign_id": campaign.campaign_id,
             "campaign_status": campaign.status.value,
             "campaign_cycle": campaign.cycle_index,
-            "campaign_max_cycles": campaign.max_cycles,
+            "campaign_max_cycles": _campaign_effective_max_cycles(campaign),
+            "campaign_configured_max_cycles": campaign.max_cycles,
+            "campaign_repair_continuation_used": (
+                campaign.repair_continuation_used
+            ),
             "campaign_path": str(
                 Path(".aworld")
                 / "self_evolve"
@@ -2058,7 +2215,13 @@ def _campaign_summary(
                 campaign.cumulative_authoritative_candidates
             ),
             "campaign_max_authoritative_candidates": (
+                _campaign_effective_authoritative_candidate_limit(campaign)
+            ),
+            "campaign_configured_max_authoritative_candidates": (
                 _campaign_authoritative_candidate_limit(campaign)
+            ),
+            "campaign_exhaustion_axes": list(
+                _campaign_exhaustion_axes(campaign)
             ),
         }
     )

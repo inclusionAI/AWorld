@@ -75,6 +75,18 @@ class FailureEventSource(str, Enum):
 
 
 def _bounded_value(value: Any, *, depth: int = 0) -> Any:
+    # Replay counterexamples are executable repair feedback, not display-only
+    # diagnostics.  Preserve their typed scalar fields before the generic depth
+    # budget stringifies deeply nested values.  Import locally to keep the
+    # failure-event transport independent during module initialization.
+    if isinstance(value, Mapping) and value.get("schema_version") == (
+        "aworld.replay.counterexample.v1"
+    ):
+        from aworld.self_evolve.counterexamples import normalize_counterexample
+
+        normalized = normalize_counterexample(value)
+        if normalized is not None:
+            return normalized
     if depth >= _MAX_DIAGNOSTIC_DEPTH:
         return sanitize_text(str(value), max_chars=256)
     if value is None or isinstance(value, (bool, int, float)):

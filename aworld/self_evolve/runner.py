@@ -2910,6 +2910,13 @@ def _campaign_failure_attribution(
     ] = {}
     seen_attempts: set[tuple[str, str, str, str | None]] = set()
     for state in iteration_states:
+        # A verified evaluation-support package is an intermediate prerequisite,
+        # not a rejected campaign frontier.  Its target_behavior_delta gate is
+        # intentionally deferred until the composed behavior candidate exists.
+        # Counting it as a terminal failure can hide the later authoritative
+        # candidate's real replay failure when both occur once.
+        if state.get("status") == "prerequisite":
+            continue
         candidate = state.get("candidate")
         candidate_id = (
             candidate.candidate_id
@@ -7334,6 +7341,7 @@ class SelfEvolveRunner:
             active_screening_dataset = screening_dataset
             active_baseline_replay_dir = screening_baseline_replay_dir
             control_case_attempts: list[dict[str, object]] = []
+            control_frontier_exhausted = False
             try:
                 fallback_case_ids = tuple(
                     case_id
@@ -7475,6 +7483,70 @@ class SelfEvolveRunner:
                     )
                     if not _screening_gate_has_invalid_control(replay_gate):
                         break
+                attempted_control_limit = min(
+                    len(control_case_datasets),
+                    control_fallback_limit,
+                )
+                control_frontier_exhausted = bool(
+                    attempted_control_limit > 0
+                    and len(control_case_attempts) >= attempted_control_limit
+                    and all(
+                        attempt.get("invalid_control") is True
+                        for attempt in control_case_attempts
+                    )
+                )
+                if control_frontier_exhausted:
+                    last_control_details = (
+                        dict(replay_gate.details)
+                        if replay_gate is not None
+                        and isinstance(replay_gate.details, Mapping)
+                        else {}
+                    )
+                    failure_event = ReplayFailureEvent(
+                        code="screening_control_frontier_exhausted",
+                        owner=FailureOwner.FRAMEWORK,
+                        stage=FailureStage.EVALUATION,
+                        scope=FailureScope.SHARED_RUN,
+                        repairable=True,
+                        category="measurement_control",
+                        summary=(
+                            "all bounded screening controls were invalid or "
+                            "right-censored before candidate observation"
+                        ),
+                        diagnostics={
+                            "attempted_control_count": len(control_case_attempts),
+                            "invalid_control_case_ids": [
+                                case_id
+                                for attempt in control_case_attempts
+                                for case_id in attempt.get(
+                                    "invalid_control_case_ids", []
+                                )
+                                if isinstance(case_id, str)
+                            ][:32],
+                        },
+                    )
+                    payload = failure_event.to_dict()
+                    replay_gate = GateResult(
+                        gate_name="candidate_replay",
+                        passed=False,
+                        reason=(
+                            "representative screening exhausted its control "
+                            "fallback panel without a valid candidate comparison"
+                        ),
+                        details={
+                            **last_control_details,
+                            "code": "control_not_comparable",
+                            "failure_class": "measurement",
+                            "failure_owner": FailureOwner.FRAMEWORK.value,
+                            "failure_scope": FailureScope.SHARED_RUN.value,
+                            "failure_stage": FailureStage.EVALUATION.value,
+                            "repairable": True,
+                            "next_action": "repair_measurement",
+                            "screening_outcome": "invalid_control",
+                            "failure_event": payload,
+                            "causal_failure_events": [payload],
+                        },
+                    )
             except Exception as exc:
                 replay_result = None
                 replay_dataset = None
@@ -8011,11 +8083,16 @@ class SelfEvolveRunner:
                 ),
                 "attempts": attempts,
                 "stopped_by_shared_infrastructure": stopped_by_shared_screening,
+                "stopped_by_invalid_control": control_frontier_exhausted,
                 "stopped_after_budget_censor": stopped_after_budget_censor,
                 "screening_outcome": (
-                    "right_censored"
-                    if stopped_after_budget_censor
-                    else "completed"
+                    "invalid_control"
+                    if control_frontier_exhausted
+                    else (
+                        "right_censored"
+                        if stopped_after_budget_censor
+                        else "completed"
+                    )
                 ),
             }
         return (
@@ -19075,10 +19152,11 @@ def _screening_gate_has_invalid_control(
         and gate.details.get("code") == _SCREENING_BUDGET_CENSORED_CODE
         and gate.details.get("screening_outcome") == "right_censored"
     ):
-        # Reaching the deliberately small screening envelope is an
-        # inconclusive qualification result, not evidence that the control
-        # plane is unhealthy. It must not consume fallback control cases.
-        return False
+        # A paired horizon is an inconclusive ranking experiment.  A baseline
+        # horizon blocks candidate execution entirely, so it is an invalid
+        # control and must consume a distinct fallback case rather than
+        # promote an unobserved candidate.
+        return gate.details.get("screening_censor_basis") == "baseline_horizon"
     stack: list[object] = [gate.details]
     inspected = 0
     while stack and inspected < 256:
@@ -19395,6 +19473,15 @@ def _authoritative_attempt_consumed(
     conclusion about that candidate package.
     """
 
+    gates = state.get("gate_results")
+    if isinstance(gates, (list, tuple)) and any(
+        isinstance(gate, GateResult)
+        and not gate.passed
+        and _gate_has_typed_shared_measurement_failure(gate)
+        for gate in gates
+    ):
+        return False
+
     replay_result = state.get("replay_result")
     if isinstance(replay_result, CandidateReplayResult):
         members = replay_result.member_results
@@ -19408,7 +19495,6 @@ def _authoritative_attempt_consumed(
         for key in ("candidate_summary", "held_out_summary")
     ):
         return True
-    gates = state.get("gate_results")
     if isinstance(gates, (list, tuple)):
         for gate in gates:
             if (

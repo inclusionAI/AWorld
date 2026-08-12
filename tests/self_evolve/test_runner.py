@@ -3039,6 +3039,60 @@ def test_campaign_attribution_reports_modal_frontier_not_incidental_candidate() 
     assert attribution["occurrence_count"] == 2
 
 
+def test_campaign_attribution_ignores_verified_support_prerequisite() -> None:
+    support = CandidateVariant(
+        candidate_id="support",
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo"),
+        content="# Demo\n",
+        rationale="support prerequisite",
+    )
+    authoritative = replace(support, candidate_id="authoritative")
+    attribution = _campaign_failure_attribution(
+        (
+            {
+                "candidate": support,
+                "status": "prerequisite",
+                "gate_results": [
+                    GateResult(
+                        gate_name="target_behavior_delta",
+                        passed=False,
+                        reason="support requires behavior composition",
+                        details={
+                            "code": "evaluation_support_bootstrap_only",
+                            "failure_class": "candidate",
+                        },
+                    )
+                ],
+            },
+            {
+                "candidate": authoritative,
+                "status": "rejected",
+                "gate_results": [
+                    GateResult(
+                        gate_name="candidate_replay",
+                        passed=False,
+                        reason="candidate violated runtime lifecycle",
+                        details={
+                            "code": "replay_evidence_runtime_policy_violation",
+                            "failure_class": "candidate",
+                            "failure_owner": "candidate",
+                            "failure_scope": "candidate",
+                            "failure_stage": "task_rollout",
+                            "repairable": True,
+                        },
+                    )
+                ],
+            },
+        ),
+        generation_stop_reason="authoritative_candidate_limit_reached",
+    )
+
+    assert attribution is not None
+    assert attribution["primary_gate"] == "candidate_replay"
+    assert attribution["code"] == "replay_evidence_runtime_policy_violation"
+    assert attribution["affected_candidate_ids"] == ["authoritative"]
+
+
 def test_campaign_failure_attribution_prefers_terminal_shared_measurement() -> None:
     candidate = CandidateVariant(
         candidate_id="candidate",
@@ -7064,7 +7118,7 @@ def test_bounded_screening_treats_paired_timeouts_as_right_censored(
     )
 
 
-def test_bounded_screening_promotes_after_baseline_deadline_without_candidate_blame(
+def test_bounded_screening_marks_baseline_deadline_as_invalid_control_without_candidate_blame(
     tmp_path: Path,
 ) -> None:
     target = SelfEvolveTargetRef(target_type="skill", target_id="screening")
@@ -7154,7 +7208,7 @@ def test_bounded_screening_promotes_after_baseline_deadline_without_candidate_bl
         event["code"] == "candidate_intervention_unobserved"
         for event in details["causal_failure_events"]
     )
-    assert runner_module._screening_gate_has_invalid_control(gate) is False
+    assert runner_module._screening_gate_has_invalid_control(gate) is True
 
 
 def test_bounded_screening_censors_candidate_timeout_with_data_plane_progress(
@@ -13333,26 +13387,21 @@ async def test_population_screening_exhausts_distinct_control_panel(
     async def always_invalid_control(**kwargs):
         calls.append(kwargs["dataset"].cases[0].case_id)
         kwargs["lifecycle_callback"]("replay_started", {})
-        event = ReplayFailureEvent(
-            code="authoritative_replay_invalid_control",
-            owner=FailureOwner.FRAMEWORK,
-            stage=FailureStage.EVALUATION,
-            scope=FailureScope.SHARED_RUN,
-            repairable=True,
-        )
         return (
             None,
             None,
             GateResult(
                 gate_name="candidate_replay",
                 passed=False,
-                reason="control member timed out",
+                reason="baseline screening horizon elapsed before candidate execution",
                 details={
-                    "code": "control_not_comparable",
-                    "failure_class": "measurement",
+                    "code": "screening_budget_censored",
+                    "screening_outcome": "right_censored",
+                    "screening_censor_basis": "baseline_horizon",
+                    "failure_class": "framework",
                     "failure_owner": "framework",
-                    "failure_scope": "shared_run",
-                    "causal_failure_events": [event.to_dict()],
+                    "failure_scope": "member",
+                    "repairable": False,
                 },
             ),
         )
@@ -13378,6 +13427,8 @@ async def test_population_screening_exhausts_distinct_control_panel(
     assert report is not None
     screening = report["screening"]
     assert screening["stopped_by_shared_infrastructure"] is True
+    assert screening["stopped_by_invalid_control"] is True
+    assert screening["screening_outcome"] == "invalid_control"
     assert screening["control_fallback_count"] == 2
     assert set(screening["invalid_control_case_ids"]) == set(case_ids)
 
@@ -21534,6 +21585,31 @@ def test_shared_measurement_without_candidate_observation_releases_authoritative
             "replay_result": None,
             "baseline_summary": None,
             "candidate_summary": None,
+            "held_out_summary": None,
+            "gate_results": [timeout_gate],
+        }
+    ) is False
+
+    # Candidate execution inside an invalid shared experiment is still not an
+    # authoritative conclusion and must not consume the Campaign frontier.
+    executed_replay = SimpleNamespace(
+        member_results=None,
+        candidate=ReplayVariantResult(
+            variant_id="candidate",
+            status="succeeded",
+            trajectory=[{"role": "assistant", "content": "done"}],
+        ),
+    )
+    assert runner_module._authoritative_attempt_consumed(
+        {
+            "status": "rejected",
+            "replay_result": executed_replay,
+            "baseline_summary": None,
+            "candidate_summary": EvaluationSummary(
+                variant_id="candidate",
+                metrics={"score": 1.0},
+                dataset_split="validation",
+            ),
             "held_out_summary": None,
             "gate_results": [timeout_gate],
         }
