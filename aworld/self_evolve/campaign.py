@@ -1502,6 +1502,33 @@ def derive_self_improvement_disposition(
     events = _typed_failure_events(report)
     terminal = report.get("terminal_cause")
     attribution = report.get("rejection_attribution")
+    campaign_attribution = report.get("campaign_failure_attribution")
+    shared_measurement = next(
+        (
+            item
+            for item in (attribution, campaign_attribution)
+            if isinstance(item, Mapping)
+            and item.get("failure_class") == "measurement"
+            and item.get("failure_owner")
+            in {"framework", "infrastructure", "evaluation_harness"}
+            and item.get("failure_scope") == "shared_run"
+        ),
+        None,
+    )
+    if shared_measurement is not None:
+        return SelfImprovementDisposition(
+            kind=SelfImprovementDispositionKind.REPAIR_MEASUREMENT,
+            reason_code="shared_measurement_control_invalid",
+            owner="evaluation_harness",
+            stage=_optional_string(
+                shared_measurement.get("failure_stage")
+                or shared_measurement.get("primary_gate")
+                or "measurement"
+            ),
+            scope="shared_run",
+            repairable=True,
+            progress_delta_ids=delta,
+        )
     if (
         isinstance(attribution, Mapping)
         and attribution.get("scheduler_reason_code") == "focused_budget_denied"

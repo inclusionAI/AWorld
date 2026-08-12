@@ -2097,6 +2097,41 @@ def test_candidate_screening_learns_from_censored_case_cost() -> None:
     }
 
 
+def test_candidate_screening_quarantines_campaign_invalid_controls() -> None:
+    dataset = SelfEvolveDataset(
+        cases=(
+            EvalCase(case_id="invalid-a", input={"content": "A"}),
+            EvalCase(case_id="invalid-b", input={"content": "B"}),
+            EvalCase(case_id="fresh-case", input={"content": "fresh"}),
+        ),
+        recipe=DatasetRecipe(
+            source={"kind": "trajectory_set"},
+            split_seed="invalid-control-memory",
+            splits={
+                "train": ["invalid-a", "invalid-b", "fresh-case"]
+            },
+            trainable_case_ids=("invalid-a", "invalid-b", "fresh-case"),
+        ),
+    )
+
+    screening = _candidate_screening_dataset(
+        dataset,
+        max_cases=2,
+        empirical_observations={
+            "invalid-a": {"invalid_control_count": 1},
+            "invalid-b": {"invalid_control_count": 1},
+        },
+    )
+
+    assert screening is not None
+    assert [case.case_id for case in screening.cases] == ["fresh-case"]
+    assert screening.recipe.source["quarantined_control_case_ids"] == [
+        "invalid-a",
+        "invalid-b",
+    ]
+    assert screening.recipe.source["control_case_retry_suppressed_count"] == 2
+
+
 def test_candidate_screening_observation_tracks_physical_termination_axis() -> None:
     observations: dict[str, dict[str, float | int]] = {}
 
@@ -2898,6 +2933,112 @@ def test_campaign_attribution_reports_modal_frontier_not_incidental_candidate() 
     assert attribution["primary_gate"] == "candidate_repair_conformance"
     assert attribution["affected_candidate_count"] == 2
     assert attribution["occurrence_count"] == 2
+
+
+def test_campaign_failure_attribution_prefers_terminal_shared_measurement() -> None:
+    candidate = CandidateVariant(
+        candidate_id="candidate",
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo"),
+        content="# Demo\n",
+        rationale="candidate",
+    )
+    contract = {
+        "runtime_response_constraints": [
+            {
+                "constraint_kind": "recorded_response_context",
+                "response_source": "AWORLD_REPLAY_RESPONSE_INDEX",
+            }
+        ]
+    }
+    fingerprint = runner_module._repair_contract_fingerprint(contract)
+    assert fingerprint is not None
+    states = (
+        {
+            "candidate": candidate,
+            "gate_results": [
+                GateResult(
+                    gate_name="candidate_repair_conformance",
+                    passed=False,
+                    reason="probe failed",
+                    details={
+                        "code": "repair_probe_execution_failed",
+                        "failure_class": "candidate",
+                        **contract,
+                    },
+                )
+            ],
+        },
+    )
+    terminal_gate = GateResult(
+        gate_name="candidate_replay",
+        passed=False,
+        reason="baseline control timed out",
+        details={
+            "code": "control_not_comparable",
+            "failure_class": "measurement",
+            "failure_owner": "framework",
+            "failure_scope": "shared_run",
+            "failure_stage": "evaluation",
+            "repairable": True,
+            "next_action": "repair_measurement",
+        },
+    )
+
+    attribution = _campaign_failure_attribution(
+        states,
+        generation_stop_reason=None,
+        terminal_gates=(terminal_gate,),
+        resolved_contract_fingerprints=(fingerprint,),
+    )
+
+    assert attribution is not None
+    assert attribution["primary_gate"] == "candidate_replay"
+    assert attribution["code"] == "control_not_comparable"
+    assert attribution["failure_owner"] == "framework"
+    assert attribution["resolved_failure_count"] == 1
+
+
+def test_resolved_conformance_frontier_is_not_campaign_primary() -> None:
+    candidate = CandidateVariant(
+        candidate_id="candidate",
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo"),
+        content="# Demo\n",
+        rationale="candidate",
+    )
+    contract = {
+        "runtime_response_constraints": [
+            {
+                "constraint_kind": "recorded_response_context",
+                "response_source": "AWORLD_REPLAY_RESPONSE_INDEX",
+            }
+        ]
+    }
+    fingerprint = runner_module._repair_contract_fingerprint(contract)
+    assert fingerprint is not None
+
+    attribution = _campaign_failure_attribution(
+        (
+            {
+                "candidate": candidate,
+                "gate_results": [
+                    GateResult(
+                        gate_name="candidate_repair_conformance",
+                        passed=False,
+                        reason="probe failed",
+                        details={
+                            "code": "repair_probe_execution_failed",
+                            "failure_class": "candidate",
+                            **contract,
+                        },
+                    )
+                ],
+            },
+        ),
+        generation_stop_reason=None,
+        resolved_contract_fingerprints=(fingerprint,),
+    )
+
+    assert attribution is None
 
 
 def test_conformance_retry_identity_is_atomic_across_batch_composition() -> None:
@@ -12567,6 +12708,96 @@ async def test_population_screening_falls_back_after_invalid_control_case(
         attempt["attempted_control_case_ids"] == ["task-a", fallback_case_id]
         for attempt in screening["attempts"]
     )
+
+
+@pytest.mark.asyncio
+async def test_population_screening_exhausts_distinct_control_panel(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("---\nname: demo\n---\n# Demo\n", encoding="utf-8")
+    case_ids = ("task-a", "task-b", "task-c")
+    dataset = SelfEvolveDataset(
+        cases=tuple(EvalCase(case_id=case_id, input=case_id) for case_id in case_ids),
+        recipe=DatasetRecipe(
+            source={"kind": "screening_control_exhaustion"},
+            split_seed="seed",
+            splits={"train": list(case_ids), "validation": [], "held_out": []},
+            trainable_case_ids=case_ids,
+        ),
+    )
+    candidate = CandidateVariant(
+        candidate_id="candidate",
+        target=SelfEvolveTargetRef(
+            target_type="skill",
+            target_id="demo",
+            path=str(skill_path),
+        ),
+        content="# Demo\n\nCandidate.\n",
+        rationale="screen",
+    )
+    runner = SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=SimpleNamespace(),
+        replay_enabled=True,
+        candidate_replay_backend=object(),
+        candidate_screening_max_cases=3,
+        measurement_invalid_control_patience=1,
+    )
+    calls: list[str] = []
+
+    async def always_invalid_control(**kwargs):
+        calls.append(kwargs["dataset"].cases[0].case_id)
+        kwargs["lifecycle_callback"]("replay_started", {})
+        event = ReplayFailureEvent(
+            code="authoritative_replay_invalid_control",
+            owner=FailureOwner.FRAMEWORK,
+            stage=FailureStage.EVALUATION,
+            scope=FailureScope.SHARED_RUN,
+            repairable=True,
+        )
+        return (
+            None,
+            None,
+            GateResult(
+                gate_name="candidate_replay",
+                passed=False,
+                reason="control member timed out",
+                details={
+                    "code": "control_not_comparable",
+                    "failure_class": "measurement",
+                    "failure_owner": "framework",
+                    "failure_scope": "shared_run",
+                    "causal_failure_events": [event.to_dict()],
+                },
+            ),
+        )
+
+    monkeypatch.setattr(
+        runner,
+        "_replay_selected_candidate",
+        always_invalid_control,
+    )
+
+    selected, report = await runner._screen_candidate_population(
+        run_id="run-screening-control-exhaustion",
+        target=SkillTextTarget(skill_path, allow_auto_apply=True),
+        dataset=dataset,
+        candidates=(candidate,),
+        apply_policy="verified_only",
+        require_single_candidate_screening=True,
+    )
+
+    assert selected == ()
+    assert len(calls) == 3
+    assert set(calls) == set(case_ids)
+    assert report is not None
+    screening = report["screening"]
+    assert screening["stopped_by_shared_infrastructure"] is True
+    assert screening["control_fallback_count"] == 2
+    assert set(screening["invalid_control_case_ids"]) == set(case_ids)
 
 
 @pytest.mark.asyncio

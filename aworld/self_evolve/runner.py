@@ -1913,7 +1913,7 @@ def _candidate_conformance_failure_signatures(
             "code": details.get("code"),
             "stage": details.get("stage"),
             "failure_fingerprint": failure_fingerprint,
-            "contract_fingerprint": _schema_field_contract_fingerprint(
+            "contract_fingerprint": _repair_contract_fingerprint(
                 details
             ),
         }
@@ -2564,6 +2564,46 @@ def _schema_field_contract_fingerprint(
     return f"{prefix}:sha256:" + hashlib.sha256(encoded).hexdigest()
 
 
+def _repair_contract_fingerprint(
+    details: Mapping[str, object],
+) -> str | None:
+    """Resolve the typed constraint identity from a gate or its projection."""
+
+    direct = _schema_field_contract_fingerprint(details)
+    if direct is not None:
+        return direct
+    projected = details.get("repair_conformance")
+    if isinstance(projected, Mapping):
+        return _schema_field_contract_fingerprint(projected)
+    return None
+
+
+def _repair_contract_fingerprints(
+    details: Mapping[str, object],
+) -> tuple[str, ...]:
+    """Return full and component identities for frontier-resolution matching."""
+
+    fingerprints: set[str] = set()
+    direct = _schema_field_contract_fingerprint(details)
+    if direct is not None:
+        fingerprints.add(direct)
+    projected = details.get("repair_conformance")
+    if isinstance(projected, Mapping):
+        combined = _schema_field_contract_fingerprint(projected)
+        if combined is not None:
+            fingerprints.add(combined)
+        for field_name in (
+            "schema_field_constraints",
+            "runtime_response_constraints",
+        ):
+            component = _schema_field_contract_fingerprint(
+                {field_name: projected.get(field_name)}
+            )
+            if component is not None:
+                fingerprints.add(component)
+    return tuple(sorted(fingerprints))
+
+
 def _terminal_cause(
     *,
     final_status: SelfEvolveRunStatus,
@@ -2728,6 +2768,8 @@ def _campaign_failure_attribution(
     iteration_states: Iterable[Mapping[str, object]],
     *,
     generation_stop_reason: str | None,
+    terminal_gates: Iterable[GateResult] = (),
+    resolved_contract_fingerprints: Iterable[str] = (),
 ) -> dict[str, object] | None:
     """Attribute a rejected search to its dominant typed failure frontier.
 
@@ -2737,6 +2779,38 @@ def _campaign_failure_attribution(
     repeated compiler/runtime frontier.  This aggregate is candidate-deduped and
     keeps the two concepts separate.
     """
+
+    resolved_contracts = set(resolved_contract_fingerprints)
+    for gate in terminal_gates:
+        if gate.passed or not isinstance(gate.details, Mapping):
+            continue
+        details = gate.details
+        owner = str(details.get("failure_owner") or "")
+        scope = str(details.get("failure_scope") or "")
+        failure_class = str(details.get("failure_class") or "")
+        if (
+            owner in {"framework", "infrastructure"}
+            and scope == "shared_run"
+            and failure_class in {"framework", "infrastructure", "measurement"}
+        ):
+            result: dict[str, object] = {
+                "primary_gate": gate.gate_name,
+                "code": str(details.get("code") or gate.gate_name),
+                "failure_class": failure_class,
+                "failure_owner": owner,
+                "failure_scope": scope,
+                "primary_reason": sanitize_text(gate.reason, max_chars=400),
+                "occurrence_count": 1,
+                "affected_candidate_count": 0,
+                "affected_candidate_ids": [],
+                "resolved_failure_count": len(resolved_contracts),
+            }
+            for key in ("next_action", "repairable", "failure_stage"):
+                if details.get(key) is not None:
+                    result[key] = details[key]
+            if generation_stop_reason is not None:
+                result["generation_stop_reason"] = generation_stop_reason
+            return result
 
     groups: dict[
         tuple[str, str, str, str | None],
@@ -2763,7 +2837,12 @@ def _campaign_failure_attribution(
                 continue
             details = gate.details if isinstance(gate.details, Mapping) else {}
             code = str(details.get("code") or gate.gate_name)
-            contract_fingerprint = _schema_field_contract_fingerprint(details)
+            contract_fingerprint = _repair_contract_fingerprint(details)
+            if (
+                gate.gate_name == "candidate_repair_conformance"
+                and contract_fingerprint in resolved_contracts
+            ):
+                continue
             attempt_identity = (
                 candidate_id or "<none>",
                 gate.gate_name,
@@ -2817,12 +2896,41 @@ def _campaign_failure_attribution(
         **primary,
         "affected_candidate_count": len(candidate_ids),
         "affected_candidate_ids": sorted(candidate_ids)[:16],
+        "resolved_failure_count": len(resolved_contracts),
     }
     if result.get("contract_fingerprint") is None:
         result.pop("contract_fingerprint", None)
     if generation_stop_reason is not None:
         result["generation_stop_reason"] = generation_stop_reason
     return result
+
+
+def _resolved_conformance_contract_fingerprints(
+    validation_reports: Iterable[Mapping[str, object]],
+) -> tuple[str, ...]:
+    """Return typed repair frontiers closed by a later conformance success."""
+
+    resolved: set[str] = set()
+    for report in validation_reports:
+        conformance = report.get("conformance")
+        attempts = (
+            conformance.get("attempts")
+            if isinstance(conformance, Mapping)
+            else None
+        )
+        if not isinstance(attempts, (list, tuple)):
+            continue
+        for attempt in attempts:
+            if (
+                not isinstance(attempt, Mapping)
+                or attempt.get("passed") is not True
+            ):
+                continue
+            details = attempt.get("details")
+            if not isinstance(details, Mapping):
+                continue
+            resolved.update(_repair_contract_fingerprints(details))
+    return tuple(sorted(resolved))
 
 
 def _with_typed_gate_failure_event(gate: GateResult) -> GateResult:
@@ -3324,6 +3432,7 @@ class SelfEvolveRunner:
         self._candidate_screening_observation_dataset_fingerprint: str | None = (
             None
         )
+        self._candidate_screening_loaded_run_ids: set[str] = set()
 
     async def run_explicit_target(
         self,
@@ -3379,15 +3488,25 @@ class SelfEvolveRunner:
         failure_cleanup: _RunFailureCleanup,
     ) -> SelfEvolveRunnerResult:
         self.execution_telemetry = SelfEvolveExecutionTelemetry()
-        screening_dataset_fingerprint = replay_dataset_fingerprint(dataset)
+        screening_dataset_fingerprint = _screening_observation_scope_fingerprint(
+            dataset=dataset,
+            target=target,
+        )
         if (
             self._candidate_screening_observation_dataset_fingerprint
             != screening_dataset_fingerprint
         ):
             self._candidate_screening_case_observations.clear()
+            self._candidate_screening_loaded_run_ids.clear()
             self._candidate_screening_observation_dataset_fingerprint = (
                 screening_dataset_fingerprint
             )
+        _restore_campaign_screening_case_observations(
+            self._candidate_screening_case_observations,
+            store=self.store,
+            prior_run_ids=tuple(campaign_prior_run_ids or ()),
+            loaded_run_ids=self._candidate_screening_loaded_run_ids,
+        )
         budget_context = _RunBudgetContext(
             ledger=RunBudgetLedger(
                 BudgetCeilings(
@@ -6420,14 +6539,30 @@ class SelfEvolveRunner:
         if rejection_attribution is not None:
             report["rejection_attribution"] = rejection_attribution
         if final_status is SelfEvolveRunStatus.REJECTED:
+            resolved_contract_fingerprints = (
+                _resolved_conformance_contract_fingerprints(
+                    population_screening_reports
+                )
+            )
             campaign_failure_attribution = _campaign_failure_attribution(
                 iteration_states,
                 generation_stop_reason=generation_stop_reason,
+                terminal_gates=gate_results,
+                resolved_contract_fingerprints=(
+                    resolved_contract_fingerprints
+                ),
             )
             if campaign_failure_attribution is not None:
                 report["campaign_failure_attribution"] = (
                     campaign_failure_attribution
                 )
+            if resolved_contract_fingerprints:
+                report["resolved_conformance_frontiers"] = {
+                    "count": len(resolved_contract_fingerprints),
+                    "contract_fingerprints": list(
+                        resolved_contract_fingerprints
+                    ),
+                }
         trajectory_set_report = _trajectory_set_report(dataset)
         if trajectory_set_report is not None:
             report["trajectory_set"] = trajectory_set_report
@@ -6609,6 +6744,7 @@ class SelfEvolveRunner:
             completed_run=completed_run,
             previous_artifact_retention=startup_artifact_retention,
         )
+        self._candidate_screening_loaded_run_ids.add(run_id)
         _emit_progress(
             self.progress_callback,
             "completed",
@@ -6876,13 +7012,11 @@ class SelfEvolveRunner:
         screening_terminal_ids: set[str] = set()
         stopped_by_shared_screening = False
         stopped_after_budget_censor = False
-        control_fallback_limit = min(
-            len(configured_representative_case_ids),
-            max(
-                1,
-                self.measurement_early_stop_policy.invalid_control_patience,
-            ),
-        )
+        # Every member of the already-bounded representative panel is a
+        # distinct control experiment.  ``invalid_control_patience`` must not
+        # truncate that panel and leave a known candidate unevaluated merely
+        # because earlier controls were unhealthy.
+        control_fallback_limit = len(configured_representative_case_ids)
         for candidate_index, candidate in enumerate(
             conformance_candidates,
             start=1,
@@ -7008,6 +7142,7 @@ class SelfEvolveRunner:
                     control_case_datasets[:control_fallback_limit],
                     start=1,
                 ):
+                    control_attempt_started_at = time.monotonic()
                     active_screening_dataset = candidate_screening_dataset
                     if control_attempt_index > 1:
                         active_baseline_replay_dir = (
@@ -7070,29 +7205,62 @@ class SelfEvolveRunner:
                             lifecycle_callback=screening_lifecycle,
                         )
                     )
-                    control_case_attempts.append(
-                        {
-                            "case_ids": [
-                                case.case_id
-                                for case in active_screening_dataset.cases
-                            ],
-                            "invalid_control": (
-                                _screening_gate_has_invalid_control(replay_gate)
+                    active_control_case_ids = tuple(
+                        case.case_id for case in active_screening_dataset.cases
+                    )
+                    invalid_control_case_ids = (
+                        _screening_invalid_control_case_ids(
+                            replay_gate,
+                            fallback_case_ids=active_control_case_ids,
+                        )
+                    )
+                    control_attempt = {
+                        "case_ids": list(active_control_case_ids),
+                        "invalid_control": (
+                            _screening_gate_has_invalid_control(replay_gate)
+                        ),
+                        "invalid_control_case_ids": list(
+                            invalid_control_case_ids
+                        ),
+                        "passed": bool(
+                            replay_gate is not None and replay_gate.passed
+                        ),
+                        "gate_name": (
+                            replay_gate.gate_name
+                            if replay_gate is not None
+                            else None
+                        ),
+                        "reason": (
+                            replay_gate.reason
+                            if replay_gate is not None
+                            else "screening replay was unavailable"
+                        ),
+                        "baseline_cache_offered": (
+                            active_baseline_replay_dir is not None
+                        ),
+                    }
+                    control_case_attempts.append(control_attempt)
+                    _record_candidate_screening_observation(
+                        self._candidate_screening_case_observations,
+                        case_ids=(
+                            invalid_control_case_ids
+                            if invalid_control_case_ids
+                            else active_control_case_ids
+                        ),
+                        attempt={
+                            "passed": bool(
+                                replay_gate is not None and replay_gate.passed
                             ),
-                            "gate_name": (
-                                replay_gate.gate_name
+                            "wall_seconds": max(
+                                0.0,
+                                time.monotonic() - control_attempt_started_at,
+                            ),
+                            "details": (
+                                replay_gate.details
                                 if replay_gate is not None
-                                else None
+                                else {"code": "screening_replay_unavailable"}
                             ),
-                            "reason": (
-                                replay_gate.reason
-                                if replay_gate is not None
-                                else "screening replay was unavailable"
-                            ),
-                            "baseline_cache_offered": (
-                                active_baseline_replay_dir is not None
-                            ),
-                        }
+                        },
                     )
                     if not _screening_gate_has_invalid_control(replay_gate):
                         break
@@ -7277,15 +7445,6 @@ class SelfEvolveRunner:
                         screening_physical_pair_count
                     ),
                 }
-            )
-            _record_candidate_screening_observation(
-                self._candidate_screening_case_observations,
-                case_ids=tuple(
-                    case_id
-                    for item in control_case_attempts
-                    for case_id in item["case_ids"]
-                ) or representative_case_ids,
-                attempt=attempts[-1],
             )
             if passed:
                 passing_candidates.append((candidate, screening_rank))
@@ -7494,6 +7653,23 @@ class SelfEvolveRunner:
                 ),
                 "configured_representative_case_count": len(
                     configured_representative_case_ids
+                ),
+                "invalid_control_case_ids": sorted(
+                    case_id
+                    for case_id, observation in (
+                        self._candidate_screening_case_observations.items()
+                    )
+                    if _non_negative_int(
+                        observation.get("invalid_control_count")
+                    )
+                    > 0
+                )[: self.candidate_screening_max_cases * 8],
+                "control_case_retry_suppressed_count": _non_negative_int(
+                    configured_screening_panel.recipe.source.get(
+                        "control_case_retry_suppressed_count"
+                    )
+                    if configured_screening_panel is not None
+                    else 0
                 ),
                 "qualification_case_limit": qualification_case_limit,
                 "screening_strategy": "adaptive_qualification_then_authoritative",
@@ -18288,6 +18464,44 @@ def _screening_gate_has_invalid_control(
     return False
 
 
+def _screening_invalid_control_case_ids(
+    gate: GateResult | None,
+    *,
+    fallback_case_ids: tuple[str, ...],
+) -> tuple[str, ...]:
+    """Locate invalid members without quarantining healthy panel siblings."""
+
+    if not _screening_gate_has_invalid_control(gate) or gate is None:
+        return ()
+    located: list[str] = []
+    stack: list[object] = [gate.details]
+    inspected = 0
+    while stack and inspected < 512:
+        current = stack.pop()
+        inspected += 1
+        if isinstance(current, Mapping):
+            raw_case_ids = current.get("affected_case_ids")
+            if isinstance(raw_case_ids, (list, tuple)):
+                located.extend(
+                    case_id
+                    for case_id in raw_case_ids
+                    if isinstance(case_id, str)
+                    and case_id in fallback_case_ids
+                    and case_id not in located
+                )
+            case_id = current.get("case_id")
+            if (
+                isinstance(case_id, str)
+                and case_id in fallback_case_ids
+                and case_id not in located
+            ):
+                located.append(case_id)
+            stack.extend(current.values())
+        elif isinstance(current, (list, tuple)):
+            stack.extend(current)
+    return tuple(located or fallback_case_ids)
+
+
 def _screening_attempt_is_budget_censored(
     attempt: Mapping[str, object],
 ) -> bool:
@@ -21778,6 +21992,101 @@ def _candidate_screening_rank_details(rank: tuple[int, ...]) -> dict[str, int]:
     return dict(zip(labels, rank, strict=True))
 
 
+def _screening_observation_scope_fingerprint(
+    *,
+    dataset: SelfEvolveDataset,
+    target: SelfEvolveTarget,
+) -> str:
+    payload = {
+        "dataset_fingerprint": replay_dataset_fingerprint(dataset),
+        "target_type": target.identity.target_type,
+        "target_id": target.identity.target_id,
+        "target_path": target.identity.path,
+        "baseline_skill_fingerprint": target.fingerprint_current_content(),
+    }
+    return "sha256:" + hashlib.sha256(
+        json.dumps(
+            payload,
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _restore_campaign_screening_case_observations(
+    observations: dict[str, dict[str, float | int]],
+    *,
+    store: FilesystemSelfEvolveStore,
+    prior_run_ids: tuple[str, ...],
+    loaded_run_ids: set[str],
+) -> None:
+    """Restore payload-free control health across Campaign cycles/restarts."""
+
+    for prior_run_id in prior_run_ids:
+        if prior_run_id in loaded_run_ids:
+            continue
+        try:
+            report = store.read_report(prior_run_id)
+        except (FileNotFoundError, OSError, TypeError, ValueError):
+            continue
+        population = report.get("population")
+        screening = (
+            population.get("screening")
+            if isinstance(population, Mapping)
+            else None
+        )
+        attempts = (
+            screening.get("attempts")
+            if isinstance(screening, Mapping)
+            else None
+        )
+        if isinstance(attempts, (list, tuple)):
+            for attempt in attempts:
+                if not isinstance(attempt, Mapping):
+                    continue
+                raw_control_attempts = attempt.get("control_case_attempts")
+                if not isinstance(raw_control_attempts, (list, tuple)):
+                    continue
+                for control_attempt in raw_control_attempts:
+                    if not isinstance(control_attempt, Mapping):
+                        continue
+                    raw_case_ids = control_attempt.get("case_ids")
+                    if control_attempt.get("invalid_control") is True:
+                        raw_invalid_case_ids = control_attempt.get(
+                            "invalid_control_case_ids"
+                        )
+                        if isinstance(raw_invalid_case_ids, (list, tuple)):
+                            raw_case_ids = raw_invalid_case_ids
+                    case_ids = tuple(
+                        str(case_id)
+                        for case_id in (
+                            raw_case_ids
+                            if isinstance(raw_case_ids, (list, tuple))
+                            else ()
+                        )
+                        if isinstance(case_id, str) and case_id
+                    )
+                    if not case_ids:
+                        continue
+                    for case_id in case_ids:
+                        current = observations.setdefault(case_id, {})
+                        current["attempt_count"] = (
+                            _non_negative_int(current.get("attempt_count")) + 1
+                        )
+                        current["invalid_control_count"] = (
+                            _non_negative_int(
+                                current.get("invalid_control_count")
+                            )
+                            + int(control_attempt.get("invalid_control") is True)
+                        )
+                        current["passed_count"] = (
+                            _non_negative_int(current.get("passed_count"))
+                            + int(control_attempt.get("passed") is True)
+                        )
+        loaded_run_ids.add(prior_run_id)
+
+
 def _candidate_screening_dataset(
     dataset: SelfEvolveDataset,
     *,
@@ -21816,6 +22125,25 @@ def _candidate_screening_dataset(
             seen_case_ids.add(case_id)
     if not ordered_candidates:
         ordered_candidates = list(replayable_cases)
+    quarantined_control_case_ids = tuple(
+        case.case_id
+        for case in ordered_candidates
+        if _non_negative_int(
+            (
+                empirical_observations.get(case.case_id, {})
+                if empirical_observations is not None
+                else {}
+            ).get("invalid_control_count")
+        )
+        > 0
+    )
+    healthy_control_candidates = [
+        case
+        for case in ordered_candidates
+        if case.case_id not in quarantined_control_case_ids
+    ]
+    if healthy_control_candidates:
+        ordered_candidates = healthy_control_candidates
     requirement_ids_by_case: dict[str, set[str]] = {}
     context_requirement_count_by_case: dict[str, int] = {}
     for requirement in capability_requirements:
@@ -21909,6 +22237,12 @@ def _candidate_screening_dataset(
                     for case in selected
                     if empirical_observations is not None
                 },
+                "quarantined_control_case_ids": list(
+                    quarantined_control_case_ids
+                ),
+                "control_case_retry_suppressed_count": len(
+                    quarantined_control_case_ids
+                ),
                 "original_case_count": len(dataset.cases),
             },
             splits={
@@ -22022,6 +22356,18 @@ def _record_candidate_screening_observation(
     wall_seconds = _non_negative_screening_float(attempt.get("wall_seconds"))
     per_case_wall_seconds = wall_seconds / max(1, len(case_ids))
     right_censored = _screening_attempt_is_budget_censored(attempt)
+    details = attempt.get("details")
+    invalid_control = bool(
+        isinstance(details, Mapping)
+        and _screening_gate_has_invalid_control(
+            GateResult(
+                gate_name="candidate_replay",
+                passed=attempt.get("passed") is True,
+                reason="screening observation",
+                details=details,
+            )
+        )
+    )
     termination_axes = _screening_attempt_termination_axes(attempt)
     for case_id in case_ids:
         current = observations.setdefault(case_id, {})
@@ -22042,6 +22388,11 @@ def _record_candidate_screening_observation(
             _non_negative_int(current.get("passed_count"))
             + int(attempt.get("passed") is True)
         )
+        if invalid_control or "invalid_control_count" in current:
+            current["invalid_control_count"] = (
+                _non_negative_int(current.get("invalid_control_count"))
+                + int(invalid_control)
+            )
         for axis in termination_axes:
             field_name = f"termination_{axis}_count"
             current[field_name] = (
