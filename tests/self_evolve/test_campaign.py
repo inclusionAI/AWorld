@@ -1091,6 +1091,88 @@ def test_campaign_bounds_authoritative_candidates_across_cycles(
     )
 
 
+def test_campaign_grants_one_bounded_repair_for_new_terminal_counterexample(
+    tmp_path: Path,
+) -> None:
+    calls: list[dict] = []
+
+    def run_once(**request):
+        calls.append(request)
+        run_id = f"{request['campaign_id']}-cycle-{request['campaign_cycle']:03d}"
+        if request["campaign_cycle"] == 1:
+            report = _report(_event())
+            report["gate_results"][0]["details"]["replay_counterexamples"] = [
+                {
+                    "schema_version": "aworld.replay.counterexample.v1",
+                    "sequence": 1,
+                    "failure_code": "tool_call_after_evidence_ready",
+                    "owner": "candidate",
+                    "stage": "task_rollout",
+                    "state_before": "evidence_ready",
+                    "trigger": "tool_call",
+                    "required_transition": "finalize_task_response",
+                }
+            ]
+            report["verification_funnel"] = {
+                "authoritative_candidate_count": 1,
+            }
+        else:
+            report = {
+                "run_id": run_id,
+                "status": "succeeded",
+                "budget": _budget(10),
+                "gate_results": [{"gate_name": "post_apply", "passed": True}],
+                "verification_funnel": {
+                    "authoritative_candidate_count": 1,
+                },
+            }
+        report["run_id"] = run_id
+        report_path = tmp_path / ".aworld" / "self_evolve" / run_id / "report.json"
+        report_path.parent.mkdir(parents=True)
+        report_path.write_text(json.dumps(report), encoding="utf-8")
+        return {
+            "run_id": run_id,
+            "status": report["status"],
+            "report_path": str(report_path),
+        }
+
+    result = run_self_improvement_campaign(
+        workspace_root=tmp_path,
+        request={
+            "from_trajectory": "trajectory.log",
+            "apply_policy": "verified_only",
+            "infer_target": True,
+            "max_full_evaluation_candidates": 1,
+        },
+        max_improvement_cycles=1,
+        run_once=run_once,
+    )
+
+    assert len(calls) == 2
+    assert [call["campaign_cycle"] for call in calls] == [1, 2]
+    assert [call["max_full_evaluation_candidates"] for call in calls] == [1, 1]
+    assert result["campaign_status"] == "complete"
+    assert result["campaign_repair_continuation_used"] is True
+    assert result["campaign_configured_max_cycles"] == 1
+    assert result["campaign_max_cycles"] == 2
+    assert result["campaign_authoritative_candidate_count"] == 2
+    assert result["campaign_exhaustion_axes"] == []
+
+
+def test_shared_measurement_invalid_attempt_is_not_authoritative_consumption() -> None:
+    report = {
+        "verification_funnel": {"authoritative_candidate_count": 1},
+        "campaign_failure_attribution": {
+            "failure_class": "measurement",
+            "failure_owner": "framework",
+            "failure_scope": "shared_run",
+            "repairable": True,
+        },
+    }
+
+    assert campaign_module._report_authoritative_candidate_count(report) == 0
+
+
 def test_shared_measurement_timeout_does_not_exhaust_authoritative_frontier(
     tmp_path: Path,
 ) -> None:

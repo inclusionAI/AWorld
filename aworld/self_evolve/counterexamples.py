@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
@@ -158,9 +159,23 @@ class ReplayCounterexampleEnvelope:
             raw = value.get(field_name)
             if raw is None:
                 continue
-            if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+            if isinstance(raw, bool):
                 raise ValueError(f"counterexample {field_name} is invalid")
-            kwargs[field_name] = max(0, int(raw))
+            if isinstance(raw, int):
+                parsed = raw
+            elif isinstance(raw, float) and raw.is_integer():
+                parsed = int(raw)
+            elif isinstance(raw, str) and re.fullmatch(r"0|[1-9][0-9]*", raw):
+                # Compatibility for reports written before typed
+                # counterexamples were exempted from the diagnostic depth
+                # stringification boundary.  Only canonical non-negative
+                # decimal integers are migrated.
+                parsed = int(raw)
+            else:
+                raise ValueError(f"counterexample {field_name} is invalid")
+            if parsed < 0:
+                raise ValueError(f"counterexample {field_name} is invalid")
+            kwargs[field_name] = parsed
         constraints = value.get("constraint_ids")
         return cls(
             failure_code=sanitize_text(
