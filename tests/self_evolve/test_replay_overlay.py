@@ -347,6 +347,7 @@ async def test_replay_member_deadline_stops_invalid_control_frontier(
     )
     events: list[dict[str, object]] = []
 
+    started_at = time.monotonic()
     result = await AWorldCliCandidateReplayBackend(
         executor=slow_executor
     ).replay_candidate(
@@ -355,8 +356,11 @@ async def test_replay_member_deadline_stops_invalid_control_frontier(
         dataset=dataset,
         progress_callback=events.append,
     )
+    assert time.monotonic() - started_at < 0.5
 
-    assert calls == [("task-a", "baseline"), ("task-b", "baseline")]
+    assert len(calls) <= 2
+    assert all(variant_id == "baseline" for _case_id, variant_id in calls)
+    assert {case_id for case_id, _variant_id in calls} <= {"task-a", "task-b"}
     assert [
         member.baseline.status for member in result.member_results
     ] == [
@@ -397,6 +401,7 @@ async def test_replay_member_deadline_stops_invalid_control_frontier(
 
     calls.clear()
     shadow_events: list[dict[str, object]] = []
+    shadow_started_at = time.monotonic()
     shadow_result = await AWorldCliCandidateReplayBackend(
         executor=slow_executor
     ).replay_candidate(
@@ -409,6 +414,7 @@ async def test_replay_member_deadline_stops_invalid_control_frontier(
         dataset=dataset,
         progress_callback=shadow_events.append,
     )
+    assert time.monotonic() - shadow_started_at < 0.5
 
     assert len(calls) == 6
     assert all(
@@ -533,7 +539,10 @@ async def test_authoritative_replay_attributes_invalid_control_stop_to_framework
         )
 
     dataset = SelfEvolveDataset(
-        cases=(EvalCase(case_id="case-1", input="task 1"),),
+        cases=tuple(
+            EvalCase(case_id=f"case-{index}", input=f"task {index}")
+            for index in range(1, 4)
+        ),
         recipe=DatasetRecipe(
             source={"kind": "invalid-control-stop"},
             split_seed="seed",
@@ -560,6 +569,14 @@ async def test_authoritative_replay_attributes_invalid_control_stop_to_framework
 
     assert calls == [("case-1", "baseline")]
     assert result.member_results is not None
+    assert all(
+        member.baseline.status is ReplayExecutionStatus.BLOCKED
+        for member in result.member_results[1:]
+    )
+    assert all(
+        member.candidate.status is ReplayExecutionStatus.BLOCKED
+        for member in result.member_results
+    )
     blocked_by = result.member_results[0].candidate.blocked_by
     assert len(blocked_by) == 1
     assert blocked_by[0].code == "authoritative_replay_invalid_control"
@@ -8136,6 +8153,48 @@ async def test_aworld_cli_replay_executor_rejects_summary_synthetic_trajectory(
     assert result.failure["diagnostics"]["replay_counterexamples"][0][
         "trigger"
     ] == "unsupported_trajectory_capture_mode"
+
+
+@pytest.mark.asyncio
+async def test_aworld_cli_replay_executor_stops_worker_on_cancellation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    started = threading.Event()
+    stopped = threading.Event()
+
+    def fake_run(command, **kwargs):
+        cancellation_event = kwargs["cancellation_event"]
+        started.set()
+        assert cancellation_event.wait(timeout=1)
+        stopped.set()
+        raise subprocess.TimeoutExpired(
+            cmd=command,
+            timeout=kwargs["timeout"],
+        )
+
+    monkeypatch.setattr("aworld.self_evolve.replay._run_replay_cli", fake_run)
+    running = asyncio.create_task(
+        AWorldCliReplayExecutor()(
+            ReplayExecutionRequest(
+                variant_id="candidate",
+                task_id="task-1",
+                candidate_id="cand-1",
+                workspace_root=str(tmp_path),
+                task_input={"content": "Replay this task"},
+                task_text="Replay this task",
+                skill_root=str(tmp_path / "skills"),
+                artifact_dir=str(tmp_path / "artifacts"),
+                timeout_seconds=60,
+            )
+        )
+    )
+    assert await asyncio.to_thread(started.wait, 1)
+    running.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await running
+    assert stopped.wait(timeout=1)
 
 
 @pytest.mark.asyncio

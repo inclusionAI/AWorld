@@ -451,7 +451,10 @@ Candidate repair gate diagnostics are summarized in a separate population `confo
   retry instead of discarding the partial control experiment. When a verified
   policy does not set this option, the framework still applies a safety horizon
   of six per-member timeout windows to prevent one candidate from occupying an
-  unbounded experiment.
+  unbounded experiment. Both deadlines are cancellation-safe: they terminate
+  the replay process group before control returns to candidate search. A shared
+  measurement timeout stops the current candidate population instead of
+  spending another authoritative slot.
 - `--replay-max-runs`: maximum `aworld-cli run` iterations per replay rollout.
 - `--judge-repetitions`: successful judge samples to aggregate per evaluator call.
 - `--judge-timeout`: timeout in seconds for each judge attempt.
