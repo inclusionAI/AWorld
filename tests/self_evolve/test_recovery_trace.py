@@ -203,6 +203,7 @@ def test_public_recovery_projection_drops_unknown_payload_fields() -> None:
         {
             "schema_version": RECOVERY_TRACE_SCHEMA_VERSION,
             "member_count": 1,
+            "candidate_execution_observed": False,
             "candidate_intervention_required": True,
             "candidate_intervention_observed": False,
             "raw_response": "SECRET",
@@ -219,6 +220,7 @@ def test_public_recovery_projection_drops_unknown_payload_fields() -> None:
 
     assert projected is not None
     assert projected["member_count"] == 1
+    assert projected["candidate_execution_observed"] is False
     assert projected["candidate_intervention_required"] is True
     assert projected["candidate_intervention_observed"] is False
     assert "SECRET" not in json.dumps(projected)

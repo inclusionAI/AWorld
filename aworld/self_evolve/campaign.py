@@ -1528,6 +1528,9 @@ def derive_self_improvement_disposition(
             scope="shared_run",
             repairable=True,
             progress_delta_ids=delta,
+            diagnostic_refs=_string_tuple(
+                shared_measurement.get("diagnostic_refs")
+            ),
         )
     if (
         isinstance(attribution, Mapping)
@@ -1688,6 +1691,9 @@ def derive_self_improvement_disposition(
                 scope="shared_run",
                 repairable=retryable,
                 progress_delta_ids=delta,
+                diagnostic_refs=_string_tuple(
+                    primary_failure.get("diagnostic_refs")
+                ),
             )
         if primary_owner == "framework":
             if primary_event is not None:
@@ -1708,6 +1714,9 @@ def derive_self_improvement_disposition(
                 scope="shared_run",
                 repairable=False,
                 progress_delta_ids=delta,
+                diagnostic_refs=_string_tuple(
+                    primary_failure.get("diagnostic_refs")
+                ),
             )
         if primary_event is not None:
             return _event_disposition(
@@ -1727,6 +1736,9 @@ def derive_self_improvement_disposition(
             scope="shared_run",
             repairable=False,
             progress_delta_ids=delta,
+            diagnostic_refs=_string_tuple(
+                primary_failure.get("diagnostic_refs")
+            ),
         )
 
     candidate = actionable_candidate
@@ -1908,6 +1920,13 @@ def build_goal_handoff(
     disposition = campaign.latest_disposition
     if disposition is None or disposition.kind is not SelfImprovementDispositionKind.HANDOFF_GOAL:
         raise ValueError("goal handoff requires a framework/shared disposition")
+    diagnostic_refs = list(disposition.diagnostic_refs)
+    if (
+        isinstance(campaign.latest_report_path, str)
+        and campaign.latest_report_path
+        and campaign.latest_report_path not in diagnostic_refs
+    ):
+        diagnostic_refs.append(campaign.latest_report_path)
     return {
         "schema_version": "aworld.self_evolve.goal_handoff.v1",
         "campaign_id": campaign.campaign_id,
@@ -1919,6 +1938,7 @@ def build_goal_handoff(
         "latest_run_id": campaign.run_ids[-1],
         "latest_report_path": campaign.latest_report_path,
         "disposition": disposition.to_dict(),
+        "diagnostic_refs": diagnostic_refs[:16],
         "semantic_frontier_ids": list(
             campaign.latest_progress.semantic_frontier_ids
             if campaign.latest_progress is not None

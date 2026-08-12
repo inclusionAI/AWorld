@@ -2894,7 +2894,9 @@ def test_rejection_attribution_prefers_actionable_candidate_evidence_failure() -
                     "failure_class": "candidate",
                     "failure_owner": "candidate",
                     "failure_scope": "candidate",
+                    "failure_stage": "evaluation",
                     "repairable": True,
+                    "diagnostic_refs": ["/tmp/evidence/report.json"],
                 },
             ),
         ),
@@ -2904,6 +2906,11 @@ def test_rejection_attribution_prefers_actionable_candidate_evidence_failure() -
     assert attribution is not None
     assert attribution["primary_gate"] == "evidence_quality"
     assert attribution["failure_class"] == "candidate"
+    assert attribution["failure_owner"] == "candidate"
+    assert attribution["failure_scope"] == "candidate"
+    assert attribution["failure_stage"] == "evaluation"
+    assert attribution["repairable"] is True
+    assert attribution["diagnostic_refs"] == ["/tmp/evidence/report.json"]
 
 
 def test_campaign_attribution_reports_modal_frontier_not_incidental_candidate() -> None:
@@ -3007,6 +3014,7 @@ def test_campaign_failure_attribution_prefers_terminal_shared_measurement() -> N
             "failure_stage": "evaluation",
             "repairable": True,
             "next_action": "repair_measurement",
+            "diagnostic_refs": ["/tmp/replay/request.json"],
         },
     )
 
@@ -3021,6 +3029,11 @@ def test_campaign_failure_attribution_prefers_terminal_shared_measurement() -> N
     assert attribution["primary_gate"] == "candidate_replay"
     assert attribution["code"] == "control_not_comparable"
     assert attribution["failure_owner"] == "framework"
+    assert attribution["failure_scope"] == "shared_run"
+    assert attribution["failure_stage"] == "evaluation"
+    assert attribution["repairable"] is True
+    assert attribution["next_action"] == "repair_measurement"
+    assert attribution["diagnostic_refs"] == ["/tmp/replay/request.json"]
     assert attribution["resolved_failure_count"] == 1
 
 
@@ -6942,6 +6955,7 @@ def test_bounded_screening_treats_paired_timeouts_as_right_censored(
 
     assert details["code"] == "screening_budget_censored"
     assert details["screening_outcome"] == "right_censored"
+    assert details["screening_censor_basis"] == "paired_horizon"
     assert details["failure_class"] == "framework"
     assert details["repairable"] is False
     assert any(
@@ -6952,6 +6966,99 @@ def test_bounded_screening_treats_paired_timeouts_as_right_censored(
         event["code"] == "candidate_recovery_incomplete"
         for event in details["causal_failure_events"]
     )
+
+
+def test_bounded_screening_promotes_after_baseline_deadline_without_candidate_blame(
+    tmp_path: Path,
+) -> None:
+    target = SelfEvolveTargetRef(target_type="skill", target_id="screening")
+    request = CandidateReplayRequest(
+        run_id="run-baseline-censor",
+        task_id="case-baseline-censor",
+        workspace_root=str(tmp_path),
+        target=target,
+        candidate_id="candidate-baseline-censor",
+        overlay_skill_root=str(tmp_path / "overlay"),
+        task_input="complete this task",
+        timeout_seconds=120,
+    )
+    deadline = ReplayFailureEvent(
+        code="replay_member_phase_timeout",
+        owner=FailureOwner.FRAMEWORK,
+        stage=FailureStage.EVALUATION,
+        scope=FailureScope.MEMBER,
+        repairable=True,
+        category="execution_control",
+        summary="bounded screening baseline reached its hard deadline",
+        diagnostics={"phase": "baseline", "timeout_seconds": 120},
+    )
+    deadline_aggregate = aggregate_replay_failure_observations(
+        (ReplayFailureObservation(event=deadline),)
+    )[0]
+    invalid_control = ReplayFailureEvent(
+        code="authoritative_replay_invalid_control",
+        owner=FailureOwner.FRAMEWORK,
+        stage=FailureStage.EVALUATION,
+        scope=FailureScope.SHARED_RUN,
+        repairable=True,
+        category="measurement_control",
+        summary="candidate did not run after the baseline deadline",
+        causes=(deadline.event_id,),
+    )
+    replay_result = _CandidateReplayResult(
+        request=request,
+        baseline=ReplayVariantResult(
+            variant_id="baseline",
+            status=ReplayExecutionStatus.FAILED,
+            trajectory=[],
+            metrics={"member_phase_timeout": True, "member_phase": "baseline"},
+            failure=deadline_aggregate,
+        ),
+        candidate=ReplayVariantResult(
+            variant_id="candidate-baseline-censor",
+            status=ReplayExecutionStatus.BLOCKED,
+            trajectory=[],
+            blocked_by=(invalid_control,),
+        ),
+    )
+    dataset = SelfEvolveDataset(
+        cases=(
+            EvalCase(
+                case_id="case-baseline-censor",
+                input="complete this task",
+            ),
+        ),
+        recipe=DatasetRecipe(
+            source={"kind": "trajectory_log"},
+            split_seed="baseline-censor",
+            splits={"train": ["case-baseline-censor"]},
+            trainable_case_ids=("case-baseline-censor",),
+        ),
+    )
+
+    details = _replay_gate_details(
+        replay_result,
+        dataset=dataset,
+        candidate_requires_intervention_exposure=True,
+        bounded_screening=True,
+    )
+    gate = GateResult(
+        gate_name="candidate_replay",
+        passed=False,
+        reason="bounded screening was right-censored",
+        details=details,
+    )
+
+    assert details["code"] == "screening_budget_censored"
+    assert details["screening_censor_basis"] == "baseline_horizon"
+    assert details["screening_outcome"] == "right_censored"
+    assert details["recovery_trace"]["candidate_execution_observed"] is False
+    assert details["recovery_trace"]["candidate_intervention_observed"] is None
+    assert not any(
+        event["code"] == "candidate_intervention_unobserved"
+        for event in details["causal_failure_events"]
+    )
+    assert runner_module._screening_gate_has_invalid_control(gate) is False
 
 
 def test_bounded_screening_censors_candidate_timeout_with_data_plane_progress(
@@ -16654,6 +16761,7 @@ async def test_runner_reports_screening_root_cause_before_later_duplicate(
         "primary_reason": "replay adaptation compilation failed",
         "failure_class": "candidate",
         "code": "repair_capability_compile_failed",
+        "repairable": True,
         "duplicate_only": False,
         "capability_error_code": "schema_field_validation_failed",
         "scheduler_reason_code": "focused_repair",

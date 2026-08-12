@@ -593,7 +593,11 @@ Invalid controls are remembered across Campaign cycles for the same frozen
 dataset and target baseline, so a later cycle suppresses the repeated control
 and selects a fresh case. Reports expose `invalid_control_case_ids` and
 `control_case_retry_suppressed_count`. Candidate-owned failures do not use this
-fallback and return directly to focused repair.
+fallback and return directly to focused repair. The bounded screening horizon is
+not an invalid control: if both variants reach it, or the baseline reaches its
+hard deadline before candidate execution, the comparison is right-censored and
+one ranked candidate advances to authoritative replay without exhausting fallback
+cases. A blocked or not-run candidate emits no candidate behavior attribution.
 For a verified dataset with at least the configured minimum number of independent
 cases, the default replay policy uses one baseline and one candidate observation
 per case; independent cases provide the measurement sample, so duplicating every

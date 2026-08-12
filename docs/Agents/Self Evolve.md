@@ -224,9 +224,11 @@ Recovery attribution also has an intervention boundary. Framework startup and
 protocol probes establish that a candidate runtime is valid, but they are cleared
 from the task-plane trace before rollout. A replay-only candidate is considered a
 repair cause only when the task actually exchanges traffic with that intervention.
-Otherwise the typed cause is `candidate_intervention_unobserved`, owned by replay
-adaptation/target selection, and the framework must repair context or targeting
-instead of repeatedly mutating the candidate.
+If the candidate executes without exchanging that traffic, the typed cause is
+`candidate_intervention_unobserved`, owned by replay adaptation/target selection,
+and the framework must repair context or targeting instead of repeatedly mutating
+the candidate. A blocked or not-run candidate has no behavioral observation and
+therefore cannot emit this cause; its control/deadline event remains authoritative.
 
 ### Candidate Generation and Focused Repair
 
@@ -395,7 +397,7 @@ For a repairable skill-owned replay failure, the framework validates a candidate
 2. **Compile and freeze** rebuilds the candidate-owned replay capability, verifies fixture provenance and immutable package fingerprints, and constructs an operation-indexed recorded response map exposed to the runtime as `AWORLD_REPLAY_RESPONSE_INDEX`.
 3. **Probe conformance** requires the declared HTTP/TCP/WebSocket probe to cover the observed operation and to assert a non-empty scalar derived from the recorded response payload, not a mapping key, request token, placeholder, hash, or control-plane handshake.
 4. **Execution preflight** starts the frozen service in the replay subprocess sandbox and executes every declared readiness/protocol probe. WebSocket probes validate the upgrade, ping/text exchange, operation correlation, non-empty result, and recorded-response binding when required.
-5. **Representative screening** runs one bounded baseline/candidate pair only after conformance passes. Screening is a cost filter, not acceptance evidence; an inconclusive baseline preserves the ranked population for authoritative replay. If one representative case produces a framework-owned invalid control, screening exhausts the distinct cases in the already-bounded predeclared panel before blocking the population. Invalid controls are quarantined for the same dataset, target baseline, and Campaign, including after process restart, so later cycles select fresh controls rather than replaying the same timeout. A sole new candidate may proceed directly, but a repair lineage carrying an authoritative replay counterexample must clear that counterexample here. Reproducing a candidate-owned failure returns it to repair instead of spending another full-panel slot.
+5. **Representative screening** runs one bounded baseline/candidate pair only after conformance passes. Screening is a cost filter, not acceptance evidence; an inconclusive baseline preserves the ranked population for authoritative replay. Reaching the deliberately smaller screening deadline is recorded as right-censored and promotes one ranked candidate to authoritative replay, including when the baseline deadline prevents candidate execution. It does not consume control fallbacks. A genuinely invalid control that is unrelated to the bounded screening horizon exhausts the distinct cases in the already-bounded predeclared panel before blocking the population. Invalid controls are quarantined for the same dataset, target baseline, and Campaign, including after process restart, so later cycles select fresh controls rather than replaying the same failure. A sole new candidate may proceed directly, but a repair lineage carrying an authoritative replay counterexample must clear that counterexample here. Reproducing a candidate-owned failure returns it to repair instead of spending another full-panel slot.
 
 Failures in the first four layers are reported through the `candidate_repair_conformance` gate. When execution preflight is reached, bounded service/probe artifacts are stored under `repair_conformance/<candidate_id>/`. The failure becomes generic repair feedback for the next iteration and does not enter the full task rollout. The contracts are derived from observed operations, package structure, fixture provenance, and protocol traces; they do not contain target-specific fixes for a particular training case.
 
@@ -404,6 +406,11 @@ Unresolved typed failures retain their source owners when a later failure adds a
 Structural strategy switches are evidence-based. The runner fingerprints the authorized owner paths, edited package paths, and value-free source control-flow shape before requesting a switch. `conformance_strategy_switch_request_count` records requests, while `conformance_strategy_switch_count` increases only after a different topology is observed. `conformance_strategy_switch_not_materialized=true` explains an early stop where only the strategy label changed.
 
 Campaign attribution follows terminal causal precedence. A shared invalid control is reported as measurement repair even when an earlier candidate failed conformance. Conversely, a later candidate that passes the same typed contract closes that historical conformance frontier; `resolved_conformance_frontiers` records the closed identities and they no longer compete for Campaign primary failure.
+
+The terminal gate, rejection attribution, Campaign attribution, disposition, and
+Goal handoff retain the same owner, scope, stage, repair action, and bounded
+diagnostic artifact references. This prevents a shared measurement failure from
+being rewritten as an unrepairable adaptation failure at a later reporting layer.
 
 A candidate package that reached judge-scored task output is a deeper causal
 frontier than rejected sibling compiler/runtime candidates. Its replay-file set

@@ -308,6 +308,7 @@ def validate_public_recovery_trace(value: object) -> dict[str, object] | None:
     for key in (
         "recovered",
         "terminal_success",
+        "candidate_execution_observed",
         "candidate_intervention_required",
         "candidate_intervention_observed",
     ):

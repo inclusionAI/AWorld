@@ -2717,6 +2717,18 @@ def _rejection_attribution(
         "code": str(details.get("code") or primary.gate_name),
         "duplicate_only": not substantive,
     }
+    for key in (
+        "failure_owner",
+        "failure_scope",
+        "failure_stage",
+        "repairable",
+        "next_action",
+    ):
+        if details.get(key) is not None:
+            attribution[key] = details[key]
+    diagnostic_refs = _attribution_diagnostic_refs(details)
+    if diagnostic_refs:
+        attribution["diagnostic_refs"] = list(diagnostic_refs)
     capability_error_code = details.get("capability_error_code")
     if isinstance(capability_error_code, str) and capability_error_code:
         attribution["capability_error_code"] = capability_error_code
@@ -2808,6 +2820,9 @@ def _campaign_failure_attribution(
             for key in ("next_action", "repairable", "failure_stage"):
                 if details.get(key) is not None:
                     result[key] = details[key]
+            diagnostic_refs = _attribution_diagnostic_refs(details)
+            if diagnostic_refs:
+                result["diagnostic_refs"] = list(diagnostic_refs)
             if generation_stop_reason is not None:
                 result["generation_stop_reason"] = generation_stop_reason
             return result
@@ -2870,8 +2885,19 @@ def _campaign_failure_attribution(
                     "occurrence_count": 0,
                     "candidate_ids": set(),
                     "contract_fingerprint": contract_fingerprint,
+                    "failure_owner": details.get("failure_owner"),
+                    "failure_scope": details.get("failure_scope"),
+                    "failure_stage": details.get("failure_stage"),
+                    "repairable": details.get("repairable"),
+                    "next_action": details.get("next_action"),
+                    "diagnostic_refs": set(
+                        _attribution_diagnostic_refs(details)
+                    ),
                 },
             )
+            refs = group.get("diagnostic_refs")
+            if isinstance(refs, set):
+                refs.update(_attribution_diagnostic_refs(details))
             group["occurrence_count"] = int(group["occurrence_count"]) + 1
             if candidate_id is not None:
                 candidate_ids = group["candidate_ids"]
@@ -2891,6 +2917,7 @@ def _campaign_failure_attribution(
         )
     )
     candidate_ids = primary.pop("candidate_ids")
+    diagnostic_refs = primary.pop("diagnostic_refs", set())
     assert isinstance(candidate_ids, set)
     result = {
         **primary,
@@ -2898,11 +2925,54 @@ def _campaign_failure_attribution(
         "affected_candidate_ids": sorted(candidate_ids)[:16],
         "resolved_failure_count": len(resolved_contracts),
     }
+    if isinstance(diagnostic_refs, set) and diagnostic_refs:
+        result["diagnostic_refs"] = sorted(diagnostic_refs)[:16]
+    for optional_key in (
+        "failure_owner",
+        "failure_scope",
+        "failure_stage",
+        "repairable",
+        "next_action",
+    ):
+        if result.get(optional_key) is None:
+            result.pop(optional_key, None)
     if result.get("contract_fingerprint") is None:
         result.pop("contract_fingerprint", None)
     if generation_stop_reason is not None:
         result["generation_stop_reason"] = generation_stop_reason
     return result
+
+
+def _attribution_diagnostic_refs(
+    value: object,
+) -> tuple[str, ...]:
+    """Collect bounded artifact references from typed failure details."""
+
+    refs: set[str] = set()
+    pending: list[tuple[object, int]] = [(value, 0)]
+    visited = 0
+    while pending and visited < 512 and len(refs) < 16:
+        current, depth = pending.pop()
+        visited += 1
+        if depth > 8:
+            continue
+        if isinstance(current, Mapping):
+            for key in ("artifact_refs", "diagnostic_refs", "evidence_refs"):
+                raw = current.get(key)
+                if not isinstance(raw, (list, tuple)):
+                    continue
+                for item in raw[:16]:
+                    text = str(item).strip()
+                    if text and "\n" not in text and "\r" not in text:
+                        refs.add(text[:500])
+            for nested in current.values():
+                if isinstance(nested, (Mapping, list, tuple)):
+                    pending.append((nested, depth + 1))
+        elif isinstance(current, (list, tuple)):
+            for nested in current[:128]:
+                if isinstance(nested, (Mapping, list, tuple)):
+                    pending.append((nested, depth + 1))
+    return tuple(sorted(refs))[:16]
 
 
 def _resolved_conformance_contract_fingerprints(
@@ -17947,6 +18017,14 @@ def _replay_gate_details(
         "baseline_skill_fingerprint": (
             replay_result.request.baseline_skill_fingerprint
         ),
+        "diagnostic_refs": [
+            str(Path(_replay_artifact_path(replay_result)) / "request.json"),
+            str(
+                Path(_replay_artifact_path(replay_result))
+                / "members"
+                / "manifest.json"
+            ),
+        ],
     }
     details["member_count"] = len(normalized.members) + len(
         normalized.missing_case_ids
@@ -17963,9 +18041,12 @@ def _replay_gate_details(
         details["causal_failure_events"] = [
             event.to_dict() for event in causal_failures
         ]
-    screening_budget_censored = bool(
-        bounded_screening and _screening_pair_is_budget_censored(normalized)
+    screening_censor_basis = (
+        _screening_budget_censor_basis(normalized)
+        if bounded_screening
+        else None
     )
+    screening_budget_censored = screening_censor_basis is not None
     completion_failure = (
         None
         if screening_budget_censored
@@ -18004,15 +18085,17 @@ def _replay_gate_details(
             repairable=False,
             category="candidate_screening",
             summary=(
-                "bounded screening ended before either paired variant reached "
-                "a terminal task result"
+                "bounded screening ended before a directional candidate "
+                "comparison could be observed"
             ),
             diagnostics={
                 "member_count": len(normalized.members),
                 "timeout_seconds": replay_result.request.timeout_seconds,
                 "max_steps": replay_result.request.max_steps,
                 "max_tool_calls": replay_result.request.max_tool_calls,
+                "censor_basis": screening_censor_basis,
             },
+            artifact_refs=tuple(details["diagnostic_refs"]),
         )
         raw_events = details.get("causal_failure_events")
         event_payloads = list(raw_events) if isinstance(raw_events, list) else []
@@ -18020,15 +18103,25 @@ def _replay_gate_details(
         details["causal_failure_events"] = event_payloads
     recovery_trace = replay_recovery_trace(normalized.members)
     if recovery_trace is not None:
+        candidate_execution_observed = any(
+            member.candidate.executed for member in normalized.members
+        )
         intervention_observed = (
-            not candidate_requires_intervention_exposure
-            or _candidate_task_plane_intervention_observed(normalized)
+            (
+                not candidate_requires_intervention_exposure
+                or _candidate_task_plane_intervention_observed(normalized)
+            )
+            if candidate_execution_observed
+            else None
+        )
+        recovery_trace["candidate_execution_observed"] = (
+            candidate_execution_observed
         )
         recovery_trace["candidate_intervention_required"] = (
             candidate_requires_intervention_exposure
         )
         recovery_trace["candidate_intervention_observed"] = intervention_observed
-        if not intervention_observed:
+        if intervention_observed is False:
             guidance = recovery_trace.get("guidance")
             recovery_trace["guidance"] = list(guidance or []) + [
                 "repair_target_selection_or_replay_context_before_candidate"
@@ -18043,7 +18136,8 @@ def _replay_gate_details(
         )
         recovery_failure = (
             None
-            if candidate_system_failures
+            if not candidate_execution_observed
+            or candidate_system_failures
             or screening_budget_censored
             or completion_failure is not None
             else (
@@ -18116,18 +18210,22 @@ def _replay_gate_details(
                 "repairable": False,
                 "screening_outcome": "right_censored",
                 "screening_budget_censored": True,
+                "screening_censor_basis": screening_censor_basis,
             }
         )
     invalid_control_events = [
         event
-        for event in causal_failures
+        for event in _replay_decision_failure_events(
+            replay_result,
+            normalized=normalized,
+        )
         if event.code in {
             "authoritative_replay_invalid_control",
             "trusted_measurement_invalid_control_frontier",
         }
         and event.owner is FailureOwner.FRAMEWORK
     ]
-    if invalid_control_events:
+    if invalid_control_events and not screening_budget_censored:
         details.update(
             {
                 "code": "control_not_comparable",
@@ -18280,16 +18378,116 @@ def _paired_candidate_completion_failure(
     )
 
 
-def _screening_pair_is_budget_censored(
+def _screening_budget_censor_basis(
     normalized: NormalizedReplayMembers,
-) -> bool:
-    """Return true only when every paired outcome hit the screening horizon."""
+) -> str | None:
+    """Classify an inconclusive bounded-screening measurement.
 
-    return bool(normalized.valid and normalized.members) and all(
+    A screening run can reach its deliberately small horizon in two ways:
+    both variants can time out after executing, or the baseline can hit the
+    per-member hard deadline before the candidate is allowed to run.  The
+    latter is not an invalid control: authoritative replay has a larger
+    envelope and is the plane that should decide the candidate.
+    """
+
+    if not normalized.valid or not normalized.members:
+        return None
+    if all(
         _variant_is_screening_timeout(member.baseline)
         and _variant_is_screening_timeout(member.candidate)
         for member in normalized.members
+    ):
+        return "paired_horizon"
+    if all(
+        _variant_is_screening_baseline_deadline(member.baseline)
+        and _variant_blocked_by_invalid_control(member.candidate)
+        for member in normalized.members
+    ):
+        return "baseline_horizon"
+    return None
+
+
+def _variant_is_screening_baseline_deadline(
+    variant: ReplayVariantResult,
+) -> bool:
+    repetitions = variant.repetition_results or (variant,)
+    if not repetitions:
+        return False
+    for repetition in repetitions:
+        failure = repetition.failure
+        if not isinstance(
+            failure,
+            (ReplayFailureEvent, AggregatedReplayFailure),
+        ):
+            return False
+        phase = repetition.metrics.get("member_phase")
+        if isinstance(failure, ReplayFailureEvent):
+            phase = failure.diagnostics.get("phase") or phase
+        if not (
+            repetition.status is ReplayExecutionStatus.FAILED
+            and failure.code == "replay_member_phase_timeout"
+            and failure.owner is FailureOwner.FRAMEWORK
+            and failure.stage is FailureStage.EVALUATION
+            and failure.scope is FailureScope.MEMBER
+            and phase == "baseline"
+        ):
+            return False
+    return True
+
+
+def _variant_blocked_by_invalid_control(
+    variant: ReplayVariantResult,
+) -> bool:
+    return bool(
+        variant.status is ReplayExecutionStatus.BLOCKED
+        and any(
+            event.code == "authoritative_replay_invalid_control"
+            and event.owner is FailureOwner.FRAMEWORK
+            for event in variant.blocked_by
+        )
     )
+
+
+def _replay_decision_failure_events(
+    replay_result: CandidateReplayResult,
+    *,
+    normalized: NormalizedReplayMembers,
+) -> tuple[ReplayFailureEvent, ...]:
+    """Return leaf and wrapper events used to make replay decisions.
+
+    Causal aggregation intentionally collapses wrapper events to their leaf
+    causes.  Admission policy also needs wrappers such as
+    ``authoritative_replay_invalid_control`` because they carry the shared-run
+    ownership and repair action.  Keep this projection local to decision
+    making so aggregate telemetry remains unchanged.
+    """
+
+    result: list[ReplayFailureEvent] = []
+    seen: set[str] = set()
+
+    def add_variant(variant: ReplayVariantResult) -> None:
+        repetitions = variant.repetition_results or (variant,)
+        for item in (*repetitions, variant):
+            events = (
+                *(
+                    (item.failure,)
+                    if isinstance(item.failure, ReplayFailureEvent)
+                    else ()
+                ),
+                *item.blocked_by,
+            )
+            for event in events:
+                if event.event_id in seen:
+                    continue
+                seen.add(event.event_id)
+                result.append(event)
+
+    add_variant(replay_result.baseline)
+    add_variant(replay_result.candidate)
+    for member in normalized.members:
+        add_variant(member.baseline)
+        add_variant(member.candidate)
+    return tuple(result)
 
 
 def _candidate_recovery_failure_event(
@@ -18459,6 +18657,15 @@ def _screening_gate_has_invalid_control(
     gate: GateResult | None,
 ) -> bool:
     if gate is None or gate.passed:
+        return False
+    if (
+        isinstance(gate.details, Mapping)
+        and gate.details.get("code") == _SCREENING_BUDGET_CENSORED_CODE
+        and gate.details.get("screening_outcome") == "right_censored"
+    ):
+        # Reaching the deliberately small screening envelope is an
+        # inconclusive qualification result, not evidence that the control
+        # plane is unhealthy. It must not consume fallback control cases.
         return False
     stack: list[object] = [gate.details]
     inspected = 0
