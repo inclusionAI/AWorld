@@ -372,7 +372,7 @@ For a repairable skill-owned replay failure, the framework validates a candidate
 2. **Compile and freeze** rebuilds the candidate-owned replay capability, verifies fixture provenance and immutable package fingerprints, and constructs an operation-indexed recorded response map exposed to the runtime as `AWORLD_REPLAY_RESPONSE_INDEX`.
 3. **Probe conformance** requires the declared HTTP/TCP/WebSocket probe to cover the observed operation and to assert a non-empty scalar derived from the recorded response payload, not a mapping key, request token, placeholder, hash, or control-plane handshake.
 4. **Execution preflight** starts the frozen service in the replay subprocess sandbox and executes every declared readiness/protocol probe. WebSocket probes validate the upgrade, ping/text exchange, operation correlation, non-empty result, and recorded-response binding when required.
-5. **Representative screening** runs one bounded baseline/candidate pair only after conformance passes. Screening is a cost filter, not acceptance evidence; an inconclusive baseline preserves the ranked population for authoritative replay.
+5. **Representative screening** runs one bounded baseline/candidate pair only after conformance passes. Screening is a cost filter, not acceptance evidence; an inconclusive baseline preserves the ranked population for authoritative replay. A sole new candidate may proceed directly, but a repair lineage carrying an authoritative replay counterexample must clear that counterexample here. Reproducing a candidate-owned failure returns it to repair instead of spending another full-panel slot.
 
 Failures in the first four layers are reported through the `candidate_repair_conformance` gate. When execution preflight is reached, bounded service/probe artifacts are stored under `repair_conformance/<candidate_id>/`. The failure becomes generic repair feedback for the next iteration and does not enter the full task rollout. The contracts are derived from observed operations, package structure, fixture provenance, and protocol traces; they do not contain target-specific fixes for a particular training case.
 
@@ -416,7 +416,20 @@ policy to stop the remaining panel and record unused members as blocked. `off`
 and `shadow` do not alter replay decisions. Operators may also set
 `--replay-total-timeout` as a
 hard deadline for the complete paired replay; completed control evidence remains
-available for a compatible retry.
+available for a compatible retry. Verified runs that omit it receive a framework
+safety horizon of six per-member timeout windows, which bounds a candidate
+experiment without turning campaign search budget back on.
+
+On datasets meeting the frozen minimum independent-case count, verified replay
+defaults to one baseline and one candidate observation per case. Confidence is
+derived from independent cases; sparse datasets continue to use configured
+repetitions, and explicit repetition options remain authoritative. Compatible
+baseline members are shared across candidates and campaign
+retries. Once a candidate member is incomparable, the runner stops its remaining
+members because they cannot repair the already-invalid authoritative comparison.
+Invalid controls are framework/shared failures; candidate-owned incomparable
+members are candidate failures and become counterexamples for the next admission
+screen.
 
 Before `build_replay_request()`, `ReplayAdaptationCompiler` rewrites workspace paths
 to `${AWORLD_REPLAY_WORKSPACE}`, creates a filtered workspace seed and environment

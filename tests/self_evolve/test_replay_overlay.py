@@ -423,6 +423,151 @@ async def test_replay_member_deadline_stops_invalid_control_frontier(
 
 
 @pytest.mark.asyncio
+async def test_authoritative_replay_stops_after_first_incomparable_candidate_member(
+    tmp_path: Path,
+) -> None:
+    calls: list[tuple[str, str]] = []
+
+    async def executor(request: ReplayExecutionRequest) -> ReplayExecutionResult:
+        calls.append((request.task_id, request.variant_id))
+        if request.variant_id.startswith("candidate"):
+            return ReplayExecutionResult(
+                status="failed",
+                trajectory=[],
+                failure={
+                    "outcome": "candidate_failure",
+                    "reason": "runtime policy counterexample",
+                },
+            )
+        return ReplayExecutionResult(
+            status="succeeded",
+            trajectory=[{"action": {"content": "baseline"}}],
+        )
+
+    dataset = SelfEvolveDataset(
+        cases=tuple(
+            EvalCase(case_id=f"case-{index}", input=f"task {index}")
+            for index in range(1, 4)
+        ),
+        recipe=DatasetRecipe(
+            source={"kind": "authoritative-stop"},
+            split_seed="seed",
+            splits={"train": ["case-1", "case-2", "case-3"]},
+        ),
+    )
+    candidate = _candidate(
+        "---\nname: demo\n---\n# Demo\nCandidate.\n",
+        candidate_id="candidate",
+    )
+    request = build_replay_request(
+        run_id="run-authoritative-stop",
+        workspace_root=tmp_path,
+        target=candidate.target,
+        candidate=candidate,
+        overlay_skill_root=tmp_path / "overlay",
+        dataset=dataset,
+        stop_on_incomparable_member=True,
+    )
+    events: list[dict[str, object]] = []
+
+    result = await AWorldCliCandidateReplayBackend(
+        executor=executor
+    ).replay_candidate(
+        request,
+        candidate=candidate,
+        dataset=dataset,
+        progress_callback=events.append,
+    )
+
+    assert calls == [
+        ("case-1", "baseline"),
+        ("case-2", "baseline"),
+        ("case-3", "baseline"),
+        ("case-1", "candidate"),
+    ]
+    assert result.member_results is not None
+    assert result.member_results[0].candidate.status is ReplayExecutionStatus.FAILED
+    assert all(
+        member.candidate.status is ReplayExecutionStatus.BLOCKED
+        for member in result.member_results[1:]
+    )
+    stop_events = [
+        event
+        for event in events
+        if event.get("event") == "authoritative_stop_triggered"
+    ]
+    assert len(stop_events) == 1
+    assert stop_events[0]["unused_case_count"] == 2
+    manifest = json.loads(
+        (
+            tmp_path
+            / ".aworld"
+            / "self_evolve"
+            / "run-authoritative-stop"
+            / "replay"
+            / "candidate"
+            / "members"
+            / "manifest.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert manifest["authoritative_stop"]["trigger"] == (
+        "incomparable_candidate_member"
+    )
+
+
+@pytest.mark.asyncio
+async def test_authoritative_replay_attributes_invalid_control_stop_to_framework(
+    tmp_path: Path,
+) -> None:
+    calls: list[tuple[str, str]] = []
+
+    async def executor(request: ReplayExecutionRequest) -> ReplayExecutionResult:
+        calls.append((request.task_id, request.variant_id))
+        return ReplayExecutionResult(
+            status="failed",
+            trajectory=[],
+            failure={
+                "outcome": "infrastructure_failure",
+                "reason": "control environment unavailable",
+            },
+        )
+
+    dataset = SelfEvolveDataset(
+        cases=(EvalCase(case_id="case-1", input="task 1"),),
+        recipe=DatasetRecipe(
+            source={"kind": "invalid-control-stop"},
+            split_seed="seed",
+            splits={"train": ["case-1"]},
+        ),
+    )
+    candidate = _candidate(
+        "---\nname: demo\n---\n# Demo\nCandidate.\n",
+        candidate_id="candidate",
+    )
+    request = build_replay_request(
+        run_id="run-invalid-control-stop",
+        workspace_root=tmp_path,
+        target=candidate.target,
+        candidate=candidate,
+        overlay_skill_root=tmp_path / "overlay",
+        dataset=dataset,
+        stop_on_incomparable_member=True,
+    )
+
+    result = await AWorldCliCandidateReplayBackend(
+        executor=executor
+    ).replay_candidate(request, candidate=candidate, dataset=dataset)
+
+    assert calls == [("case-1", "baseline")]
+    assert result.member_results is not None
+    blocked_by = result.member_results[0].candidate.blocked_by
+    assert len(blocked_by) == 1
+    assert blocked_by[0].code == "authoritative_replay_invalid_control"
+    assert blocked_by[0].owner is FailureOwner.FRAMEWORK
+    assert blocked_by[0].scope is FailureScope.SHARED_RUN
+
+
+@pytest.mark.asyncio
 async def test_current_run_completed_replay_is_available_for_baseline_reuse(
     tmp_path: Path,
 ) -> None:

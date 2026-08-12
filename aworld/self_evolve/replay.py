@@ -189,6 +189,8 @@ class CandidateReplayRequest:
     artifact_namespace: str | None = None
     invalid_control_patience: int = 2
     measurement_early_stop_enabled: bool = False
+    stop_on_incomparable_member: bool = False
+    repetition_policy: str = "configured"
     repetition_semantics: str = _PER_MEMBER_REPETITION_SEMANTICS
 
     def __post_init__(self) -> None:
@@ -199,6 +201,13 @@ class CandidateReplayRequest:
             raise ValueError("invalid_control_patience must be positive")
         if not isinstance(self.measurement_early_stop_enabled, bool):
             raise ValueError("measurement_early_stop_enabled must be boolean")
+        if not isinstance(self.stop_on_incomparable_member, bool):
+            raise ValueError("stop_on_incomparable_member must be boolean")
+        if self.repetition_policy not in {
+            "configured",
+            "independent_case_adaptive",
+        }:
+            raise ValueError("unsupported replay repetition_policy")
 
 
 @dataclass(frozen=True)
@@ -779,22 +788,11 @@ def candidate_replay_pair_coverage(
         if candidate.status is ReplayExecutionStatus.FAILED:
             candidate_execution_failure_count += 1
             candidate_failure_count += 1
-        if not candidate.succeeded:
-            continue
-        if baseline.succeeded:
-            strict_pair_count += 1
-            continue
-        if baseline.failure is not None and (
-            baseline.failure.owner is FailureOwner.TASK
-            or (
-                baseline.failure.owner is FailureOwner.CANDIDATE
-                and baseline.failure.stage is FailureStage.TASK_ROLLOUT
-            )
-        ):
-            trajectory, _ = _baseline_comparison_trajectory(case, baseline)
-            if trajectory:
+        if _replay_member_pair_is_comparable(case, baseline, candidate):
+            if baseline.succeeded:
+                strict_pair_count += 1
+            else:
                 task_failure_pair_count += 1
-                continue
     member_count = sum(
         1 for case in dataset.cases if _is_replayable_user_task_case(case)
     )
@@ -830,6 +828,27 @@ def candidate_replay_pair_coverage(
         "framework_owned_failure_count": owner_counts[FailureOwner.FRAMEWORK]
         + len(normalized.failure_events),
     }
+
+
+def _replay_member_pair_is_comparable(
+    case: EvalCase,
+    baseline: ReplayVariantResult,
+    candidate: ReplayVariantResult,
+) -> bool:
+    if not candidate.succeeded:
+        return False
+    if baseline.succeeded:
+        return True
+    if baseline.failure is None or not (
+        baseline.failure.owner is FailureOwner.TASK
+        or (
+            baseline.failure.owner is FailureOwner.CANDIDATE
+            and baseline.failure.stage is FailureStage.TASK_ROLLOUT
+        )
+    ):
+        return False
+    trajectory, _ = _baseline_comparison_trajectory(case, baseline)
+    return bool(trajectory)
 
 
 def _replay_failure_outcome(failure: ReplayFailureEvent | None) -> str:
@@ -2641,6 +2660,7 @@ class AWorldCliCandidateReplayBackend:
         member_count = len(prepared_members)
         invalid_control_streak = 0
         replay_measurement_stop: Mapping[str, Any] | None = None
+        authoritative_stop: Mapping[str, Any] | None = None
         for member_index, (case, member_request, member_dir) in enumerate(
             prepared_members,
             start=1,
@@ -2771,6 +2791,7 @@ class AWorldCliCandidateReplayBackend:
             )
 
         candidate_members = zip(prepared_members, baselines, strict=True)
+        candidate_frontier_stop_event: ReplayFailureEvent | None = None
         for member_index, (
             (case, member_request, member_dir),
             baseline,
@@ -2786,9 +2807,58 @@ class AWorldCliCandidateReplayBackend:
                 repetition_count=member_request.candidate_repetitions,
                 phase_timeout_seconds=member_request.timeout_seconds,
             )
-            blocking_event = candidate_blocking_event
+            blocking_event = candidate_frontier_stop_event
             if (
-                baseline.status is ReplayExecutionStatus.FAILED
+                blocking_event is None
+                and member_request.stop_on_incomparable_member
+                and _baseline_invalid_for_measurement(baseline)
+            ):
+                blocking_event = ReplayFailureEvent(
+                    code="authoritative_replay_invalid_control",
+                    owner=FailureOwner.FRAMEWORK,
+                    stage=FailureStage.EVALUATION,
+                    scope=FailureScope.SHARED_RUN,
+                    repairable=True,
+                    category="measurement_stopping",
+                    summary=(
+                        "authoritative replay stopped because the control "
+                        "member is not comparable"
+                    ),
+                    diagnostics={
+                        "trigger": "invalid_control_member",
+                        "case_index": member_index,
+                        "case_count": member_count,
+                        "unused_case_count": member_count - member_index,
+                    },
+                )
+                candidate_frontier_stop_event = blocking_event
+                authoritative_stop = {
+                    "trigger": "invalid_control_member",
+                    "owner": FailureOwner.FRAMEWORK.value,
+                    "case_index": member_index,
+                    "case_count": member_count,
+                    "unused_case_count": member_count - member_index,
+                    "resume_safe": True,
+                }
+                _emit_replay_member_progress(
+                    progress_callback,
+                    event="authoritative_stop_triggered",
+                    candidate_id=candidate.candidate_id,
+                    case_id=case.case_id,
+                    case_index=member_index,
+                    case_count=member_count,
+                    phase="candidate",
+                    trigger=authoritative_stop["trigger"],
+                    unused_case_count=authoritative_stop[
+                        "unused_case_count"
+                    ],
+                    resume_safe=authoritative_stop["resume_safe"],
+                )
+            if blocking_event is None:
+                blocking_event = candidate_blocking_event
+            if (
+                blocking_event is None
+                and baseline.status is ReplayExecutionStatus.FAILED
                 and _baseline_failure_blocks_candidate(baseline.failure)
             ):
                 assert baseline.failure is not None
@@ -2839,6 +2909,60 @@ class AWorldCliCandidateReplayBackend:
                     is not FailureStage.TASK_ROLLOUT
                 ):
                     candidate_blocking_event = candidate_result.failure
+                if (
+                    member_request.stop_on_incomparable_member
+                    and candidate_frontier_stop_event is None
+                    and not _replay_member_pair_is_comparable(
+                        case,
+                        baseline,
+                        candidate_result,
+                    )
+                ):
+                    candidate_frontier_stop_event = ReplayFailureEvent(
+                        code="authoritative_candidate_frontier_unreachable",
+                        owner=FailureOwner.CANDIDATE,
+                        stage=FailureStage.TASK_ROLLOUT,
+                        scope=FailureScope.CANDIDATE,
+                        repairable=True,
+                        category="authoritative_early_stop",
+                        summary=(
+                            "authoritative replay stopped because full "
+                            "member comparability is no longer reachable"
+                        ),
+                        diagnostics={
+                            "trigger": "incomparable_candidate_member",
+                            "case_index": member_index,
+                            "case_count": member_count,
+                            "unused_case_count": member_count - member_index,
+                            "underlying_failure_code": (
+                                candidate_result.failure.code
+                                if candidate_result.failure is not None
+                                else None
+                            ),
+                        },
+                    )
+                    authoritative_stop = {
+                        "trigger": "incomparable_candidate_member",
+                        "owner": FailureOwner.CANDIDATE.value,
+                        "case_index": member_index,
+                        "case_count": member_count,
+                        "unused_case_count": member_count - member_index,
+                        "resume_safe": False,
+                    }
+                    _emit_replay_member_progress(
+                        progress_callback,
+                        event="authoritative_stop_triggered",
+                        candidate_id=candidate.candidate_id,
+                        case_id=case.case_id,
+                        case_index=member_index,
+                        case_count=member_count,
+                        phase="candidate",
+                        trigger=authoritative_stop["trigger"],
+                        unused_case_count=authoritative_stop[
+                            "unused_case_count"
+                        ],
+                        resume_safe=authoritative_stop["resume_safe"],
+                    )
             _emit_replay_member_progress(
                 progress_callback,
                 event="member_phase_completed",
@@ -2864,6 +2988,7 @@ class AWorldCliCandidateReplayBackend:
                 "schema_version": _MEMBER_REPLAY_SCHEMA_V3,
                 "repetition_semantics": _PER_MEMBER_REPETITION_SEMANTICS,
                 "measurement_stop": replay_measurement_stop,
+                "authoritative_stop": authoritative_stop,
                 "members": [
                     {
                         "case_id": member.case_id,
@@ -4598,6 +4723,8 @@ def build_replay_request(
     artifact_namespace: str | None = None,
     invalid_control_patience: int = 2,
     measurement_early_stop_enabled: bool = False,
+    stop_on_incomparable_member: bool = False,
+    repetition_policy: str = "configured",
 ) -> CandidateReplayRequest:
     if not dataset.cases:
         raise ValueError("candidate replay requires at least one eval case")
@@ -4654,6 +4781,8 @@ def build_replay_request(
         artifact_namespace=artifact_namespace,
         invalid_control_patience=invalid_control_patience,
         measurement_early_stop_enabled=measurement_early_stop_enabled,
+        stop_on_incomparable_member=stop_on_incomparable_member,
+        repetition_policy=repetition_policy,
     )
 
 
@@ -8856,6 +8985,12 @@ def _candidate_replay_request_from_mapping(payload: Mapping[str, Any]) -> Candid
         ),
         measurement_early_stop_enabled=(
             payload.get("measurement_early_stop_enabled") is True
+        ),
+        stop_on_incomparable_member=(
+            payload.get("stop_on_incomparable_member") is True
+        ),
+        repetition_policy=str(
+            payload.get("repetition_policy") or "configured"
         ),
         repetition_semantics=(
             str(payload.get("repetition_semantics"))

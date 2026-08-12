@@ -981,6 +981,7 @@ def test_run_optimize_cli_uses_interactive_auto_verified_defaults(
     assert calls["judge_timeout_seconds"] == 120
     assert calls["baseline_replay_repetitions"] == 2
     assert calls["candidate_replay_repetitions"] == 3
+    assert calls["replay_repetitions_explicit"] is False
     assert calls["iterations"] is None
 
 
@@ -1024,6 +1025,48 @@ def test_run_optimize_cli_uses_verified_defaults_without_publish(
     assert calls["judge_repetitions"] == 1
     assert calls["baseline_replay_repetitions"] == 2
     assert calls["candidate_replay_repetitions"] == 3
+    assert calls["replay_repetitions_explicit"] is False
+
+
+def test_run_optimize_cli_preserves_explicit_replay_repetitions(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import aworld.self_evolve as self_evolve
+
+    calls = {}
+
+    def fake_optimize_from_cli_request(**kwargs):
+        calls.update(kwargs)
+        return {"report_path": str(tmp_path / "report.json")}
+
+    monkeypatch.setattr(
+        self_evolve,
+        "optimize_from_cli_request",
+        fake_optimize_from_cli_request,
+        raising=False,
+    )
+
+    run_optimize_cli(
+        agent=None,
+        task=None,
+        target="skill:demo",
+        dataset=None,
+        from_session=None,
+        from_trajectory="trajectory.log",
+        batch_config=None,
+        iterations=None,
+        max_improvement_cycles=1,
+        apply="verified_only",
+        infer_target=False,
+        workspace_root=str(tmp_path),
+        baseline_replay_repetitions=4,
+        candidate_replay_repetitions=5,
+    )
+
+    assert calls["baseline_replay_repetitions"] == 4
+    assert calls["candidate_replay_repetitions"] == 5
+    assert calls["replay_repetitions_explicit"] is True
 
 
 def test_render_optimize_summary_exposes_verified_only_target() -> None:
