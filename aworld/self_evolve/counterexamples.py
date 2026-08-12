@@ -27,7 +27,10 @@ REPLAY_COUNTEREXAMPLE_FIELDS = (
     "action_fingerprint",
     "manifest_entry_count",
     "artifact_file_count",
+    "artifact_file_limit",
     "artifact_bytes",
+    "artifact_byte_limit",
+    "tool_call_attempt_count",
     "consecutive_failure_count",
     "observed_endpoint_count",
     "undeclared_endpoint_count",
@@ -53,7 +56,10 @@ _INTEGER_FIELDS = frozenset(
         "sequence",
         "manifest_entry_count",
         "artifact_file_count",
+        "artifact_file_limit",
         "artifact_bytes",
+        "artifact_byte_limit",
+        "tool_call_attempt_count",
         "consecutive_failure_count",
         "observed_endpoint_count",
         "undeclared_endpoint_count",
@@ -79,7 +85,10 @@ class ReplayCounterexampleEnvelope:
     action_fingerprint: str | None = None
     manifest_entry_count: int | None = None
     artifact_file_count: int | None = None
+    artifact_file_limit: int | None = None
     artifact_bytes: int | None = None
+    artifact_byte_limit: int | None = None
+    tool_call_attempt_count: int | None = None
     consecutive_failure_count: int | None = None
     observed_endpoint_count: int | None = None
     undeclared_endpoint_count: int | None = None
@@ -122,7 +131,10 @@ class ReplayCounterexampleEnvelope:
             "action_fingerprint": self.action_fingerprint,
             "manifest_entry_count": self.manifest_entry_count,
             "artifact_file_count": self.artifact_file_count,
+            "artifact_file_limit": self.artifact_file_limit,
             "artifact_bytes": self.artifact_bytes,
+            "artifact_byte_limit": self.artifact_byte_limit,
+            "tool_call_attempt_count": self.tool_call_attempt_count,
             "consecutive_failure_count": self.consecutive_failure_count,
             "observed_endpoint_count": self.observed_endpoint_count,
             "undeclared_endpoint_count": self.undeclared_endpoint_count,

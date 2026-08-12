@@ -6,6 +6,7 @@ from dataclasses import replace
 import pytest
 
 from aworld.self_evolve.repair_conformance import (
+    ArtifactLifecycleConstraint,
     ExactRepairProbe,
     FixtureDerivedProbeConstraint,
     RepairConformanceContract,
@@ -13,6 +14,7 @@ from aworld.self_evolve.repair_conformance import (
     RuntimeResponseConstraint,
     build_repair_conformance_probe_plan,
     compile_repair_conformance_contract,
+    evaluate_artifact_lifecycle_conformance,
     evaluate_candidate_source_conformance,
     evaluate_compiled_probe_conformance,
     merge_repair_conformance_constraint_context,
@@ -96,6 +98,147 @@ def test_repair_contract_consumes_counterexample_runtime_transition() -> None:
     assert restored.required_runtime_transitions == (
         "switch_strategy_or_fail_with_observed_reason",
     )
+
+
+def test_artifact_limit_counterexample_compiles_executable_lifecycle_contract() -> None:
+    repair_focus = {
+        "repair_candidate_package": _package(),
+        "replay_counterexamples": [
+            {
+                "schema_version": "aworld.replay.counterexample.v1",
+                "sequence": 1,
+                "failure_code": "artifact_file_limit_exhausted",
+                "owner": "candidate",
+                "stage": "task_rollout",
+                "state_before": "collecting",
+                "trigger": "tool_call",
+                "manifest_entry_count": 0,
+                "artifact_file_count": 8,
+                "artifact_file_limit": 8,
+                "artifact_bytes": 4_096,
+                "artifact_byte_limit": 2_000_000,
+                "tool_call_attempt_count": 6,
+                "required_transition": (
+                    "persist_bounded_evidence_or_reduce_collection"
+                ),
+            }
+        ],
+    }
+
+    contract = compile_repair_conformance_contract(repair_focus)
+
+    assert contract is not None
+    constraint = contract.artifact_lifecycle_constraint
+    assert constraint == ArtifactLifecycleConstraint(
+        max_artifact_files=1,
+        max_artifact_bytes=2_000_000,
+        max_collection_tool_calls=5,
+    )
+    restored = RepairConformanceContract.from_public_dict(
+        contract.to_public_dict()
+    )
+    assert restored.artifact_lifecycle_constraint == constraint
+    projected = public_diagnostic_projection(contract.to_public_dict())
+    assert projected["artifact_lifecycle_constraint"] == constraint.to_dict()
+
+
+def test_artifact_lifecycle_contract_owns_skill_content_without_replay_files() -> None:
+    repair_focus = {
+        "repair_candidate_package": {
+            "candidate_id": "candidate-failed",
+            "content": "# Skill\n\nCollect every artifact before returning.\n",
+            "files": [],
+        },
+        "replay_counterexamples": [
+            {
+                "schema_version": "aworld.replay.counterexample.v1",
+                "sequence": 1,
+                "failure_code": "artifact_file_limit_exhausted",
+                "owner": "candidate",
+                "stage": "task_rollout",
+                "state_before": "collecting",
+                "trigger": "tool_call",
+                "artifact_file_count": 8,
+                "artifact_file_limit": 8,
+                "required_transition": (
+                    "persist_bounded_evidence_or_reduce_collection"
+                ),
+            }
+        ],
+    }
+
+    contract = compile_repair_conformance_contract(repair_focus)
+    assert contract is not None
+    assert contract.required_branch_paths == ("SKILL.md",)
+
+    changed = CandidateVariant(
+        candidate_id="candidate-repair",
+        target=SelfEvolveTargetRef(target_type="skill", target_id="generic"),
+        content=(
+            "# Skill\n\nPersist the first valid artifact, reuse it, and return.\n"
+        ),
+        rationale="bounded evidence lifecycle",
+    )
+    unchanged = replace(
+        changed,
+        content="# Skill\n\nCollect every artifact before returning.\n",
+    )
+
+    assert evaluate_candidate_source_conformance(changed, contract).passed is True
+    unchanged_result = evaluate_candidate_source_conformance(unchanged, contract)
+    assert unchanged_result.passed is False
+    assert unchanged_result.code == "repair_branch_unchanged"
+
+
+def test_artifact_lifecycle_conformance_requires_runtime_behavioral_proof() -> None:
+    contract = RepairConformanceContract(
+        focus_candidate_id="candidate-failed",
+        failure_codes=("artifact_file_limit_exhausted",),
+        interaction_progress=1,
+        base_file_fingerprints={},
+        required_branch_paths=(),
+        base_branch_fingerprints={},
+        artifact_lifecycle_constraint=ArtifactLifecycleConstraint(
+            max_collection_tool_calls=5,
+        ),
+    )
+    passing = {
+        "case_id": "case-1",
+        "execution_succeeded": True,
+        "policy_active": True,
+        "policy_passed": True,
+        "artifact_file_count": 1,
+        "artifact_bytes": 512,
+        "tool_call_attempt_count": 4,
+        "manifest_entry_count": 1,
+        "manifest_valid": True,
+    }
+
+    passed = evaluate_artifact_lifecycle_conformance((passing,), contract)
+    exceeded = evaluate_artifact_lifecycle_conformance(
+        (
+            {
+                **passing,
+                "artifact_file_count": 2,
+                "tool_call_attempt_count": 6,
+            },
+        ),
+        contract,
+    )
+    unavailable = evaluate_artifact_lifecycle_conformance((), contract)
+
+    assert passed is not None and passed.passed is True
+    assert exceeded is not None and exceeded.passed is False
+    assert exceeded.code == "artifact_lifecycle_conformance_failed"
+    assert exceeded.failure_class == "candidate"
+    assert set(exceeded.details["violations"][0]["failed_checks"]) == {
+        "artifact_reuse_not_proven",
+        "collection_attempt_bound_exceeded",
+        "single_reusable_artifact_not_observed",
+    }
+    assert unavailable is not None and unavailable.passed is False
+    assert unavailable.code == "artifact_lifecycle_evidence_unavailable"
+    assert unavailable.failure_class == "framework"
 
 
 def _candidate(*, runtime_source: str, compiler_source: str | None = None) -> CandidateVariant:

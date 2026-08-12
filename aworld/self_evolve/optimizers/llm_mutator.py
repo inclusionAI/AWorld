@@ -784,6 +784,9 @@ def _focused_repair_prompt_instructions(
         or contract_mapping.get("requires_fixture_derived_probe") is True
         or fixture_probe_constraints
     )
+    artifact_lifecycle_constraint = contract_mapping.get(
+        "artifact_lifecycle_constraint"
+    )
     raw_schema_field_constraints = contract_mapping.get(
         "schema_field_constraints",
         (),
@@ -900,6 +903,22 @@ def _focused_repair_prompt_instructions(
             "value through local variables or explicit parameters until the required "
             "reader and projection operations occur. Do not claim a direct read in "
             "the rationale unless that data-flow edge exists in the source. "
+        )
+    if isinstance(artifact_lifecycle_constraint, Mapping):
+        instructions += (
+            "This repair has a typed artifact_lifecycle_constraint. Change reusable "
+            "target behavior so evidence collection has an explicit bounded attempt "
+            "path, persists the first valid artifact and manifest entry immediately, "
+            "reuses that artifact instead of creating retry files, and returns the "
+            "final answer without another collection tool call once evidence is ready. "
+            "The candidate must demonstrate these counters in representative "
+            "screening; a rationale or documentation-only claim cannot satisfy "
+            "admission. Honor max_artifact_files="
+            f"{artifact_lifecycle_constraint.get('max_artifact_files')}, "
+            "max_artifact_bytes="
+            f"{artifact_lifecycle_constraint.get('max_artifact_bytes')}, "
+            "and max_collection_tool_calls="
+            f"{artifact_lifecycle_constraint.get('max_collection_tool_calls')}. "
         )
     recovery_trace = (
         focused_feedback.get("recovery_trace")

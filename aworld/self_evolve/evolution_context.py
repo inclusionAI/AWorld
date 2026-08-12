@@ -1111,6 +1111,7 @@ def _merge_typed_repair_constraints_across_feedback(
         for key, value in (merged or {}).items()
         if key
         in {
+            "artifact_lifecycle_constraint",
             "fixture_probe_constraints",
             "schema_field_constraints",
             "runtime_response_constraints",
