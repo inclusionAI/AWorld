@@ -2042,6 +2042,17 @@ def _materialize_mutator_output(
                 "mutator output must include content, patch_intent, or package files",
                 field_path=CandidateFailureField.CONTENT,
             )
+    if _focused_source_repair_parent_content_required(
+        request,
+        candidate_index=candidate_index,
+    ):
+        # Compiler/runtime conformance repair owns only the typed source
+        # branches.  The parent target content is therefore framework state,
+        # not model output: inherit it deterministically even when a provider
+        # emits current_content or an unrelated Markdown patch alongside the
+        # requested file delta.
+        content = base_content
+        materialization = f"{materialization}+focused_parent_content"
     if not isinstance(rationale, str):
         rationale = ""
     if not isinstance(raw_files, (list, tuple)):
@@ -2082,23 +2093,52 @@ def _focused_repair_patch_base(
     repair_focus = context.repair_focus_for_candidate(
         candidate_index=candidate_index
     )
-    if not isinstance(repair_focus, Mapping) or not (
-        _repair_feedback_reached_judged_task_output(repair_focus)
-    ):
+    if not isinstance(repair_focus, Mapping):
         return request.current_content
     package = repair_focus.get("repair_candidate_package")
     parent_content = (
         package.get("content") if isinstance(package, Mapping) else None
     )
     raw_files = package.get("files") if isinstance(package, Mapping) else None
+    source_repair = _focused_source_repair_parent_content_required(
+        request,
+        candidate_index=candidate_index,
+    )
     content_limit = 32_000 if raw_files else 64_000
     if (
         not isinstance(parent_content, str)
         or not parent_content.strip()
-        or len(parent_content) >= content_limit
+        or (not source_repair and len(parent_content) >= content_limit)
     ):
         return request.current_content
-    return parent_content
+    if source_repair or _repair_feedback_reached_judged_task_output(
+        repair_focus
+    ):
+        return parent_content
+    return request.current_content
+
+
+def _focused_source_repair_parent_content_required(
+    request: OptimizerRequest,
+    *,
+    candidate_index: int,
+) -> bool:
+    context = request.evolution_context or compile_evolution_context(request)
+    repair_focus = context.repair_focus_for_candidate(
+        candidate_index=candidate_index
+    )
+    if not isinstance(repair_focus, Mapping):
+        return False
+    if (
+        _repair_feedback_reached_judged_task_output(repair_focus)
+        or _repair_feedback_is_prerequisite_composition(repair_focus)
+    ):
+        return False
+    package = repair_focus.get("repair_candidate_package")
+    if not isinstance(package, Mapping):
+        return False
+    contract = compile_repair_conformance_contract(repair_focus)
+    return bool(contract is not None and contract.required_branch_paths)
 
 
 def _candidate_id(

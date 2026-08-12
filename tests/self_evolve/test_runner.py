@@ -12410,6 +12410,111 @@ def test_candidate_screening_qualification_panel_grows_logarithmically(
 
 
 @pytest.mark.asyncio
+async def test_population_screening_falls_back_after_invalid_control_case(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("---\nname: demo\n---\n# Demo\n", encoding="utf-8")
+    case_ids = ("task-a", "task-b", "task-c")
+    dataset = SelfEvolveDataset(
+        cases=tuple(EvalCase(case_id=case_id, input=case_id) for case_id in case_ids),
+        recipe=DatasetRecipe(
+            source={"kind": "screening_control_fallback"},
+            split_seed="seed",
+            splits={"train": list(case_ids), "validation": [], "held_out": []},
+            trainable_case_ids=case_ids,
+        ),
+    )
+    target_ref = SelfEvolveTargetRef(
+        target_type="skill",
+        target_id="demo",
+        path=str(skill_path),
+    )
+    candidates = tuple(
+        CandidateVariant(
+            candidate_id=f"candidate-{index}",
+            target=target_ref,
+            content=f"# Demo\n\nCandidate {index}.\n",
+            rationale="screen",
+        )
+        for index in (1, 2)
+    )
+    runner = SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=SimpleNamespace(),
+        replay_enabled=True,
+        candidate_replay_backend=object(),
+        candidate_screening_max_cases=3,
+        measurement_invalid_control_patience=2,
+    )
+    calls: list[tuple[str, str]] = []
+
+    async def replay_with_control_fallback(**kwargs):
+        candidate_id = kwargs["selected_candidate"].candidate_id
+        case_id = kwargs["dataset"].cases[0].case_id
+        calls.append((candidate_id, case_id))
+        kwargs["lifecycle_callback"]("replay_started", {})
+        if case_id == "task-a":
+            return (
+                None,
+                None,
+                GateResult(
+                    gate_name="candidate_replay",
+                    passed=False,
+                    reason="control member timed out",
+                    details={
+                        "code": "control_not_comparable",
+                        "failure_class": "measurement",
+                        "failure_owner": "framework",
+                    },
+                ),
+            )
+        return (
+            None,
+            kwargs["dataset"],
+            GateResult(
+                gate_name="candidate_replay",
+                passed=True,
+                reason="fallback control produced a comparable pair",
+            ),
+        )
+
+    monkeypatch.setattr(
+        runner,
+        "_replay_selected_candidate",
+        replay_with_control_fallback,
+    )
+
+    selected, report = await runner._screen_candidate_population(
+        run_id="run-screening-control-fallback",
+        target=SkillTextTarget(skill_path, allow_auto_apply=True),
+        dataset=dataset,
+        candidates=candidates,
+        apply_policy="verified_only",
+    )
+
+    assert selected == candidates[:1]
+    fallback_case_id = calls[1][1]
+    assert fallback_case_id != "task-a"
+    assert calls == [
+        ("candidate-1--screening", "task-a"),
+        ("candidate-1--screening--control-2", fallback_case_id),
+        ("candidate-2--screening", "task-a"),
+        ("candidate-2--screening--control-2", fallback_case_id),
+    ]
+    assert report is not None
+    screening = report["screening"]
+    assert screening["control_fallback_count"] == 2
+    assert screening["physical_pair_execution_count"] == 4
+    assert all(
+        attempt["attempted_control_case_ids"] == ["task-a", fallback_case_id]
+        for attempt in screening["attempts"]
+    )
+
+
+@pytest.mark.asyncio
 async def test_population_screening_does_not_offer_explicit_empty_members_for_reuse(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

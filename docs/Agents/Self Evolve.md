@@ -395,7 +395,7 @@ For a repairable skill-owned replay failure, the framework validates a candidate
 2. **Compile and freeze** rebuilds the candidate-owned replay capability, verifies fixture provenance and immutable package fingerprints, and constructs an operation-indexed recorded response map exposed to the runtime as `AWORLD_REPLAY_RESPONSE_INDEX`.
 3. **Probe conformance** requires the declared HTTP/TCP/WebSocket probe to cover the observed operation and to assert a non-empty scalar derived from the recorded response payload, not a mapping key, request token, placeholder, hash, or control-plane handshake.
 4. **Execution preflight** starts the frozen service in the replay subprocess sandbox and executes every declared readiness/protocol probe. WebSocket probes validate the upgrade, ping/text exchange, operation correlation, non-empty result, and recorded-response binding when required.
-5. **Representative screening** runs one bounded baseline/candidate pair only after conformance passes. Screening is a cost filter, not acceptance evidence; an inconclusive baseline preserves the ranked population for authoritative replay. A sole new candidate may proceed directly, but a repair lineage carrying an authoritative replay counterexample must clear that counterexample here. Reproducing a candidate-owned failure returns it to repair instead of spending another full-panel slot.
+5. **Representative screening** runs one bounded baseline/candidate pair only after conformance passes. Screening is a cost filter, not acceptance evidence; an inconclusive baseline preserves the ranked population for authoritative replay. If one representative case produces a framework-owned invalid control, screening advances through the predeclared panel up to the frozen invalid-control patience instead of blocking the population immediately. A sole new candidate may proceed directly, but a repair lineage carrying an authoritative replay counterexample must clear that counterexample here. Reproducing a candidate-owned failure returns it to repair instead of spending another full-panel slot.
 
 Failures in the first four layers are reported through the `candidate_repair_conformance` gate. When execution preflight is reached, bounded service/probe artifacts are stored under `repair_conformance/<candidate_id>/`. The failure becomes generic repair feedback for the next iteration and does not enter the full task rollout. The contracts are derived from observed operations, package structure, fixture provenance, and protocol traces; they do not contain target-specific fixes for a particular training case.
 
@@ -407,6 +407,13 @@ siblings remain lesson evidence but cannot expand that judge frontier's mutation
 surface back into replay implementation files. Target-only packages therefore
 remain first-class repair inputs rather than being dropped during feedback
 normalization.
+
+Compiler/runtime-focused repair also treats its parent candidate as an atomic
+package. The framework inherits parent target content and every unchanged
+candidate-owned file deterministically, then applies model output only to the
+typed source-owner paths authorized by the conformance contract. A provider that
+echoes repository-current Markdown cannot silently erase the focused parent's
+target behavior or turn a source-only repair into a target rewrite.
 
 Candidate-owned replay files also require an explicit mutation authority: either
 the active replay preflight contains a capability requirement, or the focused

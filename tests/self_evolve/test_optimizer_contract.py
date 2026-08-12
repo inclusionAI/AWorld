@@ -2369,6 +2369,79 @@ async def test_judged_target_patch_repairs_complete_parent_content() -> None:
 
 
 @pytest.mark.asyncio
+async def test_source_focused_repair_deterministically_inherits_parent_content() -> None:
+    parent_content = "# Demo\n\nVerified parent target behavior.\n"
+    request = OptimizerRequest(
+        target=_target(),
+        current_content="# Demo\n\nRepository current guidance.\n",
+        target_fingerprint="sha256:old",
+        trace_packs=(_trace_pack(),),
+        replay_requirements=(_replay_requirement(),),
+        validation_feedback=(
+            EvaluationSummary(
+                variant_id="candidate-source-parent",
+                metrics={
+                    "failed_gates": ["candidate_repair_conformance"],
+                    "failure_class": "candidate",
+                    "repairable": True,
+                    "repair_candidate_package": {
+                        "candidate_id": "candidate-source-parent",
+                        "content": parent_content,
+                        "files": [
+                            {
+                                "path": "replay/compiler.py",
+                                "operation": "upsert",
+                                "content": "def compile():\n    return 'old'\n",
+                            },
+                            {
+                                "path": "replay/runtime.py",
+                                "operation": "upsert",
+                                "content": "def run():\n    return True\n",
+                            },
+                        ],
+                    },
+                    "repair_conformance": {
+                        "focus_candidate_id": "candidate-source-parent",
+                        "required_branch_paths": ["replay/compiler.py"],
+                        "runtime_paths": ["replay/runtime.py"],
+                        "failure_codes": ["schema_field_validation_failed"],
+                    },
+                },
+                dataset_split="validation",
+            ),
+        ),
+        max_candidates=1,
+    )
+
+    result = await TraceReflectiveLLMMutator(
+        mutate_text=lambda prompt: {
+            # Providers commonly echo repository current content even though
+            # this frontier owns only compiler.py. The framework must ignore it.
+            "content": "# Demo\n\nRepository current guidance.\n",
+            "files": [
+                {
+                    "path": "replay/compiler.py",
+                    "operation": "upsert",
+                    "content": "def compile():\n    return 'repaired'\n",
+                }
+            ],
+            "rationale": "Repair only the typed compiler branch.",
+        }
+    ).propose(request)
+
+    assert len(result.candidates) == 1
+    candidate = result.candidates[0]
+    assert candidate.content == parent_content.rstrip()
+    assert candidate.parent_candidate_ids == ("candidate-source-parent",)
+    files = {item.path: item.content for item in candidate.files}
+    assert files["replay/compiler.py"] == "def compile():\n    return 'repaired'\n"
+    assert files["replay/runtime.py"] == "def run():\n    return True\n"
+    assert "focused_parent_content" in result.diagnostics[
+        "candidate_strategies"
+    ][0]["materialization"]
+
+
+@pytest.mark.asyncio
 async def test_candidate_files_require_replay_authority_or_existing_file_focus() -> None:
     async def mutate(prompt: str) -> dict:
         return {
