@@ -447,8 +447,12 @@ Candidate repair gate diagnostics are summarized in a separate population `confo
 - `--judge-model-profile`: named model profile for the judge. This is useful when the task agent uses the default `.env` model but the evaluator needs a separate model. It applies to markdown judges and local named judge agents. For `--judge-agent <agent.md>`, the same profile can also be declared in markdown front matter as `model_profile: judge`; the CLI option takes precedence.
 - `--replay-timeout`: timeout in seconds for each replay rollout.
 - `--replay-total-timeout`: optional hard wall-time deadline for the complete
-  paired replay. A timeout preserves completed baseline members for a safe
-  retry instead of discarding the partial control experiment. When a verified
+  paired replay. Cases run progressively as a baseline/candidate pair, so a
+  timeout can preserve completed causal pairs as well as completed baseline
+  members instead of discarding the partial experiment. A bounded restart
+  cursor is written to
+  `.aworld/self_evolve/<run_id>/replay/<candidate_id>/members/paired_replay_checkpoint.json`;
+  the timeout gate exposes it through `diagnostic_refs`. When a verified
   policy does not set this option, the framework still applies a safety horizon
   of six per-member timeout windows to prevent one candidate from occupying an
   unbounded experiment. Both deadlines are cancellation-safe: they terminate
@@ -539,6 +543,15 @@ comparable -> evaluation -> `selected`, `rejected`, `blocked`, or `not_run`.
 Terminal reasons and observed usage remain attached to the attempt, including work
 that was denied before replay.
 
+`verification_funnel.authoritative_candidate_attempt_count` counts candidates
+that entered authoritative validation; `authoritative_candidate_count` is the
+quota consumed across Campaign cycles. Shared framework-owned measurement
+failures that occur before candidate observation increment only the attempt
+counter and release the quota reservation. Candidate execution or a
+candidate-owned authoritative conclusion consumes the slot. This distinction
+prevents a replay infrastructure deadline from falsely reporting
+`campaign_authoritative_frontier_exhausted` with zero affected candidates.
+
 The scheduler begins with bounded exploration. After a candidate-owned repairable
 failure establishes a semantic frontier, the next iteration reserves one focused
 repair slot for that frontier. It may add one diverse exploration slot only for a new
@@ -581,8 +594,11 @@ experiment identity before observations are collected.
 The same trusted-measurement policy is enforced while authoritative replay is
 still running. Each baseline or candidate member has a hard phase deadline
 covering all evidence retries, and progress reports expose both the member
-deadline and the current retry. Completed baselines are indexed incrementally,
-so an interrupted multi-case replay can reuse valid controls. In `advisory` and
+deadline and the current retry. Each case completes its baseline/candidate pair
+before the next case starts. Completed baselines are indexed incrementally and a
+phase checkpoint records completed pairs and pending cases, so an interrupted
+multi-case replay can reuse valid controls and continue from an auditable cursor.
+In `advisory` and
 `required` modes, repeated invalid controls stop expansion after
 `measurement-invalid-control-patience`; remaining members are recorded as
 blocked rather than consuming more authoritative work. `off` and `shadow`

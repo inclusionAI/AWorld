@@ -1091,6 +1091,70 @@ def test_campaign_bounds_authoritative_candidates_across_cycles(
     )
 
 
+def test_shared_measurement_timeout_does_not_exhaust_authoritative_frontier(
+    tmp_path: Path,
+) -> None:
+    calls: list[dict] = []
+
+    def run_once(**request):
+        calls.append(request)
+        run_id = f"{request['campaign_id']}-cycle-{request['campaign_cycle']:03d}"
+        if request["campaign_cycle"] == 1:
+            report = _report(_event())
+            report["campaign_failure_attribution"] = {
+                "primary_gate": "candidate_replay",
+                "code": "replay_total_timeout",
+                "failure_class": "measurement",
+                "failure_owner": "framework",
+                "failure_scope": "shared_run",
+                "failure_stage": "evaluation",
+                "repairable": True,
+                "next_action": "continue_measurement",
+                "diagnostic_refs": ["/tmp/replay/checkpoint.json"],
+            }
+            report["verification_funnel"] = {
+                "authoritative_candidate_attempt_count": 1,
+                "authoritative_candidate_count": 0,
+            }
+        else:
+            report = {
+                "run_id": run_id,
+                "status": "succeeded",
+                "budget": _budget(10),
+                "gate_results": [{"gate_name": "post_apply", "passed": True}],
+                "verification_funnel": {
+                    "authoritative_candidate_attempt_count": 1,
+                    "authoritative_candidate_count": 1,
+                },
+            }
+        report["run_id"] = run_id
+        report_path = tmp_path / ".aworld" / "self_evolve" / run_id / "report.json"
+        report_path.parent.mkdir(parents=True)
+        report_path.write_text(json.dumps(report), encoding="utf-8")
+        return {
+            "run_id": run_id,
+            "status": report["status"],
+            "report_path": str(report_path),
+        }
+
+    result = run_self_improvement_campaign(
+        workspace_root=tmp_path,
+        request={
+            "from_trajectory": "trajectory.log",
+            "apply_policy": "verified_only",
+            "infer_target": True,
+            "max_full_evaluation_candidates": 1,
+        },
+        max_improvement_cycles=3,
+        run_once=run_once,
+    )
+
+    assert len(calls) == 2
+    assert [call["max_full_evaluation_candidates"] for call in calls] == [1, 1]
+    assert result["campaign_status"] == "complete"
+    assert result["campaign_authoritative_candidate_count"] == 1
+
+
 def test_campaign_has_no_implicit_default_budget_per_cycle(
     tmp_path: Path,
 ) -> None:

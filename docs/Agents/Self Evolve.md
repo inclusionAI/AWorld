@@ -450,7 +450,11 @@ improvement to the skill change. The historical trajectory is not substituted fo
 missing replay baseline.
 
 Authoritative replay expands only candidates admitted by representative
-screening. Within that expansion, the rollout timeout is a hard per-member phase
+screening. It schedules each case as `baseline -> candidate` before advancing to
+the next case, rather than running the complete control panel first. This
+progressive pairing produces usable causal evidence early and prevents a late
+control timeout from erasing every candidate observation. Within that expansion,
+the rollout timeout is a hard per-member phase
 deadline across retries, not a fresh allowance for every retry. Baseline members
 are committed to an incremental cache as soon as they complete. If repeated
 framework or infrastructure failures make the control group invalid,
@@ -459,7 +463,11 @@ policy to stop the remaining panel and record unused members as blocked. `off`
 and `shadow` do not alter replay decisions. Operators may also set
 `--replay-total-timeout` as a
 hard deadline for the complete paired replay; completed control evidence remains
-available for a compatible retry. Verified runs that omit it receive a framework
+available for a compatible retry. Replay also persists a bounded
+`members/paired_replay_checkpoint.json` cursor after every phase. Timeout gates
+reference that cursor, the request, and the incremental baseline manifest so a
+compatible Campaign cycle can continue measurement without reconstructing the
+completed controls. Verified runs that omit the deadline receive a framework
 safety horizon of six per-member timeout windows, which bounds a candidate
 experiment without turning campaign search budget back on. Cancellation crosses
 the batch boundary and tears down the replay process group, so a displayed hard
@@ -479,6 +487,16 @@ members because they cannot repair the already-invalid authoritative comparison.
 Invalid controls are framework/shared failures; candidate-owned incomparable
 members are candidate failures and become counterexamples for the next admission
 screen.
+
+The verification funnel reports both
+`authoritative_candidate_attempt_count` and `authoritative_candidate_count`.
+The first is observability for entries into the authoritative plane; the second
+is the Campaign quota actually consumed. A shared framework-owned measurement
+failure before any candidate observation releases the reservation. Candidate
+execution, a candidate evaluation summary, or a candidate-owned authoritative
+failure consumes it. A control-only result is reusable evidence but is not a
+conclusion about the candidate and therefore does not exhaust the candidate
+frontier.
 
 Before `build_replay_request()`, `ReplayAdaptationCompiler` rewrites workspace paths
 to `${AWORLD_REPLAY_WORKSPACE}`, creates a filtered workspace seed and environment

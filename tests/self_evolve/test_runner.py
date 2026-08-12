@@ -55,6 +55,7 @@ from aworld.self_evolve.failure_events import (
 )
 from aworld.self_evolve.gates import SkillReleaseFidelityGate
 from aworld.self_evolve.replay import (
+    AWorldCliCandidateReplayBackend,
     CandidateReplayMemberResult,
     CandidateReplayRequest,
     CandidateReplayResult as _CandidateReplayResult,
@@ -3013,7 +3014,14 @@ def test_campaign_failure_attribution_prefers_terminal_shared_measurement() -> N
             "failure_scope": "shared_run",
             "failure_stage": "evaluation",
             "repairable": True,
-            "next_action": "repair_measurement",
+            "next_action": "continue_measurement",
+            "resume_safe": True,
+            "resume_candidate_id": "candidate",
+            "resume_candidate_package_fingerprint": "sha256:package",
+            "completed_baseline_case_count": 3,
+            "completed_candidate_case_count": 2,
+            "completed_comparable_pair_count": 2,
+            "pending_case_count": 8,
             "diagnostic_refs": ["/tmp/replay/request.json"],
         },
     )
@@ -3032,7 +3040,14 @@ def test_campaign_failure_attribution_prefers_terminal_shared_measurement() -> N
     assert attribution["failure_scope"] == "shared_run"
     assert attribution["failure_stage"] == "evaluation"
     assert attribution["repairable"] is True
-    assert attribution["next_action"] == "repair_measurement"
+    assert attribution["next_action"] == "continue_measurement"
+    assert attribution["resume_safe"] is True
+    assert attribution["resume_candidate_id"] == "candidate"
+    assert attribution["resume_candidate_package_fingerprint"] == "sha256:package"
+    assert attribution["completed_baseline_case_count"] == 3
+    assert attribution["completed_candidate_case_count"] == 2
+    assert attribution["completed_comparable_pair_count"] == 2
+    assert attribution["pending_case_count"] == 8
     assert attribution["diagnostic_refs"] == ["/tmp/replay/request.json"]
     assert attribution["resolved_failure_count"] == 1
 
@@ -11163,6 +11178,7 @@ async def test_verified_runner_bounds_authoritative_candidates_across_iterations
         "generation_stop_reason": "authoritative_candidate_limit_reached",
         "policy_filtered_candidate_count": 0,
         "max_authoritative_candidates": 2,
+        "authoritative_candidate_attempt_count": 2,
         "authoritative_candidate_count": 2,
         "max_score_tiebreak_candidates": 0,
         "score_tiebreak_candidate_count": 0,
@@ -20972,11 +20988,179 @@ async def test_paired_replay_total_deadline_returns_typed_gate(
     assert gate is not None and gate.gate_name == "candidate_replay"
     assert gate.details["code"] == "replay_total_timeout"
     assert gate.details["partial_baseline_cache_preserved"] is True
+    assert gate.details["next_action"] == "continue_measurement"
+    assert gate.details["resume_safe"] is True
     assert [stage for stage, _payload in lifecycle] == [
         "adaptation_completed",
         "replay_started",
         "replay_timed_out",
     ]
+
+
+@pytest.mark.asyncio
+async def test_paired_replay_timeout_persists_progressive_resume_checkpoint(
+    tmp_path: Path,
+) -> None:
+    skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("---\nname: demo\n---\n# Demo\n", encoding="utf-8")
+    dataset = SelfEvolveDataset(
+        cases=(
+            EvalCase(case_id="case-a", input={"content": "A"}),
+            EvalCase(case_id="case-b", input={"content": "B"}),
+        ),
+        recipe=DatasetRecipe(
+            source={"kind": "progressive-timeout"},
+            split_seed="seed",
+            splits={"train": ["case-a", "case-b"]},
+            trainable_case_ids=("case-a", "case-b"),
+        ),
+    )
+    candidate = CandidateVariant(
+        candidate_id="candidate-progressive-timeout",
+        target=SelfEvolveTargetRef("skill", "demo", str(skill_path)),
+        content="---\nname: demo\n---\n# Demo\n\nCandidate.\n",
+        rationale="deadline checkpoint test",
+    )
+
+    async def executor(request):
+        if request.task_id == "case-b":
+            await asyncio.sleep(1)
+        return replay_module.ReplayExecutionResult(
+            status="succeeded",
+            trajectory=[{"action": {"content": request.variant_id}}],
+        )
+
+    runner = SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=SimpleNamespace(),
+        replay_enabled=True,
+        candidate_replay_backend=AWorldCliCandidateReplayBackend(
+            executor=executor
+        ),
+        replay_timeout_seconds=2,
+        replay_total_timeout_seconds=0.25,
+    )
+
+    replay_result, replay_dataset, gate = await runner._replay_selected_candidate(
+        run_id="run-progressive-total-deadline",
+        target=SkillTextTarget(skill_path),
+        dataset=dataset,
+        selected_candidate=candidate,
+        apply_policy="auto_verified",
+    )
+
+    assert replay_result is None
+    assert replay_dataset is None
+    assert gate is not None
+    assert gate.details["code"] == "replay_total_timeout"
+    assert gate.details["completed_baseline_case_count"] == 1
+    assert gate.details["completed_candidate_case_count"] == 1
+    assert gate.details["completed_comparable_pair_count"] == 1
+    assert gate.details["pending_case_count"] == 1
+    checkpoint = gate.details["replay_checkpoint"]
+    assert checkpoint["schedule"] == "progressive_paired"
+    assert checkpoint["active_case_id"] == "case-b"
+    assert checkpoint["active_phase"] == "baseline"
+    assert len(gate.details["diagnostic_refs"]) >= 2
+    assert all(Path(path).is_file() for path in gate.details["diagnostic_refs"])
+    replay_dir = (
+        tmp_path
+        / ".aworld"
+        / "self_evolve"
+        / "run-progressive-total-deadline"
+        / "replay"
+        / candidate.candidate_id
+        / "members"
+    )
+    assert runner_module._reusable_baseline_case_count(
+        dataset=dataset,
+        baseline_replay_dir=str(replay_dir),
+        baseline_repetitions=1,
+    ) == 1
+
+
+def test_shared_measurement_without_candidate_observation_releases_authoritative_slot() -> None:
+    timeout_gate = GateResult(
+        gate_name="candidate_replay",
+        passed=False,
+        reason="candidate replay exceeded the total hard deadline",
+        details={
+            "code": "replay_total_timeout",
+            "failure_class": "measurement",
+            "failure_owner": "framework",
+            "failure_scope": "shared_run",
+            "failure_stage": "evaluation",
+            "repairable": True,
+        },
+    )
+    assert runner_module._authoritative_attempt_consumed(
+        {
+            "status": "rejected",
+            "replay_result": None,
+            "baseline_summary": None,
+            "candidate_summary": None,
+            "held_out_summary": None,
+            "gate_results": [timeout_gate],
+        }
+    ) is False
+
+    # A completed control alone is reusable framework evidence, not a result
+    # about the candidate package.
+    assert runner_module._authoritative_attempt_consumed(
+        {
+            "status": "rejected",
+            "replay_result": None,
+            "baseline_summary": EvaluationSummary(
+                variant_id="baseline",
+                metrics={"score": 1.0},
+                dataset_split="validation",
+            ),
+            "candidate_summary": None,
+            "held_out_summary": None,
+            "gate_results": [timeout_gate],
+        }
+    ) is False
+
+    candidate_gate = GateResult(
+        gate_name="candidate_repair_conformance",
+        passed=False,
+        reason="candidate package did not conform",
+        details={
+            "failure_class": "candidate",
+            "failure_owner": "candidate",
+            "repairable": False,
+        },
+    )
+    assert runner_module._authoritative_attempt_consumed(
+        {
+            "status": "rejected",
+            "replay_result": None,
+            "baseline_summary": None,
+            "candidate_summary": None,
+            "held_out_summary": None,
+            "gate_results": [candidate_gate],
+        }
+    ) is True
+
+
+def test_effective_replay_repetitions_share_planning_and_execution_policy() -> None:
+    assert runner_module._effective_replay_repetitions(
+        apply_policy="verified_only",
+        repetitions_explicit=False,
+        replay_case_count=11,
+        measurement_min_independent_cases=4,
+        baseline_repetitions=2,
+        candidate_repetitions=3,
+    ) == (1, 1, "independent_case_adaptive")
+    assert runner_module._effective_replay_repetitions(
+        apply_policy="verified_only",
+        repetitions_explicit=True,
+        replay_case_count=11,
+        measurement_min_independent_cases=4,
+        baseline_repetitions=2,
+        candidate_repetitions=3,
+    ) == (2, 3, "configured")
 
 
 @pytest.mark.asyncio

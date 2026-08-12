@@ -288,8 +288,8 @@ async def test_replay_backend_reports_member_phase_progress(
         for event in started
     ] == [
         ("baseline", 1, "task-a"),
-        ("baseline", 2, "task-b"),
         ("candidate", 1, "task-a"),
+        ("baseline", 2, "task-b"),
         ("candidate", 2, "task-b"),
     ]
     assert [event["status"] for event in completed] == [
@@ -416,10 +416,14 @@ async def test_replay_member_deadline_stops_invalid_control_frontier(
     )
     assert time.monotonic() - shadow_started_at < 0.5
 
-    assert len(calls) == 6
+    assert calls == [
+        ("task-a", "baseline"),
+        ("task-b", "baseline"),
+        ("task-c", "baseline"),
+    ]
     assert all(
         member.baseline.status is ReplayExecutionStatus.FAILED
-        and member.candidate.status is ReplayExecutionStatus.FAILED
+        and member.candidate.status is ReplayExecutionStatus.BLOCKED
         for member in shadow_result.member_results
     )
     assert not any(
@@ -487,8 +491,6 @@ async def test_authoritative_replay_stops_after_first_incomparable_candidate_mem
 
     assert calls == [
         ("case-1", "baseline"),
-        ("case-2", "baseline"),
-        ("case-3", "baseline"),
         ("case-1", "candidate"),
     ]
     assert result.member_results is not None
@@ -5139,8 +5141,8 @@ async def test_multi_member_replay_executes_and_maps_each_member_independently(
 
     assert [(call.task_id, call.variant_id) for call in calls] == [
         ("task-a", "baseline"),
-        ("task-b", "baseline"),
         ("task-a", "cand-1"),
+        ("task-b", "baseline"),
         ("task-b", "cand-1"),
     ]
     assert [member.case_id for member in result.member_results] == [
@@ -5229,13 +5231,10 @@ async def test_replay_repetitions_apply_to_every_normalized_member(
     )
 
     expected_calls = [
-        (f"task-{member}", f"baseline-{repetition}")
+        (f"task-{member}", f"{variant}-{repetition}")
         for member in range(1, case_count + 1)
-        for repetition in range(1, 3)
-    ] + [
-        (f"task-{member}", f"cand-1-{repetition}")
-        for member in range(1, case_count + 1)
-        for repetition in range(1, 4)
+        for variant, repetition_count in (("baseline", 2), ("cand-1", 3))
+        for repetition in range(1, repetition_count + 1)
     ]
     assert [(call.task_id, call.variant_id) for call in calls] == expected_calls
     assert result.baseline.metrics["repetition_count"] == case_count * 2
@@ -5638,11 +5637,11 @@ async def test_multi_member_replay_reuses_each_members_baseline(
     assert [(call.task_id, call.variant_id) for call in calls] == [
         ("task-a", "baseline-1"),
         ("task-a", "baseline-2"),
-        ("task-b", "baseline-1"),
-        ("task-b", "baseline-2"),
         ("task-a", "cand-1-1"),
         ("task-a", "cand-1-2"),
         ("task-a", "cand-1-3"),
+        ("task-b", "baseline-1"),
+        ("task-b", "baseline-2"),
         ("task-b", "cand-1-1"),
         ("task-b", "cand-1-2"),
         ("task-b", "cand-1-3"),
@@ -5828,7 +5827,7 @@ async def test_multi_member_replay_reuses_complete_task_failure_baselines(
 
 
 @pytest.mark.asyncio
-async def test_multi_member_replay_stops_before_candidates_when_baseline_preflight_fails(
+async def test_progressive_replay_preserves_earlier_pair_before_later_baseline_failure(
     tmp_path: Path,
 ) -> None:
     calls: list[tuple[str, str]] = []
@@ -5876,14 +5875,14 @@ async def test_multi_member_replay_stops_before_candidates_when_baseline_preflig
         dataset=dataset,
     )
 
-    assert calls == [("task-a", "baseline"), ("task-b", "baseline")]
+    assert calls == [
+        ("task-a", "baseline"),
+        ("task-a", "cand-1"),
+        ("task-b", "baseline"),
+    ]
     assert result.baseline.succeeded is False
-    assert all(
-        member.candidate.status is ReplayExecutionStatus.BLOCKED
-        and member.candidate.failure is None
-        and member.candidate.blocked_by
-        for member in result.member_results
-    )
+    assert result.member_results[0].candidate.succeeded is True
+    assert result.member_results[1].candidate.status is ReplayExecutionStatus.BLOCKED
 
 
 def test_member_baseline_replay_dir_maps_legacy_member_root_without_manifest(
