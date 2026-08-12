@@ -823,6 +823,7 @@ def test_shared_measurement_attribution_precedes_historical_candidate_event() ->
         "failure_owner": "framework",
         "failure_scope": "shared_run",
         "next_action": "repair_measurement",
+        "diagnostic_refs": ["/tmp/replay/request.json"],
     }
 
     disposition = derive_self_improvement_disposition(report)
@@ -831,6 +832,7 @@ def test_shared_measurement_attribution_precedes_historical_candidate_event() ->
     assert disposition.reason_code == "shared_measurement_control_invalid"
     assert disposition.owner == "evaluation_harness"
     assert disposition.scope == "shared_run"
+    assert disposition.diagnostic_refs == ("/tmp/replay/request.json",)
 
 
 def test_terminal_nonretryable_infrastructure_attribution_pauses_operator() -> None:
