@@ -6702,6 +6702,13 @@ class SelfEvolveRunner:
         screening_terminal_ids: set[str] = set()
         stopped_by_shared_screening = False
         stopped_after_budget_censor = False
+        control_fallback_limit = min(
+            len(configured_representative_case_ids),
+            max(
+                1,
+                self.measurement_early_stop_policy.invalid_control_patience,
+            ),
+        )
         for candidate_index, candidate in enumerate(
             conformance_candidates,
             start=1,
@@ -6731,7 +6738,7 @@ class SelfEvolveRunner:
                 screening_budget = budget_context.reserve(
                     BudgetStage.SCREENING,
                     f"{candidate.candidate_id}-screening",
-                    units=1,
+                    units=control_fallback_limit,
                 )
                 if not screening_budget.allowed:
                     screening_budget_denied_ids.add(candidate.candidate_id)
@@ -6766,14 +6773,16 @@ class SelfEvolveRunner:
                 else None
             )
             screening_replay_started = False
+            screening_physical_pair_count = 0
 
             def screening_lifecycle(
                 stage: str,
                 payload: Mapping[str, object],
             ) -> None:
-                nonlocal screening_replay_started
+                nonlocal screening_replay_started, screening_physical_pair_count
                 if stage == "replay_started":
                     screening_replay_started = True
+                    screening_physical_pair_count += 1
                 if attempt_tracker is None or attempt_key is None:
                     return
                 if (
@@ -6787,44 +6796,132 @@ class SelfEvolveRunner:
                         case_count=len(screening_dataset.cases),
                     )
                 elif stage == "replay_started":
-                    attempt_tracker.emit(
-                        attempt_key,
-                        CandidateAttemptStage.SCREENING,
-                        case_count=len(screening_dataset.cases),
-                        usage=(
-                            _budget_usage_for_attempt_event(screening_budget)
-                            if screening_budget is not None
-                            else None
-                        ),
-                    )
+                    if screening_physical_pair_count == 1:
+                        attempt_tracker.emit(
+                            attempt_key,
+                            CandidateAttemptStage.SCREENING,
+                            case_count=len(screening_dataset.cases),
+                            usage=(
+                                _budget_usage_for_attempt_event(screening_budget)
+                                if screening_budget is not None
+                                else None
+                            ),
+                        )
             screening_telemetry_before = _stage_telemetry_usage_snapshot(
                 self.execution_telemetry,
                 "replay",
             )
             screening_started_at = time.monotonic()
+            active_screening_dataset = screening_dataset
+            active_baseline_replay_dir = screening_baseline_replay_dir
+            control_case_attempts: list[dict[str, object]] = []
             try:
-                replay_result, replay_dataset, replay_gate = (
-                    await self._replay_selected_candidate(
-                        run_id=run_id,
-                        target=target,
-                        dataset=screening_dataset,
-                        selected_candidate=screening_candidate,
-                        apply_policy=apply_policy,
-                        baseline_replay_dir=screening_baseline_replay_dir,
-                        baseline_repetitions=1,
-                        candidate_repetitions=1,
-                        progress_stage="candidate_screening",
-                        timeout_seconds=_candidate_screening_timeout(
-                            self.replay_timeout_seconds,
-                            max_steps=screening_max_steps,
-                        ),
-                        max_steps=screening_max_steps,
-                        max_tool_calls=(
-                            _DEFAULT_CANDIDATE_SCREENING_TOOL_CALL_LIMIT
-                        ),
-                        lifecycle_callback=screening_lifecycle,
-                    )
+                fallback_case_ids = tuple(
+                    case_id
+                    for case_id in configured_representative_case_ids
+                    if case_id not in representative_case_ids
                 )
+                control_case_datasets = [screening_dataset]
+                control_case_datasets.extend(
+                    _candidate_screening_dataset_for_case_ids(
+                        configured_screening_panel,
+                        case_ids=(case_id,),
+                    )
+                    for case_id in fallback_case_ids
+                    if configured_screening_panel is not None
+                )
+                for control_attempt_index, candidate_screening_dataset in enumerate(
+                    control_case_datasets[:control_fallback_limit],
+                    start=1,
+                ):
+                    active_screening_dataset = candidate_screening_dataset
+                    if control_attempt_index > 1:
+                        active_baseline_replay_dir = (
+                            _find_reusable_baseline_replay_dir(
+                                store=self.store,
+                                run_id=run_id,
+                                target=target.identity,
+                                dataset=active_screening_dataset,
+                                baseline_repetitions=1,
+                                **self._baseline_reuse_provenance(
+                                    run_id=run_id,
+                                    target=target,
+                                    dataset=active_screening_dataset,
+                                ),
+                            )
+                        )
+                        _emit_progress(
+                            self.progress_callback,
+                            "candidate_screening",
+                            (
+                                "Retrying representative screening after an "
+                                "invalid control on fallback case "
+                                f"{active_screening_dataset.cases[0].case_id} "
+                                f"({control_attempt_index}/{control_fallback_limit})"
+                            ),
+                        )
+                    active_screening_max_steps = _candidate_screening_max_steps(
+                        active_screening_dataset,
+                        configured_max_steps=self.replay_max_steps,
+                    )
+                    replay_result, replay_dataset, replay_gate = (
+                        await self._replay_selected_candidate(
+                            run_id=run_id,
+                            target=target,
+                            dataset=active_screening_dataset,
+                            selected_candidate=(
+                                screening_candidate
+                                if control_attempt_index == 1
+                                else replace(
+                                    screening_candidate,
+                                    candidate_id=(
+                                        f"{screening_candidate.candidate_id}"
+                                        f"--control-{control_attempt_index}"
+                                    ),
+                                )
+                            ),
+                            apply_policy=apply_policy,
+                            baseline_replay_dir=active_baseline_replay_dir,
+                            baseline_repetitions=1,
+                            candidate_repetitions=1,
+                            progress_stage="candidate_screening",
+                            timeout_seconds=_candidate_screening_timeout(
+                                self.replay_timeout_seconds,
+                                max_steps=active_screening_max_steps,
+                            ),
+                            max_steps=active_screening_max_steps,
+                            max_tool_calls=(
+                                _DEFAULT_CANDIDATE_SCREENING_TOOL_CALL_LIMIT
+                            ),
+                            lifecycle_callback=screening_lifecycle,
+                        )
+                    )
+                    control_case_attempts.append(
+                        {
+                            "case_ids": [
+                                case.case_id
+                                for case in active_screening_dataset.cases
+                            ],
+                            "invalid_control": (
+                                _screening_gate_has_invalid_control(replay_gate)
+                            ),
+                            "gate_name": (
+                                replay_gate.gate_name
+                                if replay_gate is not None
+                                else None
+                            ),
+                            "reason": (
+                                replay_gate.reason
+                                if replay_gate is not None
+                                else "screening replay was unavailable"
+                            ),
+                            "baseline_cache_offered": (
+                                active_baseline_replay_dir is not None
+                            ),
+                        }
+                    )
+                    if not _screening_gate_has_invalid_control(replay_gate):
+                        break
             except Exception as exc:
                 replay_result = None
                 replay_dataset = None
@@ -6935,9 +7032,11 @@ class SelfEvolveRunner:
                 )
             if replay_result is not None:
                 if _replay_result_has_reusable_baseline(
-                    dataset=screening_dataset,
+                    dataset=active_screening_dataset,
                     replay_result=replay_result,
-                ):
+                ) and tuple(
+                    case.case_id for case in active_screening_dataset.cases
+                ) == representative_case_ids:
                     screening_baseline_replay_dir = (
                         _baseline_replay_artifact_dir(replay_result)
                     )
@@ -6946,16 +7045,18 @@ class SelfEvolveRunner:
                         store=self.store,
                         run_id=run_id,
                         target=target.identity,
-                        dataset=screening_dataset,
+                        dataset=active_screening_dataset,
                         baseline_repetitions=1,
                         **self._baseline_reuse_provenance(
                             run_id=run_id,
                             target=target,
-                            dataset=screening_dataset,
+                            dataset=active_screening_dataset,
                         ),
                     )
                 )
-                if refreshed_screening_baseline_dir is not None:
+                if refreshed_screening_baseline_dir is not None and tuple(
+                    case.case_id for case in active_screening_dataset.cases
+                ) == representative_case_ids:
                     screening_baseline_replay_dir = (
                         refreshed_screening_baseline_dir
                     )
@@ -6985,14 +7086,31 @@ class SelfEvolveRunner:
                         screening_rank
                     ),
                     "qualification_case_ids": list(representative_case_ids),
+                    "attempted_control_case_ids": [
+                        case_id
+                        for item in control_case_attempts
+                        for case_id in item["case_ids"]
+                    ],
+                    "control_case_attempts": control_case_attempts,
+                    "control_fallback_count": max(
+                        0,
+                        len(control_case_attempts) - 1,
+                    ),
                     "baseline_cache_offered": baseline_cache_offered,
                     "wall_seconds": screening_elapsed_seconds,
                     "physical_pair_executed": screening_replay_started,
+                    "physical_pair_execution_count": (
+                        screening_physical_pair_count
+                    ),
                 }
             )
             _record_candidate_screening_observation(
                 self._candidate_screening_case_observations,
-                case_ids=representative_case_ids,
+                case_ids=tuple(
+                    case_id
+                    for item in control_case_attempts
+                    for case_id in item["case_ids"]
+                ) or representative_case_ids,
                 attempt=attempts[-1],
             )
             if passed:
@@ -7208,7 +7326,13 @@ class SelfEvolveRunner:
                 "generated_candidate_count": len(conformance_candidates),
                 "attempted_candidate_count": len(attempts),
                 "physical_pair_execution_count": sum(
-                    int(attempt.get("physical_pair_executed") is True)
+                    _non_negative_int(
+                        attempt.get("physical_pair_execution_count")
+                    )
+                    for attempt in attempts
+                ),
+                "control_fallback_count": sum(
+                    _non_negative_int(attempt.get("control_fallback_count"))
                     for attempt in attempts
                 ),
                 "screening_wall_seconds": sum(
@@ -17953,6 +18077,36 @@ def _screening_attempt_is_candidate_failure(
     )
 
 
+def _screening_gate_has_invalid_control(
+    gate: GateResult | None,
+) -> bool:
+    if gate is None or gate.passed:
+        return False
+    stack: list[object] = [gate.details]
+    inspected = 0
+    while stack and inspected < 256:
+        current = stack.pop()
+        inspected += 1
+        if isinstance(current, Mapping):
+            code = current.get("code")
+            owner = current.get("failure_owner") or current.get("owner")
+            if code in {
+                "control_not_comparable",
+                "authoritative_replay_invalid_control",
+                "trusted_measurement_invalid_control_frontier",
+            } and owner in {None, FailureOwner.FRAMEWORK.value}:
+                return True
+            if (
+                code == "replay_member_phase_timeout"
+                and owner == FailureOwner.FRAMEWORK.value
+            ):
+                return True
+            stack.extend(current.values())
+        elif isinstance(current, (list, tuple)):
+            stack.extend(current)
+    return False
+
+
 def _screening_attempt_is_budget_censored(
     attempt: Mapping[str, object],
 ) -> bool:
@@ -21582,6 +21736,39 @@ def _candidate_screening_dataset(
                 "held_out": [],
             },
             trainable_case_ids=representative_ids,
+            held_out_case_ids=(),
+        ),
+    )
+
+
+def _candidate_screening_dataset_for_case_ids(
+    dataset: SelfEvolveDataset,
+    *,
+    case_ids: tuple[str, ...],
+) -> SelfEvolveDataset:
+    requested = tuple(dict.fromkeys(case_ids))
+    selected_by_id = {case.case_id: case for case in dataset.cases}
+    if not requested or any(case_id not in selected_by_id for case_id in requested):
+        raise ValueError("screening fallback case ids must exist in the panel")
+    selected = tuple(selected_by_id[case_id] for case_id in requested)
+    return SelfEvolveDataset(
+        cases=selected,
+        recipe=replace(
+            dataset.recipe,
+            source={
+                **dict(dataset.recipe.source),
+                "candidate_screening": True,
+                "screening_case_id": requested[0],
+                "screening_case_ids": list(requested),
+                "screening_case_count": len(requested),
+                "screening_control_fallback": True,
+            },
+            splits={
+                "train": list(requested),
+                "validation": [],
+                "held_out": [],
+            },
+            trainable_case_ids=requested,
             held_out_case_ids=(),
         ),
     )
