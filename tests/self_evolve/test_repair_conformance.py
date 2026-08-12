@@ -666,6 +666,77 @@ def test_fixture_compile_failure_is_not_redirected_by_inherited_runtime_constrai
     ]
 
 
+def test_unresolved_compiler_owner_survives_new_runtime_constraint() -> None:
+    inherited = RepairConformanceContract(
+        focus_candidate_id="candidate-parent",
+        failure_codes=("protocol_probe_not_fixture_derived",),
+        interaction_progress=0,
+        base_file_fingerprints={"replay/runtime.py": "sha256:base"},
+        required_branch_paths=("replay/runtime.py",),
+        base_branch_fingerprints={},
+        manifest_path="replay/capability.json",
+        compiler_path="replay/compiler.py",
+        runtime_paths=("replay/runtime.py",),
+    )
+    contract = compile_repair_conformance_contract(
+        {
+            "repair_candidate_package": _package(),
+            "candidate_validation_diagnostics": [
+                {
+                    "code": "source_behavior_proof_failed",
+                    "schema_field_constraints": [
+                        {
+                            "schema_layer": "runtime",
+                            "field_path": (
+                                "environment.AWORLD_REPLAY_RESPONSE_INDEX.consumer"
+                            ),
+                            "rule": "enum",
+                            "expected": ["json_sidecar_record_value_projector"],
+                            "value_domain": "source_behavior",
+                        }
+                    ],
+                    "repair_conformance": inherited.to_public_dict(),
+                }
+            ],
+        }
+    )
+
+    assert contract is not None
+    assert contract.required_branch_paths == (
+        "replay/runtime.py",
+        "replay/compiler.py",
+    )
+    assert contract.requires_compiler_fixture_reconstruction is True
+    assert contract.fixture_probe_constraints == ()
+
+
+def test_inconsistent_compiler_owner_contract_is_framework_failure() -> None:
+    contract = RepairConformanceContract(
+        focus_candidate_id="candidate-parent",
+        failure_codes=("protocol_probe_not_fixture_derived",),
+        interaction_progress=0,
+        base_file_fingerprints={"replay/runtime.py": "sha256:base"},
+        required_branch_paths=("replay/runtime.py",),
+        base_branch_fingerprints={},
+        manifest_path="replay/capability.json",
+        compiler_path="replay/compiler.py",
+        runtime_paths=("replay/runtime.py",),
+    )
+
+    result = evaluate_candidate_source_conformance(
+        _candidate(runtime_source="def respond():\n    return None\n"),
+        contract,
+    )
+
+    assert result.passed is False
+    assert result.code == "repair_contract_owner_inconsistent"
+    assert result.failure_class == "framework"
+    assert result.repairable is False
+    assert "required_branch_paths.compiler" in result.details[
+        "missing_contract_fields"
+    ]
+
+
 def test_runtime_response_constraint_targets_response_producer_and_round_trips() -> None:
     runtime_constraint = RuntimeResponseConstraint(
         constraint_kind="recorded_response_context",

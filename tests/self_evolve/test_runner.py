@@ -98,6 +98,7 @@ from aworld.self_evolve.runner import (
     _candidate_generation_actual_usage,
     _campaign_failure_attribution,
     _candidate_conformance_failure_signatures,
+    _candidate_conformance_repair_topologies,
     _candidate_conformance_stall_signature,
     _candidate_materialization_failures,
     _candidate_materialization_stall_signature,
@@ -326,6 +327,58 @@ def test_conformance_stall_signature_ignores_candidate_ids_and_batch_size() -> N
 
     assert first == repeated_population
     assert first != changed
+
+
+def test_conformance_switch_topology_ignores_names_but_detects_control_flow() -> None:
+    target = SelfEvolveTargetRef("skill", "demo", "/skills/demo/SKILL.md")
+
+    def failure(candidate_id: str, source: str) -> tuple[CandidateVariant, GateResult]:
+        candidate = CandidateVariant(
+            candidate_id=candidate_id,
+            target=target,
+            content="# Demo\n",
+            rationale="repair",
+            files=(
+                CandidateFileDelta(
+                    path="replay/compiler.py",
+                    content=source,
+                ),
+            ),
+        )
+        return (
+            candidate,
+            GateResult(
+                gate_name="candidate_repair_conformance",
+                passed=False,
+                reason="typed failure",
+                details={
+                    "code": "repair_capability_compile_failed",
+                    "stage": "repair_conformance_compile",
+                    "failure_fingerprint": "sha256:" + "a" * 64,
+                    "repair_conformance": {
+                        "required_branch_paths": ["replay/compiler.py"]
+                    },
+                },
+            ),
+        )
+
+    renamed = _candidate_conformance_repair_topologies(
+        (
+            failure("first", "def build(value):\n    return value\n"),
+            failure("second", "def compile_result(item):\n    return item\n"),
+        )
+    )
+    switched = _candidate_conformance_repair_topologies(
+        (
+            failure(
+                "third",
+                "def build(value):\n    if value:\n        return value\n    return None\n",
+            ),
+        )
+    )
+
+    assert len(next(iter(renamed.values()))) == 1
+    assert next(iter(renamed.values())) != next(iter(switched.values()))
 
 
 def test_candidate_screening_depth_observes_bounded_source_trace_horizon() -> None:
@@ -10931,7 +10984,7 @@ async def test_verified_runner_bounds_generation_slots_before_authoritative_repl
 
 
 @pytest.mark.asyncio
-async def test_verified_runner_stops_repeated_conformance_after_one_strategy_switch(
+async def test_verified_runner_does_not_count_unmaterialized_strategy_switch(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -11052,9 +11105,11 @@ async def test_verified_runner_stops_repeated_conformance_after_one_strategy_swi
     assert funnel["generated_candidate_slot_count"] < 6
     assert funnel["candidate_generation_batch_count"] == 2
     assert funnel["generation_conformance_frontier_exhausted"] is True
-    assert funnel["conformance_strategy_switch_count"] == 1
+    assert funnel["conformance_strategy_switch_request_count"] == 1
+    assert funnel["conformance_strategy_switch_count"] == 0
+    assert funnel["conformance_strategy_switch_not_materialized"] is True
     assert funnel["generation_stop_reason"] == (
-        "conformance_frontier_repeated_after_strategy_switch"
+        "conformance_strategy_switch_not_materialized"
     )
     conformance_messages = [
         message
@@ -11062,11 +11117,11 @@ async def test_verified_runner_stops_repeated_conformance_after_one_strategy_swi
         if stage == "candidate_conformance"
     ]
     assert any(
-        "scheduling one structural strategy switch" in message
+        "requesting a structural strategy switch" in message
         for message in conformance_messages
     )
     assert any(
-        "remained after the allowed" in message
+        "did not change the authorized owner/edit topology" in message
         for message in conformance_messages
     )
 
