@@ -17,6 +17,29 @@ rejection. It is the self-improvement link between ordinary runs: only typed
 candidate progress or retryable infrastructure can authorize another cycle.
 Framework mutation remains behind the existing Goal authority boundary.
 
+## Architecture Overview
+
+![AWorld self-evolve architecture](../imgs/aworld-self-evolve-architecture.png)
+
+The architecture separates execution, evidence, optimization, and authority:
+
+- **AWorld Runtime** executes tasks, compiles and runs replay environments, and
+  owns verified apply and rollback. Runtime results are evidence, not permission
+  to publish a candidate.
+- **Self-Evolve Optimizer** selects the target, mines typed lessons, generates a
+  bounded candidate population, and focuses repair using failed gates and replay
+  counterexamples.
+- **Evidence & Evaluation Layer** combines source trajectories, paired
+  baseline/candidate replay, and independent held-out, challenger, and regression
+  checks. Only this verified path can produce a releasable artifact.
+- **Run** owns one variation, selection, and verification experiment.
+  **Campaign** carries typed causal progress and lineage across bounded runs.
+  **Goal session** is outside candidate evolution and is entered only through an
+  explicit framework/shared-code handoff.
+- A verified artifact returns to the agent harness through release control;
+  lessons and lineage may inform later Campaign cycles without granting mutation
+  authority over framework code.
+
 ## What It Optimizes
 
 Self-evolve works on target references rather than arbitrary files. A target records the artifact type, id, optional path, and provenance used by the framework gates.

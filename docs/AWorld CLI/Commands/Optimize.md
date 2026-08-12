@@ -14,6 +14,18 @@ aworld-cli run --task "complete this task" --evolve=shadow
 
 `--evolve` configures the selected local runtime agent for post-run self-evolve scheduling. Pair it with `--judge-agent`, `--judge-agent-name`, or `--judge-backend-ref` to configure the background evaluator. Use `--judge-model-profile` when the evaluator should use a different named model profile from the main task agent. `aworld-cli optimize` remains the manual/debug entrypoint for the same framework runner.
 
+## Framework Context
+
+![AWorld self-evolve architecture](../../imgs/aworld-self-evolve-architecture.png)
+
+One `aworld-cli optimize` execution creates a **Run**: candidate variation,
+selection, replay, verification, and optional release. Verified policies may
+continue through a bounded **Campaign** only when typed causal progress permits
+another cycle. A **Goal session** is not an implicit retry path; framework or
+shared-code work crosses that authority boundary only through an explicit
+handoff. See [Self Evolve](../../Agents/Self%20Evolve.md) for the complete
+framework design and ownership model.
+
 ## Basic Usage
 
 Proposal-only runs:
