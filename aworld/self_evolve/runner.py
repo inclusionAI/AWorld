@@ -296,8 +296,10 @@ from aworld.self_evolve.replay import (
     _baseline_replay_is_reusable,
     _distributed_member_repetitions,
     _load_variant_result_from_dir,
+    _member_baseline_replay_dir,
     _member_artifact_name,
     _replay_member_pair_is_comparable,
+    _safe_artifact_namespace,
     _is_replayable_user_task_case,
     _select_replay_case,
 )
@@ -399,6 +401,28 @@ _SAFE_VERIFIED_TARGET_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 
 def _is_verified_apply_policy(apply_policy: str) -> bool:
     return apply_policy in _VERIFIED_APPLY_POLICIES
+
+
+def _effective_replay_repetitions(
+    *,
+    apply_policy: str,
+    repetitions_explicit: bool,
+    replay_case_count: int,
+    measurement_min_independent_cases: int,
+    baseline_repetitions: int,
+    candidate_repetitions: int,
+) -> tuple[int, int, str]:
+    """Resolve one replay repetition policy for planning and execution."""
+
+    if (
+        _is_verified_apply_policy(apply_policy)
+        and not repetitions_explicit
+        and replay_case_count >= max(4, measurement_min_independent_cases)
+    ):
+        # A broad independent-case panel supplies breadth. Repeating every
+        # member here multiplies runtime without adding equivalent evidence.
+        return 1, 1, "independent_case_adaptive"
+    return baseline_repetitions, candidate_repetitions, "configured"
 
 
 @dataclass(frozen=True)
@@ -2723,6 +2747,13 @@ def _rejection_attribution(
         "failure_stage",
         "repairable",
         "next_action",
+        "resume_safe",
+        "resume_candidate_id",
+        "resume_candidate_package_fingerprint",
+        "completed_baseline_case_count",
+        "completed_candidate_case_count",
+        "completed_comparable_pair_count",
+        "pending_case_count",
     ):
         if details.get(key) is not None:
             attribution[key] = details[key]
@@ -2817,7 +2848,18 @@ def _campaign_failure_attribution(
                 "affected_candidate_ids": [],
                 "resolved_failure_count": len(resolved_contracts),
             }
-            for key in ("next_action", "repairable", "failure_stage"):
+            for key in (
+                "next_action",
+                "repairable",
+                "failure_stage",
+                "resume_safe",
+                "resume_candidate_id",
+                "resume_candidate_package_fingerprint",
+                "completed_baseline_case_count",
+                "completed_candidate_case_count",
+                "completed_comparable_pair_count",
+                "pending_case_count",
+            ):
                 if details.get(key) is not None:
                     result[key] = details[key]
             diagnostic_refs = _attribution_diagnostic_refs(details)
@@ -4032,6 +4074,7 @@ class SelfEvolveRunner:
         raw_generation_attempt_count = 0
         semantic_lesson_duplicate_attempt_count = 0
         authoritative_candidate_count = 0
+        authoritative_candidate_attempt_count = 0
         score_tiebreak_candidate_count = 0
         prerequisite_candidate_ids: list[str] = []
         generated_candidate_slot_count = 0
@@ -4041,11 +4084,25 @@ class SelfEvolveRunner:
             self.max_iterations + _MAX_PROGRESS_REPAIR_EXTENSION_ITERATIONS
         )
         estimated_replay_case_count = len(_replayable_user_task_dataset(dataset).cases)
+        (
+            estimated_baseline_repetitions,
+            estimated_candidate_repetitions,
+            _,
+        ) = _effective_replay_repetitions(
+            apply_policy=apply_policy,
+            repetitions_explicit=self.replay_repetitions_explicit,
+            replay_case_count=estimated_replay_case_count,
+            measurement_min_independent_cases=(
+                self.measurement_min_independent_cases
+            ),
+            baseline_repetitions=self.baseline_replay_repetitions,
+            candidate_repetitions=self.candidate_replay_repetitions,
+        )
         estimated_replay_units = (
             estimated_replay_case_count
             * (
-                self.baseline_replay_repetitions
-                + self.candidate_replay_repetitions
+                estimated_baseline_repetitions
+                + estimated_candidate_repetitions
             )
             if self.replay_enabled
             and self.candidate_replay_backend is not None
@@ -4053,7 +4110,7 @@ class SelfEvolveRunner:
         )
         estimated_evaluation_case_count = max(
             len(dataset.cases),
-            estimated_replay_case_count * self.candidate_replay_repetitions,
+            estimated_replay_case_count * estimated_candidate_repetitions,
         )
         estimated_evaluation_variants = (
             5 if _is_verified_apply_policy(apply_policy) else 2
@@ -5656,14 +5713,7 @@ class SelfEvolveRunner:
                         run_id=run_id,
                         target=target.identity,
                         dataset=dataset,
-                        baseline_repetitions=(
-                            1
-                            if _is_verified_apply_policy(apply_policy)
-                            and not self.replay_repetitions_explicit
-                            and estimated_replay_case_count
-                            >= max(4, self.measurement_min_independent_cases)
-                            else self.baseline_replay_repetitions
-                        ),
+                        baseline_repetitions=estimated_baseline_repetitions,
                         baseline_skill_fingerprint=target.fingerprint_current_content(),
                         dataset_fingerprint=replay_dataset_fingerprint(dataset),
                         adaptation_fingerprint=(
@@ -5713,6 +5763,7 @@ class SelfEvolveRunner:
                     )
                     break
                 if counts_toward_authoritative:
+                    authoritative_candidate_attempt_count += 1
                     authoritative_candidate_count += 1
                 state, report_item, candidate_feedback = await self._evaluate_iteration_candidate(
                     run_id=run_id,
@@ -5751,6 +5802,15 @@ class SelfEvolveRunner:
                         < self.max_score_tiebreak_candidates
                     ),
                 )
+                if (
+                    counts_toward_authoritative
+                    and not _authoritative_attempt_consumed(state)
+                ):
+                    # Entering the authoritative plane is only a reservation.
+                    # Shared framework/measurement failures that prevent any
+                    # candidate observation release that reservation so a
+                    # resumable Campaign is not exhausted by missing evidence.
+                    authoritative_candidate_count -= 1
                 if any(
                     gate.gate_name == "score_improvement"
                     and isinstance(gate.details, Mapping)
@@ -5841,14 +5901,7 @@ class SelfEvolveRunner:
                     run_id=run_id,
                     target=target.identity,
                     dataset=dataset,
-                    baseline_repetitions=(
-                        1
-                        if _is_verified_apply_policy(apply_policy)
-                        and not self.replay_repetitions_explicit
-                        and estimated_replay_case_count
-                        >= max(4, self.measurement_min_independent_cases)
-                        else self.baseline_replay_repetitions
-                    ),
+                    baseline_repetitions=estimated_baseline_repetitions,
                     **self._baseline_reuse_provenance(
                         run_id=run_id,
                         target=target,
@@ -6553,6 +6606,9 @@ class SelfEvolveRunner:
                     self.max_full_evaluation_candidates
                 ),
                 "authoritative_candidate_count": authoritative_candidate_count,
+                "authoritative_candidate_attempt_count": (
+                    authoritative_candidate_attempt_count
+                ),
                 "max_score_tiebreak_candidates": (
                     self.max_score_tiebreak_candidates
                 ),
@@ -8989,6 +9045,20 @@ class SelfEvolveRunner:
             )
             else None
         )
+        (
+            effective_replay_baseline_repetitions,
+            effective_replay_candidate_repetitions,
+            _,
+        ) = _effective_replay_repetitions(
+            apply_policy=apply_policy,
+            repetitions_explicit=self.replay_repetitions_explicit,
+            replay_case_count=replay_case_count,
+            measurement_min_independent_cases=(
+                self.measurement_min_independent_cases
+            ),
+            baseline_repetitions=self.baseline_replay_repetitions,
+            candidate_repetitions=self.candidate_replay_repetitions,
+        )
         per_attempt_budget_gate: GateResult | None = None
         if replay_evidence_reuse_backend is None:
             replay_backend_proven_zero = _backend_proves_zero_budget_usage(
@@ -9000,8 +9070,12 @@ class SelfEvolveRunner:
                     dataset=_replayable_user_task_dataset(dataset),
                     candidate_count=1,
                     judge_repetitions=self.judge_repetitions,
-                    baseline_repetitions=self.baseline_replay_repetitions,
-                    candidate_repetitions=self.candidate_replay_repetitions,
+                    baseline_repetitions=(
+                        effective_replay_baseline_repetitions
+                    ),
+                    candidate_repetitions=(
+                        effective_replay_candidate_repetitions
+                    ),
                     replay_candidate_limit=self.replay_candidate_limit,
                     max_run_tokens=self.per_attempt_replay_token_limit,
                     estimated_tokens_per_replay=(
@@ -9048,13 +9122,17 @@ class SelfEvolveRunner:
             and replay_evidence_reuse_backend is None
             and budget_context is not None
         ):
+            reusable_baseline_case_count = _reusable_baseline_case_count(
+                dataset=dataset,
+                baseline_replay_dir=baseline_replay_dir,
+                baseline_repetitions=(
+                    effective_replay_baseline_repetitions
+                ),
+            )
             replay_units = (
-                replay_case_count * self.candidate_replay_repetitions
-                + (
-                    0
-                    if baseline_replay_dir is not None
-                    else replay_case_count * self.baseline_replay_repetitions
-                )
+                replay_case_count * effective_replay_candidate_repetitions
+                + max(0, replay_case_count - reusable_baseline_case_count)
+                * effective_replay_baseline_repetitions
             )
             replay_budget = budget_context.reserve(
                 BudgetStage.PAIRED_REPLAY,
@@ -9194,6 +9272,7 @@ class SelfEvolveRunner:
                 status=("prerequisite" if support_bootstrap_ready else "rejected"),
             )
         replay_started = False
+        replay_stage_started_at: float | None = None
         replay_telemetry_before = _TelemetryUsageSnapshot()
         replay_telemetry_after = replay_telemetry_before
 
@@ -9246,6 +9325,7 @@ class SelfEvolveRunner:
                     case_count=replay_case_count,
                 )
         if not capability_blocked:
+            replay_stage_started_at = time.monotonic()
             replay_telemetry_before = _stage_telemetry_usage_snapshot(
                 self.execution_telemetry,
                 "replay",
@@ -9289,6 +9369,13 @@ class SelfEvolveRunner:
                     replay_telemetry_before,
                     replay_telemetry_after,
                 )
+                if replay_stage_started_at is not None:
+                    replay_usage = _telemetry_usage_with_observed_wall(
+                        replay_usage,
+                        elapsed_seconds=(
+                            time.monotonic() - replay_stage_started_at
+                        ),
+                    )
                 budget_context.debit(
                     replay_budget,
                     usage_observation=replay_usage.observation,
@@ -10917,33 +11004,34 @@ class SelfEvolveRunner:
         replay_case_count = sum(
             1 for case in dataset.cases if _is_replayable_user_task_case(case)
         )
-        effective_baseline_repetitions = (
+        requested_baseline_repetitions = (
             baseline_repetitions
             if baseline_repetitions is not None
             else self.baseline_replay_repetitions
         )
-        effective_candidate_repetitions = (
+        requested_candidate_repetitions = (
             candidate_repetitions
             if candidate_repetitions is not None
             else self.candidate_replay_repetitions
         )
-        repetition_policy = "configured"
-        if (
-            _is_verified_apply_policy(apply_policy)
-            and not self.replay_repetitions_explicit
-            and baseline_repetitions is None
-            and candidate_repetitions is None
-            and replay_case_count >= max(
-                4,
-                self.measurement_min_independent_cases,
-            )
-        ):
-            # Independent cases provide breadth; repetitions only estimate
-            # within-case stability. Do not multiply a sufficiently broad
-            # authoritative panel by sparse-data repetition defaults.
-            effective_baseline_repetitions = 1
-            effective_candidate_repetitions = 1
-            repetition_policy = "independent_case_adaptive"
+        (
+            effective_baseline_repetitions,
+            effective_candidate_repetitions,
+            repetition_policy,
+        ) = _effective_replay_repetitions(
+            apply_policy=apply_policy,
+            repetitions_explicit=(
+                self.replay_repetitions_explicit
+                or baseline_repetitions is not None
+                or candidate_repetitions is not None
+            ),
+            replay_case_count=replay_case_count,
+            measurement_min_independent_cases=(
+                self.measurement_min_independent_cases
+            ),
+            baseline_repetitions=requested_baseline_repetitions,
+            candidate_repetitions=requested_candidate_repetitions,
+        )
         overlay = create_candidate_skill_overlay(
             workspace_root=self.store.workspace_root,
             run_id=run_id,
@@ -11203,6 +11291,7 @@ class SelfEvolveRunner:
                         ),
                     },
                 )
+            timeout_checkpoint = _replay_timeout_checkpoint_details(request)
             return (
                 None,
                 None,
@@ -11216,6 +11305,7 @@ class SelfEvolveRunner:
                         "failure_scope": FailureScope.SHARED_RUN.value,
                         "failure_stage": FailureStage.EVALUATION.value,
                         "repairable": True,
+                        "next_action": "continue_measurement",
                         "code": "replay_total_timeout",
                         "timeout_seconds": effective_total_timeout_seconds,
                         "timeout_source": (
@@ -11224,6 +11314,7 @@ class SelfEvolveRunner:
                             else "verified_default"
                         ),
                         "partial_baseline_cache_preserved": True,
+                        **timeout_checkpoint,
                     },
                 ),
             )
@@ -15876,14 +15967,103 @@ def _replay_capability_report(
 
 
 def _replay_artifact_path(replay_result: CandidateReplayResult) -> str:
-    return str(
-        Path(replay_result.request.workspace_root)
+    return str(_replay_request_artifact_path(replay_result.request))
+
+
+def _replay_request_artifact_path(request: CandidateReplayRequest) -> Path:
+    replay_root = (
+        Path(request.workspace_root)
         / ".aworld"
         / "self_evolve"
-        / replay_result.request.run_id
-        / "replay"
-        / replay_result.request.candidate_id
+        / request.run_id
     )
+    if request.artifact_namespace is not None:
+        replay_root = replay_root.joinpath(
+            *_safe_artifact_namespace(request.artifact_namespace)
+        )
+    return (
+        replay_root
+        / "replay"
+        / request.candidate_id
+    )
+
+
+def _replay_timeout_checkpoint_details(
+    request: CandidateReplayRequest,
+) -> dict[str, object]:
+    replay_dir = Path(_replay_request_artifact_path(request))
+    members_root = replay_dir / "members"
+    checkpoint_path = members_root / "paired_replay_checkpoint.json"
+    baseline_manifest_path = members_root / "baseline_cache_manifest.json"
+    diagnostic_paths = (
+        replay_dir / "request.json",
+        checkpoint_path,
+        baseline_manifest_path,
+        (
+            Path(request.workspace_root)
+            / ".aworld"
+            / "self_evolve"
+            / request.run_id
+            / "candidates"
+            / f"{request.candidate_id}.json"
+        ),
+    )
+    details: dict[str, object] = {
+        "resume_safe": True,
+        "resume_candidate_id": request.candidate_id,
+        "resume_candidate_package_fingerprint": (
+            request.verified_candidate_package_fingerprint
+        ),
+        "diagnostic_refs": [
+            str(path) for path in diagnostic_paths if path.is_file()
+        ],
+    }
+    if not checkpoint_path.is_file() or checkpoint_path.is_symlink():
+        return details
+    try:
+        raw_checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return details
+    if not isinstance(raw_checkpoint, Mapping):
+        return details
+    bounded_checkpoint: dict[str, object] = {}
+    for key in (
+        "schema_version",
+        "schedule",
+        "active_case_id",
+        "active_phase",
+        "resume_safe",
+        "baseline_cache_manifest",
+    ):
+        value = raw_checkpoint.get(key)
+        if isinstance(value, (str, bool)) or value is None:
+            bounded_checkpoint[key] = value
+    for key in (
+        "baseline_phase_completed_case_ids",
+        "candidate_phase_completed_case_ids",
+        "comparable_pair_case_ids",
+        "reusable_baseline_case_ids",
+        "pending_case_ids",
+    ):
+        raw = raw_checkpoint.get(key)
+        if isinstance(raw, list):
+            bounded_checkpoint[key] = [
+                str(item)[:160] for item in raw[:64]
+            ]
+    details["replay_checkpoint"] = bounded_checkpoint
+    details["completed_baseline_case_count"] = len(
+        bounded_checkpoint.get("baseline_phase_completed_case_ids", [])
+    )
+    details["completed_candidate_case_count"] = len(
+        bounded_checkpoint.get("candidate_phase_completed_case_ids", [])
+    )
+    details["completed_comparable_pair_count"] = len(
+        bounded_checkpoint.get("comparable_pair_case_ids", [])
+    )
+    details["pending_case_count"] = len(
+        bounded_checkpoint.get("pending_case_ids", [])
+    )
+    return details
 
 
 def _baseline_replay_artifact_dir(replay_result: CandidateReplayResult) -> str:
@@ -15912,6 +16092,41 @@ def _replay_result_has_reusable_baseline(
         )
         for member in normalized.members
     )
+
+
+def _reusable_baseline_case_count(
+    *,
+    dataset: SelfEvolveDataset,
+    baseline_replay_dir: str | None,
+    baseline_repetitions: int,
+) -> int:
+    """Count only validated cached controls when reserving replay work."""
+
+    if baseline_replay_dir is None:
+        return 0
+    reusable = 0
+    for case in dataset.cases:
+        if not _is_replayable_user_task_case(case):
+            continue
+        try:
+            stored_dir = _member_baseline_replay_dir(
+                baseline_replay_dir,
+                case.case_id,
+            )
+            if stored_dir is None:
+                continue
+            baseline = _load_variant_result_from_dir(
+                Path(stored_dir),
+                base_variant_id="baseline",
+            )
+        except (FileNotFoundError, TypeError, ValueError, json.JSONDecodeError, OSError):
+            continue
+        if _baseline_replay_is_reusable(
+            baseline,
+            requested_repetitions=baseline_repetitions,
+        ):
+            reusable += 1
+    return reusable
 
 
 def _find_reusable_baseline_replay_dir(
@@ -18970,6 +19185,47 @@ def _gate_has_typed_shared_measurement_failure(gate: GateResult) -> bool:
         and details.get("failure_scope") == FailureScope.SHARED_RUN.value
         and details.get("repairable") is True
     )
+
+
+def _authoritative_attempt_consumed(
+    state: Mapping[str, object],
+) -> bool:
+    """Return whether an authoritative reservation produced candidate evidence.
+
+    Framework-owned failures before candidate execution are resumable
+    measurement work, not candidate opportunities. Candidate-owned gate
+    failures do consume the opportunity because they are an authoritative
+    conclusion about that candidate package.
+    """
+
+    replay_result = state.get("replay_result")
+    if isinstance(replay_result, CandidateReplayResult):
+        members = replay_result.member_results
+        if members is None:
+            if replay_result.candidate.executed:
+                return True
+        elif any(member.candidate.executed for member in members):
+            return True
+    if any(
+        state.get(key) is not None
+        for key in ("candidate_summary", "held_out_summary")
+    ):
+        return True
+    gates = state.get("gate_results")
+    if isinstance(gates, (list, tuple)):
+        for gate in gates:
+            if (
+                isinstance(gate, GateResult)
+                and not gate.passed
+                and isinstance(gate.details, Mapping)
+                and (
+                    gate.details.get("failure_owner")
+                    == FailureOwner.CANDIDATE.value
+                    or gate.details.get("failure_class") == "candidate"
+                )
+            ):
+                return True
+    return state.get("status") == "accepted"
 
 
 def _candidate_validation_stopped_by_shared_infrastructure(

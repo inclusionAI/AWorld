@@ -2566,6 +2566,46 @@ def _write_incremental_baseline_manifest(
     )
 
 
+def _write_progressive_pair_checkpoint(
+    members_root: Path,
+    *,
+    case_ids: Sequence[str],
+    baseline_phase_completed_case_ids: Sequence[str],
+    candidate_phase_completed_case_ids: Sequence[str],
+    comparable_pair_case_ids: Sequence[str],
+    reusable_baseline_case_ids: Sequence[str],
+    active_case_id: str | None,
+    active_phase: str | None,
+) -> None:
+    """Persist a bounded restart and diagnostic cursor after every phase."""
+
+    completed_candidates = set(candidate_phase_completed_case_ids)
+    _write_json(
+        members_root / "paired_replay_checkpoint.json",
+        {
+            "schema_version": "aworld.self_evolve.paired_replay_checkpoint.v1",
+            "schedule": "progressive_paired",
+            "resume_safe": True,
+            "active_case_id": active_case_id,
+            "active_phase": active_phase,
+            "baseline_phase_completed_case_ids": list(
+                baseline_phase_completed_case_ids
+            ),
+            "candidate_phase_completed_case_ids": list(
+                candidate_phase_completed_case_ids
+            ),
+            "comparable_pair_case_ids": list(comparable_pair_case_ids),
+            "reusable_baseline_case_ids": list(reusable_baseline_case_ids),
+            "pending_case_ids": [
+                case_id
+                for case_id in case_ids
+                if case_id not in completed_candidates
+            ],
+            "baseline_cache_manifest": "baseline_cache_manifest.json",
+        },
+    )
+
+
 class AWorldCliCandidateReplayBackend:
     supports_member_progress = True
 
@@ -2657,15 +2697,245 @@ class AWorldCliCandidateReplayBackend:
             _write_json(member_dir / "request.json", member_request)
             prepared_members.append((case, member_request, member_dir))
 
-        baselines: list[ReplayVariantResult] = []
         member_count = len(prepared_members)
         invalid_control_streak = 0
         replay_measurement_stop: Mapping[str, Any] | None = None
         authoritative_stop: Mapping[str, Any] | None = None
+        candidate_frontier_stop_event: ReplayFailureEvent | None = None
+        case_ids = tuple(case.case_id for case, _request, _dir in prepared_members)
+        baseline_phase_completed_case_ids: list[str] = []
+        candidate_phase_completed_case_ids: list[str] = []
+        comparable_pair_case_ids: list[str] = []
+        reusable_baseline_case_ids: list[str] = []
+        _write_progressive_pair_checkpoint(
+            members_root,
+            case_ids=case_ids,
+            baseline_phase_completed_case_ids=(),
+            candidate_phase_completed_case_ids=(),
+            comparable_pair_case_ids=(),
+            reusable_baseline_case_ids=(),
+            active_case_id=None,
+            active_phase=None,
+        )
+
+        async def run_candidate_phase(
+            *,
+            member_index: int,
+            case: EvalCase,
+            member_request: CandidateReplayRequest,
+            member_dir: Path,
+            baseline: ReplayVariantResult,
+        ) -> ReplayVariantResult:
+            nonlocal candidate_blocking_event
+            nonlocal candidate_frontier_stop_event
+            nonlocal authoritative_stop
+
+            _emit_replay_member_progress(
+                progress_callback,
+                event="member_phase_started",
+                candidate_id=candidate.candidate_id,
+                case_id=case.case_id,
+                case_index=member_index,
+                case_count=member_count,
+                phase="candidate",
+                repetition_count=member_request.candidate_repetitions,
+                phase_timeout_seconds=member_request.timeout_seconds,
+            )
+            blocking_event = candidate_frontier_stop_event
+            if (
+                blocking_event is None
+                and candidate_blocking_event is None
+                and member_request.stop_on_incomparable_member
+                and _baseline_invalid_for_measurement(baseline)
+            ):
+                blocking_event = ReplayFailureEvent(
+                    code="authoritative_replay_invalid_control",
+                    owner=FailureOwner.FRAMEWORK,
+                    stage=FailureStage.EVALUATION,
+                    scope=FailureScope.SHARED_RUN,
+                    repairable=True,
+                    category="measurement_stopping",
+                    summary=(
+                        "authoritative replay stopped because the control "
+                        "member is not comparable"
+                    ),
+                    diagnostics={
+                        "trigger": "invalid_control_member",
+                        "case_index": member_index,
+                        "case_count": member_count,
+                        "unused_case_count": member_count - member_index,
+                    },
+                )
+                candidate_frontier_stop_event = blocking_event
+                authoritative_stop = {
+                    "trigger": "invalid_control_member",
+                    "owner": FailureOwner.FRAMEWORK.value,
+                    "case_index": member_index,
+                    "case_count": member_count,
+                    "unused_case_count": member_count - member_index,
+                    "resume_safe": True,
+                }
+                _emit_replay_member_progress(
+                    progress_callback,
+                    event="authoritative_stop_triggered",
+                    candidate_id=candidate.candidate_id,
+                    case_id=case.case_id,
+                    case_index=member_index,
+                    case_count=member_count,
+                    phase="candidate",
+                    trigger=authoritative_stop["trigger"],
+                    unused_case_count=authoritative_stop[
+                        "unused_case_count"
+                    ],
+                    resume_safe=authoritative_stop["resume_safe"],
+                )
+            if blocking_event is None:
+                blocking_event = candidate_blocking_event
+            if (
+                blocking_event is None
+                and _baseline_invalid_for_measurement(baseline)
+            ):
+                # A candidate cannot form a pair for this member when its
+                # control is invalid. Continue to the next independent
+                # control until the configured frontier policy stops the run,
+                # but never spend candidate execution on an unusable pair.
+                assert baseline.failure is not None
+                blocking_event = baseline.failure
+            if (
+                blocking_event is None
+                and baseline.status is ReplayExecutionStatus.FAILED
+                and _baseline_failure_blocks_candidate(baseline.failure)
+            ):
+                assert baseline.failure is not None
+                blocking_event = baseline.failure
+            candidate_dir = member_dir / _safe_path(candidate.candidate_id)
+            if blocking_event is not None:
+                candidate_result = _blocked_variant_result(
+                    candidate.candidate_id,
+                    blocked_by=blocking_event,
+                )
+                _persist_variant_lifecycle(candidate_dir, candidate_result)
+            else:
+                try:
+                    async with asyncio.timeout(member_request.timeout_seconds):
+                        candidate_result = await self._run_repetitions(
+                            member_request,
+                            base_variant_id=candidate.candidate_id,
+                            skill_root=member_request.overlay_skill_root,
+                            artifact_dir=candidate_dir,
+                            repetitions=member_request.candidate_repetitions,
+                            progress_callback=_scoped_replay_attempt_callback(
+                                progress_callback,
+                                candidate_id=candidate.candidate_id,
+                                case_id=case.case_id,
+                                case_index=member_index,
+                                case_count=member_count,
+                                phase="candidate",
+                            ),
+                        )
+                except TimeoutError:
+                    candidate_result = _member_phase_timeout_result(
+                        variant_id=candidate.candidate_id,
+                        phase="candidate",
+                        timeout_seconds=member_request.timeout_seconds,
+                    )
+                    _persist_variant_lifecycle(
+                        candidate_dir,
+                        candidate_result,
+                    )
+                if (
+                    candidate_result.status is ReplayExecutionStatus.FAILED
+                    and candidate_result.failure is not None
+                    and candidate_result.failure.scope
+                    in {FailureScope.CANDIDATE, FailureScope.SHARED_RUN}
+                    and candidate_result.failure.stage
+                    is not FailureStage.TASK_ROLLOUT
+                ):
+                    candidate_blocking_event = candidate_result.failure
+                if (
+                    member_request.stop_on_incomparable_member
+                    and candidate_frontier_stop_event is None
+                    and not _replay_member_pair_is_comparable(
+                        case,
+                        baseline,
+                        candidate_result,
+                    )
+                ):
+                    candidate_frontier_stop_event = ReplayFailureEvent(
+                        code="authoritative_candidate_frontier_unreachable",
+                        owner=FailureOwner.CANDIDATE,
+                        stage=FailureStage.TASK_ROLLOUT,
+                        scope=FailureScope.CANDIDATE,
+                        repairable=True,
+                        category="authoritative_early_stop",
+                        summary=(
+                            "authoritative replay stopped because full "
+                            "member comparability is no longer reachable"
+                        ),
+                        diagnostics={
+                            "trigger": "incomparable_candidate_member",
+                            "case_index": member_index,
+                            "case_count": member_count,
+                            "unused_case_count": member_count - member_index,
+                            "underlying_failure_code": (
+                                candidate_result.failure.code
+                                if candidate_result.failure is not None
+                                else None
+                            ),
+                        },
+                    )
+                    authoritative_stop = {
+                        "trigger": "incomparable_candidate_member",
+                        "owner": FailureOwner.CANDIDATE.value,
+                        "case_index": member_index,
+                        "case_count": member_count,
+                        "unused_case_count": member_count - member_index,
+                        "resume_safe": False,
+                    }
+                    _emit_replay_member_progress(
+                        progress_callback,
+                        event="authoritative_stop_triggered",
+                        candidate_id=candidate.candidate_id,
+                        case_id=case.case_id,
+                        case_index=member_index,
+                        case_count=member_count,
+                        phase="candidate",
+                        trigger=authoritative_stop["trigger"],
+                        unused_case_count=authoritative_stop[
+                            "unused_case_count"
+                        ],
+                        resume_safe=authoritative_stop["resume_safe"],
+                    )
+            _emit_replay_member_progress(
+                progress_callback,
+                event="member_phase_completed",
+                candidate_id=candidate.candidate_id,
+                case_id=case.case_id,
+                case_index=member_index,
+                case_count=member_count,
+                phase="candidate",
+                status=candidate_result.status.value,
+            )
+            return candidate_result
+
         for member_index, (case, member_request, member_dir) in enumerate(
             prepared_members,
             start=1,
         ):
+            _write_progressive_pair_checkpoint(
+                members_root,
+                case_ids=case_ids,
+                baseline_phase_completed_case_ids=(
+                    baseline_phase_completed_case_ids
+                ),
+                candidate_phase_completed_case_ids=(
+                    candidate_phase_completed_case_ids
+                ),
+                comparable_pair_case_ids=comparable_pair_case_ids,
+                reusable_baseline_case_ids=reusable_baseline_case_ids,
+                active_case_id=case.case_id,
+                active_phase="baseline",
+            )
             _emit_replay_member_progress(
                 progress_callback,
                 event="member_phase_started",
@@ -2680,9 +2950,12 @@ class AWorldCliCandidateReplayBackend:
                 ),
                 phase_timeout_seconds=member_request.timeout_seconds,
             )
-            if candidate_blocking_event is not None:
+            baseline_blocking_event = (
+                candidate_blocking_event or candidate_frontier_stop_event
+            )
+            if baseline_blocking_event is not None:
                 baseline = _blocked_variant_result(
-                    "baseline", blocked_by=candidate_blocking_event
+                    "baseline", blocked_by=baseline_blocking_event
                 )
                 _persist_variant_lifecycle(member_dir / "baseline", baseline)
             else:
@@ -2708,13 +2981,6 @@ class AWorldCliCandidateReplayBackend:
                         timeout_seconds=member_request.timeout_seconds,
                     )
                     _persist_variant_lifecycle(member_dir / "baseline", baseline)
-                _write_incremental_baseline_manifest(
-                    members_root,
-                    prepared_members=prepared_members,
-                    completed_case_ids=tuple(
-                        item.case_id for item in replay_cases[:member_index]
-                    ),
-                )
                 if (
                     baseline.status is ReplayExecutionStatus.FAILED
                     and _baseline_failure_blocks_candidate(baseline.failure)
@@ -2725,7 +2991,6 @@ class AWorldCliCandidateReplayBackend:
                         FailureScope.SHARED_RUN,
                     }:
                         candidate_blocking_event = baseline.failure
-            baselines.append(baseline)
             if _baseline_invalid_for_measurement(baseline):
                 invalid_control_streak += 1
             else:
@@ -2841,190 +3106,37 @@ class AWorldCliCandidateReplayBackend:
                     baseline.metrics.get("baseline_cache_status") or "unknown"
                 ),
             )
-
-        candidate_members = zip(prepared_members, baselines, strict=True)
-        candidate_frontier_stop_event: ReplayFailureEvent | None = None
-        for member_index, (
-            (case, member_request, member_dir),
-            baseline,
-        ) in enumerate(candidate_members, start=1):
-            _emit_replay_member_progress(
-                progress_callback,
-                event="member_phase_started",
-                candidate_id=candidate.candidate_id,
-                case_id=case.case_id,
-                case_index=member_index,
-                case_count=member_count,
-                phase="candidate",
-                repetition_count=member_request.candidate_repetitions,
-                phase_timeout_seconds=member_request.timeout_seconds,
+            baseline_phase_completed_case_ids.append(case.case_id)
+            if _baseline_replay_is_reusable(
+                baseline,
+                requested_repetitions=member_request.baseline_repetitions,
+            ):
+                reusable_baseline_case_ids.append(case.case_id)
+            _write_incremental_baseline_manifest(
+                members_root,
+                prepared_members=prepared_members,
+                completed_case_ids=reusable_baseline_case_ids,
             )
-            blocking_event = candidate_frontier_stop_event
-            if (
-                blocking_event is None
-                and candidate_blocking_event is None
-                and member_request.stop_on_incomparable_member
-                and _baseline_invalid_for_measurement(baseline)
-            ):
-                blocking_event = ReplayFailureEvent(
-                    code="authoritative_replay_invalid_control",
-                    owner=FailureOwner.FRAMEWORK,
-                    stage=FailureStage.EVALUATION,
-                    scope=FailureScope.SHARED_RUN,
-                    repairable=True,
-                    category="measurement_stopping",
-                    summary=(
-                        "authoritative replay stopped because the control "
-                        "member is not comparable"
-                    ),
-                    diagnostics={
-                        "trigger": "invalid_control_member",
-                        "case_index": member_index,
-                        "case_count": member_count,
-                        "unused_case_count": member_count - member_index,
-                    },
-                )
-                candidate_frontier_stop_event = blocking_event
-                authoritative_stop = {
-                    "trigger": "invalid_control_member",
-                    "owner": FailureOwner.FRAMEWORK.value,
-                    "case_index": member_index,
-                    "case_count": member_count,
-                    "unused_case_count": member_count - member_index,
-                    "resume_safe": True,
-                }
-                _emit_replay_member_progress(
-                    progress_callback,
-                    event="authoritative_stop_triggered",
-                    candidate_id=candidate.candidate_id,
-                    case_id=case.case_id,
-                    case_index=member_index,
-                    case_count=member_count,
-                    phase="candidate",
-                    trigger=authoritative_stop["trigger"],
-                    unused_case_count=authoritative_stop[
-                        "unused_case_count"
-                    ],
-                    resume_safe=authoritative_stop["resume_safe"],
-                )
-            if blocking_event is None:
-                blocking_event = candidate_blocking_event
-            if (
-                blocking_event is None
-                and baseline.status is ReplayExecutionStatus.FAILED
-                and _baseline_failure_blocks_candidate(baseline.failure)
-            ):
-                assert baseline.failure is not None
-                blocking_event = baseline.failure
-            if blocking_event is not None:
-                candidate_result = _blocked_variant_result(
-                    candidate.candidate_id, blocked_by=blocking_event
-                )
-                _persist_variant_lifecycle(
-                    member_dir / _safe_path(candidate.candidate_id), candidate_result
-                )
-            else:
-                try:
-                    async with asyncio.timeout(member_request.timeout_seconds):
-                        candidate_result = await self._run_repetitions(
-                            member_request,
-                            base_variant_id=candidate.candidate_id,
-                            skill_root=member_request.overlay_skill_root,
-                            artifact_dir=member_dir / _safe_path(candidate.candidate_id),
-                            repetitions=member_request.candidate_repetitions,
-                            progress_callback=_scoped_replay_attempt_callback(
-                                progress_callback,
-                                candidate_id=candidate.candidate_id,
-                                case_id=case.case_id,
-                                case_index=member_index,
-                                case_count=member_count,
-                                phase="candidate",
-                            ),
-                        )
-                except TimeoutError:
-                    candidate_result = _member_phase_timeout_result(
-                        variant_id=candidate.candidate_id,
-                        phase="candidate",
-                        timeout_seconds=member_request.timeout_seconds,
-                    )
-                    _persist_variant_lifecycle(
-                        member_dir / _safe_path(candidate.candidate_id),
-                        candidate_result,
-                    )
-                if (
-                    candidate_result.status is ReplayExecutionStatus.FAILED
-                    and candidate_result.failure is not None
-                    and candidate_result.failure.scope in {
-                        FailureScope.CANDIDATE,
-                        FailureScope.SHARED_RUN,
-                    }
-                    and candidate_result.failure.stage
-                    is not FailureStage.TASK_ROLLOUT
-                ):
-                    candidate_blocking_event = candidate_result.failure
-                if (
-                    member_request.stop_on_incomparable_member
-                    and candidate_frontier_stop_event is None
-                    and not _replay_member_pair_is_comparable(
-                        case,
-                        baseline,
-                        candidate_result,
-                    )
-                ):
-                    candidate_frontier_stop_event = ReplayFailureEvent(
-                        code="authoritative_candidate_frontier_unreachable",
-                        owner=FailureOwner.CANDIDATE,
-                        stage=FailureStage.TASK_ROLLOUT,
-                        scope=FailureScope.CANDIDATE,
-                        repairable=True,
-                        category="authoritative_early_stop",
-                        summary=(
-                            "authoritative replay stopped because full "
-                            "member comparability is no longer reachable"
-                        ),
-                        diagnostics={
-                            "trigger": "incomparable_candidate_member",
-                            "case_index": member_index,
-                            "case_count": member_count,
-                            "unused_case_count": member_count - member_index,
-                            "underlying_failure_code": (
-                                candidate_result.failure.code
-                                if candidate_result.failure is not None
-                                else None
-                            ),
-                        },
-                    )
-                    authoritative_stop = {
-                        "trigger": "incomparable_candidate_member",
-                        "owner": FailureOwner.CANDIDATE.value,
-                        "case_index": member_index,
-                        "case_count": member_count,
-                        "unused_case_count": member_count - member_index,
-                        "resume_safe": False,
-                    }
-                    _emit_replay_member_progress(
-                        progress_callback,
-                        event="authoritative_stop_triggered",
-                        candidate_id=candidate.candidate_id,
-                        case_id=case.case_id,
-                        case_index=member_index,
-                        case_count=member_count,
-                        phase="candidate",
-                        trigger=authoritative_stop["trigger"],
-                        unused_case_count=authoritative_stop[
-                            "unused_case_count"
-                        ],
-                        resume_safe=authoritative_stop["resume_safe"],
-                    )
-            _emit_replay_member_progress(
-                progress_callback,
-                event="member_phase_completed",
-                candidate_id=candidate.candidate_id,
-                case_id=case.case_id,
-                case_index=member_index,
-                case_count=member_count,
-                phase="candidate",
-                status=candidate_result.status.value,
+            _write_progressive_pair_checkpoint(
+                members_root,
+                case_ids=case_ids,
+                baseline_phase_completed_case_ids=(
+                    baseline_phase_completed_case_ids
+                ),
+                candidate_phase_completed_case_ids=(
+                    candidate_phase_completed_case_ids
+                ),
+                comparable_pair_case_ids=comparable_pair_case_ids,
+                reusable_baseline_case_ids=reusable_baseline_case_ids,
+                active_case_id=case.case_id,
+                active_phase="candidate",
+            )
+            candidate_result = await run_candidate_phase(
+                member_index=member_index,
+                case=case,
+                member_request=member_request,
+                member_dir=member_dir,
+                baseline=baseline,
             )
             member_items.append(
                 CandidateReplayMemberResult(
@@ -3033,6 +3145,32 @@ class AWorldCliCandidateReplayBackend:
                     baseline=baseline,
                     candidate=candidate_result,
                 )
+            )
+            candidate_phase_completed_case_ids.append(case.case_id)
+            if _replay_member_pair_is_comparable(
+                case,
+                baseline,
+                candidate_result,
+            ):
+                comparable_pair_case_ids.append(case.case_id)
+            next_case_id = (
+                case_ids[member_index]
+                if member_index < member_count
+                else None
+            )
+            _write_progressive_pair_checkpoint(
+                members_root,
+                case_ids=case_ids,
+                baseline_phase_completed_case_ids=(
+                    baseline_phase_completed_case_ids
+                ),
+                candidate_phase_completed_case_ids=(
+                    candidate_phase_completed_case_ids
+                ),
+                comparable_pair_case_ids=comparable_pair_case_ids,
+                reusable_baseline_case_ids=reusable_baseline_case_ids,
+                active_case_id=next_case_id,
+                active_phase=("baseline" if next_case_id is not None else None),
             )
         member_results = tuple(member_items)
         _write_json(
