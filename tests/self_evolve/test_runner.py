@@ -11297,6 +11297,63 @@ async def test_verified_single_candidate_skips_comparative_screening(
     assert screening["physical_pair_execution_count"] == 0
 
 
+@pytest.mark.asyncio
+async def test_verified_single_candidate_with_prior_counterexample_requires_screening(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    skill_path, dataset = _cycle1_runner_fixture(tmp_path)
+    candidate = CandidateVariant(
+        candidate_id="counterexample-repair",
+        target=SelfEvolveTargetRef("skill", "demo", str(skill_path)),
+        content=(
+            skill_path.read_text(encoding="utf-8")
+            + "\n## Runtime Behavior\nRepair the observed counterexample.\n"
+        ),
+        rationale="counterexample repair",
+    )
+    runner = SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=SimpleNamespace(),
+        replay_enabled=True,
+        candidate_replay_backend=object(),
+    )
+    calls: list[str] = []
+
+    async def reject_screening(**kwargs):
+        calls.append(kwargs["progress_stage"])
+        return (
+            None,
+            None,
+            GateResult(
+                gate_name="candidate_screening",
+                passed=False,
+                reason="counterexample remains reproducible",
+                details={"failure_class": "candidate"},
+            ),
+        )
+
+    monkeypatch.setattr(
+        runner,
+        "_replay_selected_candidate",
+        reject_screening,
+    )
+
+    selected, report = await runner._screen_candidate_population(
+        run_id="run-single-counterexample-screening",
+        target=SkillTextTarget(skill_path, allow_auto_apply=True),
+        dataset=dataset,
+        candidates=(candidate,),
+        apply_policy="verified_only",
+        require_single_candidate_screening=True,
+    )
+
+    assert selected == ()
+    assert calls == ["candidate_screening"]
+    assert report is not None
+    assert report["screening"]["attempted_candidate_count"] == 1
+
+
 def test_verified_prerequisite_files_restore_format_only_differences() -> None:
     target = SelfEvolveTargetRef(target_type="skill", target_id="demo")
     feedback = EvaluationSummary(

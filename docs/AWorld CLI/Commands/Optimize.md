@@ -391,7 +391,7 @@ The framework ranks the generated population and validates repair candidates bef
 3. Compiled probe declarations must cover the observed operation and assert a non-empty value derived from the recorded response payload.
 4. The frozen runtime is started in the replay subprocess sandbox and every declared HTTP/TCP/WebSocket readiness and protocol probe is executed. Required WebSocket probes validate handshake, ping/text exchange, operation correlation, non-empty result, and recorded-response binding.
 5. Conformance always runs when a repair contract applies, including for a dataset with one replayable trajectory. Multiple trajectories are grouped by a stable semantic fingerprint covering the capability, service, operation, transport, recorded-response structure, exact probe, and assertion set. Equivalent shapes may execute once with every affected case ID recorded; every distinct shape is validated.
-6. Only a candidate that passes conformance proceeds to optional representative task screening and then the authoritative paired baseline/candidate rollout. Representative screening is a cost-control signal, not evidence that unselected conformance shapes work; the final paired replay remains the authoritative dataset-wide behavioral check.
+6. Only a candidate that passes conformance proceeds to optional representative task screening and then the authoritative paired baseline/candidate rollout. Representative screening is a cost-control signal, not evidence that unselected conformance shapes work; the final paired replay remains the authoritative dataset-wide behavioral check. A sole candidate normally skips ranking replay, but a candidate repairing a previously observed replay counterexample must pass that counterexample through screening before it can consume another authoritative slot.
 
 This sequence is generic: contracts are compiled from observed operations, protocol traces, fixture provenance, and the candidate package. There is no target-specific repair adapter for one trajectory case. A source-conformant candidate can still fail at runtime preflight; that result is intentionally reported before the longer task rollout and fed into the next focused repair iteration.
 
@@ -420,7 +420,9 @@ Candidate repair gate diagnostics are summarized in a separate population `confo
 - `--task`: task text used by framework target inference and dataset context.
 - `--target`: explicit target reference. Phase 1 CLI runs support `skill:<name>` end to end. Automatic inference uses the same adapter registry and therefore considers skills only. Other target forms remain framework/SDK types until general CLI adapters are implemented.
 - `--iterations`: maximum candidate optimization iterations.
-- `--apply`: `proposal` or `auto_verified`. The default is `proposal`.
+- `--apply`: `proposal`, `verified_only`, or `auto_verified`. The default is
+  `proposal`. `verified_only` performs the same verified decision process as
+  `auto_verified` but preserves the accepted package without publishing it.
 - `--max-improvement-cycles`: hard cross-run Campaign cap for `auto_verified`;
   defaults to `3`.
 - `--resume-campaign`: resume a persisted active or paused Campaign using its
@@ -433,7 +435,10 @@ Candidate repair gate diagnostics are summarized in a separate population `confo
 - `--replay-timeout`: timeout in seconds for each replay rollout.
 - `--replay-total-timeout`: optional hard wall-time deadline for the complete
   paired replay. A timeout preserves completed baseline members for a safe
-  retry instead of discarding the partial control experiment.
+  retry instead of discarding the partial control experiment. When a verified
+  policy does not set this option, the framework still applies a safety horizon
+  of six per-member timeout windows to prevent one candidate from occupying an
+  unbounded experiment.
 - `--replay-max-runs`: maximum `aworld-cli run` iterations per replay rollout.
 - `--judge-repetitions`: successful judge samples to aggregate per evaluator call.
 - `--judge-timeout`: timeout in seconds for each judge attempt.
@@ -455,6 +460,10 @@ When `--apply auto_verified` is used and the caller does not override values, th
 - `--baseline-replay-repetitions 2`
 - `--candidate-replay-repetitions 3`
 - `--iterations 10`
+
+The 2/3 replay values are sparse-data defaults. On a sufficiently broad
+independent-case panel the runner adaptively uses 1/1 unless the caller explicitly
+provided either repetition option.
 
 Proposal runs default to one iteration. `auto_verified` uses the larger budget because each verified runtime repair can expose a new protocol frontier. The runner stops early when verification succeeds or progress stalls, and it may grant up to six bounded extension iterations only for newly observed repairable failure families. Duplicate candidates and repeated failure families do not consume unbounded retries.
 
@@ -562,6 +571,16 @@ so an interrupted multi-case replay can reuse valid controls. In `advisory` and
 `measurement-invalid-control-patience`; remaining members are recorded as
 blocked rather than consuming more authoritative work. `off` and `shadow`
 retain their existing decision behavior.
+For a verified dataset with at least the configured minimum number of independent
+cases, the default replay policy uses one baseline and one candidate observation
+per case; independent cases provide the measurement sample, so duplicating every
+case two or three times is not the default source of confidence. Sparse datasets
+retain the configured repetition defaults, and explicit replay-repetition options
+always override the adaptive default. Baseline members are reused across
+compatible candidates and retries. If a candidate member makes the authoritative
+comparison impossible, remaining candidate members stop immediately; an invalid
+control is classified as framework-owned, while a candidate-owned incomparable
+member is returned to the repair frontier.
 Representative screening remains the bounded admission plane, while paired
 replay remains the authoritative full-panel experiment.
 

@@ -854,6 +854,10 @@ def run_optimize_cli(
     import aworld.self_evolve as self_evolve
 
     runtime_apply = apply
+    replay_repetitions_explicit = (
+        baseline_replay_repetitions is not None
+        or candidate_replay_repetitions is not None
+    )
     judge_repetitions = _auto_verified_default(
         runtime_apply,
         judge_repetitions,
@@ -951,6 +955,7 @@ def run_optimize_cli(
             judge_timeout_seconds=judge_timeout_seconds,
         ),
         "replay_enabled": runtime_apply in VERIFIED_APPLY_POLICIES,
+        "replay_repetitions_explicit": replay_repetitions_explicit,
         "runtime_registry_refresher": runtime_registry_refresher,
         "runtime_skill_activator": runtime_skill_activator
         or _default_runtime_skill_activator(),

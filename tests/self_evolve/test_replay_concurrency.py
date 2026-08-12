@@ -109,9 +109,10 @@ async def test_replay_repetitions_respect_skill_owned_concurrency_mode(
         variant_id,
         skill_root,
         artifact_dir,
+        progress_callback=None,
     ):
         nonlocal active, max_active
-        del request, skill_root
+        del request, skill_root, progress_callback
         active += 1
         max_active = max(max_active, active)
         index = int(variant_id.rsplit("-", 1)[-1])
