@@ -49,6 +49,7 @@ from aworld.self_evolve.replay import (
     _infer_baseline_skill_root_from_target,
     _evidence_manifest_metrics,
     _final_answer_artifact_reference_metrics,
+    _frozen_replay_capability_from_mapping,
     _execution_failure_event,
     _extract_trajectory_payload_from_stdout,
     _has_authoritative_per_member_repetitions,
@@ -129,6 +130,37 @@ from aworld.self_evolve.types import (
     SelfEvolveTargetRef,
 )
 from aworld.skills.compat_provider import build_compat_registry
+
+
+def test_frozen_capability_restores_framework_response_record_identity() -> None:
+    capability = _frozen_replay_capability_from_mapping(
+        {
+            "services": [
+                {
+                    "service_id": "browser-runtime",
+                    "requirement_id": "browser-runtime-requirement",
+                    "transport": "skill_runtime",
+                    "response_fixture": "fixture.bin",
+                    "readiness": {"kind": "tcp", "timeout_seconds": 1.0},
+                    "protocol_probes": [
+                        {
+                            "kind": "tcp",
+                            "timeout_seconds": 1.0,
+                            "request_text": '{"method":"Runtime.evaluate"}',
+                            "response_contains": "recorded-value",
+                            "response_record_id": "response-record-stable",
+                        }
+                    ],
+                }
+            ]
+        }
+    )
+
+    assert capability is not None
+    assert (
+        capability.services[0].protocol_probes[0].response_record_id
+        == "response-record-stable"
+    )
 
 
 def test_task_failure_baseline_is_reusable_but_framework_failure_is_not() -> None:

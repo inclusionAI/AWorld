@@ -1045,7 +1045,10 @@ async def test_llm_mutator_carries_candidate_specific_repair_conformance() -> No
     assert "Phase 2 is the processing of payloads inside found gateways" in prompts[0]
     assert "required_fixture_probe_operations" in prompts[0]
     assert "cannot be replaced by a later repetition" in prompts[0]
-    assert "response_contains must remain a recorded scalar leaf" in prompts[0]
+    assert (
+        "framework-finalized response_contains remains an exact recorded scalar leaf"
+        in prompts[0]
+    )
     assert "runtime response must carry the surrounding decoded container" in prompts[0]
     assert "Never remove or relocate the contract's exact_probe" in prompts[0]
     assert "shape-complete compiler contract" in prompts[0]

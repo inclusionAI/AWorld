@@ -1182,6 +1182,50 @@ def test_campaign_grants_one_bounded_repair_for_new_terminal_counterexample(
     assert result["campaign_exhaustion_axes"] == []
 
 
+def test_conformance_counterexample_counts_as_new_repair_evidence() -> None:
+    report = {
+        "gate_results": [
+            {
+                "gate_name": "candidate_repair_conformance",
+                "passed": False,
+                "details": {
+                    "counterexample_contracts": [
+                        {
+                            "schema_version": (
+                                "aworld.self_evolve.fixture_probe_counterexample.v1"
+                            ),
+                            "counterexample_id": (
+                                "fixture-probe-counterexample-abc"
+                            ),
+                            "selector_policy": (
+                                "framework_recorded_response_v1"
+                            ),
+                        }
+                    ]
+                },
+            }
+        ]
+    }
+
+    fingerprints = campaign_module._report_candidate_counterexample_fingerprints(
+        report
+    )
+
+    assert len(fingerprints) == 1
+    assert campaign_module._report_has_new_candidate_counterexample(
+        report,
+        prior_reports=(),
+    )
+    assert not campaign_module._report_has_new_candidate_counterexample(
+        report,
+        prior_reports=(report,),
+    )
+    assert (
+        "constraint-fixture-probe-counterexample-abc"
+        in campaign_module._constraint_identities(report)
+    )
+
+
 def test_shared_measurement_invalid_attempt_is_not_authoritative_consumption() -> None:
     report = {
         "verification_funnel": {"authoritative_candidate_count": 1},

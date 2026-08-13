@@ -1557,9 +1557,10 @@ def test_skill_runtime_accepts_semantically_decoded_fixture_container_expectatio
         tmp_path / "compile",
     )
 
-    assert frozen.services[0].protocol_probes[0].response_contains == (
-        expected_container
-    )
+    probe = frozen.services[0].protocol_probes[0]
+    assert probe.response_contains == "recorded fixture"
+    assert probe.response_record_id is not None
+    assert probe.response_record_id.startswith("response-record-")
 
 
 def test_materializes_bounded_read_only_evidence_derivation_catalog(
@@ -1631,6 +1632,57 @@ def test_recorded_response_index_reconstructs_nested_operation_payloads() -> Non
         for record in index["records"]
     )
     assert all(record["non_empty"] is True for record in index["records"])
+
+
+def test_recorded_response_index_assigns_stable_identity_and_exact_assertion() -> None:
+    raw = json.dumps(
+        {
+            "action_result": {
+                "content": {
+                    "oversized": "x" * 5000,
+                    "bounded": "canonical recorded response",
+                }
+            }
+        }
+    ).encode("utf-8")
+
+    first = _build_recorded_response_index(raw)
+    second = _build_recorded_response_index(raw)
+    selected = first["records"][0]
+
+    assert selected["record_id"].startswith("response-record-")
+    assert selected["record_id"] == second["records"][0]["record_id"]
+    assert selected["canonical_probe_assertion"] == "canonical recorded response"
+    assert selected["selector_policy"] == "framework_recorded_response_v1"
+    assert len(selected["canonical_probe_assertion"]) <= 4096
+
+
+def test_framework_replaces_truncated_compiler_assertion_with_exact_record() -> None:
+    fixture_bytes = json.dumps(
+        {
+            "action_result": {
+                "content": {
+                    "oversized": "x" * 5000,
+                    "bounded": "canonical recorded response",
+                }
+            }
+        }
+    ).encode("utf-8")
+    compiler_probe = replay_capability_module.ReplayProtocolProbe(
+        kind="tcp",
+        timeout_seconds=1.0,
+        request_text='{ "method": "records.query" }',
+        response_contains="x" * 4096,
+    )
+
+    (bound_probe,) = replay_capability_module._framework_bind_protocol_probes(
+        (compiler_probe,),
+        fixture_bytes=fixture_bytes,
+    )
+
+    assert bound_probe.response_contains == "canonical recorded response"
+    assert bound_probe.response_record_id is not None
+    assert bound_probe.response_contains != compiler_probe.response_contains
 
 
 def test_recorded_response_index_aliases_declared_probe_to_non_empty_value() -> None:

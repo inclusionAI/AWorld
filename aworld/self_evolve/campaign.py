@@ -2140,6 +2140,17 @@ def _report_candidate_counterexample_fingerprints(
         if depth > 12:
             continue
         if isinstance(current, Mapping):
+            counterexample_id = current.get("counterexample_id")
+            if (
+                current.get("schema_version")
+                == "aworld.self_evolve.fixture_probe_counterexample.v1"
+                and isinstance(counterexample_id, str)
+                and counterexample_id
+            ):
+                fingerprints.add(
+                    hashlib.sha256(counterexample_id.encode("utf-8")).hexdigest()
+                )
+                continue
             normalized = normalize_counterexample(current)
             if normalized is not None and normalized.get("owner") == "candidate":
                 fingerprints.add(
@@ -2573,6 +2584,14 @@ def _event_identity(event: Mapping[str, Any]) -> str:
 def _constraint_identities(report: Mapping[str, Any]) -> set[str]:
     identities: set[str] = set()
     for item in _walk_mappings(report):
+        counterexample_id = item.get("counterexample_id")
+        if (
+            item.get("schema_version")
+            == "aworld.self_evolve.fixture_probe_counterexample.v1"
+            and isinstance(counterexample_id, str)
+            and counterexample_id
+        ):
+            identities.add("constraint-" + counterexample_id)
         if (
             item.get("projection_schema_version")
             == "aworld.self_evolve.repair_conformance.public.v1"

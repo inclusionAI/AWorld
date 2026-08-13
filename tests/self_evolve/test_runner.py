@@ -763,6 +763,31 @@ def test_feedback_from_report_restores_latest_repairable_screening_package(
     }
 
 
+def test_feedback_from_shared_measurement_failure_does_not_train_candidate(
+    tmp_path: Path,
+) -> None:
+    report_path = tmp_path / "invalid-control" / "report.json"
+    report = {
+        "run_id": "invalid-control",
+        "selected_candidate_id": "candidate-never-observed",
+        "campaign_failure_attribution": {
+            "failure_class": "measurement",
+            "failure_owner": "framework",
+            "failure_scope": "shared_run",
+            "repairable": True,
+        },
+        "iterations": [
+            {
+                "candidate_id": "candidate-never-observed",
+                "status": "rejected",
+                "failed_gates": ["candidate_replay"],
+            }
+        ],
+    }
+
+    assert _feedback_from_report(report, report_path=report_path) == ()
+
+
 def test_feedback_from_verified_only_does_not_mark_candidate_as_published(
     tmp_path: Path,
 ) -> None:
@@ -16886,20 +16911,30 @@ def test_include_prior_run_cases_normalizes_accepted_rejected_and_replay_refs(tm
     for run_id, status, candidate_id in (
         ("accepted-run", "succeeded", "candidate-good"),
         ("rejected-run", "rejected", "candidate-bad"),
+        ("invalid-control-run", "rejected", "candidate-unobserved"),
     ):
         run_dir = store.run_path(run_id)
         run_dir.mkdir(parents=True)
-        (run_dir / "report.json").write_text(
-            json.dumps(
+        report_payload = {
+            "run_id": run_id,
+            "target": {
+                "target_type": "skill",
+                "target_id": "demo",
+                "path": str(skill_path),
+            },
+            "status": status,
+            "selected_candidate_id": candidate_id,
+        }
+        if run_id == "invalid-control-run":
+            report_payload["campaign_failure_attribution"] = {
+                "failure_class": "measurement",
+                "failure_owner": "framework",
+                "failure_scope": "shared_run",
+                "repairable": True,
+            }
+        else:
+            report_payload.update(
                 {
-                    "run_id": run_id,
-                    "target": {
-                        "target_type": "skill",
-                        "target_id": "demo",
-                        "path": str(skill_path),
-                    },
-                    "status": status,
-                    "selected_candidate_id": candidate_id,
                     "replay_path": str(run_dir / "replay" / candidate_id),
                     "evaluator_report_paths": [
                         str(run_dir / "evaluator" / candidate_id / "report.json")
@@ -16915,9 +16950,13 @@ def test_include_prior_run_cases_normalizes_accepted_rejected_and_replay_refs(tm
                             "passed": status == "succeeded",
                         }
                     ],
-                    "candidate_metrics": {"score": 90.0 if status == "succeeded" else 40.0},
+                    "candidate_metrics": {
+                        "score": 90.0 if status == "succeeded" else 40.0
+                    },
                 }
-            ),
+            )
+        (run_dir / "report.json").write_text(
+            json.dumps(report_payload),
             encoding="utf-8",
         )
     dataset = build_dataset_from_source(
@@ -16961,6 +17000,10 @@ def test_include_prior_run_cases_normalizes_accepted_rejected_and_replay_refs(tm
         "/candidate-good/report.json"
     )
     assert rejected_case.input["failed_gates"] == ["score_improvement"]
+    assert all(
+        case.source.get("candidate_id") != "candidate-unobserved"
+        for case in prior_cases
+    )
 
 
 @pytest.mark.asyncio
@@ -21765,7 +21808,6 @@ def test_shared_measurement_without_candidate_observation_releases_authoritative
             "gate_results": [timeout_gate],
         }
     ) is False
-
     # Candidate execution inside an invalid shared experiment is still not an
     # authoritative conclusion and must not consume the Campaign frontier.
     executed_replay = SimpleNamespace(
@@ -21828,6 +21870,35 @@ def test_shared_measurement_without_candidate_observation_releases_authoritative
             "gate_results": [candidate_gate],
         }
     ) is True
+
+
+def test_shared_measurement_failure_does_not_create_iteration_learning_data() -> None:
+    candidate = CandidateVariant(
+        candidate_id="candidate-unobserved",
+        target=SelfEvolveTargetRef("skill", "demo"),
+        content="# Demo\n",
+        rationale="unobserved because the shared control failed",
+    )
+    gate = GateResult(
+        gate_name="candidate_replay",
+        passed=False,
+        reason="shared control was invalid",
+        details={
+            "code": "control_not_comparable",
+            "failure_class": "measurement",
+            "failure_owner": "framework",
+            "failure_scope": "shared_run",
+            "repairable": True,
+        },
+    )
+
+    assert runner_module._iteration_validation_feedback(
+        candidate=candidate,
+        baseline_summary=None,
+        candidate_summary=None,
+        held_out_summary=None,
+        failed_gates=[gate],
+    ) == ()
 
 
 def test_effective_replay_repetitions_share_planning_and_execution_policy() -> None:
