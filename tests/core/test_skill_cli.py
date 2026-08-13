@@ -906,6 +906,72 @@ def test_run_top_level_command_prefers_task_response_trajectory(
     assert payload["trajectory"][0]["action"]["tool_calls"][0]["name"] == "browser"
 
 
+def test_run_top_level_command_publishes_atomic_self_evolve_task_response(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    full_trajectory = [
+        {
+            "action": {
+                "content": "Replay completed.",
+                "is_agent_finished": "True",
+            }
+        }
+    ]
+
+    async def fake_run_direct_mode(**kwargs):
+        return {
+            "results": [
+                {
+                    "iteration": 1,
+                    "response": "Replay completed.",
+                    "completed": True,
+                    "success": True,
+                    "trajectory": full_trajectory,
+                }
+            ]
+        }
+
+    response_path = tmp_path / "framework_task_response.json"
+    monkeypatch.setenv(
+        "AWORLD_SELF_EVOLVE_TASK_RESPONSE_PATH",
+        str(response_path),
+    )
+    monkeypatch.setattr(
+        "aworld_cli.top_level_commands.run_cmd.bootstrap_runtime",
+        lambda **kwargs: None,
+    )
+    monkeypatch.setattr(main_module, "_resolve_agent_dirs", lambda _dirs: [])
+    monkeypatch.setattr(main_module, "_run_direct_mode", fake_run_direct_mode)
+    args = SimpleNamespace(
+        task="Replay this task",
+        agent="Aworld",
+        skill=None,
+        max_runs=1,
+        max_cost=None,
+        max_duration=None,
+        completion_signal=None,
+        completion_threshold=3,
+        non_interactive=True,
+        session_id=None,
+        remote_backend=None,
+        agent_dir=None,
+        agent_file=None,
+        skill_path=None,
+        env_file=".env",
+        emit_trajectory=False,
+    )
+    context = SimpleNamespace(argv=["aworld-cli", "run"])
+
+    assert RunTopLevelCommand().run(args, context) == 0
+
+    payload = json.loads(response_path.read_text(encoding="utf-8"))
+    assert payload["schema_version"] == "aworld.self_evolve.task_response.v1"
+    assert payload["trajectory_capture_mode"] == "task_response"
+    assert payload["trajectory"] == full_trajectory
+    assert not list(tmp_path.glob("*.tmp"))
+
+
 @pytest.mark.asyncio
 async def test_run_direct_mode_prints_restored_transcript_before_running(
     monkeypatch: pytest.MonkeyPatch,

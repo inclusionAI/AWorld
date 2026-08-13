@@ -3,8 +3,35 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
+from pathlib import Path
 
 from aworld_cli.runtime_bootstrap import RuntimeBootstrapError, bootstrap_runtime
+
+
+_SELF_EVOLVE_TASK_RESPONSE_SCHEMA = "aworld.self_evolve.task_response.v1"
+
+
+def _write_self_evolve_task_response(payload: dict) -> None:
+    """Publish final task output atomically for the replay supervisor."""
+
+    raw_path = os.environ.get("AWORLD_SELF_EVOLVE_TASK_RESPONSE_PATH")
+    if not raw_path:
+        return
+    destination = Path(raw_path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.with_name(
+        f".{destination.name}.{os.getpid()}.tmp"
+    )
+    sidecar = {
+        "schema_version": _SELF_EVOLVE_TASK_RESPONSE_SCHEMA,
+        **payload,
+    }
+    temporary.write_text(
+        json.dumps(sidecar, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    os.replace(temporary, destination)
 
 
 def _register_run_options(parser: argparse.ArgumentParser) -> None:
@@ -157,16 +184,23 @@ class RunTopLevelCommand:
                 ),
             )
         )
-        if args.emit_trajectory:
+        task_response_path = os.environ.get(
+            "AWORLD_SELF_EVOLVE_TASK_RESPONSE_PATH"
+        )
+        if args.emit_trajectory or task_response_path:
             from aworld_cli.main import _trajectory_payload_from_direct_run_summary
 
+            trajectory_payload = _trajectory_payload_from_direct_run_summary(
+                summary,
+                prompt=args.task,
+                agent_name=agent_name,
+            )
+            if task_response_path:
+                _write_self_evolve_task_response(trajectory_payload)
+        if args.emit_trajectory:
             print(
                 json.dumps(
-                    _trajectory_payload_from_direct_run_summary(
-                        summary,
-                        prompt=args.task,
-                        agent_name=agent_name,
-                    ),
+                    trajectory_payload,
                     ensure_ascii=False,
                 )
             )
