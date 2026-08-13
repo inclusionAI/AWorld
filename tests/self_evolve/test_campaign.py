@@ -1226,6 +1226,42 @@ def test_conformance_counterexample_counts_as_new_repair_evidence() -> None:
     )
 
 
+def test_schema_parse_counterexample_counts_as_new_repair_evidence() -> None:
+    report = {
+        "gate_results": [
+            {
+                "gate_name": "candidate_repair_conformance",
+                "passed": False,
+                "details": {
+                    "counterexample_contracts": [
+                        {
+                            "schema_version": (
+                                "aworld.self_evolve.schema_counterexample.v1"
+                            ),
+                            "counterexample_id": "schema-counterexample-abc",
+                            "constraint": {
+                                "field_path": (
+                                    "services[*@transport:http_fixture]"
+                                    ".runtime_entrypoint"
+                                ),
+                                "rule": "type",
+                            },
+                        }
+                    ]
+                },
+            }
+        ]
+    }
+
+    assert campaign_module._report_has_new_candidate_counterexample(
+        report,
+        prior_reports=(),
+    )
+    assert "constraint-schema-counterexample-abc" in (
+        campaign_module._constraint_identities(report)
+    )
+
+
 def test_shared_measurement_invalid_attempt_is_not_authoritative_consumption() -> None:
     report = {
         "verification_funnel": {"authoritative_candidate_count": 1},
@@ -1250,6 +1286,9 @@ def test_shared_measurement_timeout_does_not_exhaust_authoritative_frontier(
         run_id = f"{request['campaign_id']}-cycle-{request['campaign_cycle']:03d}"
         if request["campaign_cycle"] == 1:
             report = _report(_event())
+            candidate_id = "candidate-measurement-pending"
+            report["candidate_ids"] = [candidate_id]
+            report["selected_candidate_id"] = candidate_id
             report["campaign_failure_attribution"] = {
                 "primary_gate": "candidate_replay",
                 "code": "replay_total_timeout",
@@ -1265,6 +1304,16 @@ def test_shared_measurement_timeout_does_not_exhaust_authoritative_frontier(
                 "authoritative_candidate_attempt_count": 1,
                 "authoritative_candidate_count": 0,
             }
+            candidate_path = (
+                tmp_path
+                / ".aworld"
+                / "self_evolve"
+                / run_id
+                / "candidates"
+                / f"{candidate_id}.json"
+            )
+            candidate_path.parent.mkdir(parents=True, exist_ok=True)
+            candidate_path.write_text("{}", encoding="utf-8")
         else:
             report = {
                 "run_id": run_id,
@@ -1278,7 +1327,7 @@ def test_shared_measurement_timeout_does_not_exhaust_authoritative_frontier(
             }
         report["run_id"] = run_id
         report_path = tmp_path / ".aworld" / "self_evolve" / run_id / "report.json"
-        report_path.parent.mkdir(parents=True)
+        report_path.parent.mkdir(parents=True, exist_ok=True)
         report_path.write_text(json.dumps(report), encoding="utf-8")
         return {
             "run_id": run_id,
@@ -1300,8 +1349,123 @@ def test_shared_measurement_timeout_does_not_exhaust_authoritative_frontier(
 
     assert len(calls) == 2
     assert [call["max_full_evaluation_candidates"] for call in calls] == [1, 1]
+    assert calls[1]["campaign_measurement_pending_run_id"] == (
+        calls[0]["campaign_id"] + "-cycle-001"
+    )
+    assert calls[1]["campaign_measurement_pending_candidate_id"] == (
+        "candidate-measurement-pending"
+    )
     assert result["campaign_status"] == "complete"
     assert result["campaign_authoritative_candidate_count"] == 1
+    assert result["campaign_measurement_retry_count"] == 1
+    assert result["campaign_candidate_cycle_count"] == 1
+
+
+def test_shared_measurement_retry_fails_closed_without_candidate_checkpoint(
+    tmp_path: Path,
+) -> None:
+    def run_once(**request):
+        run_id = f"{request['campaign_id']}-cycle-{request['campaign_cycle']:03d}"
+        report = _report(_event())
+        report.update(
+            {
+                "run_id": run_id,
+                "campaign_failure_attribution": {
+                    "primary_gate": "candidate_replay",
+                    "code": "replay_total_timeout",
+                    "failure_class": "measurement",
+                    "failure_owner": "framework",
+                    "failure_scope": "shared_run",
+                    "failure_stage": "evaluation",
+                    "repairable": True,
+                    "next_action": "continue_measurement",
+                },
+            }
+        )
+        report_path = tmp_path / ".aworld" / "self_evolve" / run_id / "report.json"
+        report_path.parent.mkdir(parents=True)
+        report_path.write_text(json.dumps(report), encoding="utf-8")
+        return {
+            "run_id": run_id,
+            "status": "rejected",
+            "report_path": str(report_path),
+        }
+
+    result = run_self_improvement_campaign(
+        workspace_root=tmp_path,
+        request={
+            "from_trajectory": "trajectory.log",
+            "apply_policy": "verified_only",
+            "infer_target": True,
+        },
+        max_improvement_cycles=3,
+        run_once=run_once,
+    )
+
+    assert result["campaign_status"] == "exhausted"
+    assert result["campaign_measurement_retry_count"] == 0
+    assert result["self_improvement_disposition"]["reason_code"] == (
+        "campaign_measurement_retry_candidate_missing"
+    )
+
+
+def test_shared_measurement_retries_are_bounded_separately_from_candidate_cycles(
+    tmp_path: Path,
+) -> None:
+    calls: list[dict] = []
+
+    def run_once(**request):
+        calls.append(request)
+        run_id = f"{request['campaign_id']}-cycle-{request['campaign_cycle']:03d}"
+        candidate_id = "candidate-measurement-pending"
+        report = _report(_event())
+        report.update(
+            {
+                "run_id": run_id,
+                "candidate_ids": [candidate_id],
+                "selected_candidate_id": candidate_id,
+                "campaign_failure_attribution": {
+                    "primary_gate": "candidate_replay",
+                    "code": "replay_total_timeout",
+                    "failure_class": "measurement",
+                    "failure_owner": "framework",
+                    "failure_scope": "shared_run",
+                    "failure_stage": "evaluation",
+                    "repairable": True,
+                    "next_action": "continue_measurement",
+                },
+            }
+        )
+        run_path = tmp_path / ".aworld" / "self_evolve" / run_id
+        candidate_path = run_path / "candidates" / f"{candidate_id}.json"
+        candidate_path.parent.mkdir(parents=True)
+        candidate_path.write_text("{}", encoding="utf-8")
+        report_path = run_path / "report.json"
+        report_path.write_text(json.dumps(report), encoding="utf-8")
+        return {
+            "run_id": run_id,
+            "status": "rejected",
+            "report_path": str(report_path),
+        }
+
+    result = run_self_improvement_campaign(
+        workspace_root=tmp_path,
+        request={
+            "from_trajectory": "trajectory.log",
+            "apply_policy": "verified_only",
+            "infer_target": True,
+        },
+        max_improvement_cycles=1,
+        run_once=run_once,
+    )
+
+    assert len(calls) == 3
+    assert result["campaign_status"] == "exhausted"
+    assert result["campaign_measurement_retry_count"] == 2
+    assert result["campaign_candidate_cycle_count"] == 1
+    assert result["self_improvement_disposition"]["reason_code"] == (
+        "campaign_measurement_retry_limit_reached"
+    )
 
 
 def test_campaign_has_no_implicit_default_budget_per_cycle(

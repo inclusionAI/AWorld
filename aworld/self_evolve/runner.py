@@ -2028,6 +2028,36 @@ def _candidate_conformance_counterexample_ids(
     return identities
 
 
+def _candidate_conformance_counterexample_stages(
+    failures: Iterable[tuple[CandidateVariant, GateResult]],
+) -> dict[str, set[str]]:
+    """Group typed conformance counterexamples by the stage that discovered them."""
+
+    stages: dict[str, set[str]] = {}
+    for _, gate in failures:
+        details = gate.details
+        if not isinstance(details, Mapping):
+            continue
+        raw_contracts = details.get("counterexample_contracts")
+        if not isinstance(raw_contracts, (list, tuple)):
+            continue
+        for contract in raw_contracts:
+            if not isinstance(contract, Mapping):
+                continue
+            identity = contract.get("counterexample_id")
+            schema = str(contract.get("schema_version") or "")
+            if not isinstance(identity, str) or not identity:
+                continue
+            if schema == "aworld.self_evolve.schema_counterexample.v1":
+                stage = "capability_parse_schema"
+            elif schema == "aworld.self_evolve.fixture_probe_counterexample.v1":
+                stage = "compiled_probe_conformance"
+            else:
+                stage = "candidate_conformance"
+            stages.setdefault(stage, set()).add(identity)
+    return stages
+
+
 def _candidate_conformance_repair_topologies(
     failures: Iterable[tuple[CandidateVariant, GateResult]],
 ) -> dict[str, tuple[str, ...]]:
@@ -4143,6 +4173,8 @@ class SelfEvolveRunner:
         conformance_strategy_topologies: dict[str, set[str]] = {}
         pending_conformance_counterexamples: set[str] = set()
         resolved_conformance_counterexamples: set[str] = set()
+        conformance_counterexamples_by_stage: dict[str, set[str]] = {}
+        repeated_contract_replacement_candidate_ids: set[str] = set()
         conformance_strategy_switch_not_materialized = False
         candidate_generation_infrastructure_retries = 0
         raw_generation_attempt_count = 0
@@ -5706,13 +5738,61 @@ class SelfEvolveRunner:
                 )
                 else ()
             )
+            prior_conformance_counterexamples = set(
+                pending_conformance_counterexamples
+            )
             observed_conformance_counterexamples = (
                 _candidate_conformance_counterexample_ids(
                     screening_failures
                 )
             )
+            for stage, counterexample_ids in (
+                _candidate_conformance_counterexample_stages(
+                    screening_failures
+                ).items()
+            ):
+                conformance_counterexamples_by_stage.setdefault(
+                    stage,
+                    set(),
+                ).update(counterexample_ids)
+            repeated_conformance_counterexamples = (
+                prior_conformance_counterexamples
+                & observed_conformance_counterexamples
+            )
+            released_repeated_contract_candidate_ids: set[str] = set()
+            if repeated_conformance_counterexamples:
+                for failed_candidate, failed_gate in screening_failures:
+                    candidate_counterexamples = (
+                        _candidate_conformance_counterexample_ids(
+                            ((failed_candidate, failed_gate),)
+                        )
+                    )
+                    if not (
+                        candidate_counterexamples
+                        & repeated_conformance_counterexamples
+                    ):
+                        continue
+                    released_repeated_contract_candidate_ids.add(
+                        failed_candidate.candidate_id
+                    )
+                effective_generated_candidate_ids.difference_update(
+                    released_repeated_contract_candidate_ids
+                )
+                repeated_contract_replacement_candidate_ids.update(
+                    released_repeated_contract_candidate_ids
+                )
+                generated_candidate_slot_count = len(
+                    effective_generated_candidate_ids
+                )
+                if screening_report is not None:
+                    screening_report[
+                        "repeated_contract_replacement_candidate_ids"
+                    ] = sorted(released_repeated_contract_candidate_ids)
+                    screening_report[
+                        "repeated_counterexample_ids"
+                    ] = sorted(repeated_conformance_counterexamples)
             resolved_conformance_counterexamples.update(
-                pending_conformance_counterexamples
+                prior_conformance_counterexamples
                 - observed_conformance_counterexamples
             )
             pending_conformance_counterexamples = set(
@@ -6731,32 +6811,35 @@ class SelfEvolveRunner:
                     if generation_conformance_frontier_exhausted
                     else {}
                 ),
-                **(
-                    {
-                        "conformance_strategy_switch_count": (
-                            conformance_strategy_switch_count
-                        )
-                    }
-                    if conformance_strategy_switch_request_count
-                    else {}
+                "conformance_strategy_switch_count": (
+                    conformance_strategy_switch_count
                 ),
-                **(
-                    {
-                        "conformance_strategy_switch_request_count": (
-                            conformance_strategy_switch_request_count
-                        ),
-                        "conformance_strategy_switch_not_materialized": (
-                            conformance_strategy_switch_not_materialized
-                        ),
-                        "pending_conformance_counterexample_count": len(
-                            pending_conformance_counterexamples
-                        ),
-                        "resolved_conformance_counterexample_count": len(
-                            resolved_conformance_counterexamples
-                        ),
+                "conformance_strategy_switch_request_count": (
+                    conformance_strategy_switch_request_count
+                ),
+                "conformance_strategy_switch_not_materialized": (
+                    conformance_strategy_switch_not_materialized
+                ),
+                "pending_conformance_counterexample_count": len(
+                    pending_conformance_counterexamples
+                ),
+                "resolved_conformance_counterexample_count": len(
+                    resolved_conformance_counterexamples
+                ),
+                "conformance_counterexamples_by_stage": {
+                    stage: {
+                        "count": len(counterexample_ids),
+                        "counterexample_ids": sorted(counterexample_ids),
                     }
-                    if conformance_strategy_switch_request_count
-                    else {}
+                    for stage, counterexample_ids in sorted(
+                        conformance_counterexamples_by_stage.items()
+                    )
+                },
+                "repeated_contract_replacement_candidate_count": len(
+                    repeated_contract_replacement_candidate_ids
+                ),
+                "repeated_contract_replacement_candidate_ids": sorted(
+                    repeated_contract_replacement_candidate_ids
                 ),
                 **(
                     {"generation_stop_reason": generation_stop_reason}
@@ -8699,6 +8782,7 @@ class SelfEvolveRunner:
                         "schema_field_constraints",
                         "schema_field_violations",
                         "schema_field_violation_count",
+                        "counterexample_contracts",
                     }
                 }
                 failure_event = ReplayFailureEvent(
@@ -13925,6 +14009,8 @@ def optimize_from_cli_request(
     campaign_cycle: int | None = None,
     campaign_prior_run_ids: Iterable[str] | None = None,
     campaign_expected_target: Mapping[str, Any] | None = None,
+    campaign_measurement_pending_run_id: str | None = None,
+    campaign_measurement_pending_candidate_id: str | None = None,
     from_source: str | None = None,
     source_ingestor: str | None = None,
     source_manifest: str | None = None,
@@ -14678,9 +14764,70 @@ def optimize_from_cli_request(
                 effective_concurrency_policy
             )
 
-    self_evolve_runner = SelfEvolveRunner(
-        store=store,
-        optimizer=TraceReflectiveLLMMutator(
+    measurement_pending_candidate: CandidateVariant | None = None
+    pending_measurement_values = (
+        campaign_measurement_pending_run_id,
+        campaign_measurement_pending_candidate_id,
+    )
+    if any(pending_measurement_values):
+        if not all(pending_measurement_values):
+            raise ValueError(
+                "campaign measurement resume requires both run and candidate ids"
+            )
+        assert campaign_measurement_pending_run_id is not None
+        assert campaign_measurement_pending_candidate_id is not None
+        if campaign_measurement_pending_run_id not in set(
+            campaign_prior_run_ids or ()
+        ):
+            raise ValueError(
+                "campaign measurement resume source is outside campaign lineage"
+            )
+        pending_candidate_path = (
+            store.run_path(campaign_measurement_pending_run_id)
+            / "candidates"
+            / f"{campaign_measurement_pending_candidate_id}.json"
+        )
+        measurement_pending_candidate = _load_candidate_variant(
+            pending_candidate_path
+        )
+        pending_source_report = store.read_report(
+            campaign_measurement_pending_run_id
+        )
+        expected_pending_fingerprint = pending_source_report.get(
+            "measurement_pending_candidate_fingerprint"
+        )
+        actual_pending_fingerprint = candidate_package_fingerprint(
+            measurement_pending_candidate
+        )
+        if (
+            isinstance(expected_pending_fingerprint, str)
+            and expected_pending_fingerprint
+            and expected_pending_fingerprint != actual_pending_fingerprint
+        ):
+            raise ValueError(
+                "campaign measurement resume candidate checkpoint changed"
+            )
+        if measurement_pending_candidate.target != target_adapter.identity:
+            raise ValueError(
+                "campaign measurement resume candidate target changed"
+            )
+        _emit_progress(
+            progress_callback,
+            "resume",
+            (
+                "Resuming measurement-pending candidate "
+                f"{campaign_measurement_pending_candidate_id} from "
+                f"{campaign_measurement_pending_run_id}"
+            ),
+        )
+
+    optimizer: CandidateOptimizer = (
+        _FixedCandidateOptimizer(
+            candidate=measurement_pending_candidate,
+            source_run_id=str(campaign_measurement_pending_run_id),
+        )
+        if measurement_pending_candidate is not None
+        else TraceReflectiveLLMMutator(
             mutate_text=_cli_default_mutation,
             population_callable=(
                 _cli_candidate_population
@@ -14688,7 +14835,12 @@ def optimize_from_cli_request(
                 else None
             ),
             concurrency_policy=effective_concurrency_policy,
-        ),
+        )
+    )
+
+    self_evolve_runner = SelfEvolveRunner(
+        store=store,
+        optimizer=optimizer,
         evaluation_backend=evaluation_backend,
         regression_backend=regression_backend,
         regression_suites=resolved_regression_suites,
@@ -14697,7 +14849,11 @@ def optimize_from_cli_request(
         challenger_max_cases=challenger_max_cases,
         post_apply_evaluator=post_apply_evaluator,
         min_score_delta=min_score_delta,
-        max_iterations=effective_iteration_budget,
+        max_iterations=(
+            1
+            if measurement_pending_candidate is not None
+            else effective_iteration_budget
+        ),
         min_eval_cases=min_eval_cases,
         judge_repetitions=judge_repetitions,
         max_run_tokens=max_run_tokens,
@@ -14742,7 +14898,11 @@ def optimize_from_cli_request(
         replay_max_steps=replay_max_steps,
         replay_candidate_limit=replay_candidate_limit,
         candidate_screening_max_cases=candidate_screening_max_cases,
-        max_generated_candidates=max_generated_candidates,
+        max_generated_candidates=(
+            1
+            if measurement_pending_candidate is not None
+            else max_generated_candidates
+        ),
         max_full_evaluation_candidates=max_full_evaluation_candidates,
         max_score_tiebreak_candidates=max_score_tiebreak_candidates,
         baseline_replay_repetitions=baseline_replay_repetitions,
@@ -14815,6 +14975,34 @@ def optimize_from_cli_request(
 
     report_path = run_path / "report.json"
     report = _load_json_mapping(report_path)
+    measurement_checkpoint = _measurement_pending_candidate_checkpoint(
+        run_path=run_path,
+        report=report,
+    )
+    if measurement_checkpoint is not None:
+        checkpoint_candidate_id, checkpoint_fingerprint = (
+            measurement_checkpoint
+        )
+        report["measurement_pending_candidate_id"] = checkpoint_candidate_id
+        report["measurement_pending_candidate_fingerprint"] = (
+            checkpoint_fingerprint
+        )
+    if measurement_pending_candidate is not None:
+        report["measurement_resume"] = {
+            "schema_version": "aworld.self_evolve.measurement_resume.v1",
+            "source_run_id": campaign_measurement_pending_run_id,
+            "candidate_id": measurement_pending_candidate.candidate_id,
+            "candidate_fingerprint": candidate_package_fingerprint(
+                measurement_pending_candidate
+            ),
+            "generation_skipped": True,
+            "resume_scope": "shared_measurement",
+        }
+    if (
+        measurement_pending_candidate is not None
+        or report.get("measurement_pending_candidate_id") is not None
+    ):
+        store.write_report(run_id, report)
     selected_candidate_id = (
         result.selected_candidate.candidate_id
         if result.selected_candidate is not None
@@ -17867,6 +18055,55 @@ def _report_has_shared_measurement_failure(
     return False
 
 
+def _measurement_pending_candidate_checkpoint(
+    *,
+    run_path: Path,
+    report: Mapping[str, Any],
+) -> tuple[str, str] | None:
+    """Resolve the exact immutable candidate behind a shared measurement stop."""
+
+    if not _report_has_shared_measurement_failure(report):
+        return None
+    candidate_ids: list[str] = []
+    expected_fingerprints: dict[str, str] = {}
+    for key in ("campaign_failure_attribution", "rejection_attribution"):
+        attribution = report.get(key)
+        if not isinstance(attribution, Mapping):
+            continue
+        candidate_id = attribution.get("resume_candidate_id")
+        if isinstance(candidate_id, str) and candidate_id:
+            candidate_ids.append(candidate_id)
+            fingerprint = attribution.get(
+                "resume_candidate_package_fingerprint"
+            )
+            if isinstance(fingerprint, str) and fingerprint:
+                expected_fingerprints[candidate_id] = fingerprint
+    selected_candidate_id = report.get("selected_candidate_id")
+    if isinstance(selected_candidate_id, str) and selected_candidate_id:
+        candidate_ids.append(selected_candidate_id)
+    raw_candidate_ids = report.get("candidate_ids")
+    if isinstance(raw_candidate_ids, (list, tuple)):
+        normalized = [
+            item for item in raw_candidate_ids if isinstance(item, str) and item
+        ]
+        if len(normalized) == 1:
+            candidate_ids.extend(normalized)
+    for candidate_id in dict.fromkeys(candidate_ids):
+        candidate_path = run_path / "candidates" / f"{candidate_id}.json"
+        if not candidate_path.is_file() or candidate_path.is_symlink():
+            continue
+        try:
+            candidate = _load_candidate_variant(candidate_path)
+            fingerprint = candidate_package_fingerprint(candidate)
+        except (OSError, TypeError, ValueError):
+            continue
+        expected = expected_fingerprints.get(candidate_id)
+        if expected is not None and expected != fingerprint:
+            continue
+        return candidate_id, fingerprint
+    return None
+
+
 def _repair_feedback_from_selected_candidate(
     report: Mapping[str, Any],
     *,
@@ -19821,6 +20058,7 @@ def _failed_probe_typed_feedback(
     constraints: dict[str, dict[str, object]] = {}
     runtime_response_constraints: dict[str, dict[str, object]] = {}
     runtime_response_observations: list[dict[str, object]] = []
+    counterexample_contracts: dict[str, dict[str, object]] = {}
     violations: list[dict[str, object]] = []
     diagnostics: list[dict[str, object]] = []
     violation_count = 0
@@ -19859,6 +20097,22 @@ def _failed_probe_typed_feedback(
         raw_count = result.get("schema_field_violation_count")
         if isinstance(raw_count, int) and not isinstance(raw_count, bool):
             violation_count += max(0, raw_count)
+        raw_counterexamples = result.get("counterexample_contracts")
+        if isinstance(raw_counterexamples, (list, tuple)):
+            projected_counterexamples: list[dict[str, object]] = []
+            for item in raw_counterexamples[:100]:
+                if not isinstance(item, Mapping):
+                    continue
+                counterexample_id = item.get("counterexample_id")
+                if not isinstance(counterexample_id, str) or not counterexample_id:
+                    continue
+                value = dict(item)
+                counterexample_contracts[counterexample_id] = value
+                projected_counterexamples.append(value)
+            if projected_counterexamples:
+                diagnostic["counterexample_contracts"] = (
+                    projected_counterexamples
+                )
         raw_runtime_constraints = result.get("runtime_response_constraints")
         if isinstance(raw_runtime_constraints, (list, tuple)):
             projected_runtime_constraints: list[dict[str, object]] = []
@@ -19895,6 +20149,11 @@ def _failed_probe_typed_feedback(
         feedback["schema_field_violation_count"] = (
             violation_count if violation_count else len(violations)
         )
+    if counterexample_contracts:
+        feedback["counterexample_contracts"] = [
+            counterexample_contracts[key]
+            for key in sorted(counterexample_contracts)
+        ]
     if runtime_response_constraints:
         feedback["runtime_response_constraints"] = [
             runtime_response_constraints[key]

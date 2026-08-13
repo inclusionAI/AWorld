@@ -29,6 +29,39 @@ from aworld.self_evolve.replay_capability import (
 from aworld.self_evolve.schema_diagnostics import SchemaFieldRepairConstraint
 
 
+def test_conditional_service_schema_aggregates_parse_counterexamples() -> None:
+    services = [
+        {
+            "transport": "http_fixture",
+            "runtime_entrypoint": "replay/runtime.py",
+        },
+        {
+            "transport": "skill_runtime",
+        },
+    ]
+
+    with pytest.raises(ReplayCapabilityError) as error:
+        replay_capability_module._validate_conditional_service_fields(services)
+
+    assert error.value.code == "schema_field_validation_failed"
+    assert error.value.details["code"] == (
+        "service_conditional_field_validation_failed"
+    )
+    constraints = error.value.details["schema_field_constraints"]
+    assert {item["field_path"] for item in constraints} == {
+        "services[*@transport:http_fixture].runtime_entrypoint",
+        "services[*@transport:skill_runtime].runtime_entrypoint",
+    }
+    counterexamples = error.value.details["counterexample_contracts"]
+    assert len(counterexamples) == 2
+    assert all(
+        item["schema_version"]
+        == "aworld.self_evolve.schema_counterexample.v1"
+        for item in counterexamples
+    )
+    assert len({item["counterexample_id"] for item in counterexamples}) == 2
+
+
 def test_compile_failure_collects_independent_runtime_binding_constraint(
     tmp_path: Path,
 ) -> None:

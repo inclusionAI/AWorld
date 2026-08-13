@@ -11338,6 +11338,14 @@ async def test_verified_runner_bounds_authoritative_candidates_across_iterations
         "unique_generated_candidate_count": 2,
         "generation_frontier_exhausted": False,
         "generation_policy_frontier_exhausted": False,
+        "conformance_strategy_switch_count": 0,
+        "conformance_strategy_switch_request_count": 0,
+        "conformance_strategy_switch_not_materialized": False,
+        "pending_conformance_counterexample_count": 0,
+        "resolved_conformance_counterexample_count": 0,
+        "conformance_counterexamples_by_stage": {},
+        "repeated_contract_replacement_candidate_count": 0,
+        "repeated_contract_replacement_candidate_ids": [],
         "generation_stop_reason": "authoritative_candidate_limit_reached",
         "policy_filtered_candidate_count": 0,
         "max_authoritative_candidates": 2,
@@ -11585,6 +11593,16 @@ async def test_verified_runner_does_not_count_unmaterialized_strategy_switch(
                         "code": "repair_probe_execution_failed",
                         "stage": "repair_conformance",
                         "failure_fingerprint": failure_fingerprint,
+                        "counterexample_contracts": [
+                            {
+                                "schema_version": (
+                                    "aworld.self_evolve.schema_counterexample.v1"
+                                ),
+                                "counterexample_id": (
+                                    "schema-counterexample-runtime-entrypoint"
+                                ),
+                            }
+                        ],
                         "failure_event": failure_event,
                         "causal_failure_events": [failure_event],
                     },
@@ -11638,6 +11656,15 @@ async def test_verified_runner_does_not_count_unmaterialized_strategy_switch(
     assert funnel["conformance_strategy_switch_request_count"] == 1
     assert funnel["conformance_strategy_switch_count"] == 0
     assert funnel["conformance_strategy_switch_not_materialized"] is True
+    assert funnel["repeated_contract_replacement_candidate_count"] == 2
+    assert funnel["conformance_counterexamples_by_stage"] == {
+        "capability_parse_schema": {
+            "count": 1,
+            "counterexample_ids": [
+                "schema-counterexample-runtime-entrypoint"
+            ],
+        }
+    }
     assert funnel["generation_stop_reason"] == (
         "conformance_strategy_switch_not_materialized"
     )
@@ -21899,6 +21926,69 @@ def test_shared_measurement_failure_does_not_create_iteration_learning_data() ->
         held_out_summary=None,
         failed_gates=[gate],
     ) == ()
+
+
+def test_measurement_checkpoint_uses_exact_resume_candidate(
+    tmp_path: Path,
+) -> None:
+    store = FilesystemSelfEvolveStore(tmp_path)
+    run_id = "run-measurement-checkpoint"
+    candidates = tuple(
+        CandidateVariant(
+            candidate_id=f"candidate-{index}",
+            target=SelfEvolveTargetRef("skill", "demo", "/skills/demo/SKILL.md"),
+            content=f"# Demo\n\nCandidate {index}.\n",
+            rationale="measurement checkpoint selection",
+        )
+        for index in range(2)
+    )
+    for candidate in candidates:
+        store.write_candidate(run_id, candidate)
+    expected_fingerprint = runner_module.candidate_package_fingerprint(
+        candidates[1]
+    )
+    report = {
+        "candidate_ids": [item.candidate_id for item in candidates],
+        "selected_candidate_id": candidates[0].candidate_id,
+        "campaign_failure_attribution": {
+            "failure_class": "measurement",
+            "failure_owner": "framework",
+            "failure_scope": "shared_run",
+            "resume_candidate_id": candidates[1].candidate_id,
+            "resume_candidate_package_fingerprint": expected_fingerprint,
+        },
+    }
+
+    checkpoint = runner_module._measurement_pending_candidate_checkpoint(
+        run_path=store.run_path(run_id),
+        report=report,
+    )
+
+    assert checkpoint == (candidates[1].candidate_id, expected_fingerprint)
+
+
+def test_failed_probe_feedback_preserves_schema_counterexample_contracts() -> None:
+    counterexample = {
+        "schema_version": "aworld.self_evolve.schema_counterexample.v1",
+        "counterexample_id": "schema-counterexample-probe-runtime",
+        "constraint": {
+            "field_path": "services[*@transport:http_fixture].runtime_entrypoint",
+            "rule": "type",
+        },
+    }
+
+    feedback = runner_module._failed_probe_typed_feedback(
+        (
+            {
+                "code": "schema_field_validation_failed",
+                "error_type": "ReplayCapabilityError",
+                "reason": "conditional field violation",
+                "counterexample_contracts": [counterexample],
+            },
+        )
+    )
+
+    assert feedback["counterexample_contracts"] == [counterexample]
 
 
 def test_effective_replay_repetitions_share_planning_and_execution_policy() -> None:
