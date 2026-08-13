@@ -295,6 +295,7 @@ from aworld.self_evolve.replay import (
     replay_capability_fixture_response_leaf_values,
     replay_capability_fixture_summaries,
     replay_dataset_fingerprint,
+    _baseline_invalid_for_measurement,
     _baseline_replay_is_reusable,
     _distributed_member_repetitions,
     _load_variant_result_from_dir,
@@ -5656,6 +5657,9 @@ class SelfEvolveRunner:
                     optimizer_result
                 )
             )
+            stored_candidate_admission_reason = (
+                _optimizer_stored_candidate_admission_reason(self.optimizer)
+            )
             candidate_population, screening_report = await self._screen_candidate_population(
                 run_id=run_id,
                 target=target,
@@ -5671,6 +5675,10 @@ class SelfEvolveRunner:
                     _feedback_requires_counterexample_screening(
                         (*prior_feedback, *validation_feedback)
                     )
+                ),
+                stored_measurement_resume=(
+                    stored_candidate_admission_reason
+                    == "stored_candidate_measurement_resume"
                 ),
             )
             if screening_report is not None:
@@ -7228,6 +7236,7 @@ class SelfEvolveRunner:
         attempt_keys: Mapping[str, CandidateAttemptKey] | None = None,
         budget_context: _RunBudgetContext | None = None,
         require_single_candidate_screening: bool = False,
+        stored_measurement_resume: bool = False,
     ) -> tuple[tuple[CandidateVariant, ...], dict[str, object] | None]:
         repair_conformance_contracts = repair_conformance_contracts or {}
         if (
@@ -7291,6 +7300,45 @@ class SelfEvolveRunner:
                 "phenotype_duplicate_of": dict(phenotype_duplicates),
                 "phenotype_fingerprints": dict(phenotype_fingerprints),
             }
+
+        if stored_measurement_resume:
+            if len(conformance_candidates) != 1:
+                raise ValueError(
+                    "stored measurement resume requires exactly one frozen candidate"
+                )
+            sole_candidate = conformance_candidates[0]
+            screening_report = {
+                "screening_strategy": "stored_candidate_measurement_resume",
+                "screening_role": "bypassed_for_authoritative_measurement",
+                "generated_candidate_count": 1,
+                "attempted_candidate_count": 0,
+                "physical_pair_execution_count": 0,
+                "selected_candidate_id": sole_candidate.candidate_id,
+                "selected_candidate_ids": [sole_candidate.candidate_id],
+                "candidate_dispositions": {
+                    sole_candidate.candidate_id: (
+                        "promoted_to_authoritative_measurement_resume"
+                    ),
+                },
+                "selection_reason": (
+                    "the immutable measurement-pending candidate already passed "
+                    "candidate selection and resumes directly on the authoritative "
+                    "measurement plane"
+                ),
+                "attempts": [],
+                "stopped_by_shared_infrastructure": False,
+                "stopped_after_budget_censor": False,
+                "screening_outcome": "not_required",
+                "phenotype_duplicate_of": dict(phenotype_duplicates),
+            }
+            return (
+                conformance_candidates,
+                _combined_candidate_validation_report(
+                    candidates=candidates,
+                    conformance=conformance_report,
+                    screening=screening_report,
+                ),
+            )
 
         support_prerequisites = tuple(
             candidate
@@ -19215,7 +19263,15 @@ def _replay_gate_details(
         }
         and event.owner is FailureOwner.FRAMEWORK
     ]
-    if invalid_control_events and not screening_budget_censored:
+    candidate_repair_observed = (
+        _candidate_replay_has_repairable_capability_failure(replay_result)
+        and not intervention_unobserved
+    )
+    if (
+        invalid_control_events
+        and not screening_budget_censored
+        and not candidate_repair_observed
+    ):
         details.update(
             {
                 "code": "control_not_comparable",
@@ -19228,6 +19284,15 @@ def _replay_gate_details(
                 "effect": None,
             }
         )
+    elif invalid_control_events and candidate_repair_observed:
+        # A sick baseline makes the pair unsuitable for effect measurement,
+        # but it cannot erase an independently observed candidate-owned runtime
+        # contract violation.  Repair the candidate first; measurement can be
+        # retried after the counterexample is removed.
+        details["invalid_control_secondary"] = True
+        details["invalid_control_event_ids"] = [
+            event.event_id for event in invalid_control_events
+        ]
     return details
 
 
@@ -23477,18 +23542,23 @@ def _restore_campaign_screening_case_observations(
                     raw_observation, Mapping
                 ):
                     continue
-                failure_count = _non_negative_int(
-                    raw_observation.get("authoritative_failure_count")
-                )
-                if failure_count <= 0:
-                    continue
                 current = observations.setdefault(case_id, {})
-                current["authoritative_failure_count"] = (
-                    _non_negative_int(
-                        current.get("authoritative_failure_count")
+                for field_name in (
+                    "attempt_count",
+                    "invalid_control_count",
+                    "passed_count",
+                    "authoritative_failure_count",
+                ):
+                    count = _non_negative_int(
+                        raw_observation.get(field_name)
                     )
-                    + failure_count
-                )
+                    if count <= 0:
+                        continue
+                    current[field_name] = (
+                        _non_negative_int(current.get(field_name)) + count
+                    )
+                if not current:
+                    observations.pop(case_id, None)
         population = report.get("population")
         screening = (
             population.get("screening")
@@ -23736,15 +23806,24 @@ def _authoritative_replay_dataset(
         return dataset
     indexed_cases = tuple(enumerate(dataset.cases))
 
-    def rank(item: tuple[int, EvalCase]) -> tuple[int, int, int]:
+    def rank(item: tuple[int, EvalCase]) -> tuple[int, int, int, int]:
         index, case = item
         observation = empirical_observations.get(case.case_id, {})
         passed_count = _non_negative_int(observation.get("passed_count"))
+        failure_count = _non_negative_int(
+            observation.get("authoritative_failure_count")
+        )
         invalid_count = _non_negative_int(
             observation.get("invalid_control_count")
         )
-        health_class = 0 if passed_count > 0 else 2 if invalid_count > 0 else 1
-        return health_class, -passed_count, index
+        health_class = (
+            0
+            if failure_count > 0 or passed_count > 0
+            else 2
+            if invalid_count > 0
+            else 1
+        )
+        return health_class, -failure_count, -passed_count, index
 
     ordered = tuple(case for _index, case in sorted(indexed_cases, key=rank))
     if ordered == dataset.cases:
@@ -23910,23 +23989,43 @@ def _record_authoritative_replay_observations(
         replay_result=replay_result,
     )
     for member in normalized.members:
-        if (
-            member.candidate.status is not ReplayExecutionStatus.FAILED
-            or _replay_member_pair_is_comparable(
-                member.case,
-                member.baseline,
-                member.candidate,
-            )
-        ):
+        if not member.baseline.executed:
             continue
+        invalid_control = _baseline_invalid_for_measurement(member.baseline)
+        comparable_pair = _replay_member_pair_is_comparable(
+            member.case,
+            member.baseline,
+            member.candidate,
+        )
+        candidate_failure = bool(
+            member.candidate.status is ReplayExecutionStatus.FAILED
+            and _repairable_capability_failure(member.candidate.failure)
+        )
         for destination in (
             observations,
             *((run_observations,) if run_observations is not None else ()),
         ):
             current = destination.setdefault(member.case_id, {})
-            current["authoritative_failure_count"] = (
-                _non_negative_int(current.get("authoritative_failure_count")) + 1
+            current["attempt_count"] = (
+                _non_negative_int(current.get("attempt_count")) + 1
             )
+            if invalid_control or "invalid_control_count" in current:
+                current["invalid_control_count"] = (
+                    _non_negative_int(current.get("invalid_control_count"))
+                    + int(invalid_control)
+                )
+            if comparable_pair or "passed_count" in current:
+                current["passed_count"] = (
+                    _non_negative_int(current.get("passed_count"))
+                    + int(comparable_pair)
+                )
+            if candidate_failure or "authoritative_failure_count" in current:
+                current["authoritative_failure_count"] = (
+                    _non_negative_int(
+                        current.get("authoritative_failure_count")
+                    )
+                    + int(candidate_failure)
+                )
 
 
 def _screening_attempt_termination_axes(

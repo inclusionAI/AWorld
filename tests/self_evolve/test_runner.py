@@ -7151,6 +7151,75 @@ def test_replay_gate_marks_candidate_owned_protocol_failure_as_repairable() -> N
     assert details["failure_stage"] == "replay_capability"
 
 
+def test_candidate_runtime_policy_failure_precedes_invalid_control_routing() -> None:
+    target = SelfEvolveTargetRef(target_type="skill", target_id="demo")
+    dataset = SelfEvolveDataset(
+        cases=(EvalCase(case_id="task-1", input="Replay task"),),
+        recipe=DatasetRecipe(
+            source={"kind": "test"},
+            split_seed="seed",
+            splits={"train": ["task-1"], "validation": [], "held_out": []},
+        ),
+    )
+    request = CandidateReplayRequest(
+        run_id="run-candidate-policy-invalid-control",
+        task_id="task-1",
+        workspace_root="/tmp/workspace",
+        target=target,
+        candidate_id="cand-runtime",
+        overlay_skill_root="/tmp/overlay",
+        task_input="Replay task",
+    )
+    invalid_control = ReplayFailureEvent(
+        code="authoritative_replay_invalid_control",
+        owner=FailureOwner.FRAMEWORK,
+        stage=FailureStage.EVALUATION,
+        scope=FailureScope.SHARED_RUN,
+        repairable=True,
+        category="trusted_measurement",
+    )
+    candidate_failure = {
+        "code": "replay_evidence_runtime_policy_violation",
+        "outcome": "candidate_failure",
+        "failure_class": "candidate_task_behavior",
+        "failure_stage": "task_rollout",
+        "repairable": True,
+    }
+    baseline = ReplayVariantResult(
+        variant_id="baseline",
+        status=ReplayExecutionStatus.FAILED,
+        trajectory=[],
+        failure=invalid_control,
+    )
+    candidate = ReplayVariantResult(
+        variant_id="cand-runtime",
+        status=ReplayExecutionStatus.FAILED,
+        trajectory=[],
+        failure=candidate_failure,
+    )
+    replay_result = _CandidateReplayResult(
+        request=request,
+        baseline=baseline,
+        candidate=candidate,
+        member_results=(
+            CandidateReplayMemberResult(
+                case_id="task-1",
+                request=request,
+                baseline=baseline,
+                candidate=candidate,
+            ),
+        ),
+    )
+
+    details = _replay_gate_details(replay_result, dataset=dataset)
+
+    assert details["failure_class"] == "candidate"
+    assert details["repairable"] is True
+    assert details["failure_stage"] == "replay_capability"
+    assert details["invalid_control_secondary"] is True
+    assert details.get("next_action") != "repair_measurement"
+
+
 def test_typed_gate_feedback_keeps_candidate_cause_from_baseline_slot_once() -> None:
     target = SelfEvolveTargetRef(target_type="skill", target_id="generic")
     dataset = SelfEvolveDataset(
@@ -12352,6 +12421,53 @@ async def test_verified_single_candidate_with_prior_counterexample_requires_scre
 
 
 @pytest.mark.asyncio
+async def test_stored_measurement_resume_bypasses_counterexample_screening(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    skill_path, dataset = _cycle1_runner_fixture(tmp_path)
+    candidate = CandidateVariant(
+        candidate_id="measurement-pending",
+        target=SelfEvolveTargetRef("skill", "demo", str(skill_path)),
+        content=(
+            skill_path.read_text(encoding="utf-8")
+            + "\n## Runtime Behavior\nComplete the requested task.\n"
+        ),
+        rationale="resume the frozen candidate measurement",
+    )
+    runner = SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=SimpleNamespace(),
+        replay_enabled=True,
+        candidate_replay_backend=object(),
+    )
+
+    async def fail_if_screened(**kwargs):
+        raise AssertionError("measurement resume must not rerun ranking screening")
+
+    monkeypatch.setattr(runner, "_replay_selected_candidate", fail_if_screened)
+
+    selected, report = await runner._screen_candidate_population(
+        run_id="run-measurement-resume",
+        target=SkillTextTarget(skill_path, allow_auto_apply=True),
+        dataset=dataset,
+        candidates=(candidate,),
+        apply_policy="verified_only",
+        require_single_candidate_screening=True,
+        stored_measurement_resume=True,
+    )
+
+    assert selected == (candidate,)
+    assert report is not None
+    screening = report["screening"]
+    assert screening["screening_strategy"] == (
+        "stored_candidate_measurement_resume"
+    )
+    assert screening["attempted_candidate_count"] == 0
+    assert screening["physical_pair_execution_count"] == 0
+
+
+@pytest.mark.asyncio
 async def test_artifact_lifecycle_repair_fails_closed_before_authoritative_replay(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -12669,7 +12785,10 @@ def test_authoritative_failure_case_is_persisted_and_restored_for_screening(
     )
 
     assert cumulative == {
-        "case-1": {"authoritative_failure_count": 1}
+        "case-1": {
+            "attempt_count": 1,
+            "authoritative_failure_count": 1,
+        }
     }
     assert current_run == cumulative
 
@@ -12702,6 +12821,79 @@ def test_authoritative_failure_case_is_persisted_and_restored_for_screening(
     assert restored == cumulative
     assert screening_dataset is not None
     assert screening_dataset.cases[0].case_id == "case-1"
+
+
+def test_authoritative_invalid_control_is_persisted_and_deprioritized(
+    tmp_path: Path,
+) -> None:
+    _, dataset = _cycle1_runner_fixture(tmp_path, case_count=2)
+    request = CandidateReplayRequest(
+        run_id="campaign-demo-cycle-001",
+        task_id="case-1",
+        workspace_root=str(tmp_path),
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo"),
+        candidate_id="candidate",
+        overlay_skill_root=str(tmp_path / "overlay"),
+        task_input=dataset.cases[0].input,
+    )
+    invalid_control_failure = ReplayFailureEvent(
+        code="replay_member_phase_timeout",
+        owner=FailureOwner.FRAMEWORK,
+        stage=FailureStage.EVALUATION,
+        scope=FailureScope.MEMBER,
+        repairable=True,
+        category="replay_timeout",
+    )
+    baseline = ReplayVariantResult(
+        variant_id="baseline",
+        status=ReplayExecutionStatus.FAILED,
+        trajectory=[],
+        failure=invalid_control_failure,
+    )
+    candidate = ReplayVariantResult(
+        variant_id="candidate",
+        status=ReplayExecutionStatus.BLOCKED,
+        trajectory=[],
+        blocked_by=(
+            ReplayFailureEvent(
+                code="authoritative_replay_invalid_control",
+                owner=FailureOwner.FRAMEWORK,
+                stage=FailureStage.EVALUATION,
+                scope=FailureScope.SHARED_RUN,
+                repairable=True,
+                category="trusted_measurement",
+            ),
+        ),
+    )
+    replay = _CandidateReplayResult(
+        request=request,
+        baseline=baseline,
+        candidate=candidate,
+        member_results=(
+            CandidateReplayMemberResult(
+                case_id="case-1",
+                request=request,
+                baseline=baseline,
+                candidate=candidate,
+            ),
+        ),
+    )
+    observations: dict[str, dict[str, float | int]] = {}
+
+    runner_module._record_authoritative_replay_observations(
+        observations,
+        dataset=dataset,
+        replay_result=replay,
+    )
+    ordered = runner_module._authoritative_replay_dataset(
+        dataset,
+        empirical_observations=observations,
+    )
+
+    assert observations == {
+        "case-1": {"attempt_count": 1, "invalid_control_count": 1}
+    }
+    assert ordered.cases[-1].case_id == "case-1"
 
 
 def test_verified_prerequisite_files_restore_format_only_differences() -> None:
