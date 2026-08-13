@@ -972,10 +972,129 @@ def compile_and_freeze_capability(
             frozen_root=frozen_root,
         )
         verify_frozen_replay_capability(frozen)
+    except ReplayCapabilityError as exc:
+        supplemental = _compile_failure_runtime_binding_diagnostics(
+            capability,
+            request=request,
+            output_roots=(compile_a / "output", compile_b / "output"),
+        )
+        _remove_path(frozen_root)
+        if supplemental is not None:
+            merged_details = dict(exc.details)
+            for key in (
+                "schema_field_constraints",
+                "schema_field_violations",
+                "source_behavior_proofs",
+            ):
+                existing = merged_details.get(key)
+                added = supplemental.get(key)
+                if isinstance(added, list):
+                    merged_details[key] = [
+                        *(existing if isinstance(existing, list) else []),
+                        *added,
+                    ]
+            merged_details["constraint_collection"] = "compile_and_runtime"
+            raise ReplayCapabilityError(
+                str(exc),
+                code=exc.code,
+                details=merged_details,
+            ) from exc
+        raise
     except Exception:
         _remove_path(frozen_root)
         raise
     return frozen
+
+
+def _compile_failure_runtime_binding_diagnostics(
+    capability: DiscoveredReplayCapability,
+    *,
+    request: ReplayCapabilityCompileRequest,
+    output_roots: Sequence[Path],
+) -> dict[str, object] | None:
+    """Collect an independent runtime invariant after compiler validation fails.
+
+    Compiler-result schema errors must not hide an already-provable runtime
+    failure. The check remains capability-generic: it activates only for a
+    runtime-required request whose compiler emitted a fixture with a recorded
+    non-empty response.
+    """
+
+    if not any(
+        requirement.status == "runtime_required"
+        for requirement in request.requirements
+    ):
+        return None
+    has_recorded_response = False
+    for root in output_roots:
+        if not root.is_dir():
+            continue
+        for path in sorted(root.rglob("*"))[:_MAX_FIXTURE_COUNT]:
+            if not path.is_file() or path.is_symlink():
+                continue
+            try:
+                if path.stat().st_size > _MAX_FIXTURE_FILE_BYTES:
+                    continue
+                response_index = _build_recorded_response_index(
+                    path.read_bytes(),
+                    observed_operations=(),
+                )
+            except OSError:
+                continue
+            records = response_index.get("records")
+            if isinstance(records, list) and any(
+                isinstance(record, Mapping)
+                and record.get("non_empty") is True
+                and "value" in record
+                for record in records
+            ):
+                has_recorded_response = True
+                break
+        if has_recorded_response:
+            break
+    if not has_recorded_response:
+        return None
+
+    proofs: list[dict[str, object]] = []
+    for runtime_path in capability.runtime_files:
+        if runtime_path.suffix.casefold() != ".py":
+            continue
+        try:
+            proof = recorded_response_index_source_behavior_proof(
+                runtime_path.read_text(encoding="utf-8")
+            )
+        except (OSError, UnicodeDecodeError):
+            continue
+        proofs.append(proof)
+        if proof.get("proven") is True:
+            return None
+    if not proofs:
+        return None
+
+    violation = _schema_field_violation(
+        schema_layer="runtime",
+        field_path=(
+            "environment.AWORLD_REPLAY_RESPONSE_INDEX.consumer"
+        ),
+        rule="enum",
+        expected=(REPLAY_RESPONSE_INDEX_CONSUMER,),
+        value="source_behavior_not_detected",
+        value_domain="source_behavior",
+        required_operations=(
+            "read_environment_binding_as_path",
+            "bind_environment_path_to_json_file_reader",
+            "access_records_array",
+            "project_record_value_field_directly",
+        ),
+        forbidden_operations=(
+            "coerce_environment_binding_to_numeric_index",
+            "hide_environment_read_behind_zero_arg_return_helper",
+            "substitute_raw_fixture_recursive_scan",
+        ),
+    )
+    details = schema_field_diagnostic_details((violation,))
+    details["source_behavior_proofs"] = proofs
+    return details
 
 
 def _verify_discovered_capability_unchanged(

@@ -16,6 +16,7 @@ from aworld.self_evolve.replay_capability import (
     ReplayCapabilityCompileRequest,
     ReplayCapabilityError,
     _build_recorded_response_index,
+    _compile_failure_runtime_binding_diagnostics,
     build_replay_resource_limited_command,
     build_replay_sandboxed_command,
     compile_and_freeze_capability,
@@ -26,6 +27,68 @@ from aworld.self_evolve.replay_capability import (
     verify_frozen_replay_capability,
 )
 from aworld.self_evolve.schema_diagnostics import SchemaFieldRepairConstraint
+
+
+def test_compile_failure_collects_independent_runtime_binding_constraint(
+    tmp_path: Path,
+) -> None:
+    runtime = tmp_path / "runtime.py"
+    runtime.write_text("def respond():\n    return {}\n", encoding="utf-8")
+    output_root = tmp_path / "output"
+    output_root.mkdir()
+    (output_root / "fixture.json").write_text(
+        json.dumps(
+            {
+                "wrapper": [
+                    {
+                        "action_result": [
+                            {
+                                "action_name": "records.query",
+                                "content": json.dumps(
+                                    {"records": [{"value": "recorded"}]}
+                                ),
+                            }
+                        ]
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    capability = SimpleNamespace(runtime_files=(runtime,))
+    request = SimpleNamespace(
+        requirements=(SimpleNamespace(status="runtime_required"),)
+    )
+
+    details = _compile_failure_runtime_binding_diagnostics(
+        capability,
+        request=request,
+        output_roots=(output_root,),
+    )
+
+    assert details is not None
+    assert details["schema_field_constraints"] == [
+        {
+            "schema_layer": "runtime",
+            "field_path": (
+                "environment.AWORLD_REPLAY_RESPONSE_INDEX.consumer"
+            ),
+            "rule": "enum",
+            "expected": ["json_sidecar_record_value_projector"],
+            "value_domain": "source_behavior",
+            "required_operations": [
+                "read_environment_binding_as_path",
+                "bind_environment_path_to_json_file_reader",
+                "access_records_array",
+                "project_record_value_field_directly",
+            ],
+            "forbidden_operations": [
+                "coerce_environment_binding_to_numeric_index",
+                "hide_environment_read_behind_zero_arg_return_helper",
+                "substitute_raw_fixture_recursive_scan",
+            ],
+        }
+    ]
 
 
 def test_frozen_fixture_shape_fingerprint_ignores_recorded_scalar_values(

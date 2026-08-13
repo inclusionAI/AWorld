@@ -389,6 +389,17 @@ class RepairConformanceContract:
     required_runtime_transitions: tuple[str, ...] = ()
     artifact_lifecycle_constraint: ArtifactLifecycleConstraint | None = None
 
+    @property
+    def contract_identity(self) -> str:
+        """Return the immutable identity used to lease repair work.
+
+        Private expected payloads and unrelated candidate ids are deliberately
+        excluded. A lease changes whenever the actionable constraint set, its
+        source owner, or the focused baseline being repaired changes.
+        """
+
+        return repair_conformance_contract_identity(self)
+
     def to_dict(self) -> dict[str, object]:
         """Return the private execution contract.
 
@@ -397,6 +408,7 @@ class RepairConformanceContract:
         feedback, and optimizer diagnostics must use :meth:`to_public_dict`.
         """
         return {
+            "contract_identity": self.contract_identity,
             "focus_candidate_id": self.focus_candidate_id,
             "failure_codes": list(self.failure_codes),
             "interaction_progress": self.interaction_progress,
@@ -480,6 +492,7 @@ class RepairConformanceContract:
             "projection_schema_version": (
                 "aworld.self_evolve.repair_conformance.public.v1"
             ),
+            "contract_identity": self.contract_identity,
             "focus_candidate_id": self.focus_candidate_id,
             "failure_codes": list(self.failure_codes),
             "interaction_progress": self.interaction_progress,
@@ -680,6 +693,71 @@ class RepairConformanceContract:
         private_shape.pop("projection_schema_version", None)
         private_shape["exact_probe"] = None
         return cls.from_dict(private_shape)
+
+
+def repair_conformance_contract_identity(
+    contract: RepairConformanceContract | Mapping[str, object],
+) -> str:
+    """Fingerprint the complete actionable repair lease.
+
+    This is intentionally broader than the historical schema-field fingerprint:
+    required source paths and the focused baseline are part of correctness, not
+    reporting metadata.
+    """
+
+    if isinstance(contract, RepairConformanceContract):
+        payload = {
+            "focus_candidate_id": contract.focus_candidate_id,
+            "failure_codes": list(contract.failure_codes),
+            "base_file_fingerprints": dict(contract.base_file_fingerprints),
+            "required_branch_paths": list(contract.required_branch_paths),
+            "base_branch_fingerprints": dict(contract.base_branch_fingerprints),
+            "base_fixture_selector_fingerprints": dict(
+                contract.base_fixture_selector_fingerprints
+            ),
+            "manifest_path": contract.manifest_path,
+            "compiler_path": contract.compiler_path,
+            "runtime_paths": list(contract.runtime_paths),
+            "fixture_probe_constraints": [
+                item.to_public_dict() for item in contract.fixture_probe_constraints
+            ],
+            "schema_field_constraints": [
+                item.to_dict() for item in contract.schema_field_constraints
+            ],
+            "runtime_response_constraints": [
+                item.to_dict() for item in contract.runtime_response_constraints
+            ],
+            "required_runtime_transitions": list(
+                contract.required_runtime_transitions
+            ),
+        }
+    else:
+        payload = {
+            key: contract.get(key)
+            for key in (
+                "focus_candidate_id",
+                "failure_codes",
+                "base_file_fingerprints",
+                "required_branch_paths",
+                "base_branch_fingerprints",
+                "base_fixture_selector_fingerprints",
+                "manifest_path",
+                "compiler_path",
+                "runtime_paths",
+                "fixture_probe_constraints",
+                "schema_field_constraints",
+                "runtime_response_constraints",
+                "required_runtime_transitions",
+            )
+        }
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+        default=str,
+    ).encode("utf-8")
+    return "repair-contract:sha256:" + hashlib.sha256(encoded).hexdigest()
 
 
 @dataclass(frozen=True)

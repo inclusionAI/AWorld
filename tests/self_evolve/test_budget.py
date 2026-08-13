@@ -871,6 +871,28 @@ def test_scheduler_progress_resets_stall_and_keeps_other_frontiers_independent(
     }
 
 
+def test_scheduler_new_contract_preempts_equal_progress_stale_frontier() -> None:
+    scheduler = StageAwareCandidateScheduler(exploration_population=2)
+    state = SchedulerState(
+        initial_exploration_scheduled=True,
+        frontier_progress={"semantic-old": 1},
+        frontier_stalls={"semantic-old": 0},
+        last_focused_frontier="semantic-old",
+    )
+
+    decision = scheduler.schedule(
+        state=state,
+        frontiers=(
+            _frontier("semantic-old", progress=1),
+            _frontier("semantic-new", progress=1),
+        ),
+    )
+
+    assert decision.stop is False
+    assert decision.slots[0].semantic_key == "semantic-new"
+    assert decision.state.last_focused_frontier == "semantic-new"
+
+
 def test_scheduler_exhausts_each_stable_frontier_only_after_it_was_focused() -> None:
     scheduler = StageAwareCandidateScheduler(exploration_population=2)
     state = SchedulerState(
