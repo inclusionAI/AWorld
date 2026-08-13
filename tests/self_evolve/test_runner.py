@@ -788,6 +788,87 @@ def test_feedback_from_shared_measurement_failure_does_not_train_candidate(
     assert _feedback_from_report(report, report_path=report_path) == ()
 
 
+def test_shared_measurement_failure_preserves_prior_candidate_owned_feedback(
+    tmp_path: Path,
+) -> None:
+    run_root = tmp_path / "mixed-control-failure"
+    report_path = run_root / "report.json"
+    for candidate_id in ("candidate-repairable", "candidate-unobserved"):
+        candidate_path = run_root / "candidates" / f"{candidate_id}.json"
+        candidate_path.parent.mkdir(parents=True, exist_ok=True)
+        candidate_path.write_text(
+            json.dumps(
+                {
+                    "candidate_id": candidate_id,
+                    "rationale": "candidate package",
+                    "files": [
+                        {
+                            "path": "replay/runtime.py",
+                            "operation": "upsert",
+                            "executable": False,
+                            "content": "def respond():\n    return {}\n",
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+    report = {
+        "run_id": "mixed-control-failure",
+        "campaign_failure_attribution": {
+            "failure_class": "measurement",
+            "failure_owner": "framework",
+            "failure_scope": "shared_run",
+            "repairable": True,
+        },
+        "population": {
+            "conformance": {
+                "attempts": [
+                    {
+                        "candidate_id": "candidate-repairable",
+                        "stage": "conformance",
+                        "passed": False,
+                        "reason": "candidate violated the compiled contract",
+                        "details": {
+                            "failure_class": "candidate",
+                            "failure_stage": "replay_capability",
+                            "repairable": True,
+                            "code": "schema_field_validation_failed",
+                        },
+                    }
+                ]
+            },
+            "screening": {
+                "attempts": [
+                    {
+                        "candidate_id": "candidate-unobserved",
+                        "passed": False,
+                        "reason": "shared control was invalid",
+                        "details": {
+                            "failure_class": "measurement",
+                            "failure_owner": "framework",
+                            "failure_scope": "shared_run",
+                            "repairable": True,
+                        },
+                    }
+                ]
+            },
+        },
+        "iterations": [
+            {
+                "candidate_id": "candidate-unobserved",
+                "status": "rejected",
+                "failed_gates": ["candidate_replay"],
+            }
+        ],
+    }
+
+    feedback = _feedback_from_report(report, report_path=report_path)
+
+    assert [item.variant_id for item in feedback] == ["candidate-repairable"]
+    assert feedback[0].metrics["failure_class"] == "candidate"
+
+
 def test_feedback_from_verified_only_does_not_mark_candidate_as_published(
     tmp_path: Path,
 ) -> None:
@@ -21956,6 +22037,61 @@ def test_measurement_checkpoint_uses_exact_resume_candidate(
             "failure_scope": "shared_run",
             "resume_candidate_id": candidates[1].candidate_id,
             "resume_candidate_package_fingerprint": expected_fingerprint,
+        },
+    }
+
+    checkpoint = runner_module._measurement_pending_candidate_checkpoint(
+        run_path=store.run_path(run_id),
+        report=report,
+    )
+
+    assert checkpoint == (candidates[1].candidate_id, expected_fingerprint)
+
+
+def test_measurement_checkpoint_uses_multi_candidate_screening_attempt(
+    tmp_path: Path,
+) -> None:
+    store = FilesystemSelfEvolveStore(tmp_path)
+    run_id = "run-screening-measurement-checkpoint"
+    candidates = tuple(
+        CandidateVariant(
+            candidate_id=f"candidate-{index}",
+            target=SelfEvolveTargetRef("skill", "demo", "/skills/demo/SKILL.md"),
+            content=f"# Demo\n\nCandidate {index}.\n",
+            rationale="screening measurement checkpoint",
+        )
+        for index in range(2)
+    )
+    for candidate in candidates:
+        store.write_candidate(run_id, candidate)
+    expected_fingerprint = runner_module.candidate_package_fingerprint(
+        candidates[1]
+    )
+    report = {
+        "candidate_ids": [item.candidate_id for item in candidates],
+        "campaign_failure_attribution": {
+            "failure_class": "measurement",
+            "failure_owner": "framework",
+            "failure_scope": "shared_run",
+        },
+        "population": {
+            "screening": {
+                "attempts": [
+                    {
+                        "candidate_id": candidates[1].candidate_id,
+                        "passed": False,
+                        "details": {
+                            "failure_class": "measurement",
+                            "failure_owner": "framework",
+                            "failure_scope": "shared_run",
+                            "resume_candidate_id": candidates[1].candidate_id,
+                            "resume_candidate_package_fingerprint": (
+                                expected_fingerprint
+                            ),
+                        },
+                    }
+                ]
+            }
         },
     }
 

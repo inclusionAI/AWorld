@@ -190,8 +190,6 @@ def _schema_field_counterexample_contract(
 
     identity_payload = {
         "constraint_identity_digest": violation.constraint.identity_digest,
-        "actual_fingerprint": violation.actual_fingerprint,
-        "actual_type": violation.actual_type,
     }
     encoded = json.dumps(
         identity_payload,
@@ -205,6 +203,11 @@ def _schema_field_counterexample_contract(
             "schema-counterexample-" + hashlib.sha256(encoded).hexdigest()
         ),
         **identity_payload,
+        # Observed values explain this occurrence but do not define the
+        # counterexample.  Keeping them outside the ID makes repeated
+        # violations of the same schema contract converge across repair runs.
+        "actual_fingerprint": violation.actual_fingerprint,
+        "actual_type": violation.actual_type,
         "constraint": violation.constraint.to_dict(),
         "required_checks": [
             "field_selector_resolves_subject",
@@ -3908,12 +3911,17 @@ def _validate_conditional_service_fields(
             selector = service.get(selector_field)
             if selector not in selector_values:
                 continue
-            subject_present = (
+            subject_declared = (
                 subject_field in service
                 and service.get(subject_field) is not None
-                and service.get(subject_field) != ""
             )
-            if subject_present == required:
+            subject_present = bool(
+                subject_declared and service.get(subject_field) != ""
+            )
+            condition_satisfied = (
+                subject_present if required else not subject_declared
+            )
+            if condition_satisfied:
                 continue
             predicate = f"{selector_field}:{selector}"
             field_path = f"services[*@{predicate}].{subject_field}"

@@ -1361,6 +1361,90 @@ def test_shared_measurement_timeout_does_not_exhaust_authoritative_frontier(
     assert result["campaign_candidate_cycle_count"] == 1
 
 
+def test_infrastructure_retry_preserves_measurement_candidate_checkpoint(
+    tmp_path: Path,
+) -> None:
+    calls: list[dict] = []
+
+    def run_once(**request):
+        calls.append(request)
+        run_id = f"{request['campaign_id']}-cycle-{request['campaign_cycle']:03d}"
+        candidate_id = "candidate-measurement-pending"
+        if request["campaign_cycle"] == 1:
+            report = _report(_event())
+            report.update(
+                {
+                    "campaign_failure_attribution": {
+                        "primary_gate": "candidate_replay",
+                        "code": "control_not_comparable",
+                        "failure_class": "measurement",
+                        "failure_owner": "framework",
+                        "failure_scope": "shared_run",
+                        "failure_stage": "evaluation",
+                        "repairable": True,
+                    },
+                    "candidate_ids": [candidate_id],
+                    "selected_candidate_id": candidate_id,
+                }
+            )
+            candidate_path = (
+                tmp_path
+                / ".aworld"
+                / "self_evolve"
+                / run_id
+                / "candidates"
+                / f"{candidate_id}.json"
+            )
+            candidate_path.parent.mkdir(parents=True, exist_ok=True)
+            candidate_path.write_text("{}", encoding="utf-8")
+        elif request["campaign_cycle"] == 2:
+            report = _report(
+                _event(
+                    code="evaluation_backend_timeout",
+                    owner="infrastructure",
+                    scope="shared_run",
+                )
+            )
+        else:
+            report = {
+                "status": "succeeded",
+                "budget": _budget(10),
+                "gate_results": [{"gate_name": "post_apply", "passed": True}],
+            }
+        report["run_id"] = run_id
+        report_path = tmp_path / ".aworld" / "self_evolve" / run_id / "report.json"
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+        report_path.write_text(json.dumps(report), encoding="utf-8")
+        return {
+            "run_id": run_id,
+            "status": report["status"],
+            "report_path": str(report_path),
+        }
+
+    result = run_self_improvement_campaign(
+        workspace_root=tmp_path,
+        request={
+            "from_trajectory": "trajectory.log",
+            "apply_policy": "verified_only",
+            "infer_target": True,
+        },
+        max_improvement_cycles=2,
+        run_once=run_once,
+    )
+
+    assert len(calls) == 3
+    assert calls[1]["campaign_measurement_pending_candidate_id"] == (
+        "candidate-measurement-pending"
+    )
+    assert calls[2]["campaign_measurement_pending_candidate_id"] == (
+        "candidate-measurement-pending"
+    )
+    assert calls[2]["campaign_measurement_pending_run_id"] == (
+        calls[0]["campaign_id"] + "-cycle-001"
+    )
+    assert result["campaign_status"] == "complete"
+
+
 def test_shared_measurement_retry_fails_closed_without_candidate_checkpoint(
     tmp_path: Path,
 ) -> None:
