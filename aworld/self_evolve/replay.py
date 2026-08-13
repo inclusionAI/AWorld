@@ -175,6 +175,7 @@ class CandidateReplayRequest:
     task_input: Any
     baseline_skill_root: str | None = None
     baseline_replay_dir: str | None = None
+    resume_replay_dir: str | None = None
     agent: str | None = None
     timeout_seconds: float | None = None
     max_steps: int | None = None
@@ -383,6 +384,17 @@ def _member_request_mismatch_fields(
     for request_field in dataclass_fields(CandidateReplayRequest):
         field_name = request_field.name
         expected = derived_values.get(field_name, getattr(root_request, field_name))
+        if (
+            root_request.resume_replay_dir is not None
+            and member_request.resume_replay_dir
+            == root_request.resume_replay_dir
+            and field_name in {"adaptation_fingerprint", "replay_adaptation"}
+            and _resume_adaptation_is_semantically_compatible(
+                root_request,
+                member_request,
+            )
+        ):
+            expected = getattr(member_request, field_name)
         if to_json_dict(getattr(member_request, field_name)) != to_json_dict(expected):
             mismatches.append(field_name)
     return tuple(sorted(set(mismatches)))
@@ -2245,7 +2257,7 @@ def _replay_service_protocol_diagnostics(
             if path.is_symlink() or not resolved.is_relative_to(root):
                 continue
             raw = resolved.read_bytes()[-8_000:]
-        except OSError:
+        except (FileNotFoundError, ValueError, json.JSONDecodeError, OSError):
             continue
         tail = sanitize_text(raw.decode("utf-8", errors="replace"))
         if len(tail) > _MAX_REPLAY_SERVICE_PROTOCOL_TRACE_EXCERPT_CHARS:
@@ -2579,6 +2591,8 @@ def _write_progressive_pair_checkpoint(
     reusable_baseline_case_ids: Sequence[str],
     active_case_id: str | None,
     active_phase: str | None,
+    resumed_from_replay_dir: str | None = None,
+    resumed_pair_case_ids: Sequence[str] = (),
 ) -> None:
     """Persist a bounded restart and diagnostic cursor after every phase."""
 
@@ -2605,8 +2619,283 @@ def _write_progressive_pair_checkpoint(
                 if case_id not in completed_candidates
             ],
             "baseline_cache_manifest": "baseline_cache_manifest.json",
+            "resumed_from_replay_dir": resumed_from_replay_dir,
+            "resumed_pair_case_ids": list(resumed_pair_case_ids),
         },
     )
+
+
+def _clone_replay_variant_tree(source: Path, destination: Path) -> None:
+    """Materialize immutable replay evidence without duplicating file bytes."""
+
+    if source.is_symlink() or source.resolve() == destination.resolve():
+        raise OSError("replay resume source must be a distinct physical directory")
+    if destination.exists():
+        shutil.rmtree(destination)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+
+    def copy_file(source_file: str, destination_file: str) -> str:
+        try:
+            os.link(source_file, destination_file)
+        except OSError:
+            shutil.copy2(source_file, destination_file)
+        return destination_file
+
+    shutil.copytree(source, destination, copy_function=copy_file)
+
+
+def _resume_root_is_compatible(
+    current: CandidateReplayRequest,
+    stored: CandidateReplayRequest,
+) -> bool:
+    """Compare immutable experiment identity while ignoring run-local bindings."""
+
+    return _resume_adaptation_is_semantically_compatible(current, stored) and all(
+        getattr(current, field_name) == getattr(stored, field_name)
+        for field_name in (
+            "target",
+            "candidate_id",
+            "dataset_fingerprint",
+            "baseline_skill_fingerprint",
+            "workspace_seed_fingerprint",
+            "verified_candidate_package_fingerprint",
+            "baseline_repetitions",
+            "candidate_repetitions",
+            "repetition_semantics",
+        )
+    )
+
+
+def _resume_member_is_compatible(
+    current: CandidateReplayRequest,
+    stored: CandidateReplayRequest,
+) -> bool:
+    return _resume_adaptation_is_semantically_compatible(current, stored) and all(
+        getattr(current, field_name) == getattr(stored, field_name)
+        for field_name in (
+            "task_id",
+            "target",
+            "candidate_id",
+            "task_input_fingerprint",
+            "dataset_fingerprint",
+            "baseline_skill_fingerprint",
+            "workspace_seed_fingerprint",
+            "verified_candidate_package_fingerprint",
+            "baseline_repetitions",
+            "candidate_repetitions",
+            "repetition_semantics",
+        )
+    )
+
+
+def _resume_adaptation_is_semantically_compatible(
+    current: CandidateReplayRequest,
+    stored: CandidateReplayRequest,
+) -> bool:
+    """Compare logical replay capability without run-local paths or bindings."""
+
+    current_bundle = current.replay_adaptation
+    stored_bundle = stored.replay_adaptation
+    if current_bundle is None or stored_bundle is None:
+        return current_bundle is None and stored_bundle is None
+    current_capability = current_bundle.replay_capability
+    stored_capability = stored_bundle.replay_capability
+    if current_capability is None or stored_capability is None:
+        capability_identity_matches = (
+            current_capability is None and stored_capability is None
+        )
+    else:
+        def capability_identity(capability: FrozenReplayCapability) -> object:
+            return {
+                "capability_package_fingerprint": (
+                    capability.capability_package_fingerprint
+                ),
+                "handled_requirements": capability.handled_requirements,
+                "unhandled_requirements": capability.unhandled_requirements,
+                "deterministic": capability.deterministic,
+                "concurrency_mode": capability.concurrency_mode,
+                "fixtures": [
+                    (item.sha256, item.size) for item in capability.fixtures
+                ],
+                "runtime_files": [
+                    (item.sha256, item.size) for item in capability.runtime_files
+                ],
+                "services": [
+                    {
+                        "service_id": service.service_id,
+                        "requirement_id": service.requirement_id,
+                        "transport": service.transport,
+                        "response_fixture": service.response_fixture,
+                        "readiness": to_json_dict(service.readiness),
+                        "protocol_probes": to_json_dict(service.protocol_probes),
+                    }
+                    for service in capability.services
+                ],
+            }
+
+        capability_identity_matches = (
+            capability_identity(current_capability)
+            == capability_identity(stored_capability)
+        )
+    return bool(
+        capability_identity_matches
+        and current_bundle.ready
+        and stored_bundle.ready
+        and current_bundle.environment_fingerprint
+        == stored_bundle.environment_fingerprint
+        and current_bundle.workspace_seed_fingerprint
+        == stored_bundle.workspace_seed_fingerprint
+        and [
+            (case.case_id, case.task_input_fingerprint, case.readiness)
+            for case in current_bundle.cases
+        ]
+        == [
+            (case.case_id, case.task_input_fingerprint, case.readiness)
+            for case in stored_bundle.cases
+        ]
+    )
+
+
+def _load_resumable_member_pairs(
+    request: CandidateReplayRequest,
+    *,
+    prepared_members: Sequence[tuple[EvalCase, CandidateReplayRequest, Path]],
+) -> dict[str, CandidateReplayMemberResult]:
+    """Load complete compatible member pairs from an earlier partial replay."""
+
+    if request.resume_replay_dir is None:
+        return {}
+    resume_root = Path(request.resume_replay_dir).expanduser()
+    if resume_root.is_symlink():
+        logger.info(
+            "self_evolve.replay.resume.skip reason=symlink_source "
+            f"source={resume_root}"
+        )
+        return {}
+    checkpoint_path = resume_root / "members" / "paired_replay_checkpoint.json"
+    try:
+        stored_root_request = _candidate_replay_request_from_mapping(
+            _load_json_object(resume_root / "request.json")
+        )
+        checkpoint = _load_json_object(checkpoint_path)
+    except (FileNotFoundError, ValueError, json.JSONDecodeError, OSError):
+        logger.info(
+            "self_evolve.replay.resume.skip reason=checkpoint_unreadable "
+            f"source={resume_root}"
+        )
+        return {}
+    if (
+        checkpoint.get("resume_safe") is not True
+        or not _resume_root_is_compatible(request, stored_root_request)
+    ):
+        logger.info(
+            "self_evolve.replay.resume.skip reason=experiment_identity_mismatch "
+            f"source={resume_root}"
+        )
+        return {}
+    raw_completed = checkpoint.get("candidate_phase_completed_case_ids")
+    if not isinstance(raw_completed, list):
+        return {}
+    completed = {
+        item for item in raw_completed if isinstance(item, str) and item
+    }
+    resumed: dict[str, CandidateReplayMemberResult] = {}
+    for case, member_request, member_dir in prepared_members:
+        if case.case_id not in completed:
+            continue
+        source_member_dir = (
+            resume_root / "members" / _member_artifact_name(case.case_id)
+        )
+        try:
+            stored_member_request = _candidate_replay_request_from_mapping(
+                _load_json_object(source_member_dir / "request.json")
+            )
+        except (FileNotFoundError, ValueError, json.JSONDecodeError, OSError):
+            continue
+        if not _resume_member_is_compatible(member_request, stored_member_request):
+            continue
+        source_baseline_dir = (
+            Path(stored_member_request.baseline_replay_dir)
+            if stored_member_request.baseline_replay_dir
+            else source_member_dir / "baseline"
+        )
+        source_candidate_dir = source_member_dir / _safe_path(request.candidate_id)
+        try:
+            baseline = _load_variant_result_from_dir(
+                source_baseline_dir,
+                base_variant_id="baseline",
+            )
+            candidate_result = _load_variant_result_from_dir(
+                source_candidate_dir,
+                base_variant_id=request.candidate_id,
+            )
+            baseline, baseline_failures = _validate_v3_member_variant_artifact(
+                source_baseline_dir,
+                result=baseline,
+                requested_repetitions=member_request.baseline_repetitions,
+                case_id=case.case_id,
+                variant_role="baseline",
+                expected_variant_id="baseline",
+            )
+            candidate_result, candidate_failures = (
+                _validate_v3_member_variant_artifact(
+                    source_candidate_dir,
+                    result=candidate_result,
+                    requested_repetitions=member_request.candidate_repetitions,
+                    case_id=case.case_id,
+                    variant_role="candidate",
+                    expected_variant_id=request.candidate_id,
+                )
+            )
+        except (FileNotFoundError, ValueError, json.JSONDecodeError, OSError):
+            continue
+        if baseline_failures or candidate_failures:
+            continue
+        try:
+            _clone_replay_variant_tree(
+                source_baseline_dir,
+                member_dir / "baseline",
+            )
+            _clone_replay_variant_tree(
+                source_candidate_dir,
+                member_dir / _safe_path(request.candidate_id),
+            )
+            baseline = _load_variant_result_from_dir(
+                member_dir / "baseline",
+                base_variant_id="baseline",
+            )
+            candidate_result = _load_variant_result_from_dir(
+                member_dir / _safe_path(request.candidate_id),
+                base_variant_id=request.candidate_id,
+            )
+        except OSError:
+            shutil.rmtree(member_dir / "baseline", ignore_errors=True)
+            shutil.rmtree(
+                member_dir / _safe_path(request.candidate_id),
+                ignore_errors=True,
+            )
+            continue
+        local_request = replace(
+            member_request,
+            baseline_replay_dir=None,
+            adaptation_fingerprint=(
+                stored_member_request.adaptation_fingerprint
+            ),
+            replay_adaptation=stored_member_request.replay_adaptation,
+        )
+        _write_json(member_dir / "request.json", local_request)
+        resumed[case.case_id] = CandidateReplayMemberResult(
+            case_id=case.case_id,
+            request=local_request,
+            baseline=baseline,
+            candidate=candidate_result,
+        )
+    logger.info(
+        "self_evolve.replay.resume.loaded "
+        f"source={resume_root} completed_pairs={len(resumed)} "
+        f"checkpoint_pairs={len(completed)}"
+    )
+    return resumed
 
 
 class AWorldCliCandidateReplayBackend:
@@ -2706,19 +2995,79 @@ class AWorldCliCandidateReplayBackend:
         authoritative_stop: Mapping[str, Any] | None = None
         candidate_frontier_stop_event: ReplayFailureEvent | None = None
         case_ids = tuple(case.case_id for case, _request, _dir in prepared_members)
-        baseline_phase_completed_case_ids: list[str] = []
-        candidate_phase_completed_case_ids: list[str] = []
-        comparable_pair_case_ids: list[str] = []
-        reusable_baseline_case_ids: list[str] = []
+        resumed_members = _load_resumable_member_pairs(
+            request,
+            prepared_members=prepared_members,
+        )
+        resumed_pair_case_ids = [
+            case_id for case_id in case_ids if case_id in resumed_members
+        ]
+        member_items.extend(
+            resumed_members[case_id] for case_id in resumed_pair_case_ids
+        )
+        baseline_phase_completed_case_ids: list[str] = list(
+            resumed_pair_case_ids
+        )
+        candidate_phase_completed_case_ids: list[str] = list(
+            resumed_pair_case_ids
+        )
+        comparable_pair_case_ids: list[str] = [
+            case_id
+            for case_id in resumed_pair_case_ids
+            if _replay_member_pair_is_comparable(
+                next(case for case in replay_cases if case.case_id == case_id),
+                resumed_members[case_id].baseline,
+                resumed_members[case_id].candidate,
+            )
+        ]
+        reusable_baseline_case_ids: list[str] = [
+            case_id
+            for case_id in resumed_pair_case_ids
+            if _baseline_replay_is_reusable(
+                resumed_members[case_id].baseline,
+                requested_repetitions=(
+                    resumed_members[case_id].request.baseline_repetitions
+                ),
+            )
+        ]
+        for case_id in resumed_pair_case_ids:
+            resumed_failure = resumed_members[case_id].candidate.failure
+            if (
+                isinstance(resumed_failure, ReplayFailureEvent)
+                and resumed_failure.scope
+                in {FailureScope.CANDIDATE, FailureScope.SHARED_RUN}
+                and resumed_failure.stage is not FailureStage.TASK_ROLLOUT
+            ):
+                candidate_blocking_event = resumed_failure
+        if resumed_pair_case_ids:
+            _emit_replay_member_progress(
+                progress_callback,
+                event="checkpoint_pairs_reused",
+                candidate_id=candidate.candidate_id,
+                case_id=resumed_pair_case_ids[-1],
+                case_index=len(resumed_pair_case_ids),
+                case_count=member_count,
+                phase="checkpoint",
+                reused_case_count=len(resumed_pair_case_ids),
+                pending_case_count=member_count - len(resumed_pair_case_ids),
+                source_replay_dir=request.resume_replay_dir,
+            )
+        _write_incremental_baseline_manifest(
+            members_root,
+            prepared_members=prepared_members,
+            completed_case_ids=reusable_baseline_case_ids,
+        )
         _write_progressive_pair_checkpoint(
             members_root,
             case_ids=case_ids,
-            baseline_phase_completed_case_ids=(),
-            candidate_phase_completed_case_ids=(),
-            comparable_pair_case_ids=(),
-            reusable_baseline_case_ids=(),
+            baseline_phase_completed_case_ids=baseline_phase_completed_case_ids,
+            candidate_phase_completed_case_ids=candidate_phase_completed_case_ids,
+            comparable_pair_case_ids=comparable_pair_case_ids,
+            reusable_baseline_case_ids=reusable_baseline_case_ids,
             active_case_id=None,
             active_phase=None,
+            resumed_from_replay_dir=request.resume_replay_dir,
+            resumed_pair_case_ids=resumed_pair_case_ids,
         )
 
         async def run_candidate_phase(
@@ -2925,6 +3274,8 @@ class AWorldCliCandidateReplayBackend:
             prepared_members,
             start=1,
         ):
+            if case.case_id in resumed_members:
+                continue
             _write_progressive_pair_checkpoint(
                 members_root,
                 case_ids=case_ids,
@@ -2938,6 +3289,8 @@ class AWorldCliCandidateReplayBackend:
                 reusable_baseline_case_ids=reusable_baseline_case_ids,
                 active_case_id=case.case_id,
                 active_phase="baseline",
+                resumed_from_replay_dir=request.resume_replay_dir,
+                resumed_pair_case_ids=resumed_pair_case_ids,
             )
             _emit_replay_member_progress(
                 progress_callback,
@@ -3133,6 +3486,8 @@ class AWorldCliCandidateReplayBackend:
                 reusable_baseline_case_ids=reusable_baseline_case_ids,
                 active_case_id=case.case_id,
                 active_phase="candidate",
+                resumed_from_replay_dir=request.resume_replay_dir,
+                resumed_pair_case_ids=resumed_pair_case_ids,
             )
             candidate_result = await run_candidate_phase(
                 member_index=member_index,
@@ -3156,10 +3511,13 @@ class AWorldCliCandidateReplayBackend:
                 candidate_result,
             ):
                 comparable_pair_case_ids.append(case.case_id)
-            next_case_id = (
-                case_ids[member_index]
-                if member_index < member_count
-                else None
+            next_case_id = next(
+                (
+                    pending_case_id
+                    for pending_case_id in case_ids[member_index:]
+                    if pending_case_id not in resumed_members
+                ),
+                None,
             )
             _write_progressive_pair_checkpoint(
                 members_root,
@@ -3174,8 +3532,17 @@ class AWorldCliCandidateReplayBackend:
                 reusable_baseline_case_ids=reusable_baseline_case_ids,
                 active_case_id=next_case_id,
                 active_phase=("baseline" if next_case_id is not None else None),
+                resumed_from_replay_dir=request.resume_replay_dir,
+                resumed_pair_case_ids=resumed_pair_case_ids,
             )
-        member_results = tuple(member_items)
+        member_results_by_case = {
+            member.case_id: member for member in member_items
+        }
+        member_results = tuple(
+            member_results_by_case[case_id]
+            for case_id in case_ids
+            if case_id in member_results_by_case
+        )
         _write_json(
             members_root / "manifest.json",
             {
@@ -3901,6 +4268,8 @@ def _run_replay_cli(
     execution_started_at: float,
     replay_environment: Mapping[str, str],
     cancellation_event: threading.Event | None = None,
+    evidence_manifest: Path | None = None,
+    task_response_path: Path | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Run a replay CLI process while supervising terminal task diagnostics."""
 
@@ -3916,6 +4285,9 @@ def _run_replay_cli(
         env=dict(env),
     )
     deadline = time.monotonic() + max(float(timeout), 0.0)
+    evidence_ready_at: float | None = None
+    manifest_signature: tuple[int, int] | None = None
+    manifest_valid = False
     while True:
         if cancellation_event is not None and cancellation_event.is_set():
             stdout, stderr = _stop_replay_cli_process(
@@ -3949,6 +4321,71 @@ def _run_replay_cli(
                 stderr=stderr,
             )
         except subprocess.TimeoutExpired as exc:
+            try:
+                if evidence_manifest is None:
+                    raise FileNotFoundError
+                manifest_stat = evidence_manifest.stat()
+                current_manifest_signature = (
+                    int(manifest_stat.st_mtime_ns),
+                    int(manifest_stat.st_size),
+                )
+            except OSError:
+                current_manifest_signature = None
+            if (
+                current_manifest_signature is not None
+                and current_manifest_signature != manifest_signature
+            ):
+                manifest_signature = current_manifest_signature
+                manifest_metrics = _evidence_manifest_metrics(
+                    artifact_dir=evidence_manifest.parent,
+                    evidence_manifest=evidence_manifest,
+                    workspace_root=Path(cwd),
+                )
+                manifest_valid = _has_valid_artifact_backed_timeout_evidence(
+                    manifest_metrics
+                )
+                if manifest_valid and evidence_ready_at is None:
+                    evidence_ready_at = time.monotonic()
+            if manifest_valid:
+                task_response_payload = (
+                    _load_self_evolve_task_response(task_response_path)
+                    if task_response_path is not None
+                    else None
+                )
+                if task_response_payload is not None:
+                    stdout, stderr = _stop_replay_cli_process(
+                        process,
+                        start_new_session=start_new_session,
+                    )
+                    framed_payload = json.dumps(
+                        task_response_payload,
+                        ensure_ascii=False,
+                    )
+                    completed = subprocess.CompletedProcess(
+                        list(command),
+                        0,
+                        stdout=(stdout.rstrip("\n") + "\n" + framed_payload + "\n"),
+                        stderr=stderr,
+                    )
+                    completed.evidence_ready_early_stop = True
+                    return completed
+                if (
+                    evidence_ready_at is not None
+                    and time.monotonic() - evidence_ready_at
+                    >= _EVIDENCE_FINALIZATION_GRACE_SECONDS
+                ):
+                    stdout, stderr = _stop_replay_cli_process(
+                        process,
+                        start_new_session=start_new_session,
+                    )
+                    failure = subprocess.TimeoutExpired(
+                        cmd=list(command),
+                        timeout=timeout,
+                        output=stdout,
+                        stderr=stderr,
+                    )
+                    failure.evidence_finalization_deadline = True
+                    raise failure
             artifact_diagnostics = _terminal_replay_artifact_diagnostics(
                 artifact_dir=artifact_dir,
                 since=execution_started_at,
@@ -3997,6 +4434,39 @@ def _run_replay_cli(
             )
             failure.terminal_diagnostic = True
             raise failure
+
+
+_SELF_EVOLVE_TASK_RESPONSE_SCHEMA = "aworld.self_evolve.task_response.v1"
+_MAX_SELF_EVOLVE_TASK_RESPONSE_BYTES = 8_000_000
+_EVIDENCE_FINALIZATION_GRACE_SECONDS = 45.0
+
+
+def _load_self_evolve_task_response(path: Path) -> dict[str, Any] | None:
+    try:
+        if path.is_symlink() or path.stat().st_size > _MAX_SELF_EVOLVE_TASK_RESPONSE_BYTES:
+            return None
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, OSError, json.JSONDecodeError):
+        return None
+    if (
+        not isinstance(payload, Mapping)
+        or payload.get("schema_version") != _SELF_EVOLVE_TASK_RESPONSE_SCHEMA
+        or payload.get("trajectory_capture_mode") != "task_response"
+        or not isinstance(payload.get("trajectory"), list)
+        or not payload["trajectory"]
+    ):
+        return None
+    return {
+        "trajectory": [
+            item for item in payload["trajectory"] if isinstance(item, Mapping)
+        ],
+        "trajectory_capture_mode": "task_response",
+        **(
+            {"llm_calls": payload["llm_calls"]}
+            if isinstance(payload.get("llm_calls"), list)
+            else {}
+        ),
+    }
 
 
 def _stop_replay_cli_process(
@@ -4136,6 +4606,7 @@ class AWorldCliReplayExecutor:
         evidence_dir = artifact_dir / "evidence"
         evidence_dir.mkdir(parents=True, exist_ok=True)
         evidence_manifest = evidence_dir / "evidence_manifest.jsonl"
+        task_response_path = artifact_dir / "framework_task_response.json"
         _initialize_replay_evidence_policy_state(
             evidence_dir,
             artifact_file_limit=self._DEFAULT_ARTIFACT_FILE_LIMIT,
@@ -4197,6 +4668,9 @@ class AWorldCliReplayExecutor:
                 "AWORLD_REPLAY_ARTIFACT_DIR": str(evidence_dir),
                 "AWORLD_SELF_EVOLVE_REPLAY_ARTIFACT_DIR": str(evidence_dir),
                 "AWORLD_SELF_EVOLVE_EVIDENCE_MANIFEST": str(evidence_manifest),
+                "AWORLD_SELF_EVOLVE_TASK_RESPONSE_PATH": str(
+                    task_response_path
+                ),
                 "AWORLD_REPLAY_EVIDENCE_POLICY": "1",
                 "AWORLD_REPLAY_ARTIFACT_FILE_LIMIT": str(
                     self._DEFAULT_ARTIFACT_FILE_LIMIT
@@ -4232,6 +4706,8 @@ class AWorldCliReplayExecutor:
                     start_new_session=True,
                     env=execution_environment,
                     artifact_dir=artifact_dir,
+                    evidence_manifest=evidence_manifest,
+                    task_response_path=task_response_path,
                     execution_started_at=execution_started_at,
                     replay_environment=request.environment,
                     cancellation_event=cancellation_event,
@@ -4267,6 +4743,16 @@ class AWorldCliReplayExecutor:
                 evidence_metrics,
                 default_tool_call_limit=self._DEFAULT_TOOL_CALL_LIMIT,
             )
+            if getattr(exc, "evidence_finalization_deadline", False):
+                termination_diagnostics.update(
+                    {
+                        "termination_kind": "evidence_finalization_deadline",
+                        "termination_budget_axis": "finalization_grace",
+                        "evidence_finalization_grace_seconds": (
+                            _EVIDENCE_FINALIZATION_GRACE_SECONDS
+                        ),
+                    }
+                )
             compacted_argument_failure = _compacted_argument_replay_failure(
                 evidence_metrics
             )
@@ -4355,12 +4841,26 @@ class AWorldCliReplayExecutor:
                     stdout=stdout,
                     stderr=stderr,
                     failure={
-                        "code": "replay_task_timeout_with_recoverable_evidence",
+                        "code": (
+                            "replay_evidence_finalization_timeout"
+                            if getattr(
+                                exc,
+                                "evidence_finalization_deadline",
+                                False,
+                            )
+                            else "replay_task_timeout_with_recoverable_evidence"
+                        ),
                         "type": "TimeoutExpired",
                         "outcome": "task_failure",
                         "failure_class": "task_timeout_with_recoverable_evidence",
                         "failure_stage": "task_rollout",
-                        "repairable": False,
+                        "repairable": bool(
+                            getattr(
+                                exc,
+                                "evidence_finalization_deadline",
+                                False,
+                            )
+                        ),
                         "category": "task_completion",
                         "reason": (
                             "replay timed out after persisting recoverable evidence; "
@@ -4418,6 +4918,9 @@ class AWorldCliReplayExecutor:
         )
         metrics = {
             "returncode": completed.returncode,
+            "evidence_ready_early_stop": bool(
+                getattr(completed, "evidence_ready_early_stop", False)
+            ),
             "trajectory_capture_mode": capture_mode,
             "task_completion_established": bool(
                 completed.returncode == 0
@@ -4941,6 +5444,7 @@ def build_replay_request(
     baseline_repetitions: int = 1,
     candidate_repetitions: int = 1,
     baseline_replay_dir: str | Path | None = None,
+    resume_replay_dir: str | Path | None = None,
     replay_adaptation: ReplayAdaptationBundle | None = None,
     verified_candidate_package_fingerprint: str | None = None,
     artifact_namespace: str | None = None,
@@ -4982,6 +5486,9 @@ def build_replay_request(
         baseline_skill_root=_infer_baseline_skill_root_from_target(target),
         baseline_replay_dir=(
             str(Path(baseline_replay_dir)) if baseline_replay_dir is not None else None
+        ),
+        resume_replay_dir=(
+            str(Path(resume_replay_dir)) if resume_replay_dir is not None else None
         ),
         task_input=task_input,
         agent=agent,
@@ -9307,6 +9814,11 @@ def _candidate_replay_request_from_mapping(payload: Mapping[str, Any]) -> Candid
             if payload.get("baseline_replay_dir") is not None
             else None
         ),
+        resume_replay_dir=(
+            str(payload.get("resume_replay_dir"))
+            if payload.get("resume_replay_dir") is not None
+            else None
+        ),
         agent=str(payload.get("agent")) if payload.get("agent") is not None else None,
         timeout_seconds=_optional_float(payload.get("timeout_seconds")),
         max_steps=_optional_int(payload.get("max_steps")),
@@ -9361,6 +9873,11 @@ def _candidate_replay_request_from_mapping(payload: Mapping[str, Any]) -> Candid
         verified_candidate_package_fingerprint=(
             str(payload.get("verified_candidate_package_fingerprint"))
             if payload.get("verified_candidate_package_fingerprint") is not None
+            else None
+        ),
+        artifact_namespace=(
+            str(payload.get("artifact_namespace"))
+            if payload.get("artifact_namespace") is not None
             else None
         ),
         replay_adaptation=_replay_adaptation_from_mapping(

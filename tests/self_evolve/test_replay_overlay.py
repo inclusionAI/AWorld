@@ -75,6 +75,7 @@ from aworld.self_evolve.replay import (
     _replay_service_start_failure_details,
     _stored_baseline_matches_request,
     _replay_failure_outcome,
+    replay_dataset_fingerprint,
     _run_replay_cli,
     _validate_nonempty_correlated_json_response,
     _validate_replay_service_protocol_trace,
@@ -331,6 +332,121 @@ async def test_replay_backend_reports_member_phase_progress(
         "succeeded",
     ]
     assert completed[0]["baseline_cache_status"] == "not_offered"
+
+
+@pytest.mark.asyncio
+async def test_replay_backend_resumes_completed_pairs_from_prior_checkpoint(
+    tmp_path: Path,
+) -> None:
+    calls: list[tuple[str, str]] = []
+
+    async def fake_executor(
+        request: ReplayExecutionRequest,
+    ) -> ReplayExecutionResult:
+        calls.append((request.task_id, request.variant_id))
+        return ReplayExecutionResult(
+            status="succeeded",
+            trajectory=[{"action": {"content": request.variant_id}}],
+        )
+
+    dataset = SelfEvolveDataset(
+        cases=(
+            EvalCase(case_id="task-a", input="Replay task A"),
+            EvalCase(case_id="task-b", input="Replay task B"),
+        ),
+        recipe=DatasetRecipe(
+            source={"kind": "resume-test", "case_count": 2},
+            split_seed="seed",
+            splits={"train": ["task-a", "task-b"]},
+        ),
+    )
+    candidate = _candidate(
+        "---\nname: demo\n---\n# Demo\nCandidate.\n",
+        candidate_id="resume-candidate",
+    )
+    common = {
+        "task_id": "task-a",
+        "workspace_root": str(tmp_path),
+        "target": candidate.target,
+        "candidate_id": candidate.candidate_id,
+        "overlay_skill_root": str(tmp_path / "overlay"),
+        "task_input": dataset.cases[0].input,
+        "dataset_fingerprint": replay_dataset_fingerprint(dataset),
+        "baseline_skill_fingerprint": candidate.target_fingerprint,
+        "verified_candidate_package_fingerprint": "sha256:package",
+        "baseline_repetitions": 1,
+        "candidate_repetitions": 1,
+    }
+    backend = AWorldCliCandidateReplayBackend(executor=fake_executor)
+    source_request = CandidateReplayRequest(run_id="source-run", **common)
+    await backend.replay_candidate(
+        source_request,
+        candidate=candidate,
+        dataset=dataset,
+    )
+    source_replay_dir = (
+        tmp_path
+        / ".aworld"
+        / "self_evolve"
+        / "source-run"
+        / "replay"
+        / candidate.candidate_id
+    )
+    checkpoint_path = (
+        source_replay_dir / "members" / "paired_replay_checkpoint.json"
+    )
+    checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    checkpoint.update(
+        {
+            "baseline_phase_completed_case_ids": ["task-a"],
+            "candidate_phase_completed_case_ids": ["task-a"],
+            "comparable_pair_case_ids": ["task-a"],
+            "reusable_baseline_case_ids": ["task-a"],
+            "pending_case_ids": ["task-b"],
+        }
+    )
+    checkpoint_path.write_text(json.dumps(checkpoint), encoding="utf-8")
+
+    calls.clear()
+    events: list[dict[str, object]] = []
+    resumed = await backend.replay_candidate(
+        CandidateReplayRequest(
+            run_id="resumed-run",
+            resume_replay_dir=str(source_replay_dir),
+            **common,
+        ),
+        candidate=candidate,
+        dataset=dataset,
+        progress_callback=events.append,
+    )
+
+    assert calls == [
+        ("task-b", "baseline"),
+        ("task-b", candidate.candidate_id),
+    ]
+    assert [member.case_id for member in resumed.member_results] == [
+        "task-a",
+        "task-b",
+    ]
+    assert any(
+        event["event"] == "checkpoint_pairs_reused"
+        and event["reused_case_count"] == 1
+        for event in events
+    )
+    resumed_checkpoint = json.loads(
+        (
+            tmp_path
+            / ".aworld"
+            / "self_evolve"
+            / "resumed-run"
+            / "replay"
+            / candidate.candidate_id
+            / "members"
+            / "paired_replay_checkpoint.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert resumed_checkpoint["resumed_pair_case_ids"] == ["task-a"]
+    assert resumed_checkpoint["pending_case_ids"] == []
 
 
 @pytest.mark.asyncio
@@ -9000,6 +9116,125 @@ def test_replay_cli_supervisor_does_not_stop_on_live_progress_artifact(
     assert completed.returncode == 0
     assert completed.stdout.rstrip().endswith("completed")
     assert time.monotonic() - started >= 1
+
+
+def test_replay_cli_supervisor_stops_after_evidence_and_task_response(
+    tmp_path: Path,
+) -> None:
+    artifact_dir = tmp_path / "artifacts"
+    evidence_dir = artifact_dir / "evidence"
+    evidence_dir.mkdir(parents=True)
+    evidence_path = evidence_dir / "result.json"
+    manifest_path = evidence_dir / "evidence_manifest.jsonl"
+    task_response_path = artifact_dir / "framework_task_response.json"
+    trajectory = [
+        {
+            "action": {
+                "content": "finished",
+                "is_agent_finished": "True",
+            }
+        }
+    ]
+    manifest_text = json.dumps(
+        {
+            "source_id": "result",
+            "artifact_path": "result.json",
+            "extraction_method": "bounded_extract",
+            "fields": ["value"],
+        }
+    ) + "\n"
+    task_response_text = json.dumps(
+        {
+            "schema_version": "aworld.self_evolve.task_response.v1",
+            "trajectory": trajectory,
+            "trajectory_capture_mode": "task_response",
+        }
+    ) + "\n"
+    script = (
+        "from pathlib import Path; import time; "
+        f"Path({str(evidence_path)!r}).write_text('{{\"value\": 1}}'); "
+        f"Path({str(manifest_path)!r}).write_text({manifest_text!r}); "
+        f"Path({str(task_response_path)!r}).write_text({task_response_text!r}); "
+        "time.sleep(30)"
+    )
+    started = time.monotonic()
+
+    completed = _run_replay_cli(
+        [sys.executable, "-c", script],
+        cwd=str(tmp_path),
+        text=True,
+        capture_output=True,
+        timeout=20,
+        start_new_session=True,
+        env={},
+        artifact_dir=artifact_dir,
+        evidence_manifest=manifest_path,
+        task_response_path=task_response_path,
+        execution_started_at=time.time(),
+        replay_environment={},
+    )
+
+    assert time.monotonic() - started < 5
+    assert completed.returncode == 0
+    assert getattr(completed, "evidence_ready_early_stop", False) is True
+    payload = _extract_trajectory_payload_from_stdout(completed.stdout)
+    assert payload["trajectory_capture_mode"] == "task_response"
+    assert payload["trajectory"] == trajectory
+
+
+def test_replay_cli_supervisor_bounds_evidence_finalization_without_output(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    artifact_dir = tmp_path / "artifacts"
+    evidence_dir = artifact_dir / "evidence"
+    evidence_dir.mkdir(parents=True)
+    evidence_path = evidence_dir / "result.json"
+    manifest_path = evidence_dir / "evidence_manifest.jsonl"
+    manifest_text = json.dumps(
+        {
+            "source_id": "result",
+            "artifact_path": "result.json",
+            "extraction_method": "bounded_extract",
+            "fields": ["value"],
+        }
+    ) + "\n"
+    script = (
+        "from pathlib import Path; import time; "
+        f"Path({str(evidence_path)!r}).write_text('{{\"value\": 1}}'); "
+        f"Path({str(manifest_path)!r}).write_text({manifest_text!r}); "
+        "time.sleep(30)"
+    )
+    monkeypatch.setattr(
+        "aworld.self_evolve.replay._EVIDENCE_FINALIZATION_GRACE_SECONDS",
+        0.2,
+    )
+    started = time.monotonic()
+
+    with pytest.raises(subprocess.TimeoutExpired) as exc_info:
+        _run_replay_cli(
+            [sys.executable, "-c", script],
+            cwd=str(tmp_path),
+            text=True,
+            capture_output=True,
+            timeout=20,
+            start_new_session=True,
+            env={},
+            artifact_dir=artifact_dir,
+            evidence_manifest=manifest_path,
+            task_response_path=(
+                artifact_dir / "framework_task_response.json"
+            ),
+            execution_started_at=time.time(),
+            replay_environment={},
+        )
+
+    assert time.monotonic() - started < 5
+    assert getattr(
+        exc_info.value,
+        "evidence_finalization_deadline",
+        False,
+    ) is True
 
 
 def test_replay_cli_supervisor_stops_on_skill_owned_capability_mismatch(

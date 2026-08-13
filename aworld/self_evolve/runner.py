@@ -1533,6 +1533,13 @@ def _replay_member_progress_message(
             f"{prefix} completed with status {payload.get('status')}"
             f"{cache_text}"
         )
+    if event == "checkpoint_pairs_reused":
+        return (
+            f"Replay candidate {candidate_id}; reused "
+            f"{payload.get('reused_case_count')} completed case pair(s) from "
+            "the prior measurement checkpoint; pending cases "
+            f"{payload.get('pending_case_count')}"
+        )
     if event in {"replay_attempt_started", "replay_attempt_completed"}:
         status = (
             f"; status {payload.get('status')}"
@@ -3322,6 +3329,7 @@ class SelfEvolveRunner:
         regression_replay_backend: CandidateReplayBackend | None = None,
         replay_timeout_seconds: int = 600,
         replay_total_timeout_seconds: int | None = None,
+        replay_resume_dir: str | Path | None = None,
         replay_max_steps: int | None = 1,
         replay_candidate_limit: int = 2,
         candidate_screening_max_cases: int = 3,
@@ -3599,6 +3607,11 @@ class SelfEvolveRunner:
         ):
             raise ValueError("replay_total_timeout_seconds must be positive")
         self.replay_total_timeout_seconds = replay_total_timeout_seconds
+        self.replay_resume_dir = (
+            str(Path(replay_resume_dir))
+            if replay_resume_dir is not None
+            else None
+        )
         self.replay_max_steps = replay_max_steps
         self.replay_candidate_limit = replay_candidate_limit
         if candidate_screening_max_cases <= 0:
@@ -11677,6 +11690,11 @@ class SelfEvolveRunner:
                 baseline_repetitions=effective_baseline_repetitions,
                 candidate_repetitions=effective_candidate_repetitions,
                 baseline_replay_dir=baseline_replay_dir,
+                resume_replay_dir=(
+                    self.replay_resume_dir
+                    if progress_stage == "candidate_replay"
+                    else None
+                ),
                 replay_adaptation=replay_adaptation,
                 verified_candidate_package_fingerprint=(
                     overlay.candidate_skill_package_fingerprint
@@ -14901,6 +14919,7 @@ def optimize_from_cli_request(
             )
 
     measurement_pending_candidate: CandidateVariant | None = None
+    measurement_resume_replay_dir: Path | None = None
     pending_measurement_values = (
         campaign_measurement_pending_run_id,
         campaign_measurement_pending_candidate_id,
@@ -14947,6 +14966,20 @@ def optimize_from_cli_request(
             raise ValueError(
                 "campaign measurement resume candidate target changed"
             )
+        replay_checkpoint_root = (
+            store.run_path(campaign_measurement_pending_run_id)
+            / "replay"
+            / campaign_measurement_pending_candidate_id
+        )
+        if (
+            (replay_checkpoint_root / "request.json").is_file()
+            and (
+                replay_checkpoint_root
+                / "members"
+                / "paired_replay_checkpoint.json"
+            ).is_file()
+        ):
+            measurement_resume_replay_dir = replay_checkpoint_root
         _emit_progress(
             progress_callback,
             "resume",
@@ -15032,6 +15065,7 @@ def optimize_from_cli_request(
         regression_replay_backend=regression_replay_backend,
         replay_timeout_seconds=replay_timeout_seconds,
         replay_total_timeout_seconds=replay_total_timeout_seconds,
+        replay_resume_dir=measurement_resume_replay_dir,
         replay_max_steps=replay_max_steps,
         replay_candidate_limit=replay_candidate_limit,
         candidate_screening_max_cases=candidate_screening_max_cases,
@@ -15134,6 +15168,11 @@ def optimize_from_cli_request(
             ),
             "generation_skipped": True,
             "resume_scope": "shared_measurement",
+            "source_replay_dir": (
+                str(measurement_resume_replay_dir)
+                if measurement_resume_replay_dir is not None
+                else None
+            ),
         }
     if (
         measurement_pending_candidate is not None
@@ -16569,6 +16608,7 @@ def _replay_report(replay_result: CandidateReplayResult) -> dict[str, object]:
             "candidate_id": replay_result.request.candidate_id,
             "overlay_skill_root": replay_result.request.overlay_skill_root,
             "baseline_replay_dir": replay_result.request.baseline_replay_dir,
+            "resume_replay_dir": replay_result.request.resume_replay_dir,
             "timeout_seconds": replay_result.request.timeout_seconds,
             "max_steps": replay_result.request.max_steps,
             "max_tokens": replay_result.request.max_tokens,
@@ -16735,6 +16775,7 @@ def _replay_timeout_checkpoint_details(
         "active_phase",
         "resume_safe",
         "baseline_cache_manifest",
+        "resumed_from_replay_dir",
     ):
         value = raw_checkpoint.get(key)
         if isinstance(value, (str, bool)) or value is None:
@@ -16745,6 +16786,7 @@ def _replay_timeout_checkpoint_details(
         "comparable_pair_case_ids",
         "reusable_baseline_case_ids",
         "pending_case_ids",
+        "resumed_pair_case_ids",
     ):
         raw = raw_checkpoint.get(key)
         if isinstance(raw, list):

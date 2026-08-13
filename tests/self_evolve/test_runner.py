@@ -22292,6 +22292,42 @@ async def test_paired_replay_timeout_persists_progressive_resume_checkpoint(
         baseline_repetitions=1,
     ) == 1
 
+    resumed_calls: list[tuple[str, str]] = []
+
+    async def resumed_executor(request):
+        resumed_calls.append((request.task_id, request.variant_id))
+        return replay_module.ReplayExecutionResult(
+            status="succeeded",
+            trajectory=[{"action": {"content": request.variant_id}}],
+        )
+
+    resumed_runner = SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=SimpleNamespace(),
+        replay_enabled=True,
+        candidate_replay_backend=AWorldCliCandidateReplayBackend(
+            executor=resumed_executor
+        ),
+        replay_timeout_seconds=2,
+        replay_total_timeout_seconds=5,
+        replay_resume_dir=str(replay_dir.parent),
+    )
+    resumed_result, _resumed_dataset, resumed_gate = (
+        await resumed_runner._replay_selected_candidate(
+            run_id="run-progressive-resumed",
+            target=SkillTextTarget(skill_path),
+            dataset=dataset,
+            selected_candidate=candidate,
+            apply_policy="auto_verified",
+        )
+    )
+
+    assert resumed_result is not None
+    assert resumed_gate is not None
+    assert resumed_gate.gate_name == "candidate_replay"
+    assert resumed_calls
+    assert {task_id for task_id, _variant_id in resumed_calls} == {"case-b"}
+
 
 def test_shared_measurement_without_candidate_observation_releases_authoritative_slot() -> None:
     timeout_gate = GateResult(
