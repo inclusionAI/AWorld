@@ -2836,10 +2836,17 @@ class StageAwareCandidateScheduler:
                 stop=False,
                 state=next_state,
             )
-        focused = sorted(
-            eligible_frontiers,
-            key=lambda item: (item.progress, item.semantic_key),
-        )[-1]
+        # A newly discovered typed contract must take ownership immediately.
+        # Otherwise an older equal-progress frontier can win forever by hash
+        # ordering and spend the remaining repair slots on stale work.
+        _, focused = max(
+            enumerate(eligible_frontiers),
+            key=lambda indexed: (
+                indexed[1].semantic_key not in state.frontier_progress,
+                indexed[1].progress,
+                indexed[0],
+            ),
+        )
         next_state = SchedulerState(
             initial_exploration_scheduled=next_state.initial_exploration_scheduled,
             untyped_frontier_exploration_scheduled=(

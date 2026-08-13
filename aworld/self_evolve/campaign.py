@@ -465,8 +465,16 @@ class SelfImprovementProgress:
         # reached stage, recovery achievement, or passing verification gate.
         # This prevents a later run from replacing a stronger champion merely
         # because it exposed a differently worded failure frontier.
+        constraint_delta = set(self.constraint_ids) - set(
+            previous.constraint_ids
+        )
         if self.deepest_stage_rank < previous.deepest_stage_rank:
-            return ()
+            # A candidate may intentionally return from replay/evaluation to
+            # source conformance after those stages expose a deeper owner or
+            # invariant. That is repair-contract progress even though the
+            # execution-stage rank is lower; refusing it strands a newly
+            # discovered constraint at the Campaign boundary.
+            return tuple(sorted(constraint_delta))
         previous_recovery = {
             item
             for item in previous.semantic_frontier_ids
@@ -504,7 +512,7 @@ class SelfImprovementProgress:
         # monotonic recovery or coarsely bucketed quality improvements may
         # advance a later Campaign cycle.
         delta = current_recovery - previous_recovery
-        delta.update(set(self.constraint_ids) - set(previous.constraint_ids))
+        delta.update(constraint_delta)
         delta.update(quality_delta)
         delta.update(measurement_delta)
         delta.update(
@@ -2565,6 +2573,33 @@ def _event_identity(event: Mapping[str, Any]) -> str:
 def _constraint_identities(report: Mapping[str, Any]) -> set[str]:
     identities: set[str] = set()
     for item in _walk_mappings(report):
+        if (
+            item.get("projection_schema_version")
+            == "aworld.self_evolve.repair_conformance.public.v1"
+            and isinstance(item.get("required_branch_paths"), list)
+        ):
+            # Track the actionable contract independently from candidate ids
+            # and baseline hashes. Moving ownership from compiler to runtime
+            # must advance Campaign continuation, while rebasing the same
+            # contract onto another candidate must not manufacture progress.
+            contract_shape = {
+                key: item.get(key)
+                for key in (
+                    "failure_codes",
+                    "required_branch_paths",
+                    "manifest_path",
+                    "compiler_path",
+                    "runtime_paths",
+                    "fixture_probe_constraints",
+                    "schema_field_constraints",
+                    "runtime_response_constraints",
+                    "required_runtime_transitions",
+                )
+            }
+            identities.add(
+                "constraint-repair-contract-"
+                + _fingerprint(contract_shape)[7:]
+            )
         for key in (
             "schema_field_constraints",
             "fixture_probe_constraints",

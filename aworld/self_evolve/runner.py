@@ -331,6 +331,7 @@ from aworld.self_evolve.repair_conformance import (
     evaluate_compiled_probe_conformance,
     merge_repair_conformance_constraint_context,
     project_replay_capability_for_probe_group,
+    repair_conformance_contract_identity,
 )
 from aworld.self_evolve.replay_adaptation import (
     ReplayAdaptationBundle,
@@ -1275,7 +1276,10 @@ def _typed_repair_frontiers(
         previous = frontiers.get(frontier.semantic_key)
         if previous is None or frontier.progress > previous.progress:
             frontiers[frontier.semantic_key] = frontier
-    return tuple(frontiers[key] for key in sorted(frontiers))
+    # Preserve causal feedback order. The scheduler uses the most recently
+    # discovered eligible frontier as the tie-breaker, rather than an opaque
+    # semantic-hash ordering.
+    return tuple(frontiers.values())
 
 
 def _causal_event_drives_repair_frontier(*, code: str, category: str) -> bool:
@@ -4124,7 +4128,16 @@ class SelfEvolveRunner:
         score_tiebreak_candidate_count = 0
         prerequisite_candidate_ids: list[str] = []
         generated_candidate_slot_count = 0
+        candidate_generation_attempt_slot_count = 0
+        effective_generated_candidate_ids: set[str] = set()
+        repair_reserved_slot_count = (
+            1
+            if _is_verified_apply_policy(apply_policy)
+            and self.max_generated_candidates > 1
+            else 0
+        )
         generation_frontier_exhausted = False
+        generation_repair_capacity_reserved = False
         verification_frontier_exhausted = False
         iteration_budget = (
             self.max_iterations + _MAX_PROGRESS_REPAIR_EXTENSION_ITERATIONS
@@ -4249,9 +4262,16 @@ class SelfEvolveRunner:
             requested_generation_slot_count = len(scheduler_decision.slots)
             scheduled_slots = scheduler_decision.slots
             if _is_verified_apply_policy(apply_policy) and scheduled_slots:
+                effective_generation_limit = self.max_generated_candidates
+                if not repair_frontiers:
+                    effective_generation_limit = max(
+                        1,
+                        self.max_generated_candidates
+                        - repair_reserved_slot_count,
+                    )
                 remaining_generation_slots = max(
                     0,
-                    self.max_generated_candidates
+                    effective_generation_limit
                     - generated_candidate_slot_count,
                 )
                 remaining_authoritative_slots = max(
@@ -4261,13 +4281,21 @@ class SelfEvolveRunner:
                 )
                 if remaining_generation_slots == 0:
                     generation_frontier_exhausted = True
+                    generation_repair_capacity_reserved = bool(
+                        generated_candidate_slot_count
+                        < self.max_generated_candidates
+                    )
                     _emit_progress(
                         self.progress_callback,
                         "candidate_generation",
                         (
-                            "Stopped candidate generation: generated candidate "
-                            "slot limit reached "
-                            f"({generated_candidate_slot_count}/"
+                            "Stopped candidate generation: "
+                            + (
+                                "downstream repair capacity remains reserved "
+                                if generation_repair_capacity_reserved
+                                else "generated candidate slot limit reached "
+                            )
+                            + f"({generated_candidate_slot_count}/"
                             f"{self.max_generated_candidates}); repair horizon "
                             f"{iteration_index + 1}/{iteration_budget} was not "
                             "a required iteration count"
@@ -4333,15 +4361,18 @@ class SelfEvolveRunner:
                         reason_code="generation_budget_denied",
                     )
                 break
-            first_generation_slot = generated_candidate_slot_count + 1
-            generated_candidate_slot_count += generation_slot_count
+            first_generation_attempt_slot = (
+                candidate_generation_attempt_slot_count + 1
+            )
+            candidate_generation_attempt_slot_count += generation_slot_count
             _emit_progress(
                 self.progress_callback,
                 "candidate_generation",
                 (
                     f"Generating candidate batch {iteration_index + 1}; "
-                    f"candidate slots {first_generation_slot}-"
-                    f"{generated_candidate_slot_count}/"
+                    f"candidate attempt slots {first_generation_attempt_slot}-"
+                    f"{candidate_generation_attempt_slot_count}; effective "
+                    f"candidate slots {generated_candidate_slot_count}/"
                     f"{self.max_generated_candidates}; repair horizon "
                     f"{iteration_index + 1}/{iteration_budget}"
                     if _is_verified_apply_policy(apply_policy)
@@ -4939,6 +4970,12 @@ class SelfEvolveRunner:
                 ] = key
                 unique_generated.append(generated_candidate)
                 unique_candidate_ids.add(generated_candidate.candidate_id)
+                effective_generated_candidate_ids.add(
+                    generated_candidate.candidate_id
+                )
+                generated_candidate_slot_count = len(
+                    effective_generated_candidate_ids
+                )
                 all_candidates.append(generated_candidate)
                 candidate_source_dispositions[
                     generated_candidate.candidate_id
@@ -5530,6 +5567,16 @@ class SelfEvolveRunner:
             )
             if screening_report is not None:
                 population_screening_reports.append(screening_report)
+                raw_superseded = screening_report.get(
+                    "superseded_candidate_ids"
+                )
+                if isinstance(raw_superseded, (list, tuple)):
+                    effective_generated_candidate_ids.difference_update(
+                        str(item) for item in raw_superseded if str(item)
+                    )
+                    generated_candidate_slot_count = len(
+                        effective_generated_candidate_ids
+                    )
             if _candidate_validation_stopped_by_shared_infrastructure(
                 screening_report
             ):
@@ -5627,7 +5674,12 @@ class SelfEvolveRunner:
                     )
             conformance_failure_signatures = (
                 _candidate_conformance_failure_signatures(screening_failures)
-                if screening_feedback and not candidate_population
+                if screening_feedback
+                and not candidate_population
+                and not (
+                    isinstance(screening_report, Mapping)
+                    and screening_report.get("superseding_contract_identity")
+                )
                 else ()
             )
             if conformance_failure_signatures:
@@ -6527,6 +6579,8 @@ class SelfEvolveRunner:
             if generation_materialization_frontier_exhausted
             else "generation_policy_frontier_repeated"
             if generation_policy_frontier_exhausted
+            else "repair_capacity_reserved_without_typed_frontier"
+            if generation_repair_capacity_reserved
             else "generated_candidate_slot_limit_reached"
             if generation_frontier_exhausted
             else "authoritative_candidate_limit_reached"
@@ -6592,9 +6646,16 @@ class SelfEvolveRunner:
                     optimizer_diagnostics
                 ),
                 "max_generated_candidates": self.max_generated_candidates,
+                "repair_reserved_slot_count": repair_reserved_slot_count,
                 "generated_candidate_slot_count": generated_candidate_slot_count,
+                "candidate_generation_attempt_slot_count": (
+                    candidate_generation_attempt_slot_count
+                ),
                 "unique_generated_candidate_count": len(all_candidates),
                 "generation_frontier_exhausted": generation_frontier_exhausted,
+                "generation_repair_capacity_reserved": (
+                    generation_repair_capacity_reserved
+                ),
                 "generation_policy_frontier_exhausted": (
                     generation_policy_frontier_exhausted
                 ),
@@ -8136,7 +8197,9 @@ class SelfEvolveRunner:
         attempts: list[dict[str, object]] = []
         passed_candidates: list[CandidateVariant] = []
         stopped_by_shared_infrastructure = False
-        for candidate in candidates:
+        superseded_candidate_ids: list[str] = []
+        superseding_contract_identity: str | None = None
+        for candidate_index, candidate in enumerate(candidates):
             contract = repair_conformance_contracts.get(candidate.candidate_id)
             if contract is None:
                 passed_candidates.append(candidate)
@@ -8237,6 +8300,43 @@ class SelfEvolveRunner:
             if gate.passed:
                 passed_candidates.append(candidate)
                 continue
+            evolved_contract = (
+                gate.details.get("repair_conformance")
+                if isinstance(gate.details, Mapping)
+                else None
+            )
+            if isinstance(evolved_contract, Mapping):
+                evolved_identity = repair_conformance_contract_identity(
+                    evolved_contract
+                )
+                if evolved_identity != contract.contract_identity:
+                    # The first member has discovered a deeper cumulative
+                    # contract. Remaining siblings were leased against stale
+                    # evidence and must not spend compile/replay budget or be
+                    # mistaken for independent repair attempts.
+                    superseding_contract_identity = evolved_identity
+                    superseded = tuple(candidates[candidate_index + 1 :])
+                    superseded_candidate_ids.extend(
+                        item.candidate_id for item in superseded
+                    )
+                    for stale_candidate in superseded:
+                        stale_key = (
+                            attempt_keys.get(stale_candidate.candidate_id)
+                            if attempt_keys is not None
+                            else None
+                        )
+                        if (
+                            attempt_tracker is not None
+                            and stale_key is not None
+                            and not attempt_tracker.terminal(stale_key)
+                        ):
+                            attempt_tracker.emit(
+                                stale_key,
+                                CandidateAttemptStage.NOT_RUN,
+                                reason_code="repair_contract_superseded",
+                            )
+                    passed_candidates.clear()
+                    break
             if _conformance_gate_blocks_population(gate):
                 stopped_by_shared_infrastructure = True
                 passed_candidates.clear()
@@ -8254,6 +8354,8 @@ class SelfEvolveRunner:
                 "stopped_by_shared_infrastructure": (
                     stopped_by_shared_infrastructure
                 ),
+                "superseded_candidate_ids": superseded_candidate_ids,
+                "superseding_contract_identity": superseding_contract_identity,
                 "attempts": attempts,
             },
         )

@@ -447,6 +447,7 @@ def _typed_repair_conformance_public_projection(
         }
 
     add_text("focus_candidate_id", max_chars=160)
+    add_text("contract_identity", max_chars=160)
     add_text_sequence("failure_codes", max_items=100, max_chars=160)
     add_text_sequence(
         "required_runtime_transitions",

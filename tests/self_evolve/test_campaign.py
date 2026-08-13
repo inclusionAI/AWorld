@@ -328,6 +328,29 @@ def test_progress_ranks_typed_lifecycle_stages() -> None:
     assert replay_progress.deepest_stage_rank == 5
 
 
+def test_new_repair_contract_continues_after_return_to_source_stage() -> None:
+    prior_event = _event(constraint="services[*].protocol_probes[*].path")
+    prior_event["stage"] = "task_rollout"
+    previous = self_improvement_progress(_report(prior_event))
+    current_report = _report(
+        _event(
+            constraint="environment.AWORLD_REPLAY_RESPONSE_INDEX.consumer"
+        )
+    )
+
+    disposition = derive_self_improvement_disposition(
+        current_report,
+        previous_progress=previous,
+    )
+
+    assert disposition.kind is SelfImprovementDispositionKind.CONTINUE_CANDIDATE
+    assert disposition.reason_code == "candidate_repair_frontier_progressed"
+    assert any(
+        item.startswith("constraint-")
+        for item in disposition.progress_delta_ids
+    )
+
+
 def test_required_measurement_progress_is_separate_from_candidate_quality() -> None:
     report = _report(_event())
     report["candidate_metrics"] = {"score": 99.0}

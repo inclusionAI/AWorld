@@ -19,6 +19,7 @@ from aworld.self_evolve.repair_conformance import (
     evaluate_compiled_probe_conformance,
     merge_repair_conformance_constraint_context,
     project_replay_capability_for_probe_group,
+    repair_conformance_contract_identity,
 )
 from aworld.self_evolve.replay_capability import (
     FrozenReplayCapability,
@@ -98,6 +99,28 @@ def test_repair_contract_consumes_counterexample_runtime_transition() -> None:
     assert restored.required_runtime_transitions == (
         "switch_strategy_or_fail_with_observed_reason",
     )
+
+
+def test_repair_contract_identity_changes_with_actionable_source_owner() -> None:
+    compiler_contract = RepairConformanceContract(
+        focus_candidate_id="candidate-parent",
+        failure_codes=("schema_field_validation_failed",),
+        interaction_progress=0,
+        base_file_fingerprints={"replay/compiler.py": "sha256:base"},
+        required_branch_paths=("replay/compiler.py",),
+        base_branch_fingerprints={},
+        compiler_path="replay/compiler.py",
+        runtime_paths=("replay/runtime.py",),
+    )
+    runtime_contract = replace(
+        compiler_contract,
+        required_branch_paths=("replay/runtime.py",),
+    )
+
+    assert compiler_contract.contract_identity == (
+        repair_conformance_contract_identity(compiler_contract.to_public_dict())
+    )
+    assert compiler_contract.contract_identity != runtime_contract.contract_identity
 
 
 def test_artifact_limit_counterexample_compiles_executable_lifecycle_contract() -> None:

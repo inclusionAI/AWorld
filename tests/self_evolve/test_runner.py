@@ -11306,7 +11306,10 @@ async def test_verified_runner_bounds_authoritative_candidates_across_iterations
         "repair_iteration_horizon": 11,
         "candidate_generation_batch_count": 2,
         "max_generated_candidates": 6,
-        "generated_candidate_slot_count": 3,
+        "generated_candidate_slot_count": 2,
+        "candidate_generation_attempt_slot_count": 3,
+        "repair_reserved_slot_count": 1,
+        "generation_repair_capacity_reserved": False,
         "unique_generated_candidate_count": 2,
         "generation_frontier_exhausted": False,
         "generation_policy_frontier_exhausted": False,
@@ -11406,6 +11409,83 @@ async def test_verified_runner_bounds_generation_slots_before_authoritative_repl
     scheduler_decisions = report["population"]["scheduler_decisions"]
     assert scheduler_decisions[-1]["requested_slot_count"] >= 1
     assert scheduler_decisions[-1]["admitted_slot_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_materialization_failure_receives_replacement_effective_slot(
+    tmp_path: Path,
+) -> None:
+    skill_path, dataset = _cycle1_runner_fixture(tmp_path)
+    calls = 0
+
+    class Optimizer:
+        async def propose(self, request: OptimizerRequest) -> OptimizerResult:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                return OptimizerResult(
+                    candidates=(),
+                    diagnostics={
+                        "candidate_materialization_failures": [
+                            {
+                                "candidate_index": 0,
+                                "code": "candidate_materialization_invalid",
+                                "stage": "candidate_generation",
+                                "representation": "candidate_package",
+                                "field_path": "files",
+                                "repairable": True,
+                                "reason": "candidate package was incomplete",
+                            }
+                        ]
+                    },
+                    generation_outcomes=(
+                        CandidateGenerationOutcome(
+                            candidate_index=0,
+                            kind=(
+                                CandidateGenerationOutcomeKind.MATERIALIZATION_FAILED
+                            ),
+                            repairable=True,
+                            reason_codes=("candidate_package_invalid",),
+                        ),
+                    ),
+                )
+            candidate = CandidateVariant(
+                candidate_id="replacement-candidate",
+                target=SelfEvolveTargetRef("skill", "demo", str(skill_path)),
+                content=(
+                    "---\nname: demo\n---\n# Demo\n\n"
+                    "Use bounded evidence before completion.\n"
+                ),
+                rationale="replace an unmaterialized generation attempt",
+            )
+            return OptimizerResult(candidates=(candidate,))
+
+    store = FilesystemSelfEvolveStore(tmp_path)
+    runner = SelfEvolveRunner(
+        store=store,
+        optimizer=Optimizer(),
+        max_iterations=3,
+        max_generated_candidates=1,
+        max_full_evaluation_candidates=1,
+    )
+
+    await runner.run_explicit_target(
+        run_id="run-materialization-replacement-slot",
+        target=SkillTextTarget(skill_path, allow_auto_apply=True),
+        dataset=dataset,
+        trace_packs=(),
+        apply_policy="verified_only",
+    )
+    report = json.loads(
+        (
+            store.run_path("run-materialization-replacement-slot")
+            / "report.json"
+        ).read_text(encoding="utf-8")
+    )
+
+    assert calls == 2
+    assert report["verification_funnel"]["candidate_generation_attempt_slot_count"] == 2
+    assert report["verification_funnel"]["generated_candidate_slot_count"] == 1
 
 
 @pytest.mark.asyncio
@@ -11548,6 +11628,102 @@ async def test_verified_runner_does_not_count_unmaterialized_strategy_switch(
     assert any(
         "did not change the authorized owner/edit topology" in message
         for message in conformance_messages
+    )
+
+
+@pytest.mark.asyncio
+async def test_conformance_contract_upgrade_invalidates_stale_sibling(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    skill_path, dataset = _cycle1_runner_fixture(tmp_path)
+    target_ref = SelfEvolveTargetRef("skill", "demo", str(skill_path))
+    candidates = tuple(
+        CandidateVariant(
+            candidate_id=f"candidate-{index}",
+            target=target_ref,
+            content="---\nname: demo\n---\n# Demo\n",
+            rationale="repair the compiler lease",
+            files=(
+                CandidateFileDelta(
+                    path="replay/compiler.py",
+                    content=f"def compile_request():\n    return {index}\n",
+                ),
+                CandidateFileDelta(
+                    path="replay/runtime.py",
+                    content="def respond():\n    return {}\n",
+                ),
+            ),
+        )
+        for index in range(2)
+    )
+    runner = SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=_FixedCandidateOptimizer(candidates[0], "source-run"),
+    )
+    compiler_contract = RepairConformanceContract(
+        focus_candidate_id="candidate-parent",
+        failure_codes=("schema_field_validation_failed",),
+        interaction_progress=0,
+        base_file_fingerprints={
+            "replay/compiler.py": "sha256:old-compiler",
+            "replay/runtime.py": "sha256:old-runtime",
+        },
+        required_branch_paths=("replay/compiler.py",),
+        base_branch_fingerprints={},
+        compiler_path="replay/compiler.py",
+        runtime_paths=("replay/runtime.py",),
+    )
+    runtime_constraint = SchemaFieldRepairConstraint(
+        schema_layer="runtime",
+        field_path="environment.AWORLD_REPLAY_RESPONSE_INDEX.consumer",
+        rule="enum",
+        expected=("json_sidecar_record_value_projector",),
+        value_domain="source_behavior",
+    )
+    runtime_contract = replace(
+        compiler_contract,
+        required_branch_paths=("replay/runtime.py",),
+        schema_field_constraints=(runtime_constraint,),
+    )
+    preflight_candidates: list[str] = []
+
+    async def evolved_preflight(**kwargs):
+        preflight_candidates.append(kwargs["candidate"].candidate_id)
+        return GateResult(
+            gate_name="candidate_repair_conformance",
+            passed=False,
+            reason="runtime source owner discovered",
+            details={
+                "failure_class": "candidate",
+                "repairable": True,
+                "code": "repair_capability_compile_failed",
+                "repair_conformance": runtime_contract.to_public_dict(),
+            },
+        )
+
+    monkeypatch.setattr(
+        runner,
+        "_preflight_candidate_repair_conformance",
+        evolved_preflight,
+    )
+    passed, report = await runner._validate_candidate_repair_conformance_population(
+        run_id="run-contract-upgrade",
+        target=SkillTextTarget(skill_path),
+        dataset=dataset,
+        candidates=candidates,
+        capability_requirements=(),
+        repair_conformance_contracts={
+            candidate.candidate_id: compiler_contract for candidate in candidates
+        },
+    )
+
+    assert passed == ()
+    assert preflight_candidates == ["candidate-0"]
+    assert report is not None
+    assert report["superseded_candidate_ids"] == ["candidate-1"]
+    assert report["superseding_contract_identity"] == (
+        runtime_contract.contract_identity
     )
 
 
