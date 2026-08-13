@@ -23,6 +23,7 @@ CAMPAIGN_SCHEMA_VERSION = "aworld.self_evolve.campaign.v1"
 DISPOSITION_SCHEMA_VERSION = "aworld.self_evolve.disposition.v1"
 PROGRESS_SCHEMA_VERSION = "aworld.self_evolve.progress.v1"
 DEFAULT_MAX_IMPROVEMENT_CYCLES = 3
+DEFAULT_MAX_MEASUREMENT_RETRIES = 2
 
 _ID_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]{0,159}$")
 _RUNTIME_ONLY_REQUEST_KEYS = {
@@ -655,6 +656,10 @@ class SelfImprovementCampaign:
     cumulative_usage: CampaignUsage = CampaignUsage()
     cumulative_authoritative_candidates: int = 0
     repair_continuation_used: bool = False
+    max_measurement_retries: int = DEFAULT_MAX_MEASUREMENT_RETRIES
+    measurement_retry_count: int = 0
+    measurement_pending_run_id: str | None = None
+    measurement_pending_candidate_id: str | None = None
     latest_progress: SelfImprovementProgress | None = None
     latest_disposition: SelfImprovementDisposition | None = None
     latest_report_path: str | None = None
@@ -669,7 +674,23 @@ class SelfImprovementCampaign:
             raise ValueError("max_cycles must be positive")
         if not isinstance(self.repair_continuation_used, bool):
             raise ValueError("repair_continuation_used must be boolean")
-        effective_max_cycles = self.max_cycles + int(self.repair_continuation_used)
+        if (
+            isinstance(self.max_measurement_retries, bool)
+            or self.max_measurement_retries < 0
+        ):
+            raise ValueError("campaign measurement retry limit must be non-negative")
+        if (
+            isinstance(self.measurement_retry_count, bool)
+            or not 0
+            <= self.measurement_retry_count
+            <= self.max_measurement_retries
+        ):
+            raise ValueError("campaign measurement retry count is outside its bound")
+        effective_max_cycles = (
+            self.max_cycles
+            + self.max_measurement_retries
+            + int(self.repair_continuation_used)
+        )
         if (
             isinstance(self.cycle_index, bool)
             or not 0 <= self.cycle_index <= effective_max_cycles
@@ -679,6 +700,17 @@ class SelfImprovementCampaign:
             raise ValueError("campaign run lineage must match its cycle index")
         for run_id in self.run_ids:
             _validate_id(run_id, "run_id")
+        pending_values = (
+            self.measurement_pending_run_id,
+            self.measurement_pending_candidate_id,
+        )
+        if any(pending_values) and not all(pending_values):
+            raise ValueError(
+                "measurement-pending run and candidate ids must be declared together"
+            )
+        for pending_value in pending_values:
+            if pending_value is not None:
+                _validate_id(pending_value, "measurement_pending_id")
         if (
             isinstance(self.cumulative_authoritative_candidates, bool)
             or self.cumulative_authoritative_candidates < 0
@@ -740,6 +772,12 @@ class SelfImprovementCampaign:
                 self.cumulative_authoritative_candidates
             ),
             "repair_continuation_used": self.repair_continuation_used,
+            "max_measurement_retries": self.max_measurement_retries,
+            "measurement_retry_count": self.measurement_retry_count,
+            "measurement_pending_run_id": self.measurement_pending_run_id,
+            "measurement_pending_candidate_id": (
+                self.measurement_pending_candidate_id
+            ),
             "latest_progress": (
                 self.latest_progress.to_dict() if self.latest_progress is not None else None
             ),
@@ -787,6 +825,23 @@ class SelfImprovementCampaign:
             ),
             repair_continuation_used=(
                 value.get("repair_continuation_used") is True
+            ),
+            max_measurement_retries=_non_negative_int(
+                value.get(
+                    "max_measurement_retries",
+                    DEFAULT_MAX_MEASUREMENT_RETRIES,
+                ),
+                "max_measurement_retries",
+            ),
+            measurement_retry_count=_non_negative_int(
+                value.get("measurement_retry_count", 0),
+                "measurement_retry_count",
+            ),
+            measurement_pending_run_id=_optional_string(
+                value.get("measurement_pending_run_id")
+            ),
+            measurement_pending_candidate_id=_optional_string(
+                value.get("measurement_pending_candidate_id")
             ),
             latest_progress=(
                 SelfImprovementProgress.from_dict(raw_progress)
@@ -994,6 +1049,16 @@ class SelfImprovementCampaignController:
                 "campaign_prior_run_ids": prior_run_ids,
             }
         )
+        if (
+            campaign.measurement_pending_run_id is not None
+            and campaign.measurement_pending_candidate_id is not None
+        ):
+            request["campaign_measurement_pending_run_id"] = (
+                campaign.measurement_pending_run_id
+            )
+            request["campaign_measurement_pending_candidate_id"] = (
+                campaign.measurement_pending_candidate_id
+            )
         if campaign.run_ids:
             prior_target = self.store.read_report(prior_run_ids[-1]).get("target")
             if isinstance(prior_target, Mapping):
@@ -1051,6 +1116,26 @@ class SelfImprovementCampaignController:
             campaign.cumulative_authoritative_candidates
             + _report_authoritative_candidate_count(report)
         )
+        measurement_retry_requested = (
+            disposition.kind
+            is SelfImprovementDispositionKind.REPAIR_MEASUREMENT
+            and disposition.scope == "shared_run"
+        )
+        measurement_pending_candidate_id = (
+            _measurement_pending_candidate_id(
+                self.store,
+                run_id=actual_run_id,
+                report=report,
+            )
+            if measurement_retry_requested
+            else None
+        )
+        measurement_retry_available = bool(
+            measurement_retry_requested
+            and measurement_pending_candidate_id is not None
+            and campaign.measurement_retry_count
+            < campaign.max_measurement_retries
+        )
         advanced = replace(
             campaign,
             status=status,
@@ -1064,6 +1149,19 @@ class SelfImprovementCampaignController:
             latest_disposition=disposition,
             latest_report_path=str(report_path),
             goal_handoff_path=None,
+            measurement_retry_count=(
+                campaign.measurement_retry_count + 1
+                if measurement_retry_available
+                else campaign.measurement_retry_count
+            ),
+            measurement_pending_run_id=(
+                actual_run_id if measurement_retry_available else None
+            ),
+            measurement_pending_candidate_id=(
+                measurement_pending_candidate_id
+                if measurement_retry_available
+                else None
+            ),
         )
         grant_repair_continuation = (
             disposition.kind is SelfImprovementDispositionKind.CONTINUE_CANDIDATE
@@ -1079,7 +1177,27 @@ class SelfImprovementCampaignController:
                 ),
             )
         )
-        if grant_repair_continuation:
+        if measurement_retry_available:
+            # The candidate package already passed candidate-owned admission.
+            # Preserve it as an immutable measurement checkpoint and grant a
+            # separately bounded control-plane retry.  This run does not
+            # consume the candidate cycle frontier.
+            advanced = replace(
+                advanced,
+                status=SelfImprovementCampaignStatus.ACTIVE,
+            )
+        elif measurement_retry_requested:
+            advanced = _exhaust_campaign(
+                advanced,
+                reason_code=(
+                    "campaign_measurement_retry_candidate_missing"
+                    if measurement_pending_candidate_id is None
+                    else "campaign_measurement_retry_limit_reached"
+                ),
+            )
+            disposition = advanced.latest_disposition
+            assert disposition is not None
+        elif grant_repair_continuation:
             # A newly observed authoritative counterexample on the final
             # configured cycle needs one bounded repair opportunity.  This is
             # not an open-ended budget increase: both the cycle and
@@ -1124,6 +1242,17 @@ class SelfImprovementCampaignController:
             "max_cycles": _campaign_effective_max_cycles(advanced),
             "configured_max_cycles": advanced.max_cycles,
             "repair_continuation_used": advanced.repair_continuation_used,
+            "candidate_cycle_count": _campaign_candidate_cycle_count(
+                advanced
+            ),
+            "measurement_retry_count": advanced.measurement_retry_count,
+            "max_measurement_retries": advanced.max_measurement_retries,
+            "measurement_pending_run_id": (
+                advanced.measurement_pending_run_id
+            ),
+            "measurement_pending_candidate_id": (
+                advanced.measurement_pending_candidate_id
+            ),
             "authoritative_candidate_count": (
                 advanced.cumulative_authoritative_candidates
             ),
@@ -1362,6 +1491,8 @@ def persistent_campaign_request(request: Mapping[str, Any]) -> dict[str, Any]:
             "campaign_cycle",
             "campaign_prior_run_ids",
             "campaign_expected_target",
+            "campaign_measurement_pending_run_id",
+            "campaign_measurement_pending_candidate_id",
             "workspace_root",
         }
     }
@@ -2086,7 +2217,19 @@ def _campaign_authoritative_candidate_limit(
 
 
 def _campaign_effective_max_cycles(campaign: SelfImprovementCampaign) -> int:
-    return campaign.max_cycles + int(campaign.repair_continuation_used)
+    return (
+        campaign.max_cycles
+        + campaign.measurement_retry_count
+        + int(campaign.repair_continuation_used)
+    )
+
+
+def _campaign_candidate_cycle_count(
+    campaign: SelfImprovementCampaign,
+) -> int:
+    """Return mutation/evaluation cycles, excluding invalid measurement runs."""
+
+    return max(0, campaign.cycle_index - campaign.measurement_retry_count)
 
 
 def _campaign_effective_authoritative_candidate_limit(
@@ -2101,7 +2244,9 @@ def _campaign_limit_axes(
     campaign: SelfImprovementCampaign,
 ) -> tuple[str, ...]:
     axes: list[str] = []
-    if campaign.cycle_index >= _campaign_effective_max_cycles(campaign):
+    if _campaign_candidate_cycle_count(campaign) >= (
+        campaign.max_cycles + int(campaign.repair_continuation_used)
+    ):
         axes.append("cycle")
     if (
         campaign.cumulative_authoritative_candidates
@@ -2141,9 +2286,13 @@ def _report_candidate_counterexample_fingerprints(
             continue
         if isinstance(current, Mapping):
             counterexample_id = current.get("counterexample_id")
+            counterexample_schema = current.get("schema_version")
             if (
-                current.get("schema_version")
-                == "aworld.self_evolve.fixture_probe_counterexample.v1"
+                isinstance(counterexample_schema, str)
+                and counterexample_schema.startswith(
+                    "aworld.self_evolve."
+                )
+                and "counterexample" in counterexample_schema
                 and isinstance(counterexample_id, str)
                 and counterexample_id
             ):
@@ -2207,6 +2356,37 @@ def _report_authoritative_candidate_count(report: Mapping[str, Any]) -> int:
     return count
 
 
+def _measurement_pending_candidate_id(
+    store: Any,
+    *,
+    run_id: str,
+    report: Mapping[str, Any],
+) -> str | None:
+    """Resolve the immutable candidate blocked only by invalid measurement."""
+
+    candidate_ids: list[str] = []
+    for value in (
+        report.get("measurement_pending_candidate_id"),
+        report.get("selected_candidate_id"),
+    ):
+        if isinstance(value, str) and value:
+            candidate_ids.append(value)
+    raw_candidate_ids = report.get("candidate_ids")
+    if isinstance(raw_candidate_ids, (list, tuple)):
+        normalized = [
+            str(item) for item in raw_candidate_ids if isinstance(item, str) and item
+        ]
+        if len(normalized) == 1:
+            candidate_ids.extend(normalized)
+    for candidate_id in dict.fromkeys(candidate_ids):
+        candidate_path = (
+            store.run_path(run_id) / "candidates" / f"{candidate_id}.json"
+        )
+        if candidate_path.is_file() and not candidate_path.is_symlink():
+            return candidate_id
+    return None
+
+
 def _campaign_summary(
     campaign: SelfImprovementCampaign,
     latest: Mapping[str, Any],
@@ -2221,6 +2401,21 @@ def _campaign_summary(
             "campaign_configured_max_cycles": campaign.max_cycles,
             "campaign_repair_continuation_used": (
                 campaign.repair_continuation_used
+            ),
+            "campaign_candidate_cycle_count": (
+                _campaign_candidate_cycle_count(campaign)
+            ),
+            "campaign_measurement_retry_count": (
+                campaign.measurement_retry_count
+            ),
+            "campaign_max_measurement_retries": (
+                campaign.max_measurement_retries
+            ),
+            "campaign_measurement_pending_run_id": (
+                campaign.measurement_pending_run_id
+            ),
+            "campaign_measurement_pending_candidate_id": (
+                campaign.measurement_pending_candidate_id
             ),
             "campaign_path": str(
                 Path(".aworld")
@@ -2585,9 +2780,11 @@ def _constraint_identities(report: Mapping[str, Any]) -> set[str]:
     identities: set[str] = set()
     for item in _walk_mappings(report):
         counterexample_id = item.get("counterexample_id")
+        counterexample_schema = item.get("schema_version")
         if (
-            item.get("schema_version")
-            == "aworld.self_evolve.fixture_probe_counterexample.v1"
+            isinstance(counterexample_schema, str)
+            and counterexample_schema.startswith("aworld.self_evolve.")
+            and "counterexample" in counterexample_schema
             and isinstance(counterexample_id, str)
             and counterexample_id
         ):

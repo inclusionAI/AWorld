@@ -170,6 +170,10 @@ def _raise_schema_field_error(
     if not violations:
         raise ValueError("schema field error requires at least one violation")
     details = schema_field_diagnostic_details(violations)
+    details["counterexample_contracts"] = [
+        _schema_field_counterexample_contract(violation)
+        for violation in violations[:100]
+    ]
     if extra_details:
         details.update(dict(extra_details))
     raise ReplayCapabilityError(
@@ -177,6 +181,36 @@ def _raise_schema_field_error(
         code="schema_field_validation_failed",
         details=details,
     )
+
+
+def _schema_field_counterexample_contract(
+    violation: SchemaFieldViolation,
+) -> dict[str, object]:
+    """Project a parse/schema violation into a payload-free executable check."""
+
+    identity_payload = {
+        "constraint_identity_digest": violation.constraint.identity_digest,
+        "actual_fingerprint": violation.actual_fingerprint,
+        "actual_type": violation.actual_type,
+    }
+    encoded = json.dumps(
+        identity_payload,
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return {
+        "schema_version": "aworld.self_evolve.schema_counterexample.v1",
+        "counterexample_id": (
+            "schema-counterexample-" + hashlib.sha256(encoded).hexdigest()
+        ),
+        **identity_payload,
+        "constraint": violation.constraint.to_dict(),
+        "required_checks": [
+            "field_selector_resolves_subject",
+            "schema_constraint_accepts_subject",
+        ],
+    }
 
 
 def _schema_field_violation(
@@ -3602,6 +3636,7 @@ def _parse_services(
     _validate_compile_result_service_schema(raw)
     if not isinstance(raw, list):
         raise AssertionError("schema validation did not reject invalid services")
+    _validate_conditional_service_fields(raw)
     services: list[ReplayServiceSpec] = []
     seen: set[str] = set()
     fixture_probe_violations: list[dict[str, object]] = []
@@ -3776,9 +3811,9 @@ def _parse_services(
                             "declared_response_shape": "utf8_text",
                         }
                     )
-        elif runtime_entrypoint_raw is not None:
-            raise ReplayCapabilityError(
-                "fixture service cannot declare a runtime entrypoint"
+        elif runtime_entrypoint_raw is not None:  # pragma: no cover - prevalidated
+            raise AssertionError(
+                "conditional service validation accepted fixture runtime entrypoint"
             )
         services.append(
             ReplayServiceSpec(
@@ -3831,6 +3866,75 @@ def _parse_services(
             },
         )
     return tuple(sorted(services, key=lambda item: item.service_id))
+
+
+_SERVICE_CONDITIONAL_PRESENCE_RULES = (
+    {
+        "selector_field": "transport",
+        "selector_values": ("skill_runtime",),
+        "subject_field": "runtime_entrypoint",
+        "required": True,
+    },
+    {
+        "selector_field": "transport",
+        "selector_values": ("http_fixture", "tcp_fixture"),
+        "subject_field": "runtime_entrypoint",
+        "required": False,
+    },
+)
+
+
+def _validate_conditional_service_fields(
+    services: Sequence[Mapping[str, Any]],
+) -> None:
+    """Validate declarative cross-field presence rules before fail-fast parsing."""
+
+    violations: list[SchemaFieldViolation] = []
+    relationships: list[dict[str, object]] = []
+    for rule in _SERVICE_CONDITIONAL_PRESENCE_RULES:
+        selector_field = str(rule["selector_field"])
+        selector_values = tuple(str(item) for item in rule["selector_values"])
+        subject_field = str(rule["subject_field"])
+        required = rule["required"] is True
+        relationships.append(
+            {
+                "selector_field": selector_field,
+                "selector_values": list(selector_values),
+                "subject_field": subject_field,
+                "presence": "required" if required else "forbidden",
+            }
+        )
+        for service in services:
+            selector = service.get(selector_field)
+            if selector not in selector_values:
+                continue
+            subject_present = (
+                subject_field in service
+                and service.get(subject_field) is not None
+                and service.get(subject_field) != ""
+            )
+            if subject_present == required:
+                continue
+            predicate = f"{selector_field}:{selector}"
+            field_path = f"services[*@{predicate}].{subject_field}"
+            violations.append(
+                _schema_field_violation(
+                    schema_layer="compile_result",
+                    field_path=field_path,
+                    rule="required" if required else "type",
+                    expected=() if required else ("null",),
+                    value=service.get(subject_field),
+                )
+            )
+    if violations:
+        _raise_schema_field_error(
+            "compile-result service fields violate conditional presence rules",
+            violations,
+            extra_details={
+                "code": "service_conditional_field_validation_failed",
+                "conditional_field_rules": relationships,
+            },
+        )
 
 
 def _parse_protocol_probes(
