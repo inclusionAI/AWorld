@@ -62,6 +62,54 @@ def test_conditional_service_schema_aggregates_parse_counterexamples() -> None:
     assert len({item["counterexample_id"] for item in counterexamples}) == 2
 
 
+def test_schema_counterexample_identity_is_stable_across_observed_values() -> None:
+    first = replay_capability_module._schema_field_counterexample_contract(
+        replay_capability_module._schema_field_violation(
+            schema_layer="compile_result",
+            field_path="services[*].runtime_entrypoint",
+            rule="type",
+            expected=("null",),
+            value="replay/first.py",
+        )
+    )
+    second = replay_capability_module._schema_field_counterexample_contract(
+        replay_capability_module._schema_field_violation(
+            schema_layer="compile_result",
+            field_path="services[*].runtime_entrypoint",
+            rule="type",
+            expected=("null",),
+            value="replay/second.py",
+        )
+    )
+    distinct = replay_capability_module._schema_field_counterexample_contract(
+        replay_capability_module._schema_field_violation(
+            schema_layer="compile_result",
+            field_path="services[*].response_fixture",
+            rule="type",
+            expected=("null",),
+            value="replay/second.py",
+        )
+    )
+
+    assert first["counterexample_id"] == second["counterexample_id"]
+    assert first["actual_fingerprint"] != second["actual_fingerprint"]
+    assert first["counterexample_id"] != distinct["counterexample_id"]
+
+
+def test_empty_forbidden_conditional_field_is_a_schema_violation() -> None:
+    with pytest.raises(ReplayCapabilityError) as error:
+        replay_capability_module._validate_conditional_service_fields(
+            [{"transport": "http_fixture", "runtime_entrypoint": ""}]
+        )
+
+    assert error.value.code == "schema_field_validation_failed"
+    constraint = error.value.details["schema_field_constraints"][0]
+    assert constraint["field_path"] == (
+        "services[*@transport:http_fixture].runtime_entrypoint"
+    )
+    assert constraint["expected"] == ["null"]
+
+
 def test_compile_failure_collects_independent_runtime_binding_constraint(
     tmp_path: Path,
 ) -> None:

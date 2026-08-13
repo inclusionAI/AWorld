@@ -7897,6 +7897,30 @@ class SelfEvolveRunner:
                         "repair_conformance": conformance_contract.to_public_dict(),
                     },
                 )
+            if (
+                replay_gate is not None
+                and not replay_gate.passed
+                and (
+                    _gate_has_typed_shared_measurement_failure(replay_gate)
+                    or _gate_has_typed_shared_infrastructure_failure(replay_gate)
+                )
+            ):
+                # Screening uses a synthetic replay candidate ID, but a shared
+                # control-plane retry must resume the immutable source package.
+                # Persist that identity on the typed gate so attribution and
+                # the next campaign cycle do not have to infer it from a
+                # multi-candidate population.
+                replay_gate = replace(
+                    replay_gate,
+                    details={
+                        **dict(replay_gate.details or {}),
+                        "resume_safe": True,
+                        "resume_candidate_id": candidate.candidate_id,
+                        "resume_candidate_package_fingerprint": (
+                            candidate_package_fingerprint(candidate)
+                        ),
+                    },
+                )
             if replay_result is not None:
                 if _replay_result_has_reusable_baseline(
                     dataset=active_screening_dataset,
@@ -17958,12 +17982,6 @@ def _feedback_from_report(
     *,
     report_path: Path,
 ) -> tuple[EvaluationSummary, ...]:
-    if _report_has_shared_measurement_failure(report):
-        # A broken control plane is not candidate training data.  Replaying
-        # candidate packages, lessons, or gate summaries from this report would
-        # transfer framework ownership into the mutation frontier and teach the
-        # generator to edit a skill in response to an invalid experiment.
-        return ()
     items: list[EvaluationSummary] = []
     repair_feedback = (
         *_repair_feedback_from_selected_candidate(
@@ -17981,6 +17999,12 @@ def _feedback_from_report(
             continue
         seen_repair_candidates.add(feedback.variant_id)
         items.append(feedback)
+    if _report_has_shared_measurement_failure(report):
+        # A broken control plane is not general candidate training data.  Keep
+        # only independently attributed candidate-owned conformance/screening
+        # feedback gathered before the shared stop; omit lessons and raw
+        # iteration summaries whose candidate effect was never observed.
+        return tuple(items)
     items.extend(_lesson_feedback_from_report(report, report_path=report_path))
     iterations = report.get("iterations")
     if isinstance(iterations, list):
@@ -18088,6 +18112,47 @@ def _measurement_pending_candidate_checkpoint(
         ]
         if len(normalized) == 1:
             candidate_ids.extend(normalized)
+    population = report.get("population")
+    if isinstance(population, Mapping):
+        screening_items: list[Mapping[str, Any]] = []
+        for key in ("screening", "conformance"):
+            item = population.get(key)
+            if isinstance(item, Mapping):
+                screening_items.append(item)
+        for key in ("screening_iterations", "conformance_iterations"):
+            raw_items = population.get(key)
+            if isinstance(raw_items, list):
+                screening_items.extend(
+                    item for item in raw_items if isinstance(item, Mapping)
+                )
+        for item in screening_items:
+            attempts = item.get("attempts")
+            if not isinstance(attempts, list):
+                continue
+            for attempt in attempts:
+                if not isinstance(attempt, Mapping):
+                    continue
+                details = attempt.get("details")
+                if not isinstance(details, Mapping):
+                    continue
+                if not (
+                    details.get("failure_class") == "measurement"
+                    and details.get("failure_owner")
+                    in {"framework", "infrastructure", "evaluation_harness"}
+                    and details.get("failure_scope") == "shared_run"
+                ):
+                    continue
+                candidate_id = details.get("resume_candidate_id")
+                if not isinstance(candidate_id, str) or not candidate_id:
+                    candidate_id = attempt.get("candidate_id")
+                if not isinstance(candidate_id, str) or not candidate_id:
+                    continue
+                candidate_ids.append(candidate_id)
+                fingerprint = details.get(
+                    "resume_candidate_package_fingerprint"
+                )
+                if isinstance(fingerprint, str) and fingerprint:
+                    expected_fingerprints[candidate_id] = fingerprint
     for candidate_id in dict.fromkeys(candidate_ids):
         candidate_path = run_path / "candidates" / f"{candidate_id}.json"
         if not candidate_path.is_file() or candidate_path.is_symlink():

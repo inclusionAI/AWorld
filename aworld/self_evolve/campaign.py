@@ -1136,6 +1136,13 @@ class SelfImprovementCampaignController:
             and campaign.measurement_retry_count
             < campaign.max_measurement_retries
         )
+        preserve_measurement_checkpoint = bool(
+            campaign.measurement_pending_run_id is not None
+            and campaign.measurement_pending_candidate_id is not None
+            and disposition.kind
+            is SelfImprovementDispositionKind.RETRY_INFRASTRUCTURE
+            and disposition.scope == "shared_run"
+        )
         advanced = replace(
             campaign,
             status=status,
@@ -1155,11 +1162,17 @@ class SelfImprovementCampaignController:
                 else campaign.measurement_retry_count
             ),
             measurement_pending_run_id=(
-                actual_run_id if measurement_retry_available else None
+                actual_run_id
+                if measurement_retry_available
+                else campaign.measurement_pending_run_id
+                if preserve_measurement_checkpoint
+                else None
             ),
             measurement_pending_candidate_id=(
                 measurement_pending_candidate_id
                 if measurement_retry_available
+                else campaign.measurement_pending_candidate_id
+                if preserve_measurement_checkpoint
                 else None
             ),
         )
