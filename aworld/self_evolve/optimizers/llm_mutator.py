@@ -849,6 +849,12 @@ def _focused_repair_prompt_instructions(
         item.get("value_domain") == "source_behavior"
         for item in schema_field_constraints
     )
+    requires_unique_result_fixtures = any(
+        item.get("schema_layer") == "compile_result"
+        and item.get("field_path") == "fixtures"
+        and item.get("rule") == "unique"
+        for item in schema_field_constraints
+    )
     instructions = (
         "Repair the focused candidate package using the machine-readable "
         "diagnostics and repair_conformance contract in this EvolutionContext. "
@@ -1138,6 +1144,18 @@ def _focused_repair_prompt_instructions(
             "in a compile-result service field. Repair the compiler or manifest "
             "that owns the field rather than suppressing validation, changing the "
             "diagnostic, or special-casing a recorded case. "
+        )
+    if requires_unique_result_fixtures:
+        instructions += (
+            "The compile-result fixtures collection must contain each normalized "
+            "relative path exactly once. Multiple requirements may select the same "
+            "evidence_ref or identical bytes, so changing only the hash algorithm, "
+            "file suffix, or evidence-ref sanitizer is not a repair. Implement one "
+            "of two general topologies: allocate a requirement-qualified unique path "
+            "for every requirement, or reuse a single fixture path while merging all "
+            "fixture_evidence_refs/provenance bindings that point to it. In either "
+            "topology, create and append the fixture declaration once per path and "
+            "bind every service and requirement to that canonical declaration. "
         )
     if (
         "response_contains" in feedback_text

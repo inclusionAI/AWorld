@@ -2241,8 +2241,35 @@ def _parse_compile_result(
     unhandled = _string_tuple(
         raw.get("unhandled_requirements", ()), label="unhandled_requirements"
     )
-    if len(set(handled)) != len(handled) or len(set(unhandled)) != len(unhandled):
-        raise ReplayCapabilityError("result requirement lists contain duplicates")
+    requirement_list_violations: list[SchemaFieldViolation] = []
+    for field_path, values in (
+        ("handled_requirements", handled),
+        ("unhandled_requirements", unhandled),
+    ):
+        duplicate_count = len(values) - len(set(values))
+        if duplicate_count <= 0:
+            continue
+        requirement_list_violations.append(
+            _schema_field_violation(
+                schema_layer="compile_result",
+                field_path=field_path,
+                rule="unique",
+                expected=(),
+                value=values,
+                occurrence_count=duplicate_count,
+            )
+        )
+    if requirement_list_violations:
+        _raise_schema_field_error(
+            "result requirement lists contain duplicates",
+            requirement_list_violations,
+            extra_details={
+                "required_collection_strategy": (
+                    "classify each request requirement exactly once and append "
+                    "its id to only one result collection"
+                ),
+            },
+        )
     if set(handled) & set(unhandled):
         raise ReplayCapabilityError("handled and unhandled requirements overlap")
     requirements = {item.requirement_id: item for item in request.requirements}
@@ -2285,7 +2312,30 @@ def _parse_compile_result(
         for item in _string_tuple(raw.get("fixtures", ()), label="fixtures")
     )
     if len(set(fixtures)) != len(fixtures):
-        raise ReplayCapabilityError("result fixtures contain duplicates")
+        _raise_schema_field_error(
+            "result fixtures contain duplicates",
+            (
+                _schema_field_violation(
+                    schema_layer="compile_result",
+                    field_path="fixtures",
+                    rule="unique",
+                    expected=(),
+                    value=fixtures,
+                    occurrence_count=len(fixtures) - len(set(fixtures)),
+                ),
+            ),
+            extra_details={
+                "required_collection_strategy": (
+                    "declare each relative fixture path once; when requirements "
+                    "share evidence either allocate requirement-qualified paths or "
+                    "reuse one fixture and merge its provenance bindings"
+                ),
+                "allowed_fixture_topologies": [
+                    "unique_path_per_requirement",
+                    "shared_path_with_merged_provenance",
+                ],
+            },
+        )
     if len(fixtures) > _MAX_FIXTURE_COUNT:
         raise ReplayCapabilityError("result fixture count exceeds limit")
     fixture_total_bytes = 0
