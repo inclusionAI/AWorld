@@ -13,6 +13,9 @@ from aworld.self_evolve.replay_capability import (
     FrozenReplayCapability,
     REPLAY_CAPABILITY_SCHEMA_VERSION,
     REPLAY_RESPONSE_INDEX_CONSUMER,
+    REPLAY_RESPONSE_REQUIREMENT_ID_ENV,
+    REPLAY_RESPONSE_SELECTOR_POLICY,
+    REPLAY_RESPONSE_SERVICE_ID_ENV,
     ReplayProtocolProbe,
     ReplayServiceSpec,
     recorded_response_index_source_behavior_proof,
@@ -3920,6 +3923,7 @@ def _fixture_probe_constraint_failure(
                     "probe_path": constraint.path,
                     "recorded_leaf_count": len(recorded_values),
                     "declared_response_fingerprint": response_fingerprint,
+                    "response_record_id": probe.response_record_id,
                     "violation_code": violation_code,
                 }
             )
@@ -3937,6 +3941,10 @@ def _fixture_probe_constraint_failure(
             },
         )
     if violations:
+        counterexample_contracts = [
+            _fixture_probe_counterexample_contract(item)
+            for item in violations[:64]
+        ]
         return RepairConformanceResult(
             passed=False,
             code="fixture_derived_probe_not_recorded",
@@ -3948,9 +3956,56 @@ def _fixture_probe_constraint_failure(
                 "violation_count": len(violations),
                 "violations": violations[:64],
                 "constraint_count": len(constraints),
+                "counterexample_contracts": counterexample_contracts,
             },
         )
     return None
+
+
+def _fixture_probe_counterexample_contract(
+    violation: Mapping[str, object],
+) -> dict[str, object]:
+    """Build a payload-free executable contract for one failed fixture probe."""
+
+    identity_payload = {
+        key: violation.get(key)
+        for key in (
+            "requirement_identity_digest",
+            "service_id",
+            "probe_kind",
+            "probe_path",
+            "response_record_id",
+            "violation_code",
+        )
+    }
+    encoded = json.dumps(
+        identity_payload,
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+        default=str,
+    ).encode("utf-8")
+    return {
+        "schema_version": (
+            "aworld.self_evolve.fixture_probe_counterexample.v1"
+        ),
+        "counterexample_id": (
+            "fixture-probe-counterexample-"
+            + hashlib.sha256(encoded).hexdigest()
+        ),
+        **identity_payload,
+        "selector_policy": REPLAY_RESPONSE_SELECTOR_POLICY,
+        "required_runtime_bindings": [
+            REPLAY_RESPONSE_REQUIREMENT_ID_ENV,
+            REPLAY_RESPONSE_SERVICE_ID_ENV,
+            "AWORLD_REPLAY_RESPONSE_INDEX.records[*].record_id",
+        ],
+        "required_checks": [
+            "compiler_probe_bound_to_framework_record",
+            "declared_assertion_equals_canonical_record_scalar",
+            "runtime_response_contains_declared_assertion",
+        ],
+    }
 
 
 def evaluate_compiled_probe_conformance(

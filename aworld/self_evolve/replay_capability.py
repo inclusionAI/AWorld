@@ -13,7 +13,7 @@ import shutil
 import subprocess
 import sys
 import time
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path, PurePosixPath
 from typing import Any, Mapping, NoReturn, Protocol, Sequence
 
@@ -64,7 +64,11 @@ _MAX_READINESS_TIMEOUT_SECONDS = 30.0
 REPLAY_CAPABILITY_MAX_PROTOCOL_PROBES = 16
 REPLAY_CAPABILITY_MAX_RESPONSE_CONTAINS_CHARS = 4_096
 REPLAY_RESPONSE_INDEX_ENV = "AWORLD_REPLAY_RESPONSE_INDEX"
+REPLAY_RESPONSE_RECORD_ID_ENV = "AWORLD_REPLAY_RESPONSE_RECORD_ID"
+REPLAY_RESPONSE_REQUIREMENT_ID_ENV = "AWORLD_REPLAY_REQUIREMENT_ID"
+REPLAY_RESPONSE_SERVICE_ID_ENV = "AWORLD_REPLAY_SERVICE_ID"
 REPLAY_RESPONSE_INDEX_CONSUMER = "json_sidecar_record_value_projector"
+REPLAY_RESPONSE_SELECTOR_POLICY = "framework_recorded_response_v1"
 
 REPLAY_CAPABILITY_SUPPORTED_READINESS_KINDS = tuple(
     sorted(_SUPPORTED_READINESS_KINDS)
@@ -452,6 +456,7 @@ class ReplayProtocolProbe:
     validate_advertised_websockets: bool = False
     request_text: str | None = None
     response_contains: str | None = None
+    response_record_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -2797,6 +2802,14 @@ def _build_recorded_response_index(
             int(record.get("ordinal") or 0),
         )
     )
+    for record in records:
+        record["record_id"] = _recorded_response_record_id(record)
+        canonical_assertion = _canonical_recorded_response_assertion(
+            record.get("value")
+        )
+        if canonical_assertion is not None:
+            record["canonical_probe_assertion"] = canonical_assertion
+            record["selector_policy"] = REPLAY_RESPONSE_SELECTOR_POLICY
     # A trajectory may label the producer operation (for example
     # ``read_file``), while a skill-owned adapter receives a protocol method
     # (for example ``Runtime.evaluate``).  Alias each declared probe operation
@@ -2819,13 +2832,16 @@ def _build_recorded_response_index(
         if source is None:
             continue
         alias = dict(source)
+        alias.pop("record_id", None)
         alias["ordinal"] = len(records)
         alias["operation"] = normalized_operation
         alias["derived_operation"] = True
         alias["source_ordinal"] = source.get("ordinal")
+        alias["source_record_id"] = source.get("record_id")
         alias["payload_path"] = (
             f"{source.get('payload_path', '')}#derived:{normalized_operation}"
         )
+        alias["record_id"] = _recorded_response_record_id(alias)
         records.append(alias)
         operations.append(normalized_operation)
     return {
@@ -2834,6 +2850,156 @@ def _build_recorded_response_index(
         "operations": operations[:64],
         "records": records,
     }
+
+
+def _recorded_response_record_id(record: Mapping[str, Any]) -> str:
+    """Return a stable identity for one immutable response-index record."""
+
+    value = record.get("value")
+    try:
+        value_fingerprint = _json_fingerprint(value)
+    except (TypeError, ValueError):
+        value_fingerprint = _json_fingerprint(str(value))
+    payload = {
+        "gateway_key": record.get("gateway_key"),
+        "operation": record.get("operation"),
+        "payload_path": record.get("payload_path"),
+        "source_ordinal": record.get("source_ordinal", record.get("ordinal")),
+        "value_fingerprint": value_fingerprint,
+    }
+    return "response-record-" + _json_fingerprint(payload).removeprefix("sha256:")
+
+
+def _canonical_recorded_response_assertion(
+    value: Any,
+    *,
+    max_chars: int = REPLAY_CAPABILITY_MAX_RESPONSE_CONTAINS_CHARS,
+) -> str | None:
+    """Select one exact bounded scalar from a recorded response value.
+
+    The selector never truncates.  Compiler declarations, frozen response
+    indexes, conformance, and runtime probes can therefore share one identity
+    and one exact assertion instead of independently guessing a fixture leaf.
+    """
+
+    candidates: set[str] = set()
+    pending: list[tuple[Any, int]] = [(value, 0)]
+    visited = 0
+    while pending and visited < 4096:
+        current, decoded_depth = pending.pop()
+        visited += 1
+        if isinstance(current, Mapping):
+            pending.extend(
+                (nested, decoded_depth)
+                for nested in reversed(list(current.values())[:512])
+            )
+            continue
+        if isinstance(current, (list, tuple)):
+            pending.extend(
+                (nested, decoded_depth)
+                for nested in reversed(list(current)[:512])
+            )
+            continue
+        if isinstance(current, bool) or current is None:
+            continue
+        if isinstance(current, str):
+            normalized = current.strip()
+            if (
+                decoded_depth < 4
+                and normalized[:1] in {"{", "["}
+                and len(normalized) <= 64 * 1024
+            ):
+                try:
+                    decoded = json.loads(normalized)
+                except json.JSONDecodeError:
+                    decoded = None
+                if isinstance(decoded, (Mapping, list)):
+                    pending.append((decoded, decoded_depth + 1))
+            if normalized and len(normalized) <= max_chars:
+                candidates.add(normalized)
+            continue
+        if isinstance(current, (int, float)):
+            encoded = json.dumps(current, ensure_ascii=False)
+            if len(encoded) <= max_chars:
+                candidates.add(encoded)
+    if not candidates:
+        return None
+    # Prefer a discriminative recorded value while retaining deterministic
+    # ordering for equal-sized values.  The digest avoids value-dependent
+    # lexical preferences and is never exposed in public diagnostics.
+    return max(
+        candidates,
+        key=lambda item: (
+            len(item),
+            hashlib.sha256(item.encode("utf-8")).hexdigest(),
+        ),
+    )
+
+
+def _probe_operation(probe: ReplayProtocolProbe) -> str | None:
+    request_text = probe.request_text
+    if not isinstance(request_text, str) or not request_text.strip():
+        return None
+    try:
+        request = json.loads(request_text)
+    except (TypeError, json.JSONDecodeError):
+        return None
+    return _fixture_operation_hint(request)
+
+
+def _framework_bind_protocol_probes(
+    probes: Sequence[ReplayProtocolProbe],
+    *,
+    fixture_bytes: bytes,
+) -> tuple[ReplayProtocolProbe, ...]:
+    """Bind data-plane probes to immutable framework response records."""
+
+    observed_operations = tuple(
+        dict.fromkeys(
+            operation
+            for probe in probes
+            if (operation := _probe_operation(probe)) is not None
+        )
+    )
+    response_index = _build_recorded_response_index(
+        fixture_bytes,
+        observed_operations=observed_operations,
+    )
+    records = tuple(
+        record
+        for record in response_index.get("records", ())
+        if isinstance(record, Mapping)
+        and record.get("non_empty") is True
+        and isinstance(record.get("record_id"), str)
+        and isinstance(record.get("canonical_probe_assertion"), str)
+    )
+    if not records:
+        return tuple(probes)
+    bound: list[ReplayProtocolProbe] = []
+    for probe in probes:
+        if (
+            probe.response_contains is None
+            or (probe.kind == "http" and probe.validate_advertised_websockets)
+        ):
+            bound.append(probe)
+            continue
+        operation = _probe_operation(probe)
+        record = next(
+            (
+                item
+                for item in records
+                if operation is not None and item.get("operation") == operation
+            ),
+            records[0],
+        )
+        bound.append(
+            replace(
+                probe,
+                response_contains=str(record["canonical_probe_assertion"]),
+                response_record_id=str(record["record_id"]),
+            )
+        )
+    return tuple(bound)
 
 
 def _runtime_response_record_evidence(value: Any) -> tuple[int, bool]:
@@ -3578,6 +3744,10 @@ def _parse_services(
                 output_root,
                 response_fixture,
             ).read_bytes()
+            protocol_probes = _framework_bind_protocol_probes(
+                protocol_probes,
+                fixture_bytes=fixture_bytes,
+            )
             for probe in protocol_probes:
                 if (
                     probe.response_contains is not None

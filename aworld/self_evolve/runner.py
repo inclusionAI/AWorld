@@ -393,7 +393,7 @@ _MAX_PROGRESS_REPAIR_EXTENSION_ITERATIONS = 6
 _MAX_CONSECUTIVE_DUPLICATE_POPULATION_STALLS = 1
 _MAX_CONSECUTIVE_POLICY_FILTER_STALLS = 2
 _MAX_CONSECUTIVE_MATERIALIZATION_STALLS = 2
-_MAX_CONFORMANCE_STRATEGY_SWITCH_ATTEMPTS = 1
+_MAX_CONFORMANCE_STRATEGY_SWITCH_ATTEMPTS = 2
 _REPLAY_PROGRESS_HEARTBEAT_SECONDS = 30.0
 _SEMANTIC_DEDUP_IDENTITY_VERSION = "aworld.self_evolve.semantic_dedup.v2"
 _VERIFICATION_CONTRACT_VERSION = "aworld.self_evolve.verification_contract.v2"
@@ -2004,6 +2004,28 @@ def _candidate_conformance_failure_signatures(
         ).hexdigest()
         for key in sorted(shapes)
     )
+
+
+def _candidate_conformance_counterexample_ids(
+    failures: Iterable[tuple[CandidateVariant, GateResult]],
+) -> set[str]:
+    """Return executable counterexample identities still failing this batch."""
+
+    identities: set[str] = set()
+    for _, gate in failures:
+        details = gate.details
+        if not isinstance(details, Mapping):
+            continue
+        raw_contracts = details.get("counterexample_contracts")
+        if not isinstance(raw_contracts, (list, tuple)):
+            continue
+        for contract in raw_contracts:
+            if not isinstance(contract, Mapping):
+                continue
+            identity = contract.get("counterexample_id")
+            if isinstance(identity, str) and identity:
+                identities.add(identity)
+    return identities
 
 
 def _candidate_conformance_repair_topologies(
@@ -4119,6 +4141,8 @@ class SelfEvolveRunner:
         conformance_strategy_switch_request_count = 0
         conformance_strategy_attempts: dict[str, int] = {}
         conformance_strategy_topologies: dict[str, set[str]] = {}
+        pending_conformance_counterexamples: set[str] = set()
+        resolved_conformance_counterexamples: set[str] = set()
         conformance_strategy_switch_not_materialized = False
         candidate_generation_infrastructure_retries = 0
         raw_generation_attempt_count = 0
@@ -5682,6 +5706,18 @@ class SelfEvolveRunner:
                 )
                 else ()
             )
+            observed_conformance_counterexamples = (
+                _candidate_conformance_counterexample_ids(
+                    screening_failures
+                )
+            )
+            resolved_conformance_counterexamples.update(
+                pending_conformance_counterexamples
+                - observed_conformance_counterexamples
+            )
+            pending_conformance_counterexamples = set(
+                observed_conformance_counterexamples
+            )
             if conformance_failure_signatures:
                 topology_by_signature = (
                     _candidate_conformance_repair_topologies(
@@ -5718,6 +5754,7 @@ class SelfEvolveRunner:
                     for signature in materialized_switches
                     if conformance_strategy_attempts.get(signature, 0)
                     >= _MAX_CONFORMANCE_STRATEGY_SWITCH_ATTEMPTS
+                    and bool(pending_conformance_counterexamples)
                 )
                 if exhausted_materialized or unmaterialized_switches:
                     generation_conformance_frontier_exhausted = True
@@ -5737,8 +5774,8 @@ class SelfEvolveRunner:
                             if unmaterialized_switches
                             else (
                                 "Stopped candidate generation: the same typed "
-                                "conformance failure remained after a verified "
-                                "structural strategy switch"
+                                "conformance counterexample remained after the "
+                                "allowed structural strategy switches"
                             )
                         ),
                     )
@@ -5778,8 +5815,8 @@ class SelfEvolveRunner:
                         "candidate_conformance",
                         (
                             "Typed conformance failure captured; requesting "
-                            "a structural strategy switch and recording its "
-                            "authorized owner/edit topology"
+                            "a structural strategy switch bound to the original "
+                            "executable counterexample contract"
                         ),
                     )
             if screening_feedback and not candidate_population:
@@ -5900,6 +5937,18 @@ class SelfEvolveRunner:
                         < self.max_score_tiebreak_candidates
                     ),
                 )
+                shared_measurement_invalid = any(
+                    isinstance(gate, GateResult)
+                    and not gate.passed
+                    and _gate_has_typed_shared_measurement_failure(gate)
+                    for gate in state.get("gate_results", ())
+                )
+                if shared_measurement_invalid:
+                    # No candidate observation exists when the shared control
+                    # plane is invalid.  Keep the diagnostic state, but do not
+                    # turn it into mutation feedback or persisted lesson data.
+                    candidate_feedback = ()
+                    state["feedback"] = ()
                 if (
                     counts_toward_authoritative
                     and not _authoritative_attempt_consumed(state)
@@ -5933,13 +5982,14 @@ class SelfEvolveRunner:
                     report_item["lifecycle_stage"] = attempt_tracker.last_stage(
                         evaluated_attempt_key
                     ).value
-                validation_feedback = _merge_validation_feedback(
-                    validation_feedback,
-                    candidate_feedback,
-                )
-                current_run_attempted_candidate_ids.add(
-                    iteration_candidate.candidate_id
-                )
+                if not shared_measurement_invalid:
+                    validation_feedback = _merge_validation_feedback(
+                        validation_feedback,
+                        candidate_feedback,
+                    )
+                    current_run_attempted_candidate_ids.add(
+                        iteration_candidate.candidate_id
+                    )
                 iteration_reports.append(report_item)
                 iteration_states.append(state)
                 state_measurement = state.get("measurement_summary")
@@ -6014,7 +6064,11 @@ class SelfEvolveRunner:
                 failed_gates = [
                     gate for gate in state["gate_results"] if not gate.passed
                 ]
-                if failed_gates and state["status"] != "prerequisite":
+                if (
+                    failed_gates
+                    and state["status"] != "prerequisite"
+                    and not shared_measurement_invalid
+                ):
                     rejected_candidate_ids.add(iteration_candidate.candidate_id)
                 elif state["status"] == "prerequisite":
                     prerequisite_candidate_ids.append(
@@ -6026,10 +6080,7 @@ class SelfEvolveRunner:
                 ):
                     baseline_preflight_blocked = True
                     break
-                if any(
-                    _gate_has_typed_shared_measurement_failure(gate)
-                    for gate in failed_gates
-                ):
+                if shared_measurement_invalid:
                     # A shared framework/infrastructure measurement failure
                     # invalidates the experiment, not the candidate. Further
                     # mutation cannot repair that control plane, so do not
@@ -6696,6 +6747,12 @@ class SelfEvolveRunner:
                         ),
                         "conformance_strategy_switch_not_materialized": (
                             conformance_strategy_switch_not_materialized
+                        ),
+                        "pending_conformance_counterexample_count": len(
+                            pending_conformance_counterexamples
+                        ),
+                        "resolved_conformance_counterexample_count": len(
+                            resolved_conformance_counterexamples
                         ),
                     }
                     if conformance_strategy_switch_request_count
@@ -8269,10 +8326,26 @@ class SelfEvolveRunner:
                     if isinstance(probe_plan_payload, Mapping)
                     else None
                 )
-                shape_count = (
+                counterexample_contracts = (
+                    gate.details.get("counterexample_contracts")
+                    if isinstance(gate.details, Mapping)
+                    else None
+                )
+                violations = (
+                    gate.details.get("violations")
+                    if isinstance(gate.details, Mapping)
+                    else None
+                )
+                shape_count = max(
                     len(probe_groups)
                     if isinstance(probe_groups, (list, tuple))
-                    else 0
+                    else 0,
+                    len(counterexample_contracts)
+                    if isinstance(counterexample_contracts, (list, tuple))
+                    else 0,
+                    len(violations)
+                    if isinstance(violations, (list, tuple))
+                    else 0,
                 )
                 if gate_code == "conformance_budget_denied":
                     attempt_tracker.emit(
@@ -17503,6 +17576,8 @@ def _prior_run_eval_cases(
             continue
         if not _report_matches_target(report, target):
             continue
+        if _report_has_shared_measurement_failure(report):
+            continue
         candidate_id = report.get("selected_candidate_id") or report.get("best_candidate_id")
         if not isinstance(candidate_id, str) or not candidate_id:
             continue
@@ -17695,6 +17770,12 @@ def _feedback_from_report(
     *,
     report_path: Path,
 ) -> tuple[EvaluationSummary, ...]:
+    if _report_has_shared_measurement_failure(report):
+        # A broken control plane is not candidate training data.  Replaying
+        # candidate packages, lessons, or gate summaries from this report would
+        # transfer framework ownership into the mutation frontier and teach the
+        # generator to edit a skill in response to an invalid experiment.
+        return ()
     items: list[EvaluationSummary] = []
     repair_feedback = (
         *_repair_feedback_from_selected_candidate(
@@ -17760,6 +17841,30 @@ def _feedback_from_report(
                 )
             )
     return tuple(items)
+
+
+def _report_has_shared_measurement_failure(
+    report: Mapping[str, Any],
+) -> bool:
+    disposition = report.get("self_improvement_disposition")
+    if (
+        isinstance(disposition, Mapping)
+        and disposition.get("kind") == "repair_measurement"
+        and disposition.get("scope") == "shared_run"
+    ):
+        return True
+    for key in ("rejection_attribution", "campaign_failure_attribution"):
+        attribution = report.get(key)
+        if not isinstance(attribution, Mapping):
+            continue
+        if (
+            attribution.get("failure_class") == "measurement"
+            and attribution.get("failure_owner")
+            in {"framework", "infrastructure", "evaluation_harness"}
+            and attribution.get("failure_scope") == "shared_run"
+        ):
+            return True
+    return False
 
 
 def _repair_feedback_from_selected_candidate(
@@ -20500,6 +20605,14 @@ def _iteration_validation_feedback(
     held_out_summary: EvaluationSummary | None,
     failed_gates: list[GateResult],
 ) -> tuple[EvaluationSummary, ...]:
+    if any(
+        _gate_has_typed_shared_measurement_failure(gate)
+        for gate in failed_gates
+    ):
+        # An invalid shared experiment has no candidate label.  Preserve the
+        # gate in the run report, but never turn it into optimizer feedback or
+        # lesson memory.
+        return ()
     feedback: list[EvaluationSummary] = []
     typed_gate_metrics = _typed_gate_feedback_metrics(failed_gates)
     typed_candidate_status = next(
@@ -21007,6 +21120,7 @@ def _typed_gate_feedback_metrics(
     ] = []
     replay_counterexamples: list[dict[str, object]] = []
     replay_counterexample_fingerprints: set[str] = set()
+    conformance_counterexample_contracts: dict[str, dict[str, object]] = {}
 
     def add_replay_counterexample(value: object) -> None:
         normalized = normalize_counterexample(value)
@@ -21041,6 +21155,26 @@ def _typed_gate_feedback_metrics(
             )
             if isinstance(projected_contract, Mapping):
                 repair_contract_contexts.append(dict(projected_contract))
+        raw_conformance_counterexamples = details.get(
+            "counterexample_contracts"
+        )
+        if isinstance(raw_conformance_counterexamples, (list, tuple)):
+            for raw_counterexample in raw_conformance_counterexamples[:64]:
+                if not isinstance(raw_counterexample, Mapping):
+                    continue
+                projected_counterexample = public_diagnostic_projection(
+                    raw_counterexample,
+                    max_chars=2_048,
+                )
+                if not isinstance(projected_counterexample, Mapping):
+                    continue
+                counterexample_id = projected_counterexample.get(
+                    "counterexample_id"
+                )
+                if isinstance(counterexample_id, str) and counterexample_id:
+                    conformance_counterexample_contracts[counterexample_id] = (
+                        dict(projected_counterexample)
+                    )
         for counterexample in _public_replay_counterexamples(details):
             add_replay_counterexample(counterexample)
         raw_schema_constraints = details.get("schema_field_constraints")
@@ -21181,6 +21315,11 @@ def _typed_gate_feedback_metrics(
         ]
     if replay_counterexamples:
         result["replay_counterexamples"] = replay_counterexamples[:16]
+    if conformance_counterexample_contracts:
+        result["counterexample_contracts"] = [
+            conformance_counterexample_contracts[key]
+            for key in sorted(conformance_counterexample_contracts)
+        ]
     if recovery_traces:
         result["recovery_trace"] = max(
             recovery_traces,

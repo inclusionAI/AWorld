@@ -63,6 +63,9 @@ from aworld.self_evolve.replay_adaptation import (
 )
 from aworld.self_evolve.replay_capability import (
     FrozenReplayCapability,
+    REPLAY_RESPONSE_RECORD_ID_ENV,
+    REPLAY_RESPONSE_REQUIREMENT_ID_ENV,
+    REPLAY_RESPONSE_SERVICE_ID_ENV,
     build_replay_resource_limited_command,
     build_replay_sandboxed_command,
     FrozenReplayFile,
@@ -5206,6 +5209,9 @@ async def _start_replay_services(
     recorded_response_values = _replay_capability_recorded_response_values(
         capability
     )
+    recorded_response_records = _replay_capability_recorded_response_records(
+        capability
+    )
     fixture_service = Path(__file__).with_name("fixture_service.py").resolve()
     try:
         for service in capability.services:
@@ -5283,6 +5289,24 @@ async def _start_replay_services(
                 service_environment["AWORLD_REPLAY_RESPONSE_INDEX"] = str(
                     response_index_path
                 )
+            response_record_ids = tuple(
+                dict.fromkeys(
+                    probe.response_record_id
+                    for probe in service.protocol_probes
+                    if isinstance(probe.response_record_id, str)
+                    and probe.response_record_id
+                )
+            )
+            if len(response_record_ids) == 1:
+                service_environment[REPLAY_RESPONSE_RECORD_ID_ENV] = (
+                    response_record_ids[0]
+                )
+            service_environment[REPLAY_RESPONSE_REQUIREMENT_ID_ENV] = (
+                service.requirement_id
+            )
+            service_environment[REPLAY_RESPONSE_SERVICE_ID_ENV] = (
+                service.service_id
+            )
             service_environment["AWORLD_REPLAY_FIXTURE_PATH"] = str(fixture_path)
             service_dir = service_logs / _safe_path(service.service_id)
             service_dir.mkdir(parents=True, exist_ok=True)
@@ -5356,13 +5380,35 @@ async def _start_replay_services(
                         service.response_fixture,
                         {},
                     )
+                    fixture_record_values = recorded_response_records.get(
+                        service.response_fixture,
+                        {},
+                    )
                     diagnostic_recorded_response_values = tuple(
                         value
                         for values in fixture_operation_values.values()
                         for value in values
                     )
                     required_recorded_response_values: tuple[str, ...] = ()
-                    if require_recorded_response:
+                    if protocol_probe.response_record_id is not None:
+                        required_recorded_response_values = tuple(
+                            fixture_record_values.get(
+                                protocol_probe.response_record_id,
+                                (),
+                            )
+                        )
+                        if not required_recorded_response_values:
+                            raise ReplayServiceProtocolError(
+                                "framework-bound response record is missing from "
+                                "the immutable replay sidecar",
+                                code="framework_response_record_missing",
+                                details={
+                                    "response_record_id": (
+                                        protocol_probe.response_record_id
+                                    ),
+                                },
+                            )
+                    elif require_recorded_response:
                         required_recorded_response_values = tuple(
                             value
                             for operation in recorded_probe_operations
@@ -5637,6 +5683,59 @@ def _replay_capability_recorded_response_values(
                 operation_values[operation] = values
         if operation_values:
             collected[relative] = operation_values
+    return collected
+
+
+def _replay_capability_recorded_response_records(
+    capability: FrozenReplayCapability,
+) -> dict[str, dict[str, tuple[str, ...]]]:
+    """Return probe values keyed by the framework's stable response record id."""
+
+    fixture_root = (
+        Path(capability.frozen_root).expanduser().resolve() / "fixtures"
+    ).resolve()
+    collected: dict[str, dict[str, tuple[str, ...]]] = {}
+    for service in capability.services[:16]:
+        relative = service.response_fixture
+        if relative in collected:
+            continue
+        try:
+            fixture_path = (fixture_root / relative).resolve(strict=True)
+            if (
+                not fixture_path.is_relative_to(fixture_root)
+                or not fixture_path.is_file()
+                or fixture_path.is_symlink()
+            ):
+                continue
+            sidecar_path = fixture_path.with_suffix(".responses.json")
+            if (
+                not sidecar_path.is_file()
+                or sidecar_path.is_symlink()
+                or sidecar_path.stat().st_size > 8 * 1024 * 1024
+            ):
+                continue
+            index = json.loads(sidecar_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            continue
+        records = index.get("records") if isinstance(index, Mapping) else None
+        if not isinstance(records, list):
+            continue
+        record_values: dict[str, tuple[str, ...]] = {}
+        for record in records[:4096]:
+            if (
+                not isinstance(record, Mapping)
+                or record.get("non_empty") is not True
+                or "value" not in record
+            ):
+                continue
+            record_id = record.get("record_id")
+            if not isinstance(record_id, str) or not record_id:
+                continue
+            values = _recorded_response_value_probe_values(record.get("value"))
+            if values:
+                record_values[record_id] = values
+        if record_values:
+            collected[relative] = record_values
     return collected
 
 
@@ -9430,6 +9529,11 @@ def _frozen_replay_capability_from_mapping(
                         response_contains=(
                             str(raw_probe.get("response_contains"))
                             if raw_probe.get("response_contains") is not None
+                            else None
+                        ),
+                        response_record_id=(
+                            str(raw_probe.get("response_record_id"))
+                            if raw_probe.get("response_record_id") is not None
                             else None
                         ),
                     )
