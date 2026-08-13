@@ -612,6 +612,94 @@ def test_compile_result_capability_identity_failure_is_typed_for_repair(
 
 
 @pytest.mark.replay_sandbox
+def test_duplicate_compile_result_fixtures_publish_unique_counterexample(
+    tmp_path: Path,
+) -> None:
+    skill = _write_capability_skill(tmp_path)
+    compiler_path = skill / "replay/compiler.py"
+    compiler_path.write_text(
+        compiler_path.read_text(encoding="utf-8").replace(
+            "'fixtures': ['fixture.txt']",
+            "'fixtures': ['fixture.txt', 'fixture.txt']",
+        ),
+        encoding="utf-8",
+    )
+    capability = discover_replay_capability(skill)
+    assert capability is not None
+
+    with pytest.raises(
+        ReplayCapabilityError,
+        match="result fixtures contain duplicates",
+    ) as error:
+        compile_and_freeze_capability(
+            capability,
+            _request(skill),
+            tmp_path / "compile",
+        )
+
+    assert error.value.code == "schema_field_validation_failed"
+    assert error.value.details["schema_field_constraints"] == [
+        {
+            "schema_layer": "compile_result",
+            "field_path": "fixtures",
+            "rule": "unique",
+            "expected": [],
+        }
+    ]
+    assert error.value.details["schema_field_violation_count"] == 1
+    assert error.value.details["allowed_fixture_topologies"] == [
+        "unique_path_per_requirement",
+        "shared_path_with_merged_provenance",
+    ]
+    counterexample = error.value.details["counterexample_contracts"][0]
+    assert counterexample["constraint"]["field_path"] == "fixtures"
+    assert counterexample["required_checks"] == [
+        "field_selector_resolves_subject",
+        "schema_constraint_accepts_subject",
+    ]
+
+
+@pytest.mark.replay_sandbox
+def test_duplicate_requirement_classification_publishes_unique_constraint(
+    tmp_path: Path,
+) -> None:
+    skill = _write_capability_skill(tmp_path)
+    compiler_path = skill / "replay/compiler.py"
+    compiler_path.write_text(
+        compiler_path.read_text(encoding="utf-8").replace(
+            "'handled_requirements': [requirement['requirement_id']]",
+            (
+                "'handled_requirements': [requirement['requirement_id'], "
+                "requirement['requirement_id']]"
+            ),
+        ),
+        encoding="utf-8",
+    )
+    capability = discover_replay_capability(skill)
+    assert capability is not None
+
+    with pytest.raises(
+        ReplayCapabilityError,
+        match="result requirement lists contain duplicates",
+    ) as error:
+        compile_and_freeze_capability(
+            capability,
+            _request(skill),
+            tmp_path / "compile",
+        )
+
+    assert error.value.code == "schema_field_validation_failed"
+    assert error.value.details["schema_field_constraints"] == [
+        {
+            "schema_layer": "compile_result",
+            "field_path": "handled_requirements",
+            "rule": "unique",
+            "expected": [],
+        }
+    ]
+
+
+@pytest.mark.replay_sandbox
 def test_skill_runtime_requires_declared_protocol_probes(tmp_path: Path) -> None:
     skill = _write_capability_skill(tmp_path)
     compiler_path = skill / "replay/compiler.py"

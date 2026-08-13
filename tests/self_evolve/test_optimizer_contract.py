@@ -21,6 +21,7 @@ from aworld.self_evolve.optimizers.base import (
 from aworld.self_evolve.optimizers.dspy_adapter import DSPyGEPAOptimizer, DSPyMIPROOptimizer
 from aworld.self_evolve.optimizers.llm_mutator import (
     TraceReflectiveLLMMutator,
+    _focused_repair_prompt_instructions,
     _validate_focused_repair_mutation_scope,
     _validate_prerequisite_composition_target_delta,
     _validate_mutator_output_context,
@@ -1258,6 +1259,34 @@ async def test_llm_mutator_compile_repair_keeps_schema_layers_distinct() -> None
     assert "skill_runtime belongs only in a compiled result service" in prompts[0]
     assert "runtime_required is only request status" in prompts[0]
     assert "Do not guess alternative protocol names" in prompts[0]
+
+
+def test_compile_fixture_uniqueness_contract_selects_collision_safe_topology() -> None:
+    instructions = _focused_repair_prompt_instructions(
+        {
+            "repair_conformance": {
+                "failure_codes": [
+                    "invalid_replay_capability_compile",
+                    "repair_capability_compile_failed",
+                ],
+                "schema_field_constraints": [
+                    {
+                        "schema_layer": "compile_result",
+                        "field_path": "fixtures",
+                        "rule": "unique",
+                        "expected": [],
+                    }
+                ],
+            }
+        }
+    )
+
+    assert "fixtures collection must contain each normalized relative path" in (
+        instructions
+    )
+    assert "requirement-qualified unique path" in instructions
+    assert "reuse a single fixture path while merging" in instructions
+    assert "changing only the hash algorithm" in instructions
 
 
 @pytest.mark.asyncio
