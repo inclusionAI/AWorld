@@ -235,6 +235,8 @@ from aworld.self_evolve.budget import (
     CandidateAttemptStage,
     RepairFrontier,
     RunBudgetLedger,
+    ScheduledCandidateSlot,
+    ScheduledSlotRole,
     SchedulerDecision,
     SchedulerState,
     StageAwareCandidateScheduler,
@@ -1374,9 +1376,19 @@ def _terminal_candidate_evaluation_result(
 class _FixedCandidateOptimizer:
     candidate: CandidateVariant
     source_run_id: str
+    admission_reason_code: str = "stored_candidate_fresh_evaluation"
+
+    def __post_init__(self) -> None:
+        if not self.admission_reason_code.strip():
+            raise ValueError("stored candidate admission reason is required")
 
     def proves_zero_budget_usage(self, stage: BudgetStage) -> bool:
         return stage is BudgetStage.CANDIDATE_GENERATION
+
+    def stored_candidate_admission_reason(self) -> str:
+        """Declare why scheduler mutation-frontier discovery is not needed."""
+
+        return self.admission_reason_code
 
     async def propose(self, request: OptimizerRequest) -> OptimizerResult:
         return OptimizerResult(
@@ -1391,6 +1403,23 @@ class _FixedCandidateOptimizer:
                 "candidate_id": self.candidate.candidate_id,
             },
         )
+
+
+def _optimizer_stored_candidate_admission_reason(
+    optimizer: CandidateOptimizer,
+) -> str | None:
+    declaration = getattr(
+        optimizer,
+        "stored_candidate_admission_reason",
+        None,
+    )
+    if not callable(declaration):
+        return None
+    try:
+        reason = declaration()
+    except (TypeError, ValueError):
+        return None
+    return reason if isinstance(reason, str) and reason.strip() else None
 
 
 @dataclass(frozen=True)
@@ -4314,6 +4343,29 @@ class SelfEvolveRunner:
                     bool(cumulative_feedback) and not repair_frontiers
                 ),
             )
+            stored_admission_reason = (
+                _optimizer_stored_candidate_admission_reason(self.optimizer)
+                if iteration_index == 0
+                else None
+            )
+            if stored_admission_reason is not None:
+                # A stored candidate blocked by an invalid control is already
+                # the output of candidate selection.  It belongs to the
+                # measurement lane, not to mutation-frontier scheduling.  The
+                # normal scheduler may correctly see no candidate-owned repair
+                # feedback and return no slots; overriding that result here is
+                # what actually admits the immutable candidate to fresh replay.
+                scheduler_decision = SchedulerDecision(
+                    reason_code=stored_admission_reason,
+                    slots=(
+                        ScheduledCandidateSlot(
+                            slot=0,
+                            role=ScheduledSlotRole.BOUNDED_EXPLORATION,
+                        ),
+                    ),
+                    stop=False,
+                    state=scheduler_state,
+                )
             scheduler_state = scheduler_decision.state
             requested_generation_slot_count = len(scheduler_decision.slots)
             scheduled_slots = scheduler_decision.slots
@@ -11485,6 +11537,13 @@ class SelfEvolveRunner:
                     ),
                 ),
             )
+        if progress_stage == "candidate_replay":
+            dataset = _authoritative_replay_dataset(
+                dataset,
+                empirical_observations=(
+                    self._candidate_screening_case_observations
+                ),
+            )
         replay_case_count = sum(
             1 for case in dataset.cases if _is_replayable_user_task_case(case)
         )
@@ -11584,9 +11643,14 @@ class SelfEvolveRunner:
                         MeasurementPolicyMode.ADVISORY,
                         MeasurementPolicyMode.REQUIRED,
                     }
+                    or (
+                        _is_verified_apply_policy(apply_policy)
+                        and replay_case_count > 1
+                    )
                 ),
                 stop_on_incomparable_member=(
                     _is_verified_apply_policy(apply_policy)
+                    and replay_case_count == 1
                 ),
                 repetition_policy=repetition_policy,
             )
@@ -14849,6 +14913,7 @@ def optimize_from_cli_request(
         _FixedCandidateOptimizer(
             candidate=measurement_pending_candidate,
             source_run_id=str(campaign_measurement_pending_run_id),
+            admission_reason_code="stored_candidate_measurement_resume",
         )
         if measurement_pending_candidate is not None
         else TraceReflectiveLLMMutator(
@@ -23648,6 +23713,43 @@ def _candidate_screening_dataset(
             held_out_case_ids=(),
         ),
     )
+
+
+def _authoritative_replay_dataset(
+    dataset: SelfEvolveDataset,
+    *,
+    empirical_observations: Mapping[
+        str, Mapping[str, float | int]
+    ] | None = None,
+) -> SelfEvolveDataset:
+    """Order controls by observed health for authoritative execution.
+
+    Screening is the cheap control-qualification plane.  Its result must guide
+    the expensive authoritative replay: controls that already produced a
+    comparable pair run first, unobserved controls remain eligible, and known
+    invalid controls move to the tail.  Case membership and recipe stay fixed;
+    the derived order is included in the replay fingerprint so execution is
+    reproducible and cannot silently reuse evidence from another schedule.
+    """
+
+    if not empirical_observations or len(dataset.cases) <= 1:
+        return dataset
+    indexed_cases = tuple(enumerate(dataset.cases))
+
+    def rank(item: tuple[int, EvalCase]) -> tuple[int, int, int]:
+        index, case = item
+        observation = empirical_observations.get(case.case_id, {})
+        passed_count = _non_negative_int(observation.get("passed_count"))
+        invalid_count = _non_negative_int(
+            observation.get("invalid_control_count")
+        )
+        health_class = 0 if passed_count > 0 else 2 if invalid_count > 0 else 1
+        return health_class, -passed_count, index
+
+    ordered = tuple(case for _index, case in sorted(indexed_cases, key=rank))
+    if ordered == dataset.cases:
+        return dataset
+    return replace(dataset, cases=ordered)
 
 
 def _candidate_screening_dataset_for_case_ids(

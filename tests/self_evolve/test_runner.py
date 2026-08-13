@@ -5618,6 +5618,215 @@ async def test_stored_evidence_rerun_is_cardinality_safe_and_fails_closed(
     )
 
 
+@pytest.mark.asyncio
+async def test_stored_candidate_resume_bypasses_empty_repair_frontier(
+    tmp_path: Path,
+) -> None:
+    skill_path = tmp_path / "aworld-skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text(
+        "---\nname: demo\n---\n# Demo\n\nOld guidance.\n",
+        encoding="utf-8",
+    )
+    target = SkillTextTarget(skill_path)
+    dataset = SelfEvolveDataset(
+        cases=(EvalCase(case_id="case-1", input={"task": "demo"}),),
+        recipe=DatasetRecipe(
+            source={"kind": "test"},
+            split_seed="seed",
+            splits={"train": ["case-1"]},
+        ),
+    )
+    candidate = CandidateVariant(
+        candidate_id="measurement-pending-candidate",
+        target=target.identity,
+        content="---\nname: demo\n---\n# Demo\n\nImproved guidance.\n",
+        rationale="retry the same immutable candidate after invalid control",
+        target_fingerprint=target.fingerprint_current_content(),
+    )
+
+    class EvaluationBackend:
+        async def evaluate_variant(self, request):
+            return EvaluationSummary(
+                variant_id=request.variant_id,
+                metrics={
+                    "score": 0.2 if request.candidate is None else 0.8,
+                    "latency_ms": 1.0,
+                    "cost_usd": 0.0,
+                },
+                dataset_split=request.dataset_split,
+            )
+
+    store = FilesystemSelfEvolveStore(tmp_path)
+    prior_run_id = "prior-invalid-control"
+    store.write_report(
+        prior_run_id,
+        {
+            "run_id": prior_run_id,
+            "status": "rejected",
+            "target": {
+                "target_type": target.identity.target_type,
+                "target_id": target.identity.target_id,
+                "path": target.identity.path,
+            },
+            "repair_frontier_state": {
+                "scheduler_state": runner_module.SchedulerState(
+                    initial_exploration_scheduled=True
+                ).to_dict()
+            },
+            "campaign_failure_attribution": {
+                "failure_class": "measurement",
+                "failure_owner": "framework",
+                "failure_scope": "shared_run",
+                "repairable": True,
+            },
+        },
+    )
+    runner = SelfEvolveRunner(
+        store=store,
+        optimizer=_FixedCandidateOptimizer(
+            candidate,
+            prior_run_id,
+            admission_reason_code="stored_candidate_measurement_resume",
+        ),
+        evaluation_backend=EvaluationBackend(),
+        replay_enabled=False,
+        max_iterations=1,
+        min_eval_cases=0,
+    )
+
+    result = await runner.run_explicit_target(
+        run_id="measurement-resume",
+        target=target,
+        dataset=dataset,
+        trace_packs=(),
+        apply_policy="proposal",
+        campaign_prior_run_ids=(prior_run_id,),
+    )
+    report = json.loads(
+        (store.run_path("measurement-resume") / "report.json").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    assert result.selected_candidate == candidate
+    assert report["candidate_ids"] == [candidate.candidate_id]
+    decision = report["population"]["scheduler_decisions"][0]
+    assert decision["reason_code"] == "stored_candidate_measurement_resume"
+    assert decision["admitted_slot_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_authoritative_replay_uses_screening_control_health_and_patience(
+    tmp_path: Path,
+) -> None:
+    skill_path = tmp_path / "aworld-skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text(
+        "---\nname: demo\n---\n# Demo\n\nOld guidance.\n",
+        encoding="utf-8",
+    )
+    target = SkillTextTarget(skill_path)
+    cases = tuple(
+        EvalCase(case_id=case_id, input={"task": case_id})
+        for case_id in ("invalid-control", "unobserved", "healthy-control")
+    )
+    dataset = SelfEvolveDataset(
+        cases=cases,
+        recipe=DatasetRecipe(
+            source={"kind": "test"},
+            split_seed="seed",
+            splits={"train": [case.case_id for case in cases]},
+        ),
+    )
+    candidate = CandidateVariant(
+        candidate_id="candidate-control-order",
+        target=target.identity,
+        content="---\nname: demo\n---\n# Demo\n\nImproved guidance.\n",
+        rationale="use qualified controls first",
+        target_fingerprint=target.fingerprint_current_content(),
+    )
+
+    class ReplayBackend:
+        def __init__(self) -> None:
+            self.case_ids: tuple[str, ...] = ()
+            self.request = None
+
+        async def replay_candidate(self, request, *, candidate, dataset):
+            self.case_ids = tuple(case.case_id for case in dataset.cases)
+            self.request = request
+            baseline = ReplayVariantResult(
+                variant_id="baseline",
+                status="succeeded",
+                trajectory=[{"action": {"content": "baseline"}}],
+            )
+            improved = ReplayVariantResult(
+                variant_id=candidate.candidate_id,
+                status="succeeded",
+                trajectory=[{"action": {"content": "candidate"}}],
+            )
+            return CandidateReplayResult(
+                request=request,
+                baseline=baseline,
+                candidate=improved,
+                member_results=tuple(
+                    CandidateReplayMemberResult(
+                        case_id=case.case_id,
+                        request=replace(
+                            request,
+                            task_id=case.case_id,
+                            task_input=case.input,
+                        ),
+                        baseline=baseline,
+                        candidate=improved,
+                    )
+                    for case in dataset.cases
+                ),
+            )
+
+    backend = ReplayBackend()
+    runner = SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=_FixedCandidateOptimizer(candidate, "source-run"),
+        replay_enabled=True,
+        candidate_replay_backend=backend,
+    )
+    runner._candidate_screening_case_observations.update(
+        {
+            "invalid-control": {
+                "attempt_count": 1,
+                "invalid_control_count": 1,
+            },
+            "healthy-control": {
+                "attempt_count": 1,
+                "passed_count": 1,
+            },
+        }
+    )
+
+    replay_result, replay_dataset, replay_gate = (
+        await runner._replay_selected_candidate(
+            run_id="authoritative-control-order",
+            target=target,
+            dataset=dataset,
+            selected_candidate=candidate,
+            apply_policy="verified_only",
+        )
+    )
+
+    assert replay_result is not None
+    assert replay_dataset is not None
+    assert replay_gate is not None and replay_gate.passed
+    assert backend.case_ids == (
+        "healthy-control",
+        "unobserved",
+        "invalid-control",
+    )
+    assert backend.request is not None
+    assert backend.request.measurement_early_stop_enabled is True
+    assert backend.request.stop_on_incomparable_member is False
+
+
 def test_explicit_target_keeps_multi_task_trajectory_log_without_auto_grouping(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
