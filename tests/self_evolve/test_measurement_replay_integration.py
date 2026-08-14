@@ -41,6 +41,7 @@ from aworld.self_evolve.store import FilesystemSelfEvolveStore
 from aworld.self_evolve.runner import (
     SelfEvolveRunner,
     _campaign_measurement_outcome_for_replay,
+    _effective_cli_measurement_mode,
 )
 from aworld.self_evolve.targets import SkillTextTarget
 from aworld.self_evolve.types import (
@@ -53,6 +54,30 @@ from aworld.self_evolve.types import (
 
 def _fp(label: str) -> str:
     return stable_measurement_fingerprint({"label": label})
+
+
+@pytest.mark.parametrize(
+    ("configured", "apply_policy", "replay_enabled", "expected"),
+    (
+        (None, "verified_only", True, MeasurementPolicyMode.REQUIRED),
+        (None, "auto_verified", True, MeasurementPolicyMode.REQUIRED),
+        ("off", "proposal", True, MeasurementPolicyMode.OFF),
+        ("off", "verified_only", True, MeasurementPolicyMode.OFF),
+        ("off", "verified_only", False, MeasurementPolicyMode.OFF),
+        ("shadow", "verified_only", True, MeasurementPolicyMode.SHADOW),
+    ),
+)
+def test_verified_replay_defaults_to_authoritative_measurement_v2(
+    configured: str | None,
+    apply_policy: str,
+    replay_enabled: bool,
+    expected: MeasurementPolicyMode,
+) -> None:
+    assert _effective_cli_measurement_mode(
+        configured,
+        apply_policy=apply_policy,
+        replay_enabled=replay_enabled,
+    ) is expected
 
 
 def test_runner_atomically_compiles_v2_plan_for_advisory_replay(
@@ -138,13 +163,25 @@ def test_runner_atomically_compiles_v2_plan_for_advisory_replay(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("transfer_score", "expected_decision"),
-    ((1.0, "stop_confident_positive"), (-1.0, "stop_regression")),
+    (
+        "transfer_score",
+        "framework_failure_variant",
+        "expected_decision",
+        "expected_projection",
+    ),
+    (
+        (1.0, None, "stop_confident_positive", "succeeded"),
+        (-1.0, None, "stop_regression", "candidate_rejected"),
+        (None, "baseline", "stop_framework_blocked", "framework_blocked"),
+        (None, "candidate-v2", "stop_framework_blocked", "framework_blocked"),
+    ),
 )
 async def test_authoritative_replay_executes_adaptive_plan_not_legacy_batch(
     tmp_path: Path,
-    transfer_score: float,
+    transfer_score: float | None,
+    framework_failure_variant: str | None,
     expected_decision: str,
+    expected_projection: str,
 ) -> None:
     primary = tuple(f"primary-{index}" for index in range(1, 6))
     transfer = "transfer-1"
@@ -242,6 +279,24 @@ async def test_authoritative_replay_executes_adaptive_plan_not_legacy_batch(
         execution: ReplayExecutionRequest,
     ) -> ReplayExecutionResult:
         calls.append((execution.task_id, execution.variant_id))
+        if (
+            transfer_score is None
+            and execution.variant_id == framework_failure_variant
+        ):
+            return ReplayExecutionResult(
+                status="failed",
+                trajectory=[],
+                failure={
+                    "code": "framework_probe_failed",
+                    "outcome": "framework_failure",
+                    "failure_class": "measurement_runtime_trust",
+                    "failure_owner": "framework",
+                    "failure_scope": "shared_run",
+                    "failure_stage": "evidence_finalization",
+                    "repairable": False,
+                    "reason": "fixture framework failure",
+                },
+            )
         if execution.variant_id == "baseline" or execution.task_id == neutral_case:
             score = 0.0
         elif execution.task_id == transfer:
@@ -275,11 +330,18 @@ async def test_authoritative_replay_executes_adaptive_plan_not_legacy_batch(
         executor=fake_executor
     ).replay_candidate(request, candidate=candidate, dataset=dataset)
 
-    assert {member.case_id for member in result.member_results or ()} == {
-        *primary,
-        transfer,
-    }
-    assert len(calls) == len(dataset.cases) * 2
+    if transfer_score is None:
+        assert len(result.member_results or ()) == 1
+        assert len(calls) == (1 if framework_failure_variant == "baseline" else 2)
+        assert calls[0][0] in sentinel.case_ids
+        assert calls[0][1] == "baseline"
+        assert all(call[0] == calls[0][0] for call in calls)
+    else:
+        assert {member.case_id for member in result.member_results or ()} == {
+            *primary,
+            transfer,
+        }
+        assert len(calls) == len(dataset.cases) * 2
     schedule = json.loads(
         (
             tmp_path
@@ -292,8 +354,12 @@ async def test_authoritative_replay_executes_adaptive_plan_not_legacy_batch(
             / "measurement_schedule.json"
         ).read_text(encoding="utf-8")
     )
-    assert schedule["schedule_count"] == 3
-    assert transfer in schedule["admitted_case_ids"]
+    if transfer_score is None:
+        assert schedule["schedule_count"] == 1
+        assert transfer not in schedule["admitted_case_ids"]
+    else:
+        assert schedule["schedule_count"] == 3
+        assert transfer in schedule["admitted_case_ids"]
     assert schedule["decision"]["kind"] == expected_decision
     outcome = _campaign_measurement_outcome_for_replay(
         result,
@@ -304,8 +370,4 @@ async def test_authoritative_replay_executes_adaptive_plan_not_legacy_batch(
         ),
     )
     assert outcome is not None
-    assert outcome["projection"] == (
-        "succeeded"
-        if expected_decision == "stop_confident_positive"
-        else "candidate_rejected"
-    )
+    assert outcome["projection"] == expected_projection

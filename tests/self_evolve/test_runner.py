@@ -21186,6 +21186,7 @@ def test_inferred_new_skill_policy_controls_draft_retention_and_publication(
         ),
         min_eval_cases=0,
         replay_enabled=True,
+        measurement_mode="off",
         baseline_replay_repetitions=2,
         candidate_replay_repetitions=3,
         replay_adaptation_compiler=ReplayAdaptationCompiler(
@@ -21794,6 +21795,7 @@ def test_optimize_cli_request_uses_framework_default_replay_backend_when_enabled
         task="default-replay",
         apply_policy="auto_verified",
         replay_enabled=True,
+        measurement_mode="off",
         min_eval_cases=0,
     )
 
@@ -21926,6 +21928,7 @@ def test_optimize_cli_request_auto_verified_smoke_applies_and_loads_real_skill(t
         from_trajectory=str(trajectory_log),
         apply_policy="auto_verified",
         replay_enabled=True,
+        measurement_mode="off",
         candidate_replay_backend=selection_replay_backend,
         regression_replay_backend=regression_replay_backend,
         evaluation_backend=VerifiedEvaluationBackend(),

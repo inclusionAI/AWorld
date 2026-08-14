@@ -289,9 +289,12 @@ class OptimizeTopLevelCommand:
         parser.add_argument(
             "--measurement-mode",
             choices=("off", "shadow", "advisory", "required"),
-            default="off",
+            default=None,
             dest="measurement_mode",
-            help="Controlled improvement measurement policy (default: off).",
+            help=(
+                "Controlled improvement measurement policy (default: required "
+                "for verified replay, otherwise off)."
+            ),
         )
         parser.add_argument(
             "--measurement-primary-metric",
@@ -463,7 +466,7 @@ class OptimizeTopLevelCommand:
                 max_score_tiebreak_candidates=getattr(
                     args, "max_score_tiebreak_candidates", 1
                 ),
-                measurement_mode=getattr(args, "measurement_mode", "off"),
+                measurement_mode=getattr(args, "measurement_mode", None),
                 measurement_primary_metric=getattr(
                     args, "measurement_primary_metric", "task_success"
                 ),
@@ -796,7 +799,7 @@ def run_optimize_cli(
     max_run_cost_usd: float | None = None,
     max_run_wall_seconds: float | None = None,
     per_attempt_replay_token_limit: int | None = None,
-    measurement_mode: str = "off",
+    measurement_mode: str | None = None,
     measurement_primary_metric: str = "task_success",
     measurement_minimum_effect: float = 0.0,
     measurement_confidence_level: float = 0.95,
@@ -1003,7 +1006,7 @@ def _validate_budget_cli_options(
 
 def _validate_measurement_cli_options(
     *,
-    measurement_mode: str,
+    measurement_mode: str | None,
     measurement_primary_metric: str,
     measurement_minimum_effect: float,
     measurement_confidence_level: float,
@@ -1013,7 +1016,12 @@ def _validate_measurement_cli_options(
     measurement_invalid_control_patience: int,
     measurement_maximum_interval_width: float | None,
 ) -> None:
-    if measurement_mode not in {"off", "shadow", "advisory", "required"}:
+    if measurement_mode is not None and measurement_mode not in {
+        "off",
+        "shadow",
+        "advisory",
+        "required",
+    }:
         raise ValueError("--measurement-mode is unsupported")
     if not measurement_primary_metric.strip():
         raise ValueError("--measurement-primary-metric must be non-empty")
