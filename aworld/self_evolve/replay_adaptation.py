@@ -23,6 +23,7 @@ if TYPE_CHECKING:
 
 REPLAY_ADAPTATION_SCHEMA_VERSION = "aworld.self_evolve.replay_adaptation.v1"
 REPLAY_PREFLIGHT_SCHEMA_VERSION = "aworld.self_evolve.replay_preflight.v1"
+ISOLATION_GRANT_SCHEMA_VERSION = "aworld.self_evolve.isolation_grant.v1"
 REPLAY_WORKSPACE_PLACEHOLDER = "${AWORLD_REPLAY_WORKSPACE}"
 REPLAY_ARTIFACT_PLACEHOLDER = "${AWORLD_REPLAY_ARTIFACT_DIR}"
 
@@ -141,6 +142,1213 @@ REPLAY_BINDING_CONCURRENCY_MODES = (
     "shared_read_only",
 )
 
+IsolationAccessMode = Literal["isolated", "shared_read_only"]
+IsolationFallbackCode = Literal[
+    "binding_invalid",
+    "binding_not_deterministic",
+    "binding_requires_exclusive",
+    "missing_workspace_identity",
+    "missing_runtime_identity",
+    "missing_browser_profile_identity",
+    "missing_endpoint_namespace_identity",
+    "missing_evidence_directory_identity",
+    "missing_cleanup_owner",
+    "invalid_service_identity",
+    "invalid_resource_identity",
+    "topology_identity_conflict",
+    "binding_coverage_missing",
+    "binding_coverage_invalid",
+    "grant_set_incompatible",
+    "grant_set_incomplete",
+]
+ISOLATION_TOPOLOGY_SCHEMA_VERSION = "aworld.self_evolve.isolation_topology.v1"
+ISOLATION_GRANT_SET_SCHEMA_VERSION = "aworld.self_evolve.isolation_grant_set.v1"
+ISOLATION_DECISION_SCHEMA_VERSION = "aworld.self_evolve.isolation_decision.v1"
+_FULL_SHA256 = re.compile(r"^sha256:[0-9a-f]{64}$")
+_ISOLATION_DECISION_LANE_LIMIT = 64
+_ISOLATION_GRANT_CLAIM_LIMIT = 256
+_ISOLATION_FALLBACK_CODES = frozenset(
+    {
+        "binding_invalid",
+        "binding_not_deterministic",
+        "binding_requires_exclusive",
+        "missing_workspace_identity",
+        "missing_runtime_identity",
+        "missing_browser_profile_identity",
+        "missing_endpoint_namespace_identity",
+        "missing_evidence_directory_identity",
+        "missing_cleanup_owner",
+        "invalid_service_identity",
+        "invalid_resource_identity",
+        "topology_identity_conflict",
+        "binding_coverage_missing",
+        "binding_coverage_invalid",
+        "grant_set_incompatible",
+        "grant_set_incomplete",
+    }
+)
+
+
+@dataclass(frozen=True)
+class IsolationServiceIdentity:
+    """One service instance participating in a replay isolation topology."""
+
+    service_id: str
+    instance_identity: str
+    access_mode: IsolationAccessMode = "isolated"
+    cleanup_owner: str | None = None
+
+    def __post_init__(self) -> None:
+        _require_isolation_identity(self.service_id, "service_id")
+        _require_isolation_identity(self.instance_identity, "service instance")
+        _require_isolation_access_mode(self.access_mode)
+        if self.access_mode == "isolated":
+            _require_isolation_identity(self.cleanup_owner, "service cleanup owner")
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, Any]) -> IsolationServiceIdentity:
+        return cls(
+            service_id=_required_isolation_text(value.get("service_id"), "service_id"),
+            instance_identity=_required_isolation_text(
+                value.get("instance_identity"), "service instance"
+            ),
+            access_mode=_isolation_access_mode(value.get("access_mode")),
+            cleanup_owner=_optional_isolation_text(value.get("cleanup_owner")),
+        )
+
+
+@dataclass(frozen=True)
+class IsolationResourceIdentity:
+    """A typed resource claim used to prove cross-lane compatibility."""
+
+    resource_kind: str
+    identity: str
+    access_mode: IsolationAccessMode = "isolated"
+    cleanup_owner: str | None = None
+
+    def __post_init__(self) -> None:
+        _require_isolation_identity(self.resource_kind, "resource_kind")
+        _require_isolation_identity(self.identity, "resource identity")
+        _require_isolation_access_mode(self.access_mode)
+        if self.access_mode == "isolated":
+            _require_isolation_identity(self.cleanup_owner, "resource cleanup owner")
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, Any]) -> IsolationResourceIdentity:
+        return cls(
+            resource_kind=_required_isolation_text(
+                value.get("resource_kind"), "resource_kind"
+            ),
+            identity=_required_isolation_text(value.get("identity"), "resource identity"),
+            access_mode=_isolation_access_mode(value.get("access_mode")),
+            cleanup_owner=_optional_isolation_text(value.get("cleanup_owner")),
+        )
+
+
+@dataclass(frozen=True)
+class IsolationBindingCoverage:
+    """Materializer proof that one binding owns declared service/resources."""
+
+    binding_fingerprint: str
+    adapter_id: str
+    dependency_id: str
+    service_instance_identities: tuple[str, ...] = ()
+    resource_identities: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        _require_isolation_fingerprint(
+            self.binding_fingerprint, "binding fingerprint"
+        )
+        _require_isolation_identity(self.adapter_id, "covered adapter_id")
+        _require_isolation_identity(self.dependency_id, "covered dependency_id")
+        services = _canonical_identity_tuple(
+            self.service_instance_identities, "covered service instance"
+        )
+        resources = _canonical_identity_tuple(
+            self.resource_identities, "covered resource"
+        )
+        if not services and not resources:
+            raise ValueError("binding coverage must name a service or resource")
+        object.__setattr__(self, "service_instance_identities", services)
+        object.__setattr__(self, "resource_identities", resources)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "binding_fingerprint": self.binding_fingerprint,
+            "adapter_id": self.adapter_id,
+            "dependency_id": self.dependency_id,
+            "service_instance_identities": list(self.service_instance_identities),
+            "resource_identities": list(self.resource_identities),
+        }
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, Any]) -> IsolationBindingCoverage:
+        return cls(
+            binding_fingerprint=_required_isolation_text(
+                value.get("binding_fingerprint"), "binding fingerprint"
+            ),
+            adapter_id=_required_isolation_text(
+                value.get("adapter_id"), "covered adapter_id"
+            ),
+            dependency_id=_required_isolation_text(
+                value.get("dependency_id"), "covered dependency_id"
+            ),
+            service_instance_identities=_isolation_string_tuple(
+                value.get("service_instance_identities", ()),
+                "covered service instances",
+            ),
+            resource_identities=_isolation_string_tuple(
+                value.get("resource_identities", ()), "covered resources"
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class ReplayIsolationTopology:
+    """Canonical materializer output used to compile, but not imply, isolation."""
+
+    materializer_id: str
+    materializer_fingerprint: str
+    workspace_identity: str
+    runtime_identity: str
+    browser_profile_identity: str
+    endpoint_namespace_identity: str
+    evidence_directory_identity: str
+    services: tuple[IsolationServiceIdentity, ...] = ()
+    resources: tuple[IsolationResourceIdentity, ...] = ()
+    binding_coverage: tuple[IsolationBindingCoverage, ...] = ()
+    cleanup_owner: str = ""
+    topology_fingerprint: str = ""
+    schema_version: str = ISOLATION_TOPOLOGY_SCHEMA_VERSION
+
+    def __post_init__(self) -> None:
+        if self.schema_version != ISOLATION_TOPOLOGY_SCHEMA_VERSION:
+            raise ValueError("unsupported isolation topology schema")
+        _require_isolation_identity(self.materializer_id, "materializer_id")
+        _require_isolation_fingerprint(
+            self.materializer_fingerprint, "materializer fingerprint"
+        )
+        for field_name in _ISOLATION_NAMESPACE_FIELDS:
+            _require_isolation_identity(getattr(self, field_name), field_name)
+        _require_isolation_identity(self.cleanup_owner, "cleanup_owner")
+        services = tuple(
+            sorted(
+                self.services,
+                key=lambda item: (item.service_id, item.instance_identity),
+            )
+        )
+        resources = tuple(
+            sorted(
+                self.resources,
+                key=lambda item: (item.resource_kind, item.identity),
+            )
+        )
+        coverage = tuple(
+            sorted(self.binding_coverage, key=lambda item: item.binding_fingerprint)
+        )
+        if len({item.instance_identity for item in services}) != len(services):
+            raise ValueError("isolation topology service instances must be unique")
+        if len({item.identity for item in resources}) != len(resources):
+            raise ValueError("isolation topology resource identities must be unique")
+        if len({item.binding_fingerprint for item in coverage}) != len(coverage):
+            raise ValueError("isolation topology binding coverage must be unique")
+        object.__setattr__(self, "services", services)
+        object.__setattr__(self, "resources", resources)
+        object.__setattr__(self, "binding_coverage", coverage)
+        expected = _json_fingerprint(_isolation_topology_payload(self))
+        if self.topology_fingerprint != expected:
+            raise ValueError("isolation topology fingerprint mismatch")
+
+    @classmethod
+    def create(
+        cls,
+        *,
+        materializer_id: str,
+        materializer_fingerprint: str,
+        workspace_identity: str,
+        runtime_identity: str,
+        browser_profile_identity: str,
+        endpoint_namespace_identity: str,
+        evidence_directory_identity: str,
+        services: Sequence[IsolationServiceIdentity] = (),
+        resources: Sequence[IsolationResourceIdentity] = (),
+        binding_coverage: Sequence[IsolationBindingCoverage] = (),
+        cleanup_owner: str,
+    ) -> ReplayIsolationTopology:
+        values = {
+            "schema_version": ISOLATION_TOPOLOGY_SCHEMA_VERSION,
+            "materializer_id": materializer_id,
+            "materializer_fingerprint": materializer_fingerprint,
+            "workspace_identity": workspace_identity,
+            "runtime_identity": runtime_identity,
+            "browser_profile_identity": browser_profile_identity,
+            "endpoint_namespace_identity": endpoint_namespace_identity,
+            "evidence_directory_identity": evidence_directory_identity,
+            "services": tuple(services),
+            "resources": tuple(resources),
+            "binding_coverage": tuple(binding_coverage),
+            "cleanup_owner": cleanup_owner,
+        }
+        provisional = object.__new__(cls)
+        for field_name, field_value in values.items():
+            object.__setattr__(provisional, field_name, field_value)
+        canonical_services = tuple(
+            sorted(values["services"], key=lambda item: (item.service_id, item.instance_identity))
+        )
+        canonical_resources = tuple(
+            sorted(values["resources"], key=lambda item: (item.resource_kind, item.identity))
+        )
+        canonical_coverage = tuple(
+            sorted(values["binding_coverage"], key=lambda item: item.binding_fingerprint)
+        )
+        object.__setattr__(provisional, "services", canonical_services)
+        object.__setattr__(provisional, "resources", canonical_resources)
+        object.__setattr__(provisional, "binding_coverage", canonical_coverage)
+        topology_fingerprint = _json_fingerprint(
+            _isolation_topology_payload(provisional)
+        )
+        return cls(
+            **values,
+            topology_fingerprint=topology_fingerprint,
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            **_isolation_topology_payload(self),
+            "topology_fingerprint": self.topology_fingerprint,
+        }
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, Any]) -> ReplayIsolationTopology:
+        if value.get("schema_version") != ISOLATION_TOPOLOGY_SCHEMA_VERSION:
+            raise ValueError("unsupported isolation topology schema")
+        return cls(
+            materializer_id=_required_isolation_text(
+                value.get("materializer_id"), "materializer_id"
+            ),
+            materializer_fingerprint=_required_isolation_text(
+                value.get("materializer_fingerprint"), "materializer fingerprint"
+            ),
+            workspace_identity=_required_isolation_text(
+                value.get("workspace_identity"), "workspace identity"
+            ),
+            runtime_identity=_required_isolation_text(
+                value.get("runtime_identity"), "runtime identity"
+            ),
+            browser_profile_identity=_required_isolation_text(
+                value.get("browser_profile_identity"), "browser profile identity"
+            ),
+            endpoint_namespace_identity=_required_isolation_text(
+                value.get("endpoint_namespace_identity"), "endpoint namespace identity"
+            ),
+            evidence_directory_identity=_required_isolation_text(
+                value.get("evidence_directory_identity"), "evidence directory identity"
+            ),
+            services=tuple(
+                IsolationServiceIdentity.from_dict(_isolation_mapping(item, "service"))
+                for item in _isolation_sequence(value.get("services", ()), "services")
+            ),
+            resources=tuple(
+                IsolationResourceIdentity.from_dict(_isolation_mapping(item, "resource"))
+                for item in _isolation_sequence(value.get("resources", ()), "resources")
+            ),
+            binding_coverage=tuple(
+                IsolationBindingCoverage.from_dict(_isolation_mapping(item, "binding coverage"))
+                for item in _isolation_sequence(
+                    value.get("binding_coverage", ()), "binding_coverage"
+                )
+            ),
+            cleanup_owner=_required_isolation_text(
+                value.get("cleanup_owner"), "cleanup_owner"
+            ),
+            topology_fingerprint=_required_isolation_text(
+                value.get("topology_fingerprint"), "topology fingerprint"
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class IsolationExclusiveFallback:
+    """Typed reason why the scheduler must retain one exclusive lane."""
+
+    code: IsolationFallbackCode
+    limiting_resource: str
+    detail: str
+
+    def __post_init__(self) -> None:
+        if self.code not in _ISOLATION_FALLBACK_CODES:
+            raise ValueError("unsupported isolation fallback code")
+        _require_isolation_identity(self.limiting_resource, "limiting resource")
+        _require_isolation_identity(self.detail, "fallback detail")
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, Any]) -> IsolationExclusiveFallback:
+        code = _required_isolation_text(value.get("code"), "fallback code")
+        if code not in _ISOLATION_FALLBACK_CODES:
+            raise ValueError("unsupported isolation fallback code")
+        return cls(
+            code=code,  # type: ignore[arg-type]
+            limiting_resource=_required_isolation_text(
+                value.get("limiting_resource"), "limiting resource"
+            ),
+            detail=_required_isolation_text(value.get("detail"), "fallback detail"),
+        )
+
+
+@dataclass(frozen=True)
+class IsolationGrant:
+    """Immutable proof that one replay lane owns a complete isolation scope."""
+
+    schema_version: str
+    workspace_identity: str
+    runtime_identity: str
+    browser_profile_identity: str
+    endpoint_namespace_identity: str
+    evidence_directory_identity: str
+    services: tuple[IsolationServiceIdentity, ...]
+    resources: tuple[IsolationResourceIdentity, ...]
+    cleanup_owner: str
+    materializer_id: str
+    materializer_fingerprint: str
+    topology_fingerprint: str
+    binding_fingerprints: tuple[str, ...]
+    fingerprint: str
+
+    def __post_init__(self) -> None:
+        if self.schema_version != ISOLATION_GRANT_SCHEMA_VERSION:
+            raise ValueError("unsupported isolation grant schema")
+        for field_name in _ISOLATION_NAMESPACE_FIELDS:
+            _require_isolation_identity(getattr(self, field_name), field_name)
+        _require_isolation_identity(self.cleanup_owner, "cleanup_owner")
+        _require_isolation_identity(self.materializer_id, "materializer_id")
+        _require_isolation_fingerprint(
+            self.materializer_fingerprint, "materializer fingerprint"
+        )
+        _require_isolation_fingerprint(
+            self.topology_fingerprint, "topology fingerprint"
+        )
+        canonical_services = tuple(
+            sorted(self.services, key=lambda item: (item.service_id, item.instance_identity))
+        )
+        canonical_resources = tuple(
+            sorted(self.resources, key=lambda item: (item.resource_kind, item.identity))
+        )
+        canonical_bindings = _canonical_fingerprint_tuple(
+            self.binding_fingerprints, "binding fingerprint"
+        )
+        if any(
+            len(items) > _ISOLATION_GRANT_CLAIM_LIMIT
+            for items in (
+                canonical_services,
+                canonical_resources,
+                canonical_bindings,
+            )
+        ):
+            raise ValueError("isolation grant claim limit exceeded")
+        if len({item.instance_identity for item in canonical_services}) != len(canonical_services):
+            raise ValueError("isolation grant service instances must be unique")
+        if len({item.identity for item in canonical_resources}) != len(canonical_resources):
+            raise ValueError("isolation grant resource identities must be unique")
+        object.__setattr__(self, "services", canonical_services)
+        object.__setattr__(self, "resources", canonical_resources)
+        object.__setattr__(self, "binding_fingerprints", canonical_bindings)
+        expected = _json_fingerprint(_isolation_grant_payload(self))
+        if self.fingerprint != expected:
+            raise ValueError("isolation grant fingerprint mismatch")
+
+    @classmethod
+    def create(
+        cls,
+        *,
+        topology: ReplayIsolationTopology,
+        binding_fingerprints: Sequence[str],
+    ) -> IsolationGrant:
+        payload = {
+            "schema_version": ISOLATION_GRANT_SCHEMA_VERSION,
+            **{
+                field_name: getattr(topology, field_name)
+                for field_name in _ISOLATION_NAMESPACE_FIELDS
+            },
+            "services": [item.to_dict() for item in topology.services],
+            "resources": [item.to_dict() for item in topology.resources],
+            "cleanup_owner": topology.cleanup_owner,
+            "materializer_id": topology.materializer_id,
+            "materializer_fingerprint": topology.materializer_fingerprint,
+            "topology_fingerprint": topology.topology_fingerprint,
+            "binding_fingerprints": list(
+                _canonical_fingerprint_tuple(binding_fingerprints, "binding fingerprint")
+            ),
+        }
+        return cls(
+            schema_version=ISOLATION_GRANT_SCHEMA_VERSION,
+            workspace_identity=topology.workspace_identity,
+            runtime_identity=topology.runtime_identity,
+            browser_profile_identity=topology.browser_profile_identity,
+            endpoint_namespace_identity=topology.endpoint_namespace_identity,
+            evidence_directory_identity=topology.evidence_directory_identity,
+            services=topology.services,
+            resources=topology.resources,
+            cleanup_owner=topology.cleanup_owner,
+            materializer_id=topology.materializer_id,
+            materializer_fingerprint=topology.materializer_fingerprint,
+            topology_fingerprint=topology.topology_fingerprint,
+            binding_fingerprints=tuple(payload["binding_fingerprints"]),
+            fingerprint=_json_fingerprint(payload),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, Any]) -> IsolationGrant:
+        return cls(
+            schema_version=_required_isolation_text(
+                value.get("schema_version"), "schema_version"
+            ),
+            workspace_identity=_required_isolation_text(
+                value.get("workspace_identity"), "workspace identity"
+            ),
+            runtime_identity=_required_isolation_text(
+                value.get("runtime_identity"), "runtime identity"
+            ),
+            browser_profile_identity=_required_isolation_text(
+                value.get("browser_profile_identity"), "browser profile identity"
+            ),
+            endpoint_namespace_identity=_required_isolation_text(
+                value.get("endpoint_namespace_identity"), "endpoint namespace identity"
+            ),
+            evidence_directory_identity=_required_isolation_text(
+                value.get("evidence_directory_identity"), "evidence directory identity"
+            ),
+            services=tuple(
+                IsolationServiceIdentity.from_dict(_isolation_mapping(item, "service"))
+                for item in _isolation_sequence(value.get("services", ()), "services")
+            ),
+            resources=tuple(
+                IsolationResourceIdentity.from_dict(_isolation_mapping(item, "resource"))
+                for item in _isolation_sequence(value.get("resources", ()), "resources")
+            ),
+            cleanup_owner=_required_isolation_text(
+                value.get("cleanup_owner"), "cleanup_owner"
+            ),
+            materializer_id=_required_isolation_text(
+                value.get("materializer_id"), "materializer_id"
+            ),
+            materializer_fingerprint=_required_isolation_text(
+                value.get("materializer_fingerprint"), "materializer fingerprint"
+            ),
+            topology_fingerprint=_required_isolation_text(
+                value.get("topology_fingerprint"), "topology fingerprint"
+            ),
+            binding_fingerprints=_isolation_string_tuple(
+                value.get("binding_fingerprints", ()), "binding_fingerprints"
+            ),
+            fingerprint=_required_isolation_text(
+                value.get("fingerprint"), "grant fingerprint"
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class IsolationGrantCompilation:
+    """Exactly one of a verified grant or an exclusive fallback decision."""
+
+    grant: IsolationGrant | None = None
+    fallback: IsolationExclusiveFallback | None = None
+
+    def __post_init__(self) -> None:
+        if (self.grant is None) == (self.fallback is None):
+            raise ValueError(
+                "isolation compilation requires exactly one grant or fallback"
+            )
+
+
+@dataclass(frozen=True)
+class IsolationGrantCompatibility:
+    compatible: bool
+    code: str
+    limiting_resource: str | None = None
+    detail: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class IsolationGrantPairDecision:
+    left_grant_fingerprint: str
+    right_grant_fingerprint: str
+    compatible: bool
+    code: str
+    limiting_resource: str | None = None
+
+    def __post_init__(self) -> None:
+        _require_isolation_fingerprint(
+            self.left_grant_fingerprint, "left grant fingerprint"
+        )
+        _require_isolation_fingerprint(
+            self.right_grant_fingerprint, "right grant fingerprint"
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, Any]) -> IsolationGrantPairDecision:
+        compatible = value.get("compatible")
+        if not isinstance(compatible, bool):
+            raise ValueError("pair compatibility must be boolean")
+        return cls(
+            left_grant_fingerprint=_required_isolation_text(
+                value.get("left_grant_fingerprint"), "left grant fingerprint"
+            ),
+            right_grant_fingerprint=_required_isolation_text(
+                value.get("right_grant_fingerprint"), "right grant fingerprint"
+            ),
+            compatible=compatible,
+            code=_required_isolation_text(value.get("code"), "compatibility code"),
+            limiting_resource=_optional_isolation_text(
+                value.get("limiting_resource")
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class IsolationGrantSet:
+    schema_version: str
+    grants: tuple[IsolationGrant, ...]
+    pairwise_decisions: tuple[IsolationGrantPairDecision, ...]
+    fingerprint: str
+
+    def __post_init__(self) -> None:
+        if self.schema_version != ISOLATION_GRANT_SET_SCHEMA_VERSION:
+            raise ValueError("unsupported isolation grant-set schema")
+        canonical_grants = tuple(sorted(self.grants, key=lambda item: item.fingerprint))
+        if len(canonical_grants) > _ISOLATION_DECISION_LANE_LIMIT:
+            raise ValueError("isolation grant-set lane limit exceeded")
+        if len({item.fingerprint for item in canonical_grants}) != len(canonical_grants):
+            raise ValueError("isolation grant set contains duplicate grants")
+        expected_pairs = _isolation_pair_decisions(canonical_grants)
+        if tuple(self.pairwise_decisions) != expected_pairs:
+            raise ValueError("isolation grant-set pair decisions are not canonical")
+        object.__setattr__(self, "grants", canonical_grants)
+        object.__setattr__(self, "pairwise_decisions", expected_pairs)
+        if self.fingerprint != _json_fingerprint(_isolation_grant_set_payload(self)):
+            raise ValueError("isolation grant-set fingerprint mismatch")
+
+    @classmethod
+    def create(cls, grants: Sequence[IsolationGrant]) -> IsolationGrantSet:
+        canonical = tuple(sorted(grants, key=lambda item: item.fingerprint))
+        pairs = _isolation_pair_decisions(canonical)
+        payload = {
+            "schema_version": ISOLATION_GRANT_SET_SCHEMA_VERSION,
+            "grants": [item.to_dict() for item in canonical],
+            "pairwise_decisions": [item.to_dict() for item in pairs],
+        }
+        return cls(
+            schema_version=ISOLATION_GRANT_SET_SCHEMA_VERSION,
+            grants=canonical,
+            pairwise_decisions=pairs,
+            fingerprint=_json_fingerprint(payload),
+        )
+
+    @property
+    def all_compatible(self) -> bool:
+        return bool(self.grants) and all(
+            item.compatible for item in self.pairwise_decisions
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {**_isolation_grant_set_payload(self), "fingerprint": self.fingerprint}
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, Any]) -> IsolationGrantSet:
+        return cls(
+            schema_version=_required_isolation_text(
+                value.get("schema_version"), "schema_version"
+            ),
+            grants=tuple(
+                IsolationGrant.from_dict(_isolation_mapping(item, "grant"))
+                for item in _isolation_sequence(value.get("grants", ()), "grants")
+            ),
+            pairwise_decisions=tuple(
+                IsolationGrantPairDecision.from_dict(
+                    _isolation_mapping(item, "pair decision")
+                )
+                for item in _isolation_sequence(
+                    value.get("pairwise_decisions", ()), "pairwise_decisions"
+                )
+            ),
+            fingerprint=_required_isolation_text(
+                value.get("fingerprint"), "grant-set fingerprint"
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class IsolationDecision:
+    schema_version: str
+    requested_lane_count: int
+    safe_lane_count: int
+    grant_set: IsolationGrantSet
+    fallback: IsolationExclusiveFallback | None
+    fingerprint: str
+
+    def __post_init__(self) -> None:
+        if self.schema_version != ISOLATION_DECISION_SCHEMA_VERSION:
+            raise ValueError("unsupported isolation decision schema")
+        if (
+            isinstance(self.requested_lane_count, bool)
+            or not isinstance(self.requested_lane_count, int)
+            or self.requested_lane_count <= 0
+            or self.requested_lane_count > _ISOLATION_DECISION_LANE_LIMIT
+        ):
+            raise ValueError("requested lane count is outside the supported bound")
+        complete_pairwise_proof = (
+            len(self.grant_set.grants) >= self.requested_lane_count
+            and self.grant_set.all_compatible
+        )
+        expected_safe = self.requested_lane_count if complete_pairwise_proof else 1
+        if self.safe_lane_count != expected_safe:
+            raise ValueError("isolation decision safe lane count is not canonical")
+        if isinstance(self.safe_lane_count, bool) or not isinstance(
+            self.safe_lane_count, int
+        ):
+            raise ValueError("safe lane count must be an integer")
+        expected_fallback = not complete_pairwise_proof
+        if expected_fallback != (self.fallback is not None):
+            raise ValueError("degraded isolation decision requires one fallback")
+        if self.fingerprint != _json_fingerprint(_isolation_decision_payload(self)):
+            raise ValueError("isolation decision fingerprint mismatch")
+
+    @classmethod
+    def create(
+        cls,
+        *,
+        requested_lane_count: int,
+        grants: Sequence[IsolationGrant],
+    ) -> IsolationDecision:
+        grant_set = IsolationGrantSet.create(grants)
+        if len(grant_set.grants) < requested_lane_count:
+            safe = 1
+            fallback = IsolationExclusiveFallback(
+                code="grant_set_incomplete",
+                limiting_resource="isolation_grant_set",
+                detail="not every requested lane has a verified grant",
+            )
+        elif not grant_set.all_compatible:
+            first = next(item for item in grant_set.pairwise_decisions if not item.compatible)
+            safe = 1
+            fallback = IsolationExclusiveFallback(
+                code="grant_set_incompatible",
+                limiting_resource=first.limiting_resource or "isolation_grant_set",
+                detail=f"lane grants are incompatible: {first.code}",
+            )
+        else:
+            safe = requested_lane_count
+            fallback = None
+        provisional = {
+            "schema_version": ISOLATION_DECISION_SCHEMA_VERSION,
+            "requested_lane_count": requested_lane_count,
+            "safe_lane_count": safe,
+            "grant_set": grant_set.to_dict(),
+            "fallback": fallback.to_dict() if fallback is not None else None,
+        }
+        return cls(
+            schema_version=ISOLATION_DECISION_SCHEMA_VERSION,
+            requested_lane_count=requested_lane_count,
+            safe_lane_count=safe,
+            grant_set=grant_set,
+            fallback=fallback,
+            fingerprint=_json_fingerprint(provisional),
+        )
+
+    @classmethod
+    def exclusive_fallback(
+        cls,
+        *,
+        requested_lane_count: int,
+        fallback: IsolationExclusiveFallback,
+        grants: Sequence[IsolationGrant] = (),
+    ) -> IsolationDecision:
+        """Create a canonical exclusive decision from a typed proof failure."""
+
+        if not isinstance(fallback, IsolationExclusiveFallback):
+            raise TypeError("exclusive isolation decision requires a typed fallback")
+        grant_set = IsolationGrantSet.create(grants)
+        if (
+            len(grant_set.grants) >= requested_lane_count
+            and grant_set.all_compatible
+        ):
+            raise ValueError("complete compatible grants cannot use exclusive fallback")
+        payload = {
+            "schema_version": ISOLATION_DECISION_SCHEMA_VERSION,
+            "requested_lane_count": requested_lane_count,
+            "safe_lane_count": 1,
+            "grant_set": grant_set.to_dict(),
+            "fallback": fallback.to_dict(),
+        }
+        return cls(
+            schema_version=ISOLATION_DECISION_SCHEMA_VERSION,
+            requested_lane_count=requested_lane_count,
+            safe_lane_count=1,
+            grant_set=grant_set,
+            fallback=fallback,
+            fingerprint=_json_fingerprint(payload),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {**_isolation_decision_payload(self), "fingerprint": self.fingerprint}
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, Any]) -> IsolationDecision:
+        requested = value.get("requested_lane_count")
+        safe = value.get("safe_lane_count")
+        if isinstance(requested, bool) or not isinstance(requested, int):
+            raise ValueError("requested lane count must be an integer")
+        if isinstance(safe, bool) or not isinstance(safe, int):
+            raise ValueError("safe lane count must be an integer")
+        fallback_value = value.get("fallback")
+        return cls(
+            schema_version=_required_isolation_text(
+                value.get("schema_version"), "schema_version"
+            ),
+            requested_lane_count=requested,
+            safe_lane_count=safe,
+            grant_set=IsolationGrantSet.from_dict(
+                _isolation_mapping(value.get("grant_set"), "grant_set")
+            ),
+            fallback=(
+                None
+                if fallback_value is None
+                else IsolationExclusiveFallback.from_dict(
+                    _isolation_mapping(fallback_value, "fallback")
+                )
+            ),
+            fingerprint=_required_isolation_text(
+                value.get("fingerprint"), "decision fingerprint"
+            ),
+        )
+
+
+def compile_isolation_decision_artifact(
+    *,
+    requested_lane_count: int,
+    lane_compilations: Sequence[IsolationGrantCompilation],
+) -> IsolationDecision:
+    """Compile bounded lane proofs into one canonical scheduling artifact.
+
+    Callers must provide typed grant compilations.  A proof failure always
+    produces an exclusive decision that retains the typed limiting reason;
+    no boolean or caller-supplied fingerprint can enable multiple lanes.
+    """
+
+    compilations = tuple(lane_compilations)
+    if len(compilations) > _ISOLATION_DECISION_LANE_LIMIT:
+        raise ValueError("isolation decision compilation limit exceeded")
+    if any(not isinstance(item, IsolationGrantCompilation) for item in compilations):
+        raise TypeError("isolation decisions require typed grant compilations")
+    grants = tuple(item.grant for item in compilations if item.grant is not None)
+    fallbacks = tuple(
+        item.fallback for item in compilations if item.fallback is not None
+    )
+    if fallbacks:
+        fallback = min(
+            fallbacks,
+            key=lambda item: (item.code, item.limiting_resource, item.detail),
+        )
+        return IsolationDecision.exclusive_fallback(
+            requested_lane_count=requested_lane_count,
+            fallback=fallback,
+            grants=grants,
+        )
+    return IsolationDecision.create(
+        requested_lane_count=requested_lane_count,
+        grants=grants,
+    )
+
+
+def compile_isolation_grant(
+    *,
+    topology: ReplayIsolationTopology,
+    bindings: Sequence[ReplayAdapterBinding],
+) -> IsolationGrantCompilation:
+    """Compile a complete isolation proof or a deterministic exclusive fallback.
+
+    This function never turns an ``exclusive`` binding into an isolated claim.
+    It only verifies the topology supplied by adaptation.  Scheduling remains a
+    downstream concern and must consume the returned grant explicitly.
+    """
+
+    validated_bindings: list[ReplayAdapterBinding] = []
+    for binding in bindings:
+        try:
+            validated = validate_replay_binding_concurrency(binding)
+        except ValueError as exc:
+            return _isolation_fallback(
+                "binding_invalid",
+                binding.adapter_id or "binding",
+                f"replay binding is invalid: {exc}",
+            )
+        if not validated.deterministic:
+            return _isolation_fallback(
+                "binding_not_deterministic",
+                validated.resource_key or validated.adapter_id,
+                "a non-deterministic replay binding cannot prove lane isolation",
+            )
+        if validated.concurrency_mode == "exclusive":
+            return _isolation_fallback(
+                "binding_requires_exclusive",
+                validated.resource_key or validated.adapter_id,
+                "the replay binding explicitly requires exclusive execution",
+            )
+        validated_bindings.append(validated)
+
+    namespace_values = tuple(
+        getattr(topology, field_name) for field_name in _ISOLATION_NAMESPACE_FIELDS
+    )
+    if len(namespace_values) != len(set(namespace_values)):
+        return _isolation_fallback(
+            "topology_identity_conflict",
+            "topology",
+            "workspace, runtime, browser, endpoint, and evidence identities must be distinct",
+        )
+
+    expected_bindings = {
+        item.binding_fingerprint for item in validated_bindings
+        if item.binding_fingerprint is not None
+    }
+    coverage_by_binding = {
+        item.binding_fingerprint: item for item in topology.binding_coverage
+    }
+    if set(coverage_by_binding) != expected_bindings:
+        missing = sorted(expected_bindings - set(coverage_by_binding))
+        return _isolation_fallback(
+            "binding_coverage_missing",
+            missing[0] if missing else "binding_coverage",
+            "materialized topology does not exactly cover validated bindings",
+        )
+    service_by_id = {item.instance_identity: item for item in topology.services}
+    service_ids = set(service_by_id)
+    resource_by_id = {item.identity: item for item in topology.resources}
+    for binding in validated_bindings:
+        fingerprint = binding.binding_fingerprint
+        if fingerprint is None:  # pragma: no cover - validator derives it
+            return _isolation_fallback(
+                "binding_invalid", binding.adapter_id, "binding fingerprint missing"
+            )
+        coverage = coverage_by_binding[fingerprint]
+        if (
+            coverage.adapter_id != binding.adapter_id
+            or coverage.dependency_id != binding.dependency_id
+        ):
+            return _isolation_fallback(
+                "binding_coverage_invalid",
+                fingerprint,
+                "binding coverage provenance does not match the validated binding",
+            )
+        if (
+            not set(coverage.service_instance_identities).issubset(service_ids)
+            or not set(coverage.resource_identities).issubset(resource_by_id)
+        ):
+            return _isolation_fallback(
+                "binding_coverage_invalid",
+                fingerprint,
+                "binding coverage references an undeclared materialized identity",
+            )
+        covered = (
+            set(coverage.service_instance_identities)
+            | set(coverage.resource_identities)
+        )
+        if not covered:
+            return _isolation_fallback(
+                "binding_coverage_invalid",
+                fingerprint,
+                "binding coverage did not materialize a service or resource",
+            )
+        if binding.concurrency_mode == "shared_read_only":
+            resource_key = binding.resource_key
+            resource = resource_by_id.get(resource_key or "")
+            if resource is None or resource.access_mode != "shared_read_only":
+                return _isolation_fallback(
+                    "binding_coverage_invalid",
+                    resource_key or fingerprint,
+                    "shared read-only binding lacks its matching share-safe resource",
+                )
+            if resource.identity not in coverage.resource_identities:
+                return _isolation_fallback(
+                    "binding_coverage_invalid",
+                    resource.identity,
+                    "shared binding coverage omits its declared resource key",
+                )
+        elif not any(
+            item.access_mode == "isolated"
+            for item in (
+                *(service_by_id[identity] for identity in coverage.service_instance_identities),
+                *(resource_by_id[identity] for identity in coverage.resource_identities),
+            )
+        ):
+            return _isolation_fallback(
+                "binding_coverage_invalid",
+                fingerprint,
+                "isolated binding coverage does not own an isolated identity",
+            )
+
+    return IsolationGrantCompilation(
+        grant=IsolationGrant.create(
+            topology=topology,
+            binding_fingerprints=tuple(sorted(expected_bindings)),
+        )
+    )
+
+
+def isolation_grants_compatible(
+    left: IsolationGrant,
+    right: IsolationGrant,
+) -> IsolationGrantCompatibility:
+    """Return whether two verified grants may execute at the same time."""
+
+    left_claims = _isolation_claims(left)
+    right_claims = _isolation_claims(right)
+    for left_claim in left_claims:
+        for right_claim in right_claims:
+            if not _isolation_identity_conflicts(
+                left_claim[1], right_claim[1]
+            ):
+                continue
+            same_explicit_read_only = (
+                left_claim[0] == right_claim[0]
+                and
+                left_claim[1] == right_claim[1]
+                and left_claim[2] == "shared_read_only"
+                and right_claim[2] == "shared_read_only"
+            )
+            if same_explicit_read_only:
+                continue
+            return IsolationGrantCompatibility(
+                compatible=False,
+                code="resource_identity_conflict",
+                limiting_resource=f"{left_claim[0]}:{left_claim[1]}",
+                detail=(
+                    "mutable isolation claims overlap across lanes: "
+                    f"{left_claim[0]} vs {right_claim[0]}"
+                ),
+            )
+    return IsolationGrantCompatibility(compatible=True, code="compatible")
+
+
+def _isolation_fallback(
+    code: IsolationFallbackCode,
+    limiting_resource: str,
+    detail: str,
+) -> IsolationGrantCompilation:
+    return IsolationGrantCompilation(
+        fallback=IsolationExclusiveFallback(
+            code=code,
+            limiting_resource=limiting_resource,
+            detail=detail,
+        )
+    )
+
+
+def _bounded_identity(value: object, *, max_chars: int = 1_024) -> str | None:
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip()
+    if not normalized or len(normalized) > max_chars:
+        return None
+    return normalized
+
+
+def _isolation_identity_conflicts(left: str, right: str) -> bool:
+    if left == right:
+        return True
+    # When identities are absolute locations, nested roots are not independent.
+    if not (os.path.isabs(left) and os.path.isabs(right)):
+        return False
+    try:
+        left_path = Path(left).resolve(strict=False)
+        right_path = Path(right).resolve(strict=False)
+        return left_path in right_path.parents or right_path in left_path.parents
+    except OSError:
+        return True
+
+
+_ISOLATION_NAMESPACE_FIELDS = (
+    "workspace_identity",
+    "runtime_identity",
+    "browser_profile_identity",
+    "endpoint_namespace_identity",
+    "evidence_directory_identity",
+)
+
+
+def _isolation_topology_payload(topology: ReplayIsolationTopology) -> dict[str, Any]:
+    return {
+        "schema_version": ISOLATION_TOPOLOGY_SCHEMA_VERSION,
+        "materializer_id": topology.materializer_id,
+        "materializer_fingerprint": topology.materializer_fingerprint,
+        **{
+            field_name: getattr(topology, field_name)
+            for field_name in _ISOLATION_NAMESPACE_FIELDS
+        },
+        "services": [item.to_dict() for item in topology.services],
+        "resources": [item.to_dict() for item in topology.resources],
+        "binding_coverage": [item.to_dict() for item in topology.binding_coverage],
+        "cleanup_owner": topology.cleanup_owner,
+    }
+
+
+def _isolation_grant_payload(grant: IsolationGrant) -> dict[str, Any]:
+    return {
+        "schema_version": ISOLATION_GRANT_SCHEMA_VERSION,
+        **{
+            field_name: getattr(grant, field_name)
+            for field_name in _ISOLATION_NAMESPACE_FIELDS
+        },
+        "services": [item.to_dict() for item in grant.services],
+        "resources": [item.to_dict() for item in grant.resources],
+        "cleanup_owner": grant.cleanup_owner,
+        "materializer_id": grant.materializer_id,
+        "materializer_fingerprint": grant.materializer_fingerprint,
+        "topology_fingerprint": grant.topology_fingerprint,
+        "binding_fingerprints": list(grant.binding_fingerprints),
+    }
+
+
+def _isolation_claims(
+    grant: IsolationGrant,
+) -> tuple[tuple[str, str, IsolationAccessMode], ...]:
+    claims: list[tuple[str, str, IsolationAccessMode]] = [
+        (field_name, getattr(grant, field_name), "isolated")
+        for field_name in _ISOLATION_NAMESPACE_FIELDS
+    ]
+    claims.extend(
+        (f"service:{item.service_id}", item.instance_identity, item.access_mode)
+        for item in grant.services
+    )
+    claims.extend(
+        (f"resource:{item.resource_kind}", item.identity, item.access_mode)
+        for item in grant.resources
+    )
+    return tuple(claims)
+
+
+def _isolation_pair_decisions(
+    grants: Sequence[IsolationGrant],
+) -> tuple[IsolationGrantPairDecision, ...]:
+    decisions: list[IsolationGrantPairDecision] = []
+    for index, left in enumerate(grants):
+        for right in grants[index + 1 :]:
+            compatibility = isolation_grants_compatible(left, right)
+            decisions.append(
+                IsolationGrantPairDecision(
+                    left_grant_fingerprint=left.fingerprint,
+                    right_grant_fingerprint=right.fingerprint,
+                    compatible=compatibility.compatible,
+                    code=compatibility.code,
+                    limiting_resource=compatibility.limiting_resource,
+                )
+            )
+    return tuple(decisions)
+
+
+def _isolation_grant_set_payload(value: IsolationGrantSet) -> dict[str, Any]:
+    return {
+        "schema_version": ISOLATION_GRANT_SET_SCHEMA_VERSION,
+        "grants": [item.to_dict() for item in value.grants],
+        "pairwise_decisions": [item.to_dict() for item in value.pairwise_decisions],
+    }
+
+
+def _isolation_decision_payload(value: IsolationDecision) -> dict[str, Any]:
+    return {
+        "schema_version": ISOLATION_DECISION_SCHEMA_VERSION,
+        "requested_lane_count": value.requested_lane_count,
+        "safe_lane_count": value.safe_lane_count,
+        "grant_set": value.grant_set.to_dict(),
+        "fallback": value.fallback.to_dict() if value.fallback is not None else None,
+    }
+
+
+def _require_isolation_access_mode(value: object) -> None:
+    if value not in {"isolated", "shared_read_only"}:
+        raise ValueError("invalid isolation access mode")
+
+
+def _isolation_access_mode(value: object) -> IsolationAccessMode:
+    _require_isolation_access_mode(value)
+    return value  # type: ignore[return-value]
+
+
+def _require_isolation_identity(value: object, label: str) -> None:
+    if _bounded_identity(value) is None:
+        raise ValueError(f"{label} must be a bounded non-empty identity")
+
+
+def _require_isolation_fingerprint(value: object, label: str) -> None:
+    if not isinstance(value, str) or not _FULL_SHA256.fullmatch(value):
+        raise ValueError(f"{label} must be a full sha256 fingerprint")
+
+
+def _required_isolation_text(value: object, label: str) -> str:
+    normalized = _bounded_identity(value)
+    if normalized is None:
+        raise ValueError(f"{label} must be a bounded non-empty string")
+    return normalized
+
+
+def _optional_isolation_text(value: object) -> str | None:
+    if value is None:
+        return None
+    return _required_isolation_text(value, "optional identity")
+
+
+def _isolation_mapping(value: object, label: str) -> Mapping[str, Any]:
+    if not isinstance(value, Mapping):
+        raise ValueError(f"{label} must be an object")
+    return value
+
+
+def _isolation_sequence(value: object, label: str) -> Sequence[object]:
+    if not isinstance(value, (list, tuple)):
+        raise ValueError(f"{label} must be an array")
+    return value
+
+
+def _isolation_string_tuple(value: object, label: str) -> tuple[str, ...]:
+    return tuple(
+        _required_isolation_text(item, label)
+        for item in _isolation_sequence(value, label)
+    )
+
+
+def _canonical_identity_tuple(values: Sequence[str], label: str) -> tuple[str, ...]:
+    normalized = tuple(sorted(_required_isolation_text(item, label) for item in values))
+    if len(normalized) != len(set(normalized)):
+        raise ValueError(f"{label} identities must be unique")
+    return normalized
+
+
+def _canonical_fingerprint_tuple(
+    values: Sequence[str], label: str
+) -> tuple[str, ...]:
+    normalized = tuple(sorted(values))
+    if len(normalized) != len(set(normalized)):
+        raise ValueError(f"{label} values must be unique")
+    for value in normalized:
+        _require_isolation_fingerprint(value, label)
+    return normalized
+
 
 def validate_replay_binding_concurrency(
     binding: ReplayAdapterBinding,
@@ -165,20 +1373,25 @@ def validate_replay_binding_concurrency(
             raise ValueError("isolated replay binding must be deterministic")
     elif resource_key is None:
         resource_key = f"replay-adapter:{binding.adapter_id}"
-    binding_fingerprint = binding.binding_fingerprint
-    if binding_fingerprint is not None:
-        binding_fingerprint = binding_fingerprint.strip()
-        if not binding_fingerprint:
-            raise ValueError("replay binding fingerprint must not be empty")
-    if binding_fingerprint is None:
-        binding_fingerprint = _json_fingerprint(
-            {
-                "adapter_id": binding.adapter_id,
-                "dependency_id": binding.dependency_id,
-                "deterministic": binding.deterministic,
-                "fixture_paths": list(binding.fixture_paths),
-            }
-        )
+    supplied_fingerprint = binding.binding_fingerprint
+    if supplied_fingerprint is not None:
+        supplied_fingerprint = supplied_fingerprint.strip()
+        if not supplied_fingerprint:
+            raise ValueError("external binding fingerprint must not be empty")
+    # The binding identity is always derived from the normalized safety contract.
+    # A legacy caller-provided fingerprint is never trusted as proof; excluding it
+    # from the projection also keeps repeated validation idempotent.
+    binding_fingerprint = _json_fingerprint(
+        {
+            "adapter_id": binding.adapter_id,
+            "dependency_id": binding.dependency_id,
+            "deterministic": binding.deterministic,
+            "environment": _safe_adapter_environment(binding.environment),
+            "fixture_paths": sorted(str(item) for item in binding.fixture_paths),
+            "concurrency_mode": binding.concurrency_mode,
+            "resource_key": resource_key,
+        }
+    )
     return replace(
         binding,
         resource_key=resource_key,

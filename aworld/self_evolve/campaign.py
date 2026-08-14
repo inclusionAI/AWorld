@@ -20,6 +20,12 @@ from aworld.self_evolve.recovery_trace import (
 
 
 CAMPAIGN_SCHEMA_VERSION = "aworld.self_evolve.campaign.v1"
+CAMPAIGN_MEASUREMENT_OUTCOME_SCHEMA_VERSION = (
+    "aworld.self_evolve.campaign_measurement_outcome.v2"
+)
+CAMPAIGN_MEASUREMENT_LEDGER_SCHEMA_VERSION = (
+    "aworld.self_evolve.campaign_measurement_ledger.v2"
+)
 DISPOSITION_SCHEMA_VERSION = "aworld.self_evolve.disposition.v1"
 PROGRESS_SCHEMA_VERSION = "aworld.self_evolve.progress.v1"
 DEFAULT_MAX_IMPROVEMENT_CYCLES = 3
@@ -96,6 +102,231 @@ class SelfImprovementCampaignStatus(str, Enum):
     BUDGET_LIMITED = "budget_limited"
     EXHAUSTED = "exhausted"
     COMPLETE = "complete"
+
+
+class MeasurementExecutionStatus(str, Enum):
+    NOT_STARTED = "not_started"
+    PLANNED = "planned"
+    RUNNING = "running"
+    CHECKPOINTED = "checkpointed"
+    COMPLETED = "completed"
+    INVALID = "invalid"
+    FRAMEWORK_BLOCKED = "framework_blocked"
+
+
+class CandidateImprovementOutcome(str, Enum):
+    UNKNOWN = "unknown"
+    POSITIVE = "positive"
+    NO_EFFECT = "no_effect"
+    REGRESSION = "regression"
+    CANDIDATE_INVALID = "candidate_invalid"
+
+
+class CampaignMeasurementProjection(str, Enum):
+    SUCCEEDED = "succeeded"
+    CANDIDATE_REJECTED = "candidate_rejected"
+    MEASUREMENT_INCOMPLETE = "measurement_incomplete"
+    MEASUREMENT_INVALID = "measurement_invalid"
+    FRAMEWORK_BLOCKED = "framework_blocked"
+    EXHAUSTED = "exhausted"
+
+
+@dataclass(frozen=True)
+class CampaignMeasurementOutcomeV2:
+    """Orthogonal measurement execution and candidate improvement outcome."""
+
+    execution_status: MeasurementExecutionStatus
+    improvement_outcome: CandidateImprovementOutcome
+    release_gates_passed: bool
+    continuation_available: bool
+    reason_code: str
+    schema_version: str = CAMPAIGN_MEASUREMENT_OUTCOME_SCHEMA_VERSION
+
+    def __post_init__(self) -> None:
+        if self.schema_version != CAMPAIGN_MEASUREMENT_OUTCOME_SCHEMA_VERSION:
+            raise ValueError("unsupported campaign measurement outcome schema")
+        object.__setattr__(
+            self, "execution_status", MeasurementExecutionStatus(self.execution_status)
+        )
+        object.__setattr__(
+            self,
+            "improvement_outcome",
+            CandidateImprovementOutcome(self.improvement_outcome),
+        )
+        if not isinstance(self.release_gates_passed, bool):
+            raise ValueError("release_gates_passed must be boolean")
+        if not isinstance(self.continuation_available, bool):
+            raise ValueError("continuation_available must be boolean")
+        if not re.fullmatch(r"[a-z][a-z0-9_]{0,127}", self.reason_code):
+            raise ValueError("measurement outcome reason_code must be lower_snake_case")
+        if (
+            self.execution_status is not MeasurementExecutionStatus.COMPLETED
+            and self.improvement_outcome
+            in {
+                CandidateImprovementOutcome.POSITIVE,
+                CandidateImprovementOutcome.NO_EFFECT,
+                CandidateImprovementOutcome.REGRESSION,
+            }
+        ):
+            raise ValueError("effect outcome requires completed measurement")
+        if (
+            self.execution_status is MeasurementExecutionStatus.COMPLETED
+            and self.improvement_outcome is CandidateImprovementOutcome.UNKNOWN
+        ):
+            raise ValueError("completed measurement requires an improvement outcome")
+        if self.release_gates_passed and (
+            self.execution_status is not MeasurementExecutionStatus.COMPLETED
+            or self.improvement_outcome is not CandidateImprovementOutcome.POSITIVE
+        ):
+            raise ValueError(
+                "release gates can pass only for completed positive effect"
+            )
+
+    @property
+    def projection(self) -> CampaignMeasurementProjection:
+        if self.execution_status is MeasurementExecutionStatus.FRAMEWORK_BLOCKED:
+            return CampaignMeasurementProjection.FRAMEWORK_BLOCKED
+        if self.execution_status is MeasurementExecutionStatus.INVALID:
+            return CampaignMeasurementProjection.MEASUREMENT_INVALID
+        if self.execution_status in {
+            MeasurementExecutionStatus.NOT_STARTED,
+            MeasurementExecutionStatus.PLANNED,
+            MeasurementExecutionStatus.RUNNING,
+            MeasurementExecutionStatus.CHECKPOINTED,
+        }:
+            return (
+                CampaignMeasurementProjection.MEASUREMENT_INCOMPLETE
+                if self.continuation_available
+                else CampaignMeasurementProjection.EXHAUSTED
+            )
+        if (
+            self.improvement_outcome is CandidateImprovementOutcome.POSITIVE
+            and self.release_gates_passed
+        ):
+            return CampaignMeasurementProjection.SUCCEEDED
+        return CampaignMeasurementProjection.CANDIDATE_REJECTED
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "schema_version": self.schema_version,
+            "execution_status": self.execution_status.value,
+            "improvement_outcome": self.improvement_outcome.value,
+            "release_gates_passed": self.release_gates_passed,
+            "continuation_available": self.continuation_available,
+            "reason_code": self.reason_code,
+            "projection": self.projection.value,
+        }
+
+    @classmethod
+    def from_dict(
+        cls, value: Mapping[str, object]
+    ) -> "CampaignMeasurementOutcomeV2":
+        if value.get("schema_version") != CAMPAIGN_MEASUREMENT_OUTCOME_SCHEMA_VERSION:
+            raise ValueError("unsupported campaign measurement outcome schema")
+        release_gates_passed = value.get("release_gates_passed")
+        continuation_available = value.get("continuation_available")
+        if not isinstance(release_gates_passed, bool) or not isinstance(
+            continuation_available, bool
+        ):
+            raise ValueError("campaign measurement booleans must be strict")
+        loaded = cls(
+            execution_status=MeasurementExecutionStatus(
+                str(value.get("execution_status"))
+            ),
+            improvement_outcome=CandidateImprovementOutcome(
+                str(value.get("improvement_outcome"))
+            ),
+            release_gates_passed=release_gates_passed,
+            continuation_available=continuation_available,
+            reason_code=str(value.get("reason_code")),
+        )
+        if value.get("projection") != loaded.projection.value:
+            raise ValueError("campaign measurement projection is not canonical")
+        return loaded
+
+
+@dataclass(frozen=True)
+class CampaignMeasurementLedgerV2:
+    """Single source of Campaign control-plane continuation accounting."""
+
+    continuation_run_ids: tuple[str, ...] = ()
+    invalid_retry_run_ids: tuple[str, ...] = ()
+    schema_version: str = CAMPAIGN_MEASUREMENT_LEDGER_SCHEMA_VERSION
+
+    def __post_init__(self) -> None:
+        if self.schema_version != CAMPAIGN_MEASUREMENT_LEDGER_SCHEMA_VERSION:
+            raise ValueError("unsupported campaign measurement ledger schema")
+        for values, label in (
+            (self.continuation_run_ids, "measurement continuation run"),
+            (self.invalid_retry_run_ids, "measurement invalid retry run"),
+        ):
+            if len(values) != len(set(values)):
+                raise ValueError(f"{label} ids must be unique")
+            for run_id in values:
+                _validate_id(run_id, label)
+        if set(self.continuation_run_ids) & set(self.invalid_retry_run_ids):
+            raise ValueError("a measurement run cannot be charged to two ledgers")
+
+    @property
+    def continuation_count(self) -> int:
+        return len(self.continuation_run_ids)
+
+    @property
+    def invalid_retry_count(self) -> int:
+        return len(self.invalid_retry_run_ids)
+
+    @property
+    def control_plane_run_count(self) -> int:
+        return self.continuation_count + self.invalid_retry_count
+
+    def charge_continuation(self, run_id: str) -> "CampaignMeasurementLedgerV2":
+        if run_id in self.continuation_run_ids:
+            return self
+        return replace(
+            self, continuation_run_ids=(*self.continuation_run_ids, run_id)
+        )
+
+    def charge_invalid_retry(self, run_id: str) -> "CampaignMeasurementLedgerV2":
+        if run_id in self.invalid_retry_run_ids:
+            return self
+        return replace(
+            self, invalid_retry_run_ids=(*self.invalid_retry_run_ids, run_id)
+        )
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "schema_version": self.schema_version,
+            "continuation_run_ids": list(self.continuation_run_ids),
+            "invalid_retry_run_ids": list(self.invalid_retry_run_ids),
+            "continuation_count": self.continuation_count,
+            "invalid_retry_count": self.invalid_retry_count,
+        }
+
+    @classmethod
+    def from_dict(
+        cls, value: Mapping[str, object]
+    ) -> "CampaignMeasurementLedgerV2":
+        if value.get("schema_version") != CAMPAIGN_MEASUREMENT_LEDGER_SCHEMA_VERSION:
+            raise ValueError("unsupported campaign measurement ledger schema")
+        loaded = cls(
+            continuation_run_ids=_string_tuple(value.get("continuation_run_ids")),
+            invalid_retry_run_ids=_string_tuple(value.get("invalid_retry_run_ids")),
+        )
+        continuation_count = value.get("continuation_count")
+        invalid_retry_count = value.get("invalid_retry_count")
+        if (
+            isinstance(continuation_count, bool)
+            or not isinstance(continuation_count, int)
+            or continuation_count != loaded.continuation_count
+        ):
+            raise ValueError("measurement continuation count is not canonical")
+        if (
+            isinstance(invalid_retry_count, bool)
+            or not isinstance(invalid_retry_count, int)
+            or invalid_retry_count != loaded.invalid_retry_count
+        ):
+            raise ValueError("measurement retry count is not canonical")
+        return loaded
 
 
 class SelfImprovementDispositionKind(str, Enum):
@@ -657,11 +888,12 @@ class SelfImprovementCampaign:
     cumulative_authoritative_candidates: int = 0
     repair_continuation_used: bool = False
     max_measurement_retries: int = DEFAULT_MAX_MEASUREMENT_RETRIES
-    measurement_retry_count: int = 0
+    measurement_ledger: CampaignMeasurementLedgerV2 = CampaignMeasurementLedgerV2()
     measurement_pending_run_id: str | None = None
     measurement_pending_candidate_id: str | None = None
     latest_progress: SelfImprovementProgress | None = None
     latest_disposition: SelfImprovementDisposition | None = None
+    latest_measurement_outcome: CampaignMeasurementOutcomeV2 | None = None
     latest_report_path: str | None = None
     goal_handoff_path: str | None = None
 
@@ -680,15 +912,13 @@ class SelfImprovementCampaign:
         ):
             raise ValueError("campaign measurement retry limit must be non-negative")
         if (
-            isinstance(self.measurement_retry_count, bool)
-            or not 0
-            <= self.measurement_retry_count
-            <= self.max_measurement_retries
+            self.measurement_ledger.invalid_retry_count
+            > self.max_measurement_retries
         ):
             raise ValueError("campaign measurement retry count is outside its bound")
         effective_max_cycles = (
             self.max_cycles
-            + self.max_measurement_retries
+            + self.measurement_ledger.control_plane_run_count
             + int(self.repair_continuation_used)
         )
         if (
@@ -751,6 +981,23 @@ class SelfImprovementCampaign:
             or self.latest_disposition.kind is not SelfImprovementDispositionKind.COMPLETE
         ):
             raise ValueError("complete campaign requires a complete disposition")
+        if (
+            self.status is SelfImprovementCampaignStatus.COMPLETE
+            and self.latest_measurement_outcome is not None
+            and self.latest_measurement_outcome.projection
+            is not CampaignMeasurementProjection.SUCCEEDED
+        ):
+            raise ValueError("complete campaign requires a succeeded measurement")
+
+    @property
+    def measurement_retry_count(self) -> int:
+        """Legacy projection; the v2 ledger is the only stored counter source."""
+
+        return self.measurement_ledger.invalid_retry_count
+
+    @property
+    def measurement_continuation_count(self) -> int:
+        return self.measurement_ledger.continuation_count
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -773,7 +1020,9 @@ class SelfImprovementCampaign:
             ),
             "repair_continuation_used": self.repair_continuation_used,
             "max_measurement_retries": self.max_measurement_retries,
+            "measurement_ledger": self.measurement_ledger.to_dict(),
             "measurement_retry_count": self.measurement_retry_count,
+            "measurement_continuation_count": self.measurement_continuation_count,
             "measurement_pending_run_id": self.measurement_pending_run_id,
             "measurement_pending_candidate_id": (
                 self.measurement_pending_candidate_id
@@ -784,6 +1033,11 @@ class SelfImprovementCampaign:
             "latest_disposition": (
                 self.latest_disposition.to_dict()
                 if self.latest_disposition is not None
+                else None
+            ),
+            "latest_measurement_outcome": (
+                self.latest_measurement_outcome.to_dict()
+                if self.latest_measurement_outcome is not None
                 else None
             ),
             "latest_report_path": self.latest_report_path,
@@ -805,6 +1059,43 @@ class SelfImprovementCampaign:
             raise ValueError("campaign request, source snapshot, and usage must be mappings")
         raw_progress = value.get("latest_progress")
         raw_disposition = value.get("latest_disposition")
+        raw_measurement_outcome = value.get("latest_measurement_outcome")
+        run_ids = _string_tuple(value.get("run_ids"))
+        raw_ledger = value.get("measurement_ledger")
+        if isinstance(raw_ledger, Mapping):
+            measurement_ledger = CampaignMeasurementLedgerV2.from_dict(raw_ledger)
+            legacy_retry_count = _non_negative_int(
+                value.get(
+                    "measurement_retry_count",
+                    measurement_ledger.invalid_retry_count,
+                ),
+                "measurement_retry_count",
+            )
+            if legacy_retry_count != measurement_ledger.invalid_retry_count:
+                raise ValueError("legacy measurement retry count differs from ledger")
+            legacy_continuation_count = _non_negative_int(
+                value.get(
+                    "measurement_continuation_count",
+                    measurement_ledger.continuation_count,
+                ),
+                "measurement_continuation_count",
+            )
+            if legacy_continuation_count != measurement_ledger.continuation_count:
+                raise ValueError(
+                    "legacy measurement continuation count differs from ledger"
+                )
+        else:
+            legacy_retry_count = _non_negative_int(
+                value.get("measurement_retry_count", 0),
+                "measurement_retry_count",
+            )
+            if legacy_retry_count > len(run_ids):
+                raise ValueError("legacy measurement retry count exceeds run lineage")
+            measurement_ledger = CampaignMeasurementLedgerV2(
+                invalid_retry_run_ids=(
+                    run_ids[-legacy_retry_count:] if legacy_retry_count else ()
+                )
+            )
         return cls(
             campaign_id=str(value.get("campaign_id") or ""),
             objective=str(value.get("objective") or ""),
@@ -817,7 +1108,7 @@ class SelfImprovementCampaign:
             verification_fingerprint=str(value.get("verification_fingerprint") or ""),
             max_cycles=_positive_int(value.get("max_cycles"), "max_cycles"),
             cycle_index=_non_negative_int(value.get("cycle_index"), "cycle_index"),
-            run_ids=_string_tuple(value.get("run_ids")),
+            run_ids=run_ids,
             cumulative_usage=CampaignUsage.from_dict(raw_usage),
             cumulative_authoritative_candidates=_non_negative_int(
                 value.get("cumulative_authoritative_candidates", 0),
@@ -833,10 +1124,7 @@ class SelfImprovementCampaign:
                 ),
                 "max_measurement_retries",
             ),
-            measurement_retry_count=_non_negative_int(
-                value.get("measurement_retry_count", 0),
-                "measurement_retry_count",
-            ),
+            measurement_ledger=measurement_ledger,
             measurement_pending_run_id=_optional_string(
                 value.get("measurement_pending_run_id")
             ),
@@ -851,6 +1139,11 @@ class SelfImprovementCampaign:
             latest_disposition=(
                 SelfImprovementDisposition.from_dict(raw_disposition)
                 if isinstance(raw_disposition, Mapping)
+                else None
+            ),
+            latest_measurement_outcome=(
+                CampaignMeasurementOutcomeV2.from_dict(raw_measurement_outcome)
+                if isinstance(raw_measurement_outcome, Mapping)
                 else None
             ),
             latest_report_path=_optional_string(value.get("latest_report_path")),
@@ -1091,6 +1384,7 @@ class SelfImprovementCampaignController:
         if not report_path.is_file():
             raise ValueError("campaign run did not produce a report")
         report = self.store.read_report(actual_run_id)
+        measurement_outcome = campaign_measurement_outcome_from_report(report)
         progress = self_improvement_progress(report)
         disposition = derive_self_improvement_disposition(
             report,
@@ -1100,7 +1394,22 @@ class SelfImprovementCampaignController:
             usage = campaign.cumulative_usage + campaign_usage_from_report(report)
         except ValueError:
             usage = campaign.cumulative_usage
-            if disposition.kind is not SelfImprovementDispositionKind.COMPLETE:
+            if (
+                measurement_outcome is not None
+                and disposition.kind is not SelfImprovementDispositionKind.COMPLETE
+            ):
+                measurement_outcome = CampaignMeasurementOutcomeV2(
+                    execution_status=MeasurementExecutionStatus.FRAMEWORK_BLOCKED,
+                    improvement_outcome=CandidateImprovementOutcome.UNKNOWN,
+                    release_gates_passed=False,
+                    continuation_available=False,
+                    reason_code="campaign_usage_telemetry_missing",
+                )
+                disposition = _measurement_outcome_disposition(
+                    measurement_outcome,
+                    progress_delta_ids=disposition.progress_delta_ids,
+                )
+            elif disposition.kind is not SelfImprovementDispositionKind.COMPLETE:
                 disposition = SelfImprovementDisposition(
                     kind=SelfImprovementDispositionKind.EXHAUSTED,
                     reason_code="campaign_usage_telemetry_missing",
@@ -1120,6 +1429,15 @@ class SelfImprovementCampaignController:
             disposition.kind
             is SelfImprovementDispositionKind.REPAIR_MEASUREMENT
             and disposition.scope == "shared_run"
+            and (
+                measurement_outcome is None
+                or measurement_outcome.continuation_available
+            )
+        )
+        measurement_continuation_requested = bool(
+            measurement_outcome is not None
+            and measurement_outcome.projection
+            is CampaignMeasurementProjection.MEASUREMENT_INCOMPLETE
         )
         measurement_pending_candidate_id = (
             _measurement_pending_candidate_id(
@@ -1127,7 +1445,7 @@ class SelfImprovementCampaignController:
                 run_id=actual_run_id,
                 report=report,
             )
-            if measurement_retry_requested
+            if measurement_retry_requested or measurement_continuation_requested
             else None
         )
         measurement_retry_available = bool(
@@ -1136,6 +1454,57 @@ class SelfImprovementCampaignController:
             and campaign.measurement_retry_count
             < campaign.max_measurement_retries
         )
+        if (
+            measurement_retry_requested
+            and not measurement_retry_available
+            and measurement_outcome is not None
+        ):
+            measurement_outcome = CampaignMeasurementOutcomeV2(
+                execution_status=measurement_outcome.execution_status,
+                improvement_outcome=measurement_outcome.improvement_outcome,
+                release_gates_passed=False,
+                continuation_available=False,
+                reason_code=(
+                    "measurement_checkpoint_candidate_missing"
+                    if measurement_pending_candidate_id is None
+                    else "campaign_measurement_retry_limit_reached"
+                ),
+            )
+            disposition = _measurement_outcome_disposition(
+                measurement_outcome,
+                progress_delta_ids=disposition.progress_delta_ids,
+            )
+            status = _status_for_disposition(disposition)
+        measurement_continuation_available = bool(
+            measurement_continuation_requested
+            and measurement_pending_candidate_id is not None
+        )
+        if (
+            measurement_continuation_requested
+            and not measurement_continuation_available
+            and measurement_outcome is not None
+        ):
+            measurement_outcome = CampaignMeasurementOutcomeV2(
+                execution_status=measurement_outcome.execution_status,
+                improvement_outcome=measurement_outcome.improvement_outcome,
+                release_gates_passed=False,
+                continuation_available=False,
+                reason_code="measurement_checkpoint_candidate_missing",
+            )
+            disposition = _measurement_outcome_disposition(
+                measurement_outcome,
+                progress_delta_ids=disposition.progress_delta_ids,
+            )
+            status = _status_for_disposition(disposition)
+        measurement_ledger = campaign.measurement_ledger
+        if measurement_continuation_available:
+            measurement_ledger = measurement_ledger.charge_continuation(
+                actual_run_id
+            )
+        elif measurement_retry_available:
+            measurement_ledger = measurement_ledger.charge_invalid_retry(
+                actual_run_id
+            )
         preserve_measurement_checkpoint = bool(
             campaign.measurement_pending_run_id is not None
             and campaign.measurement_pending_candidate_id is not None
@@ -1154,23 +1523,20 @@ class SelfImprovementCampaignController:
             ),
             latest_progress=progress,
             latest_disposition=disposition,
+            latest_measurement_outcome=measurement_outcome,
             latest_report_path=str(report_path),
             goal_handoff_path=None,
-            measurement_retry_count=(
-                campaign.measurement_retry_count + 1
-                if measurement_retry_available
-                else campaign.measurement_retry_count
-            ),
+            measurement_ledger=measurement_ledger,
             measurement_pending_run_id=(
                 actual_run_id
-                if measurement_retry_available
+                if measurement_retry_available or measurement_continuation_available
                 else campaign.measurement_pending_run_id
                 if preserve_measurement_checkpoint
                 else None
             ),
             measurement_pending_candidate_id=(
                 measurement_pending_candidate_id
-                if measurement_retry_available
+                if measurement_retry_available or measurement_continuation_available
                 else campaign.measurement_pending_candidate_id
                 if preserve_measurement_checkpoint
                 else None
@@ -1190,7 +1556,14 @@ class SelfImprovementCampaignController:
                 ),
             )
         )
-        if measurement_retry_available:
+        if measurement_continuation_available:
+            # A scheduler quantum/deadline boundary is resumable execution,
+            # not a failed experiment or a candidate/measurement retry.
+            advanced = replace(
+                advanced,
+                status=SelfImprovementCampaignStatus.ACTIVE,
+            )
+        elif measurement_retry_available:
             # The candidate package already passed candidate-owned admission.
             # Preserve it as an immutable measurement checkpoint and grant a
             # separately bounded control-plane retry.  This run does not
@@ -1259,6 +1632,24 @@ class SelfImprovementCampaignController:
                 advanced
             ),
             "measurement_retry_count": advanced.measurement_retry_count,
+            "measurement_continuation_count": (
+                advanced.measurement_continuation_count
+            ),
+            "measurement_projection": (
+                measurement_outcome.projection.value
+                if measurement_outcome is not None
+                else None
+            ),
+            "measurement_execution_status": (
+                measurement_outcome.execution_status.value
+                if measurement_outcome is not None
+                else None
+            ),
+            "candidate_improvement_outcome": (
+                measurement_outcome.improvement_outcome.value
+                if measurement_outcome is not None
+                else None
+            ),
             "max_measurement_retries": advanced.max_measurement_retries,
             "measurement_pending_run_id": (
                 advanced.measurement_pending_run_id
@@ -1278,6 +1669,19 @@ class SelfImprovementCampaignController:
             "exhaustion_axes": list(_campaign_exhaustion_axes(advanced)),
         }
         report["self_improvement_disposition"] = disposition.to_dict()
+        if measurement_outcome is not None:
+            report["campaign_measurement_outcome"] = measurement_outcome.to_dict()
+            if (
+                measurement_outcome.projection
+                is CampaignMeasurementProjection.SUCCEEDED
+            ):
+                report["status"] = "succeeded"
+                summary["status"] = "succeeded"
+            elif str(report.get("status") or "") == "succeeded":
+                # A legacy scalar status cannot override the orthogonal v2
+                # execution/improvement contract.
+                report["status"] = "rejected"
+                summary["status"] = "rejected"
         self.store.write_report(actual_run_id, report)
         if disposition.kind is SelfImprovementDispositionKind.HANDOFF_GOAL:
             handoff = build_goal_handoff(advanced, report)
@@ -1559,6 +1963,95 @@ def self_improvement_progress(report: Mapping[str, Any]) -> SelfImprovementProgr
     )
 
 
+def campaign_measurement_outcome_from_report(
+    report: Mapping[str, Any],
+) -> CampaignMeasurementOutcomeV2 | None:
+    """Read only the explicit v2 artifact; legacy reports remain descriptive."""
+
+    raw = report.get("campaign_measurement_outcome")
+    if raw is None:
+        return None
+    if not isinstance(raw, Mapping):
+        raise ValueError("campaign measurement outcome must be a mapping")
+    return CampaignMeasurementOutcomeV2.from_dict(raw)
+
+
+def _measurement_outcome_disposition(
+    outcome: CampaignMeasurementOutcomeV2,
+    *,
+    progress_delta_ids: tuple[str, ...],
+) -> SelfImprovementDisposition:
+    projection = outcome.projection
+    if projection is CampaignMeasurementProjection.SUCCEEDED:
+        return SelfImprovementDisposition(
+            kind=SelfImprovementDispositionKind.COMPLETE,
+            reason_code=outcome.reason_code,
+            stage="measurement",
+            progress_delta_ids=progress_delta_ids,
+        )
+    if projection is CampaignMeasurementProjection.CANDIDATE_REJECTED:
+        negative = (
+            outcome.improvement_outcome
+            is CandidateImprovementOutcome.REGRESSION
+        )
+        return SelfImprovementDisposition(
+            kind=(
+                SelfImprovementDispositionKind.STOP_NEGATIVE_EFFECT
+                if negative
+                else SelfImprovementDispositionKind.STOP_NO_EFFECT
+            ),
+            reason_code=outcome.reason_code,
+            owner="candidate",
+            stage="measurement",
+            scope="candidate",
+            repairable=False,
+            progress_delta_ids=progress_delta_ids,
+        )
+    if projection is CampaignMeasurementProjection.MEASUREMENT_INCOMPLETE:
+        return SelfImprovementDisposition(
+            kind=SelfImprovementDispositionKind.COLLECT_MORE_EVIDENCE,
+            reason_code=outcome.reason_code,
+            owner="measurement_scheduler",
+            stage="measurement",
+            scope="shared_run",
+            repairable=True,
+            progress_delta_ids=progress_delta_ids,
+        )
+    if projection is CampaignMeasurementProjection.MEASUREMENT_INVALID:
+        return SelfImprovementDisposition(
+            kind=(
+                SelfImprovementDispositionKind.REPAIR_MEASUREMENT
+                if outcome.continuation_available
+                else SelfImprovementDispositionKind.PAUSE_OPERATOR
+            ),
+            reason_code=outcome.reason_code,
+            owner="evaluation_harness",
+            stage="measurement",
+            scope="shared_run",
+            repairable=outcome.continuation_available,
+            progress_delta_ids=progress_delta_ids,
+        )
+    if projection is CampaignMeasurementProjection.FRAMEWORK_BLOCKED:
+        return SelfImprovementDisposition(
+            kind=SelfImprovementDispositionKind.PAUSE_OPERATOR,
+            reason_code=outcome.reason_code,
+            owner="framework",
+            stage="measurement",
+            scope="shared_run",
+            repairable=outcome.continuation_available,
+            progress_delta_ids=progress_delta_ids,
+        )
+    return SelfImprovementDisposition(
+        kind=SelfImprovementDispositionKind.EXHAUSTED,
+        reason_code=outcome.reason_code,
+        owner="measurement_scheduler",
+        stage="measurement",
+        scope="shared_run",
+        repairable=False,
+        progress_delta_ids=progress_delta_ids,
+    )
+
+
 def _measurement_policy_disposition(
     report: Mapping[str, Any],
     *,
@@ -1672,6 +2165,12 @@ def derive_self_improvement_disposition(
     status = str(report.get("status") or "")
     progress = self_improvement_progress(report)
     delta = progress.delta_from(previous_progress)
+    measurement_outcome = campaign_measurement_outcome_from_report(report)
+    if measurement_outcome is not None:
+        return _measurement_outcome_disposition(
+            measurement_outcome,
+            progress_delta_ids=delta,
+        )
     measurement_disposition = _measurement_policy_disposition(
         report,
         progress_delta_ids=delta,
@@ -2232,7 +2731,7 @@ def _campaign_authoritative_candidate_limit(
 def _campaign_effective_max_cycles(campaign: SelfImprovementCampaign) -> int:
     return (
         campaign.max_cycles
-        + campaign.measurement_retry_count
+        + campaign.measurement_ledger.control_plane_run_count
         + int(campaign.repair_continuation_used)
     )
 
@@ -2242,7 +2741,10 @@ def _campaign_candidate_cycle_count(
 ) -> int:
     """Return mutation/evaluation cycles, excluding invalid measurement runs."""
 
-    return max(0, campaign.cycle_index - campaign.measurement_retry_count)
+    return max(
+        0,
+        campaign.cycle_index - campaign.measurement_ledger.control_plane_run_count,
+    )
 
 
 def _campaign_effective_authoritative_candidate_limit(
@@ -2347,6 +2849,15 @@ def _report_has_new_candidate_counterexample(
 
 
 def _report_authoritative_candidate_count(report: Mapping[str, Any]) -> int:
+    measurement_outcome = campaign_measurement_outcome_from_report(report)
+    if (
+        measurement_outcome is not None
+        and measurement_outcome.execution_status
+        is not MeasurementExecutionStatus.COMPLETED
+    ):
+        # Work may have consumed rollout time, but it did not produce one
+        # authoritative candidate conclusion.
+        return 0
     funnel = report.get("verification_funnel")
     if not isinstance(funnel, Mapping):
         return 0
@@ -2421,6 +2932,9 @@ def _campaign_summary(
             "campaign_measurement_retry_count": (
                 campaign.measurement_retry_count
             ),
+            "campaign_measurement_continuation_count": (
+                campaign.measurement_continuation_count
+            ),
             "campaign_max_measurement_retries": (
                 campaign.max_measurement_retries
             ),
@@ -2454,6 +2968,13 @@ def _campaign_summary(
     )
     if campaign.latest_disposition is not None:
         summary["self_improvement_disposition"] = campaign.latest_disposition.to_dict()
+    if campaign.latest_measurement_outcome is not None:
+        summary["campaign_measurement_outcome"] = (
+            campaign.latest_measurement_outcome.to_dict()
+        )
+        summary["campaign_measurement_projection"] = (
+            campaign.latest_measurement_outcome.projection.value
+        )
     return summary
 
 

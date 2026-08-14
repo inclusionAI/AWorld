@@ -1,5 +1,6 @@
 import sys
 import json
+import os
 from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
@@ -27,7 +28,11 @@ from aworld_cli.plugin_capabilities.commands import register_plugin_commands
 from aworld_cli.plugin_capabilities.state import PluginStateStore
 from aworld_cli.runtime.cli import _apply_runtime_skill_paths_to_swarm
 from aworld_cli.top_level_commands import register_builtin_top_level_commands
-from aworld_cli.top_level_commands.run_cmd import RunTopLevelCommand
+from aworld_cli.top_level_commands.run_cmd import (
+    RunTopLevelCommand,
+    _consume_task_response_capability,
+    _write_self_evolve_task_response,
+)
 from aworld.plugins.discovery import discover_plugins
 
 
@@ -970,6 +975,40 @@ def test_run_top_level_command_publishes_atomic_self_evolve_task_response(
     assert payload["trajectory_capture_mode"] == "task_response"
     assert payload["trajectory"] == full_trajectory
     assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_task_response_capability_sends_unsigned_payload_to_parent(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    capability_reader, capability_writer = os.pipe()
+    monkeypatch.setenv(
+        "AWORLD_SELF_EVOLVE_TASK_RESPONSE_CAPABILITY_FD",
+        str(capability_writer),
+    )
+    destination = tmp_path / "candidate-must-not-write.json"
+    monkeypatch.setenv(
+        "AWORLD_SELF_EVOLVE_TASK_RESPONSE_PATH", str(destination)
+    )
+
+    descriptor = _consume_task_response_capability()
+    assert descriptor == capability_writer
+    assert os.get_inheritable(descriptor) is False
+    assert "AWORLD_SELF_EVOLVE_TASK_RESPONSE_CAPABILITY_FD" not in os.environ
+    _write_self_evolve_task_response(
+        {
+            "trajectory": [{"action": {"content": "done"}}],
+            "trajectory_capture_mode": "task_response",
+        },
+        capability_fd=descriptor,
+    )
+    payload = json.loads(os.read(capability_reader, 65_536).decode("utf-8"))
+    os.close(capability_reader)
+
+    assert payload["schema_version"] == "aworld.self_evolve.task_response.v1"
+    assert "framework_attestation" not in payload
+    assert destination.exists() is False
+    assert payload["trajectory"] == [{"action": {"content": "done"}}]
 
 
 @pytest.mark.asyncio

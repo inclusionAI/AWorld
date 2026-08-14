@@ -5825,6 +5825,7 @@ async def test_authoritative_replay_uses_screening_control_health_and_patience(
     assert backend.request is not None
     assert backend.request.measurement_early_stop_enabled is True
     assert backend.request.stop_on_incomparable_member is False
+    assert backend.request.evidence_policy_mode == "required"
 
 
 def test_explicit_target_keeps_multi_task_trajectory_log_without_auto_grouping(

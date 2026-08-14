@@ -452,10 +452,10 @@ Candidate repair gate diagnostics are summarized in a separate population `confo
   members instead of discarding the partial experiment. A bounded restart
   cursor is written to
   `.aworld/self_evolve/<run_id>/replay/<candidate_id>/members/paired_replay_checkpoint.json`;
-  the timeout gate exposes it through `diagnostic_refs`. When a verified
-  policy does not set this option, the framework still applies a safety horizon
-  of six per-member timeout windows to prevent one candidate from occupying an
-  unbounded experiment. Both deadlines are cancellation-safe: they terminate
+  the timeout gate exposes it through `diagnostic_refs`. Until the v2
+  measurement-control scheduler is enabled, verified legacy execution retains
+  its bounded safety horizon. The v2 path replaces that heuristic with planned
+  checkpoint and Campaign deadlines. Both deadlines are cancellation-safe: they terminate
   the replay process group before control returns to candidate search. A shared
   measurement timeout stops the current candidate population instead of
   spending another authoritative slot.

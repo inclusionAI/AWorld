@@ -4,10 +4,12 @@ import asyncio
 import base64
 import contextlib
 import hashlib
+import hmac
 import inspect
 import json
 import os
 import re
+import secrets
 import signal
 import shutil
 import socket
@@ -25,6 +27,21 @@ from typing import Any, Callable, Mapping, Protocol, runtime_checkable
 from urllib.parse import urlsplit
 
 from aworld.core.context.amni.local import LocalIsolatedApplicationContext
+from aworld.core.tool.replay_policy import (
+    ArtifactPolicy,
+    DynamicEndpointBinding,
+    EvidencePolicyProfileV2,
+    EvidencePolicyValidationError,
+    FrameworkEvidenceWriterAttestationV2,
+    ProducerRegistrationCapabilityV2,
+    attest_task_response_v2,
+    build_framework_evidence_manifest_v2,
+    compile_evidence_policy_profile_v2,
+    issue_framework_evidence_writer_attestation_v2,
+    issue_producer_registration_capability_v2,
+    make_evidence_handle_v2,
+    preflight_evidence_policy_v2,
+)
 from aworld.core.task import Task
 from aworld.logs.util import logger
 from aworld.memory.tool_call_compaction import REPLAY_COMPACTED_ARGUMENT_FAILURE
@@ -51,6 +68,14 @@ from aworld.self_evolve.failure_events import (
     ReplayFailureEvent,
     causal_failure_events,
 )
+from aworld.self_evolve.measurement_control import (
+    LaneMaterializationAttestationV1,
+    MeasurementArm,
+    MeasurementPlanV2,
+    MeasurementWorkUnitV1,
+    stable_control_fingerprint,
+)
+from aworld.self_evolve.replay_adaptation import IsolationDecision
 from aworld.self_evolve.replay_adaptation import (
     REPLAY_ARTIFACT_PLACEHOLDER,
     REPLAY_WORKSPACE_PLACEHOLDER,
@@ -90,6 +115,24 @@ _SYNTHETIC_EVIDENCE_EXCERPT_CHARS = 4000
 _MAX_METADATA_EVIDENCE_CHARS = 16_384
 _MAX_EVIDENCE_MANIFEST_BYTES = 1024 * 1024
 _MAX_EVIDENCE_MANIFEST_ENTRIES = 256
+_REPLAY_EVIDENCE_POLICY_MODES = frozenset({"legacy", "required"})
+_REPLAY_TRUSTED_MANIFEST_SCHEMA = "aworld.replay.runtime_trust.v2"
+_REPLAY_TRUSTED_EVIDENCE_PRODUCER = "replay.task"
+_REPLAY_TRUSTED_RESPONSE_PRODUCER = "framework.supervisor"
+_REPLAY_TRUSTED_EVIDENCE_TYPE = "task.evidence"
+_REPLAY_TRUSTED_RESPONSE_TYPE = "task.response"
+_TASK_RESPONSE_CAPABILITY_FD_ENV = (
+    "AWORLD_SELF_EVOLVE_TASK_RESPONSE_CAPABILITY_FD"
+)
+_REPLAY_TRUST_RESERVED_ENV = frozenset(
+    {
+        "AWORLD_REPLAY_EVIDENCE_POLICY_PROFILE_JSON",
+        "AWORLD_REPLAY_EVIDENCE_POLICY_FINGERPRINT",
+        "AWORLD_REPLAY_EVIDENCE_WRITER_ATTESTATION_JSON",
+        "AWORLD_REPLAY_EVIDENCE_PRODUCERS_JSON",
+        _TASK_RESPONSE_CAPABILITY_FD_ENV,
+    }
+)
 _REPLAY_SERVICE_PROTOCOL_TRACE_NAME = "protocol_trace.jsonl"
 _MAX_REPLAY_SERVICE_PROTOCOL_TRACE_BYTES = 64 * 1024
 _MAX_REPLAY_SERVICE_PROTOCOL_TRACE_EXCERPT_CHARS = 4_000
@@ -197,6 +240,13 @@ class CandidateReplayRequest:
     stop_on_incomparable_member: bool = False
     repetition_policy: str = "configured"
     repetition_semantics: str = _PER_MEMBER_REPETITION_SEMANTICS
+    evidence_policy_mode: str = "legacy"
+    measurement_plan: MeasurementPlanV2 | None = None
+    measurement_isolation_decision: IsolationDecision | None = None
+    measurement_evidence_policy_profile: EvidencePolicyProfileV2 | None = None
+    measurement_lane_attestations: Mapping[
+        str, LaneMaterializationAttestationV1
+    ] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if (
@@ -213,6 +263,49 @@ class CandidateReplayRequest:
             "independent_case_adaptive",
         }:
             raise ValueError("unsupported replay repetition_policy")
+        if self.evidence_policy_mode not in _REPLAY_EVIDENCE_POLICY_MODES:
+            raise ValueError("unsupported replay evidence_policy_mode")
+        measurement_contracts = (
+            self.measurement_plan,
+            self.measurement_isolation_decision,
+            self.measurement_evidence_policy_profile,
+        )
+        if any(item is not None for item in measurement_contracts):
+            if not all(item is not None for item in measurement_contracts):
+                raise ValueError("measurement replay contracts must be complete")
+            if self.evidence_policy_mode != "required":
+                raise ValueError("measurement replay contracts require evidence policy v2")
+            assert self.measurement_plan is not None
+            assert self.measurement_isolation_decision is not None
+            assert self.measurement_evidence_policy_profile is not None
+            verified = MeasurementPlanV2.from_dict(
+                self.measurement_plan.to_dict(),
+                isolation_decision=self.measurement_isolation_decision,
+                evidence_policy_profile=self.measurement_evidence_policy_profile,
+            )
+            if verified != self.measurement_plan:
+                raise ValueError("measurement replay plan is not canonical")
+            known_units = {item.work_unit_id for item in verified.work_units}
+            if not self.measurement_lane_attestations:
+                raise ValueError(
+                    "measurement replay contracts require materialized lane attestations"
+                )
+            for unit_id, attestation in self.measurement_lane_attestations.items():
+                if unit_id not in known_units or not isinstance(
+                    attestation, LaneMaterializationAttestationV1
+                ):
+                    raise ValueError("measurement lane attestation is outside the plan")
+                if (
+                    attestation.measurement_plan_fingerprint
+                    != verified.measurement_plan_fingerprint
+                    or attestation.isolation_decision_fingerprint
+                    != self.measurement_isolation_decision.fingerprint
+                    or attestation.evidence_policy_fingerprint
+                    != self.measurement_evidence_policy_profile.fingerprint
+                ):
+                    raise ValueError("measurement lane attestation contract drifted")
+        elif self.measurement_lane_attestations:
+            raise ValueError("lane attestations require measurement replay contracts")
 
 
 @dataclass(frozen=True)
@@ -1785,6 +1878,50 @@ class ReplayExecutionRequest:
     service_logical_ids: str | None = None
     service_endpoint: str | None = None
     service_startup_status: str | None = None
+    evidence_policy_mode: str = "legacy"
+    measurement_plan_fingerprint: str | None = None
+    measurement_work_unit: MeasurementWorkUnitV1 | None = None
+    measurement_evidence_policy_profile: EvidencePolicyProfileV2 | None = None
+    isolation_grant_fingerprint: str | None = None
+    lane_materialization_fingerprint: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.evidence_policy_mode not in _REPLAY_EVIDENCE_POLICY_MODES:
+            raise ValueError("unsupported replay evidence_policy_mode")
+        measurement_values = (
+            self.measurement_plan_fingerprint,
+            self.measurement_work_unit,
+            self.measurement_evidence_policy_profile,
+            self.lane_materialization_fingerprint,
+        )
+        if any(item is not None for item in measurement_values):
+            if not all(item is not None for item in measurement_values):
+                raise ValueError("runtime measurement identity must be complete")
+            if self.evidence_policy_mode != "required":
+                raise ValueError("runtime measurement identity requires evidence policy v2")
+            assert self.measurement_work_unit is not None
+            assert self.measurement_evidence_policy_profile is not None
+            if (
+                self.measurement_work_unit.measurement_plan_fingerprint
+                != self.measurement_plan_fingerprint
+                or self.measurement_work_unit.evidence_policy_fingerprint
+                != self.measurement_evidence_policy_profile.fingerprint
+            ):
+                raise ValueError("runtime measurement identity drifted")
+
+
+@dataclass(frozen=True)
+class _ReplayEvidenceTrustContext:
+    profile: EvidencePolicyProfileV2
+    writer: FrameworkEvidenceWriterAttestationV2
+    producer_capabilities: tuple[ProducerRegistrationCapabilityV2, ...]
+    work_unit_fingerprint: str
+    signing_key: bytes
+    trusted_root: Path
+    measurement_plan_fingerprint: str | None = None
+    measurement_work_unit_id: str | None = None
+    isolation_grant_fingerprint: str | None = None
+    lane_materialization_fingerprint: str | None = None
 
 
 @dataclass(frozen=True)
@@ -1811,15 +1948,25 @@ class ReplayRepetitionTaskInput:
     variant_id: str
     skill_root: str | None
     artifact_dir: Path
+    measurement_arm: MeasurementArm
+    repetition_id: int
     progress_callback: Callable[[Mapping[str, Any]], None] | None = None
 
     async def execute(self) -> ReplayVariantResult:
+        kwargs: dict[str, Any] = {
+            "variant_id": self.variant_id,
+            "skill_root": self.skill_root,
+            "artifact_dir": self.artifact_dir,
+            "progress_callback": self.progress_callback,
+        }
+        if self.request.measurement_plan is not None:
+            kwargs.update(
+                measurement_arm=self.measurement_arm,
+                repetition_id=self.repetition_id,
+            )
         return await self.backend._run_variant_with_evidence_retries(
             self.request,
-            variant_id=self.variant_id,
-            skill_root=self.skill_root,
-            artifact_dir=self.artifact_dir,
-            progress_callback=self.progress_callback,
+            **kwargs,
         )
 
 
@@ -3673,6 +3820,12 @@ class AWorldCliCandidateReplayBackend:
                 variant_id=variant_id,
                 skill_root=skill_root,
                 artifact_dir=repetition_dir,
+                measurement_arm=(
+                    MeasurementArm.CONTROL
+                    if base_variant_id == "baseline"
+                    else MeasurementArm.TREATMENT
+                ),
+                repetition_id=index,
                 progress_callback=progress_callback,
             )
             task_id = (
@@ -3751,9 +3904,17 @@ class AWorldCliCandidateReplayBackend:
         variant_id: str,
         skill_root: str | None,
         artifact_dir: Path,
+        measurement_arm: MeasurementArm | None = None,
+        repetition_id: int = 1,
         progress_callback: Callable[[Mapping[str, Any]], None] | None = None,
     ) -> ReplayVariantResult:
         attempts: list[ReplayVariantResult] = []
+        if measurement_arm is None:
+            measurement_arm = (
+                MeasurementArm.CONTROL
+                if variant_id == "baseline" or variant_id.startswith("baseline-")
+                else MeasurementArm.TREATMENT
+            )
         retry_attempt_limit = max(
             _EVIDENCE_RETRY_LIMIT,
             _SERVICE_STARTUP_RETRY_LIMIT,
@@ -3777,12 +3938,17 @@ class AWorldCliCandidateReplayBackend:
                 attempt_limit=retry_attempt_limit + 1,
                 attempt_timeout_seconds=request.timeout_seconds,
             )
-            result = await self._run_variant(
-                request,
-                variant_id=attempt_variant_id,
-                skill_root=skill_root,
-                artifact_dir=attempt_dir,
-            )
+            run_kwargs: dict[str, Any] = {
+                "variant_id": attempt_variant_id,
+                "skill_root": skill_root,
+                "artifact_dir": attempt_dir,
+            }
+            if request.measurement_plan is not None:
+                run_kwargs.update(
+                    measurement_arm=measurement_arm,
+                    repetition_id=repetition_id,
+                )
+            result = await self._run_variant(request, **run_kwargs)
             attempts.append(result)
             _emit_replay_attempt_progress(
                 progress_callback,
@@ -3843,6 +4009,8 @@ class AWorldCliCandidateReplayBackend:
         variant_id: str,
         skill_root: str | None,
         artifact_dir: Path,
+        measurement_arm: MeasurementArm | None = None,
+        repetition_id: int = 1,
     ) -> ReplayVariantResult:
         artifact_dir.mkdir(parents=True, exist_ok=True)
         workspace_root = request.workspace_root
@@ -3932,6 +4100,16 @@ class AWorldCliCandidateReplayBackend:
                     })
                     service_failure_details["diagnostics"] = diagnostics
                 service_failure = service_failure_details
+        effective_measurement_arm = measurement_arm or (
+            MeasurementArm.CONTROL
+            if variant_id == "baseline" or variant_id.startswith("baseline-")
+            else MeasurementArm.TREATMENT
+        )
+        measurement_work_unit = _measurement_work_unit_for_replay(
+            request,
+            arm=effective_measurement_arm,
+            repetition_id=repetition_id,
+        )
         execution_request = ReplayExecutionRequest(
             variant_id=variant_id,
             task_id=request.task_id,
@@ -4001,6 +4179,30 @@ class AWorldCliCandidateReplayBackend:
                 if service_session is not None
                 else "failed"
                 if replay_capability is not None
+                else None
+            ),
+            evidence_policy_mode=request.evidence_policy_mode,
+            measurement_plan_fingerprint=(
+                request.measurement_plan.measurement_plan_fingerprint
+                if request.measurement_plan is not None
+                else None
+            ),
+            measurement_work_unit=measurement_work_unit,
+            measurement_evidence_policy_profile=(
+                request.measurement_evidence_policy_profile
+            ),
+            isolation_grant_fingerprint=(
+                request.measurement_lane_attestations[
+                    measurement_work_unit.work_unit_id
+                ].isolation_grant_fingerprint
+                if measurement_work_unit is not None
+                else None
+            ),
+            lane_materialization_fingerprint=(
+                request.measurement_lane_attestations[
+                    measurement_work_unit.work_unit_id
+                ].attestation_fingerprint
+                if measurement_work_unit is not None
                 else None
             ),
         )
@@ -4255,6 +4457,64 @@ def _with_loopback_proxy_bypass(
     return normalized
 
 
+def _receive_task_response_capability(
+    descriptor: int,
+    *,
+    destination: Path,
+    attestation_key: bytes,
+    completed: threading.Event,
+) -> None:
+    """Receive one CLI-owned response and attest it with a parent-held key."""
+
+    try:
+        payload_bytes = bytearray()
+        while len(payload_bytes) <= _MAX_SELF_EVOLVE_TASK_RESPONSE_BYTES:
+            chunk = os.read(
+                descriptor,
+                min(
+                    64 * 1024,
+                    _MAX_SELF_EVOLVE_TASK_RESPONSE_BYTES + 1 - len(payload_bytes),
+                ),
+            )
+            if not chunk:
+                break
+            payload_bytes.extend(chunk)
+        if not payload_bytes or len(payload_bytes) > _MAX_SELF_EVOLVE_TASK_RESPONSE_BYTES:
+            return
+        payload = json.loads(bytes(payload_bytes).decode("utf-8"))
+        if (
+            not isinstance(payload, Mapping)
+            or payload.get("schema_version") != _SELF_EVOLVE_TASK_RESPONSE_SCHEMA
+            or payload.get("trajectory_capture_mode") != "task_response"
+            or not isinstance(payload.get("trajectory"), list)
+            or not payload["trajectory"]
+            or "framework_attestation" in payload
+        ):
+            return
+        attested = dict(payload)
+        attested["framework_attestation"] = {
+            "schema_version": (
+                "aworld.self_evolve.task_response_attestation.v2"
+            ),
+            "signature": _task_response_signature(payload, attestation_key),
+        }
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        temporary = destination.with_name(
+            f".{destination.name}.{uuid.uuid4().hex}.tmp"
+        )
+        temporary.write_text(
+            json.dumps(attested, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+        os.replace(temporary, destination)
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return
+    finally:
+        with contextlib.suppress(OSError):
+            os.close(descriptor)
+        completed.set()
+
+
 def _run_replay_cli(
     command: Sequence[str],
     *,
@@ -4270,20 +4530,57 @@ def _run_replay_cli(
     cancellation_event: threading.Event | None = None,
     evidence_manifest: Path | None = None,
     task_response_path: Path | None = None,
+    task_response_capability_fd: int | None = None,
+    task_response_capability_reader_fd: int | None = None,
+    task_response_attestation_key: bytes | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Run a replay CLI process while supervising terminal task diagnostics."""
 
     if not capture_output:
         raise ValueError("replay CLI supervision requires captured output")
-    process = subprocess.Popen(
-        list(command),
-        cwd=cwd,
-        text=text,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        start_new_session=start_new_session,
-        env=dict(env),
-    )
+    popen_kwargs: dict[str, Any] = {
+        "cwd": cwd,
+        "text": text,
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.PIPE,
+        "start_new_session": start_new_session,
+        "env": dict(env),
+    }
+    if task_response_capability_fd is not None:
+        if (
+            os.name != "posix"
+            or task_response_capability_reader_fd is None
+            or task_response_attestation_key is None
+            or task_response_path is None
+        ):
+            raise ValueError("task-response capability fd requires POSIX")
+        popen_kwargs["pass_fds"] = (task_response_capability_fd,)
+    try:
+        process = subprocess.Popen(list(command), **popen_kwargs)
+    except Exception:
+        for descriptor in (
+            task_response_capability_fd,
+            task_response_capability_reader_fd,
+        ):
+            if descriptor is not None:
+                with contextlib.suppress(OSError):
+                    os.close(descriptor)
+        raise
+    task_response_received = threading.Event()
+    if task_response_capability_fd is not None:
+        os.close(task_response_capability_fd)
+        receiver = threading.Thread(
+            target=_receive_task_response_capability,
+            args=(task_response_capability_reader_fd,),
+            kwargs={
+                "destination": task_response_path,
+                "attestation_key": task_response_attestation_key,
+                "completed": task_response_received,
+            },
+            daemon=True,
+            name="aworld-replay-task-response-attestor",
+        )
+        receiver.start()
     deadline = time.monotonic() + max(float(timeout), 0.0)
     evidence_ready_at: float | None = None
     manifest_signature: tuple[int, int] | None = None
@@ -4314,6 +4611,8 @@ def _run_replay_cli(
             )
         try:
             stdout, stderr = process.communicate(timeout=min(0.5, remaining))
+            if task_response_capability_fd is not None:
+                task_response_received.wait(timeout=2.0)
             return subprocess.CompletedProcess(
                 list(command),
                 process.returncode,
@@ -4348,7 +4647,10 @@ def _run_replay_cli(
                     evidence_ready_at = time.monotonic()
             if manifest_valid:
                 task_response_payload = (
-                    _load_self_evolve_task_response(task_response_path)
+                    _load_self_evolve_task_response(
+                        task_response_path,
+                        attestation_key=task_response_attestation_key,
+                    )
                     if task_response_path is not None
                     else None
                 )
@@ -4441,7 +4743,11 @@ _MAX_SELF_EVOLVE_TASK_RESPONSE_BYTES = 8_000_000
 _EVIDENCE_FINALIZATION_GRACE_SECONDS = 45.0
 
 
-def _load_self_evolve_task_response(path: Path) -> dict[str, Any] | None:
+def _load_self_evolve_task_response(
+    path: Path,
+    *,
+    attestation_key: bytes | None = None,
+) -> dict[str, Any] | None:
     try:
         if path.is_symlink() or path.stat().st_size > _MAX_SELF_EVOLVE_TASK_RESPONSE_BYTES:
             return None
@@ -4456,17 +4762,15 @@ def _load_self_evolve_task_response(path: Path) -> dict[str, Any] | None:
         or not payload["trajectory"]
     ):
         return None
-    return {
-        "trajectory": [
-            item for item in payload["trajectory"] if isinstance(item, Mapping)
-        ],
-        "trajectory_capture_mode": "task_response",
-        **(
-            {"llm_calls": payload["llm_calls"]}
-            if isinstance(payload.get("llm_calls"), list)
-            else {}
-        ),
-    }
+    if attestation_key is not None and not _task_response_is_attested(
+        payload, attestation_key
+    ):
+        return None
+    normalized = dict(payload)
+    normalized["trajectory"] = [
+        item for item in payload["trajectory"] if isinstance(item, Mapping)
+    ]
+    return normalized
 
 
 def _stop_replay_cli_process(
@@ -4588,6 +4892,481 @@ def _timeout_termination_diagnostics(
     }
 
 
+def _runtime_trust_fingerprint(value: Mapping[str, Any]) -> str:
+    encoded = json.dumps(
+        value,
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return "sha256:" + hashlib.sha256(encoded).hexdigest()
+
+
+def _runtime_endpoint_bindings(
+    environment: Mapping[str, str],
+) -> tuple[DynamicEndpointBinding, ...]:
+    bindings: list[DynamicEndpointBinding] = []
+    for name, endpoint in sorted(environment.items()):
+        if not name.startswith("AWORLD_REPLAY_ENDPOINT_"):
+            continue
+        suffix = name.removeprefix("AWORLD_REPLAY_ENDPOINT_").casefold()
+        binding_id = "runtime." + re.sub(r"[^a-z0-9_.-]+", ".", suffix)
+        bindings.append(
+            DynamicEndpointBinding(
+                binding_id=binding_id,
+                service_identity="replay." + suffix.replace("_", "."),
+                endpoint=str(endpoint),
+                path_scope="prefix",
+            )
+        )
+    return tuple(bindings)
+
+
+def _prepare_replay_evidence_trust(
+    request: ReplayExecutionRequest,
+    *,
+    artifact_dir: Path,
+    evidence_dir: Path,
+) -> _ReplayEvidenceTrustContext:
+    if os.name != "posix":
+        raise ValueError("required replay evidence trust needs POSIX pass_fds")
+    injected = sorted(_REPLAY_TRUST_RESERVED_ENV.intersection(request.environment))
+    if injected:
+        raise ValueError(
+            "reserved replay evidence trust environment was supplied: "
+            + ",".join(injected)
+        )
+    trusted_root = artifact_dir / "framework-trusted"
+    trusted_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if trusted_root.is_symlink() or any(trusted_root.iterdir()):
+        raise ValueError("framework evidence trust namespace is not empty")
+    compiled_profile = compile_evidence_policy_profile_v2(
+        artifact_policies=(
+            ArtifactPolicy(
+                artifact_type=_REPLAY_TRUSTED_EVIDENCE_TYPE,
+                registered_producers=(_REPLAY_TRUSTED_EVIDENCE_PRODUCER,),
+                max_files=AWorldCliReplayExecutor._DEFAULT_ARTIFACT_FILE_LIMIT,
+                max_items=_MAX_EVIDENCE_MANIFEST_ENTRIES,
+                max_bytes=AWorldCliReplayExecutor._DEFAULT_ARTIFACT_BYTE_LIMIT,
+                projection="summary",
+                projection_byte_limit=64_000,
+                required=True,
+            ),
+            ArtifactPolicy(
+                artifact_type=_REPLAY_TRUSTED_RESPONSE_TYPE,
+                registered_producers=(_REPLAY_TRUSTED_RESPONSE_PRODUCER,),
+                max_files=1,
+                max_items=1,
+                max_bytes=_MAX_SELF_EVOLVE_TASK_RESPONSE_BYTES,
+                projection="summary",
+                projection_byte_limit=64_000,
+                required=True,
+            ),
+        ),
+        endpoint_bindings=_runtime_endpoint_bindings(request.environment),
+        required_task_response_fields=(
+            "schema_version",
+            "task_response_digest",
+            "trajectory_capture_mode",
+        ),
+        allowed_control_actions=("browser:close",),
+    )
+    if request.measurement_evidence_policy_profile is not None:
+        profile = EvidencePolicyProfileV2.from_dict(
+            request.measurement_evidence_policy_profile.to_dict()
+        )
+        if profile.fingerprint != request.measurement_work_unit.evidence_policy_fingerprint:  # type: ignore[union-attr]
+            raise ValueError("runtime evidence profile differs from measurement unit")
+        work_unit_fingerprint = stable_control_fingerprint(
+            request.measurement_work_unit.identity_payload  # type: ignore[union-attr]
+        )
+        isolation_identity = (
+            request.isolation_grant_fingerprint
+            or request.measurement_work_unit.isolation_decision_fingerprint  # type: ignore[union-attr]
+        )
+        resource_identity = request.lane_materialization_fingerprint
+        assert resource_identity is not None
+    else:
+        profile = compiled_profile
+        work_unit_fingerprint = _runtime_trust_fingerprint(
+            {
+            "schema_version": "aworld.replay.runtime_work_unit.v2",
+            "profile_fingerprint": profile.fingerprint,
+            "variant_id": request.variant_id,
+            "task_id": request.task_id,
+            "candidate_id": request.candidate_id,
+            "dataset_fingerprint": request.dataset_fingerprint,
+            "adaptation_fingerprint": request.adaptation_fingerprint,
+            "task_input_fingerprint": request.task_input_fingerprint,
+            "baseline_skill_fingerprint": request.baseline_skill_fingerprint,
+            "capability_package_fingerprint": (
+                request.capability_package_fingerprint
+            ),
+            "frozen_capability_fingerprint": (
+                request.frozen_capability_fingerprint
+            ),
+            }
+        )
+        isolation_identity = "isolation." + uuid.uuid4().hex
+        resource_identity = "resource." + work_unit_fingerprint[-32:]
+    writer = issue_framework_evidence_writer_attestation_v2(
+        profile,
+        writer_identity="framework.replay-supervisor",
+        isolation_identity=isolation_identity,
+        resource_identity=resource_identity,
+    )
+    producer_capabilities = (
+        issue_producer_registration_capability_v2(
+            profile,
+            writer,
+            producer_id=_REPLAY_TRUSTED_EVIDENCE_PRODUCER,
+            artifact_roots={_REPLAY_TRUSTED_EVIDENCE_TYPE: "evidence"},
+        ),
+        issue_producer_registration_capability_v2(
+            profile,
+            writer,
+            producer_id=_REPLAY_TRUSTED_RESPONSE_PRODUCER,
+            artifact_roots={
+                _REPLAY_TRUSTED_RESPONSE_TYPE: "framework-trusted"
+            },
+        ),
+    )
+    resolved = {
+        binding.binding_id: request.environment.get(
+            binding.environment_name, binding.endpoint
+        )
+        for binding in profile.endpoint_bindings
+    }
+    preflight = preflight_evidence_policy_v2(
+        profile,
+        artifact_root=artifact_dir,
+        available_producers=(
+            _REPLAY_TRUSTED_EVIDENCE_PRODUCER,
+            _REPLAY_TRUSTED_RESPONSE_PRODUCER,
+        ),
+        resolved_endpoint_bindings=resolved,
+        producer_capabilities=producer_capabilities,
+    )
+    if not preflight.passed:
+        codes = ",".join(item.code for item in preflight.issues)
+        raise ValueError("replay evidence v2 preflight failed: " + codes)
+    return _ReplayEvidenceTrustContext(
+        profile=profile,
+        writer=writer,
+        producer_capabilities=producer_capabilities,
+        work_unit_fingerprint=work_unit_fingerprint,
+        signing_key=secrets.token_bytes(32),
+        trusted_root=trusted_root,
+        measurement_plan_fingerprint=request.measurement_plan_fingerprint,
+        measurement_work_unit_id=(
+            request.measurement_work_unit.work_unit_id
+            if request.measurement_work_unit is not None
+            else None
+        ),
+        isolation_grant_fingerprint=request.isolation_grant_fingerprint,
+        lane_materialization_fingerprint=request.lane_materialization_fingerprint,
+    )
+
+
+def _task_response_attestation_payload(
+    payload: Mapping[str, Any],
+) -> bytes:
+    unsigned = {
+        str(key): value
+        for key, value in payload.items()
+        if key != "framework_attestation"
+    }
+    return json.dumps(
+        unsigned,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+
+def _task_response_signature(payload: Mapping[str, Any], key: bytes) -> str:
+    return hmac.new(
+        key,
+        _task_response_attestation_payload(payload),
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def _task_response_is_attested(
+    payload: Mapping[str, Any], key: bytes
+) -> bool:
+    attestation = payload.get("framework_attestation")
+    return bool(
+        isinstance(attestation, Mapping)
+        and attestation.get("schema_version")
+        == "aworld.self_evolve.task_response_attestation.v2"
+        and isinstance(attestation.get("signature"), str)
+        and hmac.compare_digest(
+            str(attestation["signature"]),
+            _task_response_signature(payload, key),
+        )
+    )
+
+
+def _digest_regular_file(path: Path, *, max_bytes: int) -> tuple[int, str]:
+    if path.is_symlink() or not path.is_file():
+        raise ValueError("trusted evidence source is not a regular file")
+    size = path.stat().st_size
+    if size < 0 or size > max_bytes:
+        raise ValueError("trusted evidence source exceeds its policy budget")
+    digest = hashlib.sha256()
+    consumed = 0
+    with path.open("rb") as stream:
+        while True:
+            chunk = stream.read(min(64 * 1024, max_bytes + 1 - consumed))
+            if not chunk:
+                break
+            consumed += len(chunk)
+            if consumed > max_bytes:
+                raise ValueError("trusted evidence source exceeds its policy budget")
+            digest.update(chunk)
+    if consumed != size:
+        raise ValueError("trusted evidence source changed while hashing")
+    return consumed, "sha256:" + digest.hexdigest()
+
+
+def _write_runtime_projection(
+    trusted_root: Path,
+    *,
+    name: str,
+    source_digest: str,
+    source_bytes: int,
+) -> tuple[str, str]:
+    path = trusted_root / name
+    payload = {
+        "schema_version": "aworld.evidence_projection.v2",
+        "source_digest": source_digest,
+        "source_bytes": source_bytes,
+    }
+    encoded = json.dumps(
+        payload, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    path.write_bytes(encoded)
+    return (
+        path.relative_to(trusted_root.parent).as_posix(),
+        "sha256:" + hashlib.sha256(encoded).hexdigest(),
+    )
+
+
+def _finalize_replay_evidence_trust(
+    context: _ReplayEvidenceTrustContext,
+    *,
+    artifact_dir: Path,
+    evidence_dir: Path,
+    task_response_path: Path,
+) -> dict[str, Any]:
+    trusted_root = context.trusted_root
+    if (
+        trusted_root.is_symlink()
+        or not trusted_root.is_dir()
+        or any(trusted_root.iterdir())
+    ):
+        raise ValueError("framework evidence trust namespace was modified")
+    task_response = _load_self_evolve_task_response(
+        task_response_path,
+        attestation_key=context.signing_key,
+    )
+    if task_response is None:
+        raise ValueError("framework task response attestation is missing or invalid")
+    response_bytes = task_response_path.read_bytes()
+    if len(response_bytes) > _MAX_SELF_EVOLVE_TASK_RESPONSE_BYTES:
+        raise ValueError("framework task response exceeds its policy budget")
+    response_digest = "sha256:" + hashlib.sha256(response_bytes).hexdigest()
+    response_copy = trusted_root / "task-response.json"
+    response_copy.write_bytes(response_bytes)
+
+    bundle_path = evidence_dir / "evidence_bundle.json"
+    bundle = _load_json_object(bundle_path)
+    entries = bundle.get("entries")
+    if bundle.get("valid") is not True or not isinstance(entries, list) or not entries:
+        raise ValueError("candidate evidence bundle is not valid")
+    if len(entries) > AWorldCliReplayExecutor._DEFAULT_ARTIFACT_FILE_LIMIT:
+        raise ValueError("candidate evidence exceeds the trusted handle budget")
+    handles = []
+    artifact_root = artifact_dir.resolve()
+    evidence_root = evidence_dir.resolve()
+    for index, raw_entry in enumerate(entries):
+        if not isinstance(raw_entry, Mapping):
+            raise ValueError("candidate evidence entry is not an object")
+        artifact_path_value = raw_entry.get("artifact_path")
+        if isinstance(artifact_path_value, str) and artifact_path_value:
+            source = Path(artifact_path_value)
+            if not source.is_absolute():
+                source = evidence_dir / source
+            source = source.resolve()
+            try:
+                source.relative_to(evidence_root)
+            except ValueError as exc:
+                raise ValueError("candidate evidence escaped its producer root") from exc
+        else:
+            source = evidence_dir / (
+                f"framework-evidence-{index + 1:04d}-"
+                f"{secrets.token_hex(4)}.json"
+            )
+            source.write_text(
+                json.dumps(
+                    raw_entry,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+                encoding="utf-8",
+            )
+        byte_count, digest = _digest_regular_file(
+            source,
+            max_bytes=AWorldCliReplayExecutor._DEFAULT_ARTIFACT_BYTE_LIMIT,
+        )
+        relative_path = source.relative_to(artifact_root).as_posix()
+        projection_path = None
+        projection_digest = None
+        if byte_count > 64_000:
+            projection_path, projection_digest = _write_runtime_projection(
+                trusted_root,
+                name=f"evidence-{index + 1:04d}.projection.json",
+                source_digest=digest,
+                source_bytes=byte_count,
+            )
+        handles.append(
+            make_evidence_handle_v2(
+                handle_id=f"evidence.{index + 1:04d}",
+                artifact_type=_REPLAY_TRUSTED_EVIDENCE_TYPE,
+                producer_id=_REPLAY_TRUSTED_EVIDENCE_PRODUCER,
+                relative_path=relative_path,
+                content_digest=digest,
+                byte_count=byte_count,
+                item_count=1,
+                projection_relative_path=projection_path,
+                projection_digest=projection_digest,
+            )
+        )
+    response_projection_path = None
+    response_projection_digest = None
+    if len(response_bytes) > 64_000:
+        response_projection_path, response_projection_digest = (
+            _write_runtime_projection(
+                trusted_root,
+                name="task-response.projection.json",
+                source_digest=response_digest,
+                source_bytes=len(response_bytes),
+            )
+        )
+    handles.append(
+        make_evidence_handle_v2(
+            handle_id="task.response",
+            artifact_type=_REPLAY_TRUSTED_RESPONSE_TYPE,
+            producer_id=_REPLAY_TRUSTED_RESPONSE_PRODUCER,
+            relative_path=response_copy.relative_to(artifact_root).as_posix(),
+            content_digest=response_digest,
+            byte_count=len(response_bytes),
+            item_count=1,
+            projection_relative_path=response_projection_path,
+            projection_digest=response_projection_digest,
+        )
+    )
+    task_summary = {
+        "schema_version": task_response.get("schema_version"),
+        "trajectory_capture_mode": task_response.get("trajectory_capture_mode"),
+        "task_response_digest": response_digest,
+    }
+    manifest = build_framework_evidence_manifest_v2(
+        context.profile,
+        handles,
+        task_summary,
+        artifact_root=artifact_dir,
+        writer_attestation=context.writer,
+        producer_capabilities=context.producer_capabilities,
+        task_response_attestation=attest_task_response_v2(
+            context.profile, context.writer, task_summary
+        ),
+    )
+    manifest_fingerprint = _runtime_trust_fingerprint(manifest)
+    envelope = {
+        "schema_version": _REPLAY_TRUSTED_MANIFEST_SCHEMA,
+        "evidence_policy_fingerprint": context.profile.fingerprint,
+        "work_unit_fingerprint": context.work_unit_fingerprint,
+        "manifest_fingerprint": manifest_fingerprint,
+        "task_response_digest": response_digest,
+    }
+    envelope["signature"] = hmac.new(
+        context.signing_key,
+        json.dumps(
+            envelope, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    trusted_manifest = {
+        **manifest,
+        "runtime_trust_envelope": envelope,
+    }
+    destination = trusted_root / (
+        "evidence-manifest-" + secrets.token_hex(8) + ".v2.json"
+    )
+    temporary = destination.with_suffix(".tmp")
+    temporary.write_text(
+        json.dumps(trusted_manifest, sort_keys=True, separators=(",", ":")),
+        encoding="utf-8",
+    )
+    os.replace(temporary, destination)
+    persisted = _load_json_object(destination)
+    persisted_envelope = persisted.get("runtime_trust_envelope")
+    if not isinstance(persisted_envelope, Mapping):
+        raise ValueError("trusted evidence manifest envelope is missing")
+    supplied_signature = str(persisted_envelope.get("signature") or "")
+    unsigned_envelope = {
+        key: value
+        for key, value in persisted_envelope.items()
+        if key != "signature"
+    }
+    expected_signature = hmac.new(
+        context.signing_key,
+        json.dumps(
+            unsigned_envelope, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    persisted_manifest = {
+        key: value
+        for key, value in persisted.items()
+        if key != "runtime_trust_envelope"
+    }
+    if (
+        not hmac.compare_digest(supplied_signature, expected_signature)
+        or unsigned_envelope.get("evidence_policy_fingerprint")
+        != context.profile.fingerprint
+        or unsigned_envelope.get("work_unit_fingerprint")
+        != context.work_unit_fingerprint
+        or unsigned_envelope.get("manifest_fingerprint")
+        != _runtime_trust_fingerprint(persisted_manifest)
+    ):
+        raise ValueError("trusted evidence runtime identity mismatch")
+    return {
+        "evidence_policy_v2_required": True,
+        "evidence_policy_v2_preflight_passed": True,
+        "evidence_policy_v2_runtime_trust_passed": True,
+        "evidence_policy_v2_profile_fingerprint": context.profile.fingerprint,
+        "evidence_policy_v2_work_unit_fingerprint": (
+            context.work_unit_fingerprint
+        ),
+        "evidence_policy_v2_manifest_fingerprint": manifest_fingerprint,
+        "evidence_policy_v2_manifest_path": str(destination),
+        "evidence_policy_v2_task_response_digest": response_digest,
+        "evidence_policy_v2_writer_attestation_fingerprint": (
+            context.writer.fingerprint
+        ),
+        "measurement_plan_fingerprint": context.measurement_plan_fingerprint,
+        "measurement_work_unit_id": context.measurement_work_unit_id,
+        "isolation_grant_fingerprint": context.isolation_grant_fingerprint,
+        "lane_materialization_fingerprint": (
+            context.lane_materialization_fingerprint
+        ),
+    }
+
+
 class AWorldCliReplayExecutor:
     _DEFAULT_TOOL_CALL_LIMIT = 24
     _DEFAULT_RESERVED_OUTPUT_TOKENS = 4096
@@ -4607,6 +5386,31 @@ class AWorldCliReplayExecutor:
         evidence_dir.mkdir(parents=True, exist_ok=True)
         evidence_manifest = evidence_dir / "evidence_manifest.jsonl"
         task_response_path = artifact_dir / "framework_task_response.json"
+        trust_context: _ReplayEvidenceTrustContext | None = None
+        if request.evidence_policy_mode == "required":
+            try:
+                trust_context = _prepare_replay_evidence_trust(
+                    request,
+                    artifact_dir=artifact_dir,
+                    evidence_dir=evidence_dir,
+                )
+            except (EvidencePolicyValidationError, OSError, ValueError) as exc:
+                return ReplayExecutionResult(
+                    status="failed",
+                    trajectory=[],
+                    failure={
+                        "code": "evidence_policy_v2_preflight_failed",
+                        "outcome": "infrastructure_failure",
+                        "failure_class": "measurement_runtime_trust",
+                        "failure_stage": "replay_preflight",
+                        "repairable": False,
+                        "reason": str(exc),
+                    },
+                    metrics={
+                        "evidence_policy_v2_required": True,
+                        "evidence_policy_v2_preflight_passed": False,
+                    },
+                )
         _initialize_replay_evidence_policy_state(
             evidence_dir,
             artifact_file_limit=self._DEFAULT_ARTIFACT_FILE_LIMIT,
@@ -4672,6 +5476,9 @@ class AWorldCliReplayExecutor:
                     task_response_path
                 ),
                 "AWORLD_REPLAY_EVIDENCE_POLICY": "1",
+                "AWORLD_REPLAY_EVIDENCE_POLICY_MODE": (
+                    "shadow" if trust_context is not None else "legacy"
+                ),
                 "AWORLD_REPLAY_ARTIFACT_FILE_LIMIT": str(
                     self._DEFAULT_ARTIFACT_FILE_LIMIT
                 ),
@@ -4692,6 +5499,19 @@ class AWorldCliReplayExecutor:
                 "AWORLD_MCP_STDIO_INHERIT_ENV_PREFIXES": "AWORLD_REPLAY_",
             }
         )
+        for reserved_name in _REPLAY_TRUST_RESERVED_ENV:
+            execution_environment.pop(reserved_name, None)
+        task_response_capability_fd: int | None = None
+        task_response_capability_reader_fd: int | None = None
+        if trust_context is not None:
+            (
+                task_response_capability_reader_fd,
+                task_response_capability_fd,
+            ) = os.pipe()
+            os.set_inheritable(task_response_capability_fd, True)
+            execution_environment[_TASK_RESPONSE_CAPABILITY_FD_ENV] = str(
+                task_response_capability_fd
+            )
         execution_started_at = time.time()
         cancellation_event = threading.Event()
         try:
@@ -4711,8 +5531,24 @@ class AWorldCliReplayExecutor:
                     execution_started_at=execution_started_at,
                     replay_environment=request.environment,
                     cancellation_event=cancellation_event,
+                    task_response_capability_fd=(
+                        task_response_capability_fd
+                    ),
+                    task_response_capability_reader_fd=(
+                        task_response_capability_reader_fd
+                    ),
+                    task_response_attestation_key=(
+                        trust_context.signing_key
+                        if trust_context is not None
+                        else None
+                    ),
                 )
             )
+            # The supervisor thread now owns both pipe descriptors. Clearing
+            # the outer references prevents a reused descriptor number from
+            # being closed after the subprocess has already released it.
+            task_response_capability_fd = None
+            task_response_capability_reader_fd = None
             try:
                 # Shield the worker so cancellation can first signal the
                 # subprocess supervisor and then wait for process-group
@@ -4900,6 +5736,12 @@ class AWorldCliReplayExecutor:
                 metrics={**evidence_metrics, **termination_diagnostics},
             )
         finally:
+            if task_response_capability_fd is not None:
+                with contextlib.suppress(OSError):
+                    os.close(task_response_capability_fd)
+            if task_response_capability_reader_fd is not None:
+                with contextlib.suppress(OSError):
+                    os.close(task_response_capability_reader_fd)
             shutil.rmtree(runtime_root, ignore_errors=True)
 
         stdout = _text_output(completed.stdout)
@@ -4916,6 +5758,36 @@ class AWorldCliReplayExecutor:
             workspace_root=Path(request.workspace_root),
             variant_id=request.variant_id,
         )
+        trust_metrics: dict[str, Any] = {}
+        if trust_context is not None:
+            try:
+                trust_metrics = _finalize_replay_evidence_trust(
+                    trust_context,
+                    artifact_dir=artifact_dir,
+                    evidence_dir=evidence_dir,
+                    task_response_path=task_response_path,
+                )
+            except (EvidencePolicyValidationError, OSError, ValueError) as exc:
+                return ReplayExecutionResult(
+                    status="failed",
+                    trajectory=trajectory,
+                    stdout=stdout,
+                    stderr=stderr,
+                    failure={
+                        "code": "evidence_policy_v2_attestation_failed",
+                        "outcome": "framework_failure",
+                        "failure_class": "measurement_runtime_trust",
+                        "failure_stage": "evidence_finalization",
+                        "repairable": False,
+                        "reason": str(exc),
+                    },
+                    metrics={
+                        **evidence_metrics,
+                        "evidence_policy_v2_required": True,
+                        "evidence_policy_v2_preflight_passed": True,
+                        "evidence_policy_v2_runtime_trust_passed": False,
+                    },
+                )
         metrics = {
             "returncode": completed.returncode,
             "evidence_ready_early_stop": bool(
@@ -4929,6 +5801,7 @@ class AWorldCliReplayExecutor:
             ),
             "timeout_evidence_recovered": False,
             **evidence_metrics,
+            **trust_metrics,
         }
         compacted_argument_failure = _compacted_argument_replay_failure(metrics)
         if compacted_argument_failure is not None:
@@ -5452,6 +6325,13 @@ def build_replay_request(
     measurement_early_stop_enabled: bool = False,
     stop_on_incomparable_member: bool = False,
     repetition_policy: str = "configured",
+    evidence_policy_mode: str = "legacy",
+    measurement_plan: MeasurementPlanV2 | None = None,
+    measurement_isolation_decision: IsolationDecision | None = None,
+    measurement_evidence_policy_profile: EvidencePolicyProfileV2 | None = None,
+    measurement_lane_attestations: Mapping[
+        str, LaneMaterializationAttestationV1
+    ] | None = None,
 ) -> CandidateReplayRequest:
     if not dataset.cases:
         raise ValueError("candidate replay requires at least one eval case")
@@ -5513,6 +6393,11 @@ def build_replay_request(
         measurement_early_stop_enabled=measurement_early_stop_enabled,
         stop_on_incomparable_member=stop_on_incomparable_member,
         repetition_policy=repetition_policy,
+        evidence_policy_mode=evidence_policy_mode,
+        measurement_plan=measurement_plan,
+        measurement_isolation_decision=measurement_isolation_decision,
+        measurement_evidence_policy_profile=measurement_evidence_policy_profile,
+        measurement_lane_attestations=dict(measurement_lane_attestations or {}),
     )
 
 
@@ -5520,6 +6405,32 @@ def _adapted_task_input(request: CandidateReplayRequest, case: EvalCase) -> Any:
     if request.replay_adaptation is None:
         return case.input
     return request.replay_adaptation.case(case.case_id).adapted_task_input
+
+
+def _measurement_work_unit_for_replay(
+    request: CandidateReplayRequest,
+    *,
+    arm: MeasurementArm,
+    repetition_id: int,
+) -> MeasurementWorkUnitV1 | None:
+    plan = request.measurement_plan
+    if plan is None:
+        return None
+    matches = tuple(
+        unit
+        for unit in plan.work_units
+        if unit.case_id == request.task_id
+        and unit.arm is arm
+        and unit.repetition_id == repetition_id
+    )
+    if len(matches) != 1:
+        raise ValueError(
+            "replay member does not map to exactly one frozen measurement work unit"
+        )
+    unit = matches[0]
+    if unit.work_unit_id not in request.measurement_lane_attestations:
+        raise ValueError("replay member has no materialized lane attestation")
+    return unit
 
 
 def _adapted_task_input_fingerprint(
@@ -9788,6 +10699,48 @@ def _candidate_replay_request_from_mapping(payload: Mapping[str, Any]) -> Candid
     target_payload = payload.get("target")
     if not isinstance(target_payload, Mapping):
         raise ValueError("stored replay request is missing target")
+    measurement_plan_payload = payload.get("measurement_plan")
+    measurement_decision_payload = payload.get("measurement_isolation_decision")
+    measurement_profile_payload = payload.get("measurement_evidence_policy_profile")
+    measurement_attestations_payload = payload.get("measurement_lane_attestations")
+    measurement_plan: MeasurementPlanV2 | None = None
+    measurement_decision: IsolationDecision | None = None
+    measurement_profile: EvidencePolicyProfileV2 | None = None
+    measurement_attestations: dict[str, LaneMaterializationAttestationV1] = {}
+    if (
+        any(
+            item is not None
+            for item in (
+                measurement_plan_payload,
+                measurement_decision_payload,
+                measurement_profile_payload,
+            )
+        )
+        or bool(measurement_attestations_payload)
+    ):
+        if not all(
+            isinstance(item, Mapping)
+            for item in (
+                measurement_plan_payload,
+                measurement_decision_payload,
+                measurement_profile_payload,
+                measurement_attestations_payload,
+            )
+        ):
+            raise ValueError("stored measurement replay contracts are incomplete")
+        measurement_decision = IsolationDecision.from_dict(measurement_decision_payload)
+        measurement_profile = EvidencePolicyProfileV2.from_dict(measurement_profile_payload)
+        measurement_plan = MeasurementPlanV2.from_dict(
+            measurement_plan_payload,
+            isolation_decision=measurement_decision,
+            evidence_policy_profile=measurement_profile,
+        )
+        measurement_attestations = {
+            str(unit_id): LaneMaterializationAttestationV1.from_dict(
+                value if isinstance(value, Mapping) else {}
+            )
+            for unit_id, value in measurement_attestations_payload.items()
+        }
     return CandidateReplayRequest(
         run_id=str(payload.get("run_id") or ""),
         task_id=str(payload.get("task_id") or ""),
@@ -9820,6 +10773,13 @@ def _candidate_replay_request_from_mapping(payload: Mapping[str, Any]) -> Candid
             else None
         ),
         agent=str(payload.get("agent")) if payload.get("agent") is not None else None,
+        evidence_policy_mode=str(
+            payload.get("evidence_policy_mode") or "legacy"
+        ),
+        measurement_plan=measurement_plan,
+        measurement_isolation_decision=measurement_decision,
+        measurement_evidence_policy_profile=measurement_profile,
+        measurement_lane_attestations=measurement_attestations,
         timeout_seconds=_optional_float(payload.get("timeout_seconds")),
         max_steps=_optional_int(payload.get("max_steps")),
         max_tool_calls=_optional_int(payload.get("max_tool_calls")),

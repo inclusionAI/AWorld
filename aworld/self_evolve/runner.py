@@ -11719,6 +11719,11 @@ class SelfEvolveRunner:
                     and replay_case_count == 1
                 ),
                 repetition_policy=repetition_policy,
+                evidence_policy_mode=(
+                    "required"
+                    if _is_verified_apply_policy(apply_policy)
+                    else "legacy"
+                ),
             )
         except ValueError as exc:
             return (
@@ -11743,9 +11748,10 @@ class SelfEvolveRunner:
             effective_total_timeout_seconds is None
             and _is_verified_apply_policy(apply_policy)
         ):
-            # A verified replay is a bounded experiment even when the broader
-            # Campaign budget is intentionally unbounded. Six member horizons
-            # permit useful multi-case evidence without another multi-hour run.
+            # Keep the legacy safety horizon until the v2 control-plane
+            # scheduler can enforce checkpoint quanta and Campaign deadlines.
+            # The v2 path will replace this heuristic atomically behind its
+            # rollout gate rather than leaving verified replay unbounded.
             effective_total_timeout_seconds = max(
                 effective_timeout_seconds,
                 effective_timeout_seconds * 6,
