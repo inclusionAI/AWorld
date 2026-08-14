@@ -4,6 +4,7 @@ import asyncio
 import base64
 import hashlib
 import json
+import os
 import shutil
 import socket
 import subprocess
@@ -14,6 +15,7 @@ import time
 from dataclasses import asdict, replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -74,6 +76,7 @@ from aworld.self_evolve.replay import (
     _replay_service_failure_with_stderr,
     _replay_service_start_failure_details,
     _stored_baseline_matches_request,
+    _task_response_signature,
     _replay_failure_outcome,
     replay_dataset_fingerprint,
     _run_replay_cli,
@@ -81,6 +84,7 @@ from aworld.self_evolve.replay import (
     _validate_replay_service_protocol_trace,
     _validate_websocket_handshake_response,
     _load_variant_result_from_dir,
+    _load_self_evolve_task_response,
 )
 from aworld.self_evolve.failure_events import (
     FailureEventSource,
@@ -6880,6 +6884,209 @@ async def test_aworld_cli_replay_executor_requests_machine_readable_trajectory_a
 
 
 @pytest.mark.asyncio
+async def test_required_replay_runtime_builds_parent_attested_v2_manifest(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    trajectory = [
+        {
+            "state": {"input": "task"},
+            "action": {
+                "content": "done",
+                "is_agent_finished": "True",
+            },
+        }
+    ]
+    captured: dict[str, Any] = {}
+
+    def fake_run(command, **kwargs):
+        captured.update(kwargs)
+        evidence_manifest = Path(kwargs["evidence_manifest"])
+        evidence_path = evidence_manifest.parent / "result.json"
+        evidence_path.write_text('{"value":1}', encoding="utf-8")
+        evidence_manifest.write_text(
+            json.dumps(
+                {
+                    "source_id": "result",
+                    "artifact_path": "result.json",
+                    "extraction_method": "bounded_extract",
+                    "fields": ["value"],
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        response = {
+            "schema_version": "aworld.self_evolve.task_response.v1",
+            "trajectory": trajectory,
+            "trajectory_capture_mode": "task_response",
+        }
+        response["framework_attestation"] = {
+            "schema_version": (
+                "aworld.self_evolve.task_response_attestation.v2"
+            ),
+            "signature": _task_response_signature(
+                response, kwargs["task_response_attestation_key"]
+            ),
+        }
+        Path(kwargs["task_response_path"]).write_text(
+            json.dumps(response), encoding="utf-8"
+        )
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=json.dumps(
+                {
+                    "trajectory": trajectory,
+                    "trajectory_capture_mode": "task_response",
+                }
+            )
+            + "\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr("aworld.self_evolve.replay._run_replay_cli", fake_run)
+    result = await AWorldCliReplayExecutor()(
+        ReplayExecutionRequest(
+            variant_id="candidate",
+            task_id="task-1",
+            candidate_id="cand-1",
+            workspace_root=str(tmp_path),
+            task_input="task",
+            task_text="task",
+            skill_root=None,
+            artifact_dir=str(tmp_path / "artifacts"),
+            evidence_policy_mode="required",
+        )
+    )
+
+    assert result.succeeded is True
+    assert result.metrics["evidence_policy_v2_runtime_trust_passed"] is True
+    trusted_manifest = json.loads(
+        Path(result.metrics["evidence_policy_v2_manifest_path"]).read_text(
+            encoding="utf-8"
+        )
+    )
+    envelope = trusted_manifest["runtime_trust_envelope"]
+    assert envelope["evidence_policy_fingerprint"] == result.metrics[
+        "evidence_policy_v2_profile_fingerprint"
+    ]
+    assert envelope["work_unit_fingerprint"] == result.metrics[
+        "evidence_policy_v2_work_unit_fingerprint"
+    ]
+    candidate_env = captured["env"]
+    assert "AWORLD_REPLAY_EVIDENCE_WRITER_ATTESTATION_JSON" not in candidate_env
+    assert "AWORLD_REPLAY_EVIDENCE_PRODUCERS_JSON" not in candidate_env
+    assert "AWORLD_REPLAY_EVIDENCE_POLICY_PROFILE_JSON" not in candidate_env
+    assert candidate_env["AWORLD_REPLAY_EVIDENCE_POLICY_MODE"] == "shadow"
+    signing_key = captured["task_response_attestation_key"]
+    assert isinstance(signing_key, bytes)
+    assert signing_key.hex() not in json.dumps(candidate_env, sort_keys=True)
+
+
+@pytest.mark.asyncio
+async def test_required_replay_runtime_rejects_trust_injection_before_rollout(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    called = False
+
+    def fake_run(*args, **kwargs):
+        nonlocal called
+        called = True
+        raise AssertionError("expensive rollout must not start")
+
+    monkeypatch.setattr("aworld.self_evolve.replay._run_replay_cli", fake_run)
+    result = await AWorldCliReplayExecutor()(
+        ReplayExecutionRequest(
+            variant_id="candidate",
+            task_id="task-1",
+            candidate_id="cand-1",
+            workspace_root=str(tmp_path),
+            task_input="task",
+            task_text="task",
+            skill_root=None,
+            artifact_dir=str(tmp_path / "artifacts"),
+            environment={
+                "AWORLD_REPLAY_EVIDENCE_POLICY_FINGERPRINT": "sha256:forged"
+            },
+            evidence_policy_mode="required",
+        )
+    )
+
+    assert called is False
+    assert result.failure["code"] == "evidence_policy_v2_preflight_failed"
+    assert result.metrics["evidence_policy_v2_preflight_passed"] is False
+
+
+@pytest.mark.asyncio
+async def test_required_replay_runtime_rejects_unsigned_task_response(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    trajectory = [{"action": {"content": "done", "is_agent_finished": "True"}}]
+
+    def fake_run(command, **kwargs):
+        evidence_manifest = Path(kwargs["evidence_manifest"])
+        (evidence_manifest.parent / "result.json").write_text(
+            '{"value":1}', encoding="utf-8"
+        )
+        evidence_manifest.write_text(
+            json.dumps(
+                {
+                    "source_id": "result",
+                    "artifact_path": "result.json",
+                    "extraction_method": "bounded_extract",
+                    "fields": ["value"],
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        Path(kwargs["task_response_path"]).write_text(
+            json.dumps(
+                {
+                    "schema_version": "aworld.self_evolve.task_response.v1",
+                    "trajectory": trajectory,
+                    "trajectory_capture_mode": "task_response",
+                }
+            ),
+            encoding="utf-8",
+        )
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=json.dumps(
+                {
+                    "trajectory": trajectory,
+                    "trajectory_capture_mode": "task_response",
+                }
+            )
+            + "\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr("aworld.self_evolve.replay._run_replay_cli", fake_run)
+    result = await AWorldCliReplayExecutor()(
+        ReplayExecutionRequest(
+            variant_id="candidate",
+            task_id="task-1",
+            candidate_id="cand-1",
+            workspace_root=str(tmp_path),
+            task_input="task",
+            task_text="task",
+            skill_root=None,
+            artifact_dir=str(tmp_path / "artifacts"),
+            evidence_policy_mode="required",
+        )
+    )
+
+    assert result.status == "failed"
+    assert result.failure["code"] == "evidence_policy_v2_attestation_failed"
+    assert result.metrics["evidence_policy_v2_runtime_trust_passed"] is False
+
+
+@pytest.mark.asyncio
 async def test_aworld_cli_replay_executor_rejects_undeclared_loopback_fallback(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -9180,6 +9387,54 @@ def test_replay_cli_supervisor_stops_after_evidence_and_task_response(
     payload = _extract_trajectory_payload_from_stdout(completed.stdout)
     assert payload["trajectory_capture_mode"] == "task_response"
     assert payload["trajectory"] == trajectory
+
+
+def test_replay_cli_parent_attests_response_received_over_capability_fd(
+    tmp_path: Path,
+) -> None:
+    artifact_dir = tmp_path / "artifacts"
+    artifact_dir.mkdir()
+    response_path = artifact_dir / "framework_task_response.json"
+    capability_reader, capability_writer = os.pipe()
+    key = b"p" * 32
+    payload = {
+        "schema_version": "aworld.self_evolve.task_response.v1",
+        "trajectory": [{"action": {"content": "done"}}],
+        "trajectory_capture_mode": "task_response",
+    }
+    script = (
+        "import json, os; "
+        "fd=int(os.environ['AWORLD_SELF_EVOLVE_TASK_RESPONSE_CAPABILITY_FD']); "
+        f"os.write(fd, json.dumps({payload!r}).encode()); os.close(fd)"
+    )
+
+    completed = _run_replay_cli(
+        [sys.executable, "-c", script],
+        cwd=str(tmp_path),
+        text=True,
+        capture_output=True,
+        timeout=5,
+        start_new_session=True,
+        env={
+            "AWORLD_SELF_EVOLVE_TASK_RESPONSE_CAPABILITY_FD": str(
+                capability_writer
+            )
+        },
+        artifact_dir=artifact_dir,
+        execution_started_at=time.time(),
+        replay_environment={},
+        task_response_path=response_path,
+        task_response_capability_fd=capability_writer,
+        task_response_capability_reader_fd=capability_reader,
+        task_response_attestation_key=key,
+    )
+
+    assert completed.returncode == 0
+    attested = _load_self_evolve_task_response(
+        response_path, attestation_key=key
+    )
+    assert attested is not None
+    assert attested["trajectory"] == payload["trajectory"]
 
 
 def test_replay_cli_supervisor_bounds_evidence_finalization_without_output(

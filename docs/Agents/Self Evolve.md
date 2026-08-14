@@ -467,9 +467,10 @@ available for a compatible retry. Replay also persists a bounded
 `members/paired_replay_checkpoint.json` cursor after every phase. Timeout gates
 reference that cursor, the request, and the incremental baseline manifest so a
 compatible Campaign cycle can continue measurement without reconstructing the
-completed controls. Verified runs that omit the deadline receive a framework
-safety horizon of six per-member timeout windows, which bounds a candidate
-experiment without turning campaign search budget back on. Cancellation crosses
+completed controls. Legacy verified execution retains its bounded safety horizon
+until the v2 measurement-control scheduler can enforce planned checkpoint quanta
+and Campaign deadlines. The rollout switches these semantics atomically rather
+than leaving the legacy serial path unbounded. Cancellation crosses
 the batch boundary and tears down the replay process group, so a displayed hard
 deadline cannot be converted into a normal batch result or leave an orphaned
 rollout. In verified mode, the first non-comparable baseline member makes the

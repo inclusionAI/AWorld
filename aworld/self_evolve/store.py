@@ -8,8 +8,21 @@ import shutil
 import socket
 import time
 import uuid
+from contextlib import contextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
+from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import (
+    Ed25519PrivateKey,
+    Ed25519PublicKey,
+)
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - required mode fails closed below.
+    fcntl = None  # type: ignore[assignment]
 
 from aworld.self_evolve.atomic_fs import atomic_exchange_paths
 from aworld.self_evolve.ingestion.types import (
@@ -38,6 +51,12 @@ from aworld.self_evolve.candidate_package import (
     validate_candidate_files,
 )
 from aworld.self_evolve.replay_adaptation import ReplayPreflightReport
+from aworld.self_evolve.replay_adaptation import IsolationDecision, ReplayIsolationTopology
+from aworld.core.tool.replay_policy import EvidencePolicyProfileV2
+from aworld.core.tool.replay_policy import FrameworkEvidenceWriterAttestationV2
+from aworld.core.tool.replay_policy import (
+    issue_framework_evidence_writer_attestation_v2,
+)
 from aworld.self_evolve.regression import RegressionEvidence, RegressionSuiteSpec
 from aworld.self_evolve.challenger import ChallengeReport
 from aworld.self_evolve.judge import JudgeRecord
@@ -45,6 +64,27 @@ from aworld.self_evolve.measurement import (
     AttributionReport,
     ControlledExperimentSpec,
     MeasurementObservation,
+)
+from aworld.self_evolve.measurement_control import (
+    LaneMaterializationAttestationV1,
+    LaneMaterializationClaim,
+    MeasurementControlObservationRecord,
+    LegacyMeasurementControlDescription,
+    MeasurementControlCorruptionError,
+    MeasurementControlEventKind,
+    MeasurementControlIndex,
+    MeasurementControlSnapshot,
+    MeasurementPlanV2,
+    MeasurementWorkUnitState,
+    WorkUnitJournalEvent,
+    advance_measurement_control_index,
+    classify_work_unit_reuse,
+    describe_legacy_measurement_control,
+    extend_measurement_control_journal_fingerprint,
+    initial_measurement_control_index,
+    measurement_control_bytes_fingerprint,
+    rebuild_measurement_control_index,
+    stable_control_fingerprint,
 )
 from aworld.self_evolve.sanitization import public_diagnostic_projection
 from aworld.self_evolve.credit_assignment import TargetSelectionReport
@@ -57,6 +97,15 @@ from aworld.self_evolve.types import (
     to_json_dict,
 )
 from aworld.skills.release import mark_skill_content_candidate
+
+
+_MEASUREMENT_JOURNAL_MAX_EVENTS = 4096
+_MEASUREMENT_JOURNAL_MAX_BYTES = 16 * 1024 * 1024
+_MEASUREMENT_JOURNAL_MAX_EVENT_BYTES = 65_536
+_MEASUREMENT_COMPACTION_INTENT_SCHEMA = (
+    "aworld.self_evolve.measurement_compaction_intent.v1"
+)
+_MEASUREMENT_COMPACTION_METADATA_MAX_BYTES = 16 * 1024 * 1024
 
 
 def _ingestion_semantic_payload(
@@ -117,6 +166,9 @@ class FilesystemSelfEvolveStore:
             if artifact_root is not None
             else self.workspace_root / ".aworld" / "self_evolve"
         )
+        self._measurement_authority_private_keys: dict[
+            Path, Ed25519PrivateKey
+        ] = {}
 
     def run_path(self, run_id: str) -> Path:
         self._validate_id(run_id, "run_id")
@@ -150,6 +202,1440 @@ class FilesystemSelfEvolveStore:
             / experiment_id
             / "attribution_report.json"
         ).as_posix()
+
+    def measurement_control_plan_path(
+        self,
+        run_id: str,
+        measurement_plan_fingerprint: str,
+    ) -> Path:
+        """Return a path addressed only by a validated canonical plan digest."""
+
+        self._validate_id(run_id, "run_id")
+        if not re.fullmatch(r"sha256:[0-9a-f]{64}", measurement_plan_fingerprint):
+            raise ValueError("invalid measurement plan fingerprint")
+        digest = measurement_plan_fingerprint.removeprefix("sha256:")
+        return self.run_path(run_id) / "measurement_control" / f"plan-{digest}"
+
+    def write_measurement_control_plan(
+        self,
+        run_id: str,
+        plan: MeasurementPlanV2,
+        *,
+        isolation_decision: IsolationDecision,
+        evidence_policy_profile: EvidencePolicyProfileV2,
+    ) -> Path:
+        """Persist an immutable plan before any work-unit transition."""
+
+        if not isinstance(plan, MeasurementPlanV2):
+            raise TypeError("measurement control plan must be typed")
+        try:
+            validated_plan = MeasurementPlanV2.from_dict(
+                plan.to_dict(),
+                isolation_decision=isolation_decision,
+                evidence_policy_profile=evidence_policy_profile,
+            )
+        except (TypeError, ValueError) as exc:
+            raise ValueError("measurement control plan failed canonical validation") from exc
+        if validated_plan != plan:
+            raise ValueError("measurement control plan failed canonical validation")
+        experiment = self.read_measurement_experiment(run_id, plan.experiment_id)
+        if experiment.experiment_id != plan.experiment_id:
+            raise ValueError("measurement plan does not belong to the experiment")
+        root = self.measurement_control_plan_path(
+            run_id, plan.measurement_plan_fingerprint
+        )
+        self._reject_symlink_components(root.parent)
+        if root.is_symlink() or (root.exists() and not root.is_dir()):
+            raise ValueError("measurement control plan destination is unsafe")
+        plan_path = root / "plan.json"
+        isolation_path = root / "isolation_decision.json"
+        evidence_path = root / "evidence_policy_profile.json"
+        if plan_path.exists():
+            if plan_path.is_symlink() or not plan_path.is_file():
+                raise ValueError("immutable measurement plan destination is unsafe")
+            try:
+                existing = self.read_measurement_control_plan(
+                    run_id, plan.measurement_plan_fingerprint
+                )
+            except (TypeError, ValueError, json.JSONDecodeError) as exc:
+                raise ValueError(
+                    "immutable measurement plan destination is invalid"
+                ) from exc
+            if existing.to_dict() != plan.to_dict():
+                raise ValueError(
+                    "immutable measurement plan already exists with different content"
+                )
+            stored_decision, stored_profile = self.read_measurement_control_contracts(
+                run_id, plan.measurement_plan_fingerprint
+            )
+            if stored_decision != isolation_decision:
+                raise ValueError("immutable isolation decision already differs")
+            if stored_profile != evidence_policy_profile:
+                raise ValueError("immutable evidence policy profile already differs")
+        else:
+            if root.exists():
+                raise ValueError("immutable measurement plan destination is incomplete")
+            root.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            staging = root.parent / f".{root.name}.tmp-{uuid.uuid4().hex}"
+            staging.mkdir(mode=0o700)
+            try:
+                self._write_json_atomic(
+                    staging / "isolation_decision.json",
+                    isolation_decision.to_dict(),
+                )
+                self._write_json_atomic(
+                    staging / "evidence_policy_profile.json",
+                    evidence_policy_profile.to_dict(),
+                )
+                self._write_json_atomic(staging / "plan.json", plan.to_dict())
+                authority_private_key = self._create_measurement_authority_key(
+                    staging / "authority.pub"
+                )
+                self._create_empty_private_file(staging / "journal.jsonl")
+                self._write_json_atomic(
+                    staging / "index.json",
+                    initial_measurement_control_index(plan).to_dict(),
+                )
+                os.replace(staging, root)
+                self._measurement_authority_private_keys[
+                    root.resolve()
+                ] = authority_private_key
+                self._fsync_directory(root.parent)
+            except Exception:
+                shutil.rmtree(staging, ignore_errors=True)
+                raise
+
+        journal_path = root / "journal.jsonl"
+        self._read_measurement_authority_public_key(root)
+        if not journal_path.exists():
+            self._create_empty_private_file(journal_path)
+        elif journal_path.is_symlink() or not journal_path.is_file():
+            raise ValueError("measurement control journal destination is unsafe")
+
+        index_path = root / "index.json"
+        if not index_path.exists():
+            if journal_path.stat().st_size != 0:
+                raise MeasurementControlCorruptionError(
+                    "measurement_index_missing_with_journal",
+                    "measurement journal exists without its canonical index",
+                )
+            self._write_json_atomic(
+                index_path, initial_measurement_control_index(plan).to_dict()
+            )
+        elif index_path.is_symlink() or not index_path.is_file():
+            raise ValueError("measurement control index destination is unsafe")
+
+        reloaded = self.read_measurement_control_plan(
+            run_id, plan.measurement_plan_fingerprint
+        )
+        if reloaded != plan:
+            raise ValueError("persisted measurement control plan did not round trip")
+        self.read_measurement_control_index(
+            run_id, plan.measurement_plan_fingerprint
+        )
+        return root
+
+    def read_measurement_control_contracts(
+        self,
+        run_id: str,
+        measurement_plan_fingerprint: str,
+    ) -> tuple[IsolationDecision, EvidencePolicyProfileV2]:
+        """Load and revalidate the authority-bearing plan artifacts."""
+
+        root = self.measurement_control_plan_path(
+            run_id, measurement_plan_fingerprint
+        )
+        self._reject_symlink_components(root)
+        isolation_path = root / "isolation_decision.json"
+        evidence_path = root / "evidence_policy_profile.json"
+        for path in (isolation_path, evidence_path):
+            if path.is_symlink() or not path.is_file():
+                raise FileNotFoundError("measurement control contract artifact not found")
+        isolation_decision = IsolationDecision.from_dict(
+            self._read_json(isolation_path)
+        )
+        evidence_policy_profile = EvidencePolicyProfileV2.from_dict(
+            self._read_json(evidence_path)
+        )
+        return isolation_decision, evidence_policy_profile
+
+    def read_measurement_control_plan(
+        self,
+        run_id: str,
+        measurement_plan_fingerprint: str,
+    ) -> MeasurementPlanV2:
+        path = self.measurement_control_plan_path(
+            run_id, measurement_plan_fingerprint
+        ) / "plan.json"
+        self._reject_symlink_components(path.parent)
+        if path.is_symlink() or not path.is_file():
+            raise FileNotFoundError("measurement control plan not found")
+        isolation_decision, evidence_policy_profile = (
+            self.read_measurement_control_contracts(
+                run_id, measurement_plan_fingerprint
+            )
+        )
+        plan = MeasurementPlanV2.from_dict(
+            self._read_json(path),
+            isolation_decision=isolation_decision,
+            evidence_policy_profile=evidence_policy_profile,
+        )
+        if plan.measurement_plan_fingerprint != measurement_plan_fingerprint:
+            raise ValueError("measurement plan identity does not match its path")
+        self.read_measurement_experiment(run_id, plan.experiment_id)
+        return plan
+
+    def read_measurement_control_journal(
+        self,
+        run_id: str,
+        measurement_plan_fingerprint: str,
+    ) -> tuple[WorkUnitJournalEvent, ...]:
+        root = self.measurement_control_plan_path(
+            run_id, measurement_plan_fingerprint
+        )
+        with self._measurement_control_append_lock(root):
+            plan = self.read_measurement_control_plan(
+                run_id, measurement_plan_fingerprint
+            )
+            index = self._read_measurement_control_index_unlocked(
+                run_id, measurement_plan_fingerprint, verify_prefix=True
+            )
+            journal_bytes = self._read_measurement_control_journal_bytes(
+                self._measurement_control_journal_path(root, index)
+            )
+            return self._decode_measurement_control_journal(plan, journal_bytes)
+
+    def read_measurement_control_index(
+        self,
+        run_id: str,
+        measurement_plan_fingerprint: str,
+    ) -> MeasurementControlIndex:
+        """Read, validate, and recover a journal tail left before index replace."""
+
+        root = self.measurement_control_plan_path(
+            run_id, measurement_plan_fingerprint
+        )
+        with self._measurement_control_append_lock(root):
+            return self._read_measurement_control_index_unlocked(
+                run_id, measurement_plan_fingerprint, verify_prefix=True
+            )
+
+    def _read_measurement_control_index_unlocked(
+        self,
+        run_id: str,
+        measurement_plan_fingerprint: str,
+        *,
+        verify_prefix: bool,
+    ) -> MeasurementControlIndex:
+        plan = self.read_measurement_control_plan(
+            run_id, measurement_plan_fingerprint
+        )
+        root = self.measurement_control_plan_path(run_id, measurement_plan_fingerprint)
+        index_path = root / "index.json"
+        self._recover_measurement_compaction_unlocked(root, plan)
+        if index_path.is_symlink() or not index_path.is_file():
+            raise MeasurementControlCorruptionError(
+                "measurement_index_missing",
+                "canonical measurement index is missing or unsafe",
+            )
+        try:
+            stored = MeasurementControlIndex.from_dict(self._read_json(index_path))
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise MeasurementControlCorruptionError(
+                "measurement_index_invalid",
+                "canonical measurement index is invalid",
+            ) from exc
+        if stored.measurement_plan_fingerprint != measurement_plan_fingerprint:
+            raise MeasurementControlCorruptionError(
+                "measurement_index_plan_identity_mismatch",
+                "canonical index references a different measurement plan",
+            )
+        journal_path = self._measurement_control_journal_path(root, stored)
+        snapshot: MeasurementControlSnapshot | None = None
+        if stored.snapshot_fingerprint is not None:
+            digest = stored.snapshot_fingerprint.removeprefix("sha256:")
+            snapshot_path = root / "snapshots" / f"snapshot-{digest}.json"
+            try:
+                snapshot = MeasurementControlSnapshot.from_dict(
+                    self._read_json(snapshot_path)
+                )
+            except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
+                raise MeasurementControlCorruptionError(
+                    "measurement_snapshot_invalid",
+                    "canonical compacted index has no verified snapshot",
+                ) from exc
+            if (
+                snapshot.snapshot_fingerprint != stored.snapshot_fingerprint
+                or snapshot.measurement_plan_fingerprint
+                != measurement_plan_fingerprint
+                or snapshot.compacted_event_count != stored.compacted_event_count
+            ):
+                raise MeasurementControlCorruptionError(
+                    "measurement_snapshot_index_mismatch",
+                    "snapshot does not match canonical compacted index",
+                )
+        journal_size = self._measurement_control_journal_size(journal_path)
+        if journal_size > _MEASUREMENT_JOURNAL_MAX_BYTES:
+            self._record_oversized_measurement_journal(
+                root,
+                journal_file=stored.journal_file,
+                observed_bytes=journal_size,
+                confirmed_bytes=stored.journal_byte_count,
+            )
+            raise MeasurementControlCorruptionError(
+                "measurement_journal_oversized",
+                "measurement journal exceeds its hard read bound",
+            )
+        if journal_size < stored.journal_byte_count:
+            raise MeasurementControlCorruptionError(
+                "measurement_journal_prefix_corrupt",
+                "journal bytes confirmed by the canonical index were modified",
+            )
+        if verify_prefix:
+            with journal_path.open("rb") as handle:
+                prefix = handle.read(stored.journal_byte_count)
+            if measurement_control_bytes_fingerprint(prefix) != stored.journal_sha256:
+                raise MeasurementControlCorruptionError(
+                    "measurement_journal_prefix_corrupt",
+                    "journal bytes confirmed by the canonical index were modified",
+                )
+            if snapshot is None:
+                base_index = initial_measurement_control_index(plan)
+            else:
+                base_index = MeasurementControlIndex(
+                    measurement_plan_fingerprint=plan.measurement_plan_fingerprint,
+                    work_units=snapshot.work_units,
+                    event_count=snapshot.compacted_event_count,
+                    observation_count=snapshot.observation_count,
+                    actual_attempt_cost_seconds=snapshot.actual_attempt_cost_seconds,
+                    journal_byte_count=0,
+                    journal_sha256=measurement_control_bytes_fingerprint(b""),
+                    journal_file=stored.journal_file,
+                    compacted_event_count=snapshot.compacted_event_count,
+                    snapshot_fingerprint=snapshot.snapshot_fingerprint,
+                )
+            rebuilt = rebuild_measurement_control_index(
+                plan,
+                self._decode_measurement_control_journal(plan, prefix),
+                journal_bytes=prefix,
+                base_index=base_index,
+            )
+            if rebuilt != stored:
+                raise MeasurementControlCorruptionError(
+                    "measurement_index_journal_mismatch",
+                    "canonical index is not derived from its snapshot and journal",
+                )
+        if journal_size == stored.journal_byte_count:
+            return stored
+        with journal_path.open("rb") as handle:
+            handle.seek(stored.journal_byte_count)
+            tail = handle.read(
+                _MEASUREMENT_JOURNAL_MAX_BYTES - stored.journal_byte_count + 1
+            )
+        if len(tail) > _MEASUREMENT_JOURNAL_MAX_BYTES - stored.journal_byte_count:
+            raise MeasurementControlCorruptionError(
+                "measurement_journal_oversized",
+                "measurement journal tail exceeds its hard read bound",
+            )
+        last_newline = tail.rfind(b"\n")
+        complete_tail = tail[: last_newline + 1] if last_newline >= 0 else b""
+        torn_tail = tail[last_newline + 1 :] if last_newline >= 0 else tail
+        if torn_tail:
+            torn_digest = hashlib.sha256(torn_tail).hexdigest()
+            if len(torn_tail) <= _MEASUREMENT_JOURNAL_MAX_EVENT_BYTES:
+                quarantine = root / "quarantine" / f"torn-tail-{torn_digest}.bin"
+                self._write_bytes_atomic(quarantine, torn_tail)
+            else:
+                self._write_json_atomic(
+                    root / "quarantine" / f"torn-tail-{torn_digest}.json",
+                    {
+                        "schema_version": "aworld.measurement_journal_quarantine.v1",
+                        "journal_file": stored.journal_file,
+                        "torn_tail_bytes": len(torn_tail),
+                        "torn_tail_sha256": f"sha256:{torn_digest}",
+                        "content_copied": False,
+                        "reason_code": "measurement_journal_torn_record",
+                    },
+                )
+            descriptor = os.open(
+                journal_path,
+                os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0),
+            )
+            try:
+                os.ftruncate(descriptor, stored.journal_byte_count + len(complete_tail))
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+        current = stored
+        for event, encoded in self._decode_measurement_control_journal_records(
+            plan, complete_tail
+        ):
+            next_count = current.journal_byte_count + len(encoded)
+            next_hash = extend_measurement_control_journal_fingerprint(
+                current.journal_sha256, encoded
+            )
+            current = advance_measurement_control_index(
+                plan,
+                current,
+                event,
+                journal_byte_count=next_count,
+                journal_sha256=next_hash,
+            )
+        if complete_tail:
+            self._write_json_atomic(index_path, current.to_dict())
+        return current
+
+    def append_measurement_control_event(
+        self,
+        run_id: str,
+        measurement_plan_fingerprint: str,
+        event: WorkUnitJournalEvent,
+    ) -> Path:
+        """Append one bounded transition and atomically advance its index."""
+
+        root = self.measurement_control_plan_path(
+            run_id, measurement_plan_fingerprint
+        )
+        with self._measurement_control_append_lock(root):
+            return self._append_measurement_control_event_unlocked(
+                run_id, measurement_plan_fingerprint, event
+            )
+
+    def _append_measurement_control_event_unlocked(
+        self,
+        run_id: str,
+        measurement_plan_fingerprint: str,
+        event: WorkUnitJournalEvent,
+    ) -> Path:
+
+        if not isinstance(event, WorkUnitJournalEvent):
+            raise TypeError("measurement control event must be typed")
+        if event.measurement_plan_fingerprint != measurement_plan_fingerprint:
+            raise ValueError("event references a different measurement plan")
+        plan = self.read_measurement_control_plan(
+            run_id, measurement_plan_fingerprint
+        )
+        current_index = self._read_measurement_control_index_unlocked(
+            run_id, measurement_plan_fingerprint, verify_prefix=False
+        )
+        root = self.measurement_control_plan_path(run_id, measurement_plan_fingerprint)
+        journal_path = self._measurement_control_journal_path(root, current_index)
+        known_event_ids = {
+            entry.last_event_id for entry in current_index.work_units
+            if entry.last_event_id is not None
+        } | {
+            attempt.finalized_event_id
+            for entry in current_index.work_units
+            for attempt in entry.finalized_attempts
+        }
+        if event.event_id in known_event_ids:
+            return journal_path
+        if event.kind is MeasurementControlEventKind.TERMINAL_RECORDED:
+            self._validate_terminal_observation(
+                run_id, plan, event
+            )
+        # Ensures transition, attempt, and terminal invariants before mutation.
+        encoded = (
+            json.dumps(
+                event.to_dict(),
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            + "\n"
+        ).encode("utf-8")
+        if len(encoded) > _MEASUREMENT_JOURNAL_MAX_EVENT_BYTES:
+            raise ValueError("measurement control journal event exceeds 64 KiB")
+        if (
+            current_index.event_count - current_index.compacted_event_count
+            >= _MEASUREMENT_JOURNAL_MAX_EVENTS
+            or current_index.journal_byte_count + len(encoded)
+            > _MEASUREMENT_JOURNAL_MAX_BYTES
+        ):
+            raise MeasurementControlCorruptionError(
+                "measurement_journal_compaction_required",
+                "bounded journal requires a verified snapshot before append",
+            )
+        next_index = advance_measurement_control_index(
+            plan,
+            current_index,
+            event,
+            journal_byte_count=current_index.journal_byte_count + len(encoded),
+            journal_sha256=extend_measurement_control_journal_fingerprint(
+                current_index.journal_sha256, encoded
+            ),
+        )
+        self._reject_symlink_components(journal_path.parent)
+        if journal_path.is_symlink() or not journal_path.is_file():
+            raise ValueError("measurement control journal destination is unsafe")
+        descriptor = os.open(
+            journal_path,
+            os.O_APPEND | os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0),
+        )
+        try:
+            self._write_all(descriptor, encoded)
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        journal_path.chmod(0o600)
+        self._write_json_atomic(root / "index.json", next_index.to_dict())
+        return journal_path
+
+    def recover_expired_measurement_control_leases(
+        self,
+        run_id: str,
+        measurement_plan_fingerprint: str,
+        *,
+        now: str,
+    ) -> tuple[str, ...]:
+        """Checkpoint expired active units without turning expiry into failure."""
+
+        current_time = self._parse_utc_datetime(now, "now")
+        plan = self.read_measurement_control_plan(
+            run_id, measurement_plan_fingerprint
+        )
+        index = self.read_measurement_control_index(
+            run_id, measurement_plan_fingerprint
+        )
+        recovered: list[str] = []
+        for entry in index.work_units:
+            if entry.state not in {
+                MeasurementWorkUnitState.LEASED,
+                MeasurementWorkUnitState.RUNNING,
+            } or entry.lease_expires_at is None:
+                continue
+            if self._parse_utc_datetime(
+                entry.lease_expires_at, "lease_expires_at"
+            ) > current_time:
+                continue
+            event = WorkUnitJournalEvent.create(
+                measurement_plan_fingerprint=plan.measurement_plan_fingerprint,
+                work_unit_id=entry.work_unit_id,
+                kind=MeasurementControlEventKind.LEASE_RECOVERED,
+                previous_state=entry.state,
+                new_state=MeasurementWorkUnitState.CHECKPOINTED,
+                occurred_at=now,
+                attempt_id=entry.active_attempt_id or "missing-attempt",
+                attempt_cost_seconds=min(
+                    plan.deadlines.member_hard_deadline_seconds,
+                    max(
+                        0.0,
+                        (
+                            current_time
+                            - self._parse_utc_datetime(
+                                entry.active_attempt_started_at
+                                or entry.last_occurred_at
+                                or now,
+                                "active_attempt_started_at",
+                            )
+                        ).total_seconds(),
+                    ),
+                ),
+                reason_code="lease_expired",
+            )
+            self.append_measurement_control_event(
+                run_id, measurement_plan_fingerprint, event
+            )
+            recovered.append(entry.work_unit_id)
+        return tuple(recovered)
+
+    def write_measurement_control_observation(
+        self,
+        run_id: str,
+        measurement_plan_fingerprint: str,
+        observation: MeasurementControlObservationRecord,
+    ) -> Path:
+        """Persist one immutable terminal observation before journal completion."""
+
+        if not isinstance(observation, MeasurementControlObservationRecord):
+            raise TypeError("measurement control observation must be typed")
+        plan = self.read_measurement_control_plan(run_id, measurement_plan_fingerprint)
+        self._validate_observation_coordinates(run_id, plan, observation)
+        digest = observation.observation_fingerprint.removeprefix("sha256:")
+        path = self.measurement_control_plan_path(
+            run_id, measurement_plan_fingerprint
+        ) / "observations" / f"observation-{digest}.json"
+        if path.exists():
+            existing = MeasurementControlObservationRecord.from_dict(
+                self._read_json(path)
+            )
+            if existing != observation:
+                raise ValueError("immutable observation digest has conflicting content")
+            return path
+        self._write_json_atomic(path, observation.to_dict())
+        reloaded = self.read_measurement_control_observation(
+            run_id, measurement_plan_fingerprint, observation.observation_fingerprint
+        )
+        if reloaded != observation:
+            raise ValueError("persisted measurement observation did not round trip")
+        return path
+
+    def write_lane_materialization_attestation(
+        self,
+        run_id: str,
+        measurement_plan_fingerprint: str,
+        attestation: LaneMaterializationAttestationV1,
+    ) -> Path:
+        """Persist framework materialization proof before any lane executes."""
+
+        if not isinstance(attestation, LaneMaterializationAttestationV1):
+            raise TypeError("lane materialization attestation must be typed")
+        plan = self.read_measurement_control_plan(run_id, measurement_plan_fingerprint)
+        decision, profile = self.read_measurement_control_contracts(
+            run_id, measurement_plan_fingerprint
+        )
+        self._validate_lane_materialization_attestation(
+            run_id, plan, decision, profile, attestation
+        )
+        digest = attestation.attestation_fingerprint.removeprefix("sha256:")
+        path = self.measurement_control_plan_path(
+            run_id, measurement_plan_fingerprint
+        ) / "lane-attestations" / f"attestation-{digest}.json"
+        if path.exists():
+            existing = LaneMaterializationAttestationV1.from_dict(
+                self._read_json(path)
+            )
+            if existing != attestation:
+                raise ValueError(
+                    "immutable lane attestation digest has conflicting content"
+                )
+            return path
+        self._write_json_atomic(path, attestation.to_dict())
+        reloaded = self.read_lane_materialization_attestation(
+            run_id,
+            measurement_plan_fingerprint,
+            attestation.attestation_fingerprint,
+        )
+        if reloaded != attestation:
+            raise ValueError("persisted lane attestation did not round trip")
+        return path
+
+    def _issue_lane_materialization_attestation(
+        self,
+        run_id: str,
+        measurement_plan_fingerprint: str,
+        *,
+        lane_id: int,
+        isolation_grant_fingerprint: str | None,
+        topology: ReplayIsolationTopology,
+        binding_fingerprints: tuple[str, ...],
+        writer_attestation: FrameworkEvidenceWriterAttestationV2,
+        claims: tuple[LaneMaterializationClaim, ...],
+        recorded_at: str,
+    ) -> LaneMaterializationAttestationV1:
+        """Sign a lane proof with authority never exposed to replay children."""
+
+        plan = self.read_measurement_control_plan(run_id, measurement_plan_fingerprint)
+        decision, profile = self.read_measurement_control_contracts(
+            run_id, measurement_plan_fingerprint
+        )
+        if not isinstance(topology, ReplayIsolationTopology) or not isinstance(
+            writer_attestation, FrameworkEvidenceWriterAttestationV2
+        ):
+            raise TypeError("lane proof requires typed materializer provenance")
+        expected_isolation_identity = (
+            isolation_grant_fingerprint or decision.fingerprint
+        )
+        expected_resource_identity = stable_control_fingerprint(
+            {
+                "topology": topology.to_dict(),
+                "bindings": list(sorted(binding_fingerprints)),
+            }
+        )
+        if (
+            writer_attestation.evidence_policy_fingerprint != profile.fingerprint
+            or writer_attestation.writer_identity
+            != f"measurement-writer-lane-{lane_id}"
+            or writer_attestation.isolation_identity != expected_isolation_identity
+            or writer_attestation.resource_identity != expected_resource_identity
+        ):
+            raise ValueError("framework writer attestation does not match the lane")
+        root = self.measurement_control_plan_path(
+            run_id, measurement_plan_fingerprint
+        )
+        private_key = self._measurement_authority_private_key(root)
+        authority_public_key_fingerprint = (
+            self._measurement_authority_public_key_fingerprint(root)
+        )
+        unsigned = LaneMaterializationAttestationV1.create(
+            measurement_plan_fingerprint=plan.measurement_plan_fingerprint,
+            isolation_decision_fingerprint=decision.fingerprint,
+            evidence_policy_fingerprint=profile.fingerprint,
+            lane_id=lane_id,
+            isolation_grant_fingerprint=isolation_grant_fingerprint,
+            topology_fingerprint=topology.topology_fingerprint,
+            topology=topology.to_dict(),
+            writer_attestation_fingerprint=writer_attestation.fingerprint,
+            writer_attestation=writer_attestation.to_dict(),
+            claims=claims,
+            recorded_at=recorded_at,
+            authority_public_key_fingerprint=authority_public_key_fingerprint,
+            authority_signature="0" * 128,
+        )
+        signature = private_key.sign(
+            json.dumps(
+                unsigned.authority_payload(),
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=True,
+            ).encode("utf-8")
+        ).hex()
+        attestation = LaneMaterializationAttestationV1.create(
+            measurement_plan_fingerprint=plan.measurement_plan_fingerprint,
+            isolation_decision_fingerprint=decision.fingerprint,
+            evidence_policy_fingerprint=profile.fingerprint,
+            lane_id=lane_id,
+            isolation_grant_fingerprint=isolation_grant_fingerprint,
+            topology_fingerprint=topology.topology_fingerprint,
+            topology=topology.to_dict(),
+            writer_attestation_fingerprint=writer_attestation.fingerprint,
+            writer_attestation=writer_attestation.to_dict(),
+            claims=claims,
+            recorded_at=recorded_at,
+            authority_public_key_fingerprint=authority_public_key_fingerprint,
+            authority_signature=signature,
+        )
+        self.write_lane_materialization_attestation(
+            run_id, measurement_plan_fingerprint, attestation
+        )
+        return attestation
+
+    def read_lane_materialization_attestation(
+        self,
+        run_id: str,
+        measurement_plan_fingerprint: str,
+        attestation_fingerprint: str,
+    ) -> LaneMaterializationAttestationV1:
+        if not re.fullmatch(r"sha256:[0-9a-f]{64}", attestation_fingerprint):
+            raise ValueError("invalid lane attestation fingerprint")
+        plan = self.read_measurement_control_plan(run_id, measurement_plan_fingerprint)
+        decision, profile = self.read_measurement_control_contracts(
+            run_id, measurement_plan_fingerprint
+        )
+        digest = attestation_fingerprint.removeprefix("sha256:")
+        path = self.measurement_control_plan_path(
+            run_id, measurement_plan_fingerprint
+        ) / "lane-attestations" / f"attestation-{digest}.json"
+        self._reject_symlink_components(path.parent)
+        if path.is_symlink() or not path.is_file():
+            raise MeasurementControlCorruptionError(
+                "lane_materialization_attestation_missing",
+                "lane materialization attestation is missing or unsafe",
+            )
+        try:
+            attestation = LaneMaterializationAttestationV1.from_dict(
+                self._read_json(path)
+            )
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise MeasurementControlCorruptionError(
+                "lane_materialization_attestation_invalid",
+                "lane materialization attestation failed content verification",
+            ) from exc
+        if attestation.attestation_fingerprint != attestation_fingerprint:
+            raise MeasurementControlCorruptionError(
+                "lane_materialization_attestation_path_mismatch",
+                "lane attestation identity does not match its immutable path",
+            )
+        self._validate_lane_materialization_attestation(
+            run_id, plan, decision, profile, attestation
+        )
+        return attestation
+
+    def read_measurement_control_observation(
+        self,
+        run_id: str,
+        measurement_plan_fingerprint: str,
+        observation_fingerprint: str,
+    ) -> MeasurementControlObservationRecord:
+        if not re.fullmatch(r"sha256:[0-9a-f]{64}", observation_fingerprint):
+            raise ValueError("invalid observation fingerprint")
+        plan = self.read_measurement_control_plan(run_id, measurement_plan_fingerprint)
+        digest = observation_fingerprint.removeprefix("sha256:")
+        path = self.measurement_control_plan_path(
+            run_id, measurement_plan_fingerprint
+        ) / "observations" / f"observation-{digest}.json"
+        self._reject_symlink_components(path.parent)
+        if path.is_symlink() or not path.is_file():
+            raise MeasurementControlCorruptionError(
+                "measurement_observation_missing",
+                "terminal observation record is missing or unsafe",
+            )
+        try:
+            observation = MeasurementControlObservationRecord.from_dict(
+                self._read_json(path)
+            )
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise MeasurementControlCorruptionError(
+                "measurement_observation_invalid",
+                "terminal observation record failed content-address verification",
+            ) from exc
+        if observation.observation_fingerprint != observation_fingerprint:
+            raise MeasurementControlCorruptionError(
+                "measurement_observation_path_mismatch",
+                "observation identity does not match its immutable path",
+            )
+        self._validate_observation_coordinates(run_id, plan, observation)
+        return observation
+
+    def resolve_compatible_measurement_control_observation(
+        self,
+        run_id: str,
+        *,
+        expected_plan: MeasurementPlanV2,
+        stored_plan_fingerprint: str,
+        stored_work_unit_id: str,
+    ) -> MeasurementControlObservationRecord:
+        """Resolve reuse only through typed plan compatibility and a real record."""
+
+        stored_plan = self.read_measurement_control_plan(
+            run_id, stored_plan_fingerprint
+        )
+        index = self.read_measurement_control_index(run_id, stored_plan_fingerprint)
+        entry = index.entry(stored_work_unit_id)
+        decision = classify_work_unit_reuse(
+            expected_plan=expected_plan,
+            stored_plan=stored_plan,
+            stored_entry=entry,
+        )
+        if not decision.compatible or decision.observation_fingerprint is None:
+            raise MeasurementControlCorruptionError(
+                "measurement_observation_reuse_incompatible",
+                f"stored observation is not reusable: {decision.reason_code}",
+            )
+        return self.read_measurement_control_observation(
+            run_id, stored_plan_fingerprint, decision.observation_fingerprint
+        )
+
+    def compact_measurement_control_journal(
+        self, run_id: str, measurement_plan_fingerprint: str
+    ) -> Path:
+        """Publish a verified snapshot and a new journal generation atomically."""
+
+        root = self.measurement_control_plan_path(run_id, measurement_plan_fingerprint)
+        with self._measurement_control_append_lock(root):
+            index = self._read_measurement_control_index_unlocked(
+                run_id, measurement_plan_fingerprint, verify_prefix=True
+            )
+            if index.event_count == index.compacted_event_count:
+                raise ValueError("measurement journal has no uncompacted events")
+            snapshot = MeasurementControlSnapshot.create(index)
+            digest = snapshot.snapshot_fingerprint.removeprefix("sha256:")
+            snapshot_path = root / "snapshots" / f"snapshot-{digest}.json"
+            self._write_json_atomic(snapshot_path, snapshot.to_dict())
+            self._fsync_directory(snapshot_path.parent)
+            verified = MeasurementControlSnapshot.from_dict(self._read_json(snapshot_path))
+            if verified != snapshot:
+                raise MeasurementControlCorruptionError(
+                    "measurement_snapshot_verification_failed",
+                    "measurement snapshot did not round trip",
+                )
+            target_journal_file = f"journal-{digest}.jsonl"
+            target_journal_path = root / target_journal_file
+            if not target_journal_path.exists():
+                self._write_bytes_atomic(target_journal_path, b"")
+            elif (
+                target_journal_path.is_symlink()
+                or not target_journal_path.is_file()
+                or target_journal_path.stat().st_size != 0
+            ):
+                raise MeasurementControlCorruptionError(
+                    "measurement_compaction_target_unsafe",
+                    "new journal generation is not an empty regular file",
+                )
+            self._fsync_directory(root)
+            compacted = MeasurementControlIndex(
+                measurement_plan_fingerprint=index.measurement_plan_fingerprint,
+                work_units=index.work_units,
+                event_count=index.event_count,
+                observation_count=index.observation_count,
+                actual_attempt_cost_seconds=index.actual_attempt_cost_seconds,
+                journal_byte_count=0,
+                journal_sha256=measurement_control_bytes_fingerprint(b""),
+                journal_file=target_journal_file,
+                compacted_event_count=index.event_count,
+                snapshot_fingerprint=snapshot.snapshot_fingerprint,
+            )
+            intent = {
+                "schema_version": _MEASUREMENT_COMPACTION_INTENT_SCHEMA,
+                "measurement_plan_fingerprint": measurement_plan_fingerprint,
+                "source_index_fingerprint": index.index_fingerprint,
+                "source_journal_file": index.journal_file,
+                "snapshot_fingerprint": snapshot.snapshot_fingerprint,
+                "target_index": compacted.to_dict(),
+            }
+            self._write_json_atomic(root / "compaction.json", intent)
+            self._fsync_directory(root)
+            self._commit_measurement_compaction_unlocked(root, plan=None)
+            return snapshot_path
+
+    def _recover_measurement_compaction_unlocked(
+        self, root: Path, plan: MeasurementPlanV2
+    ) -> None:
+        intent_path = root / "compaction.json"
+        if not intent_path.exists():
+            return
+        self._commit_measurement_compaction_unlocked(root, plan=plan)
+
+    def _commit_measurement_compaction_unlocked(
+        self, root: Path, *, plan: MeasurementPlanV2 | None
+    ) -> None:
+        """Recover or commit one prepared generation switch under the store lock."""
+
+        intent_path = root / "compaction.json"
+        try:
+            intent = self._read_bounded_json(
+                intent_path, _MEASUREMENT_COMPACTION_METADATA_MAX_BYTES
+            )
+            if intent.get("schema_version") != _MEASUREMENT_COMPACTION_INTENT_SCHEMA:
+                raise ValueError("unsupported compaction intent schema")
+            plan_fingerprint = str(intent.get("measurement_plan_fingerprint") or "")
+            if plan is not None and plan.measurement_plan_fingerprint != plan_fingerprint:
+                raise ValueError("compaction intent references a different plan")
+            source_fingerprint = str(intent.get("source_index_fingerprint") or "")
+            source_journal_file = str(intent.get("source_journal_file") or "")
+            if not re.fullmatch(
+                r"journal(?:-[0-9a-f]{64})?\.jsonl", source_journal_file
+            ):
+                raise ValueError("compaction source journal identity is invalid")
+            snapshot_fingerprint = str(intent.get("snapshot_fingerprint") or "")
+            target_index = MeasurementControlIndex.from_dict(
+                self._require_mapping(intent.get("target_index"), "target_index")
+            )
+            if (
+                target_index.measurement_plan_fingerprint != plan_fingerprint
+                or target_index.snapshot_fingerprint != snapshot_fingerprint
+                or source_journal_file == target_index.journal_file
+            ):
+                raise ValueError("compaction intent identities are inconsistent")
+            current_index = MeasurementControlIndex.from_dict(
+                self._read_bounded_json(
+                    root / "index.json", _MEASUREMENT_COMPACTION_METADATA_MAX_BYTES
+                )
+            )
+            snapshot_digest = snapshot_fingerprint.removeprefix("sha256:")
+            snapshot = MeasurementControlSnapshot.from_dict(
+                self._read_bounded_json(
+                    root / "snapshots" / f"snapshot-{snapshot_digest}.json",
+                    _MEASUREMENT_COMPACTION_METADATA_MAX_BYTES,
+                )
+            )
+            if (
+                snapshot.snapshot_fingerprint != snapshot_fingerprint
+                or snapshot.measurement_plan_fingerprint != plan_fingerprint
+                or snapshot.compacted_event_count != target_index.compacted_event_count
+                or target_index.event_count != target_index.compacted_event_count
+                or snapshot.work_units != target_index.work_units
+                or snapshot.observation_count != target_index.observation_count
+                or snapshot.actual_attempt_cost_seconds
+                != target_index.actual_attempt_cost_seconds
+                or target_index.journal_byte_count != 0
+                or target_index.journal_sha256
+                != measurement_control_bytes_fingerprint(b"")
+            ):
+                raise ValueError("compaction snapshot does not match target index")
+            self._validate_measurement_journal_generation(root, target_index)
+            if current_index.index_fingerprint == source_fingerprint:
+                if current_index.journal_file != source_journal_file:
+                    raise ValueError("compaction source journal identity drifted")
+                self._validate_measurement_journal_generation(root, current_index)
+                self._write_json_atomic(root / "index.json", target_index.to_dict())
+                self._fsync_directory(root)
+                current_index = target_index
+            elif current_index.index_fingerprint != target_index.index_fingerprint:
+                raise ValueError("compaction authority is neither source nor target")
+            self._validate_measurement_journal_generation(root, current_index)
+        except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise MeasurementControlCorruptionError(
+                "measurement_compaction_recovery_failed",
+                "prepared measurement compaction could not be verified",
+            ) from exc
+        source_path = root / source_journal_file
+        if source_path.parent != root:
+            raise MeasurementControlCorruptionError(
+                "measurement_compaction_source_unsafe",
+                "obsolete journal generation escaped its plan root",
+            )
+        if source_path.name != target_index.journal_file and source_path.exists():
+            if source_path.is_symlink() or not source_path.is_file():
+                raise MeasurementControlCorruptionError(
+                    "measurement_compaction_source_unsafe",
+                    "obsolete journal generation is unsafe",
+                )
+            source_path.unlink()
+            self._fsync_directory(root)
+        intent_path.unlink(missing_ok=True)
+        self._fsync_directory(root)
+
+    def _validate_measurement_journal_generation(
+        self, root: Path, index: MeasurementControlIndex
+    ) -> None:
+        journal_path = self._measurement_control_journal_path(root, index)
+        size = self._measurement_control_journal_size(journal_path)
+        if size != index.journal_byte_count or size > _MEASUREMENT_JOURNAL_MAX_BYTES:
+            raise ValueError("journal generation size does not match its index")
+        payload = self._read_measurement_control_journal_bytes(journal_path)
+        if measurement_control_bytes_fingerprint(payload) != index.journal_sha256:
+            raise ValueError("journal generation fingerprint does not match its index")
+
+    @staticmethod
+    def _require_mapping(value: Any, field_name: str) -> Mapping[str, Any]:
+        if not isinstance(value, Mapping):
+            raise ValueError(f"{field_name} must be an object")
+        return value
+
+    @staticmethod
+    def _fsync_directory(path: Path) -> None:
+        descriptor = os.open(path, os.O_RDONLY)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+
+    @staticmethod
+    def _create_measurement_authority_key(path: Path) -> Ed25519PrivateKey:
+        private_key = Ed25519PrivateKey.generate()
+        public_bytes = private_key.public_key().public_bytes(
+            encoding=serialization.Encoding.Raw,
+            format=serialization.PublicFormat.Raw,
+        )
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        descriptor = os.open(path, flags, 0o600)
+        try:
+            written = os.write(descriptor, public_bytes)
+            if written != len(public_bytes):
+                raise OSError("short measurement authority public-key write")
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        return private_key
+
+    def _read_measurement_authority_public_key(
+        self,
+        root: Path,
+        authority_fingerprint: str | None = None,
+    ) -> Ed25519PublicKey:
+        current_path = root / "authority.pub"
+        path = current_path
+        if authority_fingerprint is not None:
+            if not re.fullmatch(r"sha256:[0-9a-f]{64}", authority_fingerprint):
+                raise MeasurementControlCorruptionError(
+                    "measurement_authority_key_invalid",
+                    "measurement authority fingerprint is invalid",
+                )
+            current_bytes = self._read_measurement_authority_public_bytes(current_path)
+            current_fingerprint = "sha256:" + hashlib.sha256(current_bytes).hexdigest()
+            if current_fingerprint != authority_fingerprint:
+                path = (
+                    root
+                    / "authority-history"
+                    / f"authority-{authority_fingerprint.removeprefix('sha256:')}.pub"
+                )
+        key = self._read_measurement_authority_public_bytes(path)
+        observed_fingerprint = "sha256:" + hashlib.sha256(key).hexdigest()
+        if (
+            authority_fingerprint is not None
+            and observed_fingerprint != authority_fingerprint
+        ):
+            raise MeasurementControlCorruptionError(
+                "measurement_authority_key_invalid",
+                "measurement authority key does not match its content address",
+            )
+        return Ed25519PublicKey.from_public_bytes(key)
+
+    def _read_measurement_authority_public_bytes(self, path: Path) -> bytes:
+        root = path.parent if path.name == "authority.pub" else path.parent.parent
+        self._reject_symlink_components(root)
+        if path.is_symlink() or not path.is_file():
+            raise MeasurementControlCorruptionError(
+                "measurement_authority_key_missing",
+                "measurement authority key is missing or unsafe",
+            )
+        mode = path.stat(follow_symlinks=False).st_mode & 0o777
+        if mode & 0o077:
+            raise MeasurementControlCorruptionError(
+                "measurement_authority_key_permissions",
+                "measurement authority key permissions are too broad",
+            )
+        flags = os.O_RDONLY
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        descriptor = os.open(path, flags)
+        try:
+            key = os.read(descriptor, 33)
+        finally:
+            os.close(descriptor)
+        if len(key) != 32:
+            raise MeasurementControlCorruptionError(
+                "measurement_authority_key_invalid",
+                "measurement authority key length is invalid",
+            )
+        return key
+
+    def _measurement_authority_public_key_fingerprint(self, root: Path) -> str:
+        key = self._read_measurement_authority_public_bytes(root / "authority.pub")
+        return "sha256:" + hashlib.sha256(key).hexdigest()
+
+    def _measurement_authority_private_key(
+        self, root: Path
+    ) -> Ed25519PrivateKey:
+        private_key = self._measurement_authority_private_keys.get(root.resolve())
+        if private_key is None:
+            private_key = self._rotate_measurement_authority(root)
+            self._measurement_authority_private_keys[root.resolve()] = private_key
+        return private_key
+
+    def _rotate_measurement_authority(self, root: Path) -> Ed25519PrivateKey:
+        """Create a new process authority while retaining old verification keys.
+
+        Rotation is a framework-owned resume operation. Existing observations
+        retain the content address of their original public key; new pending
+        work is signed by the new process-local key.
+        """
+
+        current_path = root / "authority.pub"
+        current = self._read_measurement_authority_public_bytes(current_path)
+        current_fingerprint = "sha256:" + hashlib.sha256(current).hexdigest()
+        history = root / "authority-history"
+        history.mkdir(mode=0o700, exist_ok=True)
+        history_path = history / (
+            f"authority-{current_fingerprint.removeprefix('sha256:')}.pub"
+        )
+        if not history_path.exists():
+            self._write_bytes_atomic(history_path, current)
+        elif self._read_measurement_authority_public_bytes(history_path) != current:
+            raise MeasurementControlCorruptionError(
+                "measurement_authority_history_conflict",
+                "measurement authority history has conflicting content",
+            )
+        next_path = root / f".authority.next-{uuid.uuid4().hex}"
+        private_key = self._create_measurement_authority_key(next_path)
+        os.replace(next_path, current_path)
+        self._fsync_directory(root)
+        return private_key
+
+    def read_legacy_measurement_control_description(
+        self, run_id: str, relative_ref: str
+    ) -> LegacyMeasurementControlDescription:
+        """Read a bounded diagnostic projection; never return reusable state."""
+
+        self._validate_id(run_id, "run_id")
+        relative = Path(relative_ref)
+        if (
+            relative.is_absolute()
+            or not relative.parts
+            or any(part in {"", ".", ".."} for part in relative.parts)
+        ):
+            raise ValueError("legacy measurement reference must be a safe relative path")
+        root = self.run_path(run_id)
+        path = root / relative
+        if not path.resolve().is_relative_to(root.resolve()):
+            raise ValueError("legacy measurement reference escapes its run directory")
+        self._reject_symlink_components(path.parent)
+        if path.is_symlink() or not path.is_file():
+            raise FileNotFoundError("legacy measurement checkpoint not found")
+        if path.stat().st_size > 65_536:
+            raise ValueError("legacy measurement checkpoint exceeds 64 KiB")
+        payload = self._read_json(path)
+        if not isinstance(payload, Mapping):
+            raise ValueError("legacy measurement checkpoint must be an object")
+        return describe_legacy_measurement_control(payload)
+
+    def _validate_terminal_observation(
+        self,
+        run_id: str,
+        plan: MeasurementPlanV2,
+        event: WorkUnitJournalEvent,
+    ) -> None:
+        observation = self.read_measurement_control_observation(
+            run_id,
+            plan.measurement_plan_fingerprint,
+            event.observation_fingerprint or "",
+        )
+        if (
+            observation.work_unit_id != event.work_unit_id
+            or observation.terminal_state is not event.new_state
+        ):
+            raise MeasurementControlCorruptionError(
+                "measurement_observation_event_mismatch",
+                "terminal event does not match immutable observation coordinates",
+            )
+
+    def _validate_observation_coordinates(
+        self,
+        run_id: str,
+        plan: MeasurementPlanV2,
+        observation: MeasurementControlObservationRecord,
+    ) -> None:
+        unit = next(
+            (item for item in plan.work_units if item.work_unit_id == observation.work_unit_id),
+            None,
+        )
+        if unit is None or (
+            observation.measurement_plan_fingerprint
+            != plan.measurement_plan_fingerprint
+            or observation.experiment_id != unit.experiment_id
+            or observation.case_id != unit.case_id
+            or observation.arm is not unit.arm
+            or observation.repetition_id != unit.repetition_id
+        ):
+            raise MeasurementControlCorruptionError(
+                "measurement_observation_coordinate_mismatch",
+                "observation coordinates do not match the frozen work unit",
+            )
+        isolation_decision, profile = self.read_measurement_control_contracts(
+            run_id, plan.measurement_plan_fingerprint
+        )
+        grant_fingerprints = {
+            grant.fingerprint for grant in isolation_decision.grant_set.grants
+        }
+        observed_grant = observation.isolation_grant_fingerprint
+        if grant_fingerprints:
+            if observed_grant not in grant_fingerprints:
+                raise MeasurementControlCorruptionError(
+                    "measurement_observation_isolation_grant_mismatch",
+                    "observation does not reference a grant from the frozen decision",
+                )
+        elif observed_grant is not None:
+            raise MeasurementControlCorruptionError(
+                "measurement_observation_unplanned_isolation_grant",
+                "exclusive observation references an unplanned isolation grant",
+            )
+        attestation = self.read_lane_materialization_attestation(
+            run_id,
+            plan.measurement_plan_fingerprint,
+            observation.lane_materialization_fingerprint,
+        )
+        self._validate_lane_materialization_attestation(
+            run_id, plan, isolation_decision, profile, attestation
+        )
+        if attestation.isolation_grant_fingerprint != observed_grant:
+            raise MeasurementControlCorruptionError(
+                "measurement_observation_lane_attestation_mismatch",
+                "observation grant differs from its lane materialization proof",
+            )
+
+    def _validate_lane_materialization_attestation(
+        self,
+        run_id: str,
+        plan: MeasurementPlanV2,
+        isolation_decision: IsolationDecision,
+        profile: EvidencePolicyProfileV2,
+        attestation: LaneMaterializationAttestationV1,
+    ) -> None:
+        if (
+            attestation.measurement_plan_fingerprint
+            != plan.measurement_plan_fingerprint
+            or attestation.isolation_decision_fingerprint
+            != isolation_decision.fingerprint
+            or attestation.evidence_policy_fingerprint != profile.fingerprint
+        ):
+            raise MeasurementControlCorruptionError(
+                "lane_materialization_attestation_contract_mismatch",
+                "lane attestation differs from frozen plan contracts",
+            )
+        if attestation.lane_id > isolation_decision.safe_lane_count:
+            raise MeasurementControlCorruptionError(
+                "lane_materialization_attestation_lane_mismatch",
+                "lane attestation exceeds the frozen safe lane count",
+            )
+        public_key = self._read_measurement_authority_public_key(
+            self.measurement_control_plan_path(
+                run_id, plan.measurement_plan_fingerprint
+            ),
+            attestation.authority_public_key_fingerprint,
+        )
+        try:
+            public_key.verify(
+                bytes.fromhex(attestation.authority_signature),
+                json.dumps(
+                    attestation.authority_payload(),
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    ensure_ascii=True,
+                ).encode("utf-8"),
+            )
+        except (InvalidSignature, ValueError):
+            raise MeasurementControlCorruptionError(
+                "lane_materialization_attestation_authority_invalid",
+                "lane attestation was not signed by the measurement store",
+            ) from None
+        try:
+            topology_payload = json.loads(attestation.topology_json)
+            writer_payload = json.loads(attestation.writer_attestation_json)
+            topology = ReplayIsolationTopology.from_dict(
+                self._require_mapping(topology_payload, "topology")
+            )
+            writer_mapping = self._require_mapping(
+                writer_payload, "writer_attestation"
+            )
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise MeasurementControlCorruptionError(
+                "lane_materialization_attestation_provenance_invalid",
+                "lane attestation provenance artifacts are invalid",
+            ) from exc
+        if set(writer_mapping) != {
+            "evidence_policy_fingerprint",
+            "writer_identity",
+            "isolation_identity",
+            "resource_identity",
+        } or (
+            topology.topology_fingerprint != attestation.topology_fingerprint
+            or stable_control_fingerprint(writer_mapping)
+            != attestation.writer_attestation_fingerprint
+            or writer_mapping.get("evidence_policy_fingerprint")
+            != profile.fingerprint
+        ):
+            raise MeasurementControlCorruptionError(
+                "lane_materialization_attestation_provenance_mismatch",
+                "lane attestation provenance differs from frozen contracts",
+            )
+        grants = {
+            item.fingerprint: item for item in isolation_decision.grant_set.grants
+        }
+        grant_fingerprint = attestation.isolation_grant_fingerprint
+        if grants:
+            grant = grants.get(grant_fingerprint or "")
+            if grant is None or grant.topology_fingerprint != attestation.topology_fingerprint:
+                raise MeasurementControlCorruptionError(
+                    "lane_materialization_attestation_grant_mismatch",
+                    "lane attestation is not backed by a frozen isolation grant",
+                )
+            if topology.to_dict() != {
+                "schema_version": topology.schema_version,
+                "materializer_id": topology.materializer_id,
+                "materializer_fingerprint": topology.materializer_fingerprint,
+                "workspace_identity": topology.workspace_identity,
+                "runtime_identity": topology.runtime_identity,
+                "browser_profile_identity": topology.browser_profile_identity,
+                "endpoint_namespace_identity": topology.endpoint_namespace_identity,
+                "evidence_directory_identity": topology.evidence_directory_identity,
+                "services": [item.to_dict() for item in topology.services],
+                "resources": [item.to_dict() for item in topology.resources],
+                "binding_coverage": [item.to_dict() for item in topology.binding_coverage],
+                "cleanup_owner": topology.cleanup_owner,
+                "topology_fingerprint": topology.topology_fingerprint,
+            }:
+                raise AssertionError("canonical topology serialization drifted")
+        elif grant_fingerprint is not None:
+            raise MeasurementControlCorruptionError(
+                "lane_materialization_attestation_unplanned_grant",
+                "exclusive lane attestation references an unplanned grant",
+            )
+        claim_paths = {
+            item.dimension: item.declared_identity for item in attestation.claims
+        }
+        if grants:
+            assert grant is not None
+            expected_paths = {
+                "workspace_root": grant.workspace_identity,
+                "runtime_root": grant.runtime_identity,
+                "browser_profile": grant.browser_profile_identity,
+                "endpoint_namespace": grant.endpoint_namespace_identity,
+                "evidence_directory": grant.evidence_directory_identity,
+            }
+            if claim_paths != expected_paths:
+                raise MeasurementControlCorruptionError(
+                    "lane_materialization_attestation_claim_mismatch",
+                    "materialized resource claims differ from the frozen grant",
+                )
+            cleanup_owner = grant.cleanup_owner
+            binding_fingerprints = grant.binding_fingerprints
+            expected_isolation_identity = grant.fingerprint
+        else:
+            cleanup_owner = f"framework-lane-{attestation.lane_id}"
+            binding_fingerprints = ()
+            expected_isolation_identity = isolation_decision.fingerprint
+            expected_topology = ReplayIsolationTopology.create(
+                materializer_id="framework-filesystem-lane-materializer",
+                materializer_fingerprint=stable_control_fingerprint(
+                    {
+                        "schema_version": "aworld.framework_lane_materializer.v1",
+                        "kind": "filesystem",
+                    }
+                ),
+                workspace_identity=claim_paths["workspace_root"],
+                runtime_identity=claim_paths["runtime_root"],
+                browser_profile_identity=claim_paths["browser_profile"],
+                endpoint_namespace_identity=claim_paths["endpoint_namespace"],
+                evidence_directory_identity=claim_paths["evidence_directory"],
+                cleanup_owner=cleanup_owner,
+            )
+            if expected_topology.topology_fingerprint != attestation.topology_fingerprint:
+                raise MeasurementControlCorruptionError(
+                    "lane_materialization_attestation_topology_mismatch",
+                    "exclusive lane topology is not the framework materializer topology",
+                )
+            if topology != expected_topology:
+                raise MeasurementControlCorruptionError(
+                    "lane_materialization_attestation_topology_payload_mismatch",
+                    "exclusive lane topology payload is not canonical",
+                )
+        expected_writer = issue_framework_evidence_writer_attestation_v2(
+            profile,
+            writer_identity=f"measurement-writer-lane-{attestation.lane_id}",
+            isolation_identity=expected_isolation_identity,
+            resource_identity=stable_control_fingerprint(
+                {
+                    "topology": topology.to_dict(),
+                    "bindings": list(sorted(binding_fingerprints)),
+                }
+            ),
+        )
+        if (
+            writer_mapping != expected_writer.to_dict()
+            or attestation.writer_attestation_fingerprint
+            != expected_writer.fingerprint
+        ):
+            raise MeasurementControlCorruptionError(
+                "lane_materialization_attestation_writer_mismatch",
+                "lane writer provenance differs from the frozen lane contract",
+            )
+        marker_payload = stable_control_fingerprint(
+            {
+                "measurement_plan_fingerprint": plan.measurement_plan_fingerprint,
+                "isolation_decision_fingerprint": isolation_decision.fingerprint,
+                "lane_id": attestation.lane_id,
+                "cleanup_owner": cleanup_owner,
+            }
+        )
+        expected_marker_fingerprint = (
+            "sha256:"
+            + hashlib.sha256((marker_payload + "\n").encode("ascii")).hexdigest()
+        )
+        trusted_root = self.workspace_root.resolve()
+        for claim in attestation.claims:
+            path = Path(claim.declared_identity)
+            marker = path / ".aworld-lane-owner"
+            try:
+                if (
+                    not path.is_absolute()
+                    or not path.resolve(strict=False).is_relative_to(trusted_root)
+                    or path.is_symlink()
+                    or not path.is_dir()
+                    or marker.is_symlink()
+                    or not marker.is_file()
+                ):
+                    raise ValueError("materialized claim path is missing or unsafe")
+                stat = path.stat(follow_symlinks=False)
+                marker_bytes = marker.read_bytes()
+            except OSError as exc:
+                raise MeasurementControlCorruptionError(
+                    "lane_materialization_attestation_probe_failed",
+                    "materialized resource could not be re-probed",
+                ) from exc
+            marker_fingerprint = "sha256:" + hashlib.sha256(marker_bytes).hexdigest()
+            if (
+                stat.st_dev != claim.observed_device
+                or stat.st_ino != claim.observed_inode
+                or marker_fingerprint != claim.ownership_marker_fingerprint
+                or marker_fingerprint != expected_marker_fingerprint
+            ):
+                raise MeasurementControlCorruptionError(
+                    "lane_materialization_attestation_probe_drift",
+                    "materialized resource identity or ownership marker drifted",
+                )
 
     def write_measurement_experiment(
         self,
@@ -1853,6 +3339,229 @@ class FilesystemSelfEvolveStore:
         payload["recovery"] = recovery
         self._write_json(journal_path, payload)
         return recovery
+
+    def _create_empty_private_file(self, path: Path) -> None:
+        self._reject_symlink_components(path.parent)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self._reject_symlink_components(path.parent)
+        descriptor = os.open(
+            path,
+            os.O_CREAT
+            | os.O_EXCL
+            | os.O_WRONLY
+            | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+        )
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+
+    @contextmanager
+    def _measurement_control_append_lock(self, root: Path):
+        if fcntl is None:
+            raise RuntimeError(
+                "safe measurement journal append requires filesystem locking"
+            )
+        self._reject_symlink_components(root)
+        if root.is_symlink() or not root.is_dir():
+            raise ValueError("measurement control plan destination is unsafe")
+        lock_path = root / ".append.lock"
+        if lock_path.is_symlink():
+            raise ValueError("measurement control append lock cannot be a symlink")
+        descriptor = os.open(
+            lock_path,
+            os.O_CREAT
+            | os.O_RDWR
+            | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+        )
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+            yield
+        finally:
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+            os.close(descriptor)
+
+    def _read_measurement_control_journal_bytes(self, path: Path) -> bytes:
+        self._reject_symlink_components(path.parent)
+        if path.is_symlink() or not path.is_file():
+            raise MeasurementControlCorruptionError(
+                "measurement_journal_missing",
+                "measurement control journal is missing or unsafe",
+            )
+        size = path.stat().st_size
+        if size > _MEASUREMENT_JOURNAL_MAX_BYTES:
+            raise MeasurementControlCorruptionError(
+                "measurement_journal_oversized",
+                "measurement journal exceeds its hard read bound",
+            )
+        with path.open("rb") as stream:
+            payload = stream.read(_MEASUREMENT_JOURNAL_MAX_BYTES + 1)
+        if len(payload) > _MEASUREMENT_JOURNAL_MAX_BYTES:
+            raise MeasurementControlCorruptionError(
+                "measurement_journal_oversized",
+                "measurement journal grew beyond its hard read bound",
+            )
+        return payload
+
+    def _measurement_control_journal_path(
+        self, root: Path, index: MeasurementControlIndex
+    ) -> Path:
+        path = root / index.journal_file
+        if path.parent != root:
+            raise MeasurementControlCorruptionError(
+                "measurement_journal_path_invalid",
+                "measurement journal identity escaped its plan root",
+            )
+        return path
+
+    def _measurement_control_journal_size(self, path: Path) -> int:
+        self._reject_symlink_components(path.parent)
+        if path.is_symlink() or not path.is_file():
+            raise MeasurementControlCorruptionError(
+                "measurement_journal_missing",
+                "measurement control journal is missing or unsafe",
+            )
+        return path.stat().st_size
+
+    def _record_oversized_measurement_journal(
+        self,
+        root: Path,
+        *,
+        journal_file: str,
+        observed_bytes: int,
+        confirmed_bytes: int,
+    ) -> None:
+        self._write_json_atomic(
+            root / "quarantine" / "oversized-journal.json",
+            {
+                "schema_version": "aworld.measurement_journal_quarantine.v1",
+                "journal_file": journal_file,
+                "observed_bytes": observed_bytes,
+                "confirmed_bytes": confirmed_bytes,
+                "content_copied": False,
+                "reason_code": "measurement_journal_oversized",
+            },
+        )
+
+    def _read_bounded_json(self, path: Path, byte_limit: int) -> Mapping[str, Any]:
+        self._reject_symlink_components(path.parent)
+        if path.is_symlink() or not path.is_file():
+            raise FileNotFoundError(path)
+        if path.stat().st_size > byte_limit:
+            raise ValueError("bounded JSON artifact is oversized")
+        with path.open("rb") as stream:
+            raw = stream.read(byte_limit + 1)
+        if len(raw) > byte_limit:
+            raise ValueError("bounded JSON artifact grew beyond its limit")
+        value = json.loads(raw)
+        if not isinstance(value, Mapping):
+            raise ValueError("bounded JSON artifact must be an object")
+        return value
+
+    def _decode_measurement_control_journal(
+        self,
+        plan: MeasurementPlanV2,
+        journal_bytes: bytes,
+    ) -> tuple[WorkUnitJournalEvent, ...]:
+        if journal_bytes and not journal_bytes.endswith(b"\n"):
+            raise MeasurementControlCorruptionError(
+                "measurement_journal_torn_record",
+                "measurement journal ends with an unconfirmed partial record",
+            )
+        result: list[WorkUnitJournalEvent] = []
+        for line_number, raw_line in enumerate(journal_bytes.splitlines(), start=1):
+            if not raw_line.strip():
+                continue
+            if len(raw_line) > 65_536:
+                raise MeasurementControlCorruptionError(
+                    "measurement_journal_record_oversized",
+                    f"measurement journal line {line_number} exceeds 64 KiB",
+                )
+            try:
+                payload = json.loads(raw_line)
+                if not isinstance(payload, Mapping):
+                    raise ValueError("journal record must be an object")
+                event = WorkUnitJournalEvent.from_dict(payload)
+            except (TypeError, ValueError, json.JSONDecodeError) as exc:
+                raise MeasurementControlCorruptionError(
+                    "measurement_journal_record_invalid",
+                    f"measurement journal line {line_number} is invalid",
+                ) from exc
+            if event.measurement_plan_fingerprint != (
+                plan.measurement_plan_fingerprint
+            ):
+                raise MeasurementControlCorruptionError(
+                    "measurement_journal_plan_identity_mismatch",
+                    "measurement journal event references a different plan",
+                )
+            result.append(event)
+        return tuple(result)
+
+    def _decode_measurement_control_journal_records(
+        self,
+        plan: MeasurementPlanV2,
+        journal_bytes: bytes,
+    ) -> tuple[tuple[WorkUnitJournalEvent, bytes], ...]:
+        if journal_bytes and not journal_bytes.endswith(b"\n"):
+            raise MeasurementControlCorruptionError(
+                "measurement_journal_torn_record",
+                "journal tail contains an incomplete record",
+            )
+        result: list[tuple[WorkUnitJournalEvent, bytes]] = []
+        for raw_line in journal_bytes.splitlines(keepends=True):
+            if raw_line.strip():
+                decoded = self._decode_measurement_control_journal(plan, raw_line)
+                if len(decoded) != 1:
+                    raise MeasurementControlCorruptionError(
+                        "measurement_journal_record_invalid",
+                        "journal record did not decode to one event",
+                    )
+                result.append((decoded[0], raw_line))
+        return tuple(result)
+
+    @staticmethod
+    def _write_all(descriptor: int, encoded: bytes) -> None:
+        view = memoryview(encoded)
+        offset = 0
+        while offset < len(view):
+            written = os.write(descriptor, view[offset:])
+            if written <= 0:
+                raise OSError("short journal write made no progress")
+            offset += written
+
+    def _write_bytes_atomic(self, path: Path, payload: bytes) -> None:
+        self._reject_symlink_components(path.parent)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self._reject_symlink_components(path.parent)
+        if path.is_symlink():
+            raise ValueError("atomic byte destination cannot be a symlink")
+        temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+        descriptor = os.open(
+            temporary,
+            os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+        )
+        try:
+            self._write_all(descriptor, payload)
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        try:
+            os.replace(temporary, path)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+    @staticmethod
+    def _parse_utc_datetime(value: str, field_name: str) -> datetime:
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise ValueError(f"{field_name} must be an ISO-8601 timestamp") from exc
+        if parsed.tzinfo is None:
+            raise ValueError(f"{field_name} must include a timezone")
+        return parsed.astimezone(timezone.utc)
 
     def _write_json(self, path: Path, payload: Any) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)

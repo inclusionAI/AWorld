@@ -59,13 +59,26 @@ def test_runtime_tool_call_budget_ignores_invalid_limit(
     _enforce_runtime_tool_call_budget("tool", _actions(2), _Message(_Context()))
 
 
-def _replay_action(command: str) -> list[ActionModel]:
+def _replay_action(
+    command: str,
+    *,
+    resource_ownership_token: str | None = None,
+    isolation_identity: str | None = None,
+    resource_identity: str | None = None,
+) -> list[ActionModel]:
+    params = {"command": command}
+    if resource_ownership_token is not None:
+        params["resource_ownership_token"] = resource_ownership_token
+    if isolation_identity is not None:
+        params["isolation_identity"] = isolation_identity
+    if resource_identity is not None:
+        params["resource_identity"] = resource_identity
     return [
         ActionModel(
             tool_name="bash",
             action_name="run",
             tool_call_id="call-replay",
-            params={"command": command},
+            params=params,
         )
     ]
 
@@ -77,6 +90,13 @@ def _enable_replay_policy(
     artifact_dir = tmp_path / "artifacts"
     artifact_dir.mkdir()
     monkeypatch.setenv("AWORLD_REPLAY_EVIDENCE_POLICY", "1")
+    monkeypatch.setenv("AWORLD_REPLAY_EVIDENCE_POLICY_MODE", "legacy")
+    monkeypatch.setenv(
+        "AWORLD_REPLAY_ISOLATION_IDENTITY", "isolation.legacy-lane"
+    )
+    monkeypatch.setenv(
+        "AWORLD_REPLAY_RESOURCE_IDENTITY", "resource.legacy-browser"
+    )
     monkeypatch.setenv(
         "AWORLD_SELF_EVOLVE_REPLAY_ARTIFACT_DIR", str(artifact_dir)
     )
@@ -107,7 +127,7 @@ def test_replay_runtime_policy_rejects_collection_after_artifact_quota(
     violation = (tmp_path / "artifacts" / "framework_evidence_policy.jsonl").read_text(
         encoding="utf-8"
     )
-    assert '"code": "artifact_file_limit_exhausted"' in violation
+    assert json.loads(violation)["code"] == "artifact_file_limit_exhausted"
     assert "screenshot" not in violation
 
 
@@ -123,6 +143,7 @@ def test_replay_runtime_policy_ignores_seeded_workspace_outside_evidence_root(
     for index in range(32):
         (workspace_root / f"seed-{index}.txt").write_bytes(b"x" * 100_000)
     monkeypatch.setenv("AWORLD_REPLAY_EVIDENCE_POLICY", "1")
+    monkeypatch.setenv("AWORLD_REPLAY_EVIDENCE_POLICY_MODE", "legacy")
     monkeypatch.setenv(
         "AWORLD_SELF_EVOLVE_REPLAY_ARTIFACT_DIR", str(evidence_root)
     )
@@ -170,10 +191,12 @@ def test_replay_runtime_policy_rejects_collection_after_evidence_ready(
             _Message(_Context()),
         )
 
-    state = (artifact_dir / "framework_evidence_state.json").read_text(
-        encoding="utf-8"
+    state = json.loads(
+        (artifact_dir / "framework_evidence_state.json").read_text(
+            encoding="utf-8"
+        )
     )
-    assert '"phase": "evidence_ready"' in state
+    assert state["phase"] == "evidence_ready"
 
 
 def test_replay_runtime_policy_allows_one_browser_cleanup_after_evidence_ready(
@@ -190,10 +213,19 @@ def test_replay_runtime_policy_allows_one_browser_cleanup_after_evidence_ready(
         encoding="utf-8",
     )
     message = _Message(_Context())
+    ownership_token = "owned-browser-runtime"
+    monkeypatch.setenv(
+        "AWORLD_REPLAY_RESOURCE_OWNERSHIP_TOKEN", ownership_token
+    )
 
     _enforce_replay_evidence_runtime_policy(
         "bash",
-        _replay_action("agent-browser close 2>&1"),
+        _replay_action(
+            "agent-browser close 2>&1",
+            resource_ownership_token=ownership_token,
+            isolation_identity="isolation.legacy-lane",
+            resource_identity="resource.legacy-browser",
+        ),
         message,
     )
 
@@ -210,8 +242,37 @@ def test_replay_runtime_policy_allows_one_browser_cleanup_after_evidence_ready(
     ):
         _enforce_replay_evidence_runtime_policy(
             "bash",
+            _replay_action(
+                "agent-browser close",
+                resource_ownership_token=ownership_token,
+                isolation_identity="isolation.legacy-lane",
+                resource_identity="resource.legacy-browser",
+            ),
+            _Message(_Context()),
+        )
+
+
+def test_replay_runtime_policy_requires_cleanup_ownership_token(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    _enable_replay_policy(monkeypatch, tmp_path)
+    artifact_dir = tmp_path / "artifacts"
+    (artifact_dir / "evidence.json").write_text("{}", encoding="utf-8")
+    (artifact_dir / "evidence_manifest.jsonl").write_text(
+        '{"source_id":"one","extraction_method":"json_fields",'
+        '"artifact_path":"evidence.json","fields":["title"]}\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv(
+        "AWORLD_REPLAY_RESOURCE_OWNERSHIP_TOKEN", "owned-browser-runtime"
+    )
+
+    with pytest.raises(ToolExecutionDenied, match="tool_call_after_evidence_ready"):
+        _enforce_replay_evidence_runtime_policy(
+            "bash",
             _replay_action("agent-browser close"),
-            message,
+            _Message(_Context()),
         )
 
 

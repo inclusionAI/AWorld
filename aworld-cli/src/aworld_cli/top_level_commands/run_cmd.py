@@ -10,9 +10,30 @@ from aworld_cli.runtime_bootstrap import RuntimeBootstrapError, bootstrap_runtim
 
 
 _SELF_EVOLVE_TASK_RESPONSE_SCHEMA = "aworld.self_evolve.task_response.v1"
+_TASK_RESPONSE_CAPABILITY_FD_ENV = (
+    "AWORLD_SELF_EVOLVE_TASK_RESPONSE_CAPABILITY_FD"
+)
 
 
-def _write_self_evolve_task_response(payload: dict) -> None:
+def _consume_task_response_capability() -> int | None:
+    raw_fd = os.environ.pop(_TASK_RESPONSE_CAPABILITY_FD_ENV, None)
+    if raw_fd is None:
+        return None
+    try:
+        descriptor = int(raw_fd)
+        if descriptor < 0:
+            raise ValueError
+    except ValueError as exc:
+        raise RuntimeError("invalid task-response capability fd") from exc
+    os.set_inheritable(descriptor, False)
+    return descriptor
+
+
+def _write_self_evolve_task_response(
+    payload: dict,
+    *,
+    capability_fd: int | None = None,
+) -> None:
     """Publish final task output atomically for the replay supervisor."""
 
     raw_path = os.environ.get("AWORLD_SELF_EVOLVE_TASK_RESPONSE_PATH")
@@ -27,6 +48,23 @@ def _write_self_evolve_task_response(payload: dict) -> None:
         "schema_version": _SELF_EVOLVE_TASK_RESPONSE_SCHEMA,
         **payload,
     }
+    if capability_fd is not None:
+        encoded = json.dumps(
+            sidecar,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        try:
+            offset = 0
+            while offset < len(encoded):
+                written = os.write(capability_fd, encoded[offset:])
+                if written <= 0:
+                    raise OSError("task-response capability write stalled")
+                offset += written
+        finally:
+            os.close(capability_fd)
+        return
     temporary.write_text(
         json.dumps(sidecar, ensure_ascii=False) + "\n",
         encoding="utf-8",
@@ -136,6 +174,7 @@ class RunTopLevelCommand:
             init_middlewares,
         )
 
+        task_response_capability = _consume_task_response_capability()
         try:
             bootstrap_runtime(
                 env_file=args.env_file,
@@ -196,7 +235,10 @@ class RunTopLevelCommand:
                 agent_name=agent_name,
             )
             if task_response_path:
-                _write_self_evolve_task_response(trajectory_payload)
+                _write_self_evolve_task_response(
+                    trajectory_payload,
+                    capability_fd=task_response_capability,
+                )
         if args.emit_trajectory:
             print(
                 json.dumps(
