@@ -25,13 +25,16 @@ from aworld.self_evolve.measurement import (
 )
 from aworld.self_evolve.measurement_control import (
     AdaptiveMeasurementPolicy,
+    AdaptiveDecisionKind,
     DeadlinePolicy,
+    MeasurementProgressSummary,
     MeasurementPlanV2,
     MeasurementWorkUnitState,
     SamplingStage,
     SamplingStageKind,
     stable_control_fingerprint,
 )
+from aworld.self_evolve.measurement_orchestrator import schedule_staged_measurement
 from aworld.self_evolve.measurement_execution import MeasurementExecutionJournal
 from aworld.self_evolve.measurement_scheduler import (
     FrameworkFilesystemLaneMaterializer,
@@ -99,6 +102,7 @@ def _bundle(
     *,
     decision: IsolationDecision,
     case_count: int,
+    staged: bool = False,
 ) -> tuple[FilesystemSelfEvolveStore, object]:
     run_id = "run-scheduler"
     case_ids = tuple(f"case-{index}" for index in range(1, case_count + 1))
@@ -137,6 +141,40 @@ def _bundle(
             ),
         ),
     )
+    stages = (
+        (
+            SamplingStage(
+                stage_id="sentinel",
+                kind=SamplingStageKind.SENTINEL,
+                case_ids=(case_ids[0],),
+                minimum_case_count=1,
+            ),
+            SamplingStage(
+                stage_id="expansion",
+                kind=SamplingStageKind.EXPANSION,
+                case_ids=case_ids[1:-1],
+                minimum_case_count=0,
+                batch_size=1,
+                optional=True,
+            ),
+            SamplingStage(
+                stage_id="regression-transfer",
+                kind=SamplingStageKind.REGRESSION_TRANSFER,
+                case_ids=(case_ids[-1],),
+                minimum_case_count=1,
+                requires_positive_effect=True,
+            ),
+        )
+        if staged
+        else (
+            SamplingStage(
+                stage_id="sentinel",
+                kind=SamplingStageKind.SENTINEL,
+                case_ids=case_ids,
+                minimum_case_count=1,
+            ),
+        )
+    )
     plan = MeasurementPlanV2.create(
         experiment_id=experiment.experiment_id,
         plan_revision=1,
@@ -146,14 +184,7 @@ def _bundle(
         execution_contract_fingerprint=_fp("execution"),
         isolation_decision=decision,
         evidence_policy_profile=profile,
-        stages=(
-            SamplingStage(
-                stage_id="sentinel",
-                kind=SamplingStageKind.SENTINEL,
-                case_ids=case_ids,
-                minimum_case_count=1,
-            ),
-        ),
+        stages=stages,
         repetitions_per_case=1,
         deadlines=DeadlinePolicy(
             attempt_timeout_seconds=10,
@@ -165,7 +196,7 @@ def _bundle(
             minimum_independent_cases=1,
             maximum_invalid_controls=1,
             zero_yield_window=1,
-            require_regression_transfer=False,
+            require_regression_transfer=staged,
         ),
         estimator_version="estimator-v1",
         decision_policy_version="policy-v1",
@@ -716,3 +747,83 @@ async def test_pending_work_resumes_after_store_process_restart(
         bundle.plan.measurement_plan_fingerprint,
         attestation.attestation_fingerprint,
     ) == attestation
+
+
+@pytest.mark.asyncio
+async def test_staged_scheduler_admits_expansion_then_regression_transfer(
+    tmp_path: Path,
+) -> None:
+    store, bundle = _bundle(
+        tmp_path,
+        decision=_exclusive_decision(),
+        case_count=4,
+        staged=True,
+    )
+    executed: list[str] = []
+
+    async def control(item: PairLaneWorkItem, context: LaneExecutionContext) -> str:
+        executed.append(f"control:{item.case_id}")
+        return "control"
+
+    async def treatment(
+        item: PairLaneWorkItem, context: LaneExecutionContext, baseline: str
+    ) -> str:
+        executed.append(f"treatment:{item.case_id}")
+        return "treatment"
+
+    def progress(plan, current_stage_id, schedules):
+        completed = tuple(
+            dict.fromkeys(
+                result.item.case_id
+                for schedule in schedules
+                for result in schedule.completed
+            )
+        )
+        expansion_complete = {"case-2", "case-3"}.issubset(completed)
+        regression_complete = "case-4" in completed
+        completed_stages = ["sentinel"] if "case-1" in completed else []
+        if expansion_complete:
+            completed_stages.append("expansion")
+        if regression_complete:
+            completed_stages.append("regression-transfer")
+        return MeasurementProgressSummary(
+            current_stage_id=current_stage_id,
+            completed_case_ids=completed,
+            comparable_case_ids=completed,
+            invalid_control_case_ids=(),
+            confidence_lower_bound=(0.05 if expansion_complete else None),
+            point_estimate=(0.1 if expansion_complete else None),
+            regression_detected=False,
+            negative_effect_detected=False,
+            futility_proven=False,
+            new_comparable_pairs_in_window=1,
+            uncertainty_reduction_in_window=0.1,
+            current_stage_exhausted=True,
+            completed_stage_ids=tuple(completed_stages),
+            checkpoint_quantum_expired=False,
+            campaign_wall_deadline_expired=False,
+            resume_safe=True,
+        )
+
+    result = await schedule_staged_measurement(
+        store,
+        run_id="run-scheduler",
+        measurement_plan_fingerprint=bundle.plan.measurement_plan_fingerprint,
+        run_control=control,
+        run_treatment=treatment,
+        progress_builder=progress,
+        lane_materializer=FrameworkFilesystemLaneMaterializer(tmp_path / "lanes"),
+    )
+
+    assert result.decision.kind is AdaptiveDecisionKind.STOP_CONFIDENT_POSITIVE
+    assert result.admitted_case_ids == ("case-1", "case-2", "case-3", "case-4")
+    assert executed == [
+        "control:case-1",
+        "treatment:case-1",
+        "control:case-2",
+        "treatment:case-2",
+        "control:case-3",
+        "treatment:case-3",
+        "control:case-4",
+        "treatment:case-4",
+    ]
