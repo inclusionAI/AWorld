@@ -14382,7 +14382,7 @@ def optimize_from_cli_request(
     candidate_replay_repetitions: int = 1,
     replay_repetitions_explicit: bool = False,
     replay_stability_margin: float = 0.0,
-    measurement_mode: MeasurementPolicyMode | str = MeasurementPolicyMode.OFF,
+    measurement_mode: MeasurementPolicyMode | str | None = None,
     measurement_primary_metric: str = "task_success",
     measurement_minimum_effect: float = 0.0,
     measurement_confidence_level: float = 0.95,
@@ -14416,6 +14416,11 @@ def optimize_from_cli_request(
     typed_new_skill_policy = InferredNewSkillPolicy(inferred_new_skill_policy)
     if apply_policy not in {"proposal", "auto_verified", "verified_only"}:
         raise ValueError(f"unsupported apply policy: {apply_policy}")
+    measurement_mode = _effective_cli_measurement_mode(
+        measurement_mode,
+        apply_policy=apply_policy,
+        replay_enabled=replay_enabled,
+    )
     effective_iteration_budget = _default_iteration_budget(
         apply_policy=apply_policy,
         explicit_iterations=iterations,
@@ -16940,7 +16945,17 @@ def _campaign_measurement_outcome_for_replay(
         MeasurementExecutionStatus,
     )
 
-    if kind in {
+    if kind == "stop_framework_blocked":
+        outcome = CampaignMeasurementOutcomeV2(
+            execution_status=MeasurementExecutionStatus.FRAMEWORK_BLOCKED,
+            improvement_outcome=CandidateImprovementOutcome.UNKNOWN,
+            release_gates_passed=False,
+            continuation_available=False,
+            reason_code=str(
+                decision.get("reason_code") or "measurement_framework_blocked"
+            ),
+        )
+    elif kind in {
         "measurement_incomplete_checkpoint",
         "measurement_incomplete_campaign_deadline",
     }:
@@ -16992,6 +17007,28 @@ def _campaign_measurement_outcome_for_replay(
             ),
         )
     return outcome.to_dict()
+
+
+def _effective_cli_measurement_mode(
+    configured_mode: MeasurementPolicyMode | str | None,
+    *,
+    apply_policy: str,
+    replay_enabled: bool,
+) -> MeasurementPolicyMode:
+    """Make verified replay authoritative unless another mode was selected.
+
+    An omitted mode is distinct from an explicit ``off``. A verified skill replay
+    must not silently retain the legacy batch executor, while operators and
+    compatibility tests can still deliberately disable the v2 control plane.
+    """
+
+    if (
+        configured_mode is None
+        and replay_enabled
+        and _is_verified_apply_policy(apply_policy)
+    ):
+        return MeasurementPolicyMode.REQUIRED
+    return MeasurementPolicyMode(configured_mode or MeasurementPolicyMode.OFF)
 
 
 def _replay_capability_report(
@@ -19444,6 +19481,32 @@ def _replay_gate_details(
         details["causal_failure_events"] = [
             event.to_dict() for event in causal_failures
         ]
+        framework_blocker = next(
+            (
+                event
+                for event in causal_failures
+                if event.owner
+                in {FailureOwner.FRAMEWORK, FailureOwner.INFRASTRUCTURE}
+                and event.scope
+                in {FailureScope.SHARED_RUN, FailureScope.MEMBER}
+            ),
+            None,
+        )
+        if framework_blocker is not None:
+            details.update(
+                {
+                    "failure_class": (
+                        "infrastructure"
+                        if framework_blocker.owner is FailureOwner.INFRASTRUCTURE
+                        else "framework"
+                    ),
+                    "failure_owner": framework_blocker.owner.value,
+                    "failure_scope": FailureScope.SHARED_RUN.value,
+                    "failure_stage": framework_blocker.stage.value,
+                    "repairable": framework_blocker.repairable,
+                    "code": framework_blocker.code,
+                }
+            )
     screening_censor_basis = (
         _screening_budget_censor_basis(normalized)
         if bounded_screening

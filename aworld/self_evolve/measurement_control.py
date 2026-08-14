@@ -101,6 +101,7 @@ class AdaptiveDecisionKind(str, Enum):
     STOP_REGRESSION = "stop_regression"
     STOP_FUTILITY = "stop_futility"
     STOP_INVALID_CONTROL = "stop_invalid_control"
+    STOP_FRAMEWORK_BLOCKED = "stop_framework_blocked"
     STOP_ZERO_YIELD = "stop_zero_yield"
     STOP_INCONCLUSIVE = "stop_inconclusive"
     MEASUREMENT_INCOMPLETE_CHECKPOINT = "measurement_incomplete_checkpoint"
@@ -2683,6 +2684,7 @@ class MeasurementProgressSummary:
     checkpoint_quantum_expired: bool
     campaign_wall_deadline_expired: bool
     resume_safe: bool
+    framework_blocked_reason_code: str | None = None
 
     def __post_init__(self) -> None:
         _safe_id(self.current_stage_id, "current_stage_id")
@@ -2720,6 +2722,11 @@ class MeasurementProgressSummary:
                 )
         if self.checkpoint_quantum_expired and self.campaign_wall_deadline_expired:
             raise ValueError("only one scheduling deadline may terminate a decision")
+        if self.framework_blocked_reason_code is not None:
+            _safe_id(
+                self.framework_blocked_reason_code,
+                "framework_blocked_reason_code",
+            )
 
 
 @dataclass(frozen=True)
@@ -2957,6 +2964,11 @@ def decide_staged_measurement(
         raise ValueError("progress references stages outside the measurement plan")
     policy = plan.decision_policy
 
+    if progress.framework_blocked_reason_code is not None:
+        return _stop(
+            AdaptiveDecisionKind.STOP_FRAMEWORK_BLOCKED,
+            progress.framework_blocked_reason_code,
+        )
     if progress.regression_detected:
         return _stop(AdaptiveDecisionKind.STOP_REGRESSION, "decisive_regression")
     if progress.negative_effect_detected:

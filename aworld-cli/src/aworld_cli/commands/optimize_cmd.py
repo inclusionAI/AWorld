@@ -141,7 +141,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--measurement-mode",
         choices=("off", "shadow", "advisory", "required"),
-        default="off",
+        default=None,
         dest="measurement_mode",
     )
     parser.add_argument(

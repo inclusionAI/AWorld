@@ -71,6 +71,7 @@ from aworld.self_evolve.replay import (
     _replay_capability_fixture_summaries,
     _replay_dependency_boundary_failure,
     _replay_evidence_runtime_policy_metrics,
+    _resume_root_is_compatible,
     replay_capability_fixture_leaf_values,
     replay_capability_fixture_response_leaf_values,
     _replay_service_failure_with_stderr,
@@ -453,6 +454,30 @@ async def test_replay_backend_resumes_completed_pairs_from_prior_checkpoint(
     assert resumed_checkpoint["pending_case_ids"] == []
 
 
+def test_replay_checkpoint_rejects_evidence_contract_mode_drift(
+    tmp_path: Path,
+) -> None:
+    candidate = _candidate(
+        "---\nname: demo\n---\n# Demo\nCandidate.\n",
+        candidate_id="resume-contract-candidate",
+    )
+    legacy = CandidateReplayRequest(
+        run_id="legacy-run",
+        task_id="task-a",
+        workspace_root=str(tmp_path),
+        target=candidate.target,
+        candidate_id=candidate.candidate_id,
+        overlay_skill_root=str(tmp_path / "overlay"),
+        task_input="task",
+        evidence_policy_mode="legacy",
+    )
+
+    assert _resume_root_is_compatible(
+        replace(legacy, run_id="required-run", evidence_policy_mode="required"),
+        legacy,
+    ) is False
+
+
 @pytest.mark.asyncio
 async def test_replay_member_deadline_stops_invalid_control_frontier(
     tmp_path: Path,
@@ -550,6 +575,21 @@ async def test_replay_member_deadline_stops_invalid_control_frontier(
         ).read_text(encoding="utf-8")
     )
     assert manifest["measurement_stop"]["resume_safe"] is True
+    checkpoint = json.loads(
+        (
+            tmp_path
+            / ".aworld"
+            / "self_evolve"
+            / "run-member-deadline"
+            / "replay"
+            / "deadline-candidate"
+            / "members"
+            / "paired_replay_checkpoint.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert checkpoint["baseline_phase_completed_case_ids"] == ["task-a", "task-b"]
+    assert checkpoint["candidate_phase_completed_case_ids"] == []
+    assert checkpoint["pending_case_ids"] == ["task-a", "task-b", "task-c"]
 
     calls.clear()
     shadow_events: list[dict[str, object]] = []
@@ -6982,6 +7022,81 @@ async def test_required_replay_runtime_builds_parent_attested_v2_manifest(
     signing_key = captured["task_response_attestation_key"]
     assert isinstance(signing_key, bytes)
     assert signing_key.hex() not in json.dumps(candidate_env, sort_keys=True)
+
+
+@pytest.mark.asyncio
+async def test_required_replay_runtime_inventories_legacy_files_without_manifest(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    trajectory = [
+        {
+            "state": {"input": "task"},
+            "action": {"content": "done", "is_agent_finished": "True"},
+        }
+    ]
+
+    def fake_run(command, **kwargs):
+        evidence_dir = Path(kwargs["evidence_manifest"]).parent
+        (evidence_dir / "page_text.txt").write_text(
+            "framework inventories this legacy artifact",
+            encoding="utf-8",
+        )
+        response = {
+            "schema_version": "aworld.self_evolve.task_response.v1",
+            "trajectory": trajectory,
+            "trajectory_capture_mode": "task_response",
+        }
+        response["framework_attestation"] = {
+            "schema_version": "aworld.self_evolve.task_response_attestation.v2",
+            "signature": _task_response_signature(
+                response, kwargs["task_response_attestation_key"]
+            ),
+        }
+        Path(kwargs["task_response_path"]).write_text(
+            json.dumps(response), encoding="utf-8"
+        )
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=json.dumps(
+                {
+                    "trajectory": trajectory,
+                    "trajectory_capture_mode": "task_response",
+                }
+            )
+            + "\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr("aworld.self_evolve.replay._run_replay_cli", fake_run)
+    result = await AWorldCliReplayExecutor()(
+        ReplayExecutionRequest(
+            variant_id="baseline",
+            task_id="task-1",
+            candidate_id="cand-1",
+            workspace_root=str(tmp_path),
+            task_input="task",
+            task_text="task",
+            skill_root=None,
+            artifact_dir=str(tmp_path / "artifacts"),
+            evidence_policy_mode="required",
+        )
+    )
+
+    assert result.succeeded is True
+    assert result.metrics["evidence_policy_v2_runtime_trust_passed"] is True
+    manifest = (
+        tmp_path / "artifacts" / "evidence" / "evidence_manifest.jsonl"
+    ).read_text(encoding="utf-8")
+    assert "framework.inventory.1" in manifest
+    bundle = json.loads(
+        (
+            tmp_path / "artifacts" / "evidence" / "evidence_bundle.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert bundle["valid"] is True
+    assert bundle["entries"][0]["artifact_path"].endswith("page_text.txt")
 
 
 @pytest.mark.asyncio

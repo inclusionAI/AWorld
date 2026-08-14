@@ -62,6 +62,7 @@ from aworld.self_evolve.datasets import (
     is_framework_meta_trace_pack,
 )
 from aworld.self_evolve.failure_events import (
+    FAILURE_EVENT_SCHEMA_VERSION,
     FailureEventSource,
     FailureOwner,
     FailureScope,
@@ -317,6 +318,70 @@ class CandidateReplayRequest:
             raise ValueError("lane attestations require measurement replay contracts")
 
 
+def _failure_event_from_persisted_mapping(
+    payload: Mapping[str, Any],
+) -> ReplayFailureEvent:
+    """Load canonical or dataclass-projected failure events without losing scope."""
+
+    try:
+        return ReplayFailureEvent.from_dict(payload)
+    except ValueError:
+        if payload.get("schema_version") != FAILURE_EVENT_SCHEMA_VERSION:
+            return ReplayFailureEvent.from_legacy_mapping(payload)
+        compatibility = payload.get("_compatibility")
+        if "semantic_key" in payload or not isinstance(compatibility, Mapping):
+            raise
+        return ReplayFailureEvent(
+            code=str(payload.get("code") or "persisted_replay_failure"),
+            owner=FailureOwner(str(payload.get("owner"))),
+            stage=FailureStage(str(payload.get("stage"))),
+            scope=FailureScope(str(payload.get("scope"))),
+            repairable=payload.get("repairable") is True,
+            category=str(payload.get("category") or "replay"),
+            summary=str(payload.get("summary") or ""),
+            diagnostics=(
+                payload.get("diagnostics")
+                if isinstance(payload.get("diagnostics"), Mapping)
+                else {}
+            ),
+            artifact_refs=tuple(payload.get("artifact_refs") or ()),
+            source=FailureEventSource(str(payload.get("source"))),
+            causes=tuple(payload.get("causes") or ()),
+            capability_id=(
+                str(payload["capability_id"])
+                if payload.get("capability_id") is not None
+                else None
+            ),
+            requirement_id=(
+                str(payload["requirement_id"])
+                if payload.get("requirement_id") is not None
+                else None
+            ),
+            contract_fingerprint=(
+                str(payload["contract_fingerprint"])
+                if payload.get("contract_fingerprint") is not None
+                else None
+            ),
+            capability_identity_digest=(
+                str(payload["capability_identity_digest"])
+                if payload.get("capability_identity_digest") is not None
+                else None
+            ),
+            requirement_identity_digest=(
+                str(payload["requirement_identity_digest"])
+                if payload.get("requirement_identity_digest") is not None
+                else None
+            ),
+            contract_identity_digest=(
+                str(payload["contract_identity_digest"])
+                if payload.get("contract_identity_digest") is not None
+                else None
+            ),
+            event_id=str(payload.get("event_id") or f"replay-event-{uuid.uuid4().hex}"),
+            _compatibility=(compatibility if isinstance(compatibility, Mapping) else {}),
+        )
+
+
 @dataclass(frozen=True)
 class ReplayVariantResult:
     variant_id: str
@@ -338,7 +403,7 @@ class ReplayVariantResult:
         if isinstance(failure, Mapping) and not isinstance(
             failure, ReplayFailureEvent
         ):
-            failure = ReplayFailureEvent.from_legacy_mapping(failure)
+            failure = _failure_event_from_persisted_mapping(failure)
         blocked_by = tuple(self.blocked_by)
         if any(not isinstance(event, ReplayFailureEvent) for event in blocked_by):
             raise ValueError("blocked_by must contain replay failure events")
@@ -1004,7 +1069,7 @@ def _baseline_failure_blocks_candidate(
     event = (
         failure
         if isinstance(failure, ReplayFailureEvent)
-        else ReplayFailureEvent.from_legacy_mapping(failure)
+        else _failure_event_from_persisted_mapping(failure)
     )
     return not (
         event.owner is FailureOwner.TASK
@@ -1058,6 +1123,27 @@ def _execution_failure_event(
     payload = dict(failure or {})
     legacy = ReplayFailureEvent.from_legacy_mapping(payload)
     owner = legacy.owner
+    raw_owner = str(payload.get("failure_owner") or "")
+    raw_scope = str(payload.get("failure_scope") or "")
+    # Executor failures produced by the framework already cross a trusted native
+    # boundary here.  Preserve a complete typed ownership projection instead of
+    # degrading it through the legacy compatibility importer.  The strict tuple
+    # requirement prevents an incomplete/prose-only legacy failure from gaining
+    # run-wide stopping authority.
+    if (
+        payload.get("code")
+        and isinstance(payload.get("repairable"), bool)
+        and raw_owner in {
+            FailureOwner.FRAMEWORK.value,
+            FailureOwner.INFRASTRUCTURE.value,
+        }
+        and raw_scope in {
+            FailureScope.MEMBER.value,
+            FailureScope.SHARED_RUN.value,
+        }
+        and str(payload.get("outcome") or "") == f"{raw_owner}_failure"
+    ):
+        owner = FailureOwner(raw_owner)
     raw_stage = str(payload.get("failure_stage") or "")
     failure_type = str(payload.get("type") or "")
     if service_preflight:
@@ -1082,6 +1168,14 @@ def _execution_failure_event(
         )
     elif owner is FailureOwner.TASK:
         scope = FailureScope.MEMBER
+    elif owner in {FailureOwner.FRAMEWORK, FailureOwner.INFRASTRUCTURE} and (
+        raw_scope in {
+            FailureScope.MEMBER.value,
+            FailureScope.SHARED_RUN.value,
+        }
+        and str(payload.get("outcome") or "") == f"{owner.value}_failure"
+    ):
+        scope = FailureScope(raw_scope)
     elif owner is FailureOwner.INFRASTRUCTURE:
         scope = FailureScope.SHARED_RUN
     elif stage is FailureStage.EVALUATION:
@@ -2823,8 +2917,9 @@ def _resume_root_is_compatible(
             "baseline_repetitions",
             "candidate_repetitions",
             "repetition_semantics",
+            "evidence_policy_mode",
         )
-    )
+    ) and _resume_measurement_contract_is_compatible(current, stored)
 
 
 def _resume_member_is_compatible(
@@ -2845,7 +2940,28 @@ def _resume_member_is_compatible(
             "baseline_repetitions",
             "candidate_repetitions",
             "repetition_semantics",
+            "evidence_policy_mode",
         )
+    ) and _resume_measurement_contract_is_compatible(current, stored)
+
+
+def _resume_measurement_contract_is_compatible(
+    current: CandidateReplayRequest,
+    stored: CandidateReplayRequest,
+) -> bool:
+    """Prevent legacy/checkpoint evidence from crossing a v2 plan boundary."""
+
+    current_plan = current.measurement_plan
+    stored_plan = stored.measurement_plan
+    if current_plan is None or stored_plan is None:
+        return current_plan is None and stored_plan is None
+    return bool(
+        current_plan.measurement_plan_fingerprint
+        == stored_plan.measurement_plan_fingerprint
+        and current_plan.evidence_policy_fingerprint
+        == stored_plan.evidence_policy_fingerprint
+        and current_plan.isolation_decision_fingerprint
+        == stored_plan.isolation_decision_fingerprint
     )
 
 
@@ -3011,6 +3127,14 @@ def _load_resumable_member_pairs(
         except (FileNotFoundError, ValueError, json.JSONDecodeError, OSError):
             continue
         if baseline_failures or candidate_failures:
+            continue
+        if (
+            baseline.status is ReplayExecutionStatus.BLOCKED
+            or candidate_result.status is ReplayExecutionStatus.BLOCKED
+        ):
+            # Older checkpoints marked scheduler-produced blocked placeholders
+            # as completed pairs. They contain no arm observation and cannot
+            # authorize terminal reuse under the current execution contract.
             continue
         try:
             _clone_replay_variant_tree(
@@ -3630,7 +3754,8 @@ class AWorldCliCandidateReplayBackend:
                     baseline.metrics.get("baseline_cache_status") or "unknown"
                 ),
             )
-            baseline_phase_completed_case_ids.append(case.case_id)
+            if baseline.status is not ReplayExecutionStatus.BLOCKED:
+                baseline_phase_completed_case_ids.append(case.case_id)
             if _baseline_replay_is_reusable(
                 baseline,
                 requested_repetitions=member_request.baseline_repetitions,
@@ -3672,7 +3797,8 @@ class AWorldCliCandidateReplayBackend:
                     candidate=candidate_result,
                 )
             )
-            candidate_phase_completed_case_ids.append(case.case_id)
+            if candidate_result.status is not ReplayExecutionStatus.BLOCKED:
+                candidate_phase_completed_case_ids.append(case.case_id)
             if _replay_member_pair_is_comparable(
                 case,
                 baseline,
@@ -3981,7 +4107,7 @@ class AWorldCliCandidateReplayBackend:
             failure = control.get("failure")
             if not isinstance(failure, Mapping):
                 return False
-            event = ReplayFailureEvent.from_legacy_mapping(failure)
+            event = _failure_event_from_persisted_mapping(failure)
             return not (
                 event.owner in {
                     FailureOwner.FRAMEWORK,
@@ -3992,6 +4118,25 @@ class AWorldCliCandidateReplayBackend:
                     and event.stage is not FailureStage.TASK_ROLLOUT
                 )
             )
+
+        def stop_on_shared_framework_failure(completed) -> str | None:
+            for pair in completed:
+                for result in (pair.control, pair.treatment):
+                    if not isinstance(result, Mapping):
+                        continue
+                    failure = result.get("failure")
+                    if not isinstance(failure, Mapping):
+                        continue
+                    event = _failure_event_from_persisted_mapping(failure)
+                    if event.owner in {
+                        FailureOwner.FRAMEWORK,
+                        FailureOwner.INFRASTRUCTURE,
+                    } and event.scope in {
+                        FailureScope.MEMBER,
+                        FailureScope.SHARED_RUN,
+                    }:
+                        return event.code
+            return None
 
         def materialize_skipped_treatments(schedules) -> None:
             entries = {entry.work_unit_id: entry for entry in journal.index_entries()}
@@ -4177,6 +4322,20 @@ class AWorldCliCandidateReplayBackend:
                 for member in members
                 if _baseline_invalid_for_measurement(member.baseline)
             )
+            framework_blocker = next(
+                (
+                    failure
+                    for member in members
+                    for variant in (member.baseline, member.candidate)
+                    for failure in (variant.failure,)
+                    if isinstance(failure, ReplayFailureEvent)
+                    and failure.owner
+                    in {FailureOwner.FRAMEWORK, FailureOwner.INFRASTRUCTURE}
+                    and failure.scope
+                    in {FailureScope.MEMBER, FailureScope.SHARED_RUN}
+                ),
+                None,
+            )
             primary_members = tuple(
                 member
                 for member in members
@@ -4249,6 +4408,9 @@ class AWorldCliCandidateReplayBackend:
                 checkpoint_quantum_expired=False,
                 campaign_wall_deadline_expired=False,
                 resume_safe=True,
+                framework_blocked_reason_code=(
+                    framework_blocker.code if framework_blocker is not None else None
+                ),
             )
 
         staged = await schedule_staged_measurement(
@@ -4263,6 +4425,7 @@ class AWorldCliCandidateReplayBackend:
             ),
             resolve_reused_control=resolve_control,
             control_allows_treatment=control_allows,
+            pair_should_stop=stop_on_shared_framework_failure,
             checkpoint_quantum_seconds=plan.deadlines.checkpoint_quantum_seconds,
             campaign_deadline_monotonic=(
                 time.monotonic() + plan.deadlines.campaign_wall_deadline_seconds
@@ -4277,15 +4440,43 @@ class AWorldCliCandidateReplayBackend:
             raise RuntimeError(
                 "measurement scheduler stopped before producing a complete pair"
             )
+        measurement_decision = to_json_dict(staged.decision)
+        framework_blocker = next(
+            (
+                failure
+                for member in members
+                for variant in (member.baseline, member.candidate)
+                for failure in (variant.failure,)
+                if isinstance(failure, ReplayFailureEvent)
+                and failure.owner
+                in {FailureOwner.FRAMEWORK, FailureOwner.INFRASTRUCTURE}
+                and failure.scope
+                in {FailureScope.SHARED_RUN, FailureScope.MEMBER}
+            ),
+            None,
+        )
+        if framework_blocker is not None:
+            # Invalid controls caused by the measurement framework are not
+            # statistical invalidity and must never spend a candidate or
+            # measurement-retry opportunity. Preserve the scheduler stop as a
+            # diagnostic while projecting the actual causal owner to Campaign.
+            measurement_decision = {
+                "kind": "stop_framework_blocked",
+                "reason_code": framework_blocker.code,
+                "resume_safe": False,
+                "failure_owner": framework_blocker.owner.value,
+                "failure_scope": framework_blocker.scope.value,
+                "scheduler_decision": to_json_dict(staged.decision),
+            }
         result = partial_result(
             members,
-            measurement_decision=to_json_dict(staged.decision),
+            measurement_decision=measurement_decision,
         )
         _write_json(
             members_root / "measurement_schedule.json",
             {
                 "schema_version": "aworld.self_evolve.measurement_schedule.v2",
-                "decision": staged.decision,
+                "decision": measurement_decision,
                 "admitted_case_ids": list(staged.admitted_case_ids),
                 "schedule_count": len(staged.schedules),
             },
@@ -5714,6 +5905,75 @@ def _write_runtime_projection(
     )
 
 
+def _ensure_framework_evidence_manifest(
+    *,
+    evidence_dir: Path,
+    evidence_manifest: Path,
+    max_files: int,
+    max_bytes: int,
+) -> None:
+    """Create a bounded parent-owned manifest when a legacy skill omitted one.
+
+    The replay child runs in shadow mode and is not an evidence authority. Once
+    it exits, the parent inventories only regular files inside the dedicated
+    evidence namespace. The normal manifest validator then rebuilds the
+    canonical bundle and the v2 trust layer signs handles for those real files.
+    Existing manifests remain subject to strict validation and are never
+    repaired from untrusted declarations.
+    """
+
+    if evidence_manifest.is_symlink():
+        raise ValueError("candidate evidence manifest is a symlink")
+    if evidence_manifest.exists():
+        return
+    root = evidence_dir.resolve()
+    entries: list[dict[str, object]] = []
+    total_bytes = 0
+    for current_root, directories, filenames in os.walk(
+        evidence_dir,
+        followlinks=False,
+    ):
+        current = Path(current_root)
+        for directory in tuple(directories):
+            if (current / directory).is_symlink():
+                raise ValueError("candidate evidence contains a symlink directory")
+        directories[:] = sorted(directories)
+        for filename in sorted(filenames):
+            if filename in _REPLAY_POLICY_CONTROL_FILES:
+                continue
+            path = current / filename
+            if path.is_symlink() or not path.is_file():
+                raise ValueError("candidate evidence contains a non-regular file")
+            resolved = path.resolve()
+            try:
+                relative = resolved.relative_to(root)
+            except ValueError as exc:
+                raise ValueError("candidate evidence escaped its producer root") from exc
+            size = path.stat().st_size
+            if size < 0:
+                raise ValueError("candidate evidence has an invalid size")
+            total_bytes += size
+            if len(entries) >= max_files or total_bytes > max_bytes:
+                raise ValueError("candidate evidence exceeds its policy budget")
+            entries.append(
+                {
+                    "source_id": f"framework.inventory.{len(entries) + 1}",
+                    "evidence_type": "file",
+                    "artifact_path": relative.as_posix(),
+                    "extraction_method": "framework_inventory",
+                }
+            )
+    if not entries:
+        raise ValueError("framework evidence inventory is empty")
+    evidence_manifest.write_text(
+        "".join(
+            json.dumps(entry, ensure_ascii=False, sort_keys=True) + "\n"
+            for entry in entries
+        ),
+        encoding="utf-8",
+    )
+
+
 def _finalize_replay_evidence_trust(
     context: _ReplayEvidenceTrustContext,
     *,
@@ -6310,45 +6570,55 @@ class AWorldCliReplayExecutor:
         trajectory_payload = _extract_trajectory_payload_from_stdout(stdout)
         trajectory = trajectory_payload["trajectory"]
         capture_mode = trajectory_payload["trajectory_capture_mode"]
-        evidence_metrics = _replay_evidence_metrics(
-            stdout=stdout,
-            stderr=stderr,
-            trajectory=trajectory,
-            artifact_dir=evidence_dir,
-            evidence_manifest=evidence_manifest,
-            workspace_root=Path(request.workspace_root),
-            variant_id=request.variant_id,
-        )
+        evidence_metrics: dict[str, Any] = {}
         trust_metrics: dict[str, Any] = {}
-        if trust_context is not None:
-            try:
+        try:
+            if trust_context is not None:
+                _ensure_framework_evidence_manifest(
+                    evidence_dir=evidence_dir,
+                    evidence_manifest=evidence_manifest,
+                    max_files=self._DEFAULT_ARTIFACT_FILE_LIMIT,
+                    max_bytes=self._DEFAULT_ARTIFACT_BYTE_LIMIT,
+                )
+            evidence_metrics = _replay_evidence_metrics(
+                stdout=stdout,
+                stderr=stderr,
+                trajectory=trajectory,
+                artifact_dir=evidence_dir,
+                evidence_manifest=evidence_manifest,
+                workspace_root=Path(request.workspace_root),
+                variant_id=request.variant_id,
+            )
+            if trust_context is not None:
                 trust_metrics = _finalize_replay_evidence_trust(
                     trust_context,
                     artifact_dir=artifact_dir,
                     evidence_dir=evidence_dir,
                     task_response_path=task_response_path,
                 )
-            except (EvidencePolicyValidationError, OSError, ValueError) as exc:
-                return ReplayExecutionResult(
-                    status="failed",
-                    trajectory=trajectory,
-                    stdout=stdout,
-                    stderr=stderr,
-                    failure={
-                        "code": "evidence_policy_v2_attestation_failed",
-                        "outcome": "framework_failure",
-                        "failure_class": "measurement_runtime_trust",
-                        "failure_stage": "evidence_finalization",
-                        "repairable": False,
-                        "reason": str(exc),
-                    },
-                    metrics={
-                        **evidence_metrics,
-                        "evidence_policy_v2_required": True,
-                        "evidence_policy_v2_preflight_passed": True,
-                        "evidence_policy_v2_runtime_trust_passed": False,
-                    },
-                )
+        except (EvidencePolicyValidationError, OSError, ValueError) as exc:
+            return ReplayExecutionResult(
+                status="failed",
+                trajectory=trajectory,
+                stdout=stdout,
+                stderr=stderr,
+                failure={
+                    "code": "evidence_policy_v2_attestation_failed",
+                    "outcome": "framework_failure",
+                    "failure_class": "measurement_runtime_trust",
+                    "failure_owner": FailureOwner.FRAMEWORK.value,
+                    "failure_scope": FailureScope.SHARED_RUN.value,
+                    "failure_stage": "evidence_finalization",
+                    "repairable": False,
+                    "reason": str(exc),
+                },
+                metrics={
+                    **evidence_metrics,
+                    "evidence_policy_v2_required": True,
+                    "evidence_policy_v2_preflight_passed": True,
+                    "evidence_policy_v2_runtime_trust_passed": False,
+                },
+            )
         metrics = {
             "returncode": completed.returncode,
             "evidence_ready_early_stop": bool(
