@@ -1439,13 +1439,23 @@ class SelfImprovementCampaignController:
             and measurement_outcome.projection
             is CampaignMeasurementProjection.MEASUREMENT_INCOMPLETE
         )
+        framework_handoff_requested = bool(
+            measurement_outcome is not None
+            and measurement_outcome.projection
+            is CampaignMeasurementProjection.FRAMEWORK_BLOCKED
+            and disposition.kind is SelfImprovementDispositionKind.HANDOFF_GOAL
+        )
         measurement_pending_candidate_id = (
             _measurement_pending_candidate_id(
                 self.store,
                 run_id=actual_run_id,
                 report=report,
             )
-            if measurement_retry_requested or measurement_continuation_requested
+            if (
+                measurement_retry_requested
+                or measurement_continuation_requested
+                or framework_handoff_requested
+            )
             else None
         )
         measurement_retry_available = bool(
@@ -1479,6 +1489,10 @@ class SelfImprovementCampaignController:
             measurement_continuation_requested
             and measurement_pending_candidate_id is not None
         )
+        framework_handoff_checkpoint_available = bool(
+            framework_handoff_requested
+            and measurement_pending_candidate_id is not None
+        )
         if (
             measurement_continuation_requested
             and not measurement_continuation_available
@@ -1497,7 +1511,10 @@ class SelfImprovementCampaignController:
             )
             status = _status_for_disposition(disposition)
         measurement_ledger = campaign.measurement_ledger
-        if measurement_continuation_available:
+        if (
+            measurement_continuation_available
+            or framework_handoff_checkpoint_available
+        ):
             measurement_ledger = measurement_ledger.charge_continuation(
                 actual_run_id
             )
@@ -1529,14 +1546,22 @@ class SelfImprovementCampaignController:
             measurement_ledger=measurement_ledger,
             measurement_pending_run_id=(
                 actual_run_id
-                if measurement_retry_available or measurement_continuation_available
+                if (
+                    measurement_retry_available
+                    or measurement_continuation_available
+                    or framework_handoff_checkpoint_available
+                )
                 else campaign.measurement_pending_run_id
                 if preserve_measurement_checkpoint
                 else None
             ),
             measurement_pending_candidate_id=(
                 measurement_pending_candidate_id
-                if measurement_retry_available or measurement_continuation_available
+                if (
+                    measurement_retry_available
+                    or measurement_continuation_available
+                    or framework_handoff_checkpoint_available
+                )
                 else campaign.measurement_pending_candidate_id
                 if preserve_measurement_checkpoint
                 else None
@@ -2033,12 +2058,12 @@ def _measurement_outcome_disposition(
         )
     if projection is CampaignMeasurementProjection.FRAMEWORK_BLOCKED:
         return SelfImprovementDisposition(
-            kind=SelfImprovementDispositionKind.PAUSE_OPERATOR,
+            kind=SelfImprovementDispositionKind.HANDOFF_GOAL,
             reason_code=outcome.reason_code,
             owner="framework",
             stage="measurement",
             scope="shared_run",
-            repairable=outcome.continuation_available,
+            repairable=True,
             progress_delta_ids=progress_delta_ids,
         )
     return SelfImprovementDisposition(
@@ -2886,7 +2911,7 @@ def _measurement_pending_candidate_id(
     run_id: str,
     report: Mapping[str, Any],
 ) -> str | None:
-    """Resolve the immutable candidate blocked only by invalid measurement."""
+    """Resolve the immutable candidate blocked by the measurement control plane."""
 
     candidate_ids: list[str] = []
     for value in (

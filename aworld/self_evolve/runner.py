@@ -16950,7 +16950,10 @@ def _campaign_measurement_outcome_for_replay(
             execution_status=MeasurementExecutionStatus.FRAMEWORK_BLOCKED,
             improvement_outcome=CandidateImprovementOutcome.UNKNOWN,
             release_gates_passed=False,
-            continuation_available=False,
+            # The candidate package remains immutable and reusable after the
+            # external framework repair. Campaign must pause for a goal handoff,
+            # not spend another mutation or invalid-measurement retry.
+            continuation_available=True,
             reason_code=str(
                 decision.get("reason_code") or "measurement_framework_blocked"
             ),

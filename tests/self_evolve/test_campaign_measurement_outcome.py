@@ -310,6 +310,55 @@ def test_controller_projects_typed_terminal_outcome_without_guessing_legacy_stat
     assert result["campaign_measurement_projection"] == projection
 
 
+def test_framework_blocker_handoff_preserves_candidate_without_charging_frontiers(
+    tmp_path: Path,
+) -> None:
+    def run_once(**request):
+        run_id = f"{request['campaign_id']}-cycle-{request['campaign_cycle']:03d}"
+        return _write_report(
+            tmp_path,
+            run_id,
+            _outcome(
+                MeasurementExecutionStatus.FRAMEWORK_BLOCKED,
+                continuation_available=True,
+                reason_code="evidence_policy_v2_attestation_failed",
+            ),
+            candidate_id="candidate-framework-blocked",
+            # The runner may have admitted the candidate before the shared
+            # framework fault. Campaign must not turn that into a conclusion.
+            authoritative_candidate_count=1,
+        )
+
+    result = run_self_improvement_campaign(
+        workspace_root=tmp_path,
+        request={
+            "from_trajectory": "trajectory.log",
+            "apply_policy": "verified_only",
+            "infer_target": True,
+        },
+        max_improvement_cycles=1,
+        run_once=run_once,
+    )
+
+    assert result["campaign_status"] == "paused"
+    assert result["campaign_measurement_projection"] == "framework_blocked"
+    assert result["campaign_measurement_retry_count"] == 0
+    assert result["campaign_measurement_continuation_count"] == 1
+    assert result["campaign_candidate_cycle_count"] == 0
+    assert result["campaign_authoritative_candidate_count"] == 0
+    assert result["campaign_measurement_pending_candidate_id"] == (
+        "candidate-framework-blocked"
+    )
+    handoff_path = Path(str(result["goal_handoff_path"]))
+    handoff = json.loads(handoff_path.read_text(encoding="utf-8"))
+    assert handoff["disposition"]["kind"] == "handoff_goal"
+    assert handoff["disposition"]["reason_code"] == (
+        "evidence_policy_v2_attestation_failed"
+    )
+    assert handoff["disposition"]["owner"] == "framework"
+    assert handoff["disposition"]["scope"] == "shared_run"
+
+
 def test_invalid_measurement_retry_uses_only_invalid_retry_ledger(
     tmp_path: Path,
 ) -> None:
