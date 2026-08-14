@@ -26,6 +26,7 @@ from aworld.core.agent.swarm import Swarm
 from aworld.core.context.amni.local import LocalIsolatedApplicationContext
 from aworld.core.context.amni.prompt.assembly.budget import PromptBudgetPolicy
 from aworld.core.task import Task
+from aworld.core.tool.replay_policy import EvidencePolicyProfileV2
 from aworld.logs.util import logger
 from aworld.models.usage import normalize_usage
 from aworld.runner import Runners
@@ -122,6 +123,11 @@ from aworld.self_evolve.measurement import (
     observations_from_evaluation,
     observations_from_replay,
     stable_measurement_fingerprint,
+)
+from aworld.self_evolve.measurement_control import DeadlinePolicy, MeasurementPlanV2
+from aworld.self_evolve.measurement_planner import (
+    compile_measurement_plan_v2,
+    persist_compiled_measurement_plan,
 )
 from aworld.self_evolve.ingestion import (
     DEFAULT_INGESTION_REGISTRY,
@@ -286,6 +292,7 @@ from aworld.self_evolve.replay import (
     ReplayServiceReadinessTimeout,
     build_paired_replay_dataset,
     build_replay_request,
+    compile_replay_evidence_policy_profile_v2,
     candidate_replay_is_comparable,
     candidate_replay_pair_coverage,
     normalize_replay_members,
@@ -337,6 +344,8 @@ from aworld.self_evolve.repair_conformance import (
     repair_conformance_contract_identity,
 )
 from aworld.self_evolve.replay_adaptation import (
+    IsolationDecision,
+    IsolationExclusiveFallback,
     ReplayAdaptationBundle,
     ReplayAdaptationCompiler,
     ReplayCapabilityRequirement,
@@ -7097,6 +7106,16 @@ class SelfEvolveRunner:
         if replay_result is not None:
             report["replay"] = _replay_report(replay_result)
             report["replay_path"] = _replay_artifact_path(replay_result)
+            campaign_measurement_outcome = (
+                _campaign_measurement_outcome_for_replay(
+                    replay_result,
+                    final_status=final_status,
+                )
+            )
+            if campaign_measurement_outcome is not None:
+                report["campaign_measurement_outcome"] = (
+                    campaign_measurement_outcome
+                )
             replay_capability_report = _replay_capability_report(replay_result)
             if replay_capability_report is not None:
                 report["replay_capability"] = replay_capability_report
@@ -9067,6 +9086,17 @@ class SelfEvolveRunner:
             and candidate.target.target_type == "skill"
             and self.candidate_replay_backend is not None
         )
+        measurement_case_ids = tuple(
+            case.case_id
+            for case in dataset.cases
+            if not replay_planned or _is_replayable_user_task_case(case)
+        )
+        if not measurement_case_ids:
+            if self.measurement_mode is MeasurementPolicyMode.REQUIRED:
+                raise ValueError(
+                    "required measurement has no executable user-task cases"
+                )
+            return None
         repetitions = (
             max(
                 self.baseline_replay_repetitions,
@@ -9172,7 +9202,7 @@ class SelfEvolveRunner:
                 budget=stable_measurement_fingerprint(budget_identity),
             ),
             sampling=SamplingPlan(
-                independent_case_ids=tuple(case.case_id for case in dataset.cases),
+                independent_case_ids=measurement_case_ids,
                 repetitions_per_case=repetitions,
                 seeds=tuple(range(1, repetitions + 1)),
             ),
@@ -9220,7 +9250,11 @@ class SelfEvolveRunner:
                     ),
                 ),
             ),
-            search_visible_case_ids=tuple(dataset.recipe.trainable_case_ids),
+            search_visible_case_ids=tuple(
+                case_id
+                for case_id in dataset.recipe.trainable_case_ids
+                if case_id in measurement_case_ids
+            ),
             selection_protocol="predeclared_authoritative_candidate",
             stopping_policy=self.measurement_early_stop_policy,
         )
@@ -11408,6 +11442,109 @@ class SelfEvolveRunner:
             "workspace_seed_fingerprint": bundle.workspace_seed_fingerprint,
         }
 
+    def _compile_authoritative_measurement_plan(
+        self,
+        *,
+        run_id: str,
+        dataset: SelfEvolveDataset,
+        candidate: CandidateVariant,
+        replay_adaptation: ReplayAdaptationBundle,
+        replay_backend: CandidateReplayBackend,
+        member_timeout_seconds: float,
+    ) -> tuple[
+        MeasurementPlanV2,
+        IsolationDecision,
+        EvidencePolicyProfileV2,
+    ] | None:
+        """Freeze and persist the replay work graph before any rollout starts.
+
+        Advisory/required are the atomic execution switch.  OFF retains the
+        legacy executor; SHADOW persists the counterfactual plan but must not
+        alter scheduling or gates.
+        """
+
+        if self.measurement_mode is MeasurementPolicyMode.OFF:
+            return None
+        experiment = self._measurement_experiments.get(
+            (run_id, candidate.candidate_id)
+        )
+        if experiment is None:
+            raise ValueError(
+                "measurement experiment was not frozen before replay admission"
+            )
+        isolation_decision = IsolationDecision.exclusive_fallback(
+            requested_lane_count=2,
+            fallback=IsolationExclusiveFallback(
+                code="binding_requires_exclusive",
+                limiting_resource="replay_execution",
+                detail=(
+                    "replay adaptation has not supplied two complete materialized "
+                    "lane grants"
+                ),
+            ),
+        )
+        evidence_profile = compile_replay_evidence_policy_profile_v2()
+        campaign_deadline = (
+            float(self.replay_total_timeout_seconds)
+            if self.replay_total_timeout_seconds is not None
+            else None
+        )
+        try:
+            compiled = compile_measurement_plan_v2(
+                experiment=experiment,
+                dataset_fingerprint=replay_dataset_fingerprint(dataset),
+                execution_contract_fingerprint=stable_measurement_fingerprint(
+                    {
+                        "schema_version": (
+                            "aworld.self_evolve.replay_execution_contract.v2"
+                        ),
+                        "backend": _measurement_component_identity(
+                            replay_backend
+                        ),
+                        "adaptation_fingerprint": (
+                            replay_adaptation.adaptation_fingerprint
+                        ),
+                        "workspace_seed_fingerprint": (
+                            replay_adaptation.workspace_seed_fingerprint
+                        ),
+                        "candidate_package_fingerprint": (
+                            candidate_package_fingerprint(candidate)
+                        ),
+                    }
+                ),
+                isolation_decision=isolation_decision,
+                evidence_policy_profile=evidence_profile,
+                deadlines=DeadlinePolicy(
+                    attempt_timeout_seconds=float(member_timeout_seconds),
+                    member_hard_deadline_seconds=float(member_timeout_seconds),
+                    checkpoint_quantum_seconds=max(
+                        float(member_timeout_seconds) * 2.0,
+                        60.0,
+                    ),
+                    campaign_wall_deadline_seconds=campaign_deadline,
+                    resumable_chunked=True,
+                ),
+                repair_screening_case_ids=experiment.search_visible_case_ids,
+            )
+        except ValueError:
+            if self.measurement_mode is MeasurementPolicyMode.SHADOW:
+                logger.warning(
+                    "self_evolve.measurement.shadow_plan_unavailable",
+                    exc_info=True,
+                )
+                return None
+            raise
+        persist_compiled_measurement_plan(
+            self.store,
+            run_id=run_id,
+            compiled=compiled,
+            isolation_decision=isolation_decision,
+            evidence_policy_profile=evidence_profile,
+        )
+        if self.measurement_mode is MeasurementPolicyMode.SHADOW:
+            return None
+        return compiled.plan, isolation_decision, evidence_profile
+
     async def _replay_selected_candidate(
         self,
         *,
@@ -11673,6 +11810,24 @@ class SelfEvolveRunner:
             else timeout_seconds
         )
         try:
+            measurement_bundle = self._compile_authoritative_measurement_plan(
+                run_id=run_id,
+                dataset=dataset,
+                candidate=selected_candidate,
+                replay_adaptation=replay_adaptation,
+                replay_backend=effective_replay_backend,
+                member_timeout_seconds=effective_timeout_seconds,
+            )
+            if measurement_bundle is None:
+                measurement_plan = None
+                measurement_isolation_decision = None
+                measurement_evidence_profile = None
+            else:
+                (
+                    measurement_plan,
+                    measurement_isolation_decision,
+                    measurement_evidence_profile,
+                ) = measurement_bundle
             request = build_replay_request(
                 run_id=run_id,
                 workspace_root=self.store.workspace_root,
@@ -11721,8 +11876,16 @@ class SelfEvolveRunner:
                 repetition_policy=repetition_policy,
                 evidence_policy_mode=(
                     "required"
-                    if _is_verified_apply_policy(apply_policy)
+                    if measurement_plan is not None
+                    or _is_verified_apply_policy(apply_policy)
                     else "legacy"
+                ),
+                measurement_plan=measurement_plan,
+                measurement_isolation_decision=(
+                    measurement_isolation_decision
+                ),
+                measurement_evidence_policy_profile=(
+                    measurement_evidence_profile
                 ),
             )
         except ValueError as exc:
@@ -11747,6 +11910,7 @@ class SelfEvolveRunner:
         if (
             effective_total_timeout_seconds is None
             and _is_verified_apply_policy(apply_policy)
+            and request.measurement_plan is None
         ):
             # Keep the legacy safety horizon until the v2 control-plane
             # scheduler can enforce checkpoint quanta and Campaign deadlines.
@@ -11954,12 +12118,79 @@ class SelfEvolveRunner:
                     )
                 },
             )
+        measurement_decision = replay_result.measurement_decision
+        measurement_decision_kind = (
+            str(measurement_decision.get("kind"))
+            if isinstance(measurement_decision, Mapping)
+            else ""
+        )
+        if measurement_decision_kind in {
+            "measurement_incomplete_checkpoint",
+            "measurement_incomplete_campaign_deadline",
+        }:
+            return (
+                replay_result,
+                None,
+                GateResult(
+                    gate_name="candidate_replay",
+                    passed=False,
+                    reason=(
+                        "authoritative replay stopped at a durable measurement "
+                        "boundary and can resume without repeating terminal work"
+                    ),
+                    details={
+                        "failure_class": "measurement",
+                        "failure_owner": "measurement_scheduler",
+                        "failure_scope": FailureScope.SHARED_RUN.value,
+                        "failure_stage": FailureStage.EVALUATION.value,
+                        "repairable": True,
+                        "next_action": "continue_measurement",
+                        "code": measurement_decision_kind,
+                        "measurement_decision": dict(measurement_decision),
+                        "measurement_plan_fingerprint": (
+                            request.measurement_plan.measurement_plan_fingerprint
+                            if request.measurement_plan is not None
+                            else None
+                        ),
+                        "resume_safe": measurement_decision.get("resume_safe")
+                        is True,
+                    },
+                ),
+            )
+        replay_validation_dataset = dataset
+        if request.measurement_plan is not None:
+            planned_case_ids = set(request.measurement_plan.case_ids)
+            replay_validation_dataset = replace(
+                dataset,
+                cases=tuple(
+                    case
+                    for case in dataset.cases
+                    if case.case_id in planned_case_ids
+                ),
+                recipe=replace(
+                    dataset.recipe,
+                    source={
+                        **dict(dataset.recipe.source),
+                        "measurement_plan_fingerprint": (
+                            request.measurement_plan.measurement_plan_fingerprint
+                        ),
+                        "measurement_case_count": len(planned_case_ids),
+                    },
+                    splits={
+                        "train": [],
+                        "validation": [],
+                        "held_out": sorted(planned_case_ids),
+                    },
+                    trainable_case_ids=(),
+                    held_out_case_ids=tuple(sorted(planned_case_ids)),
+                ),
+            )
         normalized = normalize_replay_members(
-            dataset=dataset,
+            dataset=replay_validation_dataset,
             replay_result=replay_result,
         )
         if not candidate_replay_is_comparable(
-            dataset=dataset,
+            dataset=replay_validation_dataset,
             replay_result=replay_result,
             require_adapted=True,
             normalized=normalized,
@@ -11973,7 +12204,7 @@ class SelfEvolveRunner:
                     reason="candidate replay did not produce comparable paired outcomes",
                     details=_replay_gate_details(
                         replay_result,
-                        dataset=dataset,
+                        dataset=replay_validation_dataset,
                         normalized=normalized,
                         candidate_requires_intervention_exposure=(
                             candidate_requires_intervention_exposure
@@ -11985,7 +12216,7 @@ class SelfEvolveRunner:
                 ),
             )
         replay_dataset = build_paired_replay_dataset(
-            dataset=dataset,
+            dataset=replay_validation_dataset,
             replay_result=replay_result,
             candidate=selected_candidate,
             normalized=normalized,
@@ -12010,7 +12241,7 @@ class SelfEvolveRunner:
                 reason="candidate replay produced comparable paired outcomes",
                 details=_replay_gate_details(
                     replay_result,
-                    dataset=dataset,
+                    dataset=replay_validation_dataset,
                     normalized=normalized,
                     candidate_requires_intervention_exposure=(
                         candidate_requires_intervention_exposure
@@ -16633,6 +16864,21 @@ def _replay_report(replay_result: CandidateReplayResult) -> dict[str, object]:
         "baseline": lifecycle(replay_result.baseline),
         "candidate": lifecycle(replay_result.candidate),
     }
+    if replay_result.request.measurement_plan is not None:
+        report["measurement_control"] = {
+            "measurement_plan_fingerprint": (
+                replay_result.request.measurement_plan.measurement_plan_fingerprint
+            ),
+            "isolation_decision_fingerprint": (
+                replay_result.request.measurement_plan.isolation_decision_fingerprint
+            ),
+            "evidence_policy_fingerprint": (
+                replay_result.request.measurement_plan.evidence_policy_fingerprint
+            ),
+            "decision": public_diagnostic_projection(
+                dict(replay_result.measurement_decision or {})
+            ),
+        }
     if replay_result.request.replay_adaptation is not None:
         adaptation = replay_result.request.replay_adaptation
         report["adaptation"] = {
@@ -16675,6 +16921,77 @@ def _replay_report(replay_result: CandidateReplayResult) -> dict[str, object]:
             for member in replay_result.member_results
         ]
     return report
+
+
+def _campaign_measurement_outcome_for_replay(
+    replay_result: CandidateReplayResult,
+    *,
+    final_status: SelfEvolveRunStatus,
+) -> dict[str, object] | None:
+    """Project the authoritative scheduler stop into Campaign causal state."""
+
+    decision = replay_result.measurement_decision
+    if not isinstance(decision, Mapping):
+        return None
+    kind = str(decision.get("kind") or "")
+    from aworld.self_evolve.campaign import (
+        CampaignMeasurementOutcomeV2,
+        CandidateImprovementOutcome,
+        MeasurementExecutionStatus,
+    )
+
+    if kind in {
+        "measurement_incomplete_checkpoint",
+        "measurement_incomplete_campaign_deadline",
+    }:
+        outcome = CampaignMeasurementOutcomeV2(
+            execution_status=MeasurementExecutionStatus.CHECKPOINTED,
+            improvement_outcome=CandidateImprovementOutcome.UNKNOWN,
+            release_gates_passed=False,
+            continuation_available=decision.get("resume_safe") is True,
+            reason_code=kind,
+        )
+    elif kind == "stop_confident_positive":
+        outcome = CampaignMeasurementOutcomeV2(
+            execution_status=MeasurementExecutionStatus.COMPLETED,
+            improvement_outcome=CandidateImprovementOutcome.POSITIVE,
+            release_gates_passed=final_status is SelfEvolveRunStatus.SUCCEEDED,
+            continuation_available=False,
+            reason_code="verified_positive_effect",
+        )
+    elif kind in {"stop_negative", "stop_regression"}:
+        outcome = CampaignMeasurementOutcomeV2(
+            execution_status=MeasurementExecutionStatus.COMPLETED,
+            improvement_outcome=CandidateImprovementOutcome.REGRESSION,
+            release_gates_passed=False,
+            continuation_available=False,
+            reason_code=(
+                "decisive_regression"
+                if kind == "stop_regression"
+                else "decisive_negative_effect"
+            ),
+        )
+    elif kind == "stop_invalid_control":
+        outcome = CampaignMeasurementOutcomeV2(
+            execution_status=MeasurementExecutionStatus.INVALID,
+            improvement_outcome=CandidateImprovementOutcome.UNKNOWN,
+            release_gates_passed=False,
+            continuation_available=True,
+            reason_code="repeated_invalid_control",
+        )
+    else:
+        outcome = CampaignMeasurementOutcomeV2(
+            execution_status=MeasurementExecutionStatus.COMPLETED,
+            improvement_outcome=CandidateImprovementOutcome.NO_EFFECT,
+            release_gates_passed=False,
+            continuation_available=False,
+            reason_code=(
+                kind.removeprefix("stop_") + "_effect"
+                if kind.startswith("stop_")
+                else "measurement_no_effect"
+            ),
+        )
+    return outcome.to_dict()
 
 
 def _replay_capability_report(

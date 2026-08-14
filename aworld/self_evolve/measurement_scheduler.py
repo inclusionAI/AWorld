@@ -535,10 +535,15 @@ class MeasurementScheduleBundle:
         object.__setattr__(self, "terminal_observations", observations)
 
     def work_items(
-        self, *, admitted_stage_ids: Sequence[str] | None = None
+        self,
+        *,
+        admitted_stage_ids: Sequence[str] | None = None,
+        admitted_case_ids: Sequence[str] | None = None,
     ) -> tuple[PairLaneWorkItem, ...]:
         return _pair_lane_work_from_bundle(
-            self, admitted_stage_ids=admitted_stage_ids
+            self,
+            admitted_stage_ids=admitted_stage_ids,
+            admitted_case_ids=admitted_case_ids,
         )
 
     @property
@@ -601,6 +606,7 @@ def _pair_lane_work_from_bundle(
     bundle: MeasurementScheduleBundle,
     *,
     admitted_stage_ids: Sequence[str] | None = None,
+    admitted_case_ids: Sequence[str] | None = None,
 ) -> tuple[PairLaneWorkItem, ...]:
     """Compile pending pairs only from store-verified terminal observations."""
 
@@ -615,6 +621,16 @@ def _pair_lane_work_from_bundle(
     known_stage_ids = {stage.stage_id for stage in verified_plan.stages}
     if any(stage_id not in known_stage_ids for stage_id in stage_ids):
         raise ValueError("admitted stage is outside the frozen plan")
+    requested_case_ids = (
+        tuple(admitted_case_ids)
+        if admitted_case_ids is not None
+        else tuple(verified_plan.case_ids)
+    )
+    case_ids = frozenset(requested_case_ids)
+    if len(case_ids) != len(requested_case_ids):
+        raise ValueError("admitted case ids must be unique")
+    if not case_ids.issubset(set(verified_plan.case_ids)):
+        raise ValueError("admitted case is outside the frozen plan")
     observations = bundle.observation_by_work_unit
     terminal_ids = frozenset(observations)
     known_unit_ids = {unit.work_unit_id for unit in verified_plan.work_units}
@@ -630,6 +646,7 @@ def _pair_lane_work_from_bundle(
         if (
             treatment.arm is not MeasurementArm.TREATMENT
             or treatment.stage_id not in stage_ids
+            or treatment.case_id not in case_ids
         ):
             continue
         control_id = treatment.depends_on_work_unit_id
@@ -681,6 +698,7 @@ async def schedule_pair_lanes(
     materialization_timeout_seconds: float | None = None,
     configured_lane_limit: int = 2,
     admitted_stage_ids: Sequence[str] | None = None,
+    admitted_case_ids: Sequence[str] | None = None,
     clock: Callable[[], float] = time.monotonic,
 ) -> PairLaneScheduleResult[ControlT, TreatmentT]:
     """Execute independent case pairs with bounded, proof-carrying concurrency.
@@ -731,7 +749,10 @@ async def schedule_pair_lanes(
             "authoritative scheduling requires FrameworkFilesystemLaneMaterializer"
         )
 
-    frozen_items = bundle.work_items(admitted_stage_ids=admitted_stage_ids)
+    frozen_items = bundle.work_items(
+        admitted_stage_ids=admitted_stage_ids,
+        admitted_case_ids=admitted_case_ids,
+    )
     coordinates = tuple(item.coordinate for item in frozen_items)
     if len(coordinates) != len(set(coordinates)):
         raise ValueError("pair work coordinates must be unique")

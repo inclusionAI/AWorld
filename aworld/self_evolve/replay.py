@@ -7,6 +7,7 @@ import hashlib
 import hmac
 import inspect
 import json
+import math
 import os
 import re
 import secrets
@@ -21,6 +22,7 @@ import time
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass, field, fields as dataclass_fields, replace
+from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 from typing import Any, Callable, Mapping, Protocol, runtime_checkable
@@ -74,6 +76,17 @@ from aworld.self_evolve.measurement_control import (
     MeasurementPlanV2,
     MeasurementWorkUnitV1,
     stable_control_fingerprint,
+)
+from aworld.self_evolve.measurement import (
+    EffectDirection,
+    assess_experiment_validity,
+    estimate_paired_effect,
+    observations_from_replay,
+)
+from aworld.self_evolve.measurement_control import (
+    MeasurementProgressSummary,
+    MeasurementWorkUnitState,
+    SamplingStageKind,
 )
 from aworld.self_evolve.replay_adaptation import IsolationDecision
 from aworld.self_evolve.replay_adaptation import (
@@ -286,10 +299,6 @@ class CandidateReplayRequest:
             if verified != self.measurement_plan:
                 raise ValueError("measurement replay plan is not canonical")
             known_units = {item.work_unit_id for item in verified.work_units}
-            if not self.measurement_lane_attestations:
-                raise ValueError(
-                    "measurement replay contracts require materialized lane attestations"
-                )
             for unit_id, attestation in self.measurement_lane_attestations.items():
                 if unit_id not in known_units or not isinstance(
                     attestation, LaneMaterializationAttestationV1
@@ -385,6 +394,7 @@ class CandidateReplayResult:
     # backends always write an explicit tuple, including one-member datasets.
     member_results: tuple["CandidateReplayMemberResult", ...] | None = None
     artifact_failure_events: tuple[ReplayFailureEvent, ...] = ()
+    measurement_decision: Mapping[str, Any] | None = None
 
     def __post_init__(self) -> None:
         if any(
@@ -394,6 +404,10 @@ class CandidateReplayResult:
             raise ValueError(
                 "artifact_failure_events must contain replay failure events"
             )
+        if self.measurement_decision is not None and not isinstance(
+            self.measurement_decision, Mapping
+        ):
+            raise ValueError("measurement_decision must be a mapping")
 
     @property
     def succeeded(self) -> bool:
@@ -3071,6 +3085,13 @@ class AWorldCliCandidateReplayBackend:
         dataset: SelfEvolveDataset,
         progress_callback: Callable[[Mapping[str, Any]], None] | None = None,
     ) -> CandidateReplayResult:
+        if request.measurement_plan is not None:
+            return await self._replay_candidate_measurement_v2(
+                request,
+                candidate=candidate,
+                dataset=dataset,
+                progress_callback=progress_callback,
+            )
         if not _has_authoritative_per_member_repetitions(request):
             raise ValueError(
                 "candidate replay execution requires explicit per-member "
@@ -3741,6 +3762,535 @@ class AWorldCliCandidateReplayBackend:
             candidate=candidate_result,
             member_results=member_results,
         )
+
+    async def _replay_candidate_measurement_v2(
+        self,
+        request: CandidateReplayRequest,
+        *,
+        candidate: CandidateVariant,
+        dataset: SelfEvolveDataset,
+        progress_callback: Callable[[Mapping[str, Any]], None] | None,
+    ) -> CandidateReplayResult:
+        """Execute a frozen plan through durable, adaptive pair work units."""
+
+        # Keep the control-plane persistence graph out of replay's module import
+        # path: store imports regression, which imports this module for dataset
+        # identity.  The authoritative path resolves these dependencies only at
+        # execution time, after module initialization is complete.
+        from aworld.self_evolve.measurement_execution import (
+            MeasurementExecutionJournal,
+        )
+        from aworld.self_evolve.measurement_orchestrator import (
+            schedule_staged_measurement,
+        )
+        from aworld.self_evolve.measurement_scheduler import (
+            FrameworkFilesystemLaneMaterializer,
+            ResolvedControl,
+        )
+        from aworld.self_evolve.store import FilesystemSelfEvolveStore
+
+        assert request.measurement_plan is not None
+        plan = request.measurement_plan
+        store = FilesystemSelfEvolveStore(request.workspace_root)
+        stored = store.read_measurement_control_plan(
+            request.run_id, plan.measurement_plan_fingerprint
+        )
+        if stored != plan:
+            raise ValueError("measurement replay plan differs from persisted plan")
+        experiment = store.read_measurement_experiment(
+            request.run_id, plan.experiment_id
+        )
+        journal = MeasurementExecutionJournal(
+            store=store,
+            run_id=request.run_id,
+            plan=plan,
+        )
+        journal.recover_expired(now=_utc_now())
+        replay_cases = {
+            case.case_id: case
+            for case in dataset.cases
+            if _is_replayable_user_task_case(case)
+            and case.case_id in plan.case_ids
+        }
+        if set(plan.case_ids) - set(replay_cases):
+            raise ValueError("measurement plan references unavailable replay cases")
+        replay_root = (
+            Path(request.workspace_root)
+            / ".aworld"
+            / "self_evolve"
+            / _safe_path(request.run_id)
+        )
+        if request.artifact_namespace is not None:
+            replay_root = replay_root.joinpath(
+                *_safe_artifact_namespace(request.artifact_namespace)
+            )
+        replay_dir = replay_root / "replay" / _safe_path(candidate.candidate_id)
+        members_root = replay_dir / "members"
+        replay_dir.mkdir(parents=True, exist_ok=True)
+        _write_json(replay_dir / "request.json", request)
+
+        def member_request(item: PairLaneWorkItem) -> CandidateReplayRequest:
+            case = replay_cases[item.case_id]
+            return replace(
+                request,
+                task_id=case.case_id,
+                task_input=_adapted_task_input(request, case),
+                task_input_fingerprint=_adapted_task_input_fingerprint(
+                    request, case
+                ),
+                baseline_repetitions=plan.repetitions_per_case,
+                candidate_repetitions=plan.repetitions_per_case,
+                measurement_lane_attestations={},
+            )
+
+        async def execute_arm(
+            item: PairLaneWorkItem,
+            context: LaneExecutionContext,
+            *,
+            arm: MeasurementArm,
+        ) -> Mapping[str, Any]:
+            work_unit_id = (
+                item.control_work_unit_id
+                if arm is MeasurementArm.CONTROL
+                else item.treatment_work_unit_id
+            )
+            if context.lane_attestation is None:
+                raise ValueError("measurement lane has no materialization proof")
+            local_request = replace(
+                member_request(item),
+                measurement_lane_attestations={
+                    work_unit_id: context.lane_attestation
+                },
+            )
+            member_dir = members_root / _member_artifact_name(item.case_id)
+            variant_id = (
+                "baseline"
+                if arm is MeasurementArm.CONTROL
+                else candidate.candidate_id
+            )
+            arm_root = (
+                member_dir / "baseline"
+                if arm is MeasurementArm.CONTROL
+                else member_dir / _safe_path(candidate.candidate_id)
+            )
+            artifact_dir = arm_root / str(item.repetition_id)
+            attempt_id = "measurement-attempt-" + uuid.uuid4().hex
+            started = time.monotonic()
+            handle = journal.begin(
+                work_unit_id=work_unit_id,
+                attempt_id=attempt_id,
+                now=_utc_now(),
+            )
+            try:
+                async with asyncio.timeout(
+                    plan.deadlines.member_hard_deadline_seconds
+                ):
+                    result = await self._run_variant_with_evidence_retries(
+                        local_request,
+                        variant_id=variant_id,
+                        skill_root=(
+                            local_request.baseline_skill_root
+                            or _infer_baseline_skill_root(local_request)
+                            if arm is MeasurementArm.CONTROL
+                            else local_request.overlay_skill_root
+                        ),
+                        artifact_dir=artifact_dir,
+                        measurement_arm=arm,
+                        repetition_id=item.repetition_id,
+                        progress_callback=_scoped_replay_attempt_callback(
+                            progress_callback,
+                            candidate_id=candidate.candidate_id,
+                            case_id=item.case_id,
+                            case_index=plan.case_ids.index(item.case_id) + 1,
+                            case_count=len(plan.case_ids),
+                            phase=(
+                                "baseline"
+                                if arm is MeasurementArm.CONTROL
+                                else "candidate"
+                            ),
+                        ),
+                    )
+            except TimeoutError:
+                result = _member_phase_timeout_result(
+                    variant_id=variant_id,
+                    phase=(
+                        "baseline"
+                        if arm is MeasurementArm.CONTROL
+                        else "candidate"
+                    ),
+                    timeout_seconds=plan.deadlines.member_hard_deadline_seconds,
+                )
+                _persist_variant_lifecycle(artifact_dir, result)
+            payload = to_json_dict(result)
+            resolved = ResolvedControl.from_value(payload)
+            journal.terminal(
+                handle,
+                terminal_state=(
+                    MeasurementWorkUnitState.SUCCEEDED
+                    if result.status is ReplayExecutionStatus.SUCCEEDED
+                    else MeasurementWorkUnitState.MEMBER_TIMED_OUT
+                    if result.failure is not None
+                    and result.failure.code == "replay_member_phase_timeout"
+                    else MeasurementWorkUnitState.TASK_FAILED
+                ),
+                result_fingerprint=resolved.result_fingerprint,
+                lane_attestation=context.lane_attestation,
+                now=_utc_now(),
+                attempt_cost_seconds=max(0.0, time.monotonic() - started),
+                reason_code=(
+                    None if result.succeeded else "replay_member_failed"
+                ),
+            )
+            return payload
+
+        async def run_control(
+            item: PairLaneWorkItem, context: LaneExecutionContext
+        ) -> Mapping[str, Any]:
+            return await execute_arm(item, context, arm=MeasurementArm.CONTROL)
+
+        async def run_treatment(
+            item: PairLaneWorkItem,
+            context: LaneExecutionContext,
+            _control: Mapping[str, Any],
+        ) -> Mapping[str, Any]:
+            return await execute_arm(item, context, arm=MeasurementArm.TREATMENT)
+
+        async def resolve_control(observation, _context):
+            unit = next(
+                unit
+                for unit in plan.work_units
+                if unit.work_unit_id == observation.work_unit_id
+            )
+            artifact_dir = (
+                members_root
+                / _member_artifact_name(unit.case_id)
+                / "baseline"
+                / str(unit.repetition_id)
+            )
+            result = _load_variant_result_from_dir(
+                artifact_dir, base_variant_id="baseline"
+            )
+            return ResolvedControl.from_value(to_json_dict(result))
+
+        def control_allows(
+            _item: PairLaneWorkItem, control: Mapping[str, Any]
+        ) -> bool:
+            status = control.get("status")
+            if status == ReplayExecutionStatus.SUCCEEDED.value:
+                return True
+            failure = control.get("failure")
+            if not isinstance(failure, Mapping):
+                return False
+            event = ReplayFailureEvent.from_legacy_mapping(failure)
+            return not (
+                event.owner in {
+                    FailureOwner.FRAMEWORK,
+                    FailureOwner.INFRASTRUCTURE,
+                }
+                or (
+                    event.owner is FailureOwner.CANDIDATE
+                    and event.stage is not FailureStage.TASK_ROLLOUT
+                )
+            )
+
+        def materialize_skipped_treatments(schedules) -> None:
+            entries = {entry.work_unit_id: entry for entry in journal.index_entries()}
+            for schedule in schedules:
+                resumable_coordinates = {
+                    item.coordinate for item in schedule.pending
+                }
+                for pair in schedule.completed:
+                    if (
+                        pair.treatment_admitted
+                        or pair.item.coordinate in resumable_coordinates
+                    ):
+                        continue
+                    entry = entries[pair.item.treatment_work_unit_id]
+                    if entry.state.terminal:
+                        continue
+                    assert pair.context.lane_attestation is not None
+                    baseline = _load_variant_result_from_dir(
+                        members_root
+                        / _member_artifact_name(pair.item.case_id)
+                        / "baseline"
+                        / str(pair.item.repetition_id),
+                        base_variant_id="baseline",
+                    )
+                    failure = baseline.failure or ReplayFailureEvent(
+                        code="measurement_control_invalid",
+                        owner=FailureOwner.FRAMEWORK,
+                        stage=FailureStage.EVALUATION,
+                        scope=FailureScope.MEMBER,
+                        repairable=True,
+                        category="measurement_control",
+                        summary="treatment was not admitted because control was invalid",
+                    )
+                    blocked = _blocked_variant_result(
+                        candidate.candidate_id, blocked_by=failure
+                    )
+                    artifact_dir = (
+                        members_root
+                        / _member_artifact_name(pair.item.case_id)
+                        / _safe_path(candidate.candidate_id)
+                        / str(pair.item.repetition_id)
+                    )
+                    _persist_variant_lifecycle(artifact_dir, blocked)
+                    handle = journal.begin(
+                        work_unit_id=pair.item.treatment_work_unit_id,
+                        attempt_id="measurement-cancel-" + uuid.uuid4().hex,
+                        now=_utc_now(),
+                    )
+                    journal.terminal(
+                        handle,
+                        terminal_state=MeasurementWorkUnitState.TASK_FAILED,
+                        result_fingerprint=ResolvedControl.from_value(
+                            to_json_dict(blocked)
+                        ).result_fingerprint,
+                        lane_attestation=pair.context.lane_attestation,
+                        now=_utc_now(),
+                        attempt_cost_seconds=0.0,
+                        reason_code="invalid_control_treatment_not_admitted",
+                    )
+
+        def load_member_arm(
+            case_id: str,
+            *,
+            arm_name: str,
+            base_variant_id: str,
+        ) -> ReplayVariantResult:
+            arm_root = (
+                members_root
+                / _member_artifact_name(case_id)
+                / arm_name
+            )
+            physical = [
+                _load_variant_result_from_dir(
+                    arm_root / str(repetition_id),
+                    base_variant_id=(
+                        base_variant_id
+                        if plan.repetitions_per_case == 1
+                        else f"{base_variant_id}-{repetition_id}"
+                    ),
+                )
+                for repetition_id in range(1, plan.repetitions_per_case + 1)
+            ]
+            return _aggregate_variant_results(
+                base_variant_id=base_variant_id,
+                results=physical,
+                artifact_dir=arm_root,
+            )
+
+        def current_members() -> tuple[CandidateReplayMemberResult, ...]:
+            entries = {entry.work_unit_id: entry for entry in journal.index_entries()}
+            members: list[CandidateReplayMemberResult] = []
+            for case_id in plan.case_ids:
+                units = [unit for unit in plan.work_units if unit.case_id == case_id]
+                if not units or not all(entries[unit.work_unit_id].state.terminal for unit in units):
+                    continue
+                item_request = replace(
+                    request,
+                    task_id=case_id,
+                    task_input=_adapted_task_input(request, replay_cases[case_id]),
+                    task_input_fingerprint=_adapted_task_input_fingerprint(
+                        request, replay_cases[case_id]
+                    ),
+                    measurement_lane_attestations={},
+                )
+                members.append(
+                    CandidateReplayMemberResult(
+                        case_id=case_id,
+                        request=item_request,
+                        baseline=load_member_arm(
+                            case_id,
+                            arm_name="baseline",
+                            base_variant_id="baseline",
+                        ),
+                        candidate=load_member_arm(
+                            case_id,
+                            arm_name=_safe_path(candidate.candidate_id),
+                            base_variant_id=candidate.candidate_id,
+                        ),
+                    )
+                )
+            return tuple(members)
+
+        def partial_result(
+            members: tuple[CandidateReplayMemberResult, ...],
+            *,
+            measurement_decision: Mapping[str, Any] | None = None,
+        ) -> CandidateReplayResult:
+            return CandidateReplayResult(
+                request=request,
+                baseline=_aggregate_member_variant_results(
+                    base_variant_id="baseline",
+                    members=members,
+                    select=lambda member: member.baseline,
+                    artifact_dir=replay_dir / "baseline",
+                ),
+                candidate=_aggregate_member_variant_results(
+                    base_variant_id=candidate.candidate_id,
+                    members=members,
+                    select=lambda member: member.candidate,
+                    artifact_dir=replay_dir / _safe_path(candidate.candidate_id),
+                ),
+                member_results=members,
+                measurement_decision=measurement_decision,
+            )
+
+        primary_effect_case_ids = {
+            case_id
+            for stage in plan.stages
+            if stage.kind is not SamplingStageKind.REGRESSION_TRANSFER
+            for case_id in stage.case_ids
+        }
+        latest_primary_effect = None
+
+        def primary_metric_value(result: ReplayVariantResult) -> float | None:
+            metric = experiment.outcomes.primary_metric
+            if metric == "task_success":
+                return 1.0 if result.succeeded else 0.0 if result.executed else None
+            value = result.metrics.get(metric)
+            if (
+                isinstance(value, (int, float))
+                and not isinstance(value, bool)
+                and math.isfinite(float(value))
+            ):
+                return float(value)
+            return None
+
+        def build_progress(_plan, current_stage_id, schedules):
+            nonlocal latest_primary_effect
+            materialize_skipped_treatments(schedules)
+            members = current_members()
+            completed_case_ids = tuple(member.case_id for member in members)
+            comparable_case_ids = tuple(
+                member.case_id
+                for member in members
+                if _replay_member_pair_is_comparable(
+                    replay_cases[member.case_id],
+                    member.baseline,
+                    member.candidate,
+                )
+            )
+            invalid_control_case_ids = tuple(
+                member.case_id
+                for member in members
+                if _baseline_invalid_for_measurement(member.baseline)
+            )
+            primary_members = tuple(
+                member
+                for member in members
+                if member.case_id in primary_effect_case_ids
+            )
+            if primary_members:
+                observations = observations_from_replay(
+                    experiment,
+                    dataset=dataset,
+                    replay_result=partial_result(primary_members),
+                    run_root=replay_dir,
+                )
+                validity = assess_experiment_validity(experiment, observations)
+                latest_primary_effect = estimate_paired_effect(
+                    experiment, observations, validity=validity
+                )
+            effect = latest_primary_effect
+            completed_stage_ids = tuple(
+                stage.stage_id
+                for stage in plan.stages
+                if set(stage.case_ids).issubset(completed_case_ids)
+            )
+            current_stage = next(
+                stage for stage in plan.stages if stage.stage_id == current_stage_id
+            )
+            current_schedule = schedules[-1]
+            regression_detected = False
+            if current_stage.kind is SamplingStageKind.REGRESSION_TRANSFER:
+                transfer_members = tuple(
+                    member
+                    for member in members
+                    if member.case_id in current_stage.case_ids
+                )
+                for member in transfer_members:
+                    control_value = primary_metric_value(member.baseline)
+                    treatment_value = primary_metric_value(member.candidate)
+                    if control_value is None or treatment_value is None:
+                        regression_detected = True
+                        break
+                    signed_delta = treatment_value - control_value
+                    if not experiment.outcomes.higher_is_better:
+                        signed_delta = -signed_delta
+                    if signed_delta < -experiment.outcomes.non_regression_threshold:
+                        regression_detected = True
+                        break
+            return MeasurementProgressSummary(
+                current_stage_id=current_stage_id,
+                completed_case_ids=completed_case_ids,
+                comparable_case_ids=comparable_case_ids,
+                invalid_control_case_ids=invalid_control_case_ids,
+                confidence_lower_bound=(
+                    effect.confidence_lower_bound if effect is not None else None
+                ),
+                point_estimate=(effect.point_estimate if effect is not None else None),
+                regression_detected=regression_detected,
+                negative_effect_detected=(
+                    effect is not None and effect.direction is EffectDirection.NEGATIVE
+                ),
+                futility_proven=False,
+                new_comparable_pairs_in_window=sum(
+                    1
+                    for pair in current_schedule.completed
+                    if pair.treatment_admitted
+                ),
+                uncertainty_reduction_in_window=(
+                    1.0 if current_schedule.completed else 0.0
+                ),
+                current_stage_exhausted=not current_schedule.pending,
+                completed_stage_ids=completed_stage_ids,
+                checkpoint_quantum_expired=False,
+                campaign_wall_deadline_expired=False,
+                resume_safe=True,
+            )
+
+        staged = await schedule_staged_measurement(
+            store,
+            run_id=request.run_id,
+            measurement_plan_fingerprint=plan.measurement_plan_fingerprint,
+            run_control=run_control,
+            run_treatment=run_treatment,
+            progress_builder=build_progress,
+            lane_materializer=FrameworkFilesystemLaneMaterializer(
+                replay_dir / "measurement-lanes"
+            ),
+            resolve_reused_control=resolve_control,
+            control_allows_treatment=control_allows,
+            checkpoint_quantum_seconds=plan.deadlines.checkpoint_quantum_seconds,
+            campaign_deadline_monotonic=(
+                time.monotonic() + plan.deadlines.campaign_wall_deadline_seconds
+                if plan.deadlines.campaign_wall_deadline_seconds is not None
+                else None
+            ),
+            materialization_timeout_seconds=plan.deadlines.attempt_timeout_seconds,
+            configured_lane_limit=2,
+        )
+        members = current_members()
+        if not members:
+            raise RuntimeError(
+                "measurement scheduler stopped before producing a complete pair"
+            )
+        result = partial_result(
+            members,
+            measurement_decision=to_json_dict(staged.decision),
+        )
+        _write_json(
+            members_root / "measurement_schedule.json",
+            {
+                "schema_version": "aworld.self_evolve.measurement_schedule.v2",
+                "decision": staged.decision,
+                "admitted_case_ids": list(staged.admitted_case_ids),
+                "schedule_count": len(staged.schedules),
+            },
+        )
+        return result
 
     async def _load_or_run_baseline(
         self,
@@ -4922,25 +5472,13 @@ def _runtime_endpoint_bindings(
     return tuple(bindings)
 
 
-def _prepare_replay_evidence_trust(
-    request: ReplayExecutionRequest,
+def compile_replay_evidence_policy_profile_v2(
     *,
-    artifact_dir: Path,
-    evidence_dir: Path,
-) -> _ReplayEvidenceTrustContext:
-    if os.name != "posix":
-        raise ValueError("required replay evidence trust needs POSIX pass_fds")
-    injected = sorted(_REPLAY_TRUST_RESERVED_ENV.intersection(request.environment))
-    if injected:
-        raise ValueError(
-            "reserved replay evidence trust environment was supplied: "
-            + ",".join(injected)
-        )
-    trusted_root = artifact_dir / "framework-trusted"
-    trusted_root.mkdir(mode=0o700, parents=True, exist_ok=True)
-    if trusted_root.is_symlink() or any(trusted_root.iterdir()):
-        raise ValueError("framework evidence trust namespace is not empty")
-    compiled_profile = compile_evidence_policy_profile_v2(
+    endpoint_bindings: Sequence[DynamicEndpointBinding] = (),
+) -> EvidencePolicyProfileV2:
+    """Compile the canonical evidence contract shared by plan and runtime."""
+
+    return compile_evidence_policy_profile_v2(
         artifact_policies=(
             ArtifactPolicy(
                 artifact_type=_REPLAY_TRUSTED_EVIDENCE_TYPE,
@@ -4963,13 +5501,36 @@ def _prepare_replay_evidence_trust(
                 required=True,
             ),
         ),
-        endpoint_bindings=_runtime_endpoint_bindings(request.environment),
+        endpoint_bindings=endpoint_bindings,
         required_task_response_fields=(
             "schema_version",
             "task_response_digest",
             "trajectory_capture_mode",
         ),
         allowed_control_actions=("browser:close",),
+    )
+
+
+def _prepare_replay_evidence_trust(
+    request: ReplayExecutionRequest,
+    *,
+    artifact_dir: Path,
+    evidence_dir: Path,
+) -> _ReplayEvidenceTrustContext:
+    if os.name != "posix":
+        raise ValueError("required replay evidence trust needs POSIX pass_fds")
+    injected = sorted(_REPLAY_TRUST_RESERVED_ENV.intersection(request.environment))
+    if injected:
+        raise ValueError(
+            "reserved replay evidence trust environment was supplied: "
+            + ",".join(injected)
+        )
+    trusted_root = artifact_dir / "framework-trusted"
+    trusted_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if trusted_root.is_symlink() or any(trusted_root.iterdir()):
+        raise ValueError("framework evidence trust namespace is not empty")
+    compiled_profile = compile_replay_evidence_policy_profile_v2(
+        endpoint_bindings=_runtime_endpoint_bindings(request.environment),
     )
     if request.measurement_evidence_policy_profile is not None:
         profile = EvidencePolicyProfileV2.from_dict(
@@ -10243,6 +10804,10 @@ def _text_output(value: Any) -> str:
     if isinstance(value, bytes):
         return value.decode("utf-8", errors="replace")
     return str(value)
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 def _write_json(path: Path, payload: Any) -> None:
