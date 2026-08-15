@@ -2,7 +2,7 @@
 
 This directory contains the FileX runtime used by the AWorld `filex` skill. It is self-contained inside the AWorld repository and includes the CLI, local path/URL document and media parsing services, required utilities, container recipe, examples, and FileX tests. The published container also installs AWorld and `aworld-cli`, making it a single ready-to-run image.
 
-Supported inputs include PDF, text/Markdown, Word, PowerPoint, Excel/CSV, images, audio, and video. Sources can be workspace paths or HTTP(S) URLs. The CLI exposes `filex parse` and `filex status`; it does not require a file service or file ID.
+Supported inputs include PDF, text/Markdown, Word, PowerPoint, Excel/CSV, images, audio, and video. Sources can be workspace paths, HTTP(S) file URLs, or supported source-provider URLs such as YouTube. The CLI exposes `filex inspect`, `filex parse`, and `filex status`; it does not require a file service or file ID.
 
 ## 本地使用（推荐 Docker）
 
@@ -93,6 +93,53 @@ docker run --rm \
   "$FILEX_IMAGE" \
   filex parse --url "https://example.com/large.pdf" --file-type pdf
 ```
+
+新调用方式也可把路径或 URL 作为位置参数；旧的 `--url` 与
+`--workspace-path` 参数继续兼容：
+
+```bash
+filex parse /root/workspace/report.pdf
+filex parse "https://example.com/report.pdf" --file-type pdf
+```
+
+#### YouTube transcript-first
+
+`inspect` 只发现元数据、章节、字幕和发布者 transcript 候选，不下载音视频：
+
+```bash
+filex inspect "https://www.youtube.com/watch?v=3i7ym_Qh7BA"
+```
+
+解析时默认优先人工字幕，其次自动字幕，并生成带时间戳的 Markdown、
+`source.json` 和来源指标：
+
+```bash
+filex parse \
+  "https://www.youtube.com/watch?v=3i7ym_Qh7BA" \
+  --mode transcript \
+  --language en
+```
+
+本阶段会在 `source.json` 中登记视频简介发现的发布者 transcript URL，但不自动
+抓取任意外站 HTML。只有字幕不可用、用户明确允许且声明权利基础时，才下载
+音轨并交给本地 Whisper：
+
+```bash
+filex parse \
+  "https://www.youtube.com/watch?v=VIDEO_ID" \
+  --mode transcript \
+  --allow-media-download \
+  --rights-basis user-owned
+```
+
+`--rights-basis` 支持 `user-owned`、`licensed`、`service-permitted` 和
+`applicable-law`。FileX 不会自动使用浏览器 Cookie，也不提供绕过 DRM、地区、
+年龄或其他访问控制的能力。当前 YouTube provider 聚焦 transcript；镜头切分、
+关键帧 OCR 和完整声画理解将在独立视频 provider 中实现。
+
+Source discovery 默认单次网络超时为 20 秒、重试 1 次，可通过
+`FILEX_SOURCE_TIMEOUT_SECONDS` 和 `FILEX_SOURCE_RETRIES` 调整。字幕单文件上限
+默认 32 MiB，可通过 `FILEX_MAX_SUBTITLE_BYTES` 调整。
 
 ### 4. 使用 aworld-cli 和 FileX Skill
 

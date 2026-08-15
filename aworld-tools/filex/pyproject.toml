@@ -33,6 +33,7 @@ dependencies = [
     "markdown~=3.7",
     "weasyprint~=65.0",
     "faster-whisper~=1.2.1",
+    "yt-dlp>=2026.1.29",
 ]
 
 [project.scripts]
