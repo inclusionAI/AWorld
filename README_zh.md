@@ -505,7 +505,7 @@ result = info['result']
 ```
 
 <!-- # Star History
-![](https://api.star-history.com/svg?repos=inclusionAI/AWorld&type=Date) -->
+![](https://star-history.dera.page/svg?repos=inclusionAI/AWorld&type=Date) -->
 
 
 <!-- resource section start -->

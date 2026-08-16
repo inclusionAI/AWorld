@@ -505,7 +505,7 @@ For academic citations or wish to contact us, please use the following BibTeX en
 ```
 
 <!-- # Star History
-![](https://api.star-history.com/svg?repos=inclusionAI/AWorld&type=Date) -->
+![](https://star-history.dera.page/svg?repos=inclusionAI/AWorld&type=Date) -->
 
 
 <!-- resource section start -->
