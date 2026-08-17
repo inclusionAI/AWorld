@@ -85,6 +85,35 @@ def test_disposition_is_cardinality_neutral(member_count: int) -> None:
     assert len(disposition.progress_delta_ids) == 2
 
 
+def test_candidate_prerequisite_failure_precedes_derived_measurement_gate() -> None:
+    event = _event(constraint="services[*].readiness.kind")
+    report = _report(event)
+    report["measurement"] = {
+        "mode": "required",
+        "promotion_eligible": False,
+        "next_action": "repair_measurement",
+        "status": "invalid",
+        "validity_status": "invalid",
+    }
+    report["gate_results"].append(
+        {
+            "gate_name": "trusted_improvement_measurement",
+            "passed": False,
+            "details": {
+                "failure_class": "measurement",
+                "next_action": "repair_measurement",
+            },
+        }
+    )
+
+    disposition = derive_self_improvement_disposition(report)
+
+    assert disposition.kind is SelfImprovementDispositionKind.CONTINUE_CANDIDATE
+    assert disposition.owner == "candidate"
+    assert disposition.stage == "capability_compile"
+    assert disposition.reason_code == "candidate_repair_frontier_progressed"
+
+
 def test_focused_budget_denial_takes_precedence_over_candidate_stall() -> None:
     report = _report(_event())
     report["rejection_attribution"] = {
@@ -1276,6 +1305,21 @@ def test_shared_measurement_invalid_attempt_is_not_authoritative_consumption() -
     assert campaign_module._report_authoritative_candidate_count(report) == 0
 
 
+def test_candidate_prerequisite_is_not_authoritative_consumption() -> None:
+    report = _report(_event(constraint="services[*].readiness.kind"))
+    report["verification_funnel"] = {
+        "authoritative_candidate_attempt_count": 1,
+        "authoritative_candidate_count": 1,
+    }
+    report["measurement"] = {
+        "mode": "required",
+        "status": "invalid",
+        "validity_status": "invalid",
+    }
+
+    assert campaign_module._report_authoritative_candidate_count(report) == 0
+
+
 def test_shared_measurement_timeout_does_not_exhaust_authoritative_frontier(
     tmp_path: Path,
 ) -> None:
@@ -1491,6 +1535,83 @@ def test_shared_measurement_retry_fails_closed_without_candidate_checkpoint(
     assert result["self_improvement_disposition"]["reason_code"] == (
         "campaign_measurement_retry_candidate_missing"
     )
+
+
+def test_candidate_prerequisite_enters_repair_without_measurement_retry(
+    tmp_path: Path,
+) -> None:
+    calls: list[dict] = []
+
+    def run_once(**request):
+        calls.append(request)
+        run_id = f"{request['campaign_id']}-cycle-{request['campaign_cycle']:03d}"
+        if request["campaign_cycle"] == 1:
+            event = _event(constraint="services[*].readiness.kind")
+            report = _report(event)
+            report.update(
+                {
+                    "run_id": run_id,
+                    "candidate_ids": ["candidate-invalid-capability"],
+                    "selected_candidate_id": "candidate-invalid-capability",
+                    "measurement": {
+                        "mode": "required",
+                        "status": "invalid",
+                        "validity_status": "invalid",
+                        "comparable_pair_count": 0,
+                        "effect_direction": "unmeasured",
+                        "promotion_eligible": False,
+                        "next_action": "repair_measurement",
+                    },
+                    "verification_funnel": {
+                        "authoritative_candidate_attempt_count": 1,
+                        "authoritative_candidate_count": 1,
+                    },
+                }
+            )
+            report["gate_results"].append(
+                {
+                    "gate_name": "trusted_improvement_measurement",
+                    "passed": False,
+                    "details": {"failure_class": "measurement"},
+                }
+            )
+        else:
+            report = {
+                "run_id": run_id,
+                "status": "succeeded",
+                "budget": _budget(10),
+                "gate_results": [{"gate_name": "post_apply", "passed": True}],
+                "verification_funnel": {
+                    "authoritative_candidate_attempt_count": 1,
+                    "authoritative_candidate_count": 1,
+                },
+            }
+        report_path = tmp_path / ".aworld" / "self_evolve" / run_id / "report.json"
+        report_path.parent.mkdir(parents=True)
+        report_path.write_text(json.dumps(report), encoding="utf-8")
+        return {
+            "run_id": run_id,
+            "status": report["status"],
+            "report_path": str(report_path),
+        }
+
+    result = run_self_improvement_campaign(
+        workspace_root=tmp_path,
+        request={
+            "from_trajectory": "trajectory.log",
+            "apply_policy": "verified_only",
+            "infer_target": True,
+        },
+        max_improvement_cycles=2,
+        run_once=run_once,
+    )
+
+    assert len(calls) == 2
+    assert calls[1].get("campaign_measurement_pending_run_id") is None
+    assert calls[1].get("campaign_measurement_pending_candidate_id") is None
+    assert result["campaign_measurement_retry_count"] == 0
+    assert result["campaign_authoritative_candidate_count"] == 1
+    assert result["campaign_status"] == "complete"
 
 
 def test_shared_measurement_retries_are_bounded_separately_from_candidate_cycles(

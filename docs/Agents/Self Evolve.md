@@ -405,7 +405,15 @@ Unresolved typed failures retain their source owners when a later failure adds a
 
 Structural strategy switches are evidence-based. The runner fingerprints the authorized owner paths, edited package paths, and value-free source control-flow shape before requesting a switch. `conformance_strategy_switch_request_count` records requests, while `conformance_strategy_switch_count` increases only after a different topology is observed. `conformance_strategy_switch_not_materialized=true` explains an early stop where only the strategy label changed.
 
-Campaign attribution follows terminal causal precedence. A shared invalid control is reported as measurement repair even when an earlier candidate failed conformance. Conversely, a later candidate that passes the same typed contract closes that historical conformance frontier; `resolved_conformance_frontiers` records the closed identities and they no longer compete for Campaign primary failure.
+Campaign attribution follows terminal causal precedence. A shared invalid control
+is reported as measurement repair only after the current candidate has passed its
+deterministic capability prerequisites and entered the measurement plane. An
+unresolved candidate-owned compile, conformance, or execution-preflight failure
+remains candidate repair even when required mode also emits a derived
+`trusted_improvement_measurement` release guard. Conversely, a later candidate
+that passes the same typed contract closes that historical conformance frontier;
+`resolved_conformance_frontiers` records the closed identities and they no longer
+compete for Campaign primary failure.
 
 The terminal gate, rejection attribution, Campaign attribution, disposition, and
 Goal handoff retain the same owner, scope, stage, repair action, and bounded
@@ -502,6 +510,14 @@ execution, a candidate evaluation summary, or a candidate-owned authoritative
 failure consumes it. A control-only result is reusable evidence but is not a
 conclusion about the candidate and therefore does not exhaust the candidate
 frontier.
+
+A measurement checkpoint is created only for a candidate whose deterministic
+prerequisites passed and whose shared measurement experiment can be resumed.
+Restoring that immutable package is reported as `measurement_resume`; it does
+not appear as candidate generation and does not consume a generated-candidate
+slot. If capability compilation fails first, the typed schema/probe
+counterexample is fed to the normal candidate-repair generator instead of
+replaying the same immutable package as a measurement retry.
 
 Before `build_replay_request()`, `ReplayAdaptationCompiler` rewrites workspace paths
 to `${AWORLD_REPLAY_WORKSPACE}`, creates a filtered workspace seed and environment

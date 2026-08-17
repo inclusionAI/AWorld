@@ -2190,15 +2190,23 @@ def derive_self_improvement_disposition(
     status = str(report.get("status") or "")
     progress = self_improvement_progress(report)
     delta = progress.delta_from(previous_progress)
+    candidate_prerequisite_blocked = bool(
+        _report_has_repairable_candidate_prerequisite_failure(report)
+        and not _report_has_authoritative_measurement_observation(report)
+    )
     measurement_outcome = campaign_measurement_outcome_from_report(report)
-    if measurement_outcome is not None:
+    if measurement_outcome is not None and not candidate_prerequisite_blocked:
         return _measurement_outcome_disposition(
             measurement_outcome,
             progress_delta_ids=delta,
         )
-    measurement_disposition = _measurement_policy_disposition(
-        report,
-        progress_delta_ids=delta,
+    measurement_disposition = (
+        None
+        if candidate_prerequisite_blocked
+        else _measurement_policy_disposition(
+            report,
+            progress_delta_ids=delta,
+        )
     )
     if measurement_disposition is not None:
         return measurement_disposition
@@ -2874,6 +2882,25 @@ def _report_has_new_candidate_counterexample(
 
 
 def _report_authoritative_candidate_count(report: Mapping[str, Any]) -> int:
+    funnel = report.get("verification_funnel")
+    explicit_attempt_count = (
+        funnel.get("authoritative_candidate_attempt_count")
+        if isinstance(funnel, Mapping)
+        else None
+    )
+    if (
+        _report_has_repairable_candidate_prerequisite_failure(report)
+        and not _report_has_authoritative_measurement_observation(report)
+        and (
+            isinstance(report.get("measurement"), Mapping)
+            or explicit_attempt_count == 0
+        )
+    ):
+        # A candidate rejected before rollout/evaluation has no authoritative
+        # treatment observation.  A generic required-measurement gate may also
+        # be present because release is fail-closed, but it must not turn the
+        # failed prerequisite into an authoritative experiment attempt.
+        return 0
     measurement_outcome = campaign_measurement_outcome_from_report(report)
     if (
         measurement_outcome is not None
@@ -2883,7 +2910,6 @@ def _report_authoritative_candidate_count(report: Mapping[str, Any]) -> int:
         # Work may have consumed rollout time, but it did not produce one
         # authoritative candidate conclusion.
         return 0
-    funnel = report.get("verification_funnel")
     if not isinstance(funnel, Mapping):
         return 0
     value = funnel.get("authoritative_candidate_count")
@@ -2903,6 +2929,76 @@ def _report_authoritative_candidate_count(report: Mapping[str, Any]) -> int:
         # authoritative conclusion about its candidate.
         count -= 1
     return count
+
+
+def _report_has_authoritative_measurement_observation(
+    report: Mapping[str, Any],
+) -> bool:
+    raw = report.get("measurement")
+    if not isinstance(raw, Mapping):
+        return False
+    comparable_pair_count = raw.get("comparable_pair_count")
+    if (
+        not isinstance(comparable_pair_count, bool)
+        and isinstance(comparable_pair_count, (int, float))
+        and comparable_pair_count > 0
+    ):
+        return True
+    if raw.get("validity_status") in {"valid", "valid_limited"}:
+        return True
+    return str(raw.get("effect_direction") or "unmeasured") not in {
+        "",
+        "unmeasured",
+    }
+
+
+def _report_has_repairable_candidate_prerequisite_failure(
+    report: Mapping[str, Any],
+) -> bool:
+    """Return whether candidate-owned admission failed before measurement.
+
+    Required measurement gates are derived release guards.  They cannot own
+    the causal disposition when capability compilation or deterministic
+    preflight already rejected the candidate package.
+    """
+
+    prerequisite_stages = {
+        "candidate_generation",
+        "candidate_repair_conformance",
+        "candidate_screening",
+        "capability_compile",
+        "capability_preflight",
+    }
+    for event in _typed_failure_events(report):
+        if (
+            event.get("owner") == "candidate"
+            and event.get("scope") == "candidate"
+            and event.get("repairable") is True
+            and str(event.get("stage") or "") in prerequisite_stages
+        ):
+            return True
+    for key in ("rejection_attribution", "campaign_failure_attribution"):
+        attribution = report.get(key)
+        if not isinstance(attribution, Mapping):
+            continue
+        gate_name = str(attribution.get("primary_gate") or "")
+        stage = str(
+            attribution.get("failure_stage")
+            or attribution.get("stage")
+            or ""
+        )
+        if (
+            attribution.get("failure_class") == "candidate"
+            and attribution.get("failure_owner", "candidate") == "candidate"
+            and attribution.get("repairable") is True
+            and (
+                gate_name.startswith("candidate_capability_")
+                or gate_name == "candidate_repair_conformance"
+                or stage in prerequisite_stages
+            )
+        ):
+            return True
+    return False
 
 
 def _measurement_pending_candidate_id(
