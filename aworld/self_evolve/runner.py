@@ -2694,7 +2694,17 @@ def _schema_field_contract_fingerprint(
         )
         if isinstance(item, Mapping)
     ]
-    if not constraints and not runtime_constraints:
+    raw_runtime_artifacts = details.get("runtime_artifact_constraints")
+    runtime_artifacts = [
+        dict(item)
+        for item in (
+            raw_runtime_artifacts[:64]
+            if isinstance(raw_runtime_artifacts, (list, tuple))
+            else ()
+        )
+        if isinstance(item, Mapping)
+    ]
+    if not constraints and not runtime_constraints and not runtime_artifacts:
         return None
     sorted_schema_constraints = sorted(
         constraints,
@@ -2704,16 +2714,29 @@ def _schema_field_contract_fingerprint(
         runtime_constraints,
         key=lambda item: json.dumps(item, sort_keys=True, default=str),
     )
-    payload: object = (
-        sorted_schema_constraints
-        if constraints and not runtime_constraints
-        else sorted_runtime_constraints
-        if runtime_constraints and not constraints
-        else {
+    sorted_runtime_artifacts = sorted(
+        runtime_artifacts,
+        key=lambda item: json.dumps(item, sort_keys=True, default=str),
+    )
+    active_components = sum(
+        bool(item)
+        for item in (constraints, runtime_constraints, runtime_artifacts)
+    )
+    payload: object
+    if active_components == 1:
+        payload = (
+            sorted_schema_constraints
+            if constraints
+            else sorted_runtime_constraints
+            if runtime_constraints
+            else sorted_runtime_artifacts
+        )
+    else:
+        payload = {
             "schema_field_constraints": sorted_schema_constraints,
             "runtime_response_constraints": sorted_runtime_constraints,
+            "runtime_artifact_constraints": sorted_runtime_artifacts,
         }
-    )
     encoded = json.dumps(
         payload,
         ensure_ascii=True,
@@ -2723,9 +2746,11 @@ def _schema_field_contract_fingerprint(
     ).encode("utf-8")
     prefix = (
         "schema-fields"
-        if constraints and not runtime_constraints
+        if constraints and active_components == 1
         else "runtime-response"
-        if runtime_constraints and not constraints
+        if runtime_constraints and active_components == 1
+        else "runtime-artifact"
+        if runtime_artifacts and active_components == 1
         else "typed-repair"
     )
     return f"{prefix}:sha256:" + hashlib.sha256(encoded).hexdigest()
@@ -2762,6 +2787,7 @@ def _repair_contract_fingerprints(
         for field_name in (
             "schema_field_constraints",
             "runtime_response_constraints",
+            "runtime_artifact_constraints",
         ):
             component = _schema_field_contract_fingerprint(
                 {field_name: projected.get(field_name)}
@@ -5741,6 +5767,37 @@ class SelfEvolveRunner:
                 screening_report
             ):
                 infrastructure_blocked = True
+                framework_invalidated_ids = {
+                    candidate.candidate_id for candidate in screening_candidates
+                }
+                effective_generated_candidate_ids.difference_update(
+                    framework_invalidated_ids
+                )
+                generated_candidate_slot_count = len(
+                    effective_generated_candidate_ids
+                )
+                if isinstance(screening_report, dict):
+                    screening_report["framework_invalidated_candidate_ids"] = (
+                        sorted(framework_invalidated_ids)
+                    )
+                    screening_report["effective_candidate_slot_count"] = (
+                        generated_candidate_slot_count
+                    )
+                    for stage_name in ("conformance", "screening"):
+                        stage_report = screening_report.get(stage_name)
+                        if (
+                            isinstance(stage_report, dict)
+                            and stage_report.get(
+                                "stopped_by_shared_infrastructure"
+                            )
+                            is True
+                        ):
+                            stage_report[
+                                "framework_invalidated_candidate_ids"
+                            ] = sorted(framework_invalidated_ids)
+                            stage_report["effective_candidate_slot_count"] = (
+                                generated_candidate_slot_count
+                            )
                 shared_validation_gate = _candidate_validation_shared_failure_gate(
                     screening_report
                 )
@@ -9044,6 +9101,7 @@ class SelfEvolveRunner:
                     )
                     if key
                     in {
+                        "runtime_artifact_constraints",
                         "runtime_response_constraints",
                         "runtime_response_observation",
                         "schema_field_constraints",
@@ -9068,7 +9126,13 @@ class SelfEvolveRunner:
                     },
                     artifact_refs=(artifact_ref,),
                     capability_id=capability.capability_id,
-                    requirement_id=group.requirement_id,
+                    requirement_id=(
+                        None
+                        if typed_error_details.get(
+                            "runtime_artifact_constraints"
+                        )
+                        else group.requirement_id
+                    ),
                     contract_fingerprint=(
                         _schema_field_contract_fingerprint(typed_error_details)
                         or fingerprint
@@ -21086,6 +21150,7 @@ def _failed_probe_typed_feedback(
     """Merge payload-free exception diagnostics across every failed probe shape."""
 
     constraints: dict[str, dict[str, object]] = {}
+    runtime_artifact_constraints: dict[str, dict[str, object]] = {}
     runtime_response_constraints: dict[str, dict[str, object]] = {}
     runtime_response_observations: list[dict[str, object]] = []
     counterexample_contracts: dict[str, dict[str, object]] = {}
@@ -21168,6 +21233,26 @@ def _failed_probe_typed_feedback(
             observation = dict(raw_runtime_observation)
             runtime_response_observations.append(observation)
             diagnostic["runtime_response_observation"] = observation
+        raw_runtime_artifacts = result.get("runtime_artifact_constraints")
+        if isinstance(raw_runtime_artifacts, (list, tuple)):
+            projected_runtime_artifacts: list[dict[str, object]] = []
+            for item in raw_runtime_artifacts[:64]:
+                if not isinstance(item, Mapping):
+                    continue
+                value = dict(item)
+                identity = json.dumps(
+                    value,
+                    ensure_ascii=True,
+                    separators=(",", ":"),
+                    sort_keys=True,
+                    default=str,
+                )
+                runtime_artifact_constraints[identity] = value
+                projected_runtime_artifacts.append(value)
+            if projected_runtime_artifacts:
+                diagnostic["runtime_artifact_constraints"] = (
+                    projected_runtime_artifacts
+                )
         diagnostics.append(diagnostic)
     feedback: dict[str, object] = {"diagnostics": diagnostics[:32]}
     if constraints:
@@ -21188,6 +21273,11 @@ def _failed_probe_typed_feedback(
         feedback["runtime_response_constraints"] = [
             runtime_response_constraints[key]
             for key in sorted(runtime_response_constraints)
+        ]
+    if runtime_artifact_constraints:
+        feedback["runtime_artifact_constraints"] = [
+            runtime_artifact_constraints[key]
+            for key in sorted(runtime_artifact_constraints)
         ]
     if runtime_response_observations:
         feedback["runtime_response_observations"] = (

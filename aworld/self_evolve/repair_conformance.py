@@ -35,6 +35,9 @@ _MAX_CONFORMANCE_REPORT_GROUPS = 64
 _ARTIFACT_LIFECYCLE_CONSTRAINT_SCHEMA_VERSION = (
     "aworld.self_evolve.artifact_lifecycle_constraint.v1"
 )
+_RUNTIME_ARTIFACT_CONSTRAINT_SCHEMA_VERSION = (
+    "aworld.self_evolve.runtime_artifact_constraint.v1"
+)
 
 
 @dataclass(frozen=True)
@@ -368,6 +371,137 @@ class RuntimeResponseConstraint:
 
 
 @dataclass(frozen=True)
+class RuntimeArtifactConstraint:
+    """Payload-free lifecycle contract for an artifact produced by runtime code.
+
+    Unlike a response constraint, this contract identifies *when* an artifact
+    must be observable and which source layer owns it.  That distinction is
+    what lets a direct runtime failure replace an inherited compiler mutation
+    target without discarding the compiler constraint as a validation
+    invariant.
+    """
+
+    artifact_kind: str
+    relative_path: str
+    producer_layer: str
+    availability_milestone: str
+    write_mode: str
+    maximum_bytes: int
+    require_nonempty: bool
+    required_record_fields: tuple[str, ...] = ()
+    required_directions: tuple[str, ...] = ()
+    schema_version: str = _RUNTIME_ARTIFACT_CONSTRAINT_SCHEMA_VERSION
+
+    def __post_init__(self) -> None:
+        if self.schema_version != _RUNTIME_ARTIFACT_CONSTRAINT_SCHEMA_VERSION:
+            raise ValueError("runtime artifact constraint schema is unsupported")
+        if not re.fullmatch(r"[a-z][a-z0-9_]{0,63}", self.artifact_kind):
+            raise ValueError("runtime artifact constraint kind is invalid")
+        path = PurePosixPath(self.relative_path)
+        if (
+            not self.relative_path
+            or path.is_absolute()
+            or ".." in path.parts
+            or len(self.relative_path) > 240
+        ):
+            raise ValueError("runtime artifact constraint path is invalid")
+        if self.producer_layer not in {"compiler", "runtime"}:
+            raise ValueError("runtime artifact producer layer is unsupported")
+        if self.availability_milestone not in {
+            "compile_complete",
+            "post_probe_pre_shutdown",
+            "task_rollout_complete",
+        }:
+            raise ValueError("runtime artifact availability milestone is unsupported")
+        if self.write_mode not in {"atomic_finalize", "incremental"}:
+            raise ValueError("runtime artifact write mode is unsupported")
+        if (
+            not isinstance(self.maximum_bytes, int)
+            or isinstance(self.maximum_bytes, bool)
+            or self.maximum_bytes <= 0
+            or self.maximum_bytes > 16 * 1024 * 1024
+        ):
+            raise ValueError("runtime artifact byte limit is invalid")
+        if not isinstance(self.require_nonempty, bool):
+            raise ValueError("runtime artifact require_nonempty must be boolean")
+        for label, values, limit in (
+            ("required_record_fields", self.required_record_fields, 32),
+            ("required_directions", self.required_directions, 16),
+        ):
+            if len(values) > limit or len(values) != len(set(values)):
+                raise ValueError(f"runtime artifact {label} is invalid")
+            if any(
+                not isinstance(item, str)
+                or not item
+                or len(item) > 80
+                or re.fullmatch(r"[A-Za-z][A-Za-z0-9_.-]*", item) is None
+                for item in values
+            ):
+                raise ValueError(f"runtime artifact {label} is invalid")
+
+    @property
+    def identity_digest(self) -> str:
+        encoded = json.dumps(
+            self.to_dict(),
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "schema_version": self.schema_version,
+            "artifact_kind": self.artifact_kind,
+            "relative_path": self.relative_path,
+            "producer_layer": self.producer_layer,
+            "availability_milestone": self.availability_milestone,
+            "write_mode": self.write_mode,
+            "maximum_bytes": self.maximum_bytes,
+            "require_nonempty": self.require_nonempty,
+            "required_record_fields": list(self.required_record_fields),
+            "required_directions": list(self.required_directions),
+        }
+
+    @classmethod
+    def from_dict(
+        cls,
+        value: Mapping[str, object],
+    ) -> "RuntimeArtifactConstraint":
+        raw_maximum_bytes = value.get("maximum_bytes")
+        raw_require_nonempty = value.get("require_nonempty")
+        raw_fields = value.get("required_record_fields", ())
+        raw_directions = value.get("required_directions", ())
+        if (
+            not isinstance(raw_maximum_bytes, int)
+            or isinstance(raw_maximum_bytes, bool)
+        ):
+            raise ValueError("runtime artifact byte limit is invalid")
+        if not isinstance(raw_require_nonempty, bool):
+            raise ValueError("runtime artifact require_nonempty must be boolean")
+        if not isinstance(raw_fields, (list, tuple)) or not isinstance(
+            raw_directions, (list, tuple)
+        ):
+            raise ValueError("runtime artifact fields and directions must be arrays")
+        if any(not isinstance(item, str) for item in (*raw_fields, *raw_directions)):
+            raise ValueError("runtime artifact fields and directions must contain text")
+        return cls(
+            schema_version=str(value.get("schema_version") or ""),
+            artifact_kind=str(value.get("artifact_kind") or ""),
+            relative_path=str(value.get("relative_path") or ""),
+            producer_layer=str(value.get("producer_layer") or ""),
+            availability_milestone=str(
+                value.get("availability_milestone") or ""
+            ),
+            write_mode=str(value.get("write_mode") or ""),
+            maximum_bytes=raw_maximum_bytes,
+            require_nonempty=raw_require_nonempty,
+            required_record_fields=tuple(raw_fields),
+            required_directions=tuple(raw_directions),
+        )
+
+
+@dataclass(frozen=True)
 class RepairConformanceContract:
     focus_candidate_id: str
     failure_codes: tuple[str, ...]
@@ -389,6 +523,7 @@ class RepairConformanceContract:
     fixture_probe_constraints: tuple[FixtureDerivedProbeConstraint, ...] = ()
     schema_field_constraints: tuple[SchemaFieldRepairConstraint, ...] = ()
     runtime_response_constraints: tuple[RuntimeResponseConstraint, ...] = ()
+    runtime_artifact_constraints: tuple[RuntimeArtifactConstraint, ...] = ()
     required_runtime_transitions: tuple[str, ...] = ()
     artifact_lifecycle_constraint: ArtifactLifecycleConstraint | None = None
 
@@ -449,6 +584,9 @@ class RepairConformanceContract:
             ],
             "runtime_response_constraints": [
                 item.to_dict() for item in self.runtime_response_constraints
+            ],
+            "runtime_artifact_constraints": [
+                item.to_dict() for item in self.runtime_artifact_constraints
             ],
             "required_runtime_transitions": list(
                 self.required_runtime_transitions
@@ -525,6 +663,9 @@ class RepairConformanceContract:
             ],
             "runtime_response_constraints": [
                 item.to_dict() for item in self.runtime_response_constraints
+            ],
+            "runtime_artifact_constraints": [
+                item.to_dict() for item in self.runtime_artifact_constraints
             ],
             "required_runtime_transitions": list(
                 self.required_runtime_transitions
@@ -619,6 +760,21 @@ class RepairConformanceContract:
             raw_runtime_response_constraints
         ):
             raise ValueError("runtime response constraints contain invalid entries")
+        raw_runtime_artifact_constraints = value.get(
+            "runtime_artifact_constraints",
+            (),
+        )
+        if not isinstance(raw_runtime_artifact_constraints, (list, tuple)):
+            raise ValueError("runtime artifact constraints must be an array")
+        runtime_artifact_constraints = tuple(
+            RuntimeArtifactConstraint.from_dict(item)
+            for item in raw_runtime_artifact_constraints
+            if isinstance(item, Mapping)
+        )
+        if len(runtime_artifact_constraints) != len(
+            raw_runtime_artifact_constraints
+        ):
+            raise ValueError("runtime artifact constraints contain invalid entries")
         raw_artifact_lifecycle_constraint = value.get(
             "artifact_lifecycle_constraint"
         )
@@ -668,6 +824,7 @@ class RepairConformanceContract:
             fixture_probe_constraints=probe_constraints,
             schema_field_constraints=schema_constraints,
             runtime_response_constraints=runtime_response_constraints,
+            runtime_artifact_constraints=runtime_artifact_constraints,
             required_runtime_transitions=_string_tuple(
                 value.get("required_runtime_transitions")
             ),
@@ -730,6 +887,9 @@ def repair_conformance_contract_identity(
             "runtime_response_constraints": [
                 item.to_dict() for item in contract.runtime_response_constraints
             ],
+            "runtime_artifact_constraints": [
+                item.to_dict() for item in contract.runtime_artifact_constraints
+            ],
             "required_runtime_transitions": list(
                 contract.required_runtime_transitions
             ),
@@ -750,6 +910,7 @@ def repair_conformance_contract_identity(
                 "fixture_probe_constraints",
                 "schema_field_constraints",
                 "runtime_response_constraints",
+                "runtime_artifact_constraints",
                 "required_runtime_transitions",
             )
         }
@@ -1050,6 +1211,29 @@ def repair_conformance_failure_fingerprint(
                         atoms.add(
                             (
                                 "runtime_response_constraint",
+                                hashlib.sha256(
+                                    encoded.encode("utf-8")
+                                ).hexdigest(),
+                            )
+                        )
+                    continue
+                if key == "runtime_artifact_constraints" and isinstance(
+                    nested,
+                    (list, tuple),
+                ):
+                    for item in nested:
+                        if not isinstance(item, Mapping):
+                            continue
+                        encoded = json.dumps(
+                            dict(item),
+                            ensure_ascii=True,
+                            separators=(",", ":"),
+                            sort_keys=True,
+                            default=str,
+                        )
+                        atoms.add(
+                            (
+                                "runtime_artifact_constraint",
                                 hashlib.sha256(
                                     encoded.encode("utf-8")
                                 ).hexdigest(),
@@ -1475,6 +1659,7 @@ def _typed_constraint_owner_paths(
     runtime_paths: Sequence[str],
     schema_field_constraints: Sequence[SchemaFieldRepairConstraint],
     runtime_response_constraints: Sequence[RuntimeResponseConstraint],
+    runtime_artifact_constraints: Sequence[RuntimeArtifactConstraint] = (),
 ) -> tuple[str, ...]:
     """Resolve every typed constraint to its source-producing layer.
 
@@ -1494,6 +1679,13 @@ def _typed_constraint_owner_paths(
     if layers & {"compile_result", "compiler_output"} and compiler_path is not None:
         owners.append(compiler_path)
     if "runtime" in layers or runtime_response_constraints:
+        owners.extend(runtime_paths)
+    artifact_layers = {
+        constraint.producer_layer for constraint in runtime_artifact_constraints
+    }
+    if "compiler" in artifact_layers and compiler_path is not None:
+        owners.append(compiler_path)
+    if "runtime" in artifact_layers:
         owners.extend(runtime_paths)
     return tuple(dict.fromkeys(path for path in owners if path))
 
@@ -1736,6 +1928,34 @@ def compile_repair_conformance_contract(
             )
         }.values()
     )
+    direct_runtime_artifact_constraints = _runtime_artifact_constraints(
+        direct_diagnostics
+    )
+    transported_runtime_artifact_constraints = _runtime_artifact_constraints(
+        diagnostics
+    )
+    inherited_runtime_artifact_constraints = tuple(
+        {
+            item.identity_digest: item
+            for item in (
+                *(
+                    inherited_contract.runtime_artifact_constraints
+                    if inherited_contract is not None
+                    else ()
+                ),
+                *transported_runtime_artifact_constraints,
+            )
+        }.values()
+    )
+    runtime_artifact_constraints = tuple(
+        {
+            item.identity_digest: item
+            for item in (
+                *inherited_runtime_artifact_constraints,
+                *direct_runtime_artifact_constraints,
+            )
+        }.values()
+    )
     direct_owner_paths = _typed_constraint_owner_paths(
         manifest_path=manifest_path,
         compiler_path=compiler_path,
@@ -1743,9 +1963,11 @@ def compile_repair_conformance_contract(
         schema_field_constraints=(
             ()
             if direct_runtime_response_constraints
+            or direct_runtime_artifact_constraints
             else direct_schema_constraints
         ),
         runtime_response_constraints=direct_runtime_response_constraints,
+        runtime_artifact_constraints=direct_runtime_artifact_constraints,
     )
     inherited_owner_paths = _typed_constraint_owner_paths(
         manifest_path=manifest_path,
@@ -1753,40 +1975,40 @@ def compile_repair_conformance_contract(
         runtime_paths=runtime_paths,
         schema_field_constraints=schema_field_constraints,
         runtime_response_constraints=runtime_response_constraints,
+        runtime_artifact_constraints=runtime_artifact_constraints,
     )
     inherited_failure_codes = set(
         inherited_contract.failure_codes
         if inherited_contract is not None
         else ()
     )
+    compiler_fixture_codes = {
+        "protocol_probe_not_fixture_derived",
+        "align_compiler_runtime_recorded_response_selection",
+    }
     compiler_fixture_failure_active = bool(
-        {
-            "protocol_probe_not_fixture_derived",
-            "align_compiler_runtime_recorded_response_selection",
-        }
-        & (set(direct_failure_codes) | inherited_failure_codes)
+        compiler_fixture_codes & set(direct_failure_codes)
+        or (
+            not direct_runtime_artifact_constraints
+            and compiler_fixture_codes & inherited_failure_codes
+        )
     )
     unresolved_owner_paths = (
         (compiler_path,)
         if compiler_fixture_failure_active and compiler_path is not None
         else ()
     )
-    if direct_failure_paths:
-        branch_paths = tuple(
-            dict.fromkeys(
-                (
-                    *direct_failure_paths,
-                    *direct_owner_paths,
-                    *unresolved_owner_paths,
-                )
-            )
-        )
-    elif direct_owner_paths:
-        # Multiple constraints discovered by the same failure are co-owners.
-        # Historical constraints remain validation invariants but cannot redirect
-        # the active mutation away from the current failure producer.
+    if direct_owner_paths:
+        # Typed ownership has precedence over free-form error routing. Multiple
+        # constraints discovered by the same failure are co-owners. Historical
+        # constraints remain validation invariants but cannot redirect the
+        # active mutation away from the current failure producer.
         branch_paths = tuple(
             dict.fromkeys((*direct_owner_paths, *unresolved_owner_paths))
+        )
+    elif direct_failure_paths:
+        branch_paths = tuple(
+            dict.fromkeys((*direct_failure_paths, *unresolved_owner_paths))
         )
     elif unresolved_owner_paths:
         branch_paths = tuple(
@@ -1883,6 +2105,7 @@ def compile_repair_conformance_contract(
         fixture_probe_constraints=fixture_probe_constraints,
         schema_field_constraints=schema_field_constraints,
         runtime_response_constraints=runtime_response_constraints,
+        runtime_artifact_constraints=runtime_artifact_constraints,
         required_runtime_transitions=tuple(
             dict.fromkeys(
                 (
@@ -1991,6 +2214,7 @@ def merge_repair_conformance_constraint_context(
     fixture_constraints = _fixture_probe_constraints(sources)
     schema_constraints = _schema_field_constraints(sources)
     runtime_response_constraints = _runtime_response_constraints(sources)
+    runtime_artifact_constraints = _runtime_artifact_constraints(sources)
     artifact_lifecycle_constraints = list(
         _artifact_lifecycle_constraints(sources)
     )
@@ -2004,11 +2228,15 @@ def merge_repair_conformance_constraint_context(
     direct_runtime_response_constraints = _runtime_response_constraints(
         direct_diagnostics
     )
+    direct_runtime_artifact_constraints = _runtime_artifact_constraints(
+        direct_diagnostics
+    )
     if (
         inherited is None
         and not fixture_constraints
         and not schema_constraints
         and not runtime_response_constraints
+        and not runtime_artifact_constraints
         and artifact_lifecycle_constraint is None
     ):
         return None
@@ -2041,6 +2269,10 @@ def merge_repair_conformance_constraint_context(
         merged["runtime_response_constraints"] = [
             item.to_dict() for item in runtime_response_constraints
         ]
+    if runtime_artifact_constraints:
+        merged["runtime_artifact_constraints"] = [
+            item.to_dict() for item in runtime_artifact_constraints
+        ]
     if artifact_lifecycle_constraint is not None:
         merged["artifact_lifecycle_constraint"] = (
             artifact_lifecycle_constraint.to_dict()
@@ -2063,9 +2295,11 @@ def merge_repair_conformance_constraint_context(
         schema_field_constraints=(
             ()
             if direct_runtime_response_constraints
+            or direct_runtime_artifact_constraints
             else direct_schema_constraints
         ),
         runtime_response_constraints=direct_runtime_response_constraints,
+        runtime_artifact_constraints=direct_runtime_artifact_constraints,
     )
     if not owner_paths and not _string_tuple(merged.get("required_branch_paths")):
         owner_paths = _typed_constraint_owner_paths(
@@ -2074,6 +2308,7 @@ def merge_repair_conformance_constraint_context(
             runtime_paths=runtime_paths,
             schema_field_constraints=schema_constraints,
             runtime_response_constraints=runtime_response_constraints,
+            runtime_artifact_constraints=runtime_artifact_constraints,
         )
     if owner_paths:
         merged["required_branch_paths"] = list(owner_paths)
@@ -2200,17 +2435,50 @@ def _repair_contract_consistency_failure(
     """
 
     failures = set(contract.failure_codes)
-    protocol_fixture_failure = "protocol_probe_not_fixture_derived" in failures
-    selector_alignment_failure = (
-        "align_compiler_runtime_recorded_response_selection" in failures
-    )
-    if not protocol_fixture_failure and not selector_alignment_failure:
-        return None
+    required_paths = set(contract.required_branch_paths)
     missing: list[str] = []
-    if contract.compiler_path is None:
-        missing.append("compiler_path")
-    elif contract.compiler_path not in contract.required_branch_paths:
-        missing.append("required_branch_paths.compiler")
+
+    # Runtime lifecycle failures are capability-wide and must authorize the
+    # runtime that owns the artifact.  Older compiler/schema constraints remain
+    # validation invariants, but they must not redirect the active mutation.
+    runtime_artifacts = tuple(
+        item
+        for item in contract.runtime_artifact_constraints
+        if item.producer_layer == "runtime"
+    )
+    compiler_artifacts = tuple(
+        item
+        for item in contract.runtime_artifact_constraints
+        if item.producer_layer == "compiler"
+    )
+    if runtime_artifacts and not (required_paths & set(contract.runtime_paths)):
+        missing.append("required_branch_paths.runtime_artifact_owner")
+    if compiler_artifacts and (
+        contract.compiler_path is None
+        or contract.compiler_path not in required_paths
+    ):
+        missing.append("required_branch_paths.compiler_artifact_owner")
+
+    active_runtime_artifact_frontier = bool(runtime_artifacts)
+    protocol_fixture_failure = bool(
+        "protocol_probe_not_fixture_derived" in failures
+        and not active_runtime_artifact_frontier
+    )
+    selector_alignment_failure = bool(
+        "align_compiler_runtime_recorded_response_selection" in failures
+        and not active_runtime_artifact_frontier
+    )
+    if (
+        not protocol_fixture_failure
+        and not selector_alignment_failure
+        and not missing
+    ):
+        return None
+    if protocol_fixture_failure or selector_alignment_failure:
+        if contract.compiler_path is None:
+            missing.append("compiler_path")
+        elif contract.compiler_path not in required_paths:
+            missing.append("required_branch_paths.compiler")
     if (
         protocol_fixture_failure
         and not contract.requires_compiler_fixture_reconstruction
@@ -2222,15 +2490,18 @@ def _repair_contract_consistency_failure(
         passed=False,
         code="repair_contract_owner_inconsistent",
         reason=(
-            "framework repair contract does not authorize the source owner or "
-            "typed reconstruction evidence required by its unresolved compiler "
-            "failure"
+            "framework repair contract does not authorize the producer source "
+            "owner or typed reconstruction evidence required by its active "
+            "failure contract"
         ),
         details={
             "failure_codes": sorted(failures),
             "compiler_path": contract.compiler_path,
             "required_branch_paths": list(contract.required_branch_paths),
             "missing_contract_fields": missing,
+            "runtime_artifact_constraints": [
+                item.to_dict() for item in contract.runtime_artifact_constraints
+            ],
         },
         failure_class="framework",
         repairable=False,
@@ -2991,6 +3262,36 @@ def _runtime_response_constraints(
                         continue
                     try:
                         constraint = RuntimeResponseConstraint.from_dict(
+                            raw_constraint
+                        )
+                    except ValueError:
+                        continue
+                    collected[constraint.identity_digest] = constraint
+            pending.extend(current.values())
+        elif isinstance(current, (list, tuple)):
+            pending.extend(current)
+    return tuple(collected[key] for key in sorted(collected))
+
+
+def _runtime_artifact_constraints(
+    diagnostics: Sequence[Mapping[str, object]],
+) -> tuple[RuntimeArtifactConstraint, ...]:
+    """Collect canonical producer/lifecycle constraints from nested feedback."""
+
+    collected: dict[str, RuntimeArtifactConstraint] = {}
+    pending: list[object] = list(diagnostics)
+    visited = 0
+    while pending and visited < 512 and len(collected) < 64:
+        current = pending.pop()
+        visited += 1
+        if isinstance(current, Mapping):
+            raw_constraints = current.get("runtime_artifact_constraints")
+            if isinstance(raw_constraints, (list, tuple)):
+                for raw_constraint in raw_constraints[:64]:
+                    if not isinstance(raw_constraint, Mapping):
+                        continue
+                    try:
+                        constraint = RuntimeArtifactConstraint.from_dict(
                             raw_constraint
                         )
                     except ValueError:
@@ -4410,6 +4711,7 @@ def _inherited_repair_conformance_contract(
     ] = {}
     schema_constraints: dict[str, SchemaFieldRepairConstraint] = {}
     runtime_constraints: dict[str, RuntimeResponseConstraint] = {}
+    runtime_artifact_constraints: dict[str, RuntimeArtifactConstraint] = {}
     for contract in inherited:
         for constraint in contract.fixture_probe_constraints:
             fixture_constraints[
@@ -4424,6 +4726,10 @@ def _inherited_repair_conformance_contract(
             schema_constraints[constraint.identity_digest] = constraint
         for constraint in contract.runtime_response_constraints:
             runtime_constraints[constraint.identity_digest] = constraint
+        for constraint in contract.runtime_artifact_constraints:
+            runtime_artifact_constraints[
+                constraint.identity_digest
+            ] = constraint
 
     return replace(
         base,
@@ -4496,6 +4802,10 @@ def _inherited_repair_conformance_contract(
         ),
         runtime_response_constraints=tuple(
             runtime_constraints[key] for key in sorted(runtime_constraints)
+        ),
+        runtime_artifact_constraints=tuple(
+            runtime_artifact_constraints[key]
+            for key in sorted(runtime_artifact_constraints)
         ),
         required_runtime_transitions=tuple(
             dict.fromkeys(

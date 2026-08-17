@@ -2293,6 +2293,35 @@ def _normalize_replay_service_protocol_trace_record(
     return normalized
 
 
+def _protocol_trace_runtime_artifact_constraint() -> dict[str, object]:
+    """Return the canonical runtime-owner contract for protocol evidence.
+
+    The trace is validated while the service is alive, after readiness and
+    protocol probes but before shutdown.  Therefore a runtime that buffers the
+    file until ``finally`` cannot satisfy the contract even if its final bytes
+    would be structurally valid.
+    """
+
+    return {
+        "schema_version": "aworld.self_evolve.runtime_artifact_constraint.v1",
+        "artifact_kind": "protocol_trace",
+        "relative_path": _REPLAY_SERVICE_PROTOCOL_TRACE_NAME,
+        "producer_layer": "runtime",
+        "availability_milestone": "post_probe_pre_shutdown",
+        "write_mode": "incremental",
+        "maximum_bytes": _MAX_REPLAY_SERVICE_PROTOCOL_TRACE_BYTES,
+        "require_nonempty": True,
+        "required_record_fields": [
+            "direction",
+            "sequence",
+            "kind",
+            "fields",
+            "correlation",
+        ],
+        "required_directions": ["in", "out"],
+    }
+
+
 def _validate_replay_service_protocol_trace(trace_path: Path) -> None:
     """Validate the candidate-owned, protocol-neutral replay trace contract."""
 
@@ -8193,11 +8222,14 @@ async def _start_replay_services(
                 if isinstance(exc, ReplayServiceProtocolError):
                     exc = ReplayServiceProtocolError(
                         str(exc),
-                        code=exc.code,
+                        code=exc.code or "protocol_trace_contract_failed",
                         details={
                             **exc.details,
                             "service_id": service.service_id,
                             "transport": service.transport,
+                            "runtime_artifact_constraints": [
+                                _protocol_trace_runtime_artifact_constraint()
+                            ],
                         },
                     )
                 raise _replay_service_failure_with_stderr(

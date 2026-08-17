@@ -251,6 +251,7 @@ class CampaignMeasurementLedgerV2:
 
     continuation_run_ids: tuple[str, ...] = ()
     invalid_retry_run_ids: tuple[str, ...] = ()
+    framework_blocked_run_ids: tuple[str, ...] = ()
     schema_version: str = CAMPAIGN_MEASUREMENT_LEDGER_SCHEMA_VERSION
 
     def __post_init__(self) -> None:
@@ -259,12 +260,22 @@ class CampaignMeasurementLedgerV2:
         for values, label in (
             (self.continuation_run_ids, "measurement continuation run"),
             (self.invalid_retry_run_ids, "measurement invalid retry run"),
+            (self.framework_blocked_run_ids, "framework blocked run"),
         ):
             if len(values) != len(set(values)):
                 raise ValueError(f"{label} ids must be unique")
             for run_id in values:
                 _validate_id(run_id, label)
-        if set(self.continuation_run_ids) & set(self.invalid_retry_run_ids):
+        ledger_sets = (
+            set(self.continuation_run_ids),
+            set(self.invalid_retry_run_ids),
+            set(self.framework_blocked_run_ids),
+        )
+        if any(
+            left & right
+            for index, left in enumerate(ledger_sets)
+            for right in ledger_sets[index + 1 :]
+        ):
             raise ValueError("a measurement run cannot be charged to two ledgers")
 
     @property
@@ -276,8 +287,16 @@ class CampaignMeasurementLedgerV2:
         return len(self.invalid_retry_run_ids)
 
     @property
+    def framework_blocked_count(self) -> int:
+        return len(self.framework_blocked_run_ids)
+
+    @property
     def control_plane_run_count(self) -> int:
-        return self.continuation_count + self.invalid_retry_count
+        return (
+            self.continuation_count
+            + self.invalid_retry_count
+            + self.framework_blocked_count
+        )
 
     def charge_continuation(self, run_id: str) -> "CampaignMeasurementLedgerV2":
         if run_id in self.continuation_run_ids:
@@ -293,13 +312,25 @@ class CampaignMeasurementLedgerV2:
             self, invalid_retry_run_ids=(*self.invalid_retry_run_ids, run_id)
         )
 
+    def charge_framework_blocked(self, run_id: str) -> "CampaignMeasurementLedgerV2":
+        """Record a framework-owned shared run without spending a candidate cycle."""
+
+        if run_id in self.framework_blocked_run_ids:
+            return self
+        return replace(
+            self,
+            framework_blocked_run_ids=(*self.framework_blocked_run_ids, run_id),
+        )
+
     def to_dict(self) -> dict[str, object]:
         return {
             "schema_version": self.schema_version,
             "continuation_run_ids": list(self.continuation_run_ids),
             "invalid_retry_run_ids": list(self.invalid_retry_run_ids),
+            "framework_blocked_run_ids": list(self.framework_blocked_run_ids),
             "continuation_count": self.continuation_count,
             "invalid_retry_count": self.invalid_retry_count,
+            "framework_blocked_count": self.framework_blocked_count,
         }
 
     @classmethod
@@ -311,9 +342,16 @@ class CampaignMeasurementLedgerV2:
         loaded = cls(
             continuation_run_ids=_string_tuple(value.get("continuation_run_ids")),
             invalid_retry_run_ids=_string_tuple(value.get("invalid_retry_run_ids")),
+            framework_blocked_run_ids=_string_tuple(
+                value.get("framework_blocked_run_ids")
+            ),
         )
         continuation_count = value.get("continuation_count")
         invalid_retry_count = value.get("invalid_retry_count")
+        framework_blocked_count = value.get(
+            "framework_blocked_count",
+            loaded.framework_blocked_count,
+        )
         if (
             isinstance(continuation_count, bool)
             or not isinstance(continuation_count, int)
@@ -326,6 +364,12 @@ class CampaignMeasurementLedgerV2:
             or invalid_retry_count != loaded.invalid_retry_count
         ):
             raise ValueError("measurement retry count is not canonical")
+        if (
+            isinstance(framework_blocked_count, bool)
+            or not isinstance(framework_blocked_count, int)
+            or framework_blocked_count != loaded.framework_blocked_count
+        ):
+            raise ValueError("framework blocked count is not canonical")
         return loaded
 
 
@@ -999,6 +1043,10 @@ class SelfImprovementCampaign:
     def measurement_continuation_count(self) -> int:
         return self.measurement_ledger.continuation_count
 
+    @property
+    def framework_blocked_count(self) -> int:
+        return self.measurement_ledger.framework_blocked_count
+
     def to_dict(self) -> dict[str, object]:
         return {
             "schema_version": CAMPAIGN_SCHEMA_VERSION,
@@ -1023,6 +1071,7 @@ class SelfImprovementCampaign:
             "measurement_ledger": self.measurement_ledger.to_dict(),
             "measurement_retry_count": self.measurement_retry_count,
             "measurement_continuation_count": self.measurement_continuation_count,
+            "framework_blocked_count": self.framework_blocked_count,
             "measurement_pending_run_id": self.measurement_pending_run_id,
             "measurement_pending_candidate_id": (
                 self.measurement_pending_candidate_id
@@ -1083,6 +1132,20 @@ class SelfImprovementCampaign:
             if legacy_continuation_count != measurement_ledger.continuation_count:
                 raise ValueError(
                     "legacy measurement continuation count differs from ledger"
+                )
+            legacy_framework_blocked_count = _non_negative_int(
+                value.get(
+                    "framework_blocked_count",
+                    measurement_ledger.framework_blocked_count,
+                ),
+                "framework_blocked_count",
+            )
+            if (
+                legacy_framework_blocked_count
+                != measurement_ledger.framework_blocked_count
+            ):
+                raise ValueError(
+                    "legacy framework blocked count differs from ledger"
                 )
         else:
             legacy_retry_count = _non_negative_int(
@@ -1493,6 +1556,11 @@ class SelfImprovementCampaignController:
             framework_handoff_requested
             and measurement_pending_candidate_id is not None
         )
+        framework_control_plane_blocked = bool(
+            disposition.kind is SelfImprovementDispositionKind.HANDOFF_GOAL
+            and disposition.owner == "framework"
+            and disposition.scope == "shared_run"
+        )
         if (
             measurement_continuation_requested
             and not measurement_continuation_available
@@ -1520,6 +1588,10 @@ class SelfImprovementCampaignController:
             )
         elif measurement_retry_available:
             measurement_ledger = measurement_ledger.charge_invalid_retry(
+                actual_run_id
+            )
+        elif framework_control_plane_blocked:
+            measurement_ledger = measurement_ledger.charge_framework_blocked(
                 actual_run_id
             )
         preserve_measurement_checkpoint = bool(
@@ -1660,6 +1732,7 @@ class SelfImprovementCampaignController:
             "measurement_continuation_count": (
                 advanced.measurement_continuation_count
             ),
+            "framework_blocked_count": advanced.framework_blocked_count,
             "measurement_projection": (
                 measurement_outcome.projection.value
                 if measurement_outcome is not None
@@ -3056,6 +3129,9 @@ def _campaign_summary(
             "campaign_measurement_continuation_count": (
                 campaign.measurement_continuation_count
             ),
+            "campaign_framework_blocked_count": (
+                campaign.framework_blocked_count
+            ),
             "campaign_max_measurement_retries": (
                 campaign.max_measurement_retries
             ),
@@ -3463,6 +3539,7 @@ def _constraint_identities(report: Mapping[str, Any]) -> set[str]:
                     "runtime_paths",
                     "fixture_probe_constraints",
                     "schema_field_constraints",
+                    "runtime_artifact_constraints",
                     "runtime_response_constraints",
                     "required_runtime_transitions",
                 )
@@ -3474,6 +3551,7 @@ def _constraint_identities(report: Mapping[str, Any]) -> set[str]:
         for key in (
             "schema_field_constraints",
             "fixture_probe_constraints",
+            "runtime_artifact_constraints",
             "repair_constraints",
         ):
             constraints = item.get(key)
@@ -3549,6 +3627,13 @@ def _typed_constraint_identity(value: Any, *, kind: str) -> str | None:
         required = ("schema_layer", "field_path", "rule")
     elif kind == "fixture_probe_constraints":
         required = ("kind", "path")
+    elif kind == "runtime_artifact_constraints":
+        required = (
+            "artifact_kind",
+            "relative_path",
+            "producer_layer",
+            "availability_milestone",
+        )
     else:
         required = ("identity",)
     if not all(isinstance(value.get(field), str) and value.get(field) for field in required):

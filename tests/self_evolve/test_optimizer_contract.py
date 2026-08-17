@@ -1289,6 +1289,43 @@ def test_compile_fixture_uniqueness_contract_selects_collision_safe_topology() -
     assert "changing only the hash algorithm" in instructions
 
 
+def test_runtime_artifact_contract_targets_live_runtime_producer() -> None:
+    instructions = _focused_repair_prompt_instructions(
+        {
+            "repair_conformance": {
+                "required_branch_paths": ["replay/runtime.py"],
+                "runtime_artifact_constraints": [
+                    {
+                        "schema_version": (
+                            "aworld.self_evolve.runtime_artifact_constraint.v1"
+                        ),
+                        "artifact_kind": "protocol_trace",
+                        "relative_path": "protocol_trace.jsonl",
+                        "producer_layer": "runtime",
+                        "availability_milestone": "post_probe_pre_shutdown",
+                        "write_mode": "incremental",
+                        "maximum_bytes": 65_536,
+                        "require_nonempty": True,
+                        "required_record_fields": [
+                            "direction",
+                            "sequence",
+                            "kind",
+                            "fields",
+                            "correlation",
+                        ],
+                        "required_directions": ["in", "out"],
+                    }
+                ],
+            }
+        }
+    )
+
+    assert "execution-time producer contract" in instructions
+    assert "post_probe_pre_shutdown via incremental writes" in instructions
+    assert "write deferred to shutdown/finally does not satisfy" in instructions
+    assert "Do not move the artifact into the compiler" in instructions
+
+
 @pytest.mark.asyncio
 async def test_llm_mutator_focused_compile_repair_ignores_stale_finalization_feedback() -> None:
     prompts: list[str] = []

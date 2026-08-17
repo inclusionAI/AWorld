@@ -126,6 +126,7 @@ class EvolutionContext:
             and repair_conformance is not None
             and (
                 repair_conformance.schema_field_constraints
+                or repair_conformance.runtime_artifact_constraints
                 or any(
                     "capability" in code or "compile" in code
                     for code in repair_conformance.failure_codes
@@ -374,6 +375,7 @@ _PROMPT_CAUSAL_DIAGNOSTIC_FIELDS = (
     "active_frontier_key",
     "affected_case_ids",
     "required_action",
+    "runtime_artifact_constraints",
     "runtime_response_constraints",
     "runtime_response_observation",
     "runtime_response_observations",
@@ -407,6 +409,8 @@ def _compact_prompt_causal_diagnostics(
             }
             if projected:
                 typed_weight = 0
+                if projected.get("runtime_artifact_constraints"):
+                    typed_weight += 1_500
                 if projected.get("runtime_response_constraints"):
                     typed_weight += 1_000
                 if projected.get("schema_field_constraints"):
@@ -1114,6 +1118,7 @@ def _merge_typed_repair_constraints_across_feedback(
             "artifact_lifecycle_constraint",
             "fixture_probe_constraints",
             "schema_field_constraints",
+            "runtime_artifact_constraints",
             "runtime_response_constraints",
         }
     }
