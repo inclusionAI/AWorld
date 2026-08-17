@@ -192,6 +192,30 @@ from aworld.self_evolve.types import (
 )
 
 
+def test_replay_heartbeat_uses_frozen_measurement_member_deadline() -> None:
+    request = SimpleNamespace(
+        measurement_plan=SimpleNamespace(
+            deadlines=SimpleNamespace(member_hard_deadline_seconds=900)
+        ),
+        timeout_seconds=300,
+    )
+
+    assert runner_module._replay_member_hard_deadline_seconds(
+        request,
+        {"attempt_timeout_seconds": 600},
+    ) == 900.0
+
+    legacy = SimpleNamespace(measurement_plan=None, timeout_seconds=300)
+    assert runner_module._replay_member_hard_deadline_seconds(
+        legacy,
+        {"phase_timeout_seconds": 240},
+    ) == 240.0
+    assert runner_module._replay_member_hard_deadline_seconds(
+        SimpleNamespace(measurement_plan=None, timeout_seconds=None),
+        {},
+    ) is None
+
+
 def _independent_regression_suites_for_test(
     dataset: SelfEvolveDataset,
 ) -> tuple[ResolvedRegressionSuite, ...]:

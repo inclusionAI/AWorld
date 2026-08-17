@@ -40,6 +40,7 @@ from aworld.self_evolve.measurement_scheduler import (
     FrameworkFilesystemLaneMaterializer,
     LaneExecutionContext,
     LaneMaterializationResult,
+    PairLaneScheduleResult,
     PairLaneStopKind,
     PairLaneWorkItem,
     ResolvedControl,
@@ -922,3 +923,77 @@ async def test_staged_scheduler_admits_expansion_then_regression_transfer(
         "control:case-4",
         "treatment:case-4",
     ]
+
+
+@pytest.mark.asyncio
+async def test_staged_scheduler_fails_closed_when_pending_frontier_does_not_shrink(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store, bundle = _bundle(
+        tmp_path,
+        decision=_exclusive_decision(),
+        case_count=1,
+        repetitions_per_case=3,
+    )
+    pending = bundle.work_items(
+        admitted_stage_ids=("sentinel",),
+        admitted_case_ids=("case-1",),
+    )
+    calls = 0
+
+    async def stalled_schedule(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        return PairLaneScheduleResult(
+            stop_kind=PairLaneStopKind.COMPLETED,
+            stop_reason="fixture returned no pair progress",
+            safe_lane_count=1,
+            isolation_decision_fingerprint=(
+                bundle.isolation_decision.fingerprint
+            ),
+            completed=(),
+            pending=pending,
+            elapsed_seconds=0.1,
+        )
+
+    monkeypatch.setattr(
+        "aworld.self_evolve.measurement_orchestrator.schedule_pair_lanes",
+        stalled_schedule,
+    )
+
+    def progress(_plan, current_stage_id, _schedules):
+        return MeasurementProgressSummary(
+            current_stage_id=current_stage_id,
+            completed_case_ids=(),
+            comparable_case_ids=(),
+            invalid_control_case_ids=(),
+            confidence_lower_bound=None,
+            point_estimate=None,
+            regression_detected=False,
+            negative_effect_detected=False,
+            futility_proven=False,
+            new_comparable_pairs_in_window=0,
+            uncertainty_reduction_in_window=0,
+            current_stage_exhausted=False,
+            completed_stage_ids=(),
+            checkpoint_quantum_expired=False,
+            campaign_wall_deadline_expired=False,
+            resume_safe=True,
+        )
+
+    result = await schedule_staged_measurement(
+        store,
+        run_id="run-scheduler",
+        measurement_plan_fingerprint=bundle.plan.measurement_plan_fingerprint,
+        run_control=lambda _item, _context: asyncio.sleep(0, result="unused"),
+        run_treatment=lambda _item, _context, _control: asyncio.sleep(
+            0, result="unused"
+        ),
+        progress_builder=progress,
+        lane_materializer=FrameworkFilesystemLaneMaterializer(tmp_path / "lanes"),
+    )
+
+    assert calls == 2
+    assert result.decision.kind is AdaptiveDecisionKind.STOP_FRAMEWORK_BLOCKED
+    assert result.decision.reason_code == "measurement_scheduler_no_progress"

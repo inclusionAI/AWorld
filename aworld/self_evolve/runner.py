@@ -1585,6 +1585,29 @@ def _replay_member_progress_message(
     return prefix
 
 
+def _replay_member_hard_deadline_seconds(
+    request: CandidateReplayRequest,
+    payload: Mapping[str, object],
+) -> float | None:
+    """Resolve the authoritative member deadline for heartbeat telemetry."""
+
+    value: object
+    if request.measurement_plan is not None:
+        value = request.measurement_plan.deadlines.member_hard_deadline_seconds
+    else:
+        value = payload.get("phase_timeout_seconds")
+        if value is None:
+            value = request.timeout_seconds
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(float(value))
+        or float(value) <= 0
+    ):
+        return None
+    return float(value)
+
+
 def _execution_usage_report(
     *,
     optimizer_diagnostics: list[dict[str, object]],
@@ -12292,18 +12315,39 @@ class SelfEvolveRunner:
                 "phase": "preparing",
             }
             phase_started_at = time.monotonic()
+            phase_scope: str | None = None
             completed_phase_durations: list[float] = []
 
             def replay_progress_callback(
                 payload: Mapping[str, object],
             ) -> None:
-                nonlocal phase_started_at
+                nonlocal phase_scope, phase_started_at
                 now = time.monotonic()
-                if payload.get("event") == "member_phase_completed":
+                event = payload.get("event")
+                completed_scope = (
+                    "member"
+                    if event == "member_phase_completed"
+                    else "attempt"
+                    if event == "replay_attempt_completed"
+                    else None
+                )
+                if (
+                    completed_scope is not None
+                    and phase_scope == completed_scope
+                ):
                     completed_phase_durations.append(now - phase_started_at)
+                    phase_scope = None
                 replay_progress.update(payload)
-                if payload.get("event") == "member_phase_started":
+                started_scope = (
+                    "member"
+                    if event == "member_phase_started"
+                    else "attempt"
+                    if event == "replay_attempt_started"
+                    else None
+                )
+                if started_scope is not None:
                     phase_started_at = now
+                    phase_scope = started_scope
                 _emit_progress(
                     self.progress_callback,
                     progress_stage,
@@ -12352,12 +12396,26 @@ class SelfEvolveRunner:
                             break
                         now = time.monotonic()
                         phase_elapsed = now - phase_started_at
-                        phase_timeout = replay_progress.get(
-                            "phase_timeout_seconds"
+                        attempt_timeout = replay_progress.get(
+                            "attempt_timeout_seconds"
+                        )
+                        member_hard_deadline = (
+                            _replay_member_hard_deadline_seconds(
+                                request,
+                                replay_progress,
+                            )
                         )
                         phase_remaining = (
-                            max(0, int(float(phase_timeout) - phase_elapsed))
-                            if isinstance(phase_timeout, (int, float))
+                            max(
+                                0,
+                                int(
+                                    float(member_hard_deadline)
+                                    - phase_elapsed
+                                ),
+                            )
+                            if isinstance(
+                                member_hard_deadline, (int, float)
+                            )
                             else None
                         )
                         completed_phases = len(completed_phase_durations)
@@ -12382,7 +12440,18 @@ class SelfEvolveRunner:
                                 + "; still running; total elapsed "
                                 f"{int(now - replay_started_at)}s; phase elapsed "
                                 f"{int(phase_elapsed)}s; member hard deadline "
-                                f"{phase_timeout}s"
+                                + (
+                                    f"{member_hard_deadline}s"
+                                    if member_hard_deadline is not None
+                                    else "unknown"
+                                )
+                                + (
+                                    f"; attempt timeout {attempt_timeout}s"
+                                    if attempt_timeout is not None
+                                    and attempt_timeout
+                                    != member_hard_deadline
+                                    else ""
+                                )
                                 + (
                                     f"; member remaining {phase_remaining}s"
                                     if phase_remaining is not None
