@@ -527,6 +527,7 @@ class NormalizedReplayMembers:
     duplicate_case_ids: tuple[str, ...] = ()
     unexpected_case_ids: tuple[str, ...] = ()
     request_mismatch_case_ids: tuple[str, ...] = ()
+    intentionally_unadmitted_case_ids: tuple[str, ...] = ()
 
     @property
     def valid(self) -> bool:
@@ -617,6 +618,30 @@ def normalize_replay_members(
     mismatches: list[str] = []
     mismatch_fields: dict[str, tuple[str, ...]] = {}
     root_request = getattr(replay_result, "request", None)
+    raw_measurement_decision = getattr(replay_result, "measurement_decision", None)
+    measurement_decision_kind = str(
+        raw_measurement_decision.get("kind")
+        if isinstance(raw_measurement_decision, Mapping)
+        else ""
+    )
+    authoritative_early_stop = bool(
+        isinstance(root_request, CandidateReplayRequest)
+        and root_request.measurement_plan is not None
+        and measurement_decision_kind
+        in {
+            AdaptiveDecisionKind.STOP_CONFIDENT_POSITIVE.value,
+            AdaptiveDecisionKind.STOP_NEGATIVE.value,
+            AdaptiveDecisionKind.STOP_REGRESSION.value,
+            AdaptiveDecisionKind.STOP_FUTILITY.value,
+            AdaptiveDecisionKind.STOP_INVALID_CONTROL.value,
+            AdaptiveDecisionKind.STOP_FRAMEWORK_BLOCKED.value,
+            AdaptiveDecisionKind.STOP_ZERO_YIELD.value,
+            AdaptiveDecisionKind.STOP_INCONCLUSIVE.value,
+            AdaptiveDecisionKind.MEASUREMENT_INCOMPLETE_CHECKPOINT.value,
+            AdaptiveDecisionKind.MEASUREMENT_INCOMPLETE_CAMPAIGN_DEADLINE.value,
+        }
+    )
+    intentionally_unadmitted: list[str] = []
     if isinstance(root_request, CandidateReplayRequest) and not (
         _has_authoritative_per_member_repetitions(root_request)
     ):
@@ -682,7 +707,10 @@ def normalize_replay_members(
     for case in replayable_cases:
         occurrences = occurrences_by_case_id[case.case_id]
         if not occurrences:
-            missing.append(case.case_id)
+            if authoritative_early_stop:
+                intentionally_unadmitted.append(case.case_id)
+            else:
+                missing.append(case.case_id)
             continue
         occurrence_mismatch_fields = tuple(
             sorted(
@@ -771,6 +799,7 @@ def normalize_replay_members(
         duplicate_case_ids=tuple(duplicates),
         unexpected_case_ids=tuple(unexpected),
         request_mismatch_case_ids=tuple(mismatches),
+        intentionally_unadmitted_case_ids=tuple(intentionally_unadmitted),
     )
 
 
@@ -1014,6 +1043,9 @@ def candidate_replay_pair_coverage(
         "blocked_member_count": blocked_member_count,
         "not_run_variant_count": not_run_variant_count,
         "missing_member_count": len(normalized.missing_case_ids),
+        "intentionally_unadmitted_member_count": len(
+            normalized.intentionally_unadmitted_case_ids
+        ),
         "duplicate_member_count": len(normalized.duplicate_case_ids),
         "unexpected_member_count": len(normalized.unexpected_case_ids),
         "request_mismatch_count": len(normalized.request_mismatch_case_ids),
@@ -1158,6 +1190,8 @@ def _execution_failure_event(
         stage = FailureStage.CAPABILITY_PREFLIGHT
     elif raw_stage == FailureStage.TASK_ROLLOUT.value:
         stage = FailureStage.TASK_ROLLOUT
+    elif raw_stage == FailureStage.EVIDENCE_FINALIZATION.value:
+        stage = FailureStage.EVIDENCE_FINALIZATION
     elif legacy.owner is FailureOwner.CANDIDATE and failure_type in {
         "ReplayServiceProtocolError",
         "ReplayCapabilityError",
@@ -1171,7 +1205,10 @@ def _execution_failure_event(
     if owner is FailureOwner.CANDIDATE:
         scope = (
             FailureScope.MEMBER
-            if stage is FailureStage.TASK_ROLLOUT
+            if stage in {
+                FailureStage.TASK_ROLLOUT,
+                FailureStage.EVIDENCE_FINALIZATION,
+            }
             else FailureScope.CANDIDATE
         )
     elif owner is FailureOwner.TASK:
@@ -6461,29 +6498,72 @@ def _write_runtime_projection(
     )
 
 
-def _ensure_framework_evidence_manifest(
+_FRAMEWORK_CANONICAL_EVIDENCE_MANIFEST = (
+    "framework_canonical_evidence_manifest.jsonl"
+)
+
+
+def _candidate_manifest_inventory_path(
+    value: object,
+    *,
+    evidence_root: Path,
+) -> Path | None:
+    """Resolve an advisory path only when it names the frozen inventory root.
+
+    Older skills commonly write ``evidence/foo`` even though their manifest is
+    already inside the evidence directory.  Accept that single redundant root
+    component, but never use a candidate path to discover a file.
+    """
+
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    supplied = Path(raw)
+    candidates = (
+        [supplied]
+        if supplied.is_absolute()
+        else [evidence_root / supplied]
+    )
+    if (
+        not supplied.is_absolute()
+        and supplied.parts
+        and supplied.parts[0] == evidence_root.name
+        and len(supplied.parts) > 1
+    ):
+        candidates.append(evidence_root.joinpath(*supplied.parts[1:]))
+    for candidate in candidates:
+        try:
+            resolved = candidate.resolve(strict=False)
+            resolved.relative_to(evidence_root)
+        except (OSError, ValueError):
+            continue
+        if not candidate.is_file() or candidate.is_symlink():
+            continue
+        return resolved
+    return None
+
+
+def _framework_canonical_evidence_manifest(
     *,
     evidence_dir: Path,
-    evidence_manifest: Path,
+    candidate_manifest: Path,
     max_files: int,
     max_bytes: int,
-) -> None:
-    """Create a bounded parent-owned manifest when a legacy skill omitted one.
+) -> tuple[Path, dict[str, Any]]:
+    """Build the parent-owned evidence truth from the producer namespace.
 
     The replay child runs in shadow mode and is not an evidence authority. Once
     it exits, the parent inventories only regular files inside the dedicated
-    evidence namespace. The normal manifest validator then rebuilds the
-    canonical bundle and the v2 trust layer signs handles for those real files.
-    Existing manifests remain subject to strict validation and are never
-    repaired from untrusted declarations.
+    evidence namespace. A child manifest may annotate an already inventoried
+    file, but it cannot add, remove, or invalidate inventory identities.
     """
 
-    if evidence_manifest.is_symlink():
+    if evidence_dir.is_symlink() or not evidence_dir.is_dir():
+        raise ValueError("candidate evidence root is not a regular directory")
+    if candidate_manifest.is_symlink():
         raise ValueError("candidate evidence manifest is a symlink")
-    if evidence_manifest.exists():
-        return
     root = evidence_dir.resolve()
-    entries: list[dict[str, object]] = []
+    inventory: list[tuple[Path, Path, int]] = []
     total_bytes = 0
     for current_root, directories, filenames in os.walk(
         evidence_dir,
@@ -6509,25 +6589,107 @@ def _ensure_framework_evidence_manifest(
             if size < 0:
                 raise ValueError("candidate evidence has an invalid size")
             total_bytes += size
-            if len(entries) >= max_files or total_bytes > max_bytes:
+            if len(inventory) >= max_files or total_bytes > max_bytes:
                 raise ValueError("candidate evidence exceeds its policy budget")
-            entries.append(
-                {
-                    "source_id": f"framework.inventory.{len(entries) + 1}",
-                    "evidence_type": "file",
-                    "artifact_path": relative.as_posix(),
-                    "extraction_method": "framework_inventory",
-                }
-            )
-    if not entries:
+            inventory.append((resolved, relative, size))
+    if not inventory:
         raise ValueError("framework evidence inventory is empty")
-    evidence_manifest.write_text(
-        "".join(
-            json.dumps(entry, ensure_ascii=False, sort_keys=True) + "\n"
-            for entry in entries
-        ),
-        encoding="utf-8",
+
+    inventory_paths = {resolved for resolved, _, _ in inventory}
+    annotations: dict[Path, Mapping[str, Any]] = {}
+    advisory_invalid_reasons: list[str] = []
+    advisory_entry_count = 0
+    if candidate_manifest.exists():
+        try:
+            manifest_size = candidate_manifest.stat().st_size
+            if manifest_size > _MAX_EVIDENCE_MANIFEST_BYTES:
+                advisory_invalid_reasons.append("manifest exceeds bounded byte limit")
+            else:
+                raw = candidate_manifest.read_bytes()
+                text = raw.decode("utf-8", errors="replace")
+                for line_number, entry, decode_error in _decode_evidence_manifest_stream(
+                    text
+                ):
+                    if advisory_entry_count >= _MAX_EVIDENCE_MANIFEST_ENTRIES:
+                        advisory_invalid_reasons.append(
+                            "manifest exceeds bounded entry limit"
+                        )
+                        break
+                    advisory_entry_count += 1
+                    if decode_error is not None or not isinstance(entry, Mapping):
+                        advisory_invalid_reasons.append(
+                            f"line {line_number}: {decode_error or 'entry is not an object'}"
+                        )
+                        continue
+                    if _manifest_evidence_type(entry) == "metadata":
+                        advisory_invalid_reasons.append(
+                            f"line {line_number}: metadata-only advisory is not "
+                            "authoritative evidence"
+                        )
+                        continue
+                    resolved = _candidate_manifest_inventory_path(
+                        entry.get("artifact_path"),
+                        evidence_root=root,
+                    )
+                    if resolved not in inventory_paths:
+                        advisory_invalid_reasons.append(
+                            f"line {line_number}: artifact is not in canonical inventory"
+                        )
+                        continue
+                    annotations.setdefault(resolved, dict(entry))
+        except OSError as exc:
+            advisory_invalid_reasons.append(
+                f"manifest is not readable: {exc.__class__.__name__}"
+            )
+
+    entries: list[dict[str, object]] = []
+    for index, (resolved, relative, _size) in enumerate(inventory, start=1):
+        annotation = annotations.get(resolved, {})
+        entry: dict[str, object] = {
+            "source_id": str(
+                annotation.get("source_id") or f"framework.inventory.{index}"
+            ),
+            "evidence_type": "file",
+            "artifact_path": relative.as_posix(),
+            "extraction_method": str(
+                annotation.get("extraction_method") or "framework_inventory"
+            ),
+        }
+        for key in (
+            *_MANIFEST_EVIDENCE_PAYLOAD_KEYS,
+            *_MANIFEST_EVIDENCE_PAYLOAD_ALIASES,
+            "fields_used",
+        ):
+            if key in annotation:
+                entry[key] = annotation[key]
+        entries.append(entry)
+    canonical_manifest = evidence_dir / _FRAMEWORK_CANONICAL_EVIDENCE_MANIFEST
+    encoded = "".join(
+        json.dumps(entry, ensure_ascii=False, sort_keys=True) + "\n"
+        for entry in entries
     )
+    temporary = canonical_manifest.with_name(
+        f".{canonical_manifest.name}.{secrets.token_hex(6)}.tmp"
+    )
+    temporary.write_text(encoded, encoding="utf-8")
+    os.replace(temporary, canonical_manifest)
+    diagnostics: dict[str, Any] = {
+        "candidate_evidence_manifest_present": candidate_manifest.exists(),
+        "candidate_evidence_manifest_advisory": True,
+        "candidate_evidence_manifest_entry_count": advisory_entry_count,
+        "candidate_evidence_manifest_matched_artifact_count": len(annotations),
+        "framework_evidence_inventory_file_count": len(inventory),
+        "framework_evidence_inventory_bytes": total_bytes,
+        "framework_evidence_manifest_path": str(canonical_manifest),
+    }
+    if advisory_invalid_reasons:
+        diagnostics["candidate_evidence_manifest_diagnostic_count"] = len(
+            advisory_invalid_reasons
+        )
+        diagnostics["candidate_evidence_manifest_diagnostics"] = (
+            advisory_invalid_reasons[:16]
+        )
+    return canonical_manifest, diagnostics
 
 
 def _finalize_replay_evidence_trust(
@@ -7128,11 +7290,16 @@ class AWorldCliReplayExecutor:
         capture_mode = trajectory_payload["trajectory_capture_mode"]
         evidence_metrics: dict[str, Any] = {}
         trust_metrics: dict[str, Any] = {}
+        framework_evidence_metrics: dict[str, Any] = {}
         try:
+            effective_evidence_manifest = evidence_manifest
             if trust_context is not None:
-                _ensure_framework_evidence_manifest(
+                (
+                    effective_evidence_manifest,
+                    framework_evidence_metrics,
+                ) = _framework_canonical_evidence_manifest(
                     evidence_dir=evidence_dir,
-                    evidence_manifest=evidence_manifest,
+                    candidate_manifest=evidence_manifest,
                     max_files=self._DEFAULT_ARTIFACT_FILE_LIMIT,
                     max_bytes=self._DEFAULT_ARTIFACT_BYTE_LIMIT,
                 )
@@ -7141,10 +7308,11 @@ class AWorldCliReplayExecutor:
                 stderr=stderr,
                 trajectory=trajectory,
                 artifact_dir=evidence_dir,
-                evidence_manifest=evidence_manifest,
+                evidence_manifest=effective_evidence_manifest,
                 workspace_root=Path(request.workspace_root),
                 variant_id=request.variant_id,
             )
+            evidence_metrics.update(framework_evidence_metrics)
             if trust_context is not None:
                 trust_metrics = _finalize_replay_evidence_trust(
                     trust_context,
@@ -7165,11 +7333,18 @@ class AWorldCliReplayExecutor:
                     "failure_owner": FailureOwner.FRAMEWORK.value,
                     "failure_scope": FailureScope.SHARED_RUN.value,
                     "failure_stage": "evidence_finalization",
-                    "repairable": False,
+                    "repairable": True,
                     "reason": str(exc),
+                    "diagnostics": {
+                        "required_action": (
+                            "repair_framework_evidence_finalization_contract"
+                        ),
+                        **framework_evidence_metrics,
+                    },
                 },
                 metrics={
                     **evidence_metrics,
+                    **framework_evidence_metrics,
                     "evidence_policy_v2_required": True,
                     "evidence_policy_v2_preflight_passed": True,
                     "evidence_policy_v2_runtime_trust_passed": False,
@@ -10535,6 +10710,7 @@ _REPLAY_EVIDENCE_POLICY_SCHEMA_VERSION = "aworld.replay.evidence_policy.v1"
 _REPLAY_POLICY_CONTROL_FILES = frozenset(
     {
         "evidence_manifest.jsonl",
+        _FRAMEWORK_CANONICAL_EVIDENCE_MANIFEST,
         "evidence_bundle.json",
         "execution_request.json",
         "framework_evidence_policy.jsonl",

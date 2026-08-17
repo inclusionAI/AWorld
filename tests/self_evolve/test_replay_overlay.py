@@ -4000,6 +4000,26 @@ def test_replay_service_startup_timeout_is_typed_as_retryable_infrastructure(
     assert event.repairable is True
 
 
+def test_evidence_finalization_failure_preserves_typed_framework_stage() -> None:
+    event = _execution_failure_event(
+        {
+            "code": "evidence_policy_v2_attestation_failed",
+            "outcome": "framework_failure",
+            "failure_owner": "framework",
+            "failure_scope": "shared_run",
+            "failure_stage": "evidence_finalization",
+            "repairable": True,
+            "reason": "canonical evidence finalization failed",
+        },
+        default_stage=FailureStage.TASK_ROLLOUT,
+    )
+
+    assert event.owner is FailureOwner.FRAMEWORK
+    assert event.stage is FailureStage.EVIDENCE_FINALIZATION
+    assert event.scope is FailureScope.SHARED_RUN
+    assert event.repairable is True
+
+
 def test_replay_service_protocol_probe_timeout_remains_candidate_owned(
     tmp_path: Path,
 ) -> None:
@@ -7237,10 +7257,13 @@ async def test_required_replay_runtime_inventories_legacy_files_without_manifest
 
     assert result.succeeded is True
     assert result.metrics["evidence_policy_v2_runtime_trust_passed"] is True
-    manifest = (
-        tmp_path / "artifacts" / "evidence" / "evidence_manifest.jsonl"
+    manifest = Path(
+        result.metrics["framework_evidence_manifest_path"]
     ).read_text(encoding="utf-8")
     assert "framework.inventory.1" in manifest
+    assert not (
+        tmp_path / "artifacts" / "evidence" / "evidence_manifest.jsonl"
+    ).exists()
     bundle = json.loads(
         (
             tmp_path / "artifacts" / "evidence" / "evidence_bundle.json"
@@ -7248,6 +7271,108 @@ async def test_required_replay_runtime_inventories_legacy_files_without_manifest
     )
     assert bundle["valid"] is True
     assert bundle["entries"][0]["artifact_path"].endswith("page_text.txt")
+
+
+@pytest.mark.asyncio
+async def test_required_replay_uses_parent_inventory_when_child_path_repeats_root(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    trajectory = [
+        {
+            "state": {"input": "task"},
+            "action": {"content": "done", "is_agent_finished": "True"},
+        }
+    ]
+
+    def fake_run(command, **kwargs):
+        evidence_manifest = Path(kwargs["evidence_manifest"])
+        (evidence_manifest.parent / "result.html").write_text(
+            "<html>bounded result</html>", encoding="utf-8"
+        )
+        (tmp_path / "outside.html").write_text(
+            "<html>must never be authorized</html>", encoding="utf-8"
+        )
+        # This is a common legacy spelling: the manifest already lives under
+        # evidence/, but the artifact path repeats that directory name.
+        evidence_manifest.write_text(
+            json.dumps(
+                {
+                    "source_id": "legacy.result",
+                    "artifact_path": "evidence/result.html",
+                    "extraction_method": "browser_snapshot",
+                    "fields": ["html"],
+                }
+            )
+            + "\n"
+            + json.dumps(
+                {
+                    "source_id": "outside",
+                    "artifact_path": str(tmp_path / "outside.html"),
+                    "extraction_method": "untrusted_path",
+                    "fields": ["html"],
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        response = {
+            "schema_version": "aworld.self_evolve.task_response.v1",
+            "trajectory": trajectory,
+            "trajectory_capture_mode": "task_response",
+        }
+        response["framework_attestation"] = {
+            "schema_version": "aworld.self_evolve.task_response_attestation.v2",
+            "signature": _task_response_signature(
+                response, kwargs["task_response_attestation_key"]
+            ),
+        }
+        Path(kwargs["task_response_path"]).write_text(
+            json.dumps(response), encoding="utf-8"
+        )
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=json.dumps(
+                {
+                    "trajectory": trajectory,
+                    "trajectory_capture_mode": "task_response",
+                }
+            )
+            + "\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr("aworld.self_evolve.replay._run_replay_cli", fake_run)
+    result = await AWorldCliReplayExecutor()(
+        ReplayExecutionRequest(
+            variant_id="baseline",
+            task_id="task-1",
+            candidate_id="cand-1",
+            workspace_root=str(tmp_path),
+            task_input="task",
+            task_text="task",
+            skill_root=None,
+            artifact_dir=str(tmp_path / "artifacts"),
+            evidence_policy_mode="required",
+        )
+    )
+
+    assert result.succeeded is True
+    assert result.metrics["candidate_evidence_manifest_advisory"] is True
+    assert result.metrics["candidate_evidence_manifest_matched_artifact_count"] == 1
+    assert result.metrics["candidate_evidence_manifest_diagnostic_count"] == 1
+    assert "not in canonical inventory" in result.metrics[
+        "candidate_evidence_manifest_diagnostics"
+    ][0]
+    bundle = json.loads(
+        (tmp_path / "artifacts" / "evidence" / "evidence_bundle.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert bundle["valid"] is True
+    assert bundle["entries"][0]["source_id"] == "legacy.result"
+    assert bundle["entries"][0]["artifact_path"].endswith("result.html")
 
 
 @pytest.mark.asyncio

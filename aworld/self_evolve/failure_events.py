@@ -56,6 +56,7 @@ class FailureStage(str, Enum):
     CAPABILITY_COMPILE = "capability_compile"
     CAPABILITY_PREFLIGHT = "capability_preflight"
     TASK_ROLLOUT = "task_rollout"
+    EVIDENCE_FINALIZATION = "evidence_finalization"
     EVALUATION = "evaluation"
     RESULT_NORMALIZATION = "result_normalization"
     LEGACY_IMPORT = "legacy_import"
@@ -565,6 +566,7 @@ class ReplayFailureEvent(Mapping[str, Any]):
             "capability_preflight": FailureStage.CAPABILITY_PREFLIGHT,
             "replay_capability": FailureStage.CAPABILITY_PREFLIGHT,
             "task_rollout": FailureStage.TASK_ROLLOUT,
+            "evidence_finalization": FailureStage.EVIDENCE_FINALIZATION,
             "evaluation": FailureStage.EVALUATION,
             "result_normalization": FailureStage.RESULT_NORMALIZATION,
         }

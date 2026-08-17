@@ -37,6 +37,7 @@ from aworld.self_evolve.replay import (
     _persist_measurement_result_projection,
     _persist_variant_lifecycle,
     compile_replay_evidence_policy_profile_v2,
+    normalize_replay_members,
     replay_dataset_fingerprint,
 )
 from aworld.self_evolve.failure_events import (
@@ -582,6 +583,17 @@ async def test_authoritative_replay_executes_adaptive_plan_not_legacy_batch(
         assert calls[0][0] in sentinel.case_ids
         assert calls[0][1] == "baseline"
         assert all(call[0] == calls[0][0] for call in calls)
+        normalized = normalize_replay_members(
+            dataset=dataset,
+            replay_result=result,
+        )
+        returned_case_ids = {
+            member.case_id for member in result.member_results or ()
+        }
+        assert normalized.missing_case_ids == ()
+        assert set(normalized.intentionally_unadmitted_case_ids) == {
+            case.case_id for case in dataset.cases
+        } - returned_case_ids
     else:
         assert {member.case_id for member in result.member_results or ()} == {
             *primary,
