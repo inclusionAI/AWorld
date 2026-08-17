@@ -248,6 +248,7 @@ def schema_field_diagnostic_details(
 ) -> dict[str, object]:
     """Build a public-safe diagnostic preserving every distinct field rule."""
 
+    violations = aggregate_schema_field_violations(violations)
     constraints = {
         violation.constraint.identity_digest: violation.constraint
         for violation in violations
@@ -263,6 +264,39 @@ def schema_field_diagnostic_details(
             violation.occurrence_count for violation in violations
         ),
     }
+
+
+def aggregate_schema_field_violations(
+    violations: Sequence[SchemaFieldViolation],
+) -> tuple[SchemaFieldViolation, ...]:
+    """Collapse repeated instances without losing their observed cardinality.
+
+    A compiler can violate one wildcard constraint once for every emitted
+    service.  Those instances are one repair contract, not independent repair
+    frontiers.  Keep distinct observed types/fingerprints separate while
+    accumulating identical occurrences into a stable, bounded projection.
+    """
+
+    aggregated: dict[tuple[str, str, str], SchemaFieldViolation] = {}
+    for violation in violations:
+        key = (
+            violation.constraint.identity_digest,
+            violation.actual_type,
+            violation.actual_fingerprint,
+        )
+        current = aggregated.get(key)
+        if current is None:
+            aggregated[key] = violation
+            continue
+        aggregated[key] = SchemaFieldViolation(
+            constraint=current.constraint,
+            actual_type=current.actual_type,
+            actual_fingerprint=current.actual_fingerprint,
+            occurrence_count=(
+                current.occurrence_count + violation.occurrence_count
+            ),
+        )
+    return tuple(aggregated[key] for key in sorted(aggregated))
 
 
 def schema_value_type(value: Any) -> str:

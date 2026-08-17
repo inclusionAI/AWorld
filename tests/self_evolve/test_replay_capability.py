@@ -96,6 +96,32 @@ def test_schema_counterexample_identity_is_stable_across_observed_values() -> No
     assert first["counterexample_id"] != distinct["counterexample_id"]
 
 
+def test_identical_schema_instances_emit_one_counterexample_contract() -> None:
+    violations = tuple(
+        replay_capability_module._schema_field_violation(
+            schema_layer="compile_result",
+            field_path="services[*].readiness.kind",
+            rule="required",
+            expected=(),
+            value=None,
+        )
+        for _ in range(5)
+    )
+
+    with pytest.raises(ReplayCapabilityError) as error:
+        replay_capability_module._raise_schema_field_error(
+            "replay services require a readiness kind",
+            violations,
+        )
+
+    assert error.value.details["schema_field_violation_count"] == 5
+    assert len(error.value.details["schema_field_violations"]) == 1
+    assert error.value.details["schema_field_violations"][0][
+        "occurrence_count"
+    ] == 5
+    assert len(error.value.details["counterexample_contracts"]) == 1
+
+
 def test_empty_forbidden_conditional_field_is_a_schema_violation() -> None:
     with pytest.raises(ReplayCapabilityError) as error:
         replay_capability_module._validate_conditional_service_fields(

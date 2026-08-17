@@ -5658,6 +5658,7 @@ async def test_stored_candidate_resume_bypasses_empty_repair_frontier(
             )
 
     store = FilesystemSelfEvolveStore(tmp_path)
+    progress_events: list[tuple[str, str]] = []
     prior_run_id = "prior-invalid-control"
     store.write_report(
         prior_run_id,
@@ -5693,6 +5694,9 @@ async def test_stored_candidate_resume_bypasses_empty_repair_frontier(
         replay_enabled=False,
         max_iterations=1,
         min_eval_cases=0,
+        progress_callback=lambda stage, message: progress_events.append(
+            (stage, message)
+        ),
     )
 
     result = await runner.run_explicit_target(
@@ -5714,6 +5718,12 @@ async def test_stored_candidate_resume_bypasses_empty_repair_frontier(
     decision = report["population"]["scheduler_decisions"][0]
     assert decision["reason_code"] == "stored_candidate_measurement_resume"
     assert decision["admitted_slot_count"] == 1
+    assert report["verification_funnel"][
+        "candidate_generation_attempt_slot_count"
+    ] == 0
+    assert report["verification_funnel"]["generated_candidate_slot_count"] == 0
+    assert any(stage == "measurement_resume" for stage, _ in progress_events)
+    assert not any(stage == "candidate_generation" for stage, _ in progress_events)
 
 
 @pytest.mark.asyncio
@@ -22542,6 +22552,67 @@ def test_measurement_checkpoint_uses_multi_candidate_screening_attempt(
     )
 
     assert checkpoint == (candidates[1].candidate_id, expected_fingerprint)
+
+
+def test_candidate_prerequisite_failure_does_not_create_measurement_checkpoint(
+    tmp_path: Path,
+) -> None:
+    store = FilesystemSelfEvolveStore(tmp_path)
+    run_id = "run-candidate-prerequisite"
+    candidate = CandidateVariant(
+        candidate_id="candidate-invalid-capability",
+        target=SelfEvolveTargetRef("skill", "demo", "/skills/demo/SKILL.md"),
+        content="# Demo\n",
+        rationale="missing capability readiness contract",
+    )
+    store.write_candidate(run_id, candidate)
+    event = ReplayFailureEvent(
+        code="schema_field_validation_failed",
+        owner=FailureOwner.CANDIDATE,
+        stage=FailureStage.CAPABILITY_COMPILE,
+        scope=FailureScope.CANDIDATE,
+        repairable=True,
+        category="candidate_capability_preflight",
+        summary="services readiness kind is required",
+    ).to_dict()
+    report = {
+        "candidate_ids": [candidate.candidate_id],
+        "selected_candidate_id": candidate.candidate_id,
+        "self_improvement_disposition": {
+            "kind": "repair_measurement",
+            "scope": "shared_run",
+        },
+        "gate_results": [
+            {
+                "gate_name": "candidate_capability_replay",
+                "passed": False,
+                "reason": "candidate capability compilation failed",
+                "details": {
+                    "failure_class": "candidate",
+                    "failure_owner": "candidate",
+                    "failure_scope": "candidate",
+                    "repairable": True,
+                    "stage": "capability_compile",
+                    "failure_event": event,
+                    "causal_failure_events": [event],
+                },
+            },
+            {
+                "gate_name": "trusted_improvement_measurement",
+                "passed": False,
+                "reason": "measurement was not established",
+                "details": {"failure_class": "measurement"},
+            },
+        ],
+    }
+
+    checkpoint = runner_module._measurement_pending_candidate_checkpoint(
+        run_path=store.run_path(run_id),
+        report=report,
+    )
+
+    assert checkpoint is None
+    assert runner_module._report_has_shared_measurement_failure(report) is False
 
 
 def test_failed_probe_feedback_preserves_schema_counterexample_contracts() -> None:

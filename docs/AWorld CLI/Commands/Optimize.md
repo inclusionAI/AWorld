@@ -551,6 +551,11 @@ counter and release the quota reservation. Candidate execution or a
 candidate-owned authoritative conclusion consumes the slot. This distinction
 prevents a replay infrastructure deadline from falsely reporting
 `campaign_authoritative_frontier_exhausted` with zero affected candidates.
+Candidate-owned capability compilation or deterministic preflight failures occur
+before this boundary: they increment neither authoritative counter, cannot create
+a measurement checkpoint, and return their aggregated typed constraints to the
+candidate-repair frontier. A resumed measurement checkpoint is logged as
+`measurement_resume` and is not charged as a newly generated candidate.
 
 The scheduler begins with bounded exploration. After a candidate-owned repairable
 failure establishes a semantic frontier, the next iteration reserves one focused

@@ -4497,27 +4497,38 @@ class SelfEvolveRunner:
                         reason_code="generation_budget_denied",
                     )
                 break
-            first_generation_attempt_slot = (
-                candidate_generation_attempt_slot_count + 1
-            )
-            candidate_generation_attempt_slot_count += generation_slot_count
-            _emit_progress(
-                self.progress_callback,
-                "candidate_generation",
-                (
-                    f"Generating candidate batch {iteration_index + 1}; "
-                    f"candidate attempt slots {first_generation_attempt_slot}-"
-                    f"{candidate_generation_attempt_slot_count}; effective "
-                    f"candidate slots {generated_candidate_slot_count}/"
-                    f"{self.max_generated_candidates}; repair horizon "
-                    f"{iteration_index + 1}/{iteration_budget}"
-                    if _is_verified_apply_policy(apply_policy)
-                    else (
-                        "Generating candidate iteration "
+            if stored_admission_reason is not None:
+                _emit_progress(
+                    self.progress_callback,
+                    "measurement_resume",
+                    (
+                        "Restoring the immutable measurement-pending candidate; "
+                        "mutation generation and candidate slot charging are "
+                        "skipped"
+                    ),
+                )
+            else:
+                first_generation_attempt_slot = (
+                    candidate_generation_attempt_slot_count + 1
+                )
+                candidate_generation_attempt_slot_count += generation_slot_count
+                _emit_progress(
+                    self.progress_callback,
+                    "candidate_generation",
+                    (
+                        f"Generating candidate batch {iteration_index + 1}; "
+                        f"candidate attempt slots {first_generation_attempt_slot}-"
+                        f"{candidate_generation_attempt_slot_count}; effective "
+                        f"candidate slots {generated_candidate_slot_count}/"
+                        f"{self.max_generated_candidates}; repair horizon "
                         f"{iteration_index + 1}/{iteration_budget}"
-                    )
-                ),
-            )
+                        if _is_verified_apply_policy(apply_policy)
+                        else (
+                            "Generating candidate iteration "
+                            f"{iteration_index + 1}/{iteration_budget}"
+                        )
+                    ),
+                )
             iteration_lesson_records = generation_lesson_records
             if validation_feedback:
                 iteration_lesson_records = extract_lesson_records(
@@ -4706,15 +4717,16 @@ class SelfEvolveRunner:
                 verification_settings=verification_settings,
             )
             generation_outcomes = tuple(optimizer_result.generation_outcomes)
-            raw_generation_attempt_count += (
-                sum(
-                    outcome.kind
-                    is not CandidateGenerationOutcomeKind.INFRASTRUCTURE_FAILED
-                    for outcome in generation_outcomes
+            if stored_admission_reason is None:
+                raw_generation_attempt_count += (
+                    sum(
+                        outcome.kind
+                        is not CandidateGenerationOutcomeKind.INFRASTRUCTURE_FAILED
+                        for outcome in generation_outcomes
+                    )
+                    if generation_outcomes
+                    else len(optimizer_result.candidates)
                 )
-                if generation_outcomes
-                else len(optimizer_result.candidates)
-            )
             population_execution = optimizer_result.diagnostics.get(
                 "candidate_population_execution"
             )
@@ -5106,9 +5118,10 @@ class SelfEvolveRunner:
                 ] = key
                 unique_generated.append(generated_candidate)
                 unique_candidate_ids.add(generated_candidate.candidate_id)
-                effective_generated_candidate_ids.add(
-                    generated_candidate.candidate_id
-                )
+                if stored_admission_reason is None:
+                    effective_generated_candidate_ids.add(
+                        generated_candidate.candidate_id
+                    )
                 generated_candidate_slot_count = len(
                     effective_generated_candidate_ids
                 )
@@ -6428,7 +6441,10 @@ class SelfEvolveRunner:
                 )
             )
 
-        if selected_state is not None:
+        candidate_prerequisite_blocked = (
+            _gate_results_have_candidate_prerequisite_failure(gate_results)
+        )
+        if selected_state is not None and not candidate_prerequisite_blocked:
             raw_measurement_summary = selected_state.get("measurement_summary")
             if isinstance(raw_measurement_summary, MeasurementSummary):
                 measurement_summary = raw_measurement_summary
@@ -6531,7 +6547,8 @@ class SelfEvolveRunner:
                                 )
 
         elif (
-            self.measurement_mode is not MeasurementPolicyMode.OFF
+            not candidate_prerequisite_blocked
+            and self.measurement_mode is not MeasurementPolicyMode.OFF
             and all_candidates
         ):
             fallback_candidate = all_candidates[-1]
@@ -10732,7 +10749,10 @@ class SelfEvolveRunner:
             )
 
         measurement_summary: MeasurementSummary | None = None
-        if measurement_experiment is not None:
+        candidate_prerequisite_blocked = (
+            _gate_results_have_candidate_prerequisite_failure(gate_results)
+        )
+        if measurement_experiment is not None and not candidate_prerequisite_blocked:
             try:
                 measurement_summary = self._materialize_candidate_measurement(
                     experiment=measurement_experiment,
@@ -18633,6 +18653,8 @@ def _feedback_from_report(
 def _report_has_shared_measurement_failure(
     report: Mapping[str, Any],
 ) -> bool:
+    if _report_has_candidate_prerequisite_failure(report):
+        return False
     disposition = report.get("self_improvement_disposition")
     if (
         isinstance(disposition, Mapping)
@@ -18650,6 +18672,80 @@ def _report_has_shared_measurement_failure(
             in {"framework", "infrastructure", "evaluation_harness"}
             and attribution.get("failure_scope") == "shared_run"
         ):
+            return True
+    return False
+
+
+def _gate_results_have_candidate_prerequisite_failure(
+    gates: Iterable[GateResult],
+) -> bool:
+    return any(_gate_has_candidate_prerequisite_failure(gate) for gate in gates)
+
+
+def _gate_has_candidate_prerequisite_failure(gate: GateResult) -> bool:
+    if gate.passed or not isinstance(gate.details, Mapping):
+        return False
+    details = gate.details
+    events = tuple(
+        event
+        for event in (
+            details.get("failure_event"),
+            *(details.get("causal_failure_events") or ()),
+        )
+        if isinstance(event, Mapping)
+    )
+    prerequisite_stages = {
+        "candidate_generation",
+        "candidate_repair_conformance",
+        "candidate_screening",
+        "capability_compile",
+        "capability_preflight",
+    }
+    if any(
+        event.get("owner") == FailureOwner.CANDIDATE.value
+        and event.get("scope") == FailureScope.CANDIDATE.value
+        and event.get("repairable") is True
+        and str(event.get("stage") or "") in prerequisite_stages
+        for event in events
+    ):
+        return True
+    return bool(
+        details.get("failure_class") == "candidate"
+        and details.get("repairable") is True
+        and (
+            gate.gate_name.startswith("candidate_capability_")
+            or gate.gate_name == "candidate_repair_conformance"
+            or str(
+                details.get("failure_stage") or details.get("stage") or ""
+            )
+            in prerequisite_stages
+        )
+    )
+
+
+def _report_has_candidate_prerequisite_failure(
+    report: Mapping[str, Any],
+) -> bool:
+    raw_gates = report.get("gate_results")
+    if not isinstance(raw_gates, list):
+        return False
+    for raw_gate in raw_gates:
+        if not isinstance(raw_gate, Mapping):
+            continue
+        gate_name = raw_gate.get("gate_name")
+        if not isinstance(gate_name, str) or not gate_name:
+            continue
+        gate = GateResult(
+            gate_name=gate_name,
+            passed=raw_gate.get("passed") is True,
+            reason=str(raw_gate.get("reason") or ""),
+            details=(
+                dict(raw_gate["details"])
+                if isinstance(raw_gate.get("details"), Mapping)
+                else None
+            ),
+        )
+        if _gate_has_candidate_prerequisite_failure(gate):
             return True
     return False
 

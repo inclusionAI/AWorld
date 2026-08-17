@@ -27,6 +27,7 @@ from aworld.self_evolve.replay_adaptation import (
 from aworld.self_evolve.schema_diagnostics import (
     SchemaFieldRepairConstraint,
     SchemaFieldViolation,
+    aggregate_schema_field_violations,
     schema_field_diagnostic_details,
 )
 from aworld.self_evolve.sanitization import sanitize_text
@@ -169,6 +170,7 @@ def _raise_schema_field_error(
 ) -> NoReturn:
     if not violations:
         raise ValueError("schema field error requires at least one violation")
+    violations = aggregate_schema_field_violations(violations)
     details = schema_field_diagnostic_details(violations)
     details["counterexample_contracts"] = [
         _schema_field_counterexample_contract(violation)
