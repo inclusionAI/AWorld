@@ -343,7 +343,8 @@ def test_framework_blocker_handoff_preserves_candidate_without_charging_frontier
     assert result["campaign_status"] == "paused"
     assert result["campaign_measurement_projection"] == "framework_blocked"
     assert result["campaign_measurement_retry_count"] == 0
-    assert result["campaign_measurement_continuation_count"] == 1
+    assert result["campaign_measurement_continuation_count"] == 0
+    assert result["campaign_framework_blocked_count"] == 1
     assert result["campaign_candidate_cycle_count"] == 0
     assert result["campaign_authoritative_candidate_count"] == 0
     assert result["campaign_measurement_pending_candidate_id"] == (

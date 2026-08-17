@@ -1579,7 +1579,16 @@ class SelfImprovementCampaignController:
             )
             status = _status_for_disposition(disposition)
         measurement_ledger = campaign.measurement_ledger
-        if (
+        if framework_control_plane_blocked:
+            # A retained checkpoint describes where framework repair should
+            # resume; it is not evidence that the measurement itself made
+            # causal progress. Keep blocker and continuation ledgers
+            # orthogonal so repeated framework failures cannot masquerade as
+            # useful experiment continuation.
+            measurement_ledger = measurement_ledger.charge_framework_blocked(
+                actual_run_id
+            )
+        elif (
             measurement_continuation_available
             or framework_handoff_checkpoint_available
         ):
@@ -1588,10 +1597,6 @@ class SelfImprovementCampaignController:
             )
         elif measurement_retry_available:
             measurement_ledger = measurement_ledger.charge_invalid_retry(
-                actual_run_id
-            )
-        elif framework_control_plane_blocked:
-            measurement_ledger = measurement_ledger.charge_framework_blocked(
                 actual_run_id
             )
         preserve_measurement_checkpoint = bool(
