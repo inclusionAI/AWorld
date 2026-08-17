@@ -49,6 +49,7 @@ class StagedMeasurementResult(Generic[ControlT, TreatmentT]):
     decision: AdaptiveDecision
     schedules: tuple[PairLaneScheduleResult[ControlT, TreatmentT], ...]
     admitted_case_ids: tuple[str, ...]
+    decision_history: tuple[AdaptiveDecision, ...] = ()
 
 
 async def schedule_staged_measurement(
@@ -91,6 +92,7 @@ async def schedule_staged_measurement(
         sentinel.stage_id: set(sentinel.case_ids)
     }
     schedules: list[PairLaneScheduleResult[ControlT, TreatmentT]] = []
+    decision_history: list[AdaptiveDecision] = []
     orchestration_started = time.monotonic()
 
     # Every iteration either stops or admits at least one previously hidden
@@ -102,14 +104,15 @@ async def schedule_staged_measurement(
                 time.monotonic() - orchestration_started
             )
             if remaining_quantum <= 0:
-                return StagedMeasurementResult(
-                    decision=AdaptiveDecision(
-                        kind=(
-                            AdaptiveDecisionKind.MEASUREMENT_INCOMPLETE_CHECKPOINT
-                        ),
-                        reason_code="checkpoint_quantum_expired",
-                        resume_safe=True,
+                boundary_decision = AdaptiveDecision(
+                    kind=(
+                        AdaptiveDecisionKind.MEASUREMENT_INCOMPLETE_CHECKPOINT
                     ),
+                    reason_code="checkpoint_quantum_expired",
+                    resume_safe=True,
+                )
+                return StagedMeasurementResult(
+                    decision=boundary_decision,
                     schedules=tuple(schedules),
                     admitted_case_ids=tuple(
                         sorted(
@@ -117,6 +120,9 @@ async def schedule_staged_measurement(
                             for values in admitted_by_stage.values()
                             for case_id in values
                         )
+                    ),
+                    decision_history=tuple(
+                        [*decision_history, boundary_decision]
                     ),
                 )
         admitted_cases = tuple(sorted(current_batch_case_ids))
@@ -149,6 +155,7 @@ async def schedule_staged_measurement(
         elif schedule.stop_kind is PairLaneStopKind.CHECKPOINT_QUANTUM:
             progress = _with_boundary(progress, checkpoint=True)
         decision = decide_staged_measurement(plan, progress)
+        decision_history.append(decision)
         if decision.kind in {
             AdaptiveDecisionKind.CONTINUE_CURRENT_STAGE,
             AdaptiveDecisionKind.ADMIT_EXPANSION,
@@ -182,6 +189,7 @@ async def schedule_staged_measurement(
                     for case_id in values
                 )
             ),
+            decision_history=tuple(decision_history),
         )
     raise RuntimeError("adaptive measurement exceeded its frozen admission bound")
 

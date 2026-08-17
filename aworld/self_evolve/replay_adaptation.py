@@ -977,6 +977,140 @@ def compile_isolation_decision_artifact(
     )
 
 
+def compile_replay_adaptation_isolation_decision(
+    bundle: "ReplayAdaptationBundle",
+    *,
+    materialization_root: str | Path,
+    requested_lane_count: int = 2,
+) -> IsolationDecision:
+    """Compile the execution lanes that a replay adaptation can actually prove.
+
+    The bundle is the authority for dependency bindings; the framework-owned
+    filesystem materializer is the authority for the five core lane namespaces.
+    A dependency binding is never silently discarded or promoted.  Explicit
+    exclusive bindings and bindings without complete materializer coverage
+    therefore produce a typed one-lane fallback.
+    """
+
+    if not isinstance(bundle, ReplayAdaptationBundle):
+        raise TypeError("replay isolation requires a ReplayAdaptationBundle")
+    if (
+        isinstance(requested_lane_count, bool)
+        or not isinstance(requested_lane_count, int)
+        or requested_lane_count <= 0
+        or requested_lane_count > _ISOLATION_DECISION_LANE_LIMIT
+    ):
+        raise ValueError("requested lane count is outside the supported range")
+    root = Path(materialization_root).expanduser()
+    if not root.is_absolute():
+        raise ValueError("lane materialization root must be absolute")
+    root = root.absolute()
+    existing = tuple(item for item in (root, *root.parents) if item.exists())
+    if any(item.is_symlink() for item in existing):
+        raise ValueError("lane materialization root has a symlink ancestor")
+
+    bindings_by_fingerprint: dict[str, ReplayAdapterBinding] = {}
+    for case in bundle.cases:
+        for raw_binding in case.bindings:
+            try:
+                binding = validate_replay_binding_concurrency(raw_binding)
+            except ValueError as exc:
+                return IsolationDecision.exclusive_fallback(
+                    requested_lane_count=requested_lane_count,
+                    fallback=IsolationExclusiveFallback(
+                        code="binding_invalid",
+                        limiting_resource=(
+                            raw_binding.resource_key or raw_binding.adapter_id
+                        ),
+                        detail=f"replay binding is invalid: {exc}",
+                    ),
+                )
+            assert binding.binding_fingerprint is not None
+            previous = bindings_by_fingerprint.get(binding.binding_fingerprint)
+            if previous is not None and previous != binding:
+                return IsolationDecision.exclusive_fallback(
+                    requested_lane_count=requested_lane_count,
+                    fallback=IsolationExclusiveFallback(
+                        code="binding_invalid",
+                        limiting_resource=binding.binding_fingerprint,
+                        detail=(
+                            "one replay binding fingerprint described conflicting "
+                            "execution contracts"
+                        ),
+                    ),
+                )
+            bindings_by_fingerprint[binding.binding_fingerprint] = binding
+    bindings = tuple(
+        bindings_by_fingerprint[key] for key in sorted(bindings_by_fingerprint)
+    )
+    stateful_tools = sorted(
+        {
+            tool_name
+            for case in bundle.cases
+            for tool_name in case.tool_names
+            if any(
+                token in tool_name.casefold()
+                for token in _STATEFUL_BROWSER_TOOL_TOKENS
+            )
+        }
+    )
+    if stateful_tools and not bindings:
+        return IsolationDecision.exclusive_fallback(
+            requested_lane_count=requested_lane_count,
+            fallback=IsolationExclusiveFallback(
+                code="binding_requires_exclusive",
+                limiting_resource=f"stateful_tool:{stateful_tools[0]}",
+                detail=(
+                    "stateful tool execution lacks an isolated replay binding"
+                ),
+            ),
+        )
+    capability = bundle.replay_capability
+    if capability is not None and capability.services:
+        # The filesystem materializer cannot attest service process, port, or
+        # cleanup ownership.  Capability services therefore remain exclusive
+        # until a service-aware materializer supplies complete typed claims.
+        service_id = sorted(service.service_id for service in capability.services)[0]
+        return IsolationDecision.exclusive_fallback(
+            requested_lane_count=requested_lane_count,
+            fallback=IsolationExclusiveFallback(
+                code="binding_requires_exclusive",
+                limiting_resource=f"replay_service:{service_id}",
+                detail=(
+                    "replay capability services require a service-aware lane "
+                    "materializer"
+                ),
+            ),
+        )
+
+    materializer_fingerprint = _json_fingerprint(
+        {
+            "schema_version": "aworld.framework_lane_materializer.v1",
+            "kind": "filesystem",
+        }
+    )
+    compilations: list[IsolationGrantCompilation] = []
+    for lane_id in range(1, requested_lane_count + 1):
+        lane_root = root / f"lane-{lane_id}"
+        topology = ReplayIsolationTopology.create(
+            materializer_id="framework-filesystem-lane-materializer",
+            materializer_fingerprint=materializer_fingerprint,
+            workspace_identity=str(lane_root / "workspace_root"),
+            runtime_identity=str(lane_root / "runtime_root"),
+            browser_profile_identity=str(lane_root / "browser_profile"),
+            endpoint_namespace_identity=str(lane_root / "endpoint_namespace"),
+            evidence_directory_identity=str(lane_root / "evidence_directory"),
+            cleanup_owner=f"framework-lane-{lane_id}",
+        )
+        compilations.append(
+            compile_isolation_grant(topology=topology, bindings=bindings)
+        )
+    return compile_isolation_decision_artifact(
+        requested_lane_count=requested_lane_count,
+        lane_compilations=compilations,
+    )
+
+
 def compile_isolation_grant(
     *,
     topology: ReplayIsolationTopology,

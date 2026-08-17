@@ -41,7 +41,9 @@ from aworld.self_evolve.replay import (
     ReplayVariantResult,
     build_paired_replay_dataset,
     build_replay_request,
+    compile_authoritative_replay_evidence_policy_profile_v2,
     candidate_replay_is_comparable,
+    candidate_replay_artifact_directory,
     candidate_replay_pair_coverage,
     load_candidate_replay_result,
     normalize_replay_members,
@@ -95,8 +97,147 @@ from aworld.self_evolve.failure_events import (
     ReplayExecutionStatus,
     ReplayFailureEvent,
 )
+from aworld.self_evolve.measurement import (
+    ComponentIdentity,
+    ControlledExperimentSpec,
+    ExperimentBudget,
+    FrozenIdentities,
+    MeasurementPolicyMode,
+    OutcomePlan,
+    SamplingPlan,
+    SwapAxis,
+)
 from aworld.self_evolve.types import SelfEvolveTargetRef
-from aworld.self_evolve.replay_adaptation import ReplayAdaptationCompiler
+from aworld.self_evolve.replay_adaptation import (
+    ReplayAdaptationCompiler,
+    compile_replay_adaptation_isolation_decision,
+)
+
+
+def test_candidate_replay_artifact_directory_is_shared_with_measurement_lanes(
+    tmp_path: Path,
+) -> None:
+    replay_dir = candidate_replay_artifact_directory(
+        workspace_root=tmp_path,
+        run_id="campaign/cycle-1",
+        candidate_id="candidate:one",
+        artifact_namespace="score/tie-break",
+    )
+
+    assert replay_dir == (
+        tmp_path
+        / ".aworld"
+        / "self_evolve"
+        / "campaigncycle-1"
+        / "score"
+        / "tie-break"
+        / "replay"
+        / "candidateone"
+    )
+    assert replay_dir / "measurement-lanes" == replay_dir.joinpath(
+        "measurement-lanes"
+    )
+
+
+def test_authoritative_evidence_profile_binds_all_compiler_inputs_and_services(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    bundle = ReplayAdaptationCompiler().compile(
+        dataset=build_dataset_from_source(
+            SelfEvolveEvalSourceConfig(kind="current_trajectory"),
+            current_trajectory=(
+                {
+                    "meta": {"task_id": "case-1", "step": 1},
+                    "state": {"input": {"content": "Run the task."}},
+                    "action": {"content": "done", "tool_calls": []},
+                    "reward": {"status": "success"},
+                },
+            ),
+            task_id="case-1",
+        ),
+        workspace_root=workspace,
+        artifact_root=tmp_path / "adaptation",
+    )
+    bundle = replace(
+        bundle,
+        replay_capability=_frozen_skill_runtime_capability(tmp_path),
+    )
+    fp = lambda value: "sha256:" + hashlib.sha256(value.encode()).hexdigest()
+    experiment = ControlledExperimentSpec.create(
+        run_id="run-profile",
+        mode=MeasurementPolicyMode.REQUIRED,
+        swap_axis=SwapAxis.ARTIFACT,
+        control=ComponentIdentity("control", fp("control")),
+        treatment=ComponentIdentity("treatment", fp("treatment")),
+        frozen_identities=FrozenIdentities(
+            task_model=fp("task-model"),
+            generator=fp("generator"),
+            scheduler=fp("scheduler"),
+            evaluator=fp("evaluator"),
+            dataset=fp("dataset"),
+            environment=fp("environment"),
+            runtime=fp("runtime"),
+            prompt_context=fp("prompt"),
+            budget=fp("budget"),
+        ),
+        sampling=SamplingPlan(independent_case_ids=("case-1",)),
+        outcomes=OutcomePlan(
+            primary_metric="task_success",
+            minimum_independent_cases=1,
+        ),
+        budgets=ExperimentBudget(),
+    )
+
+    profile = compile_authoritative_replay_evidence_policy_profile_v2(
+        experiment=experiment,
+        target=SelfEvolveTargetRef("skill", "demo"),
+        replay_adaptation=bundle,
+        member_timeout_seconds=600,
+    )
+
+    assert {item.contract_kind for item in profile.contract_identities} == {
+        "task_observation",
+        "target_adapter",
+        "replay_capability",
+        "evaluator",
+        "resource_policy",
+    }
+    assert len(profile.endpoint_bindings) == 1
+    endpoint = profile.endpoint_bindings[0]
+    assert endpoint.binding_id == "service-0"
+    assert endpoint.environment_name == "AWORLD_REPLAY_ENDPOINT_SERVICE_0"
+    assert endpoint.endpoint.startswith("http://127.0.0.1:")
+    assert (
+        compile_authoritative_replay_evidence_policy_profile_v2(
+            experiment=experiment,
+            target=SelfEvolveTargetRef("skill", "demo"),
+            replay_adaptation=bundle,
+            member_timeout_seconds=600,
+        )
+        == profile
+    )
+    changed_adapter = compile_authoritative_replay_evidence_policy_profile_v2(
+        experiment=experiment,
+        target=SelfEvolveTargetRef("skill", "demo"),
+        replay_adaptation=bundle,
+        member_timeout_seconds=600,
+        target_adapter_identity={
+            "module": "aworld.self_evolve.targets",
+            "class": "SkillTextTarget",
+            "version": "v2",
+        },
+    )
+    assert changed_adapter.fingerprint != profile.fingerprint
+    service_decision = compile_replay_adaptation_isolation_decision(
+        bundle,
+        materialization_root=tmp_path / "measurement-lanes",
+        requested_lane_count=2,
+    )
+    assert service_decision.safe_lane_count == 1
+    assert service_decision.fallback is not None
+    assert service_decision.fallback.limiting_resource == "replay_service:service-0"
 
 
 def test_run_owned_inferred_draft_is_not_used_as_baseline_skill_root(

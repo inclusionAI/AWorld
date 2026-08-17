@@ -452,10 +452,10 @@ Candidate repair gate diagnostics are summarized in a separate population `confo
   members instead of discarding the partial experiment. A bounded restart
   cursor is written to
   `.aworld/self_evolve/<run_id>/replay/<candidate_id>/members/paired_replay_checkpoint.json`;
-  the timeout gate exposes it through `diagnostic_refs`. Until the v2
-  measurement-control scheduler is enabled, verified legacy execution retains
-  its bounded safety horizon. The v2 path replaces that heuristic with planned
-  checkpoint and Campaign deadlines. Both deadlines are cancellation-safe: they terminate
+  the timeout gate exposes it through `diagnostic_refs`. Verified replay uses
+  the v2 measurement-control scheduler by default; an explicit
+  `--measurement-mode off` retains the bounded legacy safety horizon. The v2
+  path uses planned checkpoint and Campaign deadlines. Both deadlines are cancellation-safe: they terminate
   the replay process group before control returns to candidate search. A shared
   measurement timeout stops the current candidate population instead of
   spending another authoritative slot.
@@ -570,8 +570,10 @@ mappings are deprecated compatibility paths, not additional independent budgets.
 
 SDK callers and background `SelfEvolveConfig` jobs can enable controlled
 measurement with `measurement_mode="shadow"`, `"advisory"`, or `"required"`.
-The CLI exposes the same policy through `--measurement-mode`; the default is
-`off`, so existing runs and reports are unchanged. For example:
+The CLI exposes the same policy through `--measurement-mode`. When the option is
+omitted, verified skill replay (`verified_only` or `auto_verified`) uses
+`required`; proposal/non-replay runs use `off`. An explicit `off` remains the
+legacy compatibility switch. For example:
 
 ```bash
 aworld-cli optimize \
@@ -591,11 +593,36 @@ their case before resampling; they never increase the independent-case count.
 `--measurement-maximum-interval-width` freeze the early-stop policy into the
 experiment identity before observations are collected.
 
+Before authoritative rollout, the CLI reports planned/reused/pending work
+units, decision-required units, sampling stages, effective lane count,
+isolation fallback, minimum feasible wall time, P50/P90 decision ETA, estimate
+confidence, and stopping policy. The same bounded projection is retained under
+`measurement_control.preflight` in `report.json`.
+
+The frozen evidence policy is compiled from the controlled observation plan,
+target adapter identity, replay adaptation/capability, evaluator identity, and
+resource limits. Capability-owned loopback services receive deterministic
+plan-bound endpoints; runtime endpoint drift fails closed. Independent pairs
+use at most two lanes only when adaptation produces two complete compatible
+grants. An explicit `exclusive` adapter remains one lane and the limiting
+resource is shown in preflight output.
+
+Within an admitted stage, pair work uses the frozen stratified case order as a
+coverage constraint and then ranks otherwise eligible work by expected
+information value divided by predicted cost and failure risk. Completed pair
+duration and invalid-control outcomes update that bounded ranking; they never
+change evidence weight or expose hidden case content. First repetitions cover
+eligible cases before later repetitions, so slow or invalid cases can be
+demoted without being starved. Expansion remains limited by the frozen stage
+batch size. Each admission records its expected information value, selection
+policy, and remaining case budget in `measurement_schedule.json`.
+
 The same trusted-measurement policy is enforced while authoritative replay is
 still running. Each baseline or candidate member has a hard phase deadline
 covering all evidence retries, and progress reports expose both the member
-deadline and the current retry. Each case completes its baseline/candidate pair
-before the next case starts. Completed baselines are indexed incrementally and a
+deadline and the current retry. A treatment always follows its own compatible
+control; up to two independently isolated case pairs may overlap. Completed
+baselines are indexed incrementally and a
 phase checkpoint records completed pairs and pending cases, so an interrupted
 multi-case replay can reuse valid controls and continue from an auditable cursor.
 In `advisory` and

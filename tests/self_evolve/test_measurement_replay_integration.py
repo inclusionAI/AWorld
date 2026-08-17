@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from types import SimpleNamespace
-
 import pytest
 
 from aworld.self_evolve.datasets import EvalCase, SelfEvolveDataset
@@ -36,6 +34,8 @@ from aworld.self_evolve.replay import (
 from aworld.self_evolve.replay_adaptation import (
     IsolationDecision,
     IsolationExclusiveFallback,
+    ReplayAdaptationBundle,
+    ReplayCaseAdaptation,
 )
 from aworld.self_evolve.store import FilesystemSelfEvolveStore
 from aworld.self_evolve.runner import (
@@ -141,9 +141,28 @@ def test_runner_atomically_compiles_v2_plan_for_advisory_replay(
         run_id="run-runner-v2",
         dataset=dataset,
         candidate=candidate,
-        replay_adaptation=SimpleNamespace(
-            adaptation_fingerprint=_fp("adaptation"),
+        replay_adaptation=ReplayAdaptationBundle(
+            schema_version="test",
+            source_workspace_root=str(tmp_path),
+            workspace_seed=str(tmp_path / "seed"),
             workspace_seed_fingerprint=_fp("workspace-seed"),
+            manifest_path=str(tmp_path / "manifest.json"),
+            environment_snapshot_path=str(tmp_path / "environment.json"),
+            environment_fingerprint=_fp("environment"),
+            cases=tuple(
+                ReplayCaseAdaptation(
+                    case_id=case_id,
+                    adapted_task_input=f"run {case_id}",
+                    task_input_fingerprint=_fp(f"task-{case_id}"),
+                    dependencies=(),
+                    bindings=(),
+                    tool_names=(),
+                    readiness="ready",
+                )
+                for case_id in case_ids
+            ),
+            adaptation_fingerprint=_fp("adaptation"),
+            ready=True,
         ),
         replay_backend=backend,
         member_timeout_seconds=30,
@@ -151,6 +170,8 @@ def test_runner_atomically_compiles_v2_plan_for_advisory_replay(
 
     assert bundle is not None
     plan, decision, profile = bundle
+    assert decision.safe_lane_count == 2
+    assert plan.isolation_summary.safe_lane_count == 2
     assert set(plan.case_ids) == set(case_ids[2:])
     assert set(plan.case_ids).isdisjoint(experiment.search_visible_case_ids)
     assert store.read_measurement_control_plan(
@@ -360,6 +381,32 @@ async def test_authoritative_replay_executes_adaptive_plan_not_legacy_batch(
     else:
         assert schedule["schedule_count"] == 3
         assert transfer in schedule["admitted_case_ids"]
+        expansion_decisions = [
+            decision
+            for decision in schedule["decision_history"]
+            if decision["kind"] == "admit_expansion"
+        ]
+        assert expansion_decisions
+        assert all(
+            decision["expected_information_value"] > 0
+            and decision["remaining_case_budget"] >= 0
+            and decision["admission_policy"]
+            == "stratified-information-cost-risk-v1"
+            for decision in expansion_decisions
+        )
+    assert schedule["scheduling_policy"] == "information-cost-risk-v1"
+    assert len(schedule["schedules"]) == schedule["schedule_count"]
+    assert all(
+        set(item)
+        >= {
+            "safe_lane_count",
+            "completed_pair_count",
+            "pending_pair_count",
+            "elapsed_seconds",
+            "pairs",
+        }
+        for item in schedule["schedules"]
+    )
     assert schedule["decision"]["kind"] == expected_decision
     outcome = _campaign_measurement_outcome_for_replay(
         result,

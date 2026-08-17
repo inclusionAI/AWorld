@@ -10,6 +10,7 @@ from aworld.core.common import ActionModel
 from aworld.core.tool.replay_policy import (
     ArtifactPolicy,
     DynamicEndpointBinding,
+    EvidenceContractIdentity,
     EvidenceLifecyclePhase,
     EvidencePolicyValidationError,
     ReplayRuntimePolicy,
@@ -224,6 +225,47 @@ def test_dynamic_endpoint_binding_is_bound_to_fingerprint() -> None:
     binding = first.endpoint_bindings[0]
     assert binding.endpoint == "ws://127.0.0.1:4100/devtools"
     assert binding.authority == "127.0.0.1:4100"
+
+
+def test_compiler_input_contract_identities_are_canonical_and_authoritative() -> None:
+    first = compile_evidence_policy_profile_v2(
+        artifact_policies=(_artifact_policy(),),
+        contract_identities=(
+            EvidenceContractIdentity("target_adapter", _DIGEST_A),
+            EvidenceContractIdentity("evaluator", _DIGEST_B),
+        ),
+    )
+    reordered = compile_evidence_policy_profile_v2(
+        artifact_policies=(_artifact_policy(),),
+        contract_identities=(
+            EvidenceContractIdentity("evaluator", _DIGEST_B),
+            EvidenceContractIdentity("target_adapter", _DIGEST_A),
+        ),
+    )
+    drifted = compile_evidence_policy_profile_v2(
+        artifact_policies=(_artifact_policy(),),
+        contract_identities=(
+            EvidenceContractIdentity("evaluator", _DIGEST_C),
+            EvidenceContractIdentity("target_adapter", _DIGEST_A),
+        ),
+    )
+
+    assert first == reordered
+    assert first.fingerprint != drifted.fingerprint
+    assert first.public_projection()["contract_identity_count"] == 2
+    assert type(first).from_dict(first.to_dict()) == first
+
+    with pytest.raises(EvidencePolicyValidationError) as raised:
+        compile_evidence_policy_profile_v2(
+            artifact_policies=(_artifact_policy(),),
+            contract_identities=(
+                EvidenceContractIdentity("evaluator", _DIGEST_A),
+                EvidenceContractIdentity("evaluator", _DIGEST_B),
+            ),
+        )
+    assert {item.code for item in raised.value.issues} == {
+        "duplicate_contract_kind"
+    }
 
 
 def test_environment_round_trip_and_public_projection_are_bounded() -> None:

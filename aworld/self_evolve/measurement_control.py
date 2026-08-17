@@ -2667,6 +2667,53 @@ def describe_legacy_measurement_control(
 
 
 @dataclass(frozen=True)
+class CaseAdmissionSignal:
+    """Bounded candidate-independent signal for choosing an eligible case."""
+
+    case_id: str
+    stratum_id: str
+    expected_information_value: float
+    predicted_cost_seconds: float
+    failure_risk: float = 0.0
+    prior_variance: float = 1.0
+
+    def __post_init__(self) -> None:
+        _safe_id(self.case_id, "case_id")
+        _safe_id(self.stratum_id, "stratum_id")
+        object.__setattr__(
+            self,
+            "expected_information_value",
+            _non_negative_number(
+                self.expected_information_value,
+                "expected_information_value",
+            ),
+        )
+        object.__setattr__(
+            self,
+            "predicted_cost_seconds",
+            _positive_number(self.predicted_cost_seconds, "predicted_cost_seconds"),
+        )
+        risk = _non_negative_number(self.failure_risk, "failure_risk")
+        if risk > 1:
+            raise ValueError("failure_risk cannot exceed one")
+        object.__setattr__(self, "failure_risk", risk)
+        variance = _non_negative_number(self.prior_variance, "prior_variance")
+        if variance > 100:
+            raise ValueError("prior_variance exceeds bounded scheduling range")
+        object.__setattr__(self, "prior_variance", variance)
+
+    @property
+    def effective_information_value(self) -> float:
+        return self.expected_information_value * math.sqrt(self.prior_variance)
+
+    @property
+    def score(self) -> float:
+        return self.effective_information_value / (
+            self.predicted_cost_seconds * (1.0 + self.failure_risk)
+        )
+
+
+@dataclass(frozen=True)
 class MeasurementProgressSummary:
     current_stage_id: str
     completed_case_ids: tuple[str, ...]
@@ -2685,6 +2732,7 @@ class MeasurementProgressSummary:
     campaign_wall_deadline_expired: bool
     resume_safe: bool
     framework_blocked_reason_code: str | None = None
+    case_admission_signals: tuple[CaseAdmissionSignal, ...] = ()
 
     def __post_init__(self) -> None:
         _safe_id(self.current_stage_id, "current_stage_id")
@@ -2727,6 +2775,10 @@ class MeasurementProgressSummary:
                 self.framework_blocked_reason_code,
                 "framework_blocked_reason_code",
             )
+        signals = tuple(self.case_admission_signals)
+        if len(signals) != len({item.case_id for item in signals}):
+            raise ValueError("case admission signals must be unique by case")
+        object.__setattr__(self, "case_admission_signals", signals)
 
 
 @dataclass(frozen=True)
@@ -2736,6 +2788,9 @@ class AdaptiveDecision:
     next_stage_id: str | None = None
     admit_case_ids: tuple[str, ...] = ()
     resume_safe: bool = False
+    expected_information_value: float | None = None
+    remaining_case_budget: int | None = None
+    admission_policy: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "kind", AdaptiveDecisionKind(self.kind))
@@ -2743,6 +2798,19 @@ class AdaptiveDecision:
         if self.next_stage_id is not None:
             _safe_id(self.next_stage_id, "next_stage_id")
         object.__setattr__(self, "admit_case_ids", tuple(self.admit_case_ids))
+        if self.expected_information_value is not None:
+            object.__setattr__(
+                self,
+                "expected_information_value",
+                _non_negative_number(
+                    self.expected_information_value,
+                    "expected_information_value",
+                ),
+            )
+        if self.remaining_case_budget is not None:
+            _non_negative_int(self.remaining_case_budget, "remaining_case_budget")
+        if self.admission_policy is not None:
+            _safe_id(self.admission_policy, "admission_policy")
 
 
 def estimate_measurement_feasibility(
@@ -2962,6 +3030,11 @@ def decide_staged_measurement(
     unknown_stages = set(progress.completed_stage_ids) - set(stage_by_id)
     if unknown_stages:
         raise ValueError("progress references stages outside the measurement plan")
+    unknown_signal_cases = {
+        signal.case_id for signal in progress.case_admission_signals
+    } - set(plan.case_ids)
+    if unknown_signal_cases:
+        raise ValueError("case admission signal is outside the measurement plan")
     policy = plan.decision_policy
 
     if progress.framework_blocked_reason_code is not None:
@@ -3059,15 +3132,86 @@ def decide_staged_measurement(
             kind = AdaptiveDecisionKind.ADMIT_TIE_BREAK
         else:
             continue
+        ranked_cases, information_by_case = _rank_admission_cases(
+            stage=stage,
+            available_case_ids=available,
+            signals=progress.case_admission_signals,
+        )
+        admitted = ranked_cases[: stage.batch_size]
         return AdaptiveDecision(
             kind=kind,
             reason_code="inconclusive_evidence_has_positive_information_value",
             next_stage_id=stage.stage_id,
-            admit_case_ids=available[: stage.batch_size],
+            admit_case_ids=admitted,
+            expected_information_value=sum(
+                information_by_case[case_id] for case_id in admitted
+            ),
+            remaining_case_budget=max(0, len(available) - len(admitted)),
+            admission_policy="stratified-information-cost-risk-v1",
         )
     return _stop(
         AdaptiveDecisionKind.STOP_INCONCLUSIVE,
         "eligible_measurement_stages_exhausted",
+    )
+
+
+def _rank_admission_cases(
+    *,
+    stage: SamplingStage,
+    available_case_ids: Sequence[str],
+    signals: Sequence[CaseAdmissionSignal],
+) -> tuple[tuple[str, ...], dict[str, float]]:
+    """Rank an already-sealed panel while preserving stratum coverage.
+
+    Missing signals intentionally receive equal neutral estimates, which makes
+    the frozen, stratified stage order authoritative.  Runtime estimates can
+    refine selection but cannot introduce a case outside the stage.
+    """
+
+    available = tuple(available_case_ids)
+    if not set(available).issubset(stage.case_ids):
+        raise ValueError("admission candidate is outside its frozen stage")
+    order = {case_id: index for index, case_id in enumerate(stage.case_ids)}
+    provided = {signal.case_id: signal for signal in signals}
+    resolved = {
+        case_id: provided.get(
+            case_id,
+            CaseAdmissionSignal(
+                case_id=case_id,
+                stratum_id="default",
+                expected_information_value=1.0,
+                predicted_cost_seconds=1.0,
+            ),
+        )
+        for case_id in available
+    }
+    ranked = sorted(
+        available,
+        key=lambda case_id: (
+            -resolved[case_id].score,
+            order[case_id],
+            case_id,
+        ),
+    )
+    # Prefer one high-value case from each declared stratum before taking a
+    # second case from a stratum.  This is deterministic and bounded by the
+    # frozen panel; it cannot leak or invent hidden work.
+    first_per_stratum: list[str] = []
+    remainder: list[str] = []
+    seen_strata: set[str] = set()
+    for case_id in ranked:
+        stratum = resolved[case_id].stratum_id
+        if stratum in seen_strata:
+            remainder.append(case_id)
+        else:
+            seen_strata.add(stratum)
+            first_per_stratum.append(case_id)
+    return (
+        tuple(first_per_stratum + remainder),
+        {
+            case_id: resolved[case_id].effective_information_value
+            for case_id in available
+        },
     )
 
 

@@ -32,6 +32,7 @@ from aworld.core.context.amni.local import LocalIsolatedApplicationContext
 from aworld.core.tool.replay_policy import (
     ArtifactPolicy,
     DynamicEndpointBinding,
+    EvidenceContractIdentity,
     EvidencePolicyProfileV2,
     EvidencePolicyValidationError,
     FrameworkEvidenceWriterAttestationV2,
@@ -72,6 +73,7 @@ from aworld.self_evolve.failure_events import (
     causal_failure_events,
 )
 from aworld.self_evolve.measurement_control import (
+    CaseAdmissionSignal,
     LaneMaterializationAttestationV1,
     MeasurementArm,
     MeasurementPlanV2,
@@ -79,6 +81,7 @@ from aworld.self_evolve.measurement_control import (
     stable_control_fingerprint,
 )
 from aworld.self_evolve.measurement import (
+    ControlledExperimentSpec,
     EffectDirection,
     assess_experiment_validity,
     estimate_paired_effect,
@@ -3183,6 +3186,28 @@ def _load_resumable_member_pairs(
     return resumed
 
 
+def candidate_replay_artifact_directory(
+    *,
+    workspace_root: str | Path,
+    run_id: str,
+    candidate_id: str,
+    artifact_namespace: str | None = None,
+) -> Path:
+    """Return the one canonical artifact root shared by planning and replay."""
+
+    replay_root = (
+        Path(workspace_root)
+        / ".aworld"
+        / "self_evolve"
+        / _safe_path(run_id)
+    )
+    if artifact_namespace is not None:
+        replay_root = replay_root.joinpath(
+            *_safe_artifact_namespace(artifact_namespace)
+        )
+    return replay_root / "replay" / _safe_path(candidate_id)
+
+
 class AWorldCliCandidateReplayBackend:
     supports_member_progress = True
 
@@ -3221,17 +3246,12 @@ class AWorldCliCandidateReplayBackend:
                 "candidate replay execution requires explicit per-member "
                 "repetition semantics"
             )
-        replay_root = (
-            Path(request.workspace_root)
-            / ".aworld"
-            / "self_evolve"
-            / _safe_path(request.run_id)
+        replay_dir = candidate_replay_artifact_directory(
+            workspace_root=request.workspace_root,
+            run_id=request.run_id,
+            candidate_id=candidate.candidate_id,
+            artifact_namespace=request.artifact_namespace,
         )
-        if request.artifact_namespace is not None:
-            replay_root = replay_root.joinpath(
-                *_safe_artifact_namespace(request.artifact_namespace)
-            )
-        replay_dir = replay_root / "replay" / _safe_path(candidate.candidate_id)
         replay_dir.mkdir(parents=True, exist_ok=True)
         _write_json(replay_dir / "request.json", request)
         replay_cases = tuple(
@@ -3940,17 +3960,12 @@ class AWorldCliCandidateReplayBackend:
         }
         if set(plan.case_ids) - set(replay_cases):
             raise ValueError("measurement plan references unavailable replay cases")
-        replay_root = (
-            Path(request.workspace_root)
-            / ".aworld"
-            / "self_evolve"
-            / _safe_path(request.run_id)
+        replay_dir = candidate_replay_artifact_directory(
+            workspace_root=request.workspace_root,
+            run_id=request.run_id,
+            candidate_id=candidate.candidate_id,
+            artifact_namespace=request.artifact_namespace,
         )
-        if request.artifact_namespace is not None:
-            replay_root = replay_root.joinpath(
-                *_safe_artifact_namespace(request.artifact_namespace)
-            )
-        replay_dir = replay_root / "replay" / _safe_path(candidate.candidate_id)
         members_root = replay_dir / "members"
         replay_dir.mkdir(parents=True, exist_ok=True)
         _write_json(replay_dir / "request.json", request)
@@ -4362,6 +4377,118 @@ class AWorldCliCandidateReplayBackend:
                 stage for stage in plan.stages if stage.stage_id == current_stage_id
             )
             current_schedule = schedules[-1]
+            elapsed_samples = tuple(
+                max(0.001, pair.elapsed_seconds)
+                for schedule in schedules
+                for pair in schedule.completed
+            )
+            default_predicted_cost = (
+                sum(elapsed_samples) / len(elapsed_samples)
+                if elapsed_samples
+                else plan.deadlines.member_hard_deadline_seconds
+            )
+            invalid_rate = (
+                len(invalid_control_case_ids) / len(completed_case_ids)
+                if completed_case_ids
+                else 0.0
+            )
+
+            def case_stratum(case: EvalCase) -> str:
+                values: list[str] = []
+                for namespace, metadata in (
+                    ("metadata", case.metadata),
+                    ("source", case.source),
+                ):
+                    for key in (
+                        "task_type",
+                        "category",
+                        "cluster",
+                        "domain",
+                        "kind",
+                        "role",
+                    ):
+                        value = metadata.get(key)
+                        if isinstance(value, (str, int, float)) and not isinstance(
+                            value, bool
+                        ):
+                            values.append(f"{namespace}:{key}:{value}")
+                identity = "|".join(sorted(values)) or "default"
+                return "stratum-" + hashlib.sha256(
+                    identity.encode("utf-8")
+                ).hexdigest()[:16]
+
+            completed_strata: dict[str, int] = {}
+            for case_id in completed_case_ids:
+                stratum = case_stratum(replay_cases[case_id])
+                completed_strata[stratum] = completed_strata.get(stratum, 0) + 1
+
+            def measurement_hint(
+                case: EvalCase,
+                key: str,
+                *,
+                lower: float,
+                upper: float,
+                fallback: float,
+            ) -> float:
+                contract = case.metadata.get("measurement")
+                raw = contract.get(key) if isinstance(contract, Mapping) else None
+                if (
+                    isinstance(raw, (int, float))
+                    and not isinstance(raw, bool)
+                    and math.isfinite(float(raw))
+                    and lower <= float(raw) <= upper
+                ):
+                    return float(raw)
+                return fallback
+
+            admission_signals: list[CaseAdmissionSignal] = []
+            for case_id in plan.case_ids:
+                if case_id in completed_case_ids:
+                    continue
+                case = replay_cases[case_id]
+                stratum = case_stratum(case)
+                novelty = 1.0 / (1.0 + completed_strata.get(stratum, 0))
+                expected_information = measurement_hint(
+                    case,
+                    "expected_information_value",
+                    lower=0.0,
+                    upper=100.0,
+                    fallback=1.0,
+                ) * novelty
+                predicted_cost = measurement_hint(
+                    case,
+                    "predicted_cost_seconds",
+                    lower=0.001,
+                    upper=max(
+                        0.001,
+                        plan.deadlines.member_hard_deadline_seconds * 2.0,
+                    ),
+                    fallback=default_predicted_cost,
+                )
+                failure_risk = measurement_hint(
+                    case,
+                    "failure_risk",
+                    lower=0.0,
+                    upper=1.0,
+                    fallback=invalid_rate,
+                )
+                prior_variance = measurement_hint(
+                    case,
+                    "prior_variance",
+                    lower=0.0,
+                    upper=100.0,
+                    fallback=1.0,
+                )
+                admission_signals.append(
+                    CaseAdmissionSignal(
+                        case_id=case_id,
+                        stratum_id=stratum,
+                        expected_information_value=expected_information,
+                        predicted_cost_seconds=predicted_cost,
+                        failure_risk=failure_risk,
+                        prior_variance=prior_variance,
+                    )
+                )
             regression_detected = False
             if current_stage.kind is SamplingStageKind.REGRESSION_TRANSFER:
                 transfer_members = tuple(
@@ -4411,6 +4538,7 @@ class AWorldCliCandidateReplayBackend:
                 framework_blocked_reason_code=(
                     framework_blocker.code if framework_blocker is not None else None
                 ),
+                case_admission_signals=tuple(admission_signals),
             )
 
         staged = await schedule_staged_measurement(
@@ -4477,8 +4605,37 @@ class AWorldCliCandidateReplayBackend:
             {
                 "schema_version": "aworld.self_evolve.measurement_schedule.v2",
                 "decision": measurement_decision,
+                "decision_history": [
+                    to_json_dict(decision)
+                    for decision in staged.decision_history[:64]
+                ],
+                "decision_history_truncated": len(staged.decision_history) > 64,
                 "admitted_case_ids": list(staged.admitted_case_ids),
                 "schedule_count": len(staged.schedules),
+                "scheduling_policy": "information-cost-risk-v1",
+                "schedules": [
+                    {
+                        "stop_kind": schedule.stop_kind.value,
+                        "stop_reason": schedule.stop_reason,
+                        "safe_lane_count": schedule.safe_lane_count,
+                        "completed_pair_count": len(schedule.completed),
+                        "pending_pair_count": len(schedule.pending),
+                        "elapsed_seconds": schedule.elapsed_seconds,
+                        "pairs": [
+                            {
+                                "case_id": pair.item.case_id,
+                                "repetition_id": pair.item.repetition_id,
+                                "treatment_admitted": pair.treatment_admitted,
+                                "elapsed_seconds": pair.elapsed_seconds,
+                                "scheduling_score": pair.scheduling_score,
+                            }
+                            for pair in schedule.completed[:128]
+                        ],
+                        "pair_projection_truncated": len(schedule.completed) > 128,
+                    }
+                    for schedule in staged.schedules[:32]
+                ],
+                "schedule_projection_truncated": len(staged.schedules) > 32,
             },
         )
         return result
@@ -4817,6 +4974,11 @@ class AWorldCliCandidateReplayBackend:
                 service_session = await _start_replay_services(
                     replay_capability,
                     artifact_dir=artifact_dir,
+                    endpoint_bindings=(
+                        request.measurement_evidence_policy_profile.endpoint_bindings
+                        if request.measurement_evidence_policy_profile is not None
+                        else ()
+                    ),
                 )
                 endpoint_urls = {
                     source: service_session.endpoints[service_id]
@@ -5666,17 +5828,32 @@ def _runtime_endpoint_bindings(
 def compile_replay_evidence_policy_profile_v2(
     *,
     endpoint_bindings: Sequence[DynamicEndpointBinding] = (),
+    contract_identities: Sequence[EvidenceContractIdentity] = (),
+    artifact_file_limit: int | None = None,
+    artifact_byte_limit: int | None = None,
+    task_response_byte_limit: int = _MAX_SELF_EVOLVE_TASK_RESPONSE_BYTES,
 ) -> EvidencePolicyProfileV2:
     """Compile the canonical evidence contract shared by plan and runtime."""
+
+    artifact_file_limit = (
+        AWorldCliReplayExecutor._DEFAULT_ARTIFACT_FILE_LIMIT
+        if artifact_file_limit is None
+        else artifact_file_limit
+    )
+    artifact_byte_limit = (
+        AWorldCliReplayExecutor._DEFAULT_ARTIFACT_BYTE_LIMIT
+        if artifact_byte_limit is None
+        else artifact_byte_limit
+    )
 
     return compile_evidence_policy_profile_v2(
         artifact_policies=(
             ArtifactPolicy(
                 artifact_type=_REPLAY_TRUSTED_EVIDENCE_TYPE,
                 registered_producers=(_REPLAY_TRUSTED_EVIDENCE_PRODUCER,),
-                max_files=AWorldCliReplayExecutor._DEFAULT_ARTIFACT_FILE_LIMIT,
+                max_files=artifact_file_limit,
                 max_items=_MAX_EVIDENCE_MANIFEST_ENTRIES,
-                max_bytes=AWorldCliReplayExecutor._DEFAULT_ARTIFACT_BYTE_LIMIT,
+                max_bytes=artifact_byte_limit,
                 projection="summary",
                 projection_byte_limit=64_000,
                 required=True,
@@ -5686,13 +5863,14 @@ def compile_replay_evidence_policy_profile_v2(
                 registered_producers=(_REPLAY_TRUSTED_RESPONSE_PRODUCER,),
                 max_files=1,
                 max_items=1,
-                max_bytes=_MAX_SELF_EVOLVE_TASK_RESPONSE_BYTES,
+                max_bytes=task_response_byte_limit,
                 projection="summary",
                 projection_byte_limit=64_000,
                 required=True,
             ),
         ),
         endpoint_bindings=endpoint_bindings,
+        contract_identities=contract_identities,
         required_task_response_fields=(
             "schema_version",
             "task_response_digest",
@@ -5700,6 +5878,167 @@ def compile_replay_evidence_policy_profile_v2(
         ),
         allowed_control_actions=("browser:close",),
     )
+
+
+def compile_authoritative_replay_evidence_policy_profile_v2(
+    *,
+    experiment: ControlledExperimentSpec,
+    target: SelfEvolveTargetRef,
+    replay_adaptation: ReplayAdaptationBundle,
+    member_timeout_seconds: float,
+    target_adapter_identity: Mapping[str, object] | None = None,
+) -> EvidencePolicyProfileV2:
+    """Compile all authority-bearing replay inputs into one frozen profile."""
+
+    if not isinstance(experiment, ControlledExperimentSpec):
+        raise TypeError("authoritative evidence policy requires an experiment")
+    if not isinstance(target, SelfEvolveTargetRef):
+        raise TypeError("authoritative evidence policy requires a target reference")
+    if not isinstance(replay_adaptation, ReplayAdaptationBundle):
+        raise TypeError("authoritative evidence policy requires replay adaptation")
+    if (
+        isinstance(member_timeout_seconds, bool)
+        or not isinstance(member_timeout_seconds, (int, float))
+        or not math.isfinite(float(member_timeout_seconds))
+        or member_timeout_seconds <= 0
+    ):
+        raise ValueError("member timeout must be a finite positive number")
+
+    endpoints = _authoritative_replay_endpoint_bindings(
+        experiment=experiment,
+        replay_adaptation=replay_adaptation,
+    )
+    evaluator_fingerprint = experiment.frozen_identities.evaluator
+    if evaluator_fingerprint is None:
+        raise ValueError("authoritative evidence policy requires evaluator identity")
+    identities = (
+        EvidenceContractIdentity(
+            "task_observation",
+            stable_control_fingerprint(
+                {
+                    "outcomes": experiment.outcomes.to_dict(),
+                    "sampling": experiment.sampling.to_dict(),
+                }
+            ),
+        ),
+        EvidenceContractIdentity(
+            "target_adapter",
+            stable_control_fingerprint(
+                {
+                    "target_type": target.target_type,
+                    "target_id": target.target_id,
+                    "adapter": dict(
+                        target_adapter_identity
+                        or {
+                            "contract_version": (
+                                "aworld.self_evolve.target_adapter.v1"
+                            )
+                        }
+                    ),
+                }
+            ),
+        ),
+        EvidenceContractIdentity(
+            "replay_capability",
+            stable_control_fingerprint(
+                {
+                    "adaptation_fingerprint": replay_adaptation.adaptation_fingerprint,
+                    "capability_fingerprint": (
+                        replay_adaptation.replay_capability.fingerprint
+                        if replay_adaptation.replay_capability is not None
+                        else None
+                    ),
+                    "binding_fingerprints": sorted(
+                        {
+                            binding.binding_fingerprint
+                            for case in replay_adaptation.cases
+                            for binding in case.bindings
+                            if binding.binding_fingerprint is not None
+                        }
+                    ),
+                }
+            ),
+        ),
+        EvidenceContractIdentity("evaluator", evaluator_fingerprint),
+        EvidenceContractIdentity(
+            "resource_policy",
+            stable_control_fingerprint(
+                {
+                    "member_timeout_seconds": float(member_timeout_seconds),
+                    "artifact_file_limit": (
+                        AWorldCliReplayExecutor._DEFAULT_ARTIFACT_FILE_LIMIT
+                    ),
+                    "artifact_byte_limit": (
+                        AWorldCliReplayExecutor._DEFAULT_ARTIFACT_BYTE_LIMIT
+                    ),
+                    "task_response_byte_limit": (
+                        _MAX_SELF_EVOLVE_TASK_RESPONSE_BYTES
+                    ),
+                }
+            ),
+        ),
+    )
+    return compile_replay_evidence_policy_profile_v2(
+        endpoint_bindings=endpoints,
+        contract_identities=identities,
+    )
+
+
+def _authoritative_replay_endpoint_bindings(
+    *,
+    experiment: ControlledExperimentSpec,
+    replay_adaptation: ReplayAdaptationBundle,
+) -> tuple[DynamicEndpointBinding, ...]:
+    bindings: dict[str, DynamicEndpointBinding] = {}
+    for case in replay_adaptation.cases:
+        for binding in _runtime_endpoint_bindings(
+            {
+                key: value
+                for adapter_binding in case.bindings
+                for key, value in adapter_binding.environment.items()
+                if key.startswith("AWORLD_REPLAY_ENDPOINT_")
+            }
+        ):
+            previous = bindings.get(binding.binding_id)
+            if previous is not None and previous != binding:
+                raise ValueError("replay endpoint binding drifted across cases")
+            bindings[binding.binding_id] = binding
+
+    capability = replay_adaptation.replay_capability
+    if capability is not None:
+        used_ports = {
+            urlsplit(item.endpoint).port for item in bindings.values()
+        }
+        for service in sorted(capability.services, key=lambda item: item.service_id):
+            seed = stable_control_fingerprint(
+                {
+                    "experiment_id": experiment.experiment_id,
+                    "capability_fingerprint": capability.fingerprint,
+                    "service_id": service.service_id,
+                }
+            )
+            port = 20_000 + int(seed.removeprefix("sha256:")[:8], 16) % 40_000
+            while port in used_ports:
+                port = 20_000 + ((port - 20_000 + 1) % 40_000)
+            used_ports.add(port)
+            binding = DynamicEndpointBinding(
+                binding_id=service.service_id,
+                service_identity=(
+                    "replay."
+                    + re.sub(
+                        r"[^a-z0-9_.-]+",
+                        ".",
+                        f"{capability.capability_id}.{service.service_id}".casefold(),
+                    ).strip(".")
+                ),
+                endpoint=f"http://127.0.0.1:{port}",
+                path_scope="prefix",
+            )
+            previous = bindings.get(binding.binding_id)
+            if previous is not None and previous != binding:
+                raise ValueError("capability endpoint binding identity conflicts")
+            bindings[binding.binding_id] = binding
+    return tuple(bindings[key] for key in sorted(bindings))
 
 
 def _prepare_replay_evidence_trust(
@@ -5784,10 +6123,9 @@ def _prepare_replay_evidence_trust(
         ),
     )
     resolved = {
-        binding.binding_id: request.environment.get(
-            binding.environment_name, binding.endpoint
-        )
+        binding.binding_id: request.environment[binding.environment_name]
         for binding in profile.endpoint_bindings
+        if binding.environment_name in request.environment
     }
     preflight = preflight_evidence_policy_v2(
         profile,
@@ -7388,6 +7726,7 @@ async def _start_replay_services(
     capability: FrozenReplayCapability,
     *,
     artifact_dir: Path,
+    endpoint_bindings: Sequence[DynamicEndpointBinding] = (),
     required_nonempty_probe_operations: Sequence[str] = (),
     required_recorded_probe_operations: Sequence[str] = (),
     integrity_capability: FrozenReplayCapability | None = None,
@@ -7451,6 +7790,37 @@ async def _start_replay_services(
     )
     endpoints: dict[str, str] = {}
     environment: dict[str, str] = {}
+    services_by_id = {service.service_id: service for service in capability.services}
+    declared_endpoints = {
+        binding.binding_id: binding
+        for binding in endpoint_bindings
+        if binding.binding_id in services_by_id
+    }
+    if endpoint_bindings and set(declared_endpoints) != set(services_by_id):
+        raise ValueError(
+            "measurement evidence policy does not bind every replay service endpoint"
+        )
+    if len(declared_endpoints) != len(
+        [binding for binding in endpoint_bindings if binding.binding_id in services_by_id]
+    ):
+        raise ValueError("measurement replay service endpoint bindings are duplicated")
+    declared_ports: set[int] = set()
+    for service_id, binding in declared_endpoints.items():
+        parsed = urlsplit(binding.endpoint)
+        if (
+            parsed.scheme != "http"
+            or parsed.hostname not in {"127.0.0.1", "localhost", "::1"}
+            or parsed.port is None
+            or parsed.path not in {"", "/"}
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise ValueError(
+                f"measurement endpoint for {service_id} is not an exact loopback authority"
+            )
+        if parsed.port in declared_ports:
+            raise ValueError("measurement replay service ports must be unique")
+        declared_ports.add(parsed.port)
     # Read the operation-indexed response evidence for every preflight.  Strict
     # task-plane probes use the values as acceptance requirements; ordinary
     # probes use them only to classify compiler/runtime selector drift without
@@ -7464,7 +7834,13 @@ async def _start_replay_services(
     fixture_service = Path(__file__).with_name("fixture_service.py").resolve()
     try:
         for service in capability.services:
-            port = _reserve_loopback_port()
+            declared_binding = declared_endpoints.get(service.service_id)
+            port = (
+                urlsplit(declared_binding.endpoint).port
+                if declared_binding is not None
+                else _reserve_loopback_port()
+            )
+            assert port is not None
             fixture_path = (fixture_root / service.response_fixture).resolve(
                 strict=True
             )
@@ -7588,7 +7964,11 @@ async def _start_replay_services(
                     stderr_path=stderr_path,
                 )
             )
-            endpoint = f"http://127.0.0.1:{port}"
+            endpoint = (
+                declared_binding.endpoint.rstrip("/")
+                if declared_binding is not None
+                else f"http://127.0.0.1:{port}"
+            )
             try:
                 await _wait_for_replay_service(
                     process,

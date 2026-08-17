@@ -103,6 +103,7 @@ def _bundle(
     decision: IsolationDecision,
     case_count: int,
     staged: bool = False,
+    repetitions_per_case: int = 1,
 ) -> tuple[FilesystemSelfEvolveStore, object]:
     run_id = "run-scheduler"
     case_ids = tuple(f"case-{index}" for index in range(1, case_count + 1))
@@ -123,7 +124,10 @@ def _bundle(
             prompt_context=_fp("prompt"),
             budget=_fp("budget"),
         ),
-        sampling=SamplingPlan(independent_case_ids=case_ids),
+        sampling=SamplingPlan(
+            independent_case_ids=case_ids,
+            repetitions_per_case=repetitions_per_case,
+        ),
         outcomes=OutcomePlan(
             primary_metric="task_success",
             minimum_independent_cases=1,
@@ -185,7 +189,7 @@ def _bundle(
         isolation_decision=decision,
         evidence_policy_profile=profile,
         stages=stages,
-        repetitions_per_case=1,
+        repetitions_per_case=repetitions_per_case,
         deadlines=DeadlinePolicy(
             attempt_timeout_seconds=10,
             member_hard_deadline_seconds=20,
@@ -343,6 +347,97 @@ async def test_invalid_control_skips_treatment_without_losing_pair_result(
 
     assert [item.treatment_admitted for item in result.completed] == [False, True]
     assert treatment_cases == ["case-2"]
+
+
+@pytest.mark.asyncio
+async def test_adaptive_queue_demotes_slow_invalid_repetition_without_starvation(
+    tmp_path: Path,
+) -> None:
+    store, bundle = _bundle(
+        tmp_path,
+        decision=_exclusive_decision(),
+        case_count=2,
+        repetitions_per_case=2,
+    )
+    started: list[tuple[str, int]] = []
+    queue_events: list[dict[str, object]] = []
+
+    async def control(item: PairLaneWorkItem, context: LaneExecutionContext) -> bool:
+        started.append(item.coordinate)
+        await asyncio.sleep(0.02 if item.case_id == "case-1" else 0.001)
+        return item.case_id != "case-1"
+
+    async def observer(event: str, fields: dict[str, object]) -> None:
+        if event == "pair_queue_prioritized":
+            queue_events.append(dict(fields))
+
+    result = await schedule_pair_lanes(
+        store,
+        run_id="run-scheduler",
+        measurement_plan_fingerprint=bundle.plan.measurement_plan_fingerprint,
+        run_control=control,
+        run_treatment=lambda _item, _context, _control: asyncio.sleep(
+            0, result="treatment"
+        ),
+        lane_materializer=FrameworkFilesystemLaneMaterializer(tmp_path / "lanes"),
+        control_allows_treatment=lambda _item, baseline: baseline,
+        observer=observer,
+    )
+
+    # The first repetition preserves frozen case/coverage order.  Its measured
+    # cost and invalid-control signal then move the cheaper valid case ahead in
+    # repetition two, while the slow case still executes before completion.
+    assert started == [
+        ("case-1", 1),
+        ("case-2", 1),
+        ("case-2", 2),
+        ("case-1", 2),
+    ]
+    assert result.stop_kind is PairLaneStopKind.COMPLETED
+    assert len(result.completed) == 4
+    assert result.completed[-1].item.coordinate == ("case-2", 2)
+    assert queue_events
+    assert all(event["policy"] == "information-cost-risk-v1" for event in queue_events)
+    assert all(len(event["top_pairs"]) <= 8 for event in queue_events)
+
+
+@pytest.mark.asyncio
+async def test_adaptive_queue_ties_are_deterministic_and_cover_cases_first(
+    tmp_path: Path,
+) -> None:
+    store, bundle = _bundle(
+        tmp_path,
+        decision=_exclusive_decision(),
+        case_count=3,
+        repetitions_per_case=2,
+    )
+    started: list[tuple[str, int]] = []
+
+    async def control(item: PairLaneWorkItem, context: LaneExecutionContext) -> str:
+        started.append(item.coordinate)
+        return "control"
+
+    result = await schedule_pair_lanes(
+        store,
+        run_id="run-scheduler",
+        measurement_plan_fingerprint=bundle.plan.measurement_plan_fingerprint,
+        run_control=control,
+        run_treatment=lambda _item, _context, _control: asyncio.sleep(
+            0, result="treatment"
+        ),
+        lane_materializer=FrameworkFilesystemLaneMaterializer(tmp_path / "lanes"),
+        clock=lambda: 0.0,
+    )
+
+    assert result.stop_kind is PairLaneStopKind.COMPLETED
+    assert started == [
+        ("case-1", 1),
+        ("case-2", 1),
+        ("case-3", 1),
+        ("case-1", 2),
+        ("case-2", 2),
+        ("case-3", 2),
+    ]
 
 
 @pytest.mark.asyncio

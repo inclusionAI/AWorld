@@ -32,6 +32,7 @@ from aworld.self_evolve.measurement_control import (
     MeasurementArm,
     MeasurementControlObservationRecord,
     MeasurementPlanV2,
+    MeasurementWorkUnitIndexEntry,
     MeasurementWorkUnitState,
     stable_control_fingerprint,
 )
@@ -65,6 +66,8 @@ class PairLaneWorkItem:
     treatment_work_unit_id: str
     priority: float = 0.0
     control_reused: bool = False
+    case_order: int = 0
+    required_coverage: bool = True
 
     def __post_init__(self) -> None:
         for value, label in (
@@ -91,6 +94,14 @@ class PairLaneWorkItem:
             raise ValueError("control and treatment work units must differ")
         if not isinstance(self.control_reused, bool):
             raise ValueError("control_reused must be boolean")
+        if (
+            isinstance(self.case_order, bool)
+            or not isinstance(self.case_order, int)
+            or self.case_order < 0
+        ):
+            raise ValueError("case_order must be non-negative")
+        if not isinstance(self.required_coverage, bool):
+            raise ValueError("required_coverage must be boolean")
 
     @property
     def coordinate(self) -> tuple[str, int]:
@@ -104,6 +115,51 @@ class PairLaneResult(Generic[ControlT, TreatmentT]):
     control: ControlT
     treatment: TreatmentT | None
     treatment_admitted: bool
+    elapsed_seconds: float
+    scheduling_score: float
+
+    def __post_init__(self) -> None:
+        for value, label in (
+            (self.elapsed_seconds, "elapsed_seconds"),
+            (self.scheduling_score, "scheduling_score"),
+        ):
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(float(value))
+                or float(value) < 0
+            ):
+                raise ValueError(f"{label} must be finite and non-negative")
+
+
+@dataclass(frozen=True)
+class PairSchedulingEstimate:
+    """Bounded framework-owned inputs to one adaptive queue decision."""
+
+    item: PairLaneWorkItem
+    expected_information_value: float
+    predicted_cost_seconds: float
+    failure_risk: float
+    score: float
+
+    def __post_init__(self) -> None:
+        for value, label in (
+            (self.expected_information_value, "expected_information_value"),
+            (self.predicted_cost_seconds, "predicted_cost_seconds"),
+            (self.failure_risk, "failure_risk"),
+            (self.score, "score"),
+        ):
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(float(value))
+                or float(value) < 0
+            ):
+                raise ValueError(f"{label} must be finite and non-negative")
+        if self.predicted_cost_seconds <= 0:
+            raise ValueError("predicted_cost_seconds must be positive")
+        if self.failure_risk > 1:
+            raise ValueError("failure_risk cannot exceed one")
 
 
 @dataclass(frozen=True)
@@ -502,6 +558,7 @@ class MeasurementScheduleBundle:
     plan: MeasurementPlanV2
     isolation_decision: IsolationDecision
     evidence_policy_profile: EvidencePolicyProfileV2
+    work_unit_index: tuple[MeasurementWorkUnitIndexEntry, ...]
     terminal_observations: tuple[MeasurementControlObservationRecord, ...]
     _seal: InitVar[object] = None
 
@@ -517,6 +574,13 @@ class MeasurementScheduleBundle:
             raise ValueError("measurement schedule bundle plan is not canonical")
         observations = tuple(self.terminal_observations)
         known = {unit.work_unit_id: unit for unit in self.plan.work_units}
+        index_entries = tuple(self.work_unit_index)
+        if (
+            len(index_entries) != len(known)
+            or {item.work_unit_id for item in index_entries} != set(known)
+        ):
+            raise ValueError("measurement schedule index does not match plan")
+        object.__setattr__(self, "work_unit_index", index_entries)
         if len({item.work_unit_id for item in observations}) != len(observations):
             raise ValueError("measurement schedule bundle has duplicate observations")
         for observation in observations:
@@ -579,6 +643,7 @@ def load_measurement_schedule_bundle(
         plan=plan,
         isolation_decision=decision,
         evidence_policy_profile=profile,
+        work_unit_index=index.work_units,
         terminal_observations=observations,
         _seal=_MEASUREMENT_SCHEDULE_BUNDLE_SEAL,
     )
@@ -641,6 +706,12 @@ def _pair_lane_work_from_bundle(
         stage.stage_id: float(len(verified_plan.stages) - index)
         for index, stage in enumerate(verified_plan.stages)
     }
+    stage_by_id = {stage.stage_id: stage for stage in verified_plan.stages}
+    stage_case_order = {
+        (stage.stage_id, case_id): index
+        for stage in verified_plan.stages
+        for index, case_id in enumerate(stage.case_ids)
+    }
     work: list[PairLaneWorkItem] = []
     for treatment in verified_plan.work_units:
         if (
@@ -676,9 +747,104 @@ def _pair_lane_work_from_bundle(
                 treatment_work_unit_id=treatment.work_unit_id,
                 priority=stage_priority[treatment.stage_id],
                 control_reused=control_terminal,
+                case_order=stage_case_order[
+                    (treatment.stage_id, treatment.case_id)
+                ],
+                required_coverage=(
+                    stage_case_order[(treatment.stage_id, treatment.case_id)]
+                    < stage_by_id[treatment.stage_id].minimum_case_count
+                ),
             )
         )
     return tuple(work)
+
+
+def _adaptive_pair_estimates(
+    pending: Sequence[PairLaneWorkItem],
+    *,
+    default_cost_seconds: float,
+    case_elapsed_seconds: Mapping[str, Sequence[float]],
+    case_invalid_controls: Mapping[str, int],
+    case_completed_pairs: Mapping[str, int],
+) -> tuple[PairSchedulingEstimate, ...]:
+    """Rank pending pairs without weakening frozen coverage or stage order.
+
+    The stage and required-coverage tiers are hard ordering constraints.  The
+    adaptive score only chooses among otherwise eligible work.  Its inputs are
+    framework-observed pair duration and control admission; candidate payloads
+    and hidden case contents never enter the calculation.
+    """
+
+    if (
+        isinstance(default_cost_seconds, bool)
+        or not isinstance(default_cost_seconds, (int, float))
+        or not math.isfinite(float(default_cost_seconds))
+        or default_cost_seconds <= 0
+    ):
+        raise ValueError("default scheduling cost must be positive")
+    all_elapsed = tuple(
+        max(0.001, float(value))
+        for values in case_elapsed_seconds.values()
+        for value in values
+        if isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(float(value))
+        and value >= 0
+    )
+    global_cost = (
+        sum(all_elapsed) / len(all_elapsed)
+        if all_elapsed
+        else float(default_cost_seconds)
+    )
+    estimates: list[PairSchedulingEstimate] = []
+    for item in pending:
+        elapsed = tuple(case_elapsed_seconds.get(item.case_id, ()))
+        predicted_cost = (
+            sum(elapsed) / len(elapsed) if elapsed else global_cost
+        )
+        if item.control_reused:
+            # The immutable baseline is already available; only treatment work
+            # remains.  This is a scheduling estimate, never evidence weight.
+            predicted_cost *= 0.55
+        predicted_cost = max(0.001, predicted_cost)
+        completed_count = max(0, int(case_completed_pairs.get(item.case_id, 0)))
+        invalid_count = max(0, int(case_invalid_controls.get(item.case_id, 0)))
+        failure_risk = (
+            min(1.0, invalid_count / completed_count)
+            if completed_count
+            else 0.0
+        )
+        coverage_novelty = 1.25 if completed_count == 0 else 1.0
+        expected_information = coverage_novelty / float(item.repetition_id)
+        score = expected_information / (
+            predicted_cost * (1.0 + failure_risk)
+        )
+        estimates.append(
+            PairSchedulingEstimate(
+                item=item,
+                expected_information_value=expected_information,
+                predicted_cost_seconds=predicted_cost,
+                failure_risk=failure_risk,
+                score=score,
+            )
+        )
+    return tuple(
+        sorted(
+            estimates,
+            key=lambda estimate: (
+                -estimate.item.priority,
+                estimate.item.repetition_id,
+                not (
+                    estimate.item.required_coverage
+                    and estimate.item.repetition_id == 1
+                ),
+                -estimate.score,
+                estimate.item.case_order,
+                estimate.item.case_id,
+                estimate.item.treatment_work_unit_id,
+            ),
+        )
+    )
 
 
 async def schedule_pair_lanes(
@@ -790,13 +956,55 @@ async def schedule_pair_lanes(
         return float(value)
 
     started_at = read_clock()
-    ordered = tuple(
+    frozen_order = tuple(
         sorted(
             frozen_items,
-            key=lambda item: (-item.priority, item.stage_id, item.case_id, item.repetition_id),
+            key=lambda item: (
+                -item.priority,
+                item.repetition_id,
+                not (item.required_coverage and item.repetition_id == 1),
+                item.case_order,
+                item.case_id,
+            ),
         )
     )
-    pending_queue = deque(ordered)
+    units_by_id = {unit.work_unit_id: unit for unit in bundle.plan.work_units}
+    coordinate_costs: dict[tuple[str, int], float] = {}
+    for entry in bundle.work_unit_index:
+        if entry.actual_attempt_cost_seconds <= 0:
+            continue
+        unit = units_by_id[entry.work_unit_id]
+        coordinate = (unit.case_id, unit.repetition_id)
+        coordinate_costs[coordinate] = (
+            coordinate_costs.get(coordinate, 0.0)
+            + entry.actual_attempt_cost_seconds
+        )
+    case_elapsed_seconds: dict[str, list[float]] = {}
+    for (case_id, _repetition_id), cost in coordinate_costs.items():
+        case_elapsed_seconds.setdefault(case_id, []).append(max(0.001, cost))
+    case_invalid_controls: dict[str, int] = {}
+    case_completed_pairs: dict[str, int] = {}
+    for observation in bundle.terminal_observations:
+        if observation.arm is MeasurementArm.TREATMENT:
+            case_completed_pairs[observation.case_id] = (
+                case_completed_pairs.get(observation.case_id, 0) + 1
+            )
+        elif observation.terminal_state is not MeasurementWorkUnitState.SUCCEEDED:
+            case_invalid_controls[observation.case_id] = (
+                case_invalid_controls.get(observation.case_id, 0) + 1
+            )
+    initial_estimates = _adaptive_pair_estimates(
+        frozen_order,
+        default_cost_seconds=bundle.plan.deadlines.member_hard_deadline_seconds,
+        case_elapsed_seconds=case_elapsed_seconds,
+        case_invalid_controls=case_invalid_controls,
+        case_completed_pairs=case_completed_pairs,
+    )
+    pending_queue = deque(estimate.item for estimate in initial_estimates)
+    scheduling_estimate_by_unit = {
+        estimate.item.treatment_work_unit_id: estimate
+        for estimate in initial_estimates
+    }
 
     completed: list[PairLaneResult[ControlT, TreatmentT]] = []
     completed_coordinates: set[tuple[str, int]] = set()
@@ -810,6 +1018,43 @@ async def schedule_pair_lanes(
         result = observer(event, fields)
         if inspect.isawaitable(result):
             await result
+
+    async def reprioritize_pending(*, reason: str) -> None:
+        nonlocal pending_queue, scheduling_estimate_by_unit
+        estimates = _adaptive_pair_estimates(
+            tuple(pending_queue),
+            default_cost_seconds=bundle.plan.deadlines.member_hard_deadline_seconds,
+            case_elapsed_seconds=case_elapsed_seconds,
+            case_invalid_controls=case_invalid_controls,
+            case_completed_pairs=case_completed_pairs,
+        )
+        pending_queue = deque(estimate.item for estimate in estimates)
+        scheduling_estimate_by_unit = {
+            estimate.item.treatment_work_unit_id: estimate
+            for estimate in estimates
+        }
+        await emit(
+            "pair_queue_prioritized",
+            policy="information-cost-risk-v1",
+            reason=reason,
+            pending_pair_count=len(estimates),
+            top_pairs=[
+                {
+                    "case_id": estimate.item.case_id,
+                    "repetition_id": estimate.item.repetition_id,
+                    "required_coverage": estimate.item.required_coverage,
+                    "expected_information_value": round(
+                        estimate.expected_information_value, 6
+                    ),
+                    "predicted_cost_seconds": round(
+                        estimate.predicted_cost_seconds, 6
+                    ),
+                    "failure_risk": round(estimate.failure_risk, 6),
+                    "score": round(estimate.score, 9),
+                }
+                for estimate in estimates[:8]
+            ],
+        )
 
     def scheduling_boundary() -> tuple[PairLaneStopKind, str] | None:
         now = read_clock()
@@ -838,11 +1083,14 @@ async def schedule_pair_lanes(
     async def execute_pair(
         item: PairLaneWorkItem,
         lane_id: int,
+        scheduling_score: float,
     ) -> tuple[
         PairLaneResult[ControlT, TreatmentT],
         tuple[PairLaneStopKind, str] | None,
+        bool,
     ]:
         context = lane_contexts[lane_id]
+        pair_started_at = read_clock()
         await emit(
             "pair_started",
             lane_id=lane_id,
@@ -872,11 +1120,12 @@ async def schedule_pair_lanes(
         else:
             control = await run_control(item, context)
         treatment: TreatmentT | None = None
-        admitted = (
+        control_admitted = (
             True
             if control_allows_treatment is None
             else control_allows_treatment(item, control)
         )
+        admitted = control_admitted
         boundary = scheduling_boundary()
         if boundary is not None:
             admitted = False
@@ -889,6 +1138,8 @@ async def schedule_pair_lanes(
             control=control,
             treatment=treatment,
             treatment_admitted=admitted,
+            elapsed_seconds=max(0.0, read_clock() - pair_started_at),
+            scheduling_score=scheduling_score,
         )
         await emit(
             "pair_completed",
@@ -896,14 +1147,17 @@ async def schedule_pair_lanes(
             case_id=item.case_id,
             repetition_id=item.repetition_id,
             treatment_admitted=admitted,
+            elapsed_seconds=round(result.elapsed_seconds, 6),
+            scheduling_score=round(scheduling_score, 9),
         )
-        return result, boundary
+        return result, boundary, not control_admitted
 
     active: dict[
         asyncio.Task[
             tuple[
                 PairLaneResult[ControlT, TreatmentT],
                 tuple[PairLaneStopKind, str] | None,
+                bool,
             ]
         ],
         int,
@@ -976,7 +1230,7 @@ async def schedule_pair_lanes(
                 safe_lane_count=lane_count,
                 isolation_decision_fingerprint=verified_decision.fingerprint,
                 completed=(),
-                pending=ordered,
+                pending=frozen_order,
                 elapsed_seconds=max(0.0, read_clock() - started_at),
             )
         raise TimeoutError("lane materialization hard deadline exceeded") from None
@@ -1041,8 +1295,11 @@ async def schedule_pair_lanes(
             lane_id = min(available_lanes)
             available_lanes.remove(lane_id)
             item = pending_queue.popleft()
+            estimate = scheduling_estimate_by_unit[
+                item.treatment_work_unit_id
+            ]
             task = asyncio.create_task(
-                execute_pair(item, lane_id),
+                execute_pair(item, lane_id, estimate.score),
                 name=f"measurement-pair-lane-{lane_id}",
             )
             active[task] = lane_id
@@ -1050,9 +1307,11 @@ async def schedule_pair_lanes(
     await emit(
         "schedule_started",
         safe_lane_count=lane_count,
-        planned_pair_count=len(ordered),
+        planned_pair_count=len(frozen_order),
         isolation_decision_fingerprint=verified_decision.fingerprint,
+        scheduling_policy="information-cost-risk-v1",
     )
+    await reprioritize_pending(reason="initial_admission")
     await admit_available_pairs()
     try:
         while active:
@@ -1062,20 +1321,36 @@ async def schedule_pair_lanes(
             for task in sorted(finished, key=lambda item: active[item]):
                 lane_id = active.pop(task)
                 available_lanes.add(lane_id)
-                pair_result, boundary = task.result()
+                pair_result, boundary, invalid_control = task.result()
                 completed.append(pair_result)
                 completed_coordinates.add(pair_result.item.coordinate)
+                case_elapsed_seconds.setdefault(
+                    pair_result.item.case_id, []
+                ).append(max(0.001, pair_result.elapsed_seconds))
+                case_completed_pairs[pair_result.item.case_id] = (
+                    case_completed_pairs.get(pair_result.item.case_id, 0) + 1
+                )
+                if invalid_control:
+                    case_invalid_controls[pair_result.item.case_id] = (
+                        case_invalid_controls.get(pair_result.item.case_id, 0)
+                        + 1
+                    )
                 if boundary is not None:
                     await record_stop(*boundary)
                 if stop_kind is None and should_stop is not None:
                     completed_snapshot = tuple(
-                        sorted(completed, key=lambda result: ordered.index(result.item))
+                        sorted(
+                            completed,
+                            key=lambda result: frozen_order.index(result.item),
+                        )
                     )
                     decision = should_stop(completed_snapshot)
                     if inspect.isawaitable(decision):
                         decision = await decision
                     if decision:
                         await record_stop(PairLaneStopKind.DECISIVE_STOP, decision)
+            if stop_kind is None and pending_queue:
+                await reprioritize_pending(reason="pair_feedback")
             await admit_available_pairs()
     except BaseException:
         for task in active:
@@ -1088,7 +1363,7 @@ async def schedule_pair_lanes(
         stop_reason = "all admitted pair work reached a terminal boundary"
     pending = tuple(
         item
-        for item in ordered
+        for item in frozen_order
         if item.coordinate not in completed_coordinates
         or item.coordinate in resumable_incomplete_coordinates
     )
@@ -1103,7 +1378,9 @@ async def schedule_pair_lanes(
         stop_reason=stop_reason or stop_kind.value,
         safe_lane_count=lane_count,
         isolation_decision_fingerprint=verified_decision.fingerprint,
-        completed=tuple(sorted(completed, key=lambda result: ordered.index(result.item))),
+        completed=tuple(
+            sorted(completed, key=lambda result: frozen_order.index(result.item))
+        ),
         pending=pending,
         elapsed_seconds=max(0.0, read_clock() - started_at),
     )

@@ -21,6 +21,7 @@ from aworld.self_evolve.measurement_control import DeadlinePolicy, SamplingStage
 from aworld.self_evolve.measurement_planner import (
     MeasurementLatencyEstimate,
     compile_measurement_plan_v2,
+    measurement_preflight_projection,
 )
 from aworld.self_evolve.replay_adaptation import (
     IsolationDecision,
@@ -181,3 +182,35 @@ def test_unreachable_positive_conclusion_fails_before_rollout() -> None:
         assert "positive conclusion is unreachable" in str(exc)
     else:
         raise AssertionError("unreachable plan must fail closed")
+
+
+def test_preflight_projection_explains_scale_deadline_and_isolation() -> None:
+    compiled = _compile(_experiment(transfer=True))
+    decision = IsolationDecision.exclusive_fallback(
+        requested_lane_count=2,
+        fallback=IsolationExclusiveFallback(
+            code="binding_requires_exclusive",
+            limiting_resource="browser",
+            detail="fixture is exclusive",
+        ),
+    )
+
+    projection = measurement_preflight_projection(
+        plan=compiled.plan,
+        feasibility=compiled.feasibility,
+        isolation_decision=decision,
+    )
+
+    assert projection["planned_work_units"] == len(compiled.plan.work_units)
+    assert projection["pending_work_units"] == len(compiled.plan.work_units)
+    assert projection["safe_lane_count"] == 1
+    assert projection["isolation_fallback"] == {
+        "code": "binding_requires_exclusive",
+        "limiting_resource": "browser",
+        "detail": "fixture is exclusive",
+    }
+    assert projection["p90_time_to_decision_seconds"] >= projection[
+        "p50_time_to_decision_seconds"
+    ]
+    assert projection["sampling_stages"][-1]["kind"] == "regression_transfer"
+    assert projection["stopping_policy"]["futility_enabled"] is True

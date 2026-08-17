@@ -124,9 +124,14 @@ from aworld.self_evolve.measurement import (
     observations_from_replay,
     stable_measurement_fingerprint,
 )
-from aworld.self_evolve.measurement_control import DeadlinePolicy, MeasurementPlanV2
+from aworld.self_evolve.measurement_control import (
+    DeadlinePolicy,
+    MeasurementPlanV2,
+    estimate_measurement_feasibility,
+)
 from aworld.self_evolve.measurement_planner import (
     compile_measurement_plan_v2,
+    measurement_preflight_projection,
     persist_compiled_measurement_plan,
 )
 from aworld.self_evolve.ingestion import (
@@ -292,7 +297,8 @@ from aworld.self_evolve.replay import (
     ReplayServiceReadinessTimeout,
     build_paired_replay_dataset,
     build_replay_request,
-    compile_replay_evidence_policy_profile_v2,
+    candidate_replay_artifact_directory,
+    compile_authoritative_replay_evidence_policy_profile_v2,
     candidate_replay_is_comparable,
     candidate_replay_pair_coverage,
     normalize_replay_members,
@@ -309,7 +315,6 @@ from aworld.self_evolve.replay import (
     _member_baseline_replay_dir,
     _member_artifact_name,
     _replay_member_pair_is_comparable,
-    _safe_artifact_namespace,
     _is_replayable_user_task_case,
     _select_replay_case,
 )
@@ -345,10 +350,10 @@ from aworld.self_evolve.repair_conformance import (
 )
 from aworld.self_evolve.replay_adaptation import (
     IsolationDecision,
-    IsolationExclusiveFallback,
     ReplayAdaptationBundle,
     ReplayAdaptationCompiler,
     ReplayCapabilityRequirement,
+    compile_replay_adaptation_isolation_decision,
 )
 from aworld.self_evolve.replay_capability import (
     REPLAY_CAPABILITY_PROTOCOL_VERSION,
@@ -11451,6 +11456,8 @@ class SelfEvolveRunner:
         replay_adaptation: ReplayAdaptationBundle,
         replay_backend: CandidateReplayBackend,
         member_timeout_seconds: float,
+        artifact_namespace: str | None = None,
+        target_adapter: SelfEvolveTarget | None = None,
     ) -> tuple[
         MeasurementPlanV2,
         IsolationDecision,
@@ -11472,18 +11479,28 @@ class SelfEvolveRunner:
             raise ValueError(
                 "measurement experiment was not frozen before replay admission"
             )
-        isolation_decision = IsolationDecision.exclusive_fallback(
+        replay_dir = candidate_replay_artifact_directory(
+            workspace_root=self.store.workspace_root,
+            run_id=run_id,
+            candidate_id=candidate.candidate_id,
+            artifact_namespace=artifact_namespace,
+        )
+        isolation_decision = compile_replay_adaptation_isolation_decision(
+            replay_adaptation,
+            materialization_root=replay_dir / "measurement-lanes",
             requested_lane_count=2,
-            fallback=IsolationExclusiveFallback(
-                code="binding_requires_exclusive",
-                limiting_resource="replay_execution",
-                detail=(
-                    "replay adaptation has not supplied two complete materialized "
-                    "lane grants"
-                ),
+        )
+        evidence_profile = compile_authoritative_replay_evidence_policy_profile_v2(
+            experiment=experiment,
+            target=candidate.target,
+            replay_adaptation=replay_adaptation,
+            member_timeout_seconds=member_timeout_seconds,
+            target_adapter_identity=(
+                _measurement_component_identity(target_adapter)
+                if target_adapter is not None
+                else None
             ),
         )
-        evidence_profile = compile_replay_evidence_policy_profile_v2()
         campaign_deadline = (
             float(self.replay_total_timeout_seconds)
             if self.replay_total_timeout_seconds is not None
@@ -11524,6 +11541,11 @@ class SelfEvolveRunner:
                     campaign_wall_deadline_seconds=campaign_deadline,
                     resumable_chunked=True,
                 ),
+                case_strata={
+                    case.case_id: "|".join(sorted(_dataset_case_strata(case)))
+                    for case in dataset.cases
+                    if case.case_id in experiment.sampling.independent_case_ids
+                },
                 repair_screening_case_ids=experiment.search_visible_case_ids,
             )
         except ValueError:
@@ -11540,6 +11562,35 @@ class SelfEvolveRunner:
             compiled=compiled,
             isolation_decision=isolation_decision,
             evidence_policy_profile=evidence_profile,
+        )
+        preflight = measurement_preflight_projection(
+            plan=compiled.plan,
+            feasibility=compiled.feasibility,
+            isolation_decision=isolation_decision,
+        )
+        _emit_progress(
+            self.progress_callback,
+            "measurement_preflight",
+            (
+                "Authoritative measurement plan: "
+                f"work {preflight['pending_work_units']}/"
+                f"{preflight['planned_work_units']} pending; "
+                f"decision units {preflight['decision_required_work_units']}; "
+                f"safe lanes {preflight['safe_lane_count']}; "
+                f"P50/P90 decision ETA "
+                f"{int(float(preflight['p50_time_to_decision_seconds']))}s/"
+                f"{int(float(preflight['p90_time_to_decision_seconds']))}s"
+                + (
+                    "; isolation fallback "
+                    + str(preflight["isolation_fallback"]["code"])
+                    + ":"
+                    + str(
+                        preflight["isolation_fallback"]["limiting_resource"]
+                    )
+                    if isinstance(preflight["isolation_fallback"], Mapping)
+                    else ""
+                )
+            ),
         )
         if self.measurement_mode is MeasurementPolicyMode.SHADOW:
             return None
@@ -11817,6 +11868,8 @@ class SelfEvolveRunner:
                 replay_adaptation=replay_adaptation,
                 replay_backend=effective_replay_backend,
                 member_timeout_seconds=effective_timeout_seconds,
+                artifact_namespace=artifact_namespace,
+                target_adapter=target,
             )
             if measurement_bundle is None:
                 measurement_plan = None
@@ -16870,6 +16923,10 @@ def _replay_report(replay_result: CandidateReplayResult) -> dict[str, object]:
         "candidate": lifecycle(replay_result.candidate),
     }
     if replay_result.request.measurement_plan is not None:
+        assert replay_result.request.measurement_isolation_decision is not None
+        feasibility = estimate_measurement_feasibility(
+            replay_result.request.measurement_plan
+        )
         report["measurement_control"] = {
             "measurement_plan_fingerprint": (
                 replay_result.request.measurement_plan.measurement_plan_fingerprint
@@ -16882,6 +16939,15 @@ def _replay_report(replay_result: CandidateReplayResult) -> dict[str, object]:
             ),
             "decision": public_diagnostic_projection(
                 dict(replay_result.measurement_decision or {})
+            ),
+            "preflight": public_diagnostic_projection(
+                measurement_preflight_projection(
+                    plan=replay_result.request.measurement_plan,
+                    feasibility=feasibility,
+                    isolation_decision=(
+                        replay_result.request.measurement_isolation_decision
+                    ),
+                )
             ),
         }
     if replay_result.request.replay_adaptation is not None:
@@ -17075,20 +17141,11 @@ def _replay_artifact_path(replay_result: CandidateReplayResult) -> str:
 
 
 def _replay_request_artifact_path(request: CandidateReplayRequest) -> Path:
-    replay_root = (
-        Path(request.workspace_root)
-        / ".aworld"
-        / "self_evolve"
-        / request.run_id
-    )
-    if request.artifact_namespace is not None:
-        replay_root = replay_root.joinpath(
-            *_safe_artifact_namespace(request.artifact_namespace)
-        )
-    return (
-        replay_root
-        / "replay"
-        / request.candidate_id
+    return candidate_replay_artifact_directory(
+        workspace_root=request.workspace_root,
+        run_id=request.run_id,
+        candidate_id=request.candidate_id,
+        artifact_namespace=request.artifact_namespace,
     )
 
 
@@ -24149,7 +24206,7 @@ def _candidate_screening_dataset(
                         else None
                     ),
                 ),
-                len(_candidate_screening_case_strata(case) - covered_strata),
+                len(_dataset_case_strata(case) - covered_strata),
                 _candidate_screening_case_distance(
                     case_index[case.case_id],
                     selected_indices=tuple(
@@ -24164,7 +24221,7 @@ def _candidate_screening_dataset(
         covered_requirements.update(
             requirement_ids_by_case.get(representative.case_id, set())
         )
-        covered_strata.update(_candidate_screening_case_strata(representative))
+        covered_strata.update(_dataset_case_strata(representative))
     representative_ids = tuple(case.case_id for case in selected)
     return SelfEvolveDataset(
         cases=tuple(selected),
@@ -24518,7 +24575,9 @@ def _candidate_screening_qualification_case_limit(
     return min(configured_max_cases, adaptive_limit)
 
 
-def _candidate_screening_case_strata(case: EvalCase) -> set[str]:
+def _dataset_case_strata(case: EvalCase) -> set[str]:
+    """Return candidate-independent strata shared by screening and measurement."""
+
     strata: set[str] = set()
     for namespace, values in (("metadata", case.metadata), ("source", case.source)):
         for key in ("task_type", "category", "cluster", "domain", "kind", "role"):
