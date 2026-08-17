@@ -64,6 +64,7 @@ from aworld.self_evolve.replay import (
     _baseline_replay_is_reusable,
     _classify_candidate_task_rollout_nontermination,
     _preserve_replay_service_protocol_trace,
+    _protocol_trace_runtime_artifact_constraint,
     _reset_replay_service_protocol_trace,
     _persist_variant_lifecycle,
     _protocol_probe_response_mismatch,
@@ -4462,6 +4463,15 @@ def test_protocol_trace_canonical_record_missing_fields_emits_typed_constraints(
             "expected": [],
         },
     ]
+
+
+def test_protocol_trace_runtime_artifact_contract_requires_pre_shutdown_output() -> None:
+    constraint = _protocol_trace_runtime_artifact_constraint()
+
+    assert constraint["producer_layer"] == "runtime"
+    assert constraint["availability_milestone"] == "post_probe_pre_shutdown"
+    assert constraint["write_mode"] == "incremental"
+    assert constraint["required_directions"] == ["in", "out"]
 
 
 def test_replay_service_protocol_trace_contract_accepts_sanitized_summary(

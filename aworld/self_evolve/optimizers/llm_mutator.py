@@ -813,6 +813,19 @@ def _focused_repair_prompt_instructions(
         if isinstance(raw_runtime_response_constraints, (list, tuple))
         else ()
     )
+    raw_runtime_artifact_constraints = contract_mapping.get(
+        "runtime_artifact_constraints",
+        (),
+    )
+    runtime_artifact_constraints = (
+        tuple(
+            item
+            for item in raw_runtime_artifact_constraints
+            if isinstance(item, Mapping)
+        )
+        if isinstance(raw_runtime_artifact_constraints, (list, tuple))
+        else ()
+    )
     capability_identity = next(
         (
             str(expected[0])
@@ -1229,6 +1242,27 @@ def _focused_repair_prompt_instructions(
             "required surrounding context; "
             "returning one scalar, a preview-only wrapper, sidecar metadata, or a body "
             "larger than the 64 KiB protocol reader is non-conforming. "
+        )
+    if runtime_artifact_constraints:
+        artifact_contracts = ", ".join(
+            (
+                f"{item.get('relative_path')} owned by "
+                f"{item.get('producer_layer')} and available at "
+                f"{item.get('availability_milestone')} via "
+                f"{item.get('write_mode')} writes"
+            )
+            for item in runtime_artifact_constraints[:8]
+        )
+        instructions += (
+            "The typed runtime_artifact_constraints define an execution-time "
+            "producer contract, not a documentation or compiler schema repair. "
+            f"Required artifacts: {artifact_contracts}. Change only the authorized "
+            "producer source paths. Create and update each artifact before its "
+            "availability milestone; a write deferred to shutdown/finally does not "
+            "satisfy a post-probe-pre-shutdown contract. Keep writes bounded, "
+            "non-empty when required, and preserve every required record field and "
+            "direction. Do not move the artifact into the compiler, weaken the "
+            "validator, or merely claim that a late buffered write exists. "
         )
     if "candidate_conformance_strategy_switch_required" in all_feedback_text:
         instructions += (

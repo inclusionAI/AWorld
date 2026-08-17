@@ -8517,6 +8517,24 @@ def test_failed_probe_feedback_merges_typed_constraints_across_groups() -> None:
         "rule": "required",
         "expected": [],
     }
+    runtime_artifact_constraint = {
+        "schema_version": "aworld.self_evolve.runtime_artifact_constraint.v1",
+        "artifact_kind": "protocol_trace",
+        "relative_path": "protocol_trace.jsonl",
+        "producer_layer": "runtime",
+        "availability_milestone": "post_probe_pre_shutdown",
+        "write_mode": "incremental",
+        "maximum_bytes": 65_536,
+        "require_nonempty": True,
+        "required_record_fields": [
+            "direction",
+            "sequence",
+            "kind",
+            "fields",
+            "correlation",
+        ],
+        "required_directions": ["in", "out"],
+    }
     feedback = _failed_probe_typed_feedback(
         (
             {
@@ -8524,6 +8542,9 @@ def test_failed_probe_feedback_merges_typed_constraints_across_groups() -> None:
                 "error_type": "ReplayServiceProtocolError",
                 "reason": "first member is missing kind",
                 "schema_field_constraints": [constraint],
+                "runtime_artifact_constraints": [
+                    runtime_artifact_constraint
+                ],
                 "schema_field_violations": [{"occurrence_count": 1}],
                 "schema_field_violation_count": 1,
             },
@@ -8532,6 +8553,9 @@ def test_failed_probe_feedback_merges_typed_constraints_across_groups() -> None:
                 "error_type": "ReplayServiceProtocolError",
                 "reason": "second member is missing kind",
                 "schema_field_constraints": [constraint],
+                "runtime_artifact_constraints": [
+                    runtime_artifact_constraint
+                ],
                 "schema_field_violations": [{"occurrence_count": 2}],
                 "schema_field_violation_count": 2,
             },
@@ -8539,6 +8563,9 @@ def test_failed_probe_feedback_merges_typed_constraints_across_groups() -> None:
     )
 
     assert feedback["schema_field_constraints"] == [constraint]
+    assert feedback["runtime_artifact_constraints"] == [
+        runtime_artifact_constraint
+    ]
     assert feedback["schema_field_violation_count"] == 3
     assert len(feedback["diagnostics"]) == 2
 
@@ -11117,6 +11144,18 @@ async def test_shared_candidate_validation_stops_before_next_iteration(
     ] == ["candidate_validation"]
     assert result.run.gate_results[-1].details["failure_class"] == "framework"
     assert result.run.gate_results[-1].details["failure_scope"] == "shared_run"
+    persisted_report = json.loads(
+        (
+            runner.store.run_path(f"run-shared-{shared_stage}-stop")
+            / "report.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert persisted_report["verification_funnel"][
+        "generated_candidate_slot_count"
+    ] == 0
+    assert persisted_report["population"][shared_stage][
+        "framework_invalidated_candidate_ids"
+    ] == ["candidate-shared-1"]
 
 
 @pytest.mark.asyncio

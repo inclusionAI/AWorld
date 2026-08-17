@@ -11,6 +11,7 @@ from aworld.self_evolve.repair_conformance import (
     FixtureDerivedProbeConstraint,
     RepairConformanceContract,
     RepairConformanceResult,
+    RuntimeArtifactConstraint,
     RuntimeResponseConstraint,
     build_repair_conformance_probe_plan,
     compile_repair_conformance_contract,
@@ -3317,3 +3318,81 @@ def test_repair_contract_inherits_task_plane_constraints_across_failed_repairs()
     )
     assert inherited.interaction_progress == 152
     assert "implement_observed_endpoint_interactions" in inherited.failure_codes
+
+
+def test_runtime_artifact_failure_retargets_owner_without_losing_inherited_schema() -> None:
+    compiler_constraint = SchemaFieldRepairConstraint(
+        schema_layer="compile_result",
+        field_path="services[*].transport",
+        rule="enum",
+        expected=("skill_runtime",),
+    )
+    inherited = RepairConformanceContract(
+        focus_candidate_id="candidate-parent",
+        failure_codes=(
+            "schema_field_validation_failed",
+            "protocol_probe_not_fixture_derived",
+        ),
+        interaction_progress=1,
+        base_file_fingerprints={},
+        required_branch_paths=("replay/compiler.py",),
+        base_branch_fingerprints={},
+        manifest_path="replay/capability.json",
+        compiler_path="replay/compiler.py",
+        runtime_paths=("replay/runtime.py",),
+        schema_field_constraints=(compiler_constraint,),
+    )
+    trace_constraint = RuntimeArtifactConstraint(
+        artifact_kind="protocol_trace",
+        relative_path="protocol_trace.jsonl",
+        producer_layer="runtime",
+        availability_milestone="post_probe_pre_shutdown",
+        write_mode="incremental",
+        maximum_bytes=65_536,
+        require_nonempty=True,
+        required_record_fields=(
+            "direction",
+            "sequence",
+            "kind",
+            "fields",
+            "correlation",
+        ),
+        required_directions=("in", "out"),
+    )
+
+    contract = compile_repair_conformance_contract(
+        {
+            "repair_candidate_package": _package(),
+            "candidate_validation_diagnostics": [
+                {
+                    "code": "repair_probe_execution_failed",
+                    "runtime_artifact_constraints": [trace_constraint.to_dict()],
+                    "repair_conformance": inherited.to_public_dict(),
+                }
+            ],
+        }
+    )
+
+    assert contract is not None
+    assert contract.required_branch_paths == ("replay/runtime.py",)
+    assert contract.schema_field_constraints == (compiler_constraint,)
+    assert contract.runtime_artifact_constraints == (trace_constraint,)
+    assert RepairConformanceContract.from_dict(contract.to_dict()) == contract
+    assert public_diagnostic_projection(contract)[
+        "runtime_artifact_constraints"
+    ] == [trace_constraint.to_dict()]
+
+    malformed = replace(
+        contract,
+        required_branch_paths=("replay/compiler.py",),
+    )
+    result = evaluate_candidate_source_conformance(
+        _candidate(runtime_source="def respond():\n    return {}\n"),
+        malformed,
+    )
+    assert result.passed is False
+    assert result.code == "repair_contract_owner_inconsistent"
+    assert result.failure_class == "framework"
+    assert "required_branch_paths.runtime_artifact_owner" in result.details[
+        "missing_contract_fields"
+    ]

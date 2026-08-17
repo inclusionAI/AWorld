@@ -8,6 +8,7 @@ import pytest
 import aworld.self_evolve.campaign as campaign_module
 
 from aworld.self_evolve.campaign import (
+    CampaignMeasurementLedgerV2,
     CampaignUsage,
     SelfImprovementCampaignController,
     SelfImprovementCampaignStatus,
@@ -190,6 +191,52 @@ def test_framework_score_uncertainty_precedes_candidate_scheduler_stall() -> Non
     assert disposition.reason_code == "typed_framework_or_shared_blocker"
     assert disposition.owner == "framework"
     assert disposition.stage == "score_improvement"
+
+
+def test_framework_handoff_preserves_campaign_candidate_cycle(
+    tmp_path: Path,
+) -> None:
+    def run_once(**request):
+        run_id = f"{request['campaign_id']}-cycle-{request['campaign_cycle']:03d}"
+        event = _event(
+            code="repair_contract_owner_inconsistent",
+            owner="framework",
+            scope="shared_run",
+            repairable=False,
+        )
+        report = _report(event)
+        report["run_id"] = run_id
+        report_path = (
+            tmp_path / ".aworld" / "self_evolve" / run_id / "report.json"
+        )
+        report_path.parent.mkdir(parents=True)
+        report_path.write_text(json.dumps(report), encoding="utf-8")
+        return {
+            "run_id": run_id,
+            "status": "rejected",
+            "report_path": str(report_path),
+        }
+
+    controller = SelfImprovementCampaignController(
+        workspace_root=tmp_path,
+        run_once=run_once,
+    )
+    campaign = controller.create(
+        {
+            "from_trajectory": "trajectory.log",
+            "apply_policy": "verified_only",
+            "infer_target": True,
+        },
+        max_cycles=1,
+    )
+
+    advanced, summary = controller.advance_once(campaign)
+
+    assert advanced.status is SelfImprovementCampaignStatus.PAUSED
+    assert advanced.framework_blocked_count == 1
+    assert advanced.measurement_ledger.control_plane_run_count == 1
+    assert summary["campaign_candidate_cycle_count"] == 0
+    assert summary["campaign_max_cycles"] == 2
 
 
 def test_candidate_evidence_repair_precedes_simultaneous_score_uncertainty() -> None:
@@ -2091,3 +2138,16 @@ def test_campaign_usage_is_typed_and_additive() -> None:
         "cost_usd": "0.3",
         "wall_seconds": "5",
     }
+
+
+def test_framework_blocked_run_does_not_spend_candidate_cycle_budget() -> None:
+    ledger = CampaignMeasurementLedgerV2().charge_framework_blocked(
+        "campaign-demo-cycle-001"
+    )
+
+    assert ledger.framework_blocked_count == 1
+    assert ledger.control_plane_run_count == 1
+    assert CampaignMeasurementLedgerV2.from_dict(ledger.to_dict()) == ledger
+
+    with pytest.raises(ValueError, match="two ledgers"):
+        ledger.charge_invalid_retry("campaign-demo-cycle-001")
