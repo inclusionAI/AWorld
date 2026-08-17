@@ -30,6 +30,7 @@ from aworld.self_evolve.replay_adaptation import (
     ReplayIsolationTopology,
     compile_isolation_decision_artifact,
     compile_isolation_grant,
+    compile_replay_adaptation_isolation_decision,
     isolation_grants_compatible,
     materialize_replay_workspace,
     validate_replay_binding_concurrency,
@@ -1263,6 +1264,68 @@ def test_decision_adapter_consumes_typed_compilations_not_raw_boolean() -> None:
     assert decision.grant_set.grants == ()
     assert decision.fallback == fallback_compilation.fallback
     assert decision.fingerprint.startswith("sha256:")
+
+
+def test_replay_bundle_compiles_two_framework_owned_lanes(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    bundle = ReplayAdaptationCompiler().compile(
+        dataset=_dataset("Summarize the local instructions."),
+        workspace_root=workspace,
+        artifact_root=tmp_path / "adaptation",
+    )
+
+    decision = compile_replay_adaptation_isolation_decision(
+        bundle,
+        materialization_root=tmp_path / "run" / "measurement-lanes",
+        requested_lane_count=2,
+    )
+
+    assert decision.safe_lane_count == 2
+    assert decision.fallback is None
+    assert len(decision.grant_set.grants) == 2
+    workspaces = {
+        grant.workspace_identity for grant in decision.grant_set.grants
+    }
+    assert len(workspaces) == 2
+    assert all(
+        Path(identity).is_relative_to(tmp_path / "run" / "measurement-lanes")
+        for identity in workspaces
+    )
+
+
+def test_replay_bundle_preserves_explicit_exclusive_binding(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    bundle = ReplayAdaptationCompiler().compile(
+        dataset=_dataset("Summarize the local instructions."),
+        workspace_root=workspace,
+        artifact_root=tmp_path / "adaptation",
+    )
+    exclusive = validate_replay_binding_concurrency(
+        ReplayAdapterBinding(
+            adapter_id="browser-replay",
+            dependency_id="browser-service",
+            deterministic=True,
+            concurrency_mode="exclusive",
+            resource_key="browser:shared",
+        )
+    )
+    bundle = replace(
+        bundle,
+        cases=(replace(bundle.cases[0], bindings=(exclusive,)),),
+    )
+
+    decision = compile_replay_adaptation_isolation_decision(
+        bundle,
+        materialization_root=tmp_path / "run" / "measurement-lanes",
+        requested_lane_count=2,
+    )
+
+    assert decision.safe_lane_count == 1
+    assert decision.fallback is not None
+    assert decision.fallback.code == "binding_requires_exclusive"
+    assert decision.fallback.limiting_resource == "browser:shared"
     with pytest.raises(TypeError, match="typed grant compilations"):
         compile_isolation_decision_artifact(
             requested_lane_count=2,
@@ -1273,6 +1336,31 @@ def test_decision_adapter_consumes_typed_compilations_not_raw_boolean() -> None:
             requested_lane_count=65,
             lane_compilations=(),
         )
+
+
+def test_stateful_tool_without_isolated_binding_remains_exclusive(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    bundle = ReplayAdaptationCompiler().compile(
+        dataset=_dataset("Open the browser and inspect the page."),
+        workspace_root=workspace,
+        artifact_root=tmp_path / "adaptation",
+    )
+    bundle = replace(
+        bundle,
+        cases=(replace(bundle.cases[0], tool_names=("agent-browser",)),),
+    )
+
+    decision = compile_replay_adaptation_isolation_decision(
+        bundle,
+        materialization_root=tmp_path / "run" / "measurement-lanes",
+    )
+
+    assert decision.safe_lane_count == 1
+    assert decision.fallback is not None
+    assert decision.fallback.limiting_resource == "stateful_tool:agent-browser"
 
 
 def test_decision_adapter_requires_complete_pairwise_proof_for_multiple_lanes() -> None:

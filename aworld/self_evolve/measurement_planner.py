@@ -217,6 +217,72 @@ def persist_compiled_measurement_plan(
     )
 
 
+def measurement_preflight_projection(
+    *,
+    plan: MeasurementPlanV2,
+    feasibility: MeasurementFeasibility,
+    isolation_decision: IsolationDecision,
+) -> dict[str, object]:
+    """Return the bounded operator contract shown before expensive rollout."""
+
+    if plan.isolation_decision_fingerprint != isolation_decision.fingerprint:
+        raise ValueError("preflight isolation decision differs from plan")
+    if feasibility.total_work_units != len(plan.work_units):
+        raise ValueError("preflight work-unit count differs from plan")
+    fallback = isolation_decision.fallback
+    return {
+        "schema_version": "aworld.self_evolve.measurement_preflight.v2",
+        "measurement_plan_fingerprint": plan.measurement_plan_fingerprint,
+        "planned_work_units": feasibility.total_work_units,
+        "reused_work_units": feasibility.reused_work_units,
+        "pending_work_units": feasibility.pending_work_units,
+        "decision_required_work_units": feasibility.decision_required_work_units,
+        "sampling_stages": [
+            {
+                "stage_id": stage.stage_id,
+                "kind": stage.kind.value,
+                "case_count": len(stage.case_ids),
+                "minimum_case_count": stage.minimum_case_count,
+                "batch_size": stage.batch_size,
+                "optional": stage.optional,
+            }
+            for stage in plan.stages
+        ],
+        "safe_lane_count": feasibility.safe_lane_count,
+        "isolation_fallback": (
+            {
+                "code": fallback.code,
+                "limiting_resource": fallback.limiting_resource,
+                "detail": fallback.detail,
+            }
+            if fallback is not None
+            else None
+        ),
+        "minimum_feasible_wall_seconds": feasibility.minimum_feasible_wall_seconds,
+        "p50_time_to_decision_seconds": feasibility.p50_time_to_decision_seconds,
+        "p90_time_to_decision_seconds": feasibility.p90_time_to_decision_seconds,
+        "expected_checkpoint_quanta": feasibility.expected_checkpoint_quanta,
+        "estimate_source": feasibility.estimate_source,
+        "estimate_confidence": feasibility.estimate_confidence,
+        "feasibility_status": feasibility.status.value,
+        "feasibility_reason_code": feasibility.reason_code,
+        "stopping_policy": {
+            "minimum_effect": plan.decision_policy.minimum_effect,
+            "minimum_independent_cases": (
+                plan.decision_policy.minimum_independent_cases
+            ),
+            "maximum_invalid_controls": (
+                plan.decision_policy.maximum_invalid_controls
+            ),
+            "zero_yield_window": plan.decision_policy.zero_yield_window,
+            "require_regression_transfer": (
+                plan.decision_policy.require_regression_transfer
+            ),
+            "futility_enabled": plan.decision_policy.futility_enabled,
+        },
+    }
+
+
 def _stratified_case_order(
     case_ids: Sequence[str],
     *,

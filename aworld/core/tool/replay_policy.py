@@ -277,11 +277,43 @@ class DynamicEndpointBinding:
 
 
 @dataclass(frozen=True)
+class EvidenceContractIdentity:
+    """One authority-bearing compiler input included in policy identity."""
+
+    contract_kind: str
+    fingerprint: str
+
+    def __post_init__(self) -> None:
+        kind = str(self.contract_kind).strip()
+        if not _IDENTIFIER.fullmatch(kind):
+            raise ValueError("evidence contract kind is invalid")
+        if not _DIGEST.fullmatch(str(self.fingerprint)):
+            raise ValueError("evidence contract fingerprint is invalid")
+        object.__setattr__(self, "contract_kind", kind)
+
+    def to_dict(self) -> dict[str, str]:
+        return {
+            "contract_kind": self.contract_kind,
+            "fingerprint": self.fingerprint,
+        }
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, Any]) -> "EvidenceContractIdentity":
+        return cls(
+            contract_kind=_strict_text(
+                value.get("contract_kind"), "contract_kind"
+            ),
+            fingerprint=_strict_text(value.get("fingerprint"), "fingerprint"),
+        )
+
+
+@dataclass(frozen=True)
 class EvidencePolicyProfileV2:
     """Immutable evidence contract bound to measurement identity."""
 
     artifact_policies: tuple[ArtifactPolicy, ...]
     endpoint_bindings: tuple[DynamicEndpointBinding, ...] = ()
+    contract_identities: tuple[EvidenceContractIdentity, ...] = ()
     required_task_response_fields: tuple[str, ...] = ()
     required_manifest_fields: tuple[str, ...] = (
         "handle_id",
@@ -301,6 +333,7 @@ class EvidencePolicyProfileV2:
         for name, key in (
             ("artifact_policies", lambda item: item.artifact_type),
             ("endpoint_bindings", lambda item: item.binding_id),
+            ("contract_identities", lambda item: item.contract_kind),
         ):
             object.__setattr__(self, name, tuple(sorted(getattr(self, name), key=key)))
         for name in (
@@ -319,6 +352,9 @@ class EvidencePolicyProfileV2:
             "schema_version": self.schema_version,
             "artifact_policies": [item.to_dict() for item in self.artifact_policies],
             "endpoint_bindings": [item.to_dict() for item in self.endpoint_bindings],
+            "contract_identities": [
+                item.to_dict() for item in self.contract_identities
+            ],
             "required_task_response_fields": list(self.required_task_response_fields),
             "required_manifest_fields": list(self.required_manifest_fields),
             "allowed_control_actions": list(self.allowed_control_actions),
@@ -343,6 +379,13 @@ class EvidencePolicyProfileV2:
             endpoint_bindings=tuple(
                 DynamicEndpointBinding.from_dict(item)
                 for item in endpoint_values
+            ),
+            contract_identities=tuple(
+                EvidenceContractIdentity.from_dict(item)
+                for item in _strict_mapping_tuple(
+                    value.get("contract_identities", ()),
+                    "contract_identities",
+                )
             ),
             required_task_response_fields=_strict_string_tuple(
                 value.get("required_task_response_fields"),
@@ -453,6 +496,7 @@ class EvidencePolicyProfileV2:
                 for item in self.artifact_policies[:_PROFILE_ITEM_LIMIT]
             ],
             "endpoint_binding_count": len(self.endpoint_bindings),
+            "contract_identity_count": len(self.contract_identities),
             "endpoint_paths_enforced": bool(self.endpoint_bindings),
             "required_task_response_field_count": len(
                 self.required_task_response_fields
@@ -679,6 +723,9 @@ def compile_evidence_policy_profile_v2(
     *,
     artifact_policies: Iterable[ArtifactPolicy | Mapping[str, Any]],
     endpoint_bindings: Iterable[DynamicEndpointBinding | Mapping[str, Any]] = (),
+    contract_identities: Iterable[
+        EvidenceContractIdentity | Mapping[str, Any]
+    ] = (),
     required_task_response_fields: Iterable[str] = (),
     required_manifest_fields: Iterable[str] = tuple(
         _MANIFEST_FIELDS
@@ -699,6 +746,12 @@ def compile_evidence_policy_profile_v2(
             if isinstance(item, DynamicEndpointBinding)
             else DynamicEndpointBinding.from_dict(item)
             for item in endpoint_bindings
+        ),
+        contract_identities=tuple(
+            item
+            if isinstance(item, EvidenceContractIdentity)
+            else EvidenceContractIdentity.from_dict(item)
+            for item in contract_identities
         ),
         required_task_response_fields=tuple(required_task_response_fields),
         required_manifest_fields=tuple(required_manifest_fields),
@@ -772,6 +825,22 @@ def validate_evidence_policy_profile_v2(
             issues.append(EvidencePolicyIssue("duplicate_endpoint_identity", field))
         ids.add(item.binding_id)
         env_names.add(item.environment_name)
+    contract_kinds: set[str] = set()
+    if len(profile.contract_identities) > _PROFILE_ITEM_LIMIT:
+        issues.append(
+            EvidencePolicyIssue(
+                "invalid_contract_identity_count", "contract_identities"
+            )
+        )
+    for index, item in enumerate(profile.contract_identities):
+        field = f"contract_identities[{index}]"
+        if item.contract_kind in contract_kinds:
+            issues.append(EvidencePolicyIssue("duplicate_contract_kind", field))
+        contract_kinds.add(item.contract_kind)
+        if not _IDENTIFIER.fullmatch(item.contract_kind) or not _DIGEST.fullmatch(
+            item.fingerprint
+        ):
+            issues.append(EvidencePolicyIssue("invalid_contract_identity", field))
     fields = profile.required_task_response_fields + profile.required_manifest_fields
     if len(fields) > _PROFILE_ITEM_LIMIT or any(
         not _IDENTIFIER.fullmatch(value) for value in fields

@@ -450,10 +450,15 @@ improvement to the skill change. The historical trajectory is not substituted fo
 missing replay baseline.
 
 Authoritative replay expands only candidates admitted by representative
-screening. It schedules each case as `baseline -> candidate` before advancing to
-the next case, rather than running the complete control panel first. This
-progressive pairing produces usable causal evidence early and prevents a late
-control timeout from erasing every candidate observation. Within that expansion,
+screening. The v2 scheduler preserves `baseline -> candidate` ordering inside
+each case pair while allowing at most two independent pairs to run concurrently
+when replay adaptation proves distinct workspace, runtime, browser-profile,
+endpoint, evidence, service, resource, and cleanup ownership. Otherwise it
+deterministically uses one exclusive lane. This progressive pairing produces
+usable causal evidence early and prevents a late control timeout from erasing
+every candidate observation. The queue covers first repetitions in frozen
+stratified order, then uses measured information-per-cost and invalid-control
+risk to prioritize remaining eligible pairs without starving them. Within that expansion,
 the rollout timeout is a hard per-member phase
 deadline across retries, not a fresh allowance for every retry. Baseline members
 are committed to an incremental cache as soon as they complete. If repeated
@@ -467,10 +472,9 @@ available for a compatible retry. Replay also persists a bounded
 `members/paired_replay_checkpoint.json` cursor after every phase. Timeout gates
 reference that cursor, the request, and the incremental baseline manifest so a
 compatible Campaign cycle can continue measurement without reconstructing the
-completed controls. Legacy verified execution retains its bounded safety horizon
-until the v2 measurement-control scheduler can enforce planned checkpoint quanta
-and Campaign deadlines. The rollout switches these semantics atomically rather
-than leaving the legacy serial path unbounded. Cancellation crosses
+completed controls. Verified CLI execution uses the v2 measurement-control
+scheduler by default; only an explicit `measurement_mode="off"` selects the
+bounded legacy path. Cancellation crosses
 the batch boundary and tears down the replay process group, so a displayed hard
 deadline cannot be converted into a normal batch result or leave an orphaned
 rollout. In verified mode, the first non-comparable baseline member makes the
@@ -576,7 +580,8 @@ Modes:
 
 `online` requires `apply_policy="auto_verified"`. `auto_verified` also requires `requires_post_apply_reevaluation=True`, which is the default. Useful verification knobs include `replay_timeout_seconds`, `replay_max_steps`, `baseline_replay_repetitions`, `candidate_replay_repetitions`, `replay_candidate_limit`, `replay_stability_margin`, `judge_repetitions`, and `judge_timeout_seconds`.
 
-Trusted improvement measurement is a separate, disabled-by-default policy:
+Trusted improvement measurement is independently configurable. Verified CLI
+replay defaults to `required`; SDK/background configuration remains explicit:
 
 ```python
 SelfEvolveConfig(
@@ -596,6 +601,22 @@ treatment must differ on exactly one declared axis, frozen identities must match
 independent cases must meet the configured floor, the confidence interval must
 support the minimum effect, and token/wall usage must be complete. Repetitions
 estimate stability within a case; they never increase the independent-case count.
+
+Before rollout, the framework freezes and reports the complete measurement
+preflight: work-unit counts and reuse, stage panels, safe lanes and fallback,
+minimum/P50/P90 time-to-decision, checkpoint quanta, estimate confidence, and
+stopping policy. The EvidencePolicy profile binds the observation plan, target
+adapter, replay capability, evaluator, resource policy, and exact dynamic
+loopback endpoints into every work-unit identity.
+
+The authoritative queue is adaptive but causally bounded. Frozen stratified
+case order and required coverage are hard tiers. Among otherwise eligible
+pairs, the scheduler uses framework-observed information value, pair cost, and
+invalid-control risk, updates the ranking at pair boundaries, and keeps stable
+ties deterministic. Expansion chooses only from its sealed stage, admits no
+more than the frozen batch size, prefers stratum diversity, and records expected
+information plus the unused case budget. These signals affect execution order,
+not estimator weights or candidate feedback.
 
 `max_improvement_cycles` is the cross-run hard cap and defaults to `3`.
 `max_background_jobs` still limits how many queued generations one drain call

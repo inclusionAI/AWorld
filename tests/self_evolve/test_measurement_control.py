@@ -13,6 +13,7 @@ from aworld.self_evolve.measurement_control import (
     AdaptiveDecision,
     AdaptiveDecisionKind,
     AdaptiveMeasurementPolicy,
+    CaseAdmissionSignal,
     CaseVisibilityRole,
     DeadlinePolicy,
     FeasibilityStatus,
@@ -602,6 +603,55 @@ def test_inconclusive_sentinel_admits_bounded_expansion_batch() -> None:
     assert decision.kind is AdaptiveDecisionKind.ADMIT_EXPANSION
     assert decision.next_stage_id == "expansion"
     assert decision.admit_case_ids == ("case-3",)
+    assert decision.expected_information_value == 1.0
+    assert decision.remaining_case_budget == 1
+    assert decision.admission_policy == "stratified-information-cost-risk-v1"
+
+
+def test_expansion_uses_bounded_information_cost_risk_signals() -> None:
+    progress = _progress(
+        case_admission_signals=(
+            CaseAdmissionSignal(
+                case_id="case-3",
+                stratum_id="browser-navigation",
+                expected_information_value=0.5,
+                predicted_cost_seconds=20.0,
+                failure_risk=0.5,
+                prior_variance=0.25,
+            ),
+            CaseAdmissionSignal(
+                case_id="case-4",
+                stratum_id="browser-extraction",
+                expected_information_value=1.5,
+                predicted_cost_seconds=2.0,
+                failure_risk=0.0,
+                prior_variance=1.0,
+            ),
+        )
+    )
+
+    decision = decide_staged_measurement(_plan(), progress)
+
+    assert decision.kind is AdaptiveDecisionKind.ADMIT_EXPANSION
+    assert decision.admit_case_ids == ("case-4",)
+    assert decision.expected_information_value == 1.5
+    assert decision.remaining_case_budget == 1
+
+
+def test_admission_signal_cannot_reference_case_outside_plan() -> None:
+    progress = _progress(
+        case_admission_signals=(
+            CaseAdmissionSignal(
+                case_id="unknown-case",
+                stratum_id="default",
+                expected_information_value=1.0,
+                predicted_cost_seconds=1.0,
+            ),
+        )
+    )
+
+    with pytest.raises(ValueError, match="outside the measurement plan"):
+        decide_staged_measurement(_plan(), progress)
 
 
 def test_progress_case_ids_must_belong_to_plan() -> None:
