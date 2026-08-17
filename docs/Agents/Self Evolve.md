@@ -458,7 +458,15 @@ improvement to the skill change. The historical trajectory is not substituted fo
 missing replay baseline.
 
 Authoritative replay expands only candidates admitted by representative
-screening. The v2 scheduler preserves `baseline -> candidate` ordering inside
+screening. Every representative qualification case first freezes a distinct v2
+plan whose visibility role is `repair_screening`. The candidate ID remains the
+canonical package identity across qualification, control fallback, and
+authoritative replay; `screening/<case-id>` separates execution artifacts
+without manufacturing `--screening` or `--control-N` candidates. Screening
+observations therefore cannot be promoted as authoritative evidence, while the
+same immutable candidate can continue into the full-panel experiment.
+
+The v2 scheduler preserves `baseline -> candidate` ordering inside
 each case pair while allowing at most two independent pairs to run concurrently
 when replay adaptation proves distinct workspace, runtime, browser-profile,
 endpoint, evidence, service, resource, and cleanup ownership. Otherwise it
@@ -490,6 +498,24 @@ full paired panel unreachable: remaining baseline and candidate members are
 recorded as blocked, and a shared measurement timeout terminates the current
 candidate population rather than triggering more mutations.
 
+The scheduler/control boundary is intentionally smaller than the replay
+artifact boundary. A member may produce a multi-megabyte trajectory, but the
+scheduler receives only a bounded canonical projection with typed lifecycle
+state and hashes of the immutable trajectory, metrics, failure, and lifecycle
+files. Reuse revalidates those hashes before decoding the control. Once a work
+unit reaches `running`, every ordinary exception either records a terminal
+observation or a resumable checkpoint plus bounded diagnostics; a serialization
+or persistence exception cannot silently strand the lease.
+
+Control qualification precedes candidate attribution. Artifact-count and byte
+budgets constrain evidence growth, not read-only inspection of files already
+inside the trusted root. Only recognized read-only actions without command or
+output parameters may continue at the quota; everything unknown remains
+fail-closed. A policy that rejects the unchanged baseline yields the typed
+shared cause `baseline_evidence_policy_infeasible`, stops treatment admission,
+and requests a framework policy amendment rather than consuming candidate or
+measurement-retry capacity.
+
 On datasets meeting the frozen minimum independent-case count, verified replay
 defaults to one baseline and one candidate observation per case. Confidence is
 derived from independent cases; sparse datasets continue to use configured
@@ -518,6 +544,14 @@ not appear as candidate generation and does not consume a generated-candidate
 slot. If capability compilation fails first, the typed schema/probe
 counterexample is fed to the normal candidate-repair generator instead of
 replaying the same immutable package as a measurement retry.
+
+A failure to freeze or admit the qualification plan is owned by the shared
+measurement framework, not by candidate generation. The population stops before
+physical replay, preserves the source candidate and package fingerprint for
+continuation, and does not spend sibling or authoritative slots. With no paired
+observation, the report records measurement as `not_started` with
+`prerequisite_blocked`; it must not synthesize `control_not_comparable` from an
+empty experiment.
 
 Before `build_replay_request()`, `ReplayAdaptationCompiler` rewrites workspace paths
 to `${AWORLD_REPLAY_WORKSPACE}`, creates a filtered workspace seed and environment

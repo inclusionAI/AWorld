@@ -630,6 +630,22 @@ control; up to two independently isolated case pairs may overlap. Completed
 baselines are indexed incrementally and a
 phase checkpoint records completed pairs and pending cases, so an interrupted
 multi-case replay can reuse valid controls and continue from an auditable cursor.
+Scheduler messages never embed complete trajectories, stdout, stderr, or large
+metric payloads. Each completed member writes those artifacts normally and
+publishes a bounded `measurement_result_projection.json` containing only typed
+status/failure data and content-addressed artifact references. Projection or
+journal-finalization failure checkpoints the running work unit and preserves a
+bounded error artifact; it cannot leave a normal process alive with an
+unexplained `running` unit.
+
+The first baseline in an admitted stage also qualifies the frozen control
+contract. Reaching an artifact quota does not prohibit provably read-only
+analysis of evidence already collected, but unknown or artifact-producing
+actions remain fail-closed. If the unchanged baseline is nevertheless rejected
+by the frozen evidence policy, the scheduler reports
+`baseline_evidence_policy_infeasible` as a shared framework blocker and stops
+before candidate execution. It does not label the candidate, synthesize a
+trusted-improvement result, or charge a measurement-invalid retry.
 In `advisory` and
 `required` modes, repeated invalid controls stop expansion after
 `measurement-invalid-control-patience`; remaining members are recorded as
@@ -637,6 +653,12 @@ blocked rather than consuming more authoritative work. `off` and `shadow`
 retain their existing decision behavior.
 During representative screening, a framework-owned invalid control advances
 through every distinct case in the already-bounded representative panel.
+Each qualification case is itself frozen as a v2 `repair_screening` measurement
+plan before rollout. The candidate package keeps its canonical candidate ID;
+`screening/<case-id>` is an execution namespace only and cannot become a new
+candidate identity or authoritative observation. This prevents screening and
+control fallbacks from losing the predeclared experiment while keeping their
+artifacts isolated from the later full-panel replay.
 Invalid controls are remembered across Campaign cycles for the same frozen
 dataset and target baseline, so a later cycle suppresses the repeated control
 and selects a fresh case. Reports expose `invalid_control_case_ids` and
@@ -658,6 +680,14 @@ control is classified as framework-owned, while a candidate-owned incomparable
 member is returned to the repair frontier.
 Representative screening remains the bounded admission plane, while paired
 replay remains the authoritative full-panel experiment.
+
+If the framework cannot freeze or admit that screening plan, it stops the
+population before physical replay and reports a shared
+`measurement_plan_admission_failed` prerequisite. The source candidate is kept
+as the immutable measurement checkpoint; sibling candidates, authoritative
+quota, and candidate-repair feedback are not consumed. In this state the
+bounded `measurement` projection is `not_started` / `prerequisite_blocked`, not
+`control_not_comparable`, because no control or treatment observation exists.
 
 For each measured candidate, AWorld freezes the task model/executor, generator,
 scheduler, evaluator, dataset, environment, runtime, prompt context, and budget

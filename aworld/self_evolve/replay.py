@@ -138,6 +138,10 @@ _REPLAY_TRUSTED_EVIDENCE_PRODUCER = "replay.task"
 _REPLAY_TRUSTED_RESPONSE_PRODUCER = "framework.supervisor"
 _REPLAY_TRUSTED_EVIDENCE_TYPE = "task.evidence"
 _REPLAY_TRUSTED_RESPONSE_TYPE = "task.response"
+_MEASUREMENT_RESULT_PROJECTION_SCHEMA = (
+    "aworld.self_evolve.measurement_result_projection.v1"
+)
+_MEASUREMENT_RESULT_PROJECTION_FILE = "measurement_result_projection.json"
 _TASK_RESPONSE_CAPABILITY_FD_ENV = (
     "AWORLD_SELF_EVOLVE_TASK_RESPONSE_CAPABILITY_FD"
 )
@@ -4023,66 +4027,93 @@ class AWorldCliCandidateReplayBackend:
                 now=_utc_now(),
             )
             try:
-                async with asyncio.timeout(
-                    plan.deadlines.member_hard_deadline_seconds
-                ):
-                    result = await self._run_variant_with_evidence_retries(
-                        local_request,
-                        variant_id=variant_id,
-                        skill_root=(
-                            local_request.baseline_skill_root
-                            or _infer_baseline_skill_root(local_request)
-                            if arm is MeasurementArm.CONTROL
-                            else local_request.overlay_skill_root
-                        ),
-                        artifact_dir=artifact_dir,
-                        measurement_arm=arm,
-                        repetition_id=item.repetition_id,
-                        progress_callback=_scoped_replay_attempt_callback(
-                            progress_callback,
-                            candidate_id=candidate.candidate_id,
-                            case_id=item.case_id,
-                            case_index=plan.case_ids.index(item.case_id) + 1,
-                            case_count=len(plan.case_ids),
-                            phase=(
-                                "baseline"
+                try:
+                    async with asyncio.timeout(
+                        plan.deadlines.member_hard_deadline_seconds
+                    ):
+                        result = await self._run_variant_with_evidence_retries(
+                            local_request,
+                            variant_id=variant_id,
+                            skill_root=(
+                                local_request.baseline_skill_root
+                                or _infer_baseline_skill_root(local_request)
                                 if arm is MeasurementArm.CONTROL
-                                else "candidate"
+                                else local_request.overlay_skill_root
                             ),
+                            artifact_dir=artifact_dir,
+                            measurement_arm=arm,
+                            repetition_id=item.repetition_id,
+                            progress_callback=_scoped_replay_attempt_callback(
+                                progress_callback,
+                                candidate_id=candidate.candidate_id,
+                                case_id=item.case_id,
+                                case_index=plan.case_ids.index(item.case_id) + 1,
+                                case_count=len(plan.case_ids),
+                                phase=(
+                                    "baseline"
+                                    if arm is MeasurementArm.CONTROL
+                                    else "candidate"
+                                ),
+                            ),
+                        )
+                except TimeoutError:
+                    result = _member_phase_timeout_result(
+                        variant_id=variant_id,
+                        phase=(
+                            "baseline"
+                            if arm is MeasurementArm.CONTROL
+                            else "candidate"
                         ),
+                        timeout_seconds=plan.deadlines.member_hard_deadline_seconds,
                     )
-            except TimeoutError:
-                result = _member_phase_timeout_result(
-                    variant_id=variant_id,
-                    phase=(
-                        "baseline"
-                        if arm is MeasurementArm.CONTROL
-                        else "candidate"
-                    ),
-                    timeout_seconds=plan.deadlines.member_hard_deadline_seconds,
+                    _persist_variant_lifecycle(artifact_dir, result)
+                resolved = _persist_measurement_result_projection(
+                    artifact_dir,
+                    result=result,
                 )
-                _persist_variant_lifecycle(artifact_dir, result)
-            payload = to_json_dict(result)
-            resolved = ResolvedControl.from_value(payload)
-            journal.terminal(
-                handle,
-                terminal_state=(
-                    MeasurementWorkUnitState.SUCCEEDED
-                    if result.status is ReplayExecutionStatus.SUCCEEDED
-                    else MeasurementWorkUnitState.MEMBER_TIMED_OUT
-                    if result.failure is not None
-                    and result.failure.code == "replay_member_phase_timeout"
-                    else MeasurementWorkUnitState.TASK_FAILED
-                ),
-                result_fingerprint=resolved.result_fingerprint,
-                lane_attestation=context.lane_attestation,
-                now=_utc_now(),
-                attempt_cost_seconds=max(0.0, time.monotonic() - started),
-                reason_code=(
-                    None if result.succeeded else "replay_member_failed"
-                ),
-            )
-            return payload
+                journal.terminal(
+                    handle,
+                    terminal_state=(
+                        MeasurementWorkUnitState.SUCCEEDED
+                        if result.status is ReplayExecutionStatus.SUCCEEDED
+                        else MeasurementWorkUnitState.MEMBER_TIMED_OUT
+                        if result.failure is not None
+                        and result.failure.code == "replay_member_phase_timeout"
+                        else MeasurementWorkUnitState.TASK_FAILED
+                    ),
+                    result_fingerprint=resolved.result_fingerprint,
+                    lane_attestation=context.lane_attestation,
+                    now=_utc_now(),
+                    attempt_cost_seconds=max(0.0, time.monotonic() - started),
+                    reason_code=(
+                        None if result.succeeded else "replay_member_failed"
+                    ),
+                )
+                return resolved.value
+            except (Exception, asyncio.CancelledError) as exc:
+                # Once a lease has entered RUNNING every non-terminal exit must
+                # leave a resumable journal record.  Large result projection,
+                # persistence, and cancellation failures previously escaped
+                # here and stranded the unit in RUNNING forever.
+                _persist_measurement_execution_error(
+                    artifact_dir,
+                    exc=exc,
+                    work_unit_id=work_unit_id,
+                    arm=arm,
+                )
+                try:
+                    journal.checkpoint(
+                        handle,
+                        now=_utc_now(),
+                        attempt_cost_seconds=max(0.0, time.monotonic() - started),
+                        reason_code="measurement_work_unit_finalization_failed",
+                    )
+                except (OSError, TypeError, ValueError):
+                    logger.exception(
+                        "self_evolve.measurement.work_unit_checkpoint_failed "
+                        f"run_id={request.run_id} work_unit_id={work_unit_id}"
+                    )
+                raise
 
         async def run_control(
             item: PairLaneWorkItem, context: LaneExecutionContext
@@ -4108,14 +4139,44 @@ class AWorldCliCandidateReplayBackend:
                 / "baseline"
                 / str(unit.repetition_id)
             )
-            result = _load_variant_result_from_dir(
-                artifact_dir, base_variant_id="baseline"
+            return _load_measurement_result_projection(artifact_dir)
+
+        def baseline_control_blocker(
+            control: Mapping[str, Any],
+        ) -> ReplayFailureEvent | None:
+            failure = control.get("failure")
+            if not isinstance(failure, Mapping):
+                return None
+            event = _failure_event_from_persisted_mapping(failure)
+            if event.code != "replay_evidence_runtime_policy_violation":
+                return None
+            return ReplayFailureEvent(
+                code="baseline_evidence_policy_infeasible",
+                owner=FailureOwner.FRAMEWORK,
+                stage=FailureStage.EVALUATION,
+                scope=FailureScope.SHARED_RUN,
+                repairable=True,
+                category="measurement_control",
+                summary=(
+                    "the frozen evidence policy rejected the unchanged control "
+                    "before candidate comparison"
+                ),
+                diagnostics={
+                    "control_failure_code": event.code,
+                    "control_failure_semantic_key": event.semantic_key,
+                    "required_action": "amend_evidence_policy_from_control",
+                    "evidence_policy_fingerprint": (
+                        plan.evidence_policy_fingerprint
+                    ),
+                },
+                causes=(event.event_id,),
             )
-            return ResolvedControl.from_value(to_json_dict(result))
 
         def control_allows(
             _item: PairLaneWorkItem, control: Mapping[str, Any]
         ) -> bool:
+            if baseline_control_blocker(control) is not None:
+                return False
             status = control.get("status")
             if status == ReplayExecutionStatus.SUCCEEDED.value:
                 return True
@@ -4136,6 +4197,9 @@ class AWorldCliCandidateReplayBackend:
 
         def stop_on_shared_framework_failure(completed) -> str | None:
             for pair in completed:
+                control_blocker = baseline_control_blocker(pair.control)
+                if control_blocker is not None:
+                    return control_blocker.code
                 for result in (pair.control, pair.treatment):
                     if not isinstance(result, Mapping):
                         continue
@@ -4339,14 +4403,27 @@ class AWorldCliCandidateReplayBackend:
             )
             framework_blocker = next(
                 (
-                    failure
+                    blocker
                     for member in members
-                    for variant in (member.baseline, member.candidate)
-                    for failure in (variant.failure,)
-                    if isinstance(failure, ReplayFailureEvent)
-                    and failure.owner
+                    for blocker in (
+                        baseline_control_blocker(
+                            _measurement_result_projection(
+                                member.baseline,
+                                artifact_dir=(
+                                    members_root
+                                    / _member_artifact_name(member.case_id)
+                                    / "baseline"
+                                ),
+                                include_artifact_references=False,
+                            )
+                        ),
+                        member.baseline.failure,
+                        member.candidate.failure,
+                    )
+                    if isinstance(blocker, ReplayFailureEvent)
+                    and blocker.owner
                     in {FailureOwner.FRAMEWORK, FailureOwner.INFRASTRUCTURE}
-                    and failure.scope
+                    and blocker.scope
                     in {FailureScope.MEMBER, FailureScope.SHARED_RUN}
                 ),
                 None,
@@ -4571,14 +4648,27 @@ class AWorldCliCandidateReplayBackend:
         measurement_decision = to_json_dict(staged.decision)
         framework_blocker = next(
             (
-                failure
+                blocker
                 for member in members
-                for variant in (member.baseline, member.candidate)
-                for failure in (variant.failure,)
-                if isinstance(failure, ReplayFailureEvent)
-                and failure.owner
+                for blocker in (
+                    baseline_control_blocker(
+                        _measurement_result_projection(
+                            member.baseline,
+                            artifact_dir=(
+                                members_root
+                                / _member_artifact_name(member.case_id)
+                                / "baseline"
+                            ),
+                            include_artifact_references=False,
+                        )
+                    ),
+                    member.baseline.failure,
+                    member.candidate.failure,
+                )
+                if isinstance(blocker, ReplayFailureEvent)
+                and blocker.owner
                 in {FailureOwner.FRAMEWORK, FailureOwner.INFRASTRUCTURE}
-                and failure.scope
+                and blocker.scope
                 in {FailureScope.SHARED_RUN, FailureScope.MEMBER}
             ),
             None,
@@ -11510,6 +11600,146 @@ def _persist_variant_lifecycle(
             "blocked_by": [event.to_dict() for event in result.blocked_by],
         },
     )
+
+
+def _measurement_artifact_reference(path: Path) -> dict[str, object]:
+    """Return a bounded content address without loading a large artifact."""
+
+    if path.is_symlink() or not path.is_file():
+        raise ValueError("measurement result artifact is missing or unsafe")
+    digest = hashlib.sha256()
+    byte_count = 0
+    with path.open("rb") as stream:
+        while True:
+            chunk = stream.read(1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+            byte_count += len(chunk)
+    return {
+        "name": path.name,
+        "content_digest": "sha256:" + digest.hexdigest(),
+        "byte_count": byte_count,
+    }
+
+
+def _measurement_failure_projection(
+    failure: ReplayFailureEvent | None,
+) -> Mapping[str, Any] | None:
+    if failure is None:
+        return None
+    payload = failure.to_dict()
+    payload["diagnostics"] = {
+        "full_failure_fingerprint": stable_control_fingerprint(payload),
+    }
+    payload["artifact_refs"] = []
+    return payload
+
+
+def _measurement_result_projection(
+    result: ReplayVariantResult,
+    *,
+    artifact_dir: Path,
+    include_artifact_references: bool = True,
+) -> dict[str, Any]:
+    """Project replay state into a bounded scheduler/control-plane message.
+
+    Trajectory, stdout, stderr, and detailed metrics remain immutable replay
+    artifacts.  Only their content addresses cross the scheduler boundary.
+    """
+
+    artifact_references: list[dict[str, object]] = []
+    if include_artifact_references:
+        for filename in (
+            "lifecycle.json",
+            "trajectory.json",
+            "metrics.json",
+            "failure.json",
+        ):
+            path = artifact_dir / filename
+            if path.exists():
+                artifact_references.append(_measurement_artifact_reference(path))
+    return {
+        "schema_version": _MEASUREMENT_RESULT_PROJECTION_SCHEMA,
+        "variant_id": result.variant_id,
+        "status": result.status.value,
+        "executed": result.executed,
+        "succeeded": result.succeeded,
+        "failure": _measurement_failure_projection(result.failure),
+        "blocked_by": [
+            _measurement_failure_projection(event) for event in result.blocked_by[:8]
+        ],
+        "artifact_references": artifact_references,
+    }
+
+
+def _persist_measurement_result_projection(
+    artifact_dir: Path,
+    *,
+    result: ReplayVariantResult,
+) -> "ResolvedControl[Mapping[str, Any]]":
+    # Local import preserves replay's existing lazy measurement-control import
+    # boundary and avoids pulling scheduler/store into ordinary replay startup.
+    from aworld.self_evolve.measurement_scheduler import ResolvedControl
+
+    projection = _measurement_result_projection(result, artifact_dir=artifact_dir)
+    resolved = ResolvedControl.from_value(projection)
+    _write_json(artifact_dir / _MEASUREMENT_RESULT_PROJECTION_FILE, projection)
+    reloaded = _load_measurement_result_projection(artifact_dir)
+    if reloaded.result_fingerprint != resolved.result_fingerprint:
+        raise ValueError("measurement result projection did not round trip")
+    return reloaded
+
+
+def _load_measurement_result_projection(
+    artifact_dir: Path,
+) -> "ResolvedControl[Mapping[str, Any]]":
+    from aworld.self_evolve.measurement_scheduler import ResolvedControl
+
+    payload = _load_json_object(
+        artifact_dir / _MEASUREMENT_RESULT_PROJECTION_FILE
+    )
+    if payload.get("schema_version") != _MEASUREMENT_RESULT_PROJECTION_SCHEMA:
+        raise ValueError("unsupported measurement result projection schema")
+    raw_references = payload.get("artifact_references")
+    if not isinstance(raw_references, list):
+        raise ValueError("measurement result projection has no artifact references")
+    for item in raw_references:
+        if not isinstance(item, Mapping):
+            raise ValueError("measurement result artifact reference is invalid")
+        name = item.get("name")
+        if not isinstance(name, str) or name != Path(name).name:
+            raise ValueError("measurement result artifact name is unsafe")
+        observed = _measurement_artifact_reference(artifact_dir / name)
+        if observed != dict(item):
+            raise ValueError("measurement result artifact content drifted")
+    return ResolvedControl.from_value(dict(payload))
+
+
+def _persist_measurement_execution_error(
+    artifact_dir: Path,
+    *,
+    exc: BaseException,
+    work_unit_id: str,
+    arm: MeasurementArm,
+) -> None:
+    try:
+        _write_json(
+            artifact_dir / "measurement_execution_error.json",
+            {
+                "schema_version": "aworld.self_evolve.measurement_execution_error.v1",
+                "work_unit_id": work_unit_id,
+                "arm": arm.value,
+                "error_type": type(exc).__name__,
+                "error": sanitize_text(str(exc), max_chars=2_000),
+                "recorded_at": _utc_now(),
+            },
+        )
+    except OSError:
+        logger.exception(
+            "self_evolve.measurement.execution_error_persistence_failed "
+            f"work_unit_id={work_unit_id}"
+        )
 
 
 def _safe_path(value: str) -> str:

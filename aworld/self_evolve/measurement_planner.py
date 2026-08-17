@@ -197,6 +197,93 @@ def compile_measurement_plan_v2(
     )
 
 
+def compile_screening_measurement_plan_v2(
+    *,
+    experiment: ControlledExperimentSpec,
+    dataset_fingerprint: str,
+    execution_contract_fingerprint: str,
+    isolation_decision: IsolationDecision,
+    evidence_policy_profile: EvidencePolicyProfileV2,
+    deadlines: DeadlinePolicy,
+    plan_revision: int = 1,
+    reusable_work_unit_ids: Sequence[str] = (),
+    latency: MeasurementLatencyEstimate | None = None,
+) -> CompiledMeasurementPlan:
+    """Compile a bounded qualification plan without granting release authority.
+
+    Screening is a real paired experiment, but its cases are visible to the
+    search loop and therefore cannot be reused as authoritative validation.
+    Keeping that distinction in the frozen stage contract prevents callers
+    from either running screening through an unfrozen legacy path or promoting
+    its observations as release evidence.
+    """
+
+    control_fingerprint = experiment.control.fingerprint
+    candidate_fingerprint = experiment.treatment.fingerprint
+    if experiment.selection_protocol != "staged_qualification_candidate":
+        raise ValueError(
+            "screening measurement plan requires qualification selection protocol"
+        )
+    if control_fingerprint is None or candidate_fingerprint is None:
+        raise ValueError(
+            "screening measurement plan requires frozen control and candidate artifacts"
+        )
+    case_ids = tuple(experiment.sampling.independent_case_ids)
+    if not case_ids:
+        raise ValueError("screening measurement plan requires at least one case")
+    stage = SamplingStage(
+        stage_id="qualification",
+        kind=SamplingStageKind.SENTINEL,
+        case_ids=case_ids,
+        minimum_case_count=1,
+        batch_size=1,
+        visibility_role=CaseVisibilityRole.REPAIR_SCREENING,
+    )
+    decision_policy = AdaptiveMeasurementPolicy(
+        minimum_effect=experiment.outcomes.minimum_effect,
+        minimum_independent_cases=1,
+        maximum_invalid_controls=max(
+            1, experiment.stopping_policy.invalid_control_patience
+        ),
+        zero_yield_window=max(1, experiment.stopping_policy.zero_yield_patience),
+        require_regression_transfer=False,
+        futility_enabled=True,
+    )
+    plan = MeasurementPlanV2.create(
+        experiment_id=experiment.experiment_id,
+        plan_revision=plan_revision,
+        candidate_fingerprint=candidate_fingerprint,
+        control_fingerprint=control_fingerprint,
+        dataset_fingerprint=dataset_fingerprint,
+        execution_contract_fingerprint=execution_contract_fingerprint,
+        isolation_decision=isolation_decision,
+        evidence_policy_profile=evidence_policy_profile,
+        stages=(stage,),
+        repetitions_per_case=experiment.sampling.repetitions_per_case,
+        deadlines=deadlines,
+        decision_policy=decision_policy,
+        estimator_version="paired-screening-experiment-v2",
+        decision_policy_version="bounded-qualification-v2",
+    )
+    estimate = latency or MeasurementLatencyEstimate()
+    feasibility = estimate_measurement_feasibility(
+        plan,
+        reusable_work_unit_ids=reusable_work_unit_ids,
+        minimum_member_seconds=estimate.minimum_member_seconds,
+        p50_member_seconds=estimate.p50_member_seconds,
+        p90_member_seconds=estimate.p90_member_seconds,
+        cold_start_seconds=estimate.cold_start_seconds,
+        estimate_source=estimate.source,
+        estimate_confidence=estimate.confidence,
+    )
+    validate_measurement_feasibility(plan, feasibility)
+    return CompiledMeasurementPlan(
+        plan=plan,
+        feasibility=feasibility,
+        excluded_repair_screening_case_ids=(),
+    )
+
+
 def persist_compiled_measurement_plan(
     store: FilesystemSelfEvolveStore,
     *,
