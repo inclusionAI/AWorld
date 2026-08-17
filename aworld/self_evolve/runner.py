@@ -131,6 +131,7 @@ from aworld.self_evolve.measurement_control import (
 )
 from aworld.self_evolve.measurement_planner import (
     compile_measurement_plan_v2,
+    compile_screening_measurement_plan_v2,
     measurement_preflight_projection,
     persist_compiled_measurement_plan,
 )
@@ -3676,6 +3677,9 @@ class SelfEvolveRunner:
         self._measurement_experiments: dict[
             tuple[str, str], ControlledExperimentSpec
         ] = {}
+        self._screening_measurement_experiments: dict[
+            tuple[str, str, str], ControlledExperimentSpec
+        ] = {}
         self._measurement_summaries: dict[
             tuple[str, str], MeasurementSummary
         ] = {}
@@ -6444,11 +6448,19 @@ class SelfEvolveRunner:
         candidate_prerequisite_blocked = (
             _gate_results_have_candidate_prerequisite_failure(gate_results)
         )
+        measurement_prerequisite_blocked = any(
+            not gate.passed
+            and _gate_blocks_measurement_materialization(gate)
+            for gate in gate_results
+        )
         if selected_state is not None and not candidate_prerequisite_blocked:
             raw_measurement_summary = selected_state.get("measurement_summary")
             if isinstance(raw_measurement_summary, MeasurementSummary):
                 measurement_summary = raw_measurement_summary
-            elif self.measurement_mode is not MeasurementPolicyMode.OFF:
+            elif (
+                self.measurement_mode is not MeasurementPolicyMode.OFF
+                and not measurement_prerequisite_blocked
+            ):
                 state_candidate = selected_state.get("candidate")
                 if isinstance(state_candidate, CandidateVariant):
                     experiment = self._measurement_experiments.get(
@@ -6548,6 +6560,7 @@ class SelfEvolveRunner:
 
         elif (
             not candidate_prerequisite_blocked
+            and not measurement_prerequisite_blocked
             and self.measurement_mode is not MeasurementPolicyMode.OFF
             and all_candidates
         ):
@@ -7018,6 +7031,34 @@ class SelfEvolveRunner:
         }
         if measurement_summary is not None:
             report["measurement"] = measurement_summary.to_dict()
+        elif measurement_prerequisite_blocked:
+            prerequisite_gate = next(
+                gate
+                for gate in gate_results
+                if not gate.passed
+                and _gate_blocks_measurement_materialization(gate)
+            )
+            prerequisite_details = (
+                prerequisite_gate.details
+                if isinstance(prerequisite_gate.details, Mapping)
+                else {}
+            )
+            report["measurement"] = {
+                "schema_version": "aworld.self_evolve.measurement_summary.v1",
+                "mode": self.measurement_mode.value,
+                "status": "not_started",
+                "validity_status": "prerequisite_blocked",
+                "measurement_readiness_stage": "contract_blocked",
+                "decision_reason": str(
+                    prerequisite_details.get("code")
+                    or "measurement_prerequisite_blocked"
+                ),
+                "effect_direction": "unmeasured",
+                "independent_case_count": 0,
+                "comparable_pair_count": 0,
+                "promotion_eligible": False,
+                "next_action": "repair_measurement",
+            }
         if candidate_source_dispositions:
             report["candidate_source_dispositions"] = {
                 candidate_id: disposition.to_dict()
@@ -7584,6 +7625,7 @@ class SelfEvolveRunner:
         screening_budget_denied_ids: set[str] = set()
         screening_terminal_ids: set[str] = set()
         stopped_by_shared_screening = False
+        stopped_by_shared_measurement = False
         stopped_after_budget_censor = False
         # Every member of the already-bounded representative panel is a
         # distinct control experiment.  ``invalid_control_patience`` must not
@@ -7597,10 +7639,7 @@ class SelfEvolveRunner:
             conformance_contract = repair_conformance_contracts.get(
                 candidate.candidate_id
             )
-            screening_candidate = replace(
-                candidate,
-                candidate_id=f"{candidate.candidate_id}--screening",
-            )
+            screening_execution_id = f"{candidate.candidate_id}--screening"
             baseline_cache_offered = screening_baseline_replay_dir is not None
             _emit_progress(
                 self.progress_callback,
@@ -7626,7 +7665,7 @@ class SelfEvolveRunner:
                     attempts.append(
                         {
                             "candidate_id": candidate.candidate_id,
-                            "screening_candidate_id": screening_candidate.candidate_id,
+                            "screening_candidate_id": screening_execution_id,
                             "passed": False,
                             "reason": "representative screening was not run because budget was denied",
                             "details": {
@@ -7747,22 +7786,35 @@ class SelfEvolveRunner:
                         active_screening_dataset,
                         configured_max_steps=self.replay_max_steps,
                     )
+                    active_case_id = active_screening_dataset.cases[0].case_id
+                    screening_experiment = self._plan_candidate_measurement(
+                        run_id=run_id,
+                        target=target,
+                        dataset=active_screening_dataset,
+                        candidate=candidate,
+                        candidate_count=len(conformance_candidates),
+                        experiment_registry=(
+                            self._screening_measurement_experiments
+                        ),
+                        experiment_key=(
+                            run_id,
+                            candidate.candidate_id,
+                            replay_dataset_fingerprint(
+                                active_screening_dataset
+                            ),
+                        ),
+                        selection_protocol=(
+                            "staged_qualification_candidate"
+                        ),
+                        repetitions=1,
+                        minimum_independent_cases=1,
+                    )
                     replay_result, replay_dataset, replay_gate = (
                         await self._replay_selected_candidate(
                             run_id=run_id,
                             target=target,
                             dataset=active_screening_dataset,
-                            selected_candidate=(
-                                screening_candidate
-                                if control_attempt_index == 1
-                                else replace(
-                                    screening_candidate,
-                                    candidate_id=(
-                                        f"{screening_candidate.candidate_id}"
-                                        f"--control-{control_attempt_index}"
-                                    ),
-                                )
-                            ),
+                            selected_candidate=candidate,
                             apply_policy=apply_policy,
                             baseline_replay_dir=active_baseline_replay_dir,
                             baseline_repetitions=1,
@@ -7777,6 +7829,11 @@ class SelfEvolveRunner:
                                 _DEFAULT_CANDIDATE_SCREENING_TOOL_CALL_LIMIT
                             ),
                             lifecycle_callback=screening_lifecycle,
+                            artifact_namespace=(
+                                f"screening/{active_case_id}"
+                            ),
+                            measurement_experiment=screening_experiment,
+                            measurement_stage="screening",
                         )
                     )
                     active_control_case_ids = tuple(
@@ -7956,8 +8013,19 @@ class SelfEvolveRunner:
                 )
                 or (
                     replay_gate is not None
-                    and _gate_has_typed_shared_infrastructure_failure(replay_gate)
+                    and (
+                        _gate_has_typed_shared_infrastructure_failure(
+                            replay_gate
+                        )
+                        or _gate_has_typed_shared_measurement_failure(
+                            replay_gate
+                        )
+                    )
                 )
+            )
+            shared_measurement_screening_failure = bool(
+                replay_gate is not None
+                and _gate_has_typed_shared_measurement_failure(replay_gate)
             )
             if (
                 attempt_tracker is not None
@@ -8114,7 +8182,7 @@ class SelfEvolveRunner:
             attempts.append(
                 {
                     "candidate_id": candidate.candidate_id,
-                    "screening_candidate_id": screening_candidate.candidate_id,
+                    "screening_candidate_id": screening_execution_id,
                     "gate_name": (
                         replay_gate.gate_name
                         if replay_gate is not None
@@ -8175,10 +8243,17 @@ class SelfEvolveRunner:
                     attempt_tracker.emit(
                         attempt_key,
                         CandidateAttemptStage.BLOCKED,
-                        reason_code="screening_shared_infrastructure_blocked",
+                        reason_code=(
+                            "screening_shared_measurement_blocked"
+                            if shared_measurement_screening_failure
+                            else "screening_shared_infrastructure_blocked"
+                        ),
                     )
                     screening_terminal_ids.add(candidate.candidate_id)
                 stopped_by_shared_screening = True
+                stopped_by_shared_measurement = (
+                    shared_measurement_screening_failure
+                )
                 break
 
         if passing_candidates and not stopped_by_shared_screening:
@@ -8215,7 +8290,11 @@ class SelfEvolveRunner:
                     attempt_tracker.emit(
                         pending_key,
                         CandidateAttemptStage.BLOCKED,
-                        reason_code="screening_shared_infrastructure_blocked",
+                        reason_code=(
+                            "screening_shared_measurement_blocked"
+                            if stopped_by_shared_measurement
+                            else "screening_shared_infrastructure_blocked"
+                        ),
                     )
 
         selection_reason = (
@@ -8225,7 +8304,10 @@ class SelfEvolveRunner:
         if selected_candidate is None:
             if stopped_by_shared_screening:
                 selection_reason = (
-                    "screening stopped after a shared infrastructure failure"
+                    "screening stopped after a shared measurement prerequisite "
+                    "failure"
+                    if stopped_by_shared_measurement
+                    else "screening stopped after a shared infrastructure failure"
                 )
                 selected_candidates = ()
             elif artifact_lifecycle_admission_failed:
@@ -8461,7 +8543,14 @@ class SelfEvolveRunner:
                     self.candidate_replay_repetitions
                 ),
                 "attempts": attempts,
-                "stopped_by_shared_infrastructure": stopped_by_shared_screening,
+                "stopped_by_shared_infrastructure": (
+                    stopped_by_shared_screening
+                    and not stopped_by_shared_measurement
+                ),
+                "stopped_by_shared_measurement": (
+                    stopped_by_shared_measurement
+                ),
+                "stopped_by_shared_validation": stopped_by_shared_screening,
                 "stopped_by_invalid_control": control_frontier_exhausted,
                 "stopped_after_budget_censor": stopped_after_budget_censor,
                 "screening_outcome": (
@@ -9096,11 +9185,25 @@ class SelfEvolveRunner:
         dataset: SelfEvolveDataset,
         candidate: CandidateVariant,
         candidate_count: int,
+        experiment_registry: dict[object, ControlledExperimentSpec] | None = None,
+        experiment_key: object | None = None,
+        selection_protocol: str = "predeclared_authoritative_candidate",
+        repetitions: int | None = None,
+        minimum_independent_cases: int | None = None,
     ) -> ControlledExperimentSpec | None:
         if self.measurement_mode is MeasurementPolicyMode.OFF:
             return None
-        key = (run_id, candidate.candidate_id)
-        existing = self._measurement_experiments.get(key)
+        registry = (
+            self._measurement_experiments
+            if experiment_registry is None
+            else experiment_registry
+        )
+        key = (
+            (run_id, candidate.candidate_id)
+            if experiment_key is None
+            else experiment_key
+        )
+        existing = registry.get(key)
         if existing is not None:
             return existing
         replay_planned = bool(
@@ -9119,15 +9222,19 @@ class SelfEvolveRunner:
                     "required measurement has no executable user-task cases"
                 )
             return None
-        repetitions = (
-            max(
-                self.baseline_replay_repetitions,
-                self.candidate_replay_repetitions,
+        effective_repetitions = (
+            repetitions
+            if repetitions is not None
+            else (
+                max(
+                    self.baseline_replay_repetitions,
+                    self.candidate_replay_repetitions,
+                )
+                if replay_planned
+                else self.judge_repetitions
+                if self.evaluation_backend is not None
+                else 1
             )
-            if replay_planned
-            else self.judge_repetitions
-            if self.evaluation_backend is not None
-            else 1
         )
         dataset_fingerprint = replay_dataset_fingerprint(dataset)
         budget_identity = {
@@ -9225,8 +9332,8 @@ class SelfEvolveRunner:
             ),
             sampling=SamplingPlan(
                 independent_case_ids=measurement_case_ids,
-                repetitions_per_case=repetitions,
-                seeds=tuple(range(1, repetitions + 1)),
+                repetitions_per_case=effective_repetitions,
+                seeds=tuple(range(1, effective_repetitions + 1)),
             ),
             outcomes=OutcomePlan(
                 primary_metric=self.measurement_primary_metric,
@@ -9245,6 +9352,8 @@ class SelfEvolveRunner:
                 confidence_level=self.measurement_confidence_level,
                 minimum_independent_cases=(
                     self.measurement_min_independent_cases
+                    if minimum_independent_cases is None
+                    else minimum_independent_cases
                 ),
                 bootstrap_samples=self.measurement_bootstrap_samples,
             ),
@@ -9277,11 +9386,11 @@ class SelfEvolveRunner:
                 for case_id in dataset.recipe.trainable_case_ids
                 if case_id in measurement_case_ids
             ),
-            selection_protocol="predeclared_authoritative_candidate",
+            selection_protocol=selection_protocol,
             stopping_policy=self.measurement_early_stop_policy,
         )
         self.store.write_measurement_experiment(experiment)
-        self._measurement_experiments[key] = experiment
+        registry[key] = experiment
         return experiment
 
     def _materialize_candidate_measurement(
@@ -9999,14 +10108,45 @@ class SelfEvolveRunner:
             except Exception as exc:
                 replay_result = None
                 replay_dataset = None
+                error_message = sanitize_text(str(exc), max_chars=2_000)
+                failure_event = ReplayFailureEvent(
+                    code="candidate_replay_infrastructure_error",
+                    owner=FailureOwner.INFRASTRUCTURE,
+                    stage=FailureStage.EVALUATION,
+                    scope=FailureScope.SHARED_RUN,
+                    repairable=True,
+                    category="measurement_execution",
+                    summary=(
+                        error_message
+                        or "candidate replay backend failed without diagnostics"
+                    ),
+                    diagnostics={
+                        "error_type": type(exc).__name__,
+                        "candidate_id": candidate.candidate_id,
+                        "replay_started": replay_started,
+                    },
+                )
                 replay_gate = GateResult(
                     gate_name="candidate_replay",
                     passed=False,
-                    reason="candidate replay backend failed",
+                    reason=(
+                        "candidate replay backend failed: " + error_message
+                        if error_message
+                        else "candidate replay backend failed"
+                    ),
                     details={
                         "failure_class": "infrastructure",
-                        "code": "candidate_replay_infrastructure_error",
+                        "failure_owner": FailureOwner.INFRASTRUCTURE.value,
+                        "failure_scope": FailureScope.SHARED_RUN.value,
+                        "failure_stage": FailureStage.EVALUATION.value,
+                        "repairable": True,
+                        "next_action": "retry_infrastructure",
+                        "resume_safe": True,
+                        "code": failure_event.code,
                         "type": type(exc).__name__,
+                        "error": error_message,
+                        "failure_event": failure_event.to_dict(),
+                        "causal_failure_events": [failure_event.to_dict()],
                     },
                 )
             if replay_gate is not None:
@@ -10703,7 +10843,14 @@ class SelfEvolveRunner:
                 )
             )
 
-        if source_disposition.requires_fresh_evaluation:
+        if (
+            source_disposition.requires_fresh_evaluation
+            and not any(
+                not gate.passed
+                and _gate_is_replay_execution_infrastructure_failure(gate)
+                for gate in gate_results
+            )
+        ):
             gate_results.append(
                 GateResult(
                     gate_name="fresh_evaluator_rerun",
@@ -11478,6 +11625,8 @@ class SelfEvolveRunner:
         member_timeout_seconds: float,
         artifact_namespace: str | None = None,
         target_adapter: SelfEvolveTarget | None = None,
+        experiment: ControlledExperimentSpec | None = None,
+        measurement_stage: str = "authoritative",
     ) -> tuple[
         MeasurementPlanV2,
         IsolationDecision,
@@ -11492,7 +11641,9 @@ class SelfEvolveRunner:
 
         if self.measurement_mode is MeasurementPolicyMode.OFF:
             return None
-        experiment = self._measurement_experiments.get(
+        if measurement_stage not in {"authoritative", "screening"}:
+            raise ValueError("unsupported measurement execution stage")
+        experiment = experiment or self._measurement_experiments.get(
             (run_id, candidate.candidate_id)
         )
         if experiment is None:
@@ -11527,7 +11678,12 @@ class SelfEvolveRunner:
             else None
         )
         try:
-            compiled = compile_measurement_plan_v2(
+            compile_plan = (
+                compile_screening_measurement_plan_v2
+                if measurement_stage == "screening"
+                else compile_measurement_plan_v2
+            )
+            compiled = compile_plan(
                 experiment=experiment,
                 dataset_fingerprint=replay_dataset_fingerprint(dataset),
                 execution_contract_fingerprint=stable_measurement_fingerprint(
@@ -11561,12 +11717,23 @@ class SelfEvolveRunner:
                     campaign_wall_deadline_seconds=campaign_deadline,
                     resumable_chunked=True,
                 ),
-                case_strata={
-                    case.case_id: "|".join(sorted(_dataset_case_strata(case)))
-                    for case in dataset.cases
-                    if case.case_id in experiment.sampling.independent_case_ids
-                },
-                repair_screening_case_ids=experiment.search_visible_case_ids,
+                **(
+                    {
+                        "case_strata": {
+                            case.case_id: "|".join(
+                                sorted(_dataset_case_strata(case))
+                            )
+                            for case in dataset.cases
+                            if case.case_id
+                            in experiment.sampling.independent_case_ids
+                        },
+                        "repair_screening_case_ids": (
+                            experiment.search_visible_case_ids
+                        ),
+                    }
+                    if measurement_stage == "authoritative"
+                    else {}
+                ),
             )
         except ValueError:
             if self.measurement_mode is MeasurementPolicyMode.SHADOW:
@@ -11588,11 +11755,16 @@ class SelfEvolveRunner:
             feasibility=compiled.feasibility,
             isolation_decision=isolation_decision,
         )
+        measurement_plan_label = (
+            "Screening measurement plan: "
+            if measurement_stage == "screening"
+            else "Authoritative measurement plan: "
+        )
         _emit_progress(
             self.progress_callback,
             "measurement_preflight",
             (
-                "Authoritative measurement plan: "
+                f"{measurement_plan_label}"
                 f"work {preflight['pending_work_units']}/"
                 f"{preflight['planned_work_units']} pending; "
                 f"decision units {preflight['decision_required_work_units']}; "
@@ -11635,6 +11807,8 @@ class SelfEvolveRunner:
         source_disposition: CandidateSourceDisposition = CandidateSourceDisposition(),
         artifact_namespace: str | None = None,
         replay_backend: CandidateReplayBackend | None = None,
+        measurement_experiment: ControlledExperimentSpec | None = None,
+        measurement_stage: str = "authoritative",
     ) -> tuple[CandidateReplayResult | None, SelfEvolveDataset | None, GateResult | None]:
         if not self.replay_enabled or selected_candidate.target.target_type != "skill":
             return None, None, None
@@ -11890,6 +12064,8 @@ class SelfEvolveRunner:
                 member_timeout_seconds=effective_timeout_seconds,
                 artifact_namespace=artifact_namespace,
                 target_adapter=target,
+                experiment=measurement_experiment,
+                measurement_stage=measurement_stage,
             )
             if measurement_bundle is None:
                 measurement_plan = None
@@ -11962,6 +12138,20 @@ class SelfEvolveRunner:
                 ),
             )
         except ValueError as exc:
+            failure_event = ReplayFailureEvent(
+                code="measurement_plan_admission_failed",
+                owner=FailureOwner.FRAMEWORK,
+                stage=FailureStage.EVALUATION,
+                scope=FailureScope.SHARED_RUN,
+                repairable=True,
+                category="measurement_control",
+                summary="measurement plan admission failed before replay rollout",
+                diagnostics={
+                    "error_type": type(exc).__name__,
+                    "measurement_stage": measurement_stage,
+                },
+            )
+            payload = failure_event.to_dict()
             return (
                 None,
                 None,
@@ -11969,6 +12159,23 @@ class SelfEvolveRunner:
                     gate_name="candidate_replay",
                     passed=False,
                     reason=str(exc),
+                    details={
+                        "failure_class": "measurement",
+                        "failure_owner": FailureOwner.FRAMEWORK.value,
+                        "failure_scope": FailureScope.SHARED_RUN.value,
+                        "failure_stage": FailureStage.EVALUATION.value,
+                        "repairable": True,
+                        "next_action": "repair_measurement",
+                        "resume_safe": True,
+                        "resume_candidate_id": selected_candidate.candidate_id,
+                        "resume_candidate_package_fingerprint": (
+                            candidate_package_fingerprint(selected_candidate)
+                        ),
+                        "code": failure_event.code,
+                        "measurement_stage": measurement_stage,
+                        "failure_event": payload,
+                        "causal_failure_events": [payload],
+                    },
                 ),
             )
         replay_history = getattr(
@@ -17346,11 +17553,26 @@ def _find_reusable_baseline_replay_dir(
     # loading or validating their lifecycle and provenance.
     run_dirs = [path for path in root.iterdir() if path.is_dir()]
     for prior_run_dir in sorted(run_dirs, key=lambda path: path.stat().st_mtime, reverse=True):
-        replay_root = prior_run_dir / "replay"
-        if not replay_root.exists():
-            continue
-        replay_dirs = [path for path in replay_root.iterdir() if path.is_dir()]
-        for replay_dir in sorted(replay_dirs, key=lambda path: path.stat().st_mtime, reverse=True):
+        replay_roots = [prior_run_dir / "replay"]
+        screening_root = prior_run_dir / "screening"
+        if screening_root.is_dir() and not screening_root.is_symlink():
+            replay_roots.extend(
+                path / "replay"
+                for path in screening_root.iterdir()
+                if path.is_dir() and not path.is_symlink()
+            )
+        replay_dirs = [
+            path
+            for replay_root in replay_roots
+            if replay_root.is_dir() and not replay_root.is_symlink()
+            for path in replay_root.iterdir()
+            if path.is_dir() and not path.is_symlink()
+        ]
+        for replay_dir in sorted(
+            replay_dirs,
+            key=lambda path: path.stat().st_mtime,
+            reverse=True,
+        ):
             incremental_members = _incremental_baseline_cache_dir(
                 replay_dir=replay_dir,
                 target=target,
@@ -20685,6 +20907,25 @@ def _gate_has_typed_shared_measurement_failure(gate: GateResult) -> bool:
     )
 
 
+def _gate_is_replay_execution_infrastructure_failure(gate: GateResult) -> bool:
+    details = gate.details
+    return bool(
+        gate.gate_name == "candidate_replay"
+        and isinstance(details, Mapping)
+        and details.get("code") == "candidate_replay_infrastructure_error"
+        and _gate_has_typed_shared_infrastructure_failure(gate)
+    )
+
+
+def _gate_blocks_measurement_materialization(gate: GateResult) -> bool:
+    """Prevent derived statistical gates from hiding an execution blocker."""
+
+    return bool(
+        _gate_has_typed_shared_measurement_failure(gate)
+        or _gate_is_replay_execution_infrastructure_failure(gate)
+    )
+
+
 def _authoritative_attempt_consumed(
     state: Mapping[str, object],
 ) -> bool:
@@ -20700,7 +20941,10 @@ def _authoritative_attempt_consumed(
     if isinstance(gates, (list, tuple)) and any(
         isinstance(gate, GateResult)
         and not gate.passed
-        and _gate_has_typed_shared_measurement_failure(gate)
+        and (
+            _gate_has_typed_shared_measurement_failure(gate)
+            or _gate_is_replay_execution_infrastructure_failure(gate)
+        )
         for gate in gates
     ):
         return False
@@ -20741,7 +20985,11 @@ def _candidate_validation_stopped_by_shared_infrastructure(
         return False
     return any(
         isinstance(stage_report, Mapping)
-        and stage_report.get("stopped_by_shared_infrastructure") is True
+        and (
+            stage_report.get("stopped_by_shared_infrastructure") is True
+            or stage_report.get("stopped_by_shared_measurement") is True
+            or stage_report.get("stopped_by_shared_validation") is True
+        )
         for stage_report in (report.get("conformance"), report.get("screening"))
     )
 
@@ -20784,7 +21032,10 @@ def _candidate_validation_shared_failure_gate(
                         dict(details) if isinstance(details, Mapping) else None
                     ),
                 )
-                if _gate_has_typed_shared_infrastructure_failure(gate):
+                if (
+                    _gate_has_typed_shared_infrastructure_failure(gate)
+                    or _gate_has_typed_shared_measurement_failure(gate)
+                ):
                     return gate
 
     failure_event = ReplayFailureEvent(

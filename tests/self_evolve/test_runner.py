@@ -11120,6 +11120,119 @@ async def test_shared_candidate_validation_stops_before_next_iteration(
 
 
 @pytest.mark.asyncio
+async def test_shared_screening_measurement_prerequisite_preserves_causality(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    skill_path, dataset = _cycle1_runner_fixture(tmp_path)
+    candidate = CandidateVariant(
+        candidate_id="candidate-screening-measurement-blocked",
+        target=SelfEvolveTargetRef("skill", "demo", str(skill_path)),
+        content=(
+            "---\nname: demo\n---\n# Demo\n\n"
+            "Candidate blocked before screening rollout.\n"
+        ),
+        rationale="shared measurement prerequisite fixture",
+    )
+    optimizer_calls = 0
+
+    class Optimizer:
+        async def propose(self, request: OptimizerRequest) -> OptimizerResult:
+            nonlocal optimizer_calls
+            optimizer_calls += 1
+            return OptimizerResult(candidates=(candidate,))
+
+    store = FilesystemSelfEvolveStore(tmp_path)
+    runner = SelfEvolveRunner(
+        store=store,
+        optimizer=Optimizer(),
+        replay_enabled=True,
+        candidate_replay_backend=object(),
+        measurement_mode="required",
+        max_iterations=3,
+    )
+    expected_fingerprint = runner_module.candidate_package_fingerprint(candidate)
+
+    async def blocked_screening(**kwargs):
+        details = {
+            "failure_class": "measurement",
+            "failure_owner": "framework",
+            "failure_scope": "shared_run",
+            "failure_stage": "evaluation",
+            "repairable": True,
+            "next_action": "repair_measurement",
+            "resume_safe": True,
+            "resume_candidate_id": candidate.candidate_id,
+            "resume_candidate_package_fingerprint": expected_fingerprint,
+            "code": "measurement_plan_admission_failed",
+        }
+        screening = {
+            "generated_candidate_count": 1,
+            "attempted_candidate_count": 1,
+            "selected_candidate_ids": [],
+            "stopped_by_shared_infrastructure": False,
+            "stopped_by_shared_measurement": True,
+            "stopped_by_shared_validation": True,
+            "attempts": [
+                {
+                    "candidate_id": candidate.candidate_id,
+                    "gate_name": "candidate_replay",
+                    "passed": False,
+                    "reason": "measurement plan admission failed",
+                    "details": details,
+                    "physical_pair_execution_count": 0,
+                }
+            ],
+        }
+        return (), {
+            "generated_candidate_count": 1,
+            "selected_candidate_ids": [],
+            "attempts": list(screening["attempts"]),
+            "conformance": None,
+            "screening": screening,
+        }
+
+    monkeypatch.setattr(runner, "_screen_candidate_population", blocked_screening)
+
+    result = await runner.run_explicit_target(
+        run_id="run-screening-measurement-blocked",
+        target=SkillTextTarget(skill_path),
+        dataset=dataset,
+        trace_packs=(),
+        apply_policy="verified_only",
+    )
+
+    report = json.loads(
+        (store.run_path(result.run.run_id) / "report.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    failed_gate_names = [
+        gate["gate_name"]
+        for gate in report["gate_results"]
+        if gate["passed"] is False
+    ]
+    assert failed_gate_names == ["candidate_replay"]
+    assert optimizer_calls == 1
+    assert report["selected_candidate_id"] is None
+    assert report["measurement"]["status"] == "not_started"
+    assert report["measurement"]["validity_status"] == (
+        "prerequisite_blocked"
+    )
+    assert report["measurement"]["comparable_pair_count"] == 0
+    assert report["campaign_failure_attribution"]["failure_class"] == (
+        "measurement"
+    )
+    assert report["campaign_failure_attribution"]["resume_candidate_id"] == (
+        candidate.candidate_id
+    )
+    assert runner_module._measurement_pending_candidate_checkpoint(
+        run_path=store.run_path(result.run.run_id),
+        report=report,
+    ) == (candidate.candidate_id, expected_fingerprint)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "persistence_method",
     ("write_candidate", "write_optimizer_lineage"),
@@ -11459,7 +11572,7 @@ async def test_replay_actual_wall_overrun_blocks_following_stage_and_candidate(
         item for item in report["budget"]["debits"]
         if item["stage"] == "screening"
     )
-    assert replay_calls == ["candidate-wall-1--screening"]
+    assert replay_calls == ["candidate-wall-1"]
     assert replay_debit["actual"]["tokens"] == 23
     assert replay_debit["actual"]["cost_usd"] == "4"
     assert replay_debit["actual"]["wall_seconds"] == "5"
@@ -12479,6 +12592,63 @@ async def test_stored_measurement_resume_bypasses_counterexample_screening(
 
 
 @pytest.mark.asyncio
+async def test_missing_measurement_plan_is_typed_shared_admission_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    skill_path, dataset = _cycle1_runner_fixture(tmp_path)
+    candidate = CandidateVariant(
+        candidate_id="measurement-plan-missing",
+        target=SelfEvolveTargetRef("skill", "demo", str(skill_path)),
+        content=(
+            skill_path.read_text(encoding="utf-8")
+            + "\n## Runtime Behavior\nComplete the requested task.\n"
+        ),
+        rationale="exercise fail-closed measurement admission",
+    )
+    runner = SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=SimpleNamespace(),
+        replay_enabled=True,
+        candidate_replay_backend=object(),
+        measurement_mode="required",
+    )
+    monkeypatch.setattr(
+        runner,
+        "_prepare_replay_adaptation",
+        lambda **_kwargs: (
+            SimpleNamespace(),
+            GateResult(
+                gate_name="replay_adaptation",
+                passed=True,
+                reason="adaptation ready",
+            ),
+        ),
+    )
+
+    replay_result, replay_dataset, gate = await runner._replay_selected_candidate(
+        run_id="run-measurement-plan-missing",
+        target=SkillTextTarget(skill_path, allow_auto_apply=True),
+        dataset=dataset,
+        selected_candidate=candidate,
+        apply_policy="verified_only",
+        progress_stage="candidate_screening",
+        measurement_stage="screening",
+    )
+
+    assert replay_result is None
+    assert replay_dataset is None
+    assert gate is not None and gate.passed is False
+    assert gate.details is not None
+    assert gate.details["code"] == "measurement_plan_admission_failed"
+    assert gate.details["failure_class"] == "measurement"
+    assert gate.details["failure_owner"] == "framework"
+    assert gate.details["failure_scope"] == "shared_run"
+    assert gate.details["resume_candidate_id"] == candidate.candidate_id
+    assert gate.details["resume_safe"] is True
+
+
+@pytest.mark.asyncio
 async def test_artifact_lifecycle_repair_fails_closed_before_authoritative_replay(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -13419,8 +13589,10 @@ async def test_runner_reuses_successful_baseline_replay_across_candidate_populat
         / ".aworld"
         / "self_evolve"
         / "run-baseline-reuse"
+        / "screening"
+        / "population-replay-task"
         / "replay"
-        / "candidate-one--screening"
+        / "candidate-one"
         / "baseline"
     )
     assert result.run.status.value == (
@@ -13444,13 +13616,13 @@ async def test_runner_reuses_successful_baseline_replay_across_candidate_populat
         pytest.param(
             FailureOwner.CANDIDATE,
             FailureScope.CANDIDATE,
-            ["candidate-one--screening", "candidate-two--screening"],
+            ["candidate-one", "candidate-two"],
             id="candidate_owned_continues",
         ),
         pytest.param(
             FailureOwner.INFRASTRUCTURE,
             FailureScope.SHARED_RUN,
-            ["candidate-one--screening"],
+            ["candidate-one"],
             id="shared_run_stops",
         ),
     ),
@@ -13904,8 +14076,8 @@ async def test_runner_screens_population_on_representative_member_before_full_re
 
     assert result.run.status.value == "rejected"
     assert replay_backend.calls == [
-        ("candidate-1--screening", ("task-a",), 90, 8),
-        ("candidate-2--screening", ("task-a",), 90, 8),
+        ("candidate-1", ("task-a",), 90, 8),
+        ("candidate-2", ("task-a",), 90, 8),
         ("candidate-1", ("task-a", "task-b"), 600, None),
     ]
     report = json.loads(
@@ -14001,13 +14173,24 @@ async def test_population_screening_falls_back_after_invalid_control_case(
         candidate_replay_backend=object(),
         candidate_screening_max_cases=3,
         measurement_invalid_control_patience=2,
+        measurement_mode="required",
     )
     calls: list[tuple[str, str]] = []
+    measurement_contracts: list[tuple[str, str, str]] = []
 
     async def replay_with_control_fallback(**kwargs):
         candidate_id = kwargs["selected_candidate"].candidate_id
         case_id = kwargs["dataset"].cases[0].case_id
         calls.append((candidate_id, case_id))
+        experiment = kwargs["measurement_experiment"]
+        assert experiment is not None
+        measurement_contracts.append(
+            (
+                kwargs["measurement_stage"],
+                experiment.selection_protocol,
+                kwargs["artifact_namespace"],
+            )
+        )
         kwargs["lifecycle_callback"]("replay_started", {})
         if case_id == "task-a":
             return (
@@ -14052,10 +14235,24 @@ async def test_population_screening_falls_back_after_invalid_control_case(
     fallback_case_id = calls[1][1]
     assert fallback_case_id != "task-a"
     assert calls == [
-        ("candidate-1--screening", "task-a"),
-        ("candidate-1--screening--control-2", fallback_case_id),
-        ("candidate-2--screening", "task-a"),
-        ("candidate-2--screening--control-2", fallback_case_id),
+        ("candidate-1", "task-a"),
+        ("candidate-1", fallback_case_id),
+        ("candidate-2", "task-a"),
+        ("candidate-2", fallback_case_id),
+    ]
+    assert measurement_contracts == [
+        ("screening", "staged_qualification_candidate", "screening/task-a"),
+        (
+            "screening",
+            "staged_qualification_candidate",
+            f"screening/{fallback_case_id}",
+        ),
+        ("screening", "staged_qualification_candidate", "screening/task-a"),
+        (
+            "screening",
+            "staged_qualification_candidate",
+            f"screening/{fallback_case_id}",
+        ),
     ]
     assert report is not None
     screening = report["screening"]
@@ -14147,7 +14344,9 @@ async def test_population_screening_exhausts_distinct_control_panel(
     assert set(calls) == set(case_ids)
     assert report is not None
     screening = report["screening"]
-    assert screening["stopped_by_shared_infrastructure"] is True
+    assert screening["stopped_by_shared_infrastructure"] is False
+    assert screening["stopped_by_shared_measurement"] is True
+    assert screening["stopped_by_shared_validation"] is True
     assert screening["stopped_by_invalid_control"] is True
     assert screening["screening_outcome"] == "invalid_control"
     assert screening["control_fallback_count"] == 2
@@ -16283,7 +16482,7 @@ async def test_runner_filters_quality_rejection_but_retries_replay_only_candidat
     assert result.run.status.value == "succeeded"
     assert optimizer.requests[0].max_candidates == 2
     assert replay_backend.candidate_ids == [
-        "candidate-dup-2--screening",
+        "candidate-dup-2",
         "candidate-dup-2",
         "candidate-dup-2",
     ]
@@ -22784,6 +22983,10 @@ async def test_replay_backend_exception_blocks_population_and_clears_budget(
     assert any(
         gate["gate_name"] == "candidate_replay"
         and gate["details"]["code"] == "candidate_replay_infrastructure_error"
+        and gate["details"]["failure_owner"] == "infrastructure"
+        and gate["details"]["failure_scope"] == "shared_run"
+        and gate["details"]["error"] == "shared backend unavailable"
+        and gate["details"]["next_action"] == "retry_infrastructure"
         for gate in report["gate_results"]
     )
     lifecycle = report["population"]["lifecycle"]

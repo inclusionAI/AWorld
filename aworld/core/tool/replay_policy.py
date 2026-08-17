@@ -1950,9 +1950,15 @@ def enforce_replay_evidence_runtime_policy(
     elif inventory_issues:
         violation_code = inventory_issues[0].code
         violation_metadata = {"artifact_type": inventory_issues[0].field}
-    elif artifact_file_count >= policy.artifact_file_limit:
+    elif (
+        artifact_file_count >= policy.artifact_file_limit
+        and not _actions_are_provably_artifact_read_only(action_items)
+    ):
         violation_code = "artifact_file_limit_exhausted"
-    elif artifact_bytes >= policy.artifact_byte_limit:
+    elif (
+        artifact_bytes >= policy.artifact_byte_limit
+        and not _actions_are_provably_artifact_read_only(action_items)
+    ):
         violation_code = "artifact_byte_limit_exhausted"
     else:
         for item in action_items:
@@ -2261,6 +2267,68 @@ def _action_fingerprint(action: Any) -> str:
     except (TypeError, ValueError):
         encoded = repr(payload).encode("utf-8", errors="replace")
     return "sha256:" + hashlib.sha256(encoded).hexdigest()
+
+
+_ARTIFACT_READ_ONLY_ACTION_PREFIXES = (
+    "get",
+    "inspect",
+    "list",
+    "query",
+    "read",
+    "search",
+    "view",
+)
+_ARTIFACT_MUTATING_PARAMETER_MARKERS = (
+    "append",
+    "command",
+    "create",
+    "destination",
+    "download",
+    "output",
+    "save",
+    "script",
+    "target",
+    "write",
+)
+
+
+def _actions_are_provably_artifact_read_only(actions: tuple[Any, ...]) -> bool:
+    """Allow bounded analysis after quota while keeping collection fail-closed.
+
+    Artifact quotas constrain growth, not use of evidence already collected.
+    Only actions with a recognized read-only verb, no shell command, and no
+    output-like parameter are admitted. Unknown actions remain mutating.
+    """
+
+    if not actions:
+        return False
+    for action in actions:
+        action_name = re.sub(
+            r"[^a-z0-9]+",
+            "_",
+            str(getattr(action, "action_name", None) or "").casefold(),
+        ).strip("_")
+        if not action_name or not any(
+            action_name == prefix or action_name.startswith(prefix + "_")
+            for prefix in _ARTIFACT_READ_ONLY_ACTION_PREFIXES
+        ):
+            return False
+        if _command_texts(action):
+            return False
+        params = getattr(action, "params", None)
+        if params is not None and not isinstance(params, Mapping):
+            return False
+        if isinstance(params, Mapping):
+            for raw_key in params:
+                normalized_key = re.sub(
+                    r"[^a-z0-9]+", "_", str(raw_key).casefold()
+                ).strip("_")
+                if any(
+                    marker in normalized_key
+                    for marker in _ARTIFACT_MUTATING_PARAMETER_MARKERS
+                ):
+                    return False
+    return True
 
 
 def _checked_action_parameters(action: Any) -> str | None:

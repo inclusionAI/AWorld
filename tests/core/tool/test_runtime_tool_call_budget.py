@@ -131,6 +131,67 @@ def test_replay_runtime_policy_rejects_collection_after_artifact_quota(
     assert "screenshot" not in violation
 
 
+def test_replay_runtime_policy_allows_provably_read_only_analysis_at_quota(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    _enable_replay_policy(monkeypatch, tmp_path)
+    artifact_dir = tmp_path / "artifacts"
+    evidence = artifact_dir / "evidence.txt"
+    evidence.write_text("bounded evidence", encoding="utf-8")
+    monkeypatch.setenv("AWORLD_REPLAY_ARTIFACT_FILE_LIMIT", "1")
+
+    action = ActionModel(
+        tool_name="CAST_SEARCH",
+        action_name="read_file",
+        tool_call_id="call-read-existing-evidence",
+        params={"file_path": str(evidence)},
+    )
+
+    assert (
+        _enforce_replay_evidence_runtime_policy(
+            "CAST_SEARCH",
+            [action],
+            _Message(_Context()),
+        )
+        is None
+    )
+
+
+def test_replay_runtime_policy_keeps_unknown_or_output_actions_closed_at_quota(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    _enable_replay_policy(monkeypatch, tmp_path)
+    artifact_dir = tmp_path / "artifacts"
+    (artifact_dir / "evidence.txt").write_text("bounded evidence", encoding="utf-8")
+    monkeypatch.setenv("AWORLD_REPLAY_ARTIFACT_FILE_LIMIT", "1")
+
+    for action in (
+        ActionModel(
+            tool_name="custom",
+            action_name="transform",
+            tool_call_id="call-unknown",
+            params={"file_path": str(artifact_dir / "evidence.txt")},
+        ),
+        ActionModel(
+            tool_name="custom",
+            action_name="read_file",
+            tool_call_id="call-read-with-output",
+            params={
+                "file_path": str(artifact_dir / "evidence.txt"),
+                "output_path": str(artifact_dir / "copy.txt"),
+            },
+        ),
+    ):
+        with pytest.raises(ToolExecutionDenied, match="artifact_file_limit_exhausted"):
+            _enforce_replay_evidence_runtime_policy(
+                action.tool_name,
+                [action],
+                _Message(_Context()),
+            )
+
+
 def test_replay_runtime_policy_ignores_seeded_workspace_outside_evidence_root(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,

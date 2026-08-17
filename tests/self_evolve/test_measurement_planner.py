@@ -17,10 +17,15 @@ from aworld.self_evolve.measurement import (
     TransferPanel,
     TransferPanelRole,
 )
-from aworld.self_evolve.measurement_control import DeadlinePolicy, SamplingStageKind
+from aworld.self_evolve.measurement_control import (
+    CaseVisibilityRole,
+    DeadlinePolicy,
+    SamplingStageKind,
+)
 from aworld.self_evolve.measurement_planner import (
     MeasurementLatencyEstimate,
     compile_measurement_plan_v2,
+    compile_screening_measurement_plan_v2,
     measurement_preflight_projection,
 )
 from aworld.self_evolve.replay_adaptation import (
@@ -34,7 +39,11 @@ def _fp(label: str) -> str:
     return stable_control_fingerprint({"label": label})
 
 
-def _experiment(*, transfer: bool = False) -> ControlledExperimentSpec:
+def _experiment(
+    *,
+    transfer: bool = False,
+    selection_protocol: str = "predeclared_candidate",
+) -> ControlledExperimentSpec:
     cases = tuple(f"case-{index}" for index in range(1, 12))
     return ControlledExperimentSpec.create(
         run_id="run-planner",
@@ -71,6 +80,7 @@ def _experiment(*, transfer: bool = False) -> ControlledExperimentSpec:
             invalid_control_patience=2,
             zero_yield_patience=2,
         ),
+        selection_protocol=selection_protocol,
     )
 
 
@@ -142,6 +152,52 @@ def test_candidate_influencing_cases_are_excluded_from_authoritative_plan() -> N
     assert "case-1" not in compiled.plan.case_ids
     assert "case-2" not in compiled.plan.case_ids
     assert compiled.excluded_repair_screening_case_ids == ("case-1", "case-2")
+
+
+def test_screening_plan_is_frozen_as_non_authoritative_qualification() -> None:
+    experiment = _experiment(
+        selection_protocol="staged_qualification_candidate"
+    )
+    compiled = compile_screening_measurement_plan_v2(
+        experiment=experiment,
+        dataset_fingerprint=_fp("screening-dataset"),
+        execution_contract_fingerprint=_fp("screening-execution"),
+        isolation_decision=IsolationDecision.exclusive_fallback(
+            requested_lane_count=2,
+            fallback=IsolationExclusiveFallback(
+                code="binding_requires_exclusive",
+                limiting_resource="browser",
+                detail="fixture is exclusive",
+            ),
+        ),
+        evidence_policy_profile=compile_evidence_policy_profile_v2(
+            artifact_policies=(
+                ArtifactPolicy(
+                    artifact_type="browser.snapshot",
+                    registered_producers=("browser.snapshotter",),
+                    max_files=2,
+                    max_items=2,
+                    max_bytes=1_000_000,
+                ),
+            ),
+        ),
+        deadlines=DeadlinePolicy(
+            attempt_timeout_seconds=30,
+            member_hard_deadline_seconds=600,
+            checkpoint_quantum_seconds=900,
+            resumable_chunked=True,
+        ),
+    )
+
+    assert len(compiled.plan.stages) == 1
+    assert compiled.plan.stages[0].kind is SamplingStageKind.SENTINEL
+    assert (
+        compiled.plan.stages[0].visibility_role
+        is CaseVisibilityRole.REPAIR_SCREENING
+    )
+    assert compiled.plan.decision_policy.minimum_independent_cases == 1
+    assert compiled.plan.estimator_version == "paired-screening-experiment-v2"
+    assert compiled.excluded_repair_screening_case_ids == ()
 
 
 def test_regression_transfer_is_frozen_but_requires_positive_effect() -> None:

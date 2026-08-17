@@ -18,7 +18,11 @@ from aworld.self_evolve.measurement import (
     TransferPanelRole,
     stable_measurement_fingerprint,
 )
-from aworld.self_evolve.measurement_control import DeadlinePolicy, SamplingStageKind
+from aworld.self_evolve.measurement_control import (
+    CaseVisibilityRole,
+    DeadlinePolicy,
+    SamplingStageKind,
+)
 from aworld.self_evolve.measurement_planner import (
     compile_measurement_plan_v2,
     persist_compiled_measurement_plan,
@@ -28,8 +32,18 @@ from aworld.self_evolve.replay import (
     CandidateReplayRequest,
     ReplayExecutionRequest,
     ReplayExecutionResult,
+    ReplayVariantResult,
+    _load_measurement_result_projection,
+    _persist_measurement_result_projection,
+    _persist_variant_lifecycle,
     compile_replay_evidence_policy_profile_v2,
     replay_dataset_fingerprint,
+)
+from aworld.self_evolve.failure_events import (
+    FailureOwner,
+    FailureScope,
+    FailureStage,
+    ReplayFailureEvent,
 )
 from aworld.self_evolve.replay_adaptation import (
     IsolationDecision,
@@ -54,6 +68,45 @@ from aworld.self_evolve.types import (
 
 def _fp(label: str) -> str:
     return stable_measurement_fingerprint({"label": label})
+
+
+def test_measurement_result_projection_content_addresses_large_replay_artifacts(
+    tmp_path: Path,
+) -> None:
+    artifact_dir = tmp_path / "member" / "baseline" / "1"
+    failure = ReplayFailureEvent(
+        code="baseline_task_failed",
+        owner=FailureOwner.TASK,
+        stage=FailureStage.TASK_ROLLOUT,
+        scope=FailureScope.MEMBER,
+        repairable=False,
+        diagnostics={"large_detail": "d" * 200_000},
+    )
+    result = ReplayVariantResult(
+        variant_id="baseline",
+        status="failed",
+        trajectory=[{"content": "x" * 1_500_000}],
+        metrics={"large_metric": "m" * 1_500_000},
+        failure=failure,
+    )
+    _persist_variant_lifecycle(artifact_dir, result)
+
+    resolved = _persist_measurement_result_projection(
+        artifact_dir,
+        result=result,
+    )
+
+    assert len(resolved.content_bytes) < 32_000
+    assert resolved.value["status"] == "failed"
+    assert resolved.value["failure"]["code"] == "baseline_task_failed"
+    assert {
+        item["name"] for item in resolved.value["artifact_references"]
+    } >= {"lifecycle.json", "trajectory.json", "metrics.json", "failure.json"}
+    assert _load_measurement_result_projection(artifact_dir) == resolved
+
+    (artifact_dir / "trajectory.json").write_text("[]\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="content drifted"):
+        _load_measurement_result_projection(artifact_dir)
 
 
 @pytest.mark.parametrize(
@@ -182,6 +235,102 @@ def test_runner_atomically_compiles_v2_plan_for_advisory_replay(
     ) == (decision, profile)
 
 
+def test_runner_compiles_screening_plan_with_stable_candidate_identity(
+    tmp_path: Path,
+) -> None:
+    skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("---\nname: demo\n---\n# Demo\n", encoding="utf-8")
+    target = SkillTextTarget(skill_path)
+    dataset = SelfEvolveDataset(
+        cases=(EvalCase(case_id="qualification-case", input="run qualification"),),
+        recipe=DatasetRecipe(
+            source={"kind": "screening-v2-integration"},
+            split_seed="screening-v2",
+            splits={"train": ["qualification-case"], "validation": [], "held_out": []},
+            trainable_case_ids=("qualification-case",),
+        ),
+    )
+    candidate = CandidateVariant(
+        candidate_id="stable-screening-candidate",
+        target=target.identity,
+        content="---\nname: demo\n---\n# Demo\nImproved.\n",
+        rationale="screening plan integration fixture",
+        target_fingerprint=target.fingerprint_current_content(),
+    )
+    store = FilesystemSelfEvolveStore(tmp_path)
+    backend = AWorldCliCandidateReplayBackend()
+    runner = SelfEvolveRunner(
+        store=store,
+        optimizer=object(),
+        replay_enabled=True,
+        candidate_replay_backend=backend,
+        measurement_mode=MeasurementPolicyMode.REQUIRED,
+    )
+    experiment = runner._plan_candidate_measurement(
+        run_id="run-screening-v2",
+        target=target,
+        dataset=dataset,
+        candidate=candidate,
+        candidate_count=1,
+        experiment_registry=runner._screening_measurement_experiments,
+        experiment_key=(
+            "run-screening-v2",
+            candidate.candidate_id,
+            replay_dataset_fingerprint(dataset),
+        ),
+        selection_protocol="staged_qualification_candidate",
+        repetitions=1,
+        minimum_independent_cases=1,
+    )
+    assert experiment is not None
+    adaptation = ReplayAdaptationBundle(
+        schema_version="test",
+        source_workspace_root=str(tmp_path),
+        workspace_seed=str(tmp_path / "seed"),
+        workspace_seed_fingerprint=_fp("screening-workspace-seed"),
+        manifest_path=str(tmp_path / "manifest.json"),
+        environment_snapshot_path=str(tmp_path / "environment.json"),
+        environment_fingerprint=_fp("screening-environment"),
+        cases=(
+            ReplayCaseAdaptation(
+                case_id="qualification-case",
+                adapted_task_input="run qualification",
+                task_input_fingerprint=_fp("screening-task"),
+                dependencies=(),
+                bindings=(),
+                tool_names=(),
+                readiness="ready",
+            ),
+        ),
+        adaptation_fingerprint=_fp("screening-adaptation"),
+        ready=True,
+    )
+
+    bundle = runner._compile_authoritative_measurement_plan(
+        run_id="run-screening-v2",
+        dataset=dataset,
+        candidate=candidate,
+        replay_adaptation=adaptation,
+        replay_backend=backend,
+        member_timeout_seconds=30,
+        artifact_namespace="screening/qualification-case",
+        target_adapter=target,
+        experiment=experiment,
+        measurement_stage="screening",
+    )
+
+    assert bundle is not None
+    plan, _, _ = bundle
+    assert plan.candidate_fingerprint == experiment.treatment.fingerprint
+    assert plan.case_ids == ("qualification-case",)
+    assert plan.stages[0].visibility_role is CaseVisibilityRole.REPAIR_SCREENING
+    assert plan.estimator_version == "paired-screening-experiment-v2"
+    assert store.read_measurement_control_plan(
+        "run-screening-v2", plan.measurement_plan_fingerprint
+    ) == plan
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     (
@@ -194,6 +343,12 @@ def test_runner_atomically_compiles_v2_plan_for_advisory_replay(
         (1.0, None, "stop_confident_positive", "succeeded"),
         (-1.0, None, "stop_regression", "candidate_rejected"),
         (None, "baseline", "stop_framework_blocked", "framework_blocked"),
+        (
+            None,
+            "baseline-policy",
+            "stop_framework_blocked",
+            "framework_blocked",
+        ),
         (None, "candidate-v2", "stop_framework_blocked", "framework_blocked"),
     ),
 )
@@ -301,6 +456,23 @@ async def test_authoritative_replay_executes_adaptive_plan_not_legacy_batch(
     ) -> ReplayExecutionResult:
         calls.append((execution.task_id, execution.variant_id))
         if (
+            framework_failure_variant == "baseline-policy"
+            and execution.variant_id == "baseline"
+        ):
+            return ReplayExecutionResult(
+                status="failed",
+                trajectory=[{"action": {"content": "bounded control"}}],
+                failure={
+                    "code": "replay_evidence_runtime_policy_violation",
+                    "outcome": "task_failure",
+                    "failure_owner": "task",
+                    "failure_scope": "member",
+                    "failure_stage": "task_rollout",
+                    "repairable": False,
+                    "reason": "frozen policy rejected unchanged control",
+                },
+            )
+        if (
             transfer_score is None
             and execution.variant_id == framework_failure_variant
         ):
@@ -326,7 +498,18 @@ async def test_authoritative_replay_executes_adaptive_plan_not_legacy_batch(
             score = 1.0
         return ReplayExecutionResult(
             status="succeeded",
-            trajectory=[{"action": {"content": execution.variant_id}}],
+            trajectory=[
+                {
+                    "action": {
+                        "content": (
+                            "x" * 1_200_000
+                            if execution.task_id == neutral_case
+                            and execution.variant_id == "baseline"
+                            else execution.variant_id
+                        )
+                    }
+                }
+            ],
             metrics={"score": score},
         )
 
@@ -353,7 +536,11 @@ async def test_authoritative_replay_executes_adaptive_plan_not_legacy_batch(
 
     if transfer_score is None:
         assert len(result.member_results or ()) == 1
-        assert len(calls) == (1 if framework_failure_variant == "baseline" else 2)
+        assert len(calls) == (
+            1
+            if framework_failure_variant in {"baseline", "baseline-policy"}
+            else 2
+        )
         assert calls[0][0] in sentinel.case_ids
         assert calls[0][1] == "baseline"
         assert all(call[0] == calls[0][0] for call in calls)
@@ -408,6 +595,23 @@ async def test_authoritative_replay_executes_adaptive_plan_not_legacy_batch(
         for item in schedule["schedules"]
     )
     assert schedule["decision"]["kind"] == expected_decision
+    projection_paths = tuple(
+        (
+            tmp_path
+            / ".aworld"
+            / "self_evolve"
+            / experiment.run_id
+            / "replay"
+            / candidate.candidate_id
+            / "members"
+        ).rglob("measurement_result_projection.json")
+    )
+    assert projection_paths
+    assert all(path.stat().st_size < 32_000 for path in projection_paths)
+    if framework_failure_variant == "baseline-policy":
+        assert schedule["decision"]["reason_code"] == (
+            "baseline_evidence_policy_infeasible"
+        )
     outcome = _campaign_measurement_outcome_for_replay(
         result,
         final_status=(
