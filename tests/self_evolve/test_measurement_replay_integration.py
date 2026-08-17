@@ -336,26 +336,42 @@ def test_runner_compiles_screening_plan_with_stable_candidate_identity(
     (
         "transfer_score",
         "framework_failure_variant",
+        "repetitions_per_case",
         "expected_decision",
         "expected_projection",
     ),
     (
-        (1.0, None, "stop_confident_positive", "succeeded"),
-        (-1.0, None, "stop_regression", "candidate_rejected"),
-        (None, "baseline", "stop_framework_blocked", "framework_blocked"),
+        (1.0, None, 1, "stop_confident_positive", "succeeded"),
+        (-1.0, None, 1, "stop_regression", "candidate_rejected"),
+        (None, "baseline", 1, "stop_framework_blocked", "framework_blocked"),
         (
             None,
             "baseline-policy",
+            3,
             "stop_framework_blocked",
             "framework_blocked",
         ),
-        (None, "candidate-v2", "stop_framework_blocked", "framework_blocked"),
+        (
+            None,
+            "baseline-attestation",
+            3,
+            "stop_framework_blocked",
+            "framework_blocked",
+        ),
+        (
+            None,
+            "candidate-v2",
+            1,
+            "stop_framework_blocked",
+            "framework_blocked",
+        ),
     ),
 )
 async def test_authoritative_replay_executes_adaptive_plan_not_legacy_batch(
     tmp_path: Path,
     transfer_score: float | None,
     framework_failure_variant: str | None,
+    repetitions_per_case: int,
     expected_decision: str,
     expected_projection: str,
 ) -> None:
@@ -396,7 +412,10 @@ async def test_authoritative_replay_executes_adaptive_plan_not_legacy_batch(
             prompt_context=_fp("prompt"),
             budget=_fp("budget"),
         ),
-        sampling=SamplingPlan(independent_case_ids=primary),
+        sampling=SamplingPlan(
+            independent_case_ids=primary,
+            repetitions_per_case=repetitions_per_case,
+        ),
         outcomes=OutcomePlan(
             primary_metric="score",
             minimum_effect=0.1,
@@ -473,6 +492,24 @@ async def test_authoritative_replay_executes_adaptive_plan_not_legacy_batch(
                 },
             )
         if (
+            framework_failure_variant == "baseline-attestation"
+            and execution.variant_id == "baseline"
+        ):
+            return ReplayExecutionResult(
+                status="failed",
+                trajectory=[],
+                failure={
+                    "code": "evidence_policy_v2_attestation_failed",
+                    "outcome": "framework_failure",
+                    "failure_class": "measurement_runtime_trust",
+                    "failure_owner": "framework",
+                    "failure_scope": "shared_run",
+                    "failure_stage": "evidence_finalization",
+                    "repairable": True,
+                    "reason": "control evidence bundle was not attested",
+                },
+            )
+        if (
             transfer_score is None
             and execution.variant_id == framework_failure_variant
         ):
@@ -538,7 +575,8 @@ async def test_authoritative_replay_executes_adaptive_plan_not_legacy_batch(
         assert len(result.member_results or ()) == 1
         assert len(calls) == (
             1
-            if framework_failure_variant in {"baseline", "baseline-policy"}
+            if framework_failure_variant
+            in {"baseline", "baseline-policy", "baseline-attestation"}
             else 2
         )
         assert calls[0][0] in sentinel.case_ids
@@ -608,7 +646,10 @@ async def test_authoritative_replay_executes_adaptive_plan_not_legacy_batch(
     )
     assert projection_paths
     assert all(path.stat().st_size < 32_000 for path in projection_paths)
-    if framework_failure_variant == "baseline-policy":
+    if framework_failure_variant in {
+        "baseline-policy",
+        "baseline-attestation",
+    }:
         assert schedule["decision"]["reason_code"] == (
             "baseline_evidence_policy_infeasible"
         )

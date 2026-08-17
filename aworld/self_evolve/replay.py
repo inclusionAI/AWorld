@@ -73,6 +73,7 @@ from aworld.self_evolve.failure_events import (
     causal_failure_events,
 )
 from aworld.self_evolve.measurement_control import (
+    AdaptiveDecisionKind,
     CaseAdmissionSignal,
     LaneMaterializationAttestationV1,
     MeasurementArm,
@@ -4177,7 +4178,10 @@ class AWorldCliCandidateReplayBackend:
             if not isinstance(failure, Mapping):
                 return None
             event = _failure_event_from_persisted_mapping(failure)
-            if event.code != "replay_evidence_runtime_policy_violation":
+            if event.code not in {
+                "evidence_policy_v2_attestation_failed",
+                "replay_evidence_runtime_policy_violation",
+            }:
                 return None
             return ReplayFailureEvent(
                 code="baseline_evidence_policy_infeasible",
@@ -4193,7 +4197,9 @@ class AWorldCliCandidateReplayBackend:
                 diagnostics={
                     "control_failure_code": event.code,
                     "control_failure_semantic_key": event.semantic_key,
-                    "required_action": "amend_evidence_policy_from_control",
+                    "required_action": (
+                        "repair_framework_evidence_contract_from_control"
+                    ),
                     "evidence_policy_fingerprint": (
                         plan.evidence_policy_fingerprint
                     ),
@@ -4310,11 +4316,15 @@ class AWorldCliCandidateReplayBackend:
             *,
             arm_name: str,
             base_variant_id: str,
+            repetition_ids: tuple[int, ...] | None = None,
         ) -> ReplayVariantResult:
             arm_root = (
                 members_root
                 / _member_artifact_name(case_id)
                 / arm_name
+            )
+            selected_repetitions = repetition_ids or tuple(
+                range(1, plan.repetitions_per_case + 1)
             )
             physical = [
                 _load_variant_result_from_dir(
@@ -4325,7 +4335,7 @@ class AWorldCliCandidateReplayBackend:
                         else f"{base_variant_id}-{repetition_id}"
                     ),
                 )
-                for repetition_id in range(1, plan.repetitions_per_case + 1)
+                for repetition_id in selected_repetitions
             ]
             return _aggregate_variant_results(
                 base_variant_id=base_variant_id,
@@ -4333,12 +4343,34 @@ class AWorldCliCandidateReplayBackend:
                 artifact_dir=arm_root,
             )
 
-        def current_members() -> tuple[CandidateReplayMemberResult, ...]:
+        def current_members(
+            *, include_partial: bool = False
+        ) -> tuple[CandidateReplayMemberResult, ...]:
             entries = {entry.work_unit_id: entry for entry in journal.index_entries()}
             members: list[CandidateReplayMemberResult] = []
             for case_id in plan.case_ids:
                 units = [unit for unit in plan.work_units if unit.case_id == case_id]
-                if not units or not all(entries[unit.work_unit_id].state.terminal for unit in units):
+                if not units:
+                    continue
+                terminal_repetitions = tuple(
+                    repetition_id
+                    for repetition_id in range(1, plan.repetitions_per_case + 1)
+                    if (
+                        repetition_units := tuple(
+                            unit
+                            for unit in units
+                            if unit.repetition_id == repetition_id
+                        )
+                    )
+                    and all(
+                        entries[unit.work_unit_id].state.terminal
+                        for unit in repetition_units
+                    )
+                )
+                if not terminal_repetitions or (
+                    not include_partial
+                    and len(terminal_repetitions) != plan.repetitions_per_case
+                ):
                     continue
                 item_request = replace(
                     request,
@@ -4357,15 +4389,59 @@ class AWorldCliCandidateReplayBackend:
                             case_id,
                             arm_name="baseline",
                             base_variant_id="baseline",
+                            repetition_ids=terminal_repetitions,
                         ),
                         candidate=load_member_arm(
                             case_id,
                             arm_name=_safe_path(candidate.candidate_id),
                             base_variant_id=candidate.candidate_id,
+                            repetition_ids=terminal_repetitions,
                         ),
                     )
                 )
             return tuple(members)
+
+        def framework_blocked_member(
+            reason_code: str,
+        ) -> CandidateReplayMemberResult:
+            case_id = plan.case_ids[0]
+            failure = ReplayFailureEvent(
+                code=reason_code,
+                owner=FailureOwner.FRAMEWORK,
+                stage=FailureStage.EVALUATION,
+                scope=FailureScope.SHARED_RUN,
+                repairable=True,
+                category="measurement_control",
+                summary=(
+                    "authoritative measurement stopped before a complete "
+                    "case aggregate was available"
+                ),
+                diagnostics={
+                    "measurement_plan_fingerprint": (
+                        plan.measurement_plan_fingerprint
+                    ),
+                    "resume_safe": True,
+                },
+            )
+            item_request = replace(
+                request,
+                task_id=case_id,
+                task_input=_adapted_task_input(request, replay_cases[case_id]),
+                task_input_fingerprint=_adapted_task_input_fingerprint(
+                    request, replay_cases[case_id]
+                ),
+                measurement_lane_attestations={},
+            )
+            return CandidateReplayMemberResult(
+                case_id=case_id,
+                request=item_request,
+                baseline=_blocked_variant_result(
+                    "baseline", blocked_by=failure
+                ),
+                candidate=_blocked_variant_result(
+                    candidate.candidate_id, blocked_by=failure
+                ),
+            )
 
         def partial_result(
             members: tuple[CandidateReplayMemberResult, ...],
@@ -4660,6 +4736,9 @@ class AWorldCliCandidateReplayBackend:
             resolve_reused_control=resolve_control,
             control_allows_treatment=control_allows,
             pair_should_stop=stop_on_shared_framework_failure,
+            pair_decisive_stop_kind=(
+                AdaptiveDecisionKind.STOP_FRAMEWORK_BLOCKED
+            ),
             checkpoint_quantum_seconds=plan.deadlines.checkpoint_quantum_seconds,
             campaign_deadline_monotonic=(
                 time.monotonic() + plan.deadlines.campaign_wall_deadline_seconds
@@ -4669,7 +4748,15 @@ class AWorldCliCandidateReplayBackend:
             materialization_timeout_seconds=plan.deadlines.attempt_timeout_seconds,
             configured_lane_limit=2,
         )
-        members = current_members()
+        framework_stopped = (
+            staged.decision.kind
+            is AdaptiveDecisionKind.STOP_FRAMEWORK_BLOCKED
+        )
+        members = current_members(include_partial=framework_stopped)
+        if not members and framework_stopped:
+            members = (
+                framework_blocked_member(staged.decision.reason_code),
+            )
         if not members:
             raise RuntimeError(
                 "measurement scheduler stopped before producing a complete pair"
@@ -4702,17 +4789,29 @@ class AWorldCliCandidateReplayBackend:
             ),
             None,
         )
-        if framework_blocker is not None:
+        if framework_stopped or framework_blocker is not None:
             # Invalid controls caused by the measurement framework are not
             # statistical invalidity and must never spend a candidate or
             # measurement-retry opportunity. Preserve the scheduler stop as a
             # diagnostic while projecting the actual causal owner to Campaign.
             measurement_decision = {
                 "kind": "stop_framework_blocked",
-                "reason_code": framework_blocker.code,
-                "resume_safe": False,
-                "failure_owner": framework_blocker.owner.value,
-                "failure_scope": framework_blocker.scope.value,
+                "reason_code": (
+                    staged.decision.reason_code
+                    if framework_stopped
+                    else framework_blocker.code
+                ),
+                "resume_safe": staged.decision.resume_safe,
+                "failure_owner": (
+                    framework_blocker.owner.value
+                    if framework_blocker is not None
+                    else FailureOwner.FRAMEWORK.value
+                ),
+                "failure_scope": (
+                    framework_blocker.scope.value
+                    if framework_blocker is not None
+                    else FailureScope.SHARED_RUN.value
+                ),
                 "scheduler_decision": to_json_dict(staged.decision),
             }
         result = partial_result(
