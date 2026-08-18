@@ -2832,7 +2832,23 @@ def test_candidate_screening_timeout_is_bounded_without_extending_short_timeouts
     assert _candidate_screening_timeout(90) == 90
     assert _candidate_screening_timeout(60) == 60
     assert _candidate_screening_timeout(600, max_steps=4) == 120
-    assert _candidate_screening_timeout(600, max_steps=8) == 180
+    assert _candidate_screening_timeout(600, max_steps=8) == 240
+    assert _candidate_screening_timeout(
+        600,
+        max_steps=4,
+        empirical_observation={
+            "baseline_success_count": 1,
+            "baseline_success_wall_seconds": 101.0,
+        },
+    ) == 152
+    assert _candidate_screening_timeout(
+        900,
+        max_steps=12,
+        empirical_observation={
+            "baseline_success_count": 1,
+            "baseline_success_wall_seconds": 500.0,
+        },
+    ) == 300
 
 
 def test_candidate_generation_retries_only_transient_provider_failures() -> None:
@@ -7777,6 +7793,79 @@ def test_bounded_screening_marks_baseline_deadline_as_invalid_control_without_ca
         for event in details["causal_failure_events"]
     )
     assert runner_module._screening_gate_has_invalid_control(gate) is True
+
+
+def test_bounded_screening_promotes_candidate_only_deadline_to_candidate_repair(
+    tmp_path: Path,
+) -> None:
+    request = CandidateReplayRequest(
+        run_id="run-candidate-deadline",
+        task_id="case-candidate-deadline",
+        workspace_root=str(tmp_path),
+        target=SelfEvolveTargetRef(target_type="skill", target_id="screening"),
+        candidate_id="candidate-deadline",
+        overlay_skill_root=str(tmp_path / "overlay"),
+        task_input="complete this task",
+        timeout_seconds=120,
+    )
+    candidate_deadline = ReplayFailureEvent(
+        code="replay_member_phase_timeout",
+        owner=FailureOwner.FRAMEWORK,
+        stage=FailureStage.EVALUATION,
+        scope=FailureScope.MEMBER,
+        repairable=True,
+        category="execution_control",
+        summary="candidate phase reached its hard deadline",
+        diagnostics={"phase": "candidate", "timeout_seconds": 120},
+    )
+    replay_result = _CandidateReplayResult(
+        request=request,
+        baseline=ReplayVariantResult(
+            variant_id="baseline",
+            status=ReplayExecutionStatus.SUCCEEDED,
+            trajectory=[{"step": 1}],
+            metrics={"task_success": 1.0},
+        ),
+        candidate=ReplayVariantResult(
+            variant_id="candidate-deadline",
+            status=ReplayExecutionStatus.FAILED,
+            trajectory=[{"step": 1}],
+            failure=candidate_deadline,
+        ),
+    )
+    dataset = SelfEvolveDataset(
+        cases=(
+            EvalCase(
+                case_id="case-candidate-deadline",
+                input="complete this task",
+            ),
+        ),
+        recipe=DatasetRecipe(
+            source={"kind": "trajectory_log"},
+            split_seed="candidate-deadline",
+            splits={"train": ["case-candidate-deadline"]},
+            trainable_case_ids=("case-candidate-deadline",),
+        ),
+    )
+
+    details = _replay_gate_details(
+        replay_result,
+        dataset=dataset,
+        bounded_screening=True,
+    )
+    gate = GateResult(
+        gate_name="candidate_replay",
+        passed=False,
+        reason="candidate phase timed out",
+        details=details,
+    )
+
+    assert details["code"] == "candidate_screening_deadline_exceeded"
+    assert details["failure_class"] == "candidate"
+    assert details["failure_owner"] == "candidate"
+    assert details["failure_scope"] == "candidate"
+    assert details["evaluator_skipped"] is True
+    assert runner_module._screening_gate_has_invalid_control(gate) is False
 
 
 def test_bounded_screening_censors_candidate_timeout_with_data_plane_progress(
@@ -13405,6 +13494,214 @@ def test_authoritative_invalid_control_is_persisted_and_deprioritized(
     assert ordered.cases[-1].case_id == "case-1"
 
 
+def test_historical_baseline_lifecycles_preflight_control_before_generation(
+    tmp_path: Path,
+) -> None:
+    store = FilesystemSelfEvolveStore(tmp_path)
+    target = SelfEvolveTargetRef(
+        target_type="skill",
+        target_id="demo",
+        path=str(tmp_path / "skills" / "demo" / "SKILL.md"),
+    )
+    dataset = SelfEvolveDataset(
+        cases=(
+            EvalCase(case_id="case-timeout", input="slow"),
+            EvalCase(case_id="case-healthy", input="healthy"),
+        ),
+        recipe=DatasetRecipe(
+            source={"kind": "trajectory_log"},
+            split_seed="control-preflight",
+            splits={"train": ["case-timeout", "case-healthy"]},
+            trainable_case_ids=("case-timeout", "case-healthy"),
+        ),
+    )
+    prior_run = store.run_path("campaign-prior-cycle-001")
+    prior_run.mkdir(parents=True)
+    (prior_run / "report.json").write_text(
+        json.dumps(
+            {
+                "target": {
+                    "target_type": target.target_type,
+                    "target_id": target.target_id,
+                    "path": target.path,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    for case_id, status, failure, latency_ms in (
+        (
+            "case-timeout",
+            "failed",
+            {
+                "code": "replay_member_phase_timeout",
+                "diagnostics": {"timeout_seconds": 120},
+            },
+            None,
+        ),
+        ("case-healthy", "succeeded", None, 100_000.0),
+    ):
+        baseline_dir = (
+            prior_run
+            / "screening"
+            / case_id
+            / "replay"
+            / "candidate"
+            / "baseline"
+        )
+        baseline_dir.mkdir(parents=True)
+        (baseline_dir / "lifecycle.json").write_text(
+            json.dumps({"status": status, "failure": failure}),
+            encoding="utf-8",
+        )
+        (baseline_dir / "aggregate_metrics.json").write_text(
+            json.dumps(
+                ({"latency_ms": latency_ms} if latency_ms is not None else {})
+            ),
+            encoding="utf-8",
+        )
+
+    observations: dict[str, dict[str, float | int]] = {}
+    runner_module._restore_historical_screening_lifecycle_observations(
+        observations,
+        store=store,
+        target=target,
+        dataset=dataset,
+        current_run_id="campaign-current-cycle-001",
+    )
+    preflight = runner_module._screening_control_preflight(
+        dataset,
+        observations=observations,
+    )
+    screening = _candidate_screening_dataset(
+        dataset,
+        max_cases=1,
+        empirical_observations=observations,
+    )
+
+    assert observations["case-timeout"]["baseline_timeout_count"] == 1
+    assert observations["case-healthy"]["baseline_success_count"] == 1
+    assert observations["case-healthy"]["baseline_total_wall_seconds"] == 100.0
+    assert observations["case-healthy"]["baseline_success_wall_seconds"] == 100.0
+    assert preflight["status"] == "feasible"
+    assert preflight["feasible_case_ids"] == ["case-healthy"]
+    assert preflight["infeasible_case_ids"] == []
+    assert preflight["unknown_case_ids"] == ["case-timeout"]
+    assert screening is not None
+    assert screening.cases[0].case_id == "case-healthy"
+
+
+def test_control_preflight_fails_closed_only_when_all_baselines_are_known_bad() -> None:
+    dataset = SelfEvolveDataset(
+        cases=(EvalCase(case_id="case-timeout", input="slow"),),
+        recipe=DatasetRecipe(
+            source={"kind": "trajectory_log"},
+            split_seed="all-bad-controls",
+            splits={"train": ["case-timeout"]},
+            trainable_case_ids=("case-timeout",),
+        ),
+    )
+
+    infeasible = runner_module._screening_control_preflight(
+        dataset,
+        observations={
+            "case-timeout": {
+                "baseline_attempt_count": 2,
+                "baseline_success_count": 0,
+                "baseline_timeout_count": 2,
+                "baseline_timeout_max_seconds": 300.0,
+            }
+        },
+    )
+    unknown = runner_module._screening_control_preflight(
+        dataset,
+        observations={},
+    )
+
+    assert infeasible["status"] == "infeasible"
+    assert infeasible["candidate_generation_allowed"] is False
+    assert unknown["status"] == "unknown"
+    assert unknown["candidate_generation_allowed"] is True
+
+
+@pytest.mark.asyncio
+async def test_runner_skips_candidate_generation_when_control_preflight_is_infeasible(
+    tmp_path: Path,
+) -> None:
+    skill_path, dataset = _cycle1_runner_fixture(tmp_path, case_count=1)
+    store = FilesystemSelfEvolveStore(tmp_path)
+    case_id = dataset.cases[0].case_id
+    prior_run = store.run_path("campaign-prior-cycle-001")
+    prior_run.mkdir(parents=True)
+    (prior_run / "report.json").write_text(
+        json.dumps(
+            {
+                "target": {
+                    "target_type": "skill",
+                    "target_id": "demo",
+                    "path": str(skill_path),
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    baseline_dir = (
+        prior_run
+        / "screening"
+        / case_id
+        / "replay"
+        / "candidate"
+        / "baseline"
+    )
+    baseline_dir.mkdir(parents=True)
+    (baseline_dir / "lifecycle.json").write_text(
+        json.dumps(
+            {
+                "status": "failed",
+                "failure": {
+                    "code": "replay_member_phase_timeout",
+                    "diagnostics": {"timeout_seconds": 300},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (baseline_dir / "aggregate_metrics.json").write_text("{}", encoding="utf-8")
+    optimizer_calls = 0
+
+    class Optimizer:
+        async def propose(self, request: OptimizerRequest) -> OptimizerResult:
+            nonlocal optimizer_calls
+            optimizer_calls += 1
+            raise AssertionError("control preflight must run before generation")
+
+    runner = SelfEvolveRunner(
+        store=store,
+        optimizer=Optimizer(),
+        replay_enabled=True,
+        candidate_replay_backend=object(),
+        measurement_mode="required",
+    )
+
+    result = await runner.run_explicit_target(
+        run_id="campaign-current-cycle-001",
+        target=SkillTextTarget(skill_path),
+        dataset=dataset,
+        trace_packs=(),
+        apply_policy="verified_only",
+    )
+
+    report = store.read_report(result.run.run_id)
+    assert optimizer_calls == 0
+    assert result.run.status is SelfEvolveRunStatus.REJECTED
+    assert report["screening_control_preflight"]["status"] == "infeasible"
+    assert len(report["gate_results"]) == 1
+    assert report["gate_results"][0]["gate_name"] == (
+        "candidate_screening_preflight"
+    )
+    assert report["gate_results"][0]["details"]["failure_class"] == "framework"
+
+
 def test_verified_prerequisite_files_restore_format_only_differences() -> None:
     target = SelfEvolveTargetRef(target_type="skill", target_id="demo")
     feedback = EvaluationSummary(
@@ -14684,6 +14981,94 @@ async def test_population_screening_exhausts_distinct_control_panel(
     assert terminal_details["failure_class"] == "framework"
     assert terminal_details["resume_safe"] is False
     assert terminal_details.get("resume_candidate_id") is None
+
+
+@pytest.mark.asyncio
+async def test_population_screening_does_not_retry_control_after_candidate_deadline(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("---\nname: demo\n---\n# Demo\n", encoding="utf-8")
+    case_ids = ("task-a", "task-b", "task-c")
+    dataset = SelfEvolveDataset(
+        cases=tuple(EvalCase(case_id=item, input=item) for item in case_ids),
+        recipe=DatasetRecipe(
+            source={"kind": "candidate-deadline"},
+            split_seed="candidate-deadline",
+            splits={"train": list(case_ids), "validation": [], "held_out": []},
+            trainable_case_ids=case_ids,
+        ),
+    )
+    candidate = CandidateVariant(
+        candidate_id="candidate-deadline",
+        target=SelfEvolveTargetRef("skill", "demo", str(skill_path)),
+        content="# Demo\n\nCandidate.\n",
+        rationale="deadline fixture",
+    )
+    runner = SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=SimpleNamespace(),
+        replay_enabled=True,
+        candidate_replay_backend=object(),
+        candidate_screening_max_cases=3,
+        measurement_mode="required",
+    )
+    calls: list[str] = []
+    event = ReplayFailureEvent(
+        code="candidate_screening_deadline_exceeded",
+        owner=FailureOwner.CANDIDATE,
+        stage=FailureStage.TASK_ROLLOUT,
+        scope=FailureScope.CANDIDATE,
+        repairable=True,
+        category="candidate_screening",
+    ).to_dict()
+
+    async def candidate_deadline(**kwargs):
+        calls.append(kwargs["dataset"].cases[0].case_id)
+        kwargs["lifecycle_callback"]("replay_started", {})
+        return (
+            None,
+            None,
+            GateResult(
+                gate_name="candidate_replay",
+                passed=False,
+                reason="candidate exceeded screening deadline",
+                details={
+                    "code": "candidate_screening_deadline_exceeded",
+                    "failure_class": "candidate",
+                    "failure_owner": "candidate",
+                    "failure_scope": "candidate",
+                    "repairable": True,
+                    "evaluator_skipped": True,
+                    "failure_event": event,
+                    "causal_failure_events": [event],
+                },
+            ),
+        )
+
+    monkeypatch.setattr(runner, "_replay_selected_candidate", candidate_deadline)
+
+    selected, report = await runner._screen_candidate_population(
+        run_id="run-candidate-deadline",
+        target=SkillTextTarget(skill_path, allow_auto_apply=True),
+        dataset=dataset,
+        candidates=(candidate,),
+        apply_policy="verified_only",
+        require_single_candidate_screening=True,
+    )
+
+    assert selected == ()
+    assert len(calls) == 1
+    assert report is not None
+    screening = report["screening"]
+    assert screening["control_fallback_count"] == 0
+    assert screening["stopped_by_shared_measurement"] is False
+    assert screening["candidate_dispositions"] == {
+        candidate.candidate_id: "screening_rejected"
+    }
+    assert "candidate-owned replay failure" in screening["selection_reason"]
 
 
 @pytest.mark.asyncio
@@ -17764,9 +18149,10 @@ async def test_runner_emits_progress_events_for_long_optimize_phases(tmp_path) -
     )
 
     stages = [stage for stage, _ in events]
-    assert stages[:5] == [
+    assert stages[:6] == [
         "start",
         "trajectory_set_loading",
+        "candidate_screening_preflight",
         "candidate_generation",
         "population_generation",
         "replay_adaptation",

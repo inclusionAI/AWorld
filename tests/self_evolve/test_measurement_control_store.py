@@ -54,6 +54,31 @@ def _fp(label: str) -> str:
     return stable_control_fingerprint({"label": label})
 
 
+def test_screening_control_preflight_cache_round_trips(tmp_path: Path) -> None:
+    store = FilesystemSelfEvolveStore(tmp_path)
+    payload = {
+        "schema_version": "aworld.self_evolve.screening_control_preflight.v1",
+        "status": "feasible",
+        "case_count": 1,
+        "feasible_case_ids": ["case-1"],
+        "infeasible_case_ids": [],
+        "unknown_case_ids": [],
+        "candidate_generation_allowed": True,
+        "source": "historical_baseline_lifecycle",
+        "case_observations": {"case-1": {"baseline_success_count": 1}},
+    }
+
+    path = store.write_screening_control_preflight("run-preflight", payload)
+
+    assert path.name == "control_preflight.json"
+    assert store.read_screening_control_preflight("run-preflight") == payload
+    with pytest.raises(ValueError, match="unsupported screening"):
+        store.write_screening_control_preflight(
+            "run-preflight",
+            {**payload, "schema_version": "wrong"},
+        )
+
+
 def _evidence_profile(label: str = "default") -> EvidencePolicyProfileV2:
     return compile_evidence_policy_profile_v2(
         artifact_policies=(

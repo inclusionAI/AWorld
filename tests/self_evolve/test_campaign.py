@@ -1426,6 +1426,37 @@ def test_screening_candidate_blocker_precedes_derived_measurement_gate() -> None
     assert campaign_module._report_authoritative_candidate_count(report) == 1
 
 
+def test_measurement_policy_routes_framework_repair_to_goal_handoff() -> None:
+    report = {
+        "status": "rejected",
+        "measurement": {
+            "mode": "required",
+            "status": "not_started",
+            "validity_status": "prerequisite_blocked",
+            "promotion_eligible": False,
+            "next_action": "repair_framework",
+        },
+        "gate_results": [
+            {
+                "gate_name": "candidate_screening_preflight",
+                "passed": False,
+                "details": {
+                    "failure_class": "framework",
+                    "failure_owner": "framework",
+                    "failure_scope": "shared_run",
+                    "repairable": True,
+                },
+            }
+        ],
+    }
+
+    disposition = derive_self_improvement_disposition(report)
+
+    assert disposition.kind is SelfImprovementDispositionKind.HANDOFF_GOAL
+    assert disposition.owner == "framework"
+    assert disposition.reason_code == "typed_framework_or_shared_blocker"
+
+
 def test_screening_candidate_blocker_continues_repair_without_checkpoint(
     tmp_path: Path,
 ) -> None:
