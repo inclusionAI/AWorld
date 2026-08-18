@@ -318,6 +318,8 @@ from aworld.self_evolve.replay import (
     replay_capability_fixture_response_leaf_values,
     replay_capability_fixture_summaries,
     replay_dataset_fingerprint,
+    replay_support_fingerprint,
+    replay_timeout_envelope_fingerprint,
     _baseline_invalid_for_measurement,
     _baseline_replay_is_reusable,
     _candidate_replay_request_from_mapping,
@@ -1775,6 +1777,21 @@ def _candidate_screening_timeout(
             math.ceil(empirical_seconds),
         ),
     )
+
+
+def _candidate_screening_escalated_timeout(
+    current_timeout_seconds: int,
+    *,
+    authoritative_timeout_seconds: int,
+) -> int | None:
+    ceiling = min(
+        authoritative_timeout_seconds,
+        _MAX_CANDIDATE_SCREENING_TIMEOUT_SECONDS,
+    )
+    if current_timeout_seconds >= ceiling:
+        return None
+    escalated = min(ceiling, math.ceil(current_timeout_seconds * 1.5))
+    return escalated if escalated > current_timeout_seconds else None
 
 
 def _candidate_screening_max_steps(
@@ -3844,6 +3861,12 @@ class SelfEvolveRunner:
         self._candidate_screening_case_observations: dict[
             str, dict[str, float | int]
         ] = {}
+        # Exact qualification health is never keyed by case alone.  The
+        # case-only projection above is retained strictly as an advisory
+        # ordering/cost signal for cold-start panel selection.
+        self._candidate_screening_control_observations: dict[
+            str, dict[str, object]
+        ] = {}
         self._candidate_screening_observation_dataset_fingerprint: str | None = (
             None
         )
@@ -3916,6 +3939,7 @@ class SelfEvolveRunner:
             != screening_dataset_fingerprint
         ):
             self._candidate_screening_case_observations.clear()
+            self._candidate_screening_control_observations.clear()
             self._candidate_screening_loaded_run_ids.clear()
             self._candidate_screening_observation_dataset_fingerprint = (
                 screening_dataset_fingerprint
@@ -3925,6 +3949,9 @@ class SelfEvolveRunner:
             store=self.store,
             prior_run_ids=tuple(campaign_prior_run_ids or ()),
             loaded_run_ids=self._candidate_screening_loaded_run_ids,
+            control_observations=(
+                self._candidate_screening_control_observations
+            ),
         )
         _restore_historical_screening_lifecycle_observations(
             self._candidate_screening_case_observations,
@@ -3932,6 +3959,9 @@ class SelfEvolveRunner:
             target=target.identity,
             dataset=dataset,
             current_run_id=run_id,
+            control_observations=(
+                self._candidate_screening_control_observations
+            ),
         )
         screening_control_preflight = _screening_control_preflight(
             dataset,
@@ -4383,48 +4413,6 @@ class SelfEvolveRunner:
         baseline_preflight_blocked = False
         infrastructure_blocked = False
         shared_validation_gate: GateResult | None = None
-        if screening_control_preflight.get("status") == "infeasible":
-            preflight_event = ReplayFailureEvent(
-                code="screening_control_preflight_infeasible",
-                owner=FailureOwner.FRAMEWORK,
-                stage=FailureStage.CAPABILITY_PREFLIGHT,
-                scope=FailureScope.SHARED_RUN,
-                repairable=True,
-                category="measurement_control",
-                summary=(
-                    "historical baseline lifecycles prove that no screening "
-                    "control case fits the current bounded execution envelope"
-                ),
-                diagnostics={
-                    "infeasible_case_ids": list(
-                        screening_control_preflight.get(
-                            "infeasible_case_ids", []
-                        )
-                    )[:32],
-                },
-            )
-            payload = preflight_event.to_dict()
-            shared_validation_gate = GateResult(
-                gate_name="candidate_screening_preflight",
-                passed=False,
-                reason=(
-                    "candidate generation was skipped because the frozen "
-                    "screening control panel is infeasible"
-                ),
-                details={
-                    **screening_control_preflight,
-                    "failure_class": "framework",
-                    "failure_owner": FailureOwner.FRAMEWORK.value,
-                    "failure_scope": FailureScope.SHARED_RUN.value,
-                    "failure_stage": FailureStage.CAPABILITY_PREFLIGHT.value,
-                    "repairable": True,
-                    "next_action": "repair_framework",
-                    "resume_safe": False,
-                    "failure_event": payload,
-                    "causal_failure_events": [payload],
-                },
-            )
-            baseline_preflight_blocked = True
         progress_repair_families: set[str] = set()
         duplicate_population_stalls = 0
         consecutive_policy_filter_stalls = 0
@@ -6513,6 +6501,9 @@ class SelfEvolveRunner:
                         run_observations=(
                             self._current_run_authoritative_case_observations
                         ),
+                        control_observations=(
+                            self._candidate_screening_control_observations
+                        ),
                     )
                     if _replay_result_has_reusable_baseline(
                         dataset=dataset,
@@ -7163,6 +7154,25 @@ class SelfEvolveRunner:
             ),
             "prior_feedback_count": len(prior_feedback),
             "screening_control_preflight": screening_control_preflight,
+            "support_specific_control_health": {
+                "schema_version": (
+                    "aworld.self_evolve.support_specific_control_health.v1"
+                ),
+                "identity_fields": [
+                    "case_id",
+                    "baseline_skill_fingerprint",
+                    "capability_package_fingerprint",
+                    "replay_capability_fingerprint",
+                    "adaptation_fingerprint",
+                    "timeout_envelope_fingerprint",
+                ],
+                "observations": [
+                    dict(observation)
+                    for observation in list(
+                        self._candidate_screening_control_observations.values()
+                    )[-128:]
+                ],
+            },
             "iterations": iteration_reports,
             "execution": {
                 "stages": execution_stages,
@@ -7300,7 +7310,8 @@ class SelfEvolveRunner:
                                     self._current_run_authoritative_case_observations
                                 ).items()
                             )
-                        }
+                        },
+                        "authoritative_case_observations_advisory_only": True,
                     }
                     if self._current_run_authoritative_case_observations
                     else {}
@@ -8103,27 +8114,14 @@ class SelfEvolveRunner:
                     for case_id in fallback_case_ids
                     if configured_screening_panel is not None
                 )
-                for control_attempt_index, candidate_screening_dataset in enumerate(
+                attempted_control_dataset_count = 0
+                for control_panel_index, candidate_screening_dataset in enumerate(
                     control_case_datasets[:control_fallback_limit],
                     start=1,
                 ):
-                    control_attempt_started_at = time.monotonic()
                     active_screening_dataset = candidate_screening_dataset
-                    if control_attempt_index > 1:
-                        active_baseline_replay_dir = (
-                            _find_reusable_baseline_replay_dir(
-                                store=self.store,
-                                run_id=run_id,
-                                target=target.identity,
-                                dataset=active_screening_dataset,
-                                baseline_repetitions=1,
-                                **self._baseline_reuse_provenance(
-                                    run_id=run_id,
-                                    target=target,
-                                    dataset=active_screening_dataset,
-                                ),
-                            )
-                        )
+                    active_baseline_replay_dir = None
+                    if control_panel_index > 1:
                         _emit_progress(
                             self.progress_callback,
                             "candidate_screening",
@@ -8131,7 +8129,7 @@ class SelfEvolveRunner:
                                 "Retrying representative screening after an "
                                 "invalid control on fallback case "
                                 f"{active_screening_dataset.cases[0].case_id} "
-                                f"({control_attempt_index}/{control_fallback_limit})"
+                                f"({control_panel_index}/{control_fallback_limit})"
                             ),
                         )
                     active_screening_max_steps = _candidate_screening_max_steps(
@@ -8139,15 +8137,34 @@ class SelfEvolveRunner:
                         configured_max_steps=self.replay_max_steps,
                     )
                     active_case_id = active_screening_dataset.cases[0].case_id
+                    support_adaptation: ReplayAdaptationBundle | None = None
+                    if target.identity.path is not None:
+                        support_overlay = create_candidate_skill_overlay(
+                            workspace_root=self.store.workspace_root,
+                            run_id=run_id,
+                            candidate=candidate,
+                            target_skill_path=target.identity.path,
+                            baseline_skill_roots=getattr(
+                                target, "baseline_skill_roots", ()
+                            ),
+                        )
+                        support_adaptation, _support_gate = (
+                            self._prepare_replay_adaptation(
+                                run_id=run_id,
+                                dataset=active_screening_dataset,
+                                capability_skill_root=(
+                                    support_overlay.candidate_skill_path.parent
+                                ),
+                                candidate_package_fingerprint=(
+                                    candidate_package_fingerprint(candidate)
+                                ),
+                                emit_progress=False,
+                            )
+                        )
                     active_screening_timeout = _candidate_screening_timeout(
                         self.replay_timeout_seconds,
                         max_steps=active_screening_max_steps,
-                        empirical_observation=(
-                            self._candidate_screening_case_observations.get(
-                                active_case_id,
-                                {},
-                            )
-                        ),
+                        empirical_observation=None,
                     )
                     screening_experiment = self._plan_candidate_measurement(
                         run_id=run_id,
@@ -8171,97 +8188,152 @@ class SelfEvolveRunner:
                         repetitions=1,
                         minimum_independent_cases=1,
                     )
-                    replay_result, replay_dataset, replay_gate = (
-                        await self._replay_selected_candidate(
-                            run_id=run_id,
-                            target=target,
-                            dataset=active_screening_dataset,
-                            selected_candidate=candidate,
-                            apply_policy=apply_policy,
-                            baseline_replay_dir=active_baseline_replay_dir,
-                            baseline_repetitions=1,
-                            candidate_repetitions=1,
-                            progress_stage="candidate_screening",
-                            timeout_seconds=active_screening_timeout,
-                            max_steps=active_screening_max_steps,
-                            max_tool_calls=(
-                                _DEFAULT_CANDIDATE_SCREENING_TOOL_CALL_LIMIT
-                            ),
-                            lifecycle_callback=screening_lifecycle,
-                            artifact_namespace=(
-                                f"screening/{active_case_id}"
-                            ),
-                            measurement_experiment=screening_experiment,
-                            measurement_stage="screening",
+                    escalated = False
+                    while True:
+                        control_attempt_started_at = time.monotonic()
+                        replay_result, replay_dataset, replay_gate = (
+                            await self._replay_selected_candidate(
+                                run_id=run_id,
+                                target=target,
+                                dataset=active_screening_dataset,
+                                selected_candidate=candidate,
+                                apply_policy=apply_policy,
+                                baseline_replay_dir=active_baseline_replay_dir,
+                                baseline_repetitions=1,
+                                candidate_repetitions=1,
+                                progress_stage="candidate_screening",
+                                timeout_seconds=active_screening_timeout,
+                                max_steps=active_screening_max_steps,
+                                max_tool_calls=(
+                                    _DEFAULT_CANDIDATE_SCREENING_TOOL_CALL_LIMIT
+                                ),
+                                lifecycle_callback=screening_lifecycle,
+                                artifact_namespace=(
+                                    f"screening/{active_case_id}"
+                                    if not escalated
+                                    else (
+                                        f"screening/{active_case_id}-timeout-"
+                                        f"{active_screening_timeout}"
+                                    )
+                                ),
+                                measurement_experiment=screening_experiment,
+                                measurement_stage="screening",
+                            )
                         )
-                    )
-                    active_control_case_ids = tuple(
-                        case.case_id for case in active_screening_dataset.cases
-                    )
-                    invalid_control_case_ids = (
-                        _screening_invalid_control_case_ids(
-                            replay_gate,
-                            fallback_case_ids=active_control_case_ids,
+                        active_control_case_ids = tuple(
+                            case.case_id
+                            for case in active_screening_dataset.cases
                         )
-                    )
-                    control_details = (
-                        replay_gate.details
-                        if replay_gate is not None
-                        and isinstance(replay_gate.details, Mapping)
-                        else {}
-                    )
-                    control_wall_seconds = max(
-                        0.0,
-                        time.monotonic() - control_attempt_started_at,
-                    )
-                    control_attempt = {
-                        "case_ids": list(active_control_case_ids),
-                        "invalid_control": (
-                            _screening_gate_has_invalid_control(replay_gate)
-                        ),
-                        "invalid_control_case_ids": list(
-                            invalid_control_case_ids
-                        ),
-                        "passed": bool(
-                            replay_gate is not None and replay_gate.passed
-                        ),
-                        "gate_name": (
-                            replay_gate.gate_name
+                        control_identities = (
+                            tuple(
+                                _control_qualification_identity(
+                                    case_id=case_id,
+                                    baseline_skill_fingerprint=(
+                                        target.fingerprint_current_content()
+                                    ),
+                                    replay_adaptation=support_adaptation,
+                                    timeout_seconds=active_screening_timeout,
+                                    max_steps=active_screening_max_steps,
+                                    max_tool_calls=(
+                                        _DEFAULT_CANDIDATE_SCREENING_TOOL_CALL_LIMIT
+                                    ),
+                                )
+                                for case_id in active_control_case_ids
+                            )
+                            if support_adaptation is not None
+                            else ()
+                        )
+                        baseline_failure_case_ids = (
+                            _screening_baseline_failure_case_ids(
+                                replay_gate,
+                                fallback_case_ids=active_control_case_ids,
+                            )
+                        )
+                        for control_identity in control_identities:
+                            if (
+                                control_identity.get("case_id")
+                                not in baseline_failure_case_ids
+                            ):
+                                continue
+                            replay_gate = (
+                                _candidate_support_baseline_incompatibility_gate(
+                                    replay_gate,
+                                    control_identity=control_identity,
+                                    control_observations=(
+                                        self._candidate_screening_control_observations
+                                    ),
+                                )
+                            )
+                        invalid_control_case_ids = (
+                            _screening_invalid_control_case_ids(
+                                replay_gate,
+                                fallback_case_ids=active_control_case_ids,
+                            )
+                        )
+                        control_details = (
+                            replay_gate.details
                             if replay_gate is not None
-                            else None
-                        ),
-                        "reason": (
-                            replay_gate.reason
-                            if replay_gate is not None
-                            else "screening replay was unavailable"
-                        ),
-                        "baseline_cache_offered": (
-                            active_baseline_replay_dir is not None
-                        ),
-                        "timeout_seconds": active_screening_timeout,
-                        "wall_seconds": control_wall_seconds,
-                        "baseline_status": control_details.get(
-                            "baseline_status"
-                        ),
-                        "candidate_status": control_details.get(
-                            "candidate_status"
-                        ),
-                        "baseline_failure": control_details.get(
-                            "baseline_failure"
-                        ),
-                        "candidate_failure": control_details.get(
-                            "candidate_failure"
-                        ),
-                    }
-                    control_case_attempts.append(control_attempt)
-                    _record_candidate_screening_observation(
-                        self._candidate_screening_case_observations,
-                        case_ids=(
-                            invalid_control_case_ids
-                            if invalid_control_case_ids
-                            else active_control_case_ids
-                        ),
-                        attempt={
+                            and isinstance(replay_gate.details, Mapping)
+                            else {}
+                        )
+                        control_wall_seconds = max(
+                            0.0,
+                            time.monotonic() - control_attempt_started_at,
+                        )
+                        control_attempt = {
+                            "case_ids": list(active_control_case_ids),
+                            "invalid_control": (
+                                _screening_gate_has_invalid_control(replay_gate)
+                            ),
+                            "invalid_control_case_ids": list(
+                                invalid_control_case_ids
+                            ),
+                            "passed": bool(
+                                replay_gate is not None and replay_gate.passed
+                            ),
+                            "gate_name": (
+                                replay_gate.gate_name
+                                if replay_gate is not None
+                                else None
+                            ),
+                            "reason": (
+                                replay_gate.reason
+                                if replay_gate is not None
+                                else "screening replay was unavailable"
+                            ),
+                            "baseline_cache_offered": bool(
+                                replay_result is not None
+                                and getattr(replay_result, "request", None)
+                                is not None
+                                and replay_result.request.baseline_replay_dir
+                            ),
+                            "timeout_seconds": active_screening_timeout,
+                            "wall_seconds": control_wall_seconds,
+                            "bounded_escalation": escalated,
+                            "control_identity": (
+                                control_identities[0]
+                                if len(control_identities) == 1
+                                else None
+                            ),
+                            "control_identities": [
+                                dict(identity)
+                                for identity in control_identities
+                            ],
+                            "baseline_status": control_details.get(
+                                "baseline_status"
+                            ),
+                            "candidate_status": control_details.get(
+                                "candidate_status"
+                            ),
+                            "baseline_failure": control_details.get(
+                                "baseline_failure"
+                            ),
+                            "candidate_failure": control_details.get(
+                                "candidate_failure"
+                            ),
+                        }
+                        control_case_attempts.append(control_attempt)
+                        observation_attempt = {
                             "passed": bool(
                                 replay_gate is not None and replay_gate.passed
                             ),
@@ -8271,8 +8343,57 @@ class SelfEvolveRunner:
                                 if replay_gate is not None
                                 else {"code": "screening_replay_unavailable"}
                             ),
-                        },
-                    )
+                        }
+                        _record_candidate_screening_observation(
+                            self._candidate_screening_case_observations,
+                            case_ids=(
+                                invalid_control_case_ids
+                                if invalid_control_case_ids
+                                else active_control_case_ids
+                            ),
+                            attempt=observation_attempt,
+                        )
+                        for control_identity in control_identities:
+                            _record_support_specific_control_observation(
+                                self._candidate_screening_control_observations,
+                                identity=control_identity,
+                                attempt={
+                                    **observation_attempt,
+                                    "wall_seconds": (
+                                        control_wall_seconds
+                                        / max(1, len(control_identities))
+                                    ),
+                                },
+                            )
+                        escalated_timeout = (
+                            _candidate_screening_escalated_timeout(
+                                active_screening_timeout,
+                                authoritative_timeout_seconds=(
+                                    self.replay_timeout_seconds
+                                ),
+                            )
+                            if not escalated
+                            and _screening_invalid_control_is_timeout(
+                                replay_gate
+                            )
+                            else None
+                        )
+                        if escalated_timeout is None:
+                            break
+                        escalated = True
+                        active_screening_timeout = escalated_timeout
+                        active_baseline_replay_dir = None
+                        _emit_progress(
+                            self.progress_callback,
+                            "candidate_screening",
+                            (
+                                "Retrying the same control with a bounded "
+                                f"timeout escalation on {active_case_id}: "
+                                f"{control_attempt['timeout_seconds']}s -> "
+                                f"{active_screening_timeout}s"
+                            ),
+                        )
+                    attempted_control_dataset_count += 1
                     if not _screening_gate_has_invalid_control(replay_gate):
                         break
                 attempted_control_limit = min(
@@ -8281,7 +8402,7 @@ class SelfEvolveRunner:
                 )
                 control_frontier_exhausted = bool(
                     attempted_control_limit > 0
-                    and len(control_case_attempts) >= attempted_control_limit
+                    and attempted_control_dataset_count >= attempted_control_limit
                     and all(
                         attempt.get("invalid_control") is True
                         for attempt in control_case_attempts
@@ -8582,9 +8703,51 @@ class SelfEvolveRunner:
                     "control_case_attempts": control_case_attempts,
                     "control_fallback_count": max(
                         0,
-                        len(control_case_attempts) - 1,
+                        len(
+                            {
+                                tuple(item.get("case_ids", ()))
+                                for item in control_case_attempts
+                            }
+                        )
+                        - 1,
                     ),
-                    "baseline_cache_offered": baseline_cache_offered,
+                    "control_escalation_count": sum(
+                        int(item.get("bounded_escalation") is True)
+                        for item in control_case_attempts
+                    ),
+                    "support_specific_control_qualification": {
+                        "schema_version": (
+                            "aworld.self_evolve.support_control_qualification.v1"
+                        ),
+                        "required": True,
+                        "status": (
+                            "qualified"
+                            if passed
+                            else "candidate_support_incompatible"
+                            if replay_gate is not None
+                            and isinstance(replay_gate.details, Mapping)
+                            and replay_gate.details.get("code")
+                            == "candidate_replay_support_baseline_incompatible"
+                            else "not_qualified"
+                        ),
+                        "control_identities": [
+                            dict(identity)
+                            for item in control_case_attempts
+                            for identity in (
+                                item.get("control_identities")
+                                if isinstance(
+                                    item.get("control_identities"),
+                                    (list, tuple),
+                                )
+                                else ()
+                            )
+                            if isinstance(identity, Mapping)
+                        ],
+                    },
+                    "baseline_cache_offered": any(
+                        item.get("baseline_cache_offered") is True
+                        for item in control_case_attempts
+                    ),
                     "wall_seconds": screening_elapsed_seconds,
                     "physical_pair_executed": screening_replay_started,
                     "physical_pair_execution_count": (
@@ -8854,6 +9017,21 @@ class SelfEvolveRunner:
                 ),
                 "control_fallback_count": sum(
                     _non_negative_int(attempt.get("control_fallback_count"))
+                    for attempt in attempts
+                ),
+                "control_escalation_count": sum(
+                    _non_negative_int(attempt.get("control_escalation_count"))
+                    for attempt in attempts
+                ),
+                "support_specific_control_qualification_count": sum(
+                    int(
+                        isinstance(
+                            attempt.get(
+                                "support_specific_control_qualification"
+                            ),
+                            Mapping,
+                        )
+                    )
                     for attempt in attempts
                 ),
                 "screening_wall_seconds": sum(
@@ -12046,24 +12224,52 @@ class SelfEvolveRunner:
         run_id: str,
         target: SelfEvolveTarget,
         dataset: SelfEvolveDataset,
+        replay_adaptation: ReplayAdaptationBundle | None = None,
+        timeout_seconds: float | None = None,
+        max_steps: int | None = None,
+        max_tool_calls: int | None = None,
     ) -> dict[str, str | None]:
-        bundle, gate = self._prepare_replay_adaptation(
-            run_id=run_id,
-            dataset=dataset,
-            emit_progress=False,
-        )
-        if bundle is None or not gate.passed:
+        bundle = replay_adaptation
+        gate: GateResult | None = None
+        if bundle is None:
+            bundle, gate = self._prepare_replay_adaptation(
+                run_id=run_id,
+                dataset=dataset,
+                emit_progress=False,
+            )
+        if bundle is None or (gate is not None and not gate.passed):
             return {
                 "baseline_skill_fingerprint": None,
                 "dataset_fingerprint": None,
                 "adaptation_fingerprint": None,
                 "workspace_seed_fingerprint": None,
+                "support_fingerprint": None,
+                "timeout_envelope_fingerprint": None,
+            }
+        if not isinstance(bundle, ReplayAdaptationBundle):
+            return {
+                "baseline_skill_fingerprint": None,
+                "dataset_fingerprint": None,
+                "adaptation_fingerprint": None,
+                "workspace_seed_fingerprint": None,
+                "support_fingerprint": None,
+                "timeout_envelope_fingerprint": None,
             }
         return {
             "baseline_skill_fingerprint": target.fingerprint_current_content(),
             "dataset_fingerprint": replay_dataset_fingerprint(dataset),
             "adaptation_fingerprint": bundle.adaptation_fingerprint,
             "workspace_seed_fingerprint": bundle.workspace_seed_fingerprint,
+            "support_fingerprint": replay_support_fingerprint(bundle),
+            "timeout_envelope_fingerprint": (
+                replay_timeout_envelope_fingerprint(
+                    timeout_seconds=timeout_seconds,
+                    max_steps=max_steps,
+                    max_tool_calls=max_tool_calls,
+                )
+                if timeout_seconds is not None
+                else None
+            ),
         }
 
     def _compile_authoritative_measurement_plan(
@@ -12561,6 +12767,29 @@ class SelfEvolveRunner:
             if timeout_seconds is None
             else timeout_seconds
         )
+        effective_max_steps = (
+            self.replay_max_steps if max_steps is None else max_steps
+        )
+        effective_max_tool_calls = max_tool_calls
+        # Baseline reuse is resolved only after the candidate-owned support has
+        # compiled.  This prevents a framework-only or sibling support surface
+        # from being offered to a request with different runtime bindings.
+        baseline_replay_dir = _find_reusable_baseline_replay_dir(
+            store=self.store,
+            run_id=run_id,
+            target=target.identity,
+            dataset=dataset,
+            baseline_repetitions=effective_baseline_repetitions,
+            **self._baseline_reuse_provenance(
+                run_id=run_id,
+                target=target,
+                dataset=dataset,
+                replay_adaptation=replay_adaptation,
+                timeout_seconds=effective_timeout_seconds,
+                max_steps=effective_max_steps,
+                max_tool_calls=effective_max_tool_calls,
+            ),
+        )
         try:
             measurement_bundle = self._compile_authoritative_measurement_plan(
                 run_id=run_id,
@@ -12593,10 +12822,8 @@ class SelfEvolveRunner:
                 dataset=dataset,
                 agent=self.replay_agent,
                 timeout_seconds=effective_timeout_seconds,
-                max_steps=(
-                    self.replay_max_steps if max_steps is None else max_steps
-                ),
-                max_tool_calls=max_tool_calls,
+                max_steps=effective_max_steps,
+                max_tool_calls=effective_max_tool_calls,
                 max_tokens=self.per_attempt_replay_token_limit,
                 baseline_repetitions=effective_baseline_repetitions,
                 candidate_repetitions=effective_candidate_repetitions,
@@ -13053,25 +13280,40 @@ class SelfEvolveRunner:
             require_adapted=True,
             normalized=normalized,
         ):
+            replay_gate: GateResult | None = GateResult(
+                gate_name="candidate_replay",
+                passed=False,
+                reason="candidate replay did not produce comparable paired outcomes",
+                details=_replay_gate_details(
+                    replay_result,
+                    dataset=replay_validation_dataset,
+                    normalized=normalized,
+                    candidate_requires_intervention_exposure=(
+                        candidate_requires_intervention_exposure
+                    ),
+                    bounded_screening=(
+                        progress_stage == "candidate_screening"
+                    ),
+                ),
+            )
+            for member in normalized.members:
+                if member.baseline.status is not ReplayExecutionStatus.FAILED:
+                    continue
+                replay_gate = _candidate_support_baseline_incompatibility_gate(
+                    replay_gate,
+                    control_identity=(
+                        _control_qualification_identity_from_request(
+                            member.request
+                        )
+                    ),
+                    control_observations=(
+                        self._candidate_screening_control_observations
+                    ),
+                )
             return (
                 replay_result,
                 None,
-                GateResult(
-                    gate_name="candidate_replay",
-                    passed=False,
-                    reason="candidate replay did not produce comparable paired outcomes",
-                    details=_replay_gate_details(
-                        replay_result,
-                        dataset=replay_validation_dataset,
-                        normalized=normalized,
-                        candidate_requires_intervention_exposure=(
-                            candidate_requires_intervention_exposure
-                        ),
-                        bounded_screening=(
-                            progress_stage == "candidate_screening"
-                        ),
-                    ),
-                ),
+                replay_gate,
             )
         replay_dataset = build_paired_replay_dataset(
             dataset=replay_validation_dataset,
@@ -17738,6 +17980,10 @@ def _replay_report(replay_result: CandidateReplayResult) -> dict[str, object]:
             "adaptation_fingerprint": (
                 replay_result.request.adaptation_fingerprint
             ),
+            "support_fingerprint": replay_result.request.support_fingerprint,
+            "timeout_envelope_fingerprint": (
+                replay_result.request.timeout_envelope_fingerprint
+            ),
             "workspace_seed_fingerprint": (
                 replay_result.request.workspace_seed_fingerprint
             ),
@@ -18127,12 +18373,16 @@ def _find_reusable_baseline_replay_dir(
     dataset_fingerprint: str | None = None,
     adaptation_fingerprint: str | None = None,
     workspace_seed_fingerprint: str | None = None,
+    support_fingerprint: str | None = None,
+    timeout_envelope_fingerprint: str | None = None,
 ) -> str | None:
     expected_provenance = {
         "baseline_skill_fingerprint": baseline_skill_fingerprint,
         "dataset_fingerprint": dataset_fingerprint,
         "adaptation_fingerprint": adaptation_fingerprint,
         "workspace_seed_fingerprint": workspace_seed_fingerprint,
+        "support_fingerprint": support_fingerprint,
+        "timeout_envelope_fingerprint": timeout_envelope_fingerprint,
     }
     if any(value is None for value in expected_provenance.values()):
         return None
@@ -18259,6 +18509,7 @@ def _incremental_baseline_cache_dir(
         member_root = members_root / relative_path
         try:
             request = _load_json_mapping(member_root / "request.json")
+            stored_request = _candidate_replay_request_from_mapping(request)
             raw_target = request.get("target")
             if not isinstance(raw_target, Mapping):
                 continue
@@ -18275,9 +18526,9 @@ def _incremental_baseline_cache_dir(
                 continue
             if int(request.get("baseline_repetitions") or 0) != baseline_repetitions:
                 continue
-            if not all(
-                value is not None and request.get(key) == value
-                for key, value in expected_provenance.items()
+            if not _replay_request_provenance_matches(
+                stored_request,
+                expected=expected_provenance,
             ):
                 continue
             baseline = _load_variant_result_from_dir(
@@ -18299,9 +18550,21 @@ def _replay_request_provenance_matches(
     *,
     expected: Mapping[str, str | None],
 ) -> bool:
-    return all(
+    exact = all(
         value is not None and getattr(request, key, None) == value
         for key, value in expected.items()
+    )
+    if not exact:
+        return False
+    return bool(
+        request.support_fingerprint
+        == replay_support_fingerprint(request.replay_adaptation)
+        and request.timeout_envelope_fingerprint
+        == replay_timeout_envelope_fingerprint(
+            timeout_seconds=request.timeout_seconds,
+            max_steps=request.max_steps,
+            max_tool_calls=request.max_tool_calls,
+        )
     )
 
 
@@ -20415,6 +20678,10 @@ def _replay_gate_details(
             normalized=normalized,
         ),
         "adaptation_fingerprint": replay_result.request.adaptation_fingerprint,
+        "support_fingerprint": replay_result.request.support_fingerprint,
+        "timeout_envelope_fingerprint": (
+            replay_result.request.timeout_envelope_fingerprint
+        ),
         "workspace_seed_fingerprint": (
             replay_result.request.workspace_seed_fingerprint
         ),
@@ -21306,6 +21573,13 @@ def _screening_gate_has_invalid_control(
         return False
     if (
         isinstance(gate.details, Mapping)
+        and gate.details.get("code")
+        == "candidate_replay_support_baseline_incompatible"
+        and gate.details.get("failure_owner") == FailureOwner.CANDIDATE.value
+    ):
+        return False
+    if (
+        isinstance(gate.details, Mapping)
         and gate.details.get("code") == _SCREENING_BUDGET_CENSORED_CODE
         and gate.details.get("screening_outcome") == "right_censored"
     ):
@@ -21369,6 +21643,183 @@ def _screening_gate_has_invalid_control(
         elif isinstance(current, (list, tuple)):
             stack.extend(current)
     return False
+
+
+def _screening_invalid_control_is_timeout(gate: GateResult | None) -> bool:
+    if not _screening_gate_has_invalid_control(gate) or gate is None:
+        return False
+    details = gate.details if isinstance(gate.details, Mapping) else {}
+    if (
+        details.get("code") == _SCREENING_BUDGET_CENSORED_CODE
+        and details.get("screening_censor_basis") == "baseline_horizon"
+    ):
+        return True
+    failures: list[object] = [
+        details.get("baseline_failure"),
+        details.get("baseline_failure_event"),
+    ]
+    failed_members = details.get("failed_members")
+    if isinstance(failed_members, (list, tuple)):
+        for member in failed_members:
+            if isinstance(member, Mapping):
+                failures.extend(
+                    (
+                        member.get("baseline_failure"),
+                        member.get("baseline_failure_event"),
+                    )
+                )
+    return any(_framework_phase_timeout(item) for item in failures)
+
+
+def _screening_gate_has_baseline_execution_failure(
+    gate: GateResult | None,
+) -> bool:
+    if gate is None or gate.passed or not isinstance(gate.details, Mapping):
+        return False
+    details = gate.details
+    if details.get("baseline_status") == ReplayExecutionStatus.FAILED.value:
+        return True
+    if isinstance(details.get("baseline_failure"), Mapping):
+        return True
+    failed_members = details.get("failed_members")
+    return bool(
+        isinstance(failed_members, (list, tuple))
+        and any(
+            isinstance(member, Mapping)
+            and (
+                member.get("baseline_status")
+                == ReplayExecutionStatus.FAILED.value
+                or isinstance(member.get("baseline_failure"), Mapping)
+            )
+            for member in failed_members
+        )
+    )
+
+
+def _screening_baseline_failure_case_ids(
+    gate: GateResult | None,
+    *,
+    fallback_case_ids: tuple[str, ...],
+) -> tuple[str, ...]:
+    if not _screening_gate_has_baseline_execution_failure(gate):
+        return ()
+    assert gate is not None and isinstance(gate.details, Mapping)
+    located: list[str] = []
+    failed_members = gate.details.get("failed_members")
+    if isinstance(failed_members, (list, tuple)):
+        for member in failed_members:
+            if not isinstance(member, Mapping):
+                continue
+            case_id = member.get("case_id")
+            if (
+                isinstance(case_id, str)
+                and case_id in fallback_case_ids
+                and (
+                    member.get("baseline_status")
+                    == ReplayExecutionStatus.FAILED.value
+                    or isinstance(member.get("baseline_failure"), Mapping)
+                )
+            ):
+                located.append(case_id)
+    return tuple(dict.fromkeys(located or fallback_case_ids))
+
+
+def _candidate_support_baseline_incompatibility_gate(
+    gate: GateResult | None,
+    *,
+    control_identity: Mapping[str, object] | None,
+    control_observations: Mapping[str, Mapping[str, object]],
+) -> GateResult | None:
+    """Attribute a baseline failure to candidate support only with a counterfactual."""
+
+    if (
+        gate is None
+        or gate.passed
+        or control_identity is None
+        or not _screening_gate_has_baseline_execution_failure(gate)
+        or control_identity.get("capability_package_fingerprint")
+        == "framework-only"
+    ):
+        return gate
+    case_id = control_identity.get("case_id")
+    baseline_fingerprint = control_identity.get(
+        "baseline_skill_fingerprint"
+    )
+    support_fingerprint = control_identity.get("support_fingerprint")
+    counterfactuals: list[dict[str, object]] = []
+    for observation in control_observations.values():
+        identity = observation.get("identity")
+        if not isinstance(identity, Mapping):
+            continue
+        if (
+            identity.get("case_id") != case_id
+            or identity.get("baseline_skill_fingerprint")
+            != baseline_fingerprint
+            or identity.get("support_fingerprint") == support_fingerprint
+            or _non_negative_int(
+                observation.get("baseline_success_count")
+            )
+            <= 0
+        ):
+            continue
+        counterfactuals.append(
+            {
+                "support_fingerprint": identity.get("support_fingerprint"),
+                "capability_package_fingerprint": identity.get(
+                    "capability_package_fingerprint"
+                ),
+                "replay_capability_fingerprint": identity.get(
+                    "replay_capability_fingerprint"
+                ),
+                "timeout_envelope_fingerprint": identity.get(
+                    "timeout_envelope_fingerprint"
+                ),
+            }
+        )
+    if not counterfactuals:
+        return gate
+    event = ReplayFailureEvent(
+        code="candidate_replay_support_baseline_incompatible",
+        owner=FailureOwner.CANDIDATE,
+        stage=FailureStage.ADAPTATION,
+        scope=FailureScope.CANDIDATE,
+        repairable=True,
+        category="candidate_replay_support",
+        summary=(
+            "candidate-owned replay support breaks a baseline that succeeds "
+            "under another qualified support surface"
+        ),
+        diagnostics={
+            "case_id": case_id,
+            "candidate_support_fingerprint": support_fingerprint,
+            "qualified_counterfactual_supports": counterfactuals[:8],
+        },
+    )
+    payload = event.to_dict()
+    details = dict(gate.details or {})
+    return GateResult(
+        gate_name=gate.gate_name,
+        passed=False,
+        reason=(
+            "baseline is incompatible only with candidate-owned replay support; "
+            "repair the candidate support package"
+        ),
+        details={
+            **details,
+            "code": event.code,
+            "failure_class": "candidate",
+            "failure_owner": event.owner.value,
+            "failure_scope": event.scope.value,
+            "failure_stage": event.stage.value,
+            "repairable": True,
+            "next_action": "continue_candidate_repair",
+            "candidate_support_fingerprint": support_fingerprint,
+            "control_identity": dict(control_identity),
+            "qualified_counterfactual_supports": counterfactuals[:8],
+            "failure_event": payload,
+            "causal_failure_events": [payload],
+        },
+    )
 
 
 def _framework_phase_timeout(value: object) -> bool:
@@ -25188,12 +25639,94 @@ def _screening_observation_scope_fingerprint(
     ).hexdigest()
 
 
+def _control_qualification_identity(
+    *,
+    case_id: str,
+    baseline_skill_fingerprint: str,
+    replay_adaptation: ReplayAdaptationBundle,
+    timeout_seconds: float,
+    max_steps: int | None,
+    max_tool_calls: int | None,
+) -> dict[str, object]:
+    """Freeze the exact support and envelope used to qualify one control."""
+
+    capability = replay_adaptation.replay_capability
+    capability_package_fingerprint = (
+        capability.capability_package_fingerprint
+        if capability is not None
+        else "framework-only"
+    )
+    replay_capability_fingerprint = (
+        capability.fingerprint if capability is not None else "framework-only"
+    )
+    support_fingerprint = replay_support_fingerprint(replay_adaptation)
+    assert support_fingerprint is not None
+    timeout_fingerprint = replay_timeout_envelope_fingerprint(
+        timeout_seconds=timeout_seconds,
+        max_steps=max_steps,
+        max_tool_calls=max_tool_calls,
+    )
+    identity: dict[str, object] = {
+        "schema_version": "aworld.self_evolve.control_qualification_identity.v1",
+        "case_id": case_id,
+        "baseline_skill_fingerprint": baseline_skill_fingerprint,
+        "capability_package_fingerprint": capability_package_fingerprint,
+        "replay_capability_fingerprint": replay_capability_fingerprint,
+        "adaptation_fingerprint": replay_adaptation.adaptation_fingerprint,
+        "support_fingerprint": support_fingerprint,
+        "timeout_envelope_fingerprint": timeout_fingerprint,
+        "timeout_seconds": float(timeout_seconds),
+        "max_steps": max_steps,
+        "max_tool_calls": max_tool_calls,
+    }
+    encoded = json.dumps(
+        identity,
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    identity["control_identity_fingerprint"] = (
+        "sha256:" + hashlib.sha256(encoded).hexdigest()
+    )
+    return identity
+
+
+def _control_qualification_identity_from_request(
+    request: CandidateReplayRequest,
+) -> dict[str, object] | None:
+    adaptation = request.replay_adaptation
+    if (
+        adaptation is None
+        or request.baseline_skill_fingerprint is None
+        or request.timeout_seconds is None
+        or request.support_fingerprint is None
+        or request.timeout_envelope_fingerprint is None
+    ):
+        return None
+    identity = _control_qualification_identity(
+        case_id=request.task_id,
+        baseline_skill_fingerprint=request.baseline_skill_fingerprint,
+        replay_adaptation=adaptation,
+        timeout_seconds=request.timeout_seconds,
+        max_steps=request.max_steps,
+        max_tool_calls=request.max_tool_calls,
+    )
+    if (
+        identity["support_fingerprint"] != request.support_fingerprint
+        or identity["timeout_envelope_fingerprint"]
+        != request.timeout_envelope_fingerprint
+    ):
+        return None
+    return identity
+
+
 def _restore_campaign_screening_case_observations(
     observations: dict[str, dict[str, float | int]],
     *,
     store: FilesystemSelfEvolveStore,
     prior_run_ids: tuple[str, ...],
     loaded_run_ids: set[str],
+    control_observations: dict[str, dict[str, object]] | None = None,
 ) -> None:
     """Restore payload-free control health across Campaign cycles/restarts."""
 
@@ -25272,6 +25805,56 @@ def _restore_campaign_screening_case_observations(
                     )
                     if not case_ids:
                         continue
+                    raw_identities = control_attempt.get(
+                        "control_identities"
+                    )
+                    identities = (
+                        tuple(
+                            item
+                            for item in raw_identities
+                            if isinstance(item, Mapping)
+                        )
+                        if isinstance(raw_identities, (list, tuple))
+                        else (
+                            (control_attempt["control_identity"],)
+                            if isinstance(
+                                control_attempt.get("control_identity"),
+                                Mapping,
+                            )
+                            else ()
+                        )
+                    )
+                    if control_observations is not None:
+                        for identity in identities:
+                            _record_support_specific_control_observation(
+                                control_observations,
+                                identity=identity,
+                                attempt={
+                                    "passed": (
+                                        control_attempt.get("passed") is True
+                                    ),
+                                    "wall_seconds": (
+                                        _non_negative_screening_float(
+                                            control_attempt.get("wall_seconds")
+                                        )
+                                        / max(1, len(identities))
+                                    ),
+                                    "details": {
+                                        "baseline_status": control_attempt.get(
+                                            "baseline_status"
+                                        ),
+                                        "candidate_status": control_attempt.get(
+                                            "candidate_status"
+                                        ),
+                                        "baseline_failure": control_attempt.get(
+                                            "baseline_failure"
+                                        ),
+                                        "candidate_failure": control_attempt.get(
+                                            "candidate_failure"
+                                        ),
+                                    },
+                                },
+                            )
                     for case_id in case_ids:
                         current = observations.setdefault(case_id, {})
                         current["attempt_count"] = (
@@ -25306,6 +25889,7 @@ def _restore_historical_screening_lifecycle_observations(
     target: SelfEvolveTargetRef,
     dataset: SelfEvolveDataset,
     current_run_id: str,
+    control_observations: dict[str, dict[str, object]] | None = None,
 ) -> None:
     """Build a candidate-independent control profile from prior lifecycles."""
 
@@ -25325,6 +25909,28 @@ def _restore_historical_screening_lifecycle_observations(
             continue
         if not _report_matches_target(report, target):
             continue
+        if control_observations is not None:
+            health = report.get("support_specific_control_health")
+            raw_health_observations = (
+                health.get("observations")
+                if isinstance(health, Mapping)
+                else None
+            )
+            if isinstance(raw_health_observations, (list, tuple)):
+                for raw_observation in raw_health_observations[:128]:
+                    if not isinstance(raw_observation, Mapping):
+                        continue
+                    identity = raw_observation.get("identity")
+                    fingerprint = (
+                        identity.get("control_identity_fingerprint")
+                        if isinstance(identity, Mapping)
+                        else None
+                    )
+                    if isinstance(fingerprint, str) and fingerprint:
+                        control_observations.setdefault(
+                            fingerprint,
+                            dict(raw_observation),
+                        )
         screening_root = run_dir / "screening"
         if not screening_root.is_dir() or screening_root.is_symlink():
             continue
@@ -25332,7 +25938,6 @@ def _restore_historical_screening_lifecycle_observations(
             if (
                 not case_dir.is_dir()
                 or case_dir.is_symlink()
-                or case_dir.name not in eligible_case_ids
             ):
                 continue
             replay_root = case_dir / "replay"
@@ -25341,7 +25946,29 @@ def _restore_historical_screening_lifecycle_observations(
             for replay_dir in replay_root.iterdir():
                 if not replay_dir.is_dir() or replay_dir.is_symlink():
                     continue
-                current = observations.setdefault(case_dir.name, {})
+                try:
+                    stored_request = _candidate_replay_request_from_mapping(
+                        _load_json_mapping(replay_dir / "request.json")
+                    )
+                except (
+                    FileNotFoundError,
+                    OSError,
+                    TypeError,
+                    ValueError,
+                    json.JSONDecodeError,
+                ):
+                    stored_request = None
+                case_id = (
+                    stored_request.task_id
+                    if stored_request is not None
+                    and stored_request.task_id in eligible_case_ids
+                    else case_dir.name
+                    if case_dir.name in eligible_case_ids
+                    else None
+                )
+                if case_id is None:
+                    continue
+                current = observations.setdefault(case_id, {})
                 _merge_screening_variant_lifecycle_observation(
                     current,
                     variant_dir=replay_dir / "baseline",
@@ -25353,8 +25980,26 @@ def _restore_historical_screening_lifecycle_observations(
                     variant_dir=candidate_dir,
                     phase="candidate",
                 )
+                if control_observations is not None:
+                    identity = (
+                        _control_qualification_identity_from_request(
+                            stored_request
+                        )
+                        if stored_request is not None
+                        else None
+                    )
+                    if identity is not None:
+                        fingerprint = identity.get(
+                            "control_identity_fingerprint"
+                        )
+                        if fingerprint not in control_observations:
+                            _merge_support_specific_lifecycle_observation(
+                                control_observations,
+                                identity=identity,
+                                variant_dir=replay_dir / "baseline",
+                            )
                 if not current:
-                    observations.pop(case_dir.name, None)
+                    observations.pop(case_id, None)
 
 
 def _merge_screening_variant_lifecycle_observation(
@@ -25448,6 +26093,119 @@ def _merge_screening_variant_lifecycle_observation(
         )
 
 
+def _merge_support_specific_lifecycle_observation(
+    observations: dict[str, dict[str, object]],
+    *,
+    identity: Mapping[str, object],
+    variant_dir: Path,
+) -> None:
+    lifecycle_path = variant_dir / "lifecycle.json"
+    if lifecycle_path.is_symlink() or not lifecycle_path.is_file():
+        return
+    try:
+        lifecycle = _load_json_mapping(lifecycle_path)
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return
+    status = str(lifecycle.get("status") or "")
+    if status in {"", "blocked", "not_run"}:
+        return
+    failure = lifecycle.get("failure")
+    metrics_path = variant_dir / "aggregate_metrics.json"
+    try:
+        metrics = _load_json_mapping(metrics_path)
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        metrics = {}
+    latency_ms = metrics.get("latency_ms")
+    wall_seconds = (
+        float(latency_ms) / 1000.0
+        if isinstance(latency_ms, (int, float))
+        and not isinstance(latency_ms, bool)
+        and math.isfinite(float(latency_ms))
+        and float(latency_ms) >= 0
+        else 0.0
+    )
+    _record_support_specific_control_observation(
+        observations,
+        identity=identity,
+        attempt={
+            "passed": status == ReplayExecutionStatus.SUCCEEDED.value,
+            "wall_seconds": wall_seconds,
+            "details": {
+                "baseline_status": status,
+                "baseline_failure": failure,
+            },
+        },
+    )
+
+
+def _record_support_specific_control_observation(
+    observations: dict[str, dict[str, object]],
+    *,
+    identity: Mapping[str, object],
+    attempt: Mapping[str, object],
+) -> None:
+    fingerprint = identity.get("control_identity_fingerprint")
+    required_fields = (
+        "case_id",
+        "baseline_skill_fingerprint",
+        "capability_package_fingerprint",
+        "replay_capability_fingerprint",
+        "adaptation_fingerprint",
+        "support_fingerprint",
+        "timeout_envelope_fingerprint",
+    )
+    if (
+        not isinstance(fingerprint, str)
+        or not fingerprint
+        or any(not isinstance(identity.get(key), str) for key in required_fields)
+    ):
+        return
+    current = observations.setdefault(
+        fingerprint,
+        {
+            "identity": dict(identity),
+            "attempt_count": 0,
+            "baseline_attempt_count": 0,
+            "baseline_success_count": 0,
+            "baseline_timeout_count": 0,
+            "passed_count": 0,
+            "total_wall_seconds": 0.0,
+        },
+    )
+    if current.get("identity") != dict(identity):
+        return
+    details = attempt.get("details")
+    baseline_status = (
+        str(details.get("baseline_status") or "")
+        if isinstance(details, Mapping)
+        else ""
+    )
+    baseline_failure = (
+        details.get("baseline_failure")
+        if isinstance(details, Mapping)
+        else None
+    )
+    current["attempt_count"] = _non_negative_int(
+        current.get("attempt_count")
+    ) + 1
+    current["passed_count"] = _non_negative_int(
+        current.get("passed_count")
+    ) + int(attempt.get("passed") is True)
+    current["total_wall_seconds"] = _non_negative_screening_float(
+        current.get("total_wall_seconds")
+    ) + _non_negative_screening_float(attempt.get("wall_seconds"))
+    if baseline_status and baseline_status not in {"blocked", "not_run"}:
+        current["baseline_attempt_count"] = _non_negative_int(
+            current.get("baseline_attempt_count")
+        ) + 1
+        current["baseline_success_count"] = _non_negative_int(
+            current.get("baseline_success_count")
+        ) + int(baseline_status == ReplayExecutionStatus.SUCCEEDED.value)
+        current["baseline_timeout_count"] = _non_negative_int(
+            current.get("baseline_timeout_count")
+        ) + int(_framework_phase_timeout(baseline_failure))
+
+
 def _screening_control_preflight(
     dataset: SelfEvolveDataset,
     *,
@@ -25494,7 +26252,10 @@ def _screening_control_preflight(
         "feasible_case_ids": feasible,
         "infeasible_case_ids": infeasible,
         "unknown_case_ids": unknown,
-        "candidate_generation_allowed": status != "infeasible",
+        "candidate_generation_allowed": True,
+        "advisory_only": True,
+        "advisory_role": "candidate_control_ordering",
+        "support_specific_qualification_required": True,
         "source": "historical_baseline_lifecycle",
         "timeout_ceiling_seconds": timeout_ceiling_seconds,
         "case_observations": {
@@ -25554,13 +26315,11 @@ def _candidate_screening_dataset(
             )
         )
     )
-    healthy_control_candidates = [
-        case
-        for case in ordered_candidates
-        if case.case_id not in quarantined_control_case_ids
-    ]
-    if healthy_control_candidates:
-        ordered_candidates = healthy_control_candidates
+    # Target-only history may order the panel but cannot remove a case: the
+    # candidate support surface has not been compiled or qualified yet.
+    ordered_candidates.sort(
+        key=lambda case: case.case_id in quarantined_control_case_ids
+    )
     requirement_ids_by_case: dict[str, set[str]] = {}
     context_requirement_count_by_case: dict[str, int] = {}
     for requirement in capability_requirements:
@@ -25946,6 +26705,7 @@ def _record_authoritative_replay_observations(
     dataset: SelfEvolveDataset,
     replay_result: CandidateReplayResult,
     run_observations: dict[str, dict[str, int]] | None = None,
+    control_observations: dict[str, dict[str, object]] | None = None,
 ) -> None:
     """Prioritize bounded counterexample cases in later screening panels."""
 
@@ -25966,6 +26726,44 @@ def _record_authoritative_replay_observations(
             member.candidate.status is ReplayExecutionStatus.FAILED
             and _repairable_capability_failure(member.candidate.failure)
         )
+        if control_observations is not None:
+            control_identity = _control_qualification_identity_from_request(
+                member.request
+            )
+            if control_identity is not None:
+                _record_support_specific_control_observation(
+                    control_observations,
+                    identity=control_identity,
+                    attempt={
+                        "passed": comparable_pair,
+                        "wall_seconds": (
+                            _non_negative_screening_float(
+                                member.baseline.metrics.get("latency_ms")
+                            )
+                            / 1000.0
+                        ),
+                        "details": {
+                            "baseline_status": member.baseline.status.value,
+                            "candidate_status": member.candidate.status.value,
+                            "baseline_failure": (
+                                member.baseline.failure.compatibility_dict()
+                                if isinstance(
+                                    member.baseline.failure,
+                                    ReplayFailureEvent,
+                                )
+                                else member.baseline.failure
+                            ),
+                            "candidate_failure": (
+                                member.candidate.failure.compatibility_dict()
+                                if isinstance(
+                                    member.candidate.failure,
+                                    ReplayFailureEvent,
+                                )
+                                else member.candidate.failure
+                            ),
+                        },
+                    },
+                )
         for destination in (
             observations,
             *((run_observations,) if run_observations is not None else ()),

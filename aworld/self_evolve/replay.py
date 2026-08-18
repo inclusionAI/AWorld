@@ -254,6 +254,8 @@ class CandidateReplayRequest:
     dataset_fingerprint: str | None = None
     baseline_skill_fingerprint: str | None = None
     adaptation_fingerprint: str | None = None
+    support_fingerprint: str | None = None
+    timeout_envelope_fingerprint: str | None = None
     workspace_seed_fingerprint: str | None = None
     task_input_fingerprint: str | None = None
     verified_candidate_package_fingerprint: str | None = None
@@ -2028,6 +2030,8 @@ class ReplayExecutionRequest:
     max_cost_usd: float | None = None
     environment: Mapping[str, str] = field(default_factory=dict)
     adaptation_fingerprint: str | None = None
+    support_fingerprint: str | None = None
+    timeout_envelope_fingerprint: str | None = None
     workspace_seed_fingerprint: str | None = None
     task_input_fingerprint: str | None = None
     dataset_fingerprint: str | None = None
@@ -5318,6 +5322,10 @@ class AWorldCliCandidateReplayBackend:
             max_cost_usd=request.max_cost_usd,
             environment=environment,
             adaptation_fingerprint=adaptation_fingerprint,
+            support_fingerprint=request.support_fingerprint,
+            timeout_envelope_fingerprint=(
+                request.timeout_envelope_fingerprint
+            ),
             workspace_seed_fingerprint=workspace_seed_fingerprint,
             task_input_fingerprint=task_input_fingerprint,
             dataset_fingerprint=request.dataset_fingerprint,
@@ -5523,10 +5531,23 @@ def _stored_baseline_matches_request(request: CandidateReplayRequest) -> bool:
         "baseline_skill_fingerprint",
         "dataset_fingerprint",
         "adaptation_fingerprint",
+        "support_fingerprint",
+        "timeout_envelope_fingerprint",
         "workspace_seed_fingerprint",
         "task_input_fingerprint",
     )
     if any(getattr(request, key) is None for key in provenance_keys):
+        return False
+    if (
+        request.support_fingerprint
+        != replay_support_fingerprint(request.replay_adaptation)
+        or request.timeout_envelope_fingerprint
+        != replay_timeout_envelope_fingerprint(
+            timeout_seconds=request.timeout_seconds,
+            max_steps=request.max_steps,
+            max_tool_calls=request.max_tool_calls,
+        )
+    ):
         return False
     request_path = Path(request.baseline_replay_dir).parent / "request.json"
     if not request_path.is_file():
@@ -5554,6 +5575,17 @@ def _stored_baseline_matches_request(request: CandidateReplayRequest) -> bool:
     if not all(
         getattr(stored, key) == getattr(request, key)
         for key in provenance_keys
+    ):
+        return False
+    if (
+        stored.support_fingerprint
+        != replay_support_fingerprint(stored.replay_adaptation)
+        or stored.timeout_envelope_fingerprint
+        != replay_timeout_envelope_fingerprint(
+            timeout_seconds=stored.timeout_seconds,
+            max_steps=stored.max_steps,
+            max_tool_calls=stored.max_tool_calls,
+        )
     ):
         return False
     try:
@@ -6412,6 +6444,10 @@ def _prepare_replay_evidence_trust(
             "candidate_id": request.candidate_id,
             "dataset_fingerprint": request.dataset_fingerprint,
             "adaptation_fingerprint": request.adaptation_fingerprint,
+            "support_fingerprint": request.support_fingerprint,
+            "timeout_envelope_fingerprint": (
+                request.timeout_envelope_fingerprint
+            ),
             "task_input_fingerprint": request.task_input_fingerprint,
             "baseline_skill_fingerprint": request.baseline_skill_fingerprint,
             "capability_package_fingerprint": (
@@ -8085,6 +8121,58 @@ def _replay_dependency_boundary_failure(
     }
 
 
+def replay_support_fingerprint(
+    replay_adaptation: ReplayAdaptationBundle | None,
+) -> str | None:
+    """Identify the executable support surface shared by both replay arms."""
+
+    if replay_adaptation is None:
+        return None
+    capability = replay_adaptation.replay_capability
+    payload = {
+        "schema_version": "aworld.self_evolve.replay_support_identity.v1",
+        "capability_package_fingerprint": (
+            capability.capability_package_fingerprint
+            if capability is not None
+            else "framework-only"
+        ),
+        "replay_capability_fingerprint": (
+            capability.fingerprint if capability is not None else "framework-only"
+        ),
+        "adaptation_fingerprint": replay_adaptation.adaptation_fingerprint,
+    }
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return "sha256:" + hashlib.sha256(encoded).hexdigest()
+
+
+def replay_timeout_envelope_fingerprint(
+    *,
+    timeout_seconds: float | None,
+    max_steps: int | None,
+    max_tool_calls: int | None,
+) -> str:
+    payload = {
+        "schema_version": "aworld.self_evolve.replay_timeout_envelope.v1",
+        "timeout_seconds": (
+            float(timeout_seconds) if timeout_seconds is not None else None
+        ),
+        "max_steps": max_steps,
+        "max_tool_calls": max_tool_calls,
+    }
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return "sha256:" + hashlib.sha256(encoded).hexdigest()
+
+
 def build_replay_request(
     *,
     run_id: str,
@@ -8141,6 +8229,12 @@ def build_replay_request(
         adaptation_fingerprint = None
         workspace_seed_fingerprint = None
         task_input_fingerprint = None
+    support_fingerprint = replay_support_fingerprint(replay_adaptation)
+    timeout_envelope_fingerprint = replay_timeout_envelope_fingerprint(
+        timeout_seconds=timeout_seconds,
+        max_steps=max_steps,
+        max_tool_calls=max_tool_calls,
+    )
     return CandidateReplayRequest(
         run_id=run_id,
         task_id=case.case_id,
@@ -8168,6 +8262,8 @@ def build_replay_request(
         dataset_fingerprint=replay_dataset_fingerprint(dataset),
         baseline_skill_fingerprint=candidate.target_fingerprint,
         adaptation_fingerprint=adaptation_fingerprint,
+        support_fingerprint=support_fingerprint,
+        timeout_envelope_fingerprint=timeout_envelope_fingerprint,
         workspace_seed_fingerprint=workspace_seed_fingerprint,
         task_input_fingerprint=task_input_fingerprint,
         verified_candidate_package_fingerprint=(
@@ -8264,6 +8360,11 @@ def _replay_execution_provenance(
         key: value
         for key, value in (
             ("adaptation_fingerprint", request.adaptation_fingerprint),
+            ("support_fingerprint", request.support_fingerprint),
+            (
+                "timeout_envelope_fingerprint",
+                request.timeout_envelope_fingerprint,
+            ),
             ("workspace_seed_fingerprint", request.workspace_seed_fingerprint),
             ("task_input_fingerprint", request.task_input_fingerprint),
             ("dataset_fingerprint", request.dataset_fingerprint),
@@ -12830,6 +12931,16 @@ def _candidate_replay_request_from_mapping(payload: Mapping[str, Any]) -> Candid
         adaptation_fingerprint=(
             str(payload.get("adaptation_fingerprint"))
             if payload.get("adaptation_fingerprint") is not None
+            else None
+        ),
+        support_fingerprint=(
+            str(payload.get("support_fingerprint"))
+            if payload.get("support_fingerprint") is not None
+            else None
+        ),
+        timeout_envelope_fingerprint=(
+            str(payload.get("timeout_envelope_fingerprint"))
+            if payload.get("timeout_envelope_fingerprint") is not None
             else None
         ),
         workspace_seed_fingerprint=(

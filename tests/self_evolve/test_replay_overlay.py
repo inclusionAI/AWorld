@@ -944,24 +944,32 @@ async def test_current_run_completed_replay_is_available_for_baseline_reuse(
         "---\nname: demo\n---\n# Demo\nCandidate.\n",
         candidate_id="cached-candidate",
     )
-    provenance = {
-        "baseline_skill_fingerprint": "sha256:baseline",
-        "dataset_fingerprint": "sha256:dataset",
-        "adaptation_fingerprint": "sha256:adaptation",
-        "workspace_seed_fingerprint": "sha256:workspace",
-    }
-    request = CandidateReplayRequest(
+    adaptation = ReplayAdaptationCompiler().compile(
+        dataset=dataset,
+        workspace_root=tmp_path,
+        artifact_root=tmp_path / "adaptation",
+    )
+    request = build_replay_request(
         run_id="run-current-cache",
-        task_id="task-a",
         workspace_root=str(tmp_path),
         target=candidate.target,
-        candidate_id=candidate.candidate_id,
+        candidate=candidate,
         overlay_skill_root=str(tmp_path / "overlay"),
-        task_input=dataset.cases[0].input,
+        dataset=dataset,
         baseline_repetitions=1,
         candidate_repetitions=1,
-        **provenance,
+        replay_adaptation=adaptation,
     )
+    provenance = {
+        "baseline_skill_fingerprint": request.baseline_skill_fingerprint,
+        "dataset_fingerprint": request.dataset_fingerprint,
+        "adaptation_fingerprint": request.adaptation_fingerprint,
+        "workspace_seed_fingerprint": request.workspace_seed_fingerprint,
+        "support_fingerprint": request.support_fingerprint,
+        "timeout_envelope_fingerprint": (
+            request.timeout_envelope_fingerprint
+        ),
+    }
     await AWorldCliCandidateReplayBackend(
         executor=fake_executor
     ).replay_candidate(
@@ -2286,6 +2294,11 @@ async def test_v3_repetition_artifact_tamper_is_typed_and_non_authoritative(
             trajectory=[{"action": {"content": request.variant_id}}],
         )
 
+    replay_adaptation = ReplayAdaptationCompiler().compile(
+        dataset=dataset,
+        workspace_root=tmp_path,
+        artifact_root=tmp_path / "adaptation",
+    )
     request = build_replay_request(
         run_id=f"v3-tamper-{tamper}",
         workspace_root=tmp_path,
@@ -2295,12 +2308,7 @@ async def test_v3_repetition_artifact_tamper_is_typed_and_non_authoritative(
         dataset=dataset,
         baseline_repetitions=2,
         candidate_repetitions=3,
-    )
-    request = replace(
-        request,
-        adaptation_fingerprint="sha256:tamper-adaptation",
-        workspace_seed_fingerprint="sha256:tamper-workspace",
-        task_input_fingerprint="sha256:tamper-input",
+        replay_adaptation=replay_adaptation,
     )
     original = await AWorldCliCandidateReplayBackend(
         executor=fake_executor
