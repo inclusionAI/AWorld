@@ -29,6 +29,8 @@ def test_default_retention_bounds_large_replay_workspace_history() -> None:
 
 def test_pending_measurement_work_protects_replay_runtime_seed(tmp_path: Path) -> None:
     run_dir = tmp_path / ".aworld" / "self_evolve" / "run-pending-measurement"
+    candidate_id = "candidate"
+    plan_fingerprint = "sha256:" + "a" * 64
     seed = (
         run_dir
         / "replay_adaptation"
@@ -37,9 +39,78 @@ def test_pending_measurement_work_protects_replay_runtime_seed(tmp_path: Path) -
         / "workspace_seed"
     )
     _write_text(seed / "source.py")
+    overlay = run_dir / "overlays" / candidate_id / "skills" / "SKILL.md"
+    candidate_materialization = run_dir / "candidates" / candidate_id / "SKILL.md"
+    _write_text(overlay)
+    _write_text(candidate_materialization)
     _write_json(
         run_dir / "measurement_control" / ("plan-" + "a" * 64) / "index.json",
         {"work_units": [{"state": "checkpointed"}, {"state": "succeeded"}]},
+    )
+    _write_json(
+        run_dir / "replay" / candidate_id / "request.json",
+        {
+            "run_id": run_dir.name,
+            "candidate_id": candidate_id,
+            "measurement_plan": {
+                "measurement_plan_fingerprint": plan_fingerprint,
+            },
+        },
+    )
+
+    candidates = tuple(
+        lifecycle_module._terminal_cleanup_candidates(
+            tmp_path / ".aworld" / "self_evolve",
+            run_dir,
+            prune_unselected_candidate_materializations=True,
+        )
+    )
+
+    assert seed not in candidates
+    assert not any(path == run_dir / "overlays" for path in candidates)
+    assert candidate_materialization.parent not in candidates
+
+    _write_json(
+        run_dir / "measurement_control" / ("plan-" + "a" * 64) / "index.json",
+        {"work_units": [{"state": "succeeded"}, {"state": "task_failed"}]},
+    )
+    completed_candidates = tuple(
+        lifecycle_module._terminal_cleanup_candidates(
+            tmp_path / ".aworld" / "self_evolve",
+            run_dir,
+            prune_unselected_candidate_materializations=True,
+        )
+    )
+    assert seed in completed_candidates
+    assert run_dir / "overlays" in completed_candidates
+    assert candidate_materialization.parent in completed_candidates
+
+
+def test_screening_measurement_work_does_not_protect_authoritative_runtime(
+    tmp_path: Path,
+) -> None:
+    run_dir = tmp_path / ".aworld" / "self_evolve" / "run-screening-only"
+    seed = run_dir / "replay_adaptation" / "dataset" / "capability" / "workspace_seed"
+    _write_text(seed / "source.py")
+    fingerprint = "sha256:" + "b" * 64
+    _write_json(
+        run_dir / "measurement_control" / ("plan-" + "b" * 64) / "index.json",
+        {"work_units": [{"state": "checkpointed", "attempt_count": 1}]},
+    )
+    _write_json(
+        run_dir
+        / "screening"
+        / "case-1"
+        / "replay"
+        / "candidate"
+        / "request.json",
+        {
+            "run_id": run_dir.name,
+            "candidate_id": "candidate",
+            "measurement_plan": {
+                "measurement_plan_fingerprint": fingerprint,
+            },
+        },
     )
 
     candidates = tuple(
@@ -50,20 +121,7 @@ def test_pending_measurement_work_protects_replay_runtime_seed(tmp_path: Path) -
         )
     )
 
-    assert seed not in candidates
-
-    _write_json(
-        run_dir / "measurement_control" / ("plan-" + "a" * 64) / "index.json",
-        {"work_units": [{"state": "succeeded"}, {"state": "task_failed"}]},
-    )
-    completed_candidates = tuple(
-        lifecycle_module._terminal_cleanup_candidates(
-            tmp_path / ".aworld" / "self_evolve",
-            run_dir,
-            prune_unselected_candidate_materializations=False,
-        )
-    )
-    assert seed in completed_candidates
+    assert seed in candidates
 
 
 def _write_json(path: Path, payload: object) -> None:

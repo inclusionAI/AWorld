@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import socket
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import aworld.self_evolve.campaign as campaign_module
@@ -1369,6 +1370,7 @@ def test_candidate_prerequisite_is_not_authoritative_consumption() -> None:
 
 def test_shared_measurement_timeout_does_not_exhaust_authoritative_frontier(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list[dict] = []
 
@@ -1426,6 +1428,20 @@ def test_shared_measurement_timeout_does_not_exhaust_authoritative_frontier(
             "report_path": str(report_path),
         }
 
+    monkeypatch.setattr(
+        campaign_module,
+        "_measurement_resume_checkpoint",
+        lambda store, *, run_id, report: (
+            SimpleNamespace(candidate_id="candidate-measurement-pending")
+            if (
+                store.run_path(run_id)
+                / "candidates"
+                / "candidate-measurement-pending.json"
+            ).is_file()
+            else None
+        ),
+    )
+
     result = run_self_improvement_campaign(
         workspace_root=tmp_path,
         request={
@@ -1454,6 +1470,7 @@ def test_shared_measurement_timeout_does_not_exhaust_authoritative_frontier(
 
 def test_infrastructure_retry_preserves_measurement_candidate_checkpoint(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list[dict] = []
 
@@ -1511,6 +1528,20 @@ def test_infrastructure_retry_preserves_measurement_candidate_checkpoint(
             "status": report["status"],
             "report_path": str(report_path),
         }
+
+    monkeypatch.setattr(
+        campaign_module,
+        "_measurement_resume_checkpoint",
+        lambda store, *, run_id, report: (
+            SimpleNamespace(candidate_id="candidate-measurement-pending")
+            if (
+                store.run_path(run_id)
+                / "candidates"
+                / "candidate-measurement-pending.json"
+            ).is_file()
+            else None
+        ),
+    )
 
     result = run_self_improvement_campaign(
         workspace_root=tmp_path,
@@ -1580,8 +1611,97 @@ def test_shared_measurement_retry_fails_closed_without_candidate_checkpoint(
     assert result["campaign_status"] == "exhausted"
     assert result["campaign_measurement_retry_count"] == 0
     assert result["self_improvement_disposition"]["reason_code"] == (
-        "campaign_measurement_retry_candidate_missing"
+        "measurement_authority_checkpoint_missing_or_invalid"
     )
+
+
+def test_legacy_candidate_only_pending_marker_is_cleared_before_next_cycle(
+    tmp_path: Path,
+) -> None:
+    calls: list[dict] = []
+    controller = SelfImprovementCampaignController(
+        workspace_root=tmp_path,
+        run_once=lambda **request: _write_successful_campaign_fixture(
+            tmp_path,
+            calls,
+            request,
+        ),
+    )
+    campaign = controller.create(
+        {
+            "from_trajectory": "trajectory.log",
+            "apply_policy": "verified_only",
+            "infer_target": True,
+        },
+        max_cycles=3,
+    )
+    source_run_id = f"{campaign.campaign_id}-cycle-001"
+    source_path = controller.store.run_path(source_run_id)
+    candidate_id = "candidate-screening-only"
+    (source_path / "candidates").mkdir(parents=True)
+    (source_path / "candidates" / f"{candidate_id}.json").write_text(
+        "{}", encoding="utf-8"
+    )
+    controller.store.write_report(
+        source_run_id,
+        {
+            "run_id": source_run_id,
+            "status": "rejected",
+            "measurement_pending_candidate_id": candidate_id,
+            "campaign_failure_attribution": {
+                "failure_class": "measurement",
+                "failure_owner": "framework",
+                "failure_scope": "shared_run",
+                "code": "control_not_comparable",
+            },
+        },
+    )
+    legacy = campaign_module.replace(
+        campaign,
+        cycle_index=1,
+        run_ids=(source_run_id,),
+        measurement_pending_run_id=source_run_id,
+        measurement_pending_candidate_id=candidate_id,
+    )
+    controller.store.write_campaign(legacy)
+
+    advanced, summary = controller.advance_once(legacy)
+
+    assert len(calls) == 1
+    assert calls[0].get("campaign_measurement_pending_run_id") is None
+    assert calls[0].get("campaign_measurement_pending_candidate_id") is None
+    assert advanced.measurement_pending_run_id is None
+    assert advanced.measurement_pending_candidate_id is None
+    assert summary["campaign_checkpoint_migration"]["reason_code"] == (
+        "authoritative_checkpoint_missing_or_invalid"
+    )
+
+
+def _write_successful_campaign_fixture(
+    tmp_path: Path,
+    calls: list[dict],
+    request: dict,
+) -> dict:
+    calls.append(request)
+    run_id = f"{request['campaign_id']}-cycle-{request['campaign_cycle']:03d}"
+    report = {
+        "run_id": run_id,
+        "status": "succeeded",
+        "budget": _budget(10),
+        "gate_results": [{"gate_name": "post_apply", "passed": True}],
+        "verification_funnel": {
+            "authoritative_candidate_attempt_count": 1,
+            "authoritative_candidate_count": 1,
+        },
+    }
+    report_path = tmp_path / ".aworld" / "self_evolve" / run_id / "report.json"
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text(json.dumps(report), encoding="utf-8")
+    return {
+        "run_id": run_id,
+        "status": "succeeded",
+        "report_path": str(report_path),
+    }
 
 
 def test_candidate_prerequisite_enters_repair_without_measurement_retry(
@@ -1663,6 +1783,7 @@ def test_candidate_prerequisite_enters_repair_without_measurement_retry(
 
 def test_shared_measurement_retries_are_bounded_separately_from_candidate_cycles(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list[dict] = []
 
@@ -1699,6 +1820,20 @@ def test_shared_measurement_retries_are_bounded_separately_from_candidate_cycles
             "status": "rejected",
             "report_path": str(report_path),
         }
+
+    monkeypatch.setattr(
+        campaign_module,
+        "_measurement_resume_checkpoint",
+        lambda store, *, run_id, report: (
+            SimpleNamespace(candidate_id="candidate-measurement-pending")
+            if (
+                store.run_path(run_id)
+                / "candidates"
+                / "candidate-measurement-pending.json"
+            ).is_file()
+            else None
+        ),
+    )
 
     result = run_self_improvement_campaign(
         workspace_root=tmp_path,

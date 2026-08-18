@@ -130,6 +130,11 @@ from aworld.self_evolve.measurement_control import (
     MeasurementPlanV2,
     estimate_measurement_feasibility,
 )
+from aworld.self_evolve.measurement_checkpoint import (
+    MeasurementResumeCheckpointV1,
+    discover_measurement_resume_checkpoint,
+    load_measurement_resume_checkpoint,
+)
 from aworld.self_evolve.measurement_planner import (
     compile_measurement_plan_v2,
     compile_screening_measurement_plan_v2,
@@ -8019,7 +8024,7 @@ class SelfEvolveRunner:
                         else {}
                     )
                     failure_event = ReplayFailureEvent(
-                        code="screening_control_frontier_exhausted",
+                        code="screening_control_infeasible",
                         owner=FailureOwner.FRAMEWORK,
                         stage=FailureStage.EVALUATION,
                         scope=FailureScope.SHARED_RUN,
@@ -8051,14 +8056,15 @@ class SelfEvolveRunner:
                         ),
                         details={
                             **last_control_details,
-                            "code": "control_not_comparable",
-                            "failure_class": "measurement",
+                            "code": "screening_control_infeasible",
+                            "failure_class": "framework",
                             "failure_owner": FailureOwner.FRAMEWORK.value,
                             "failure_scope": FailureScope.SHARED_RUN.value,
                             "failure_stage": FailureStage.EVALUATION.value,
                             "repairable": True,
-                            "next_action": "repair_measurement",
+                            "next_action": "repair_framework",
                             "screening_outcome": "invalid_control",
+                            "resume_safe": False,
                             "failure_event": payload,
                             "causal_failure_events": [payload],
                         },
@@ -8223,28 +8229,17 @@ class SelfEvolveRunner:
                         "repair_conformance": conformance_contract.to_public_dict(),
                     },
                 )
-            if (
-                replay_gate is not None
-                and not replay_gate.passed
-                and (
-                    _gate_has_typed_shared_measurement_failure(replay_gate)
-                    or _gate_has_typed_shared_infrastructure_failure(replay_gate)
-                )
-            ):
-                # Screening uses a synthetic replay candidate ID, but a shared
-                # control-plane retry must resume the immutable source package.
-                # Persist that identity on the typed gate so attribution and
-                # the next campaign cycle do not have to infer it from a
-                # multi-candidate population.
+            if replay_gate is not None and not replay_gate.passed:
+                # Screening is a qualification experiment, never the
+                # authoritative measurement graph.  A framework/shared failure
+                # may justify a handoff, but it cannot authorize Campaign
+                # measurement continuation from this namespace.
                 replay_gate = replace(
                     replay_gate,
                     details={
                         **dict(replay_gate.details or {}),
-                        "resume_safe": True,
-                        "resume_candidate_id": candidate.candidate_id,
-                        "resume_candidate_package_fingerprint": (
-                            candidate_package_fingerprint(candidate)
-                        ),
+                        "resume_safe": False,
+                        "checkpoint_stage": "screening",
                     },
                 )
             if replay_result is not None:
@@ -15771,6 +15766,23 @@ def optimize_from_cli_request(
             raise ValueError(
                 "campaign measurement resume source is outside campaign lineage"
             )
+        pending_source_report = store.read_report(
+            campaign_measurement_pending_run_id
+        )
+        resume_checkpoint = load_measurement_resume_checkpoint(
+            store,
+            run_id=campaign_measurement_pending_run_id,
+            report=pending_source_report,
+        )
+        if resume_checkpoint is None:
+            raise ValueError(
+                "campaign measurement resume checkpoint is missing or invalid"
+            )
+        if (
+            resume_checkpoint.candidate_id
+            != campaign_measurement_pending_candidate_id
+        ):
+            raise ValueError("campaign measurement resume candidate changed")
         pending_candidate_path = (
             store.run_path(campaign_measurement_pending_run_id)
             / "candidates"
@@ -15778,9 +15790,6 @@ def optimize_from_cli_request(
         )
         measurement_pending_candidate = _load_candidate_variant(
             pending_candidate_path
-        )
-        pending_source_report = store.read_report(
-            campaign_measurement_pending_run_id
         )
         expected_pending_fingerprint = pending_source_report.get(
             "measurement_pending_candidate_fingerprint"
@@ -15796,41 +15805,18 @@ def optimize_from_cli_request(
             raise ValueError(
                 "campaign measurement resume candidate checkpoint changed"
             )
+        if resume_checkpoint.candidate_fingerprint != actual_pending_fingerprint:
+            raise ValueError(
+                "campaign measurement resume typed candidate checkpoint changed"
+            )
         if measurement_pending_candidate.target != target_adapter.identity:
             raise ValueError(
                 "campaign measurement resume candidate target changed"
             )
-        replay_checkpoint_root = (
+        measurement_resume_replay_dir = (
             store.run_path(campaign_measurement_pending_run_id)
-            / "replay"
-            / campaign_measurement_pending_candidate_id
+            / resume_checkpoint.replay_dir
         )
-        replay_request_path = replay_checkpoint_root / "request.json"
-        legacy_checkpoint_path = (
-            replay_checkpoint_root
-            / "members"
-            / "paired_replay_checkpoint.json"
-        )
-        v2_measurement_checkpoint = False
-        if replay_request_path.is_file():
-            stored_replay_request = _load_json_mapping(replay_request_path)
-            stored_plan = stored_replay_request.get("measurement_plan")
-            if isinstance(stored_plan, Mapping):
-                plan_fingerprint = stored_plan.get(
-                    "measurement_plan_fingerprint"
-                )
-                v2_measurement_checkpoint = bool(
-                    isinstance(plan_fingerprint, str)
-                    and plan_fingerprint
-                    and store.measurement_control_plan_path(
-                        campaign_measurement_pending_run_id,
-                        plan_fingerprint,
-                    ).is_dir()
-                )
-        if replay_request_path.is_file() and (
-            legacy_checkpoint_path.is_file() or v2_measurement_checkpoint
-        ):
-            measurement_resume_replay_dir = replay_checkpoint_root
         _emit_progress(
             progress_callback,
             "resume",
@@ -16003,16 +15989,17 @@ def optimize_from_cli_request(
     report_path = run_path / "report.json"
     report = _load_json_mapping(report_path)
     measurement_checkpoint = _measurement_pending_candidate_checkpoint(
-        run_path=run_path,
+        store=store,
+        run_id=run_id,
         report=report,
     )
     if measurement_checkpoint is not None:
-        checkpoint_candidate_id, checkpoint_fingerprint = (
-            measurement_checkpoint
+        report["measurement_resume_checkpoint"] = measurement_checkpoint.to_dict()
+        report["measurement_pending_candidate_id"] = (
+            measurement_checkpoint.candidate_id
         )
-        report["measurement_pending_candidate_id"] = checkpoint_candidate_id
         report["measurement_pending_candidate_fingerprint"] = (
-            checkpoint_fingerprint
+            measurement_checkpoint.candidate_fingerprint
         )
     if measurement_pending_candidate is not None:
         report["measurement_resume"] = {
@@ -19211,6 +19198,14 @@ def _report_has_shared_measurement_failure(
 ) -> bool:
     if _report_has_candidate_prerequisite_failure(report):
         return False
+    outcome = report.get("campaign_measurement_outcome")
+    if (
+        isinstance(outcome, Mapping)
+        and outcome.get("continuation_available") is True
+        and outcome.get("execution_status")
+        in {"checkpointed", "invalid", "framework_blocked"}
+    ):
+        return True
     disposition = report.get("self_improvement_disposition")
     if (
         isinstance(disposition, Mapping)
@@ -19308,13 +19303,15 @@ def _report_has_candidate_prerequisite_failure(
 
 def _measurement_pending_candidate_checkpoint(
     *,
-    run_path: Path,
+    store: FilesystemSelfEvolveStore,
+    run_id: str,
     report: Mapping[str, Any],
-) -> tuple[str, str] | None:
-    """Resolve the exact immutable candidate behind a shared measurement stop."""
+) -> MeasurementResumeCheckpointV1 | None:
+    """Admit only a complete authoritative v2 continuation checkpoint."""
 
     if not _report_has_shared_measurement_failure(report):
         return None
+    run_path = store.run_path(run_id)
     candidate_ids: list[str] = []
     expected_fingerprints: dict[str, str] = {}
     for key in ("campaign_failure_attribution", "rejection_attribution"):
@@ -19392,7 +19389,14 @@ def _measurement_pending_candidate_checkpoint(
         expected = expected_fingerprints.get(candidate_id)
         if expected is not None and expected != fingerprint:
             continue
-        return candidate_id, fingerprint
+        checkpoint = discover_measurement_resume_checkpoint(
+            store,
+            run_id=run_id,
+            candidate_id=candidate_id,
+            candidate_fingerprint=fingerprint,
+        )
+        if checkpoint is not None:
+            return checkpoint
     return None
 
 
