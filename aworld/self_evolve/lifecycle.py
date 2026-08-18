@@ -728,7 +728,12 @@ def _terminal_cleanup_candidates(
     for name in sorted(_RAW_RUN_DIRS | _TEMP_RUN_DIRS):
         yield run_dir / name
     yield from _replay_workspace_paths(run_dir)
-    yield from _replay_adaptation_workspace_seed_paths(run_dir)
+    # A resumable v2 measurement plan owns its runtime seed until every work
+    # unit reaches a terminal state. Removing the seed merely because the
+    # enclosing Campaign cycle ended turns checkpoint continuation into an
+    # unrecoverable replay-adaptation failure.
+    if not _run_has_pending_measurement_work(run_dir):
+        yield from _replay_adaptation_workspace_seed_paths(run_dir)
     yield run_dir / "overlays"
     if prune_unselected_candidate_materializations:
         yield from _candidate_materialization_paths(run_dir)
@@ -774,6 +779,31 @@ def _replay_adaptation_workspace_seed_paths(run_dir: Path) -> Iterable[Path]:
             seed = capability_dir / "workspace_seed"
             if seed.exists() or seed.is_symlink():
                 yield seed
+
+
+def _run_has_pending_measurement_work(run_dir: Path) -> bool:
+    control_root = run_dir / "measurement_control"
+    if not control_root.is_dir() or control_root.is_symlink():
+        return False
+    terminal_states = {
+        "succeeded",
+        "task_failed",
+        "member_timed_out",
+        "evidence_invalid",
+        "cancelled_decisive",
+    }
+    for index_path in control_root.glob("plan-*/index.json"):
+        payload = _read_json_object(index_path)
+        work_units = payload.get("work_units") if payload else None
+        if not isinstance(work_units, list):
+            continue
+        if any(
+            isinstance(item, Mapping)
+            and item.get("state") not in terminal_states
+            for item in work_units
+        ):
+            return True
+    return False
 
 
 def _evaluator_raw_paths(root: Path, run_dir: Path) -> Iterable[Path]:

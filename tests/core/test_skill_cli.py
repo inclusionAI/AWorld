@@ -30,6 +30,7 @@ from aworld_cli.runtime.cli import _apply_runtime_skill_paths_to_swarm
 from aworld_cli.top_level_commands import register_builtin_top_level_commands
 from aworld_cli.top_level_commands.run_cmd import (
     RunTopLevelCommand,
+    _bounded_task_response_capability_payload,
     _consume_task_response_capability,
     _write_self_evolve_task_response,
 )
@@ -1009,6 +1010,45 @@ def test_task_response_capability_sends_unsigned_payload_to_parent(
     assert "framework_attestation" not in payload
     assert destination.exists() is False
     assert payload["trajectory"] == [{"action": {"content": "done"}}]
+
+
+def test_task_response_capability_compacts_oversized_trajectory() -> None:
+    sidecar = {
+        "schema_version": "aworld.self_evolve.task_response.v1",
+        "trajectory_capture_mode": "task_response",
+        "trajectory": [
+            {
+                "meta": {"step": 1, "agent_id": "Aworld"},
+                "state": {"input": {"content": "prompt" * 4_000}},
+                "action": {
+                    "content": "terminal answer " * 8_000,
+                    "is_agent_finished": "True",
+                    "tool_calls": [],
+                },
+                "reward": {"status": "ok"},
+            }
+        ],
+        "llm_calls": [{"payload": "secretly huge" * 8_000}],
+    }
+
+    compact = _bounded_task_response_capability_payload(
+        sidecar,
+        max_bytes=4_096,
+    )
+    encoded = json.dumps(
+        compact,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+    assert len(encoded) <= 4_096
+    assert compact["trajectory_capture_mode"] == "task_response"
+    assert compact["trajectory_compacted"] is True
+    assert compact["trajectory_original_count"] == 1
+    assert compact["trajectory_digest"].startswith("sha256:")
+    assert compact["trajectory"][0]["action"]["is_agent_finished"] == "True"
+    assert "llm_calls" not in compact
 
 
 @pytest.mark.asyncio

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+import uuid
 
 from aworld.self_evolve.measurement_control import (
     LaneMaterializationAttestationV1,
@@ -77,6 +78,46 @@ class MeasurementExecutionJournal:
                 )
             )
         return observations
+
+    def schedule_infrastructure_retries(
+        self,
+        *,
+        now: str,
+        maximum_attempts: int = 2,
+    ) -> tuple[str, ...]:
+        """Re-open only retryable terminal infrastructure observations.
+
+        Successful observations remain immutable and reusable. A timed-out or
+        evidence-invalid member may be re-attempted within the frozen plan,
+        retaining its finalized-attempt cost ledger and stable work-unit id.
+        """
+
+        if (
+            isinstance(maximum_attempts, bool)
+            or not isinstance(maximum_attempts, int)
+            or maximum_attempts <= 0
+        ):
+            raise ValueError("maximum_attempts must be a positive integer")
+        scheduled: list[str] = []
+        for entry in self.index_entries():
+            if entry.state not in {
+                MeasurementWorkUnitState.MEMBER_TIMED_OUT,
+                MeasurementWorkUnitState.EVIDENCE_INVALID,
+            } or entry.attempt_count >= maximum_attempts:
+                continue
+            event = WorkUnitJournalEvent.create(
+                measurement_plan_fingerprint=self._plan.measurement_plan_fingerprint,
+                work_unit_id=entry.work_unit_id,
+                kind=MeasurementControlEventKind.RETRY_SCHEDULED,
+                previous_state=entry.state,
+                new_state=MeasurementWorkUnitState.CHECKPOINTED,
+                occurred_at=now,
+                attempt_id="measurement-retry-" + uuid.uuid4().hex,
+                reason_code="measurement_infrastructure_retry",
+            )
+            self._append(event)
+            scheduled.append(entry.work_unit_id)
+        return tuple(scheduled)
 
     def begin(
         self,

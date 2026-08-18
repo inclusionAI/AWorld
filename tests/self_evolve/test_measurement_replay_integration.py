@@ -36,6 +36,7 @@ from aworld.self_evolve.replay import (
     _load_measurement_result_projection,
     _persist_measurement_result_projection,
     _persist_variant_lifecycle,
+    build_replay_request,
     compile_replay_evidence_policy_profile_v2,
     normalize_replay_members,
     replay_dataset_fingerprint,
@@ -64,6 +65,7 @@ from aworld.self_evolve.types import (
     DatasetRecipe,
     SelfEvolveTargetRef,
     SelfEvolveRunStatus,
+    to_json_dict,
 )
 
 
@@ -234,6 +236,140 @@ def test_runner_atomically_compiles_v2_plan_for_advisory_replay(
     assert store.read_measurement_control_contracts(
         "run-runner-v2", plan.measurement_plan_fingerprint
     ) == (decision, profile)
+
+
+def test_runner_resumes_exact_measurement_authority_across_campaign_cycles(
+    tmp_path: Path,
+) -> None:
+    skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("---\nname: demo\n---\n# Demo\n", encoding="utf-8")
+    target = SkillTextTarget(skill_path)
+    case_ids = ("case-1", "case-2")
+    dataset = SelfEvolveDataset(
+        cases=tuple(EvalCase(case_id=item, input=item) for item in case_ids),
+        recipe=DatasetRecipe(
+            source={"kind": "resume-v2"},
+            split_seed="resume-v2",
+            splits={"train": [], "validation": [], "held_out": list(case_ids)},
+            held_out_case_ids=case_ids,
+        ),
+    )
+    candidate = CandidateVariant(
+        candidate_id="resume-candidate",
+        target=target.identity,
+        content="---\nname: demo\n---\n# Demo\nImproved.\n",
+        rationale="resume fixture",
+        target_fingerprint=target.fingerprint_current_content(),
+    )
+    adaptation = ReplayAdaptationBundle(
+        schema_version="test",
+        source_workspace_root=str(tmp_path),
+        workspace_seed=str(tmp_path / "seed"),
+        workspace_seed_fingerprint=_fp("resume-seed"),
+        manifest_path=str(tmp_path / "manifest.json"),
+        environment_snapshot_path=str(tmp_path / "environment.json"),
+        environment_fingerprint=_fp("resume-environment"),
+        cases=tuple(
+            ReplayCaseAdaptation(
+                case_id=item,
+                adapted_task_input=item,
+                task_input_fingerprint=_fp(item),
+                dependencies=(),
+                bindings=(),
+                tool_names=(),
+                readiness="ready",
+            )
+            for item in case_ids
+        ),
+        adaptation_fingerprint=_fp("resume-adaptation"),
+        ready=True,
+    )
+
+    class Optimizer:
+        async def propose(self, _request):  # pragma: no cover
+            raise AssertionError("optimizer is outside this integration seam")
+
+    backend = AWorldCliCandidateReplayBackend()
+    store = FilesystemSelfEvolveStore(tmp_path)
+    source = SelfEvolveRunner(
+        store=store,
+        optimizer=Optimizer(),
+        replay_enabled=True,
+        candidate_replay_backend=backend,
+        measurement_mode=MeasurementPolicyMode.REQUIRED,
+        measurement_min_independent_cases=2,
+    )
+    experiment = source._plan_candidate_measurement(
+        run_id="campaign-cycle-1",
+        target=target,
+        dataset=dataset,
+        candidate=candidate,
+        candidate_count=1,
+    )
+    assert experiment is not None
+    compiled = source._compile_authoritative_measurement_plan(
+        run_id="campaign-cycle-1",
+        dataset=dataset,
+        candidate=candidate,
+        replay_adaptation=adaptation,
+        replay_backend=backend,
+        member_timeout_seconds=30,
+        experiment=experiment,
+    )
+    assert compiled is not None
+    plan, decision, profile = compiled
+    replay_dir = tmp_path / ".aworld" / "self_evolve" / "campaign-cycle-1" / "replay" / candidate.candidate_id
+    replay_dir.mkdir(parents=True, exist_ok=True)
+    request = build_replay_request(
+        run_id="campaign-cycle-1",
+        workspace_root=tmp_path,
+        target=target.identity,
+        candidate=candidate,
+        overlay_skill_root=skill_path.parent,
+        dataset=dataset,
+        replay_adaptation=adaptation,
+        evidence_policy_mode="required",
+        measurement_plan=plan,
+        measurement_isolation_decision=decision,
+        measurement_evidence_policy_profile=profile,
+    )
+    (replay_dir / "request.json").write_text(
+        json.dumps(to_json_dict(request)), encoding="utf-8"
+    )
+
+    resumed = SelfEvolveRunner(
+        store=store,
+        optimizer=Optimizer(),
+        replay_enabled=True,
+        candidate_replay_backend=backend,
+        replay_resume_dir=replay_dir,
+        measurement_resume_run_id="campaign-cycle-1",
+        measurement_mode=MeasurementPolicyMode.REQUIRED,
+        measurement_min_independent_cases=2,
+    )
+    resumed_experiment = resumed._plan_candidate_measurement(
+        run_id="campaign-cycle-2",
+        target=target,
+        dataset=dataset,
+        candidate=candidate,
+        candidate_count=1,
+    )
+    resumed_bundle = resumed._compile_authoritative_measurement_plan(
+        run_id="campaign-cycle-2",
+        dataset=dataset,
+        candidate=candidate,
+        replay_adaptation=adaptation,
+        replay_backend=backend,
+        member_timeout_seconds=30,
+        experiment=resumed_experiment,
+    )
+
+    assert resumed_experiment == experiment
+    assert resumed_bundle == (plan, decision, profile)
+    assert not (
+        tmp_path / ".aworld" / "self_evolve" / "campaign-cycle-2" / "measurement_control"
+    ).exists()
 
 
 def test_runner_compiles_screening_plan_with_stable_candidate_identity(
@@ -474,6 +610,9 @@ async def test_authoritative_replay_executes_adaptive_plan_not_legacy_batch(
     async def fake_executor(
         execution: ReplayExecutionRequest,
     ) -> ReplayExecutionResult:
+        assert execution.evidence_finalization_timeout_seconds == (
+            compiled.plan.deadlines.evidence_finalization_timeout_seconds
+        )
         calls.append((execution.task_id, execution.variant_id))
         if (
             framework_failure_variant == "baseline-policy"

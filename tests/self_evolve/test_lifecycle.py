@@ -27,6 +27,45 @@ def test_default_retention_bounds_large_replay_workspace_history() -> None:
     assert policy.prune_unselected_candidate_materializations is True
 
 
+def test_pending_measurement_work_protects_replay_runtime_seed(tmp_path: Path) -> None:
+    run_dir = tmp_path / ".aworld" / "self_evolve" / "run-pending-measurement"
+    seed = (
+        run_dir
+        / "replay_adaptation"
+        / "dataset"
+        / "capability"
+        / "workspace_seed"
+    )
+    _write_text(seed / "source.py")
+    _write_json(
+        run_dir / "measurement_control" / ("plan-" + "a" * 64) / "index.json",
+        {"work_units": [{"state": "checkpointed"}, {"state": "succeeded"}]},
+    )
+
+    candidates = tuple(
+        lifecycle_module._terminal_cleanup_candidates(
+            tmp_path / ".aworld" / "self_evolve",
+            run_dir,
+            prune_unselected_candidate_materializations=False,
+        )
+    )
+
+    assert seed not in candidates
+
+    _write_json(
+        run_dir / "measurement_control" / ("plan-" + "a" * 64) / "index.json",
+        {"work_units": [{"state": "succeeded"}, {"state": "task_failed"}]},
+    )
+    completed_candidates = tuple(
+        lifecycle_module._terminal_cleanup_candidates(
+            tmp_path / ".aworld" / "self_evolve",
+            run_dir,
+            prune_unselected_candidate_materializations=False,
+        )
+    )
+    assert seed in completed_candidates
+
+
 def _write_json(path: Path, payload: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")

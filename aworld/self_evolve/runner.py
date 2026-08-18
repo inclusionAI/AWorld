@@ -14,6 +14,7 @@ import time
 import uuid
 from collections import Counter
 from dataclasses import asdict, dataclass, field, replace
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Callable, Any
 from pathlib import Path
@@ -311,6 +312,7 @@ from aworld.self_evolve.replay import (
     replay_dataset_fingerprint,
     _baseline_invalid_for_measurement,
     _baseline_replay_is_reusable,
+    _candidate_replay_request_from_mapping,
     _distributed_member_repetitions,
     _load_variant_result_from_dir,
     _member_baseline_replay_dir,
@@ -3394,6 +3396,7 @@ class SelfEvolveRunner:
         replay_timeout_seconds: int = 600,
         replay_total_timeout_seconds: int | None = None,
         replay_resume_dir: str | Path | None = None,
+        measurement_resume_run_id: str | None = None,
         replay_max_steps: int | None = 1,
         replay_candidate_limit: int = 2,
         candidate_screening_max_cases: int = 3,
@@ -3676,6 +3679,18 @@ class SelfEvolveRunner:
             if replay_resume_dir is not None
             else None
         )
+        self.measurement_resume_run_id = (
+            str(measurement_resume_run_id).strip()
+            if measurement_resume_run_id is not None
+            else None
+        )
+        if self.measurement_resume_run_id is not None:
+            if not self.measurement_resume_run_id:
+                raise ValueError("measurement_resume_run_id must be non-empty")
+            if self.replay_resume_dir is None:
+                raise ValueError(
+                    "measurement authority resume requires its replay directory"
+                )
         self.replay_max_steps = replay_max_steps
         self.replay_candidate_limit = replay_candidate_limit
         if candidate_screening_max_cases <= 0:
@@ -6262,8 +6277,17 @@ class SelfEvolveRunner:
                     in {MeasurementPolicyMode.ADVISORY, MeasurementPolicyMode.REQUIRED}
                     and isinstance(state_measurement, MeasurementSummary)
                 ):
-                    attribution = self.store.read_measurement_attribution_report(
+                    measurement_authority_run_id = next(
+                        (
+                            experiment.run_id
+                            for experiment in self._measurement_experiments.values()
+                            if experiment.experiment_id
+                            == state_measurement.experiment_id
+                        ),
                         run_id,
+                    )
+                    attribution = self.store.read_measurement_attribution_report(
+                        measurement_authority_run_id,
                         state_measurement.experiment_id,
                     )
                     measurement_attributions.append(attribution)
@@ -6282,7 +6306,7 @@ class SelfEvolveRunner:
                     updated_summary = updated_attribution.summary(
                         attribution_report_path=(
                             self.store.measurement_attribution_ref(
-                                run_id,
+                                measurement_authority_run_id,
                                 state_measurement.experiment_id,
                             )
                         )
@@ -9264,6 +9288,53 @@ class SelfEvolveRunner:
             contract=contract,
         )
 
+    def _load_measurement_resume_request(
+        self,
+        *,
+        candidate: CandidateVariant,
+        dataset: SelfEvolveDataset,
+    ) -> CandidateReplayRequest | None:
+        """Load the original frozen measurement authority for continuation."""
+
+        if self.measurement_resume_run_id is None:
+            return None
+        if self.replay_resume_dir is None:
+            raise ValueError("measurement resume replay directory is missing")
+        request_path = Path(self.replay_resume_dir) / "request.json"
+        request = _candidate_replay_request_from_mapping(
+            _load_json_mapping(request_path)
+        )
+        if request.run_id != self.measurement_resume_run_id:
+            raise ValueError("measurement resume request belongs to another run")
+        if request.candidate_id != candidate.candidate_id:
+            raise ValueError("measurement resume request candidate changed")
+        if request.target != candidate.target:
+            raise ValueError("measurement resume request target changed")
+        if (
+            request.measurement_plan is None
+            or request.measurement_isolation_decision is None
+            or request.measurement_evidence_policy_profile is None
+        ):
+            raise ValueError("measurement resume request has no frozen v2 authority")
+        if (
+            request.dataset_fingerprint
+            != request.measurement_plan.dataset_fingerprint
+        ):
+            raise ValueError("measurement resume request dataset authority drifted")
+        available_case_ids = {case.case_id for case in dataset.cases}
+        missing_case_ids = set(request.measurement_plan.case_ids) - available_case_ids
+        if missing_case_ids:
+            raise ValueError(
+                "measurement resume view no longer covers frozen plan cases: "
+                + ",".join(sorted(missing_case_ids))
+            )
+        if (
+            request.measurement_plan.candidate_fingerprint
+            != candidate_package_fingerprint(candidate)
+        ):
+            raise ValueError("measurement resume candidate package changed")
+        return request
+
     def _plan_candidate_measurement(
         self,
         *,
@@ -9293,6 +9364,26 @@ class SelfEvolveRunner:
         existing = registry.get(key)
         if existing is not None:
             return existing
+        if experiment_registry is None and self.measurement_resume_run_id is not None:
+            source_request = self._load_measurement_resume_request(
+                candidate=candidate,
+                dataset=dataset,
+            )
+            assert source_request is not None
+            assert source_request.measurement_plan is not None
+            experiment = self.store.read_measurement_experiment(
+                self.measurement_resume_run_id,
+                source_request.measurement_plan.experiment_id,
+            )
+            if experiment.run_id != self.measurement_resume_run_id:
+                raise ValueError("measurement resume experiment authority changed")
+            if experiment.treatment.fingerprint != candidate_package_fingerprint(
+                candidate
+            ):
+                raise ValueError("measurement resume treatment identity changed")
+            registry[key] = experiment
+            registry[(experiment.run_id, candidate.candidate_id)] = experiment
+            return experiment
         replay_planned = bool(
             self.replay_enabled
             and candidate.target.target_type == "skill"
@@ -9651,8 +9742,16 @@ class SelfEvolveRunner:
                 else None
             ),
         )
-        attribution = self.store.read_measurement_attribution_report(
+        measurement_authority_run_id = next(
+            (
+                experiment.run_id
+                for experiment in self._measurement_experiments.values()
+                if experiment.experiment_id == summary.experiment_id
+            ),
             run_id,
+        )
+        attribution = self.store.read_measurement_attribution_report(
+            measurement_authority_run_id,
             summary.experiment_id,
         )
         search_usage = MeasurementUsage(
@@ -9692,7 +9791,7 @@ class SelfEvolveRunner:
         self.store.write_measurement_attribution_report(updated)
         refreshed_summary = updated.summary(
             attribution_report_path=self.store.measurement_attribution_ref(
-                run_id,
+                measurement_authority_run_id,
                 summary.experiment_id,
             )
         )
@@ -9700,7 +9799,7 @@ class SelfEvolveRunner:
             (
                 key
                 for key, cached in self._measurement_summaries.items()
-                if key[0] == run_id
+                if key[0] == measurement_authority_run_id
                 and cached.experiment_id == summary.experiment_id
             ),
             None,
@@ -11737,6 +11836,54 @@ class SelfEvolveRunner:
             raise ValueError(
                 "measurement experiment was not frozen before replay admission"
             )
+        if (
+            measurement_stage == "authoritative"
+            and self.measurement_resume_run_id is not None
+            and experiment.run_id == self.measurement_resume_run_id
+        ):
+            source_request = self._load_measurement_resume_request(
+                candidate=candidate,
+                dataset=dataset,
+            )
+            assert source_request is not None
+            assert source_request.measurement_plan is not None
+            assert source_request.measurement_isolation_decision is not None
+            assert source_request.measurement_evidence_policy_profile is not None
+            plan = source_request.measurement_plan
+            if plan.experiment_id != experiment.experiment_id:
+                raise ValueError("measurement resume plan experiment changed")
+            from aworld.self_evolve.measurement_execution import (
+                MeasurementExecutionJournal,
+            )
+
+            journal = MeasurementExecutionJournal(
+                store=self.store,
+                run_id=self.measurement_resume_run_id,
+                plan=plan,
+            )
+            resume_now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+            journal.recover_expired(now=resume_now)
+            retried = journal.schedule_infrastructure_retries(
+                now=resume_now, maximum_attempts=2
+            )
+            entries = journal.index_entries()
+            pending = sum(not entry.state.terminal for entry in entries)
+            completed = len(entries) - pending
+            _emit_progress(
+                self.progress_callback,
+                "measurement_preflight",
+                (
+                    "Resumed authoritative measurement authority: "
+                    f"{pending}/{len(entries)} work units pending; "
+                    f"{completed} trusted terminal units reused; "
+                    f"{len(retried)} infrastructure unit(s) scheduled for retry"
+                ),
+            )
+            return (
+                plan,
+                source_request.measurement_isolation_decision,
+                source_request.measurement_evidence_policy_profile,
+            )
         replay_dir = candidate_replay_artifact_directory(
             workspace_root=self.store.workspace_root,
             run_id=run_id,
@@ -11800,6 +11947,13 @@ class SelfEvolveRunner:
                     checkpoint_quantum_seconds=max(
                         float(member_timeout_seconds) * 2.0,
                         60.0,
+                    ),
+                    evidence_finalization_timeout_seconds=min(
+                        float(member_timeout_seconds),
+                        min(
+                            max(float(member_timeout_seconds) * 0.25, 45.0),
+                            120.0,
+                        ),
                     ),
                     campaign_wall_deadline_seconds=campaign_deadline,
                     resumable_chunked=True,
@@ -12224,6 +12378,31 @@ class SelfEvolveRunner:
                     measurement_evidence_profile
                 ),
             )
+            authority_experiment = measurement_experiment
+            if authority_experiment is None and measurement_plan is not None:
+                authority_experiment = self._measurement_experiments.get(
+                    (run_id, selected_candidate.candidate_id)
+                )
+            if (
+                measurement_plan is not None
+                and authority_experiment is not None
+                and authority_experiment.run_id != run_id
+            ):
+                source_request = self._load_measurement_resume_request(
+                    candidate=selected_candidate,
+                    dataset=dataset,
+                )
+                assert source_request is not None
+                if source_request.measurement_plan != measurement_plan:
+                    raise ValueError("measurement resume plan changed during admission")
+                # The measurement authority owns its execution contract,
+                # scratch roots, endpoint bindings, and checkpoint journal.
+                # Continue the exact request instead of rewriting it with the
+                # new Campaign cycle's otherwise descriptive run id.
+                request = replace(
+                    source_request,
+                    measurement_lane_attestations={},
+                )
         except ValueError as exc:
             failure_event = ReplayFailureEvent(
                 code="measurement_plan_admission_failed",
@@ -15626,13 +15805,30 @@ def optimize_from_cli_request(
             / "replay"
             / campaign_measurement_pending_candidate_id
         )
-        if (
-            (replay_checkpoint_root / "request.json").is_file()
-            and (
-                replay_checkpoint_root
-                / "members"
-                / "paired_replay_checkpoint.json"
-            ).is_file()
+        replay_request_path = replay_checkpoint_root / "request.json"
+        legacy_checkpoint_path = (
+            replay_checkpoint_root
+            / "members"
+            / "paired_replay_checkpoint.json"
+        )
+        v2_measurement_checkpoint = False
+        if replay_request_path.is_file():
+            stored_replay_request = _load_json_mapping(replay_request_path)
+            stored_plan = stored_replay_request.get("measurement_plan")
+            if isinstance(stored_plan, Mapping):
+                plan_fingerprint = stored_plan.get(
+                    "measurement_plan_fingerprint"
+                )
+                v2_measurement_checkpoint = bool(
+                    isinstance(plan_fingerprint, str)
+                    and plan_fingerprint
+                    and store.measurement_control_plan_path(
+                        campaign_measurement_pending_run_id,
+                        plan_fingerprint,
+                    ).is_dir()
+                )
+        if replay_request_path.is_file() and (
+            legacy_checkpoint_path.is_file() or v2_measurement_checkpoint
         ):
             measurement_resume_replay_dir = replay_checkpoint_root
         _emit_progress(
@@ -15721,6 +15917,11 @@ def optimize_from_cli_request(
         replay_timeout_seconds=replay_timeout_seconds,
         replay_total_timeout_seconds=replay_total_timeout_seconds,
         replay_resume_dir=measurement_resume_replay_dir,
+        measurement_resume_run_id=(
+            str(campaign_measurement_pending_run_id)
+            if measurement_pending_candidate is not None
+            else None
+        ),
         replay_max_steps=replay_max_steps,
         replay_candidate_limit=replay_candidate_limit,
         candidate_screening_max_cases=candidate_screening_max_cases,
@@ -19849,6 +20050,10 @@ def _summary_with_replay_evidence_metrics(
         "evidence_unmanifested_artifact_reference_identity_digests",
         "evidence_runtime_policy_active",
         "evidence_runtime_policy_passed",
+        "evidence_runtime_policy_authoritative_passed",
+        "evidence_runtime_policy_authority",
+        "evidence_runtime_policy_mode",
+        "evidence_runtime_policy_advisory_violation_count",
         "evidence_runtime_policy_violation_count",
         "evidence_runtime_policy_phase",
         "evidence_runtime_policy_tool_call_attempt_count",
@@ -19988,6 +20193,7 @@ def _replay_gate_details(
         replay_result,
         normalized=normalized,
     )
+    framework_blocker: ReplayFailureEvent | None = None
     if causal_failures:
         details["causal_failure_events"] = [
             event.to_dict() for event in causal_failures
@@ -20012,7 +20218,7 @@ def _replay_gate_details(
                         else "framework"
                     ),
                     "failure_owner": framework_blocker.owner.value,
-                    "failure_scope": FailureScope.SHARED_RUN.value,
+                    "failure_scope": framework_blocker.scope.value,
                     "failure_stage": framework_blocker.stage.value,
                     "repairable": framework_blocker.repairable,
                     "code": framework_blocker.code,
@@ -20115,6 +20321,7 @@ def _replay_gate_details(
             None
             if not candidate_execution_observed
             or candidate_system_failures
+            or framework_blocker is not None
             or screening_budget_censored
             or completion_failure is not None
             else (
@@ -20133,13 +20340,27 @@ def _replay_gate_details(
             event_payloads.append(recovery_failure.to_dict())
             details["causal_failure_events"] = event_payloads
             if recovery_failure.owner is FailureOwner.CANDIDATE:
-                details["failure_class"] = "candidate"
-                details["repairable"] = True
-                details["failure_stage"] = "task_rollout"
+                details.update(
+                    {
+                        "code": recovery_failure.code,
+                        "failure_class": "candidate",
+                        "failure_owner": recovery_failure.owner.value,
+                        "failure_scope": recovery_failure.scope.value,
+                        "failure_stage": recovery_failure.stage.value,
+                        "repairable": recovery_failure.repairable,
+                    }
+                )
             else:
-                details["failure_class"] = "framework"
-                details["repairable"] = False
-                details["failure_stage"] = "adaptation"
+                details.update(
+                    {
+                        "code": recovery_failure.code,
+                        "failure_class": "framework",
+                        "failure_owner": recovery_failure.owner.value,
+                        "failure_scope": recovery_failure.scope.value,
+                        "failure_stage": recovery_failure.stage.value,
+                        "repairable": recovery_failure.repairable,
+                    }
+                )
     if normalized.members:
         details["failed_members"] = [
             {
@@ -20173,9 +20394,25 @@ def _replay_gate_details(
         and not intervention_unobserved
         and not screening_budget_censored
     ):
-        details["failure_class"] = "candidate"
-        details["repairable"] = True
-        details["failure_stage"] = "replay_capability"
+        capability_event = next(
+            (
+                event
+                for event in causal_failures
+                if event.owner is FailureOwner.CANDIDATE and event.repairable
+            ),
+            None,
+        )
+        if capability_event is not None:
+            details.update(
+                {
+                    "code": capability_event.code,
+                    "failure_class": "candidate",
+                    "failure_owner": capability_event.owner.value,
+                    "failure_scope": capability_event.scope.value,
+                    "failure_stage": capability_event.stage.value,
+                    "repairable": True,
+                }
+            )
     if screening_budget_censored:
         details.update(
             {
@@ -20252,6 +20489,7 @@ def _variant_is_screening_timeout(variant: ReplayVariantResult) -> bool:
                 "timeoutexpired",
                 "task_rollout_timeout",
                 "replay_task_timeout_with_recoverable_evidence",
+                "replay_evidence_finalization_timeout",
             }
         ):
             return False
@@ -20297,6 +20535,7 @@ def _variant_has_progressing_task_timeout(variant: ReplayVariantResult) -> bool:
             "timeoutexpired",
             "task_rollout_timeout",
             "replay_task_timeout_with_recoverable_evidence",
+            "replay_evidence_finalization_timeout",
         }
         and bool(_failure_completed_data_plane_operations(repetition.failure))
         for repetition in repetitions
@@ -20327,6 +20566,7 @@ def _paired_candidate_completion_failure(
                     "timeoutexpired",
                     "task_rollout_timeout",
                     "replay_task_timeout_with_recoverable_evidence",
+                    "replay_evidence_finalization_timeout",
                 }
             ):
                 continue
@@ -20697,7 +20937,8 @@ def _candidate_artifact_lifecycle_observations(
                         "evidence_runtime_policy_active"
                     ),
                     "policy_passed": metrics.get(
-                        "evidence_runtime_policy_passed"
+                        "evidence_runtime_policy_authoritative_passed",
+                        metrics.get("evidence_runtime_policy_passed"),
                     ),
                     "artifact_file_count": metrics.get(
                         "evidence_runtime_policy_artifact_file_count"
@@ -21033,8 +21274,17 @@ def _gate_has_typed_shared_measurement_failure(gate: GateResult) -> bool:
     if not isinstance(details, Mapping):
         return False
     return bool(
-        details.get("failure_class") == "measurement"
-        and details.get("failure_owner") == FailureOwner.FRAMEWORK.value
+        gate.gate_name
+        in {
+            "candidate_replay",
+            "replay_confidence",
+            "fresh_evaluator_rerun",
+            "trusted_improvement_measurement",
+        }
+        and details.get("failure_class")
+        in {"measurement", "framework", "infrastructure"}
+        and details.get("failure_owner")
+        in {FailureOwner.FRAMEWORK.value, FailureOwner.INFRASTRUCTURE.value}
         and details.get("failure_scope") == FailureScope.SHARED_RUN.value
         and details.get("repairable") is True
     )
@@ -21764,24 +22014,66 @@ def _replay_confidence_gate(
             },
         )
         measurement_payload = measurement_event.to_dict()
+        primary_failure = next(
+            (
+                event
+                for event in causal_failures
+                if event.stage is not FailureStage.EVALUATION
+                and FailureEventSource.NATIVE.value
+                in getattr(event, "source_kinds", ())
+            ),
+            measurement_event,
+        )
+        primary_payload = primary_failure.to_dict()
+        primary_class = (
+            "measurement"
+            if primary_failure is measurement_event
+            else primary_failure.owner.value
+        )
+        primary_scope = (
+            FailureScope.SHARED_RUN
+            if primary_failure.owner
+            in {FailureOwner.FRAMEWORK, FailureOwner.INFRASTRUCTURE}
+            else primary_failure.scope
+        )
+        primary_next_action = (
+            "repair_measurement"
+            if primary_failure.owner
+            in {FailureOwner.FRAMEWORK, FailureOwner.INFRASTRUCTURE}
+            else "repair_candidate"
+            if primary_failure.owner is FailureOwner.CANDIDATE
+            else "repair_task_completion"
+        )
         base_details.update(
             {
-                "code": "control_not_comparable",
-                "failure_class": "measurement",
-                "failure_owner": FailureOwner.FRAMEWORK.value,
-                "failure_scope": FailureScope.SHARED_RUN.value,
-                "failure_stage": FailureStage.EVALUATION.value,
-                "repairable": True,
-                "next_action": "repair_measurement",
+                "code": primary_failure.code,
+                "failure_class": primary_class,
+                "failure_owner": primary_failure.owner.value,
+                "failure_scope": primary_scope.value,
+                "failure_stage": primary_failure.stage.value,
+                "repairable": primary_failure.repairable,
+                "next_action": primary_next_action,
                 "effect": None,
-                "failure_event": measurement_payload,
-                "causal_failure_events": [measurement_payload],
+                "failure_event": primary_payload,
+                "derived_failure_event": measurement_payload,
+                "causal_failure_events": [
+                    *(event.to_dict() for event in causal_failures),
+                    measurement_payload,
+                ],
                 "observed_replay_failure_events": [
                     event.to_dict() for event in causal_failures
                 ],
             }
         )
-    if coverage["incomparable_pair_count"] > 0:
+    actionable_incomparable_pair_count = max(
+        0,
+        int(coverage["incomparable_pair_count"])
+        - int(coverage.get("intentionally_unadmitted_member_count", 0)),
+    )
+    base_details["actionable_incomparable_pair_count"] = (
+        actionable_incomparable_pair_count
+    )
+    if actionable_incomparable_pair_count > 0:
         return GateResult(
             gate_name="replay_confidence",
             passed=False,
@@ -21900,10 +22192,19 @@ def _replay_evaluator_admission_gate(
     # These are candidate-side completion invariants, not relative quality
     # signals. A baseline with the same failure must not make an incomplete or
     # policy-violating candidate admissible.
-    for metric_name in (
-        "evidence_runtime_policy_passed",
-        "task_completion_established",
-    ):
+    absolute_invariants = (
+        (
+            "evidence_runtime_policy_passed",
+            "evidence_runtime_policy_authoritative_passed",
+        ),
+        ("task_completion_established", "task_completion_established"),
+    )
+    for fallback_metric_name, authoritative_metric_name in absolute_invariants:
+        metric_name = (
+            authoritative_metric_name
+            if authoritative_metric_name in candidate_metrics
+            else fallback_metric_name
+        )
         candidate_value = candidate_metrics.get(metric_name)
         if isinstance(candidate_value, bool):
             observed_metrics.append(metric_name)

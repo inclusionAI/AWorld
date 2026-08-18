@@ -196,6 +196,7 @@ _EVIDENCE_COVERAGE_BOOL_METRIC_KEYS = (
     "evidence_bundle_valid",
     "evidence_runtime_policy_active",
     "evidence_runtime_policy_passed",
+    "evidence_runtime_policy_authoritative_passed",
     "task_completion_established",
     "timeout_evidence_recovered",
 )
@@ -902,10 +903,19 @@ def _candidate_replay_provenance_is_comparable(
             if replay_capability.services:
                 baseline_endpoints = _service_endpoint_values(baseline)
                 candidate_endpoints = _service_endpoint_values(candidate)
+                exclusive_measurement = bool(
+                    replay_result.request.measurement_isolation_decision
+                    is not None
+                    and replay_result.request.measurement_isolation_decision.safe_lane_count
+                    == 1
+                )
                 if (
                     not baseline_endpoints
                     or not candidate_endpoints
-                    or baseline_endpoints & candidate_endpoints
+                    or (
+                        baseline_endpoints & candidate_endpoints
+                        and not exclusive_measurement
+                    )
                 ):
                     return False
         baseline_workspaces = _isolated_workspace_paths(baseline)
@@ -2037,6 +2047,7 @@ class ReplayExecutionRequest:
     measurement_evidence_policy_profile: EvidencePolicyProfileV2 | None = None
     isolation_grant_fingerprint: str | None = None
     lane_materialization_fingerprint: str | None = None
+    evidence_finalization_timeout_seconds: float | None = None
 
     def __post_init__(self) -> None:
         if self.evidence_policy_mode not in _REPLAY_EVIDENCE_POLICY_MODES:
@@ -2061,6 +2072,23 @@ class ReplayExecutionRequest:
                 != self.measurement_evidence_policy_profile.fingerprint
             ):
                 raise ValueError("runtime measurement identity drifted")
+            if (
+                isinstance(self.evidence_finalization_timeout_seconds, bool)
+                or not isinstance(
+                    self.evidence_finalization_timeout_seconds, (int, float)
+                )
+                or not math.isfinite(
+                    float(self.evidence_finalization_timeout_seconds)
+                )
+                or float(self.evidence_finalization_timeout_seconds) <= 0
+            ):
+                raise ValueError(
+                    "runtime measurement finalization timeout must be positive"
+                )
+        elif self.evidence_finalization_timeout_seconds is not None:
+            raise ValueError(
+                "finalization timeout requires runtime measurement identity"
+            )
 
 
 @dataclass(frozen=True)
@@ -5363,6 +5391,11 @@ class AWorldCliCandidateReplayBackend:
                 if measurement_work_unit is not None
                 else None
             ),
+            evidence_finalization_timeout_seconds=(
+                request.measurement_plan.deadlines.evidence_finalization_timeout_seconds
+                if request.measurement_plan is not None
+                else None
+            ),
         )
         _write_json(artifact_dir / "execution_request.json", execution_request)
         started_at = time.monotonic()
@@ -5621,23 +5654,26 @@ def _receive_task_response_capability(
     destination: Path,
     attestation_key: bytes,
     completed: threading.Event,
+    max_bytes: int | None = None,
 ) -> None:
     """Receive one CLI-owned response and attest it with a parent-held key."""
 
     try:
+        if max_bytes is None:
+            max_bytes = _MAX_SELF_EVOLVE_TASK_RESPONSE_BYTES
         payload_bytes = bytearray()
-        while len(payload_bytes) <= _MAX_SELF_EVOLVE_TASK_RESPONSE_BYTES:
+        while len(payload_bytes) <= max_bytes:
             chunk = os.read(
                 descriptor,
                 min(
                     64 * 1024,
-                    _MAX_SELF_EVOLVE_TASK_RESPONSE_BYTES + 1 - len(payload_bytes),
+                    max_bytes + 1 - len(payload_bytes),
                 ),
             )
             if not chunk:
                 break
             payload_bytes.extend(chunk)
-        if not payload_bytes or len(payload_bytes) > _MAX_SELF_EVOLVE_TASK_RESPONSE_BYTES:
+        if not payload_bytes or len(payload_bytes) > max_bytes:
             return
         payload = json.loads(bytes(payload_bytes).decode("utf-8"))
         if (
@@ -5691,11 +5727,28 @@ def _run_replay_cli(
     task_response_capability_fd: int | None = None,
     task_response_capability_reader_fd: int | None = None,
     task_response_attestation_key: bytes | None = None,
+    evidence_finalization_timeout_seconds: float | None = None,
+    task_response_max_bytes: int | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Run a replay CLI process while supervising terminal task diagnostics."""
 
     if not capture_output:
         raise ValueError("replay CLI supervision requires captured output")
+    if evidence_finalization_timeout_seconds is None:
+        evidence_finalization_timeout_seconds = (
+            _EVIDENCE_FINALIZATION_GRACE_SECONDS
+        )
+    if (
+        isinstance(evidence_finalization_timeout_seconds, bool)
+        or not isinstance(evidence_finalization_timeout_seconds, (int, float))
+        or not math.isfinite(float(evidence_finalization_timeout_seconds))
+        or float(evidence_finalization_timeout_seconds) <= 0
+    ):
+        raise ValueError("evidence finalization timeout must be positive")
+    if task_response_max_bytes is None:
+        task_response_max_bytes = _MAX_SELF_EVOLVE_TASK_RESPONSE_BYTES
+    if isinstance(task_response_max_bytes, bool) or task_response_max_bytes <= 0:
+        raise ValueError("task response byte limit must be positive")
     popen_kwargs: dict[str, Any] = {
         "cwd": cwd,
         "text": text,
@@ -5734,6 +5787,7 @@ def _run_replay_cli(
                 "destination": task_response_path,
                 "attestation_key": task_response_attestation_key,
                 "completed": task_response_received,
+                "max_bytes": task_response_max_bytes,
             },
             daemon=True,
             name="aworld-replay-task-response-attestor",
@@ -5808,6 +5862,7 @@ def _run_replay_cli(
                     _load_self_evolve_task_response(
                         task_response_path,
                         attestation_key=task_response_attestation_key,
+                        max_bytes=task_response_max_bytes,
                     )
                     if task_response_path is not None
                     else None
@@ -5832,7 +5887,7 @@ def _run_replay_cli(
                 if (
                     evidence_ready_at is not None
                     and time.monotonic() - evidence_ready_at
-                    >= _EVIDENCE_FINALIZATION_GRACE_SECONDS
+                    >= evidence_finalization_timeout_seconds
                 ):
                     stdout, stderr = _stop_replay_cli_process(
                         process,
@@ -5899,15 +5954,19 @@ def _run_replay_cli(
 _SELF_EVOLVE_TASK_RESPONSE_SCHEMA = "aworld.self_evolve.task_response.v1"
 _MAX_SELF_EVOLVE_TASK_RESPONSE_BYTES = 8_000_000
 _EVIDENCE_FINALIZATION_GRACE_SECONDS = 45.0
+_DEFAULT_TRUSTED_EVIDENCE_SOURCE_BYTE_LIMIT = 64_000_000
+_DEFAULT_EVIDENCE_SCRATCH_FILE_LIMIT = 64
+_DEFAULT_EVIDENCE_SCRATCH_BYTE_LIMIT = 256_000_000
 
 
 def _load_self_evolve_task_response(
     path: Path,
     *,
     attestation_key: bytes | None = None,
+    max_bytes: int = _MAX_SELF_EVOLVE_TASK_RESPONSE_BYTES,
 ) -> dict[str, Any] | None:
     try:
-        if path.is_symlink() or path.stat().st_size > _MAX_SELF_EVOLVE_TASK_RESPONSE_BYTES:
+        if path.is_symlink() or path.stat().st_size > max_bytes:
             return None
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (FileNotFoundError, OSError, json.JSONDecodeError):
@@ -6087,6 +6146,8 @@ def compile_replay_evidence_policy_profile_v2(
     artifact_file_limit: int | None = None,
     artifact_byte_limit: int | None = None,
     task_response_byte_limit: int = _MAX_SELF_EVOLVE_TASK_RESPONSE_BYTES,
+    scratch_file_limit: int = _DEFAULT_EVIDENCE_SCRATCH_FILE_LIMIT,
+    scratch_byte_limit: int = _DEFAULT_EVIDENCE_SCRATCH_BYTE_LIMIT,
 ) -> EvidencePolicyProfileV2:
     """Compile the canonical evidence contract shared by plan and runtime."""
 
@@ -6096,7 +6157,7 @@ def compile_replay_evidence_policy_profile_v2(
         else artifact_file_limit
     )
     artifact_byte_limit = (
-        AWorldCliReplayExecutor._DEFAULT_ARTIFACT_BYTE_LIMIT
+        _DEFAULT_TRUSTED_EVIDENCE_SOURCE_BYTE_LIMIT
         if artifact_byte_limit is None
         else artifact_byte_limit
     )
@@ -6132,6 +6193,8 @@ def compile_replay_evidence_policy_profile_v2(
             "trajectory_capture_mode",
         ),
         allowed_control_actions=("browser:close",),
+        scratch_max_files=scratch_file_limit,
+        scratch_max_bytes=scratch_byte_limit,
     )
 
 
@@ -6224,10 +6287,16 @@ def compile_authoritative_replay_evidence_policy_profile_v2(
                         AWorldCliReplayExecutor._DEFAULT_ARTIFACT_FILE_LIMIT
                     ),
                     "artifact_byte_limit": (
-                        AWorldCliReplayExecutor._DEFAULT_ARTIFACT_BYTE_LIMIT
+                        _DEFAULT_TRUSTED_EVIDENCE_SOURCE_BYTE_LIMIT
                     ),
                     "task_response_byte_limit": (
                         _MAX_SELF_EVOLVE_TASK_RESPONSE_BYTES
+                    ),
+                    "scratch_file_limit": (
+                        _DEFAULT_EVIDENCE_SCRATCH_FILE_LIMIT
+                    ),
+                    "scratch_byte_limit": (
+                        _DEFAULT_EVIDENCE_SCRATCH_BYTE_LIMIT
                     ),
                 }
             ),
@@ -6481,6 +6550,8 @@ def _write_runtime_projection(
     name: str,
     source_digest: str,
     source_bytes: int,
+    source_path: Path | None = None,
+    projection_byte_limit: int = 64_000,
 ) -> tuple[str, str]:
     path = trusted_root / name
     payload = {
@@ -6488,9 +6559,38 @@ def _write_runtime_projection(
         "source_digest": source_digest,
         "source_bytes": source_bytes,
     }
+    if source_path is not None:
+        preview_limit = min(max(projection_byte_limit // 4, 1), 16_000)
+        with source_path.open("rb") as stream:
+            preview = stream.read(preview_limit + 1)
+        decoded = preview[:preview_limit].decode(
+            "utf-8", errors="replace"
+        ).strip()
+        replacement_ratio = (
+            decoded.count("\ufffd") / max(len(decoded), 1)
+            if decoded
+            else 1.0
+        )
+        if decoded and replacement_ratio <= 0.02:
+            payload["bounded_excerpt"] = decoded
+            payload["truncated"] = source_bytes > preview_limit
+        else:
+            payload["projection_kind"] = "framework_binary_identity"
     encoded = json.dumps(
-        payload, sort_keys=True, separators=(",", ":")
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
     ).encode("utf-8")
+    if len(encoded) > projection_byte_limit:
+        payload.pop("bounded_excerpt", None)
+        payload.pop("truncated", None)
+        payload["projection_kind"] = "framework_bounded_identity"
+        encoded = json.dumps(
+            payload,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
     path.write_bytes(encoded)
     return (
         path.relative_to(trusted_root.parent).as_posix(),
@@ -6501,6 +6601,70 @@ def _write_runtime_projection(
 _FRAMEWORK_CANONICAL_EVIDENCE_MANIFEST = (
     "framework_canonical_evidence_manifest.jsonl"
 )
+
+
+def _profile_artifact_policy(
+    profile: EvidencePolicyProfileV2,
+    artifact_type: str,
+) -> ArtifactPolicy:
+    matches = tuple(
+        item for item in profile.artifact_policies
+        if item.artifact_type == artifact_type
+    )
+    if len(matches) != 1:
+        raise ValueError(
+            f"evidence profile must define exactly one {artifact_type} policy"
+        )
+    return matches[0]
+
+
+def _profile_scratch_limits(
+    profile: EvidencePolicyProfileV2,
+) -> tuple[int, int]:
+    """Derive the bounded producer namespace from the frozen source policy.
+
+    Scratch is deliberately larger than the trusted handle budget.  Raw browser
+    exports may need a deterministic projection before they become trusted
+    evidence, so charging them directly to the evaluator budget makes the
+    projection path unreachable.
+    """
+
+    return profile.scratch_max_files, profile.scratch_max_bytes
+
+
+def _framework_projection_payload(
+    path: Path,
+    *,
+    source_byte_limit: int,
+    projection_byte_limit: int,
+) -> dict[str, object]:
+    """Build candidate-independent bounded semantics from the actual source."""
+
+    byte_count, digest = _digest_regular_file(path, max_bytes=source_byte_limit)
+    preview_limit = min(max(projection_byte_limit, 1), 64_000)
+    with path.open("rb") as stream:
+        preview = stream.read(preview_limit + 1)
+    decoded = preview[:preview_limit].decode("utf-8", errors="replace").strip()
+    replacement_ratio = (
+        decoded.count("\ufffd") / max(len(decoded), 1)
+        if decoded
+        else 1.0
+    )
+    if decoded and replacement_ratio <= 0.02:
+        return {
+            "bounded_excerpt": decoded,
+            "fields_used": ["framework_bounded_source_preview"],
+            "truncated": byte_count > preview_limit,
+        }
+    return {
+        "structured_summary": {
+            "content_digest": digest,
+            "byte_count": byte_count,
+            "file_suffix": path.suffix.casefold()[:32],
+            "projection_kind": "framework_binary_identity",
+        },
+        "fields_used": ["framework_binary_identity"],
+    }
 
 
 def _candidate_manifest_inventory_path(
@@ -6547,8 +6711,7 @@ def _framework_canonical_evidence_manifest(
     *,
     evidence_dir: Path,
     candidate_manifest: Path,
-    max_files: int,
-    max_bytes: int,
+    profile: EvidencePolicyProfileV2,
 ) -> tuple[Path, dict[str, Any]]:
     """Build the parent-owned evidence truth from the producer namespace.
 
@@ -6562,6 +6725,8 @@ def _framework_canonical_evidence_manifest(
         raise ValueError("candidate evidence root is not a regular directory")
     if candidate_manifest.is_symlink():
         raise ValueError("candidate evidence manifest is a symlink")
+    policy = _profile_artifact_policy(profile, _REPLAY_TRUSTED_EVIDENCE_TYPE)
+    scratch_file_limit, scratch_byte_limit = _profile_scratch_limits(profile)
     root = evidence_dir.resolve()
     inventory: list[tuple[Path, Path, int]] = []
     total_bytes = 0
@@ -6589,8 +6754,11 @@ def _framework_canonical_evidence_manifest(
             if size < 0:
                 raise ValueError("candidate evidence has an invalid size")
             total_bytes += size
-            if len(inventory) >= max_files or total_bytes > max_bytes:
-                raise ValueError("candidate evidence exceeds its policy budget")
+            if (
+                len(inventory) >= scratch_file_limit
+                or total_bytes > scratch_byte_limit
+            ):
+                raise ValueError("candidate evidence exceeds its scratch budget")
             inventory.append((resolved, relative, size))
     if not inventory:
         raise ValueError("framework evidence inventory is empty")
@@ -6642,26 +6810,39 @@ def _framework_canonical_evidence_manifest(
                 f"manifest is not readable: {exc.__class__.__name__}"
             )
 
+    # Selection is framework-owned and deterministic. Candidate annotations
+    # remain diagnostics only: they may not decide which source becomes trusted
+    # evidence or smuggle semantic claims into the canonical manifest.
+    selected_inventory: list[tuple[Path, Path, int]] = []
+    selected_bytes = 0
+    for item in inventory:
+        size = item[2]
+        if len(selected_inventory) >= policy.max_files:
+            break
+        if size > policy.max_bytes or selected_bytes + size > policy.max_bytes:
+            continue
+        selected_inventory.append(item)
+        selected_bytes += size
+    if not selected_inventory:
+        raise ValueError("no scratch artifact fits the trusted evidence profile")
+
     entries: list[dict[str, object]] = []
-    for index, (resolved, relative, _size) in enumerate(inventory, start=1):
-        annotation = annotations.get(resolved, {})
+    for index, (resolved, relative, _size) in enumerate(
+        selected_inventory, start=1
+    ):
         entry: dict[str, object] = {
-            "source_id": str(
-                annotation.get("source_id") or f"framework.inventory.{index}"
-            ),
+            "source_id": f"framework.inventory.{index}",
             "evidence_type": "file",
             "artifact_path": relative.as_posix(),
-            "extraction_method": str(
-                annotation.get("extraction_method") or "framework_inventory"
-            ),
+            "extraction_method": "framework_deterministic_projection",
         }
-        for key in (
-            *_MANIFEST_EVIDENCE_PAYLOAD_KEYS,
-            *_MANIFEST_EVIDENCE_PAYLOAD_ALIASES,
-            "fields_used",
-        ):
-            if key in annotation:
-                entry[key] = annotation[key]
+        entry.update(
+            _framework_projection_payload(
+                resolved,
+                source_byte_limit=policy.max_bytes,
+                projection_byte_limit=policy.projection_byte_limit,
+            )
+        )
         entries.append(entry)
     canonical_manifest = evidence_dir / _FRAMEWORK_CANONICAL_EVIDENCE_MANIFEST
     encoded = "".join(
@@ -6680,6 +6861,10 @@ def _framework_canonical_evidence_manifest(
         "candidate_evidence_manifest_matched_artifact_count": len(annotations),
         "framework_evidence_inventory_file_count": len(inventory),
         "framework_evidence_inventory_bytes": total_bytes,
+        "framework_trusted_evidence_file_count": len(selected_inventory),
+        "framework_trusted_evidence_bytes": selected_bytes,
+        "framework_scratch_file_limit": scratch_file_limit,
+        "framework_scratch_byte_limit": scratch_byte_limit,
         "framework_evidence_manifest_path": str(canonical_manifest),
     }
     if advisory_invalid_reasons:
@@ -6699,6 +6884,12 @@ def _finalize_replay_evidence_trust(
     evidence_dir: Path,
     task_response_path: Path,
 ) -> dict[str, Any]:
+    evidence_policy = _profile_artifact_policy(
+        context.profile, _REPLAY_TRUSTED_EVIDENCE_TYPE
+    )
+    response_policy = _profile_artifact_policy(
+        context.profile, _REPLAY_TRUSTED_RESPONSE_TYPE
+    )
     trusted_root = context.trusted_root
     if (
         trusted_root.is_symlink()
@@ -6709,11 +6900,12 @@ def _finalize_replay_evidence_trust(
     task_response = _load_self_evolve_task_response(
         task_response_path,
         attestation_key=context.signing_key,
+        max_bytes=response_policy.max_bytes,
     )
     if task_response is None:
         raise ValueError("framework task response attestation is missing or invalid")
     response_bytes = task_response_path.read_bytes()
-    if len(response_bytes) > _MAX_SELF_EVOLVE_TASK_RESPONSE_BYTES:
+    if len(response_bytes) > response_policy.max_bytes:
         raise ValueError("framework task response exceeds its policy budget")
     response_digest = "sha256:" + hashlib.sha256(response_bytes).hexdigest()
     response_copy = trusted_root / "task-response.json"
@@ -6724,7 +6916,7 @@ def _finalize_replay_evidence_trust(
     entries = bundle.get("entries")
     if bundle.get("valid") is not True or not isinstance(entries, list) or not entries:
         raise ValueError("candidate evidence bundle is not valid")
-    if len(entries) > AWorldCliReplayExecutor._DEFAULT_ARTIFACT_FILE_LIMIT:
+    if len(entries) > evidence_policy.max_files:
         raise ValueError("candidate evidence exceeds the trusted handle budget")
     handles = []
     artifact_root = artifact_dir.resolve()
@@ -6758,17 +6950,19 @@ def _finalize_replay_evidence_trust(
             )
         byte_count, digest = _digest_regular_file(
             source,
-            max_bytes=AWorldCliReplayExecutor._DEFAULT_ARTIFACT_BYTE_LIMIT,
+            max_bytes=evidence_policy.max_bytes,
         )
         relative_path = source.relative_to(artifact_root).as_posix()
         projection_path = None
         projection_digest = None
-        if byte_count > 64_000:
+        if byte_count > evidence_policy.projection_byte_limit:
             projection_path, projection_digest = _write_runtime_projection(
                 trusted_root,
                 name=f"evidence-{index + 1:04d}.projection.json",
                 source_digest=digest,
                 source_bytes=byte_count,
+                source_path=source,
+                projection_byte_limit=evidence_policy.projection_byte_limit,
             )
         handles.append(
             make_evidence_handle_v2(
@@ -6785,13 +6979,15 @@ def _finalize_replay_evidence_trust(
         )
     response_projection_path = None
     response_projection_digest = None
-    if len(response_bytes) > 64_000:
+    if len(response_bytes) > response_policy.projection_byte_limit:
         response_projection_path, response_projection_digest = (
             _write_runtime_projection(
                 trusted_root,
                 name="task-response.projection.json",
                 source_digest=response_digest,
                 source_bytes=len(response_bytes),
+                source_path=response_copy,
+                projection_byte_limit=response_policy.projection_byte_limit,
             )
         )
     handles.append(
@@ -6950,13 +7146,29 @@ class AWorldCliReplayExecutor:
                         "evidence_policy_v2_preflight_passed": False,
                     },
                 )
+        if trust_context is not None:
+            scratch_file_limit, scratch_byte_limit = _profile_scratch_limits(
+                trust_context.profile
+            )
+            task_response_max_bytes = _profile_artifact_policy(
+                trust_context.profile,
+                _REPLAY_TRUSTED_RESPONSE_TYPE,
+            ).max_bytes
+            max_consecutive_failed_actions = (
+                trust_context.profile.max_consecutive_failed_actions
+            )
+        else:
+            scratch_file_limit = self._DEFAULT_ARTIFACT_FILE_LIMIT
+            scratch_byte_limit = self._DEFAULT_ARTIFACT_BYTE_LIMIT
+            task_response_max_bytes = _MAX_SELF_EVOLVE_TASK_RESPONSE_BYTES
+            max_consecutive_failed_actions = (
+                self._DEFAULT_MAX_CONSECUTIVE_FAILED_ACTIONS
+            )
         _initialize_replay_evidence_policy_state(
             evidence_dir,
-            artifact_file_limit=self._DEFAULT_ARTIFACT_FILE_LIMIT,
-            artifact_byte_limit=self._DEFAULT_ARTIFACT_BYTE_LIMIT,
-            max_consecutive_failed_actions=(
-                self._DEFAULT_MAX_CONSECUTIVE_FAILED_ACTIONS
-            ),
+            artifact_file_limit=scratch_file_limit,
+            artifact_byte_limit=scratch_byte_limit,
+            max_consecutive_failed_actions=max_consecutive_failed_actions,
         )
         # Keep process-local roots short as well as isolated. Unix-domain socket
         # consumers (browser drivers in particular) commonly impose path limits
@@ -7014,18 +7226,21 @@ class AWorldCliReplayExecutor:
                 "AWORLD_SELF_EVOLVE_TASK_RESPONSE_PATH": str(
                     task_response_path
                 ),
+                "AWORLD_SELF_EVOLVE_TASK_RESPONSE_CAPABILITY_MAX_BYTES": str(
+                    task_response_max_bytes
+                ),
                 "AWORLD_REPLAY_EVIDENCE_POLICY": "1",
                 "AWORLD_REPLAY_EVIDENCE_POLICY_MODE": (
                     "shadow" if trust_context is not None else "legacy"
                 ),
                 "AWORLD_REPLAY_ARTIFACT_FILE_LIMIT": str(
-                    self._DEFAULT_ARTIFACT_FILE_LIMIT
+                    scratch_file_limit
                 ),
                 "AWORLD_REPLAY_ARTIFACT_BYTE_LIMIT": str(
-                    self._DEFAULT_ARTIFACT_BYTE_LIMIT
+                    scratch_byte_limit
                 ),
                 "AWORLD_REPLAY_MAX_CONSECUTIVE_FAILED_ACTIONS": str(
-                    self._DEFAULT_MAX_CONSECUTIVE_FAILED_ACTIONS
+                    max_consecutive_failed_actions
                 ),
                 "AWORLD_LOG_PATH": str(artifact_dir / "logs"),
                 "AWORLD_TRAJECTORY_LOG_DISABLED": "1",
@@ -7081,6 +7296,11 @@ class AWorldCliReplayExecutor:
                         if trust_context is not None
                         else None
                     ),
+                    evidence_finalization_timeout_seconds=(
+                        request.evidence_finalization_timeout_seconds
+                        or _EVIDENCE_FINALIZATION_GRACE_SECONDS
+                    ),
+                    task_response_max_bytes=task_response_max_bytes,
                 )
             )
             # The supervisor thread now owns both pipe descriptors. Clearing
@@ -7124,7 +7344,8 @@ class AWorldCliReplayExecutor:
                         "termination_kind": "evidence_finalization_deadline",
                         "termination_budget_axis": "finalization_grace",
                         "evidence_finalization_grace_seconds": (
-                            _EVIDENCE_FINALIZATION_GRACE_SECONDS
+                            request.evidence_finalization_timeout_seconds
+                            or _EVIDENCE_FINALIZATION_GRACE_SECONDS
                         ),
                     }
                 )
@@ -7205,6 +7426,9 @@ class AWorldCliReplayExecutor:
                 }
                 counterexample = _timeout_evidence_counterexample(
                     metrics,
+                    finalization_deadline=bool(
+                        getattr(exc, "evidence_finalization_deadline", False)
+                    ),
                 )
                 metrics = {
                     **metrics,
@@ -7300,8 +7524,7 @@ class AWorldCliReplayExecutor:
                 ) = _framework_canonical_evidence_manifest(
                     evidence_dir=evidence_dir,
                     candidate_manifest=evidence_manifest,
-                    max_files=self._DEFAULT_ARTIFACT_FILE_LIMIT,
-                    max_bytes=self._DEFAULT_ARTIFACT_BYTE_LIMIT,
+                    profile=trust_context.profile,
                 )
             evidence_metrics = _replay_evidence_metrics(
                 stdout=stdout,
@@ -10688,13 +10911,15 @@ def _replay_evidence_metrics(
     manifest_fully_valid = manifest_valid and not (
         isinstance(manifest_invalid_count, (int, float)) and manifest_invalid_count > 0
     )
+    runtime_policy_authoritative_passed = runtime_policy_metrics.get(
+        "evidence_runtime_policy_authoritative_passed",
+        runtime_policy_metrics.get("evidence_runtime_policy_passed", True),
+    )
     metrics = {
         "evidence_compacted": compacted,
         "evidence_strategy_passed": (
             ((not compacted) or manifest_fully_valid)
-            and runtime_policy_metrics.get(
-                "evidence_runtime_policy_passed", True
-            )
+            and runtime_policy_authoritative_passed
         ),
         "evidence_compaction_signals": signals,
         **manifest_metrics,
@@ -10765,6 +10990,15 @@ def _replay_evidence_runtime_policy_metrics(
     ):
         return {}
     violations = _read_replay_evidence_policy_violations(artifact_dir)
+    policy_mode = str(state.get("evidence_policy_mode") or "legacy").casefold()
+    policy_authority = str(
+        state.get("evidence_policy_authority")
+        or ("advisory" if policy_mode == "shadow" else "authoritative")
+    ).casefold()
+    if policy_authority not in {"advisory", "authoritative"}:
+        # Historical legacy state was enforcement-capable. Preserve that
+        # behavior unless the persisted state explicitly proves shadow mode.
+        policy_authority = "authoritative"
     artifact_file_count, artifact_bytes = _replay_agent_artifact_inventory(
         artifact_dir
     )
@@ -10830,6 +11064,14 @@ def _replay_evidence_runtime_policy_metrics(
     return {
         "evidence_runtime_policy_active": True,
         "evidence_runtime_policy_passed": not counterexamples,
+        "evidence_runtime_policy_mode": policy_mode,
+        "evidence_runtime_policy_authority": policy_authority,
+        "evidence_runtime_policy_authoritative_passed": (
+            not counterexamples or policy_authority == "advisory"
+        ),
+        "evidence_runtime_policy_advisory_violation_count": (
+            len(counterexamples) if policy_authority == "advisory" else 0
+        ),
         "evidence_runtime_policy_violation_count": len(counterexamples),
         "evidence_runtime_policy_phase": str(
             state.get("phase") or "collecting"
@@ -11629,10 +11871,14 @@ def _evidence_quality_failure(
     policy_violation_count = metrics.get(
         "evidence_runtime_policy_violation_count"
     )
+    policy_authority = str(
+        metrics.get("evidence_runtime_policy_authority") or "authoritative"
+    ).casefold()
     if (
         isinstance(policy_violation_count, (int, float))
         and not isinstance(policy_violation_count, bool)
         and policy_violation_count > 0
+        and policy_authority != "advisory"
     ):
         raw_counterexamples = metrics.get("replay_counterexamples")
         counterexamples = [
@@ -11699,14 +11945,28 @@ def _has_valid_artifact_backed_timeout_evidence(metrics: Mapping[str, Any]) -> b
 
 def _timeout_evidence_counterexample(
     metrics: Mapping[str, Any],
+    *,
+    finalization_deadline: bool = False,
 ) -> dict[str, Any]:
     """Describe the physical timeout without assigning treatment blame."""
 
     return _task_completion_counterexample(
         metrics,
-        failure_code="replay_task_timeout_with_recoverable_evidence",
-        trigger="task_timeout",
-        required_transition="finalize_task_response_before_timeout",
+        failure_code=(
+            "replay_evidence_finalization_timeout"
+            if finalization_deadline
+            else "replay_task_timeout_with_recoverable_evidence"
+        ),
+        trigger=(
+            "evidence_finalization_timeout"
+            if finalization_deadline
+            else "task_timeout"
+        ),
+        required_transition=(
+            "emit_task_response_within_frozen_finalization_deadline"
+            if finalization_deadline
+            else "finalize_task_response_before_timeout"
+        ),
         owner="task",
     )
 
