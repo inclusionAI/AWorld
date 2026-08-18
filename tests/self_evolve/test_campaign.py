@@ -1651,6 +1651,87 @@ def test_resume_migrates_misattributed_candidate_blocker_campaign(
     )
 
 
+def test_resume_restores_deeper_abandoned_repair_champion(
+    tmp_path: Path,
+) -> None:
+    calls: list[dict] = []
+    controller = SelfImprovementCampaignController(
+        workspace_root=tmp_path,
+        run_once=lambda **request: _write_successful_campaign_fixture(
+            tmp_path,
+            calls,
+            request,
+        ),
+    )
+    campaign = controller.create(
+        {
+            "from_trajectory": "trajectory.log",
+            "apply_policy": "verified_only",
+            "infer_target": True,
+        },
+        max_cycles=3,
+    )
+    reports: list[dict] = []
+    run_ids: list[str] = []
+    for cycle, stage in ((1, "capability_compile"), (2, "capability_preflight"), (3, "capability_compile")):
+        run_id = f"{campaign.campaign_id}-cycle-{cycle:03d}"
+        event = _event(constraint="services[*].readiness.kind")
+        event["stage"] = stage
+        report = _report(event)
+        focus_id = f"candidate-focus-{cycle}"
+        report.update(
+            {
+                "run_id": run_id,
+                "repair_focus_candidate_id": focus_id,
+            }
+        )
+        controller.store.write_report(run_id, report)
+        candidate_path = (
+            controller.store.run_path(run_id)
+            / "candidates"
+            / f"{focus_id}.json"
+        )
+        candidate_path.parent.mkdir(parents=True, exist_ok=True)
+        candidate_path.write_text("{}", encoding="utf-8")
+        reports.append(report)
+        run_ids.append(run_id)
+    exhausted = campaign_module.replace(
+        campaign,
+        status=SelfImprovementCampaignStatus.EXHAUSTED,
+        cycle_index=3,
+        run_ids=tuple(run_ids),
+        latest_progress=self_improvement_progress(reports[-1]),
+        latest_disposition=SelfImprovementDisposition(
+            kind=SelfImprovementDispositionKind.EXHAUSTED,
+            reason_code="candidate_repair_frontier_stalled",
+            owner="candidate",
+            stage="candidate_repair_conformance",
+            scope="candidate",
+        ),
+        latest_report_path=str(
+            controller.store.run_path(run_ids[-1]) / "report.json"
+        ),
+    )
+    controller.store.write_campaign(exhausted)
+
+    result = run_self_improvement_campaign(
+        workspace_root=tmp_path,
+        request={},
+        resume_campaign=campaign.campaign_id,
+        run_once=controller.run_once,
+    )
+
+    assert len(calls) == 1
+    assert calls[0]["campaign_cycle"] == 4
+    assert calls[0]["campaign_prior_run_ids"][-1] == run_ids[1]
+    assert result["campaign_status"] == "complete"
+    assert result["campaign_repair_continuation_used"] is True
+    migrated_report = controller.store.read_report(run_ids[-1])
+    assert migrated_report["campaign_causal_migration"]["action"] == (
+        "restore_deepest_repair_champion"
+    )
+
+
 def test_shared_measurement_timeout_does_not_exhaust_authoritative_frontier(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2276,6 +2357,39 @@ def test_campaign_prioritizes_cross_run_champion_feedback(tmp_path: Path) -> Non
         f"{calls[0]['campaign_id']}-cycle-002",
         f"{calls[0]['campaign_id']}-cycle-001",
     )
+
+
+def test_campaign_prioritizes_deepest_repair_focus_champion(tmp_path: Path) -> None:
+    controller = SelfImprovementCampaignController(workspace_root=tmp_path)
+    compile_run = "campaign-repair-cycle-001"
+    preflight_run = "campaign-repair-cycle-002"
+    compile_report = _report(_event())
+    compile_report.update(
+        {
+            "run_id": compile_run,
+            "repair_focus_candidate_id": "candidate-compile",
+        }
+    )
+    preflight_event = _event(constraint="services[*].readiness.kind")
+    preflight_event["stage"] = "capability_preflight"
+    preflight_report = _report(preflight_event)
+    preflight_report.update(
+        {
+            "run_id": preflight_run,
+            "repair_focus_candidate_id": "candidate-preflight",
+        }
+    )
+    controller.store.write_report(compile_run, compile_report)
+    controller.store.write_report(preflight_run, preflight_report)
+
+    ordered = campaign_module._campaign_prior_run_ids_by_champion(
+        controller.store,
+        (compile_run, preflight_run),
+    )
+
+    assert self_improvement_progress(compile_report).deepest_stage_rank == 3
+    assert self_improvement_progress(preflight_report).deepest_stage_rank == 4
+    assert ordered[-1] == preflight_run
 
 
 def test_campaign_missing_usage_telemetry_stops_before_second_run(tmp_path: Path) -> None:

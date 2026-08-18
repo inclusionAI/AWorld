@@ -122,6 +122,32 @@ def test_identical_schema_instances_emit_one_counterexample_contract() -> None:
     assert len(error.value.details["counterexample_contracts"]) == 1
 
 
+def test_missing_service_readiness_reports_known_allowed_values() -> None:
+    with pytest.raises(ReplayCapabilityError) as error:
+        replay_capability_module._validate_compile_result_service_schema(
+            [
+                {
+                    "service_id": "service-1",
+                    "requirement_id": "requirement-1",
+                    "transport": "http_fixture",
+                    "response_fixture": "fixtures/one.json",
+                }
+            ]
+        )
+
+    readiness = next(
+        item
+        for item in error.value.details["schema_field_constraints"]
+        if item["field_path"] == "services[*].readiness.kind"
+    )
+    assert readiness == {
+        "schema_layer": "compile_result",
+        "field_path": "services[*].readiness.kind",
+        "rule": "required",
+        "expected": ["http", "tcp"],
+    }
+
+
 def test_empty_forbidden_conditional_field_is_a_schema_violation() -> None:
     with pytest.raises(ReplayCapabilityError) as error:
         replay_capability_module._validate_conditional_service_fields(
