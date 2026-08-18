@@ -320,6 +320,12 @@ def test_online_job_worker_rejects_auto_verified_skill_candidate_on_replay_failu
     class FakeReplayBackend:
         async def replay_candidate(self, request, *, candidate, dataset):
             from aworld.self_evolve.replay import CandidateReplayResult, ReplayVariantResult
+            from aworld.self_evolve.failure_events import (
+                FailureOwner,
+                FailureScope,
+                FailureStage,
+                ReplayFailureEvent,
+            )
 
             return CandidateReplayResult(
                 request=request,
@@ -332,7 +338,15 @@ def test_online_job_worker_rejects_auto_verified_skill_candidate_on_replay_failu
                     variant_id=candidate.candidate_id,
                     status="failed",
                     trajectory=[],
-                    failure={"reason": "fake replay failure"},
+                    failure=ReplayFailureEvent(
+                        code="fake_candidate_replay_failure",
+                        owner=FailureOwner.CANDIDATE,
+                        stage=FailureStage.TASK_ROLLOUT,
+                        scope=FailureScope.CANDIDATE,
+                        repairable=True,
+                        category="test_candidate_replay",
+                        summary="fake replay failure",
+                    ),
                 ),
             )
 
@@ -394,8 +408,8 @@ def test_online_job_worker_rejects_auto_verified_skill_candidate_on_replay_failu
     assert saved["job_execution_status"] == "succeeded"
     assert saved["framework_status"] == "rejected"
     assert saved["campaign_status"] == "active"
-    assert saved["self_improvement_disposition"]["kind"] == "repair_measurement"
-    assert saved["self_improvement_disposition"]["owner"] == "evaluation_harness"
+    assert saved["self_improvement_disposition"]["kind"] == "continue_candidate"
+    assert saved["self_improvement_disposition"]["owner"] == "candidate"
     follow_up_jobs = sorted(result.job_path.parent.glob("*-campaign-002.json"))
     assert len(follow_up_jobs) == 1
     assert json.loads(follow_up_jobs[0].read_text(encoding="utf-8"))["status"] == (

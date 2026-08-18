@@ -2351,7 +2351,10 @@ def test_candidate_screening_quarantines_campaign_invalid_controls() -> None:
     )
 
     assert screening is not None
-    assert [case.case_id for case in screening.cases] == ["fresh-case"]
+    assert [case.case_id for case in screening.cases] == [
+        "fresh-case",
+        "invalid-b",
+    ]
     assert screening.recipe.source["quarantined_control_case_ids"] == [
         "invalid-a",
         "invalid-b",
@@ -13691,13 +13694,83 @@ def test_control_preflight_fails_closed_only_when_all_baselines_are_known_bad() 
     )
 
     assert infeasible["status"] == "infeasible"
-    assert infeasible["candidate_generation_allowed"] is False
+    assert infeasible["candidate_generation_allowed"] is True
+    assert infeasible["advisory_only"] is True
+    assert infeasible["support_specific_qualification_required"] is True
     assert unknown["status"] == "unknown"
     assert unknown["candidate_generation_allowed"] is True
 
 
+def test_screening_timeout_uses_one_bounded_same_case_escalation() -> None:
+    assert runner_module._candidate_screening_escalated_timeout(
+        177,
+        authoritative_timeout_seconds=600,
+    ) == 266
+    assert runner_module._candidate_screening_escalated_timeout(
+        266,
+        authoritative_timeout_seconds=600,
+    ) == 300
+    assert runner_module._candidate_screening_escalated_timeout(
+        300,
+        authoritative_timeout_seconds=600,
+    ) is None
+
+
+def test_candidate_owned_support_baseline_incompatibility_is_candidate_repair() -> None:
+    timeout_failure = {
+        "code": "replay_member_phase_timeout",
+        "failure_owner": "framework",
+    }
+    gate = GateResult(
+        gate_name="candidate_replay",
+        passed=False,
+        reason="baseline timed out under candidate support",
+        details={
+            "failure_class": "framework",
+            "failure_owner": "framework",
+            "baseline_failure": timeout_failure,
+        },
+    )
+    current_identity = {
+        "case_id": "case-1",
+        "baseline_skill_fingerprint": "sha256:baseline",
+        "capability_package_fingerprint": "sha256:candidate-package",
+        "replay_capability_fingerprint": "sha256:candidate-capability",
+        "adaptation_fingerprint": "sha256:candidate-adaptation",
+        "support_fingerprint": "sha256:candidate-support",
+        "timeout_envelope_fingerprint": "sha256:candidate-timeout",
+    }
+    qualified_framework_identity = {
+        **current_identity,
+        "capability_package_fingerprint": "framework-only",
+        "replay_capability_fingerprint": "framework-only",
+        "support_fingerprint": "sha256:framework-support",
+        "timeout_envelope_fingerprint": "sha256:framework-timeout",
+    }
+
+    attributed = runner_module._candidate_support_baseline_incompatibility_gate(
+        gate,
+        control_identity=current_identity,
+        control_observations={
+            "sha256:framework-control": {
+                "identity": qualified_framework_identity,
+                "baseline_success_count": 1,
+            }
+        },
+    )
+
+    assert attributed is not None and not attributed.passed
+    assert attributed.details["code"] == (
+        "candidate_replay_support_baseline_incompatible"
+    )
+    assert attributed.details["failure_class"] == "candidate"
+    assert attributed.details["failure_owner"] == "candidate"
+    assert attributed.details["next_action"] == "continue_candidate_repair"
+    assert runner_module._screening_gate_has_invalid_control(attributed) is False
+
+
 @pytest.mark.asyncio
-async def test_runner_skips_candidate_generation_when_control_preflight_is_infeasible(
+async def test_runner_keeps_generation_after_target_only_control_preflight_is_infeasible(
     tmp_path: Path,
 ) -> None:
     skill_path, dataset = _cycle1_runner_fixture(tmp_path, case_count=1)
@@ -13745,7 +13818,7 @@ async def test_runner_skips_candidate_generation_when_control_preflight_is_infea
         async def propose(self, request: OptimizerRequest) -> OptimizerResult:
             nonlocal optimizer_calls
             optimizer_calls += 1
-            raise AssertionError("control preflight must run before generation")
+            return OptimizerResult(candidates=())
 
     runner = SelfEvolveRunner(
         store=store,
@@ -13764,14 +13837,14 @@ async def test_runner_skips_candidate_generation_when_control_preflight_is_infea
     )
 
     report = store.read_report(result.run.run_id)
-    assert optimizer_calls == 0
+    assert optimizer_calls == 1
     assert result.run.status is SelfEvolveRunStatus.REJECTED
     assert report["screening_control_preflight"]["status"] == "infeasible"
-    assert len(report["gate_results"]) == 1
-    assert report["gate_results"][0]["gate_name"] == (
-        "candidate_screening_preflight"
+    assert report["screening_control_preflight"]["advisory_only"] is True
+    assert not any(
+        gate["gate_name"] == "candidate_screening_preflight"
+        for gate in report["gate_results"]
     )
-    assert report["gate_results"][0]["details"]["failure_class"] == "framework"
 
 
 def test_verified_prerequisite_files_restore_format_only_differences() -> None:
@@ -14281,25 +14354,12 @@ async def test_runner_reuses_successful_baseline_replay_across_candidate_populat
         apply_policy="auto_verified",
     )
 
-    expected_baseline_dir = (
-        tmp_path
-        / ".aworld"
-        / "self_evolve"
-        / "run-baseline-reuse"
-        / "screening"
-        / "population-replay-task"
-        / "replay"
-        / "candidate-one"
-        / "baseline"
-    )
     assert result.run.status.value == (
         "rejected" if explicit_empty_members else "succeeded"
     )
-    assert replay_backend.baseline_replay_dirs[:2] == (
-        [None, None]
-        if explicit_empty_members
-        else [None, str(expected_baseline_dir)]
-    )
+    # This fake backend does not persist a request carrying the exact support
+    # fingerprint, so its in-memory baseline is deliberately not reusable.
+    assert replay_backend.baseline_replay_dirs[:2] == [None, None]
     assert all(
         replay_dir is None
         for replay_dir in replay_backend.baseline_replay_dirs[2:]
@@ -15037,7 +15097,10 @@ async def test_population_screening_exhausts_distinct_control_panel(
     )
 
     assert selected == ()
-    assert len(calls) == 3
+    assert len(calls) == 6
+    assert calls[0] == calls[1]
+    assert calls[2] == calls[3]
+    assert calls[4] == calls[5]
     assert set(calls) == set(case_ids)
     assert report is not None
     screening = report["screening"]
@@ -15047,6 +15110,7 @@ async def test_population_screening_exhausts_distinct_control_panel(
     assert screening["stopped_by_invalid_control"] is True
     assert screening["screening_outcome"] == "invalid_control"
     assert screening["control_fallback_count"] == 2
+    assert screening["control_escalation_count"] == 3
     assert set(screening["invalid_control_case_ids"]) == set(case_ids)
     terminal_details = screening["attempts"][0]["details"]
     assert terminal_details["code"] == "screening_control_infeasible"

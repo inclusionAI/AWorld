@@ -622,6 +622,20 @@ demoted without being starved. Expansion remains limited by the frozen stage
 batch size. Each admission records its expected information value, selection
 policy, and remaining case budget in `measurement_schedule.json`.
 
+Historical target-only control preflight is advisory: it may order candidate
+controls, but it cannot block candidate generation or qualify a newly compiled
+replay support package. After candidate capability compilation, control health
+is qualified under an identity that binds the case, baseline skill, capability
+package, frozen replay capability, adaptation, and timeout envelope. A baseline
+cache entry is reusable only with the same support and envelope fingerprints;
+behavior-only siblings can therefore share it when their replay support is
+identical. A smaller-envelope baseline timeout gets one bounded same-case
+escalation (up to 300 seconds) before another control is tried. If the baseline
+fails only with candidate-owned support while another qualified support surface
+succeeds, the failure is reported as
+`candidate_replay_support_baseline_incompatible` and returned to candidate
+repair rather than framework handoff.
+
 The same trusted-measurement policy is enforced while authoritative replay is
 still running. Each baseline or candidate member has a hard phase deadline
 covering all evidence retries, and progress reports expose both the member

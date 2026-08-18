@@ -1711,6 +1711,10 @@ async def test_each_variant_and_repetition_starts_from_same_clean_seed(
         "dataset_fingerprint": request.dataset_fingerprint,
         "adaptation_fingerprint": request.adaptation_fingerprint,
         "workspace_seed_fingerprint": request.workspace_seed_fingerprint,
+        "support_fingerprint": request.support_fingerprint,
+        "timeout_envelope_fingerprint": (
+            request.timeout_envelope_fingerprint
+        ),
     }
     assert _find_reusable_baseline_replay_dir(**lookup) is not None
     assert _find_reusable_baseline_replay_dir(
@@ -1724,6 +1728,15 @@ async def test_each_variant_and_repetition_starts_from_same_clean_seed(
     ) is None
     assert _find_reusable_baseline_replay_dir(
         **{**lookup, "adaptation_fingerprint": "sha256:changed-adaptation"}
+    ) is None
+    assert _find_reusable_baseline_replay_dir(
+        **{**lookup, "support_fingerprint": "sha256:changed-support"}
+    ) is None
+    assert _find_reusable_baseline_replay_dir(
+        **{
+            **lookup,
+            "timeout_envelope_fingerprint": "sha256:changed-timeout-envelope",
+        }
     ) is None
 
 
@@ -1786,6 +1799,10 @@ async def test_multi_case_baseline_reuse_requires_exact_root_repetition_count(
         "dataset_fingerprint": request.dataset_fingerprint,
         "adaptation_fingerprint": request.adaptation_fingerprint,
         "workspace_seed_fingerprint": request.workspace_seed_fingerprint,
+        "support_fingerprint": request.support_fingerprint,
+        "timeout_envelope_fingerprint": (
+            request.timeout_envelope_fingerprint
+        ),
     }
 
     assert _find_reusable_baseline_replay_dir(
@@ -1796,6 +1813,100 @@ async def test_multi_case_baseline_reuse_requires_exact_root_repetition_count(
         **lookup,
         baseline_repetitions=4,
     ) is None
+
+
+@pytest.mark.asyncio
+async def test_behavior_only_siblings_share_baseline_with_same_support_fingerprint(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "source" / "demo"
+    workspace.mkdir(parents=True)
+    dataset = _dataset("Replay task", task_id="task-a")
+    bundle = ReplayAdaptationCompiler().compile(
+        dataset=dataset,
+        workspace_root=workspace,
+        artifact_root=tmp_path / "adaptation",
+    )
+    target = SelfEvolveTargetRef(target_type="skill", target_id="demo")
+    first = CandidateVariant(
+        candidate_id="behavior-a",
+        target=target,
+        content="# Demo\n\nBehavior A.\n",
+        rationale="first behavior",
+        target_fingerprint="sha256:baseline",
+    )
+    second = replace(
+        first,
+        candidate_id="behavior-b",
+        content="# Demo\n\nBehavior B.\n",
+        rationale="second behavior",
+    )
+    calls: list[str] = []
+
+    async def fake_executor(request: ReplayExecutionRequest) -> ReplayExecutionResult:
+        calls.append(request.variant_id)
+        return ReplayExecutionResult(
+            status="succeeded",
+            trajectory=[{"action": {"content": request.variant_id}}],
+        )
+
+    backend = AWorldCliCandidateReplayBackend(executor=fake_executor)
+    first_request = build_replay_request(
+        run_id="support-sibling-a",
+        workspace_root=workspace,
+        target=target,
+        candidate=first,
+        overlay_skill_root=tmp_path / "overlay-a",
+        dataset=dataset,
+        replay_adaptation=bundle,
+        timeout_seconds=120,
+        max_steps=4,
+        max_tool_calls=8,
+    )
+    await backend.replay_candidate(
+        first_request,
+        candidate=first,
+        dataset=dataset,
+    )
+    baseline_dir = _find_reusable_baseline_replay_dir(
+        store=FilesystemSelfEvolveStore(workspace),
+        run_id="support-sibling-b",
+        target=target,
+        dataset=dataset,
+        baseline_repetitions=1,
+        baseline_skill_fingerprint=first_request.baseline_skill_fingerprint,
+        dataset_fingerprint=first_request.dataset_fingerprint,
+        adaptation_fingerprint=first_request.adaptation_fingerprint,
+        workspace_seed_fingerprint=first_request.workspace_seed_fingerprint,
+        support_fingerprint=first_request.support_fingerprint,
+        timeout_envelope_fingerprint=(
+            first_request.timeout_envelope_fingerprint
+        ),
+    )
+    assert baseline_dir is not None
+
+    calls.clear()
+    second_request = build_replay_request(
+        run_id="support-sibling-b",
+        workspace_root=workspace,
+        target=target,
+        candidate=second,
+        overlay_skill_root=tmp_path / "overlay-b",
+        dataset=dataset,
+        replay_adaptation=bundle,
+        timeout_seconds=120,
+        max_steps=4,
+        max_tool_calls=8,
+        baseline_replay_dir=baseline_dir,
+    )
+    assert second_request.support_fingerprint == first_request.support_fingerprint
+    await backend.replay_candidate(
+        second_request,
+        candidate=second,
+        dataset=dataset,
+    )
+
+    assert calls == [second.candidate_id]
 
 
 def _result_with_request_provenance(request, candidate_id: str) -> CandidateReplayResult:
@@ -2140,7 +2251,17 @@ async def test_unresolved_adaptation_preserves_proposal_but_rejects_verified_app
         )
 
         assert result.run.status.value == expected_status
-        assert result.selected_candidate is not None
+        assert result.selected_candidate is None
+        report = json.loads(
+            (
+                workspace
+                / ".aworld"
+                / "self_evolve"
+                / f"run-policy-{policy}"
+                / "report.json"
+            ).read_text(encoding="utf-8")
+        )
+        assert report["repair_focus_candidate_id"] == "cand-policy"
         assert (
             workspace
             / ".aworld"
