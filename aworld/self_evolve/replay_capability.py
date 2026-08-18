@@ -3412,7 +3412,7 @@ def _validate_compile_result_service_schema(raw: Any) -> None:
                     schema_layer="compile_result",
                     field_path="services[*].transport",
                     rule="required",
-                    expected=(),
+                    expected=REPLAY_CAPABILITY_SUPPORTED_SERVICE_TRANSPORTS,
                     value=None,
                 )
             )
@@ -3448,11 +3448,7 @@ def _validate_compile_result_service_schema(raw: Any) -> None:
                     rule=(
                         "required" if "kind" not in readiness else "enum"
                     ),
-                    expected=(
-                        ()
-                        if "kind" not in readiness
-                        else REPLAY_CAPABILITY_SUPPORTED_READINESS_KINDS
-                    ),
+                    expected=REPLAY_CAPABILITY_SUPPORTED_READINESS_KINDS,
                     value=readiness.get("kind"),
                 )
             )

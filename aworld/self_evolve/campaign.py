@@ -83,7 +83,7 @@ _STAGE_RANK = {
     "post_apply": 10,
     # Typed causal events use lifecycle stage names rather than gate names.
     "capability_compile": 3,
-    "capability_preflight": 3,
+    "capability_preflight": 4,
     "task_rollout": 5,
     "evaluator": 7,
     "post_apply_verification": 10,
@@ -1915,6 +1915,10 @@ def run_self_improvement_campaign(
             controller,
             campaign,
         )
+        campaign = _migrate_lost_repair_champion_for_resume(
+            controller,
+            campaign,
+        )
         if campaign.status in {
             SelfImprovementCampaignStatus.COMPLETE,
             SelfImprovementCampaignStatus.BUDGET_LIMITED,
@@ -2114,6 +2118,99 @@ def _migrate_misattributed_candidate_blocker_for_resume(
         latest_progress=self_improvement_progress(report),
         latest_disposition=corrected,
         latest_measurement_outcome=None,
+        measurement_pending_run_id=None,
+        measurement_pending_candidate_id=None,
+        goal_handoff_path=None,
+    )
+    controller.store.write_campaign(migrated)
+    return migrated
+
+
+def _migrate_lost_repair_champion_for_resume(
+    controller: SelfImprovementCampaignController,
+    campaign: SelfImprovementCampaign,
+) -> SelfImprovementCampaign:
+    """Restore one bounded cycle when a deeper repair champion was abandoned."""
+
+    if (
+        campaign.status is not SelfImprovementCampaignStatus.EXHAUSTED
+        or campaign.latest_disposition is None
+        or campaign.latest_disposition.reason_code
+        != "candidate_repair_frontier_stalled"
+        or len(campaign.run_ids) < 2
+        or campaign.repair_continuation_used
+    ):
+        return campaign
+    reports: dict[str, Mapping[str, Any]] = {}
+    for run_id in campaign.run_ids:
+        try:
+            report = controller.store.read_report(run_id)
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            return campaign
+        if isinstance(report.get("repair_focus_candidate_id"), str):
+            reports[run_id] = report
+    if len(reports) < 2:
+        return campaign
+    positions = {run_id: index for index, run_id in enumerate(campaign.run_ids)}
+    champion_run_id = max(
+        reports,
+        key=lambda run_id: (
+            self_improvement_progress(reports[run_id]).deepest_stage_rank,
+            positions[run_id],
+        ),
+    )
+    latest_run_id = campaign.run_ids[-1]
+    if champion_run_id == latest_run_id:
+        return campaign
+    champion_report = reports[champion_run_id]
+    latest_report = reports.get(latest_run_id)
+    if latest_report is None or (
+        self_improvement_progress(champion_report).deepest_stage_rank
+        <= self_improvement_progress(latest_report).deepest_stage_rank
+    ):
+        return campaign
+    focus_candidate_id = champion_report.get("repair_focus_candidate_id")
+    if not isinstance(focus_candidate_id, str) or not (
+        controller.store.run_path(champion_run_id)
+        / "candidates"
+        / f"{focus_candidate_id}.json"
+    ).is_file():
+        return campaign
+    champion_index = positions[champion_run_id]
+    previous_progress = (
+        self_improvement_progress(
+            controller.store.read_report(campaign.run_ids[champion_index - 1])
+        )
+        if champion_index > 0
+        else None
+    )
+    corrected = derive_self_improvement_disposition(
+        champion_report,
+        previous_progress=previous_progress,
+    )
+    if corrected.kind is not SelfImprovementDispositionKind.CONTINUE_CANDIDATE:
+        return campaign
+    migration = {
+        "schema_version": "aworld.self_evolve.repair_champion_migration.v1",
+        "action": "restore_deepest_repair_champion",
+        "source_run_id": latest_run_id,
+        "champion_run_id": champion_run_id,
+        "champion_candidate_id": focus_candidate_id,
+        "previous_reason_code": campaign.latest_disposition.reason_code,
+        "corrected_reason_code": corrected.reason_code,
+    }
+    latest_report["campaign_causal_migration"] = migration
+    controller.store.write_report(latest_run_id, latest_report)
+    migrated = replace(
+        campaign,
+        status=SelfImprovementCampaignStatus.ACTIVE,
+        repair_continuation_used=True,
+        latest_progress=self_improvement_progress(champion_report),
+        latest_disposition=corrected,
+        latest_measurement_outcome=None,
+        latest_report_path=str(
+            controller.store.run_path(champion_run_id) / "report.json"
+        ),
         measurement_pending_run_id=None,
         measurement_pending_candidate_id=None,
         goal_handoff_path=None,
@@ -3445,9 +3542,15 @@ def _campaign_report_quality(report: Mapping[str, Any]) -> tuple[object, ...]:
         if measurement_required
         else (False, 0, 1, float("-inf"))
     )
+    progress = self_improvement_progress(report)
+    repair_focus_present = isinstance(
+        report.get("repair_focus_candidate_id"), str
+    )
     return (
         str(report.get("status") or "") == "succeeded",
         post_apply.get("release_state") in {"verified", "verified_only"},
+        repair_focus_present,
+        progress.deepest_stage_rank if repair_focus_present else 0,
         not measurement_required
         or measurement.get("promotion_eligible") is True,
         *trusted_measurement_quality,
@@ -3459,7 +3562,7 @@ def _campaign_report_quality(report: Mapping[str, Any]) -> tuple[object, ...]:
         _finite_metric(metrics.get("command_pass_rate")),
         -failed_gate_count,
         _finite_metric(metrics.get("score")),
-        self_improvement_progress(report).deepest_stage_rank,
+        progress.deepest_stage_rank,
     )
 
 

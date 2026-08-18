@@ -371,6 +371,7 @@ from aworld.self_evolve.replay_capability import (
     REPLAY_CAPABILITY_RESULT_SCHEMA_VERSION,
     REPLAY_CAPABILITY_SCHEMA_VERSION,
     REPLAY_CAPABILITY_SUPPORTED_REQUIREMENT_KINDS,
+    REPLAY_CAPABILITY_SUPPORTED_READINESS_KINDS,
     REPLAY_CAPABILITY_SUPPORTED_SERVICE_TRANSPORTS,
     FrozenReplayCapabilityAdapter,
     ReplayCapabilityCompileRequest,
@@ -2213,13 +2214,39 @@ def _candidate_conformance_repair_topologies(
                     "source_shape": source_shape,
                 }
             )
+        raw_counterexamples = details.get("counterexample_contracts")
+        output_witnesses = sorted(
+            (
+                str(item.get("counterexample_id") or ""),
+                str(item.get("actual_type") or ""),
+                str(item.get("actual_fingerprint") or ""),
+            )
+            for item in (
+                raw_counterexamples
+                if isinstance(raw_counterexamples, (list, tuple))
+                else ()
+            )
+            if isinstance(item, Mapping)
+            and isinstance(item.get("counterexample_id"), str)
+            and isinstance(item.get("actual_fingerprint"), str)
+        )
         payload = {
             "owner_paths": owner_paths,
-            "edited_files": edited_files,
-            "structural_authorization": (
-                candidate.structural_edit_intent.authorization
-                if candidate.structural_edit_intent is not None
-                else None
+            # A typed counterexample is an executable output witness. Source
+            # refactors do not constitute a strategy switch while the selected
+            # subject retains the same type and content fingerprint.
+            "counterexample_output_witnesses": output_witnesses,
+            **(
+                {}
+                if output_witnesses
+                else {
+                    "edited_files": edited_files,
+                    "structural_authorization": (
+                        candidate.structural_edit_intent.authorization
+                        if candidate.structural_edit_intent is not None
+                        else None
+                    ),
+                }
             ),
         }
         fingerprint = "sha256:" + hashlib.sha256(
@@ -2656,6 +2683,14 @@ def _replay_adaptation_exception_details(
                 ),
                 "service_transport_values": list(
                     REPLAY_CAPABILITY_SUPPORTED_SERVICE_TRANSPORTS
+                ),
+                "service_readiness_contract": (
+                    "every services[*] item must emit readiness.kind; the "
+                    "requirement applies to every wildcard-selected service, "
+                    "not only skill_runtime or runtime_required branches"
+                ),
+                "service_readiness_kind_values": list(
+                    REPLAY_CAPABILITY_SUPPORTED_READINESS_KINDS
                 ),
                 "runtime_service_transport": "skill_runtime",
                 "requirement_classification": (
@@ -4409,6 +4444,7 @@ class SelfEvolveRunner:
         resolved_conformance_counterexamples: set[str] = set()
         conformance_counterexamples_by_stage: dict[str, set[str]] = {}
         repeated_contract_replacement_candidate_ids: set[str] = set()
+        conformance_same_slot_repair_count = 0
         conformance_strategy_switch_not_materialized = False
         candidate_generation_infrastructure_retries = 0
         raw_generation_attempt_count = 0
@@ -6039,6 +6075,36 @@ class SelfEvolveRunner:
                             ),
                             status="rejected",
                         )
+                        )
+            same_slot_conformance_repair_ids = {
+                failed_candidate.candidate_id
+                for failed_candidate, failed_gate in screening_failures
+                if failed_gate.gate_name == "candidate_repair_conformance"
+                and isinstance(failed_gate.details, Mapping)
+                and failed_gate.details.get("failure_class") == "candidate"
+                and failed_gate.details.get("repairable") is True
+            }
+            if same_slot_conformance_repair_ids:
+                # A conformance rejection is feedback for the slot that
+                # produced it, not a completed candidate strategy. Release the
+                # effective slot immediately; the next generation batch is the
+                # bounded same-slot repair attempt and receives this batch's
+                # executable counterexamples through validation_feedback.
+                effective_generated_candidate_ids.difference_update(
+                    same_slot_conformance_repair_ids
+                )
+                conformance_same_slot_repair_count += len(
+                    same_slot_conformance_repair_ids
+                )
+                generated_candidate_slot_count = len(
+                    effective_generated_candidate_ids
+                )
+                if isinstance(screening_report, dict):
+                    screening_report["same_slot_conformance_repair_ids"] = sorted(
+                        same_slot_conformance_repair_ids
+                    )
+                    screening_report["effective_candidate_slot_count"] = (
+                        generated_candidate_slot_count
                     )
             conformance_failure_signatures = (
                 _candidate_conformance_failure_signatures(screening_failures)
@@ -7197,6 +7263,9 @@ class SelfEvolveRunner:
                 ),
                 "repeated_contract_replacement_candidate_ids": sorted(
                     repeated_contract_replacement_candidate_ids
+                ),
+                "conformance_same_slot_repair_count": (
+                    conformance_same_slot_repair_count
                 ),
                 **(
                     {"generation_stop_reason": generation_stop_reason}

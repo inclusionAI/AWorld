@@ -2920,6 +2920,12 @@ def test_candidate_replay_capability_compile_error_is_typed_repair_feedback() ->
     assert diagnostic["required_compile_result_contract"][
         "runtime_service_transport"
     ] == "skill_runtime"
+    assert diagnostic["required_compile_result_contract"][
+        "service_readiness_kind_values"
+    ] == ["http", "tcp"]
+    assert "every services[*] item" in diagnostic[
+        "required_compile_result_contract"
+    ]["service_readiness_contract"]
     assert "runtime_required is a requirement status" in diagnostic[
         "layering_rules"
     ][2]
@@ -3013,6 +3019,69 @@ def test_candidate_replay_capability_preserves_schema_field_constraints() -> Non
         )
         != fingerprint
     )
+
+
+def test_conformance_strategy_switch_requires_output_witness_change() -> None:
+    target = SelfEvolveTargetRef("skill", "demo")
+
+    def candidate(candidate_id: str, source: str) -> CandidateVariant:
+        return CandidateVariant(
+            candidate_id=candidate_id,
+            target=target,
+            content="# Demo\n",
+            rationale="strategy witness",
+            files=(
+                CandidateFileDelta(
+                    path="replay/compiler.py",
+                    operation="upsert",
+                    content=source,
+                ),
+            ),
+        )
+
+    def gate(actual_fingerprint: str) -> GateResult:
+        return GateResult(
+            gate_name="candidate_repair_conformance",
+            passed=False,
+            reason="compiled subject still violates schema",
+            details={
+                "failure_class": "candidate",
+                "repairable": True,
+                "failure_fingerprint": "same-schema-frontier",
+                "counterexample_contracts": [
+                    {
+                        "counterexample_id": "schema-counterexample-readiness",
+                        "actual_type": "null",
+                        "actual_fingerprint": actual_fingerprint,
+                    }
+                ],
+                "repair_conformance": {
+                    "required_branch_paths": ["replay/compiler.py"],
+                },
+            },
+        )
+
+    unchanged = runner_module._candidate_conformance_repair_topologies(
+        (
+            (candidate("candidate-a", "def build():\n    return {}\n"), gate("sha256:" + "a" * 64)),
+            (
+                candidate(
+                    "candidate-b",
+                    "def helper():\n    return None\n\ndef build():\n    return {}\n",
+                ),
+                gate("sha256:" + "a" * 64),
+            ),
+        )
+    )
+    changed = runner_module._candidate_conformance_repair_topologies(
+        (
+            (candidate("candidate-a", "def build():\n    return {}\n"), gate("sha256:" + "a" * 64)),
+            (candidate("candidate-c", "def build():\n    return {'readiness': {}}\n"), gate("sha256:" + "b" * 64)),
+        )
+    )
+
+    assert len(next(iter(unchanged.values()))) == 1
+    assert len(next(iter(changed.values()))) == 2
 
 
 def test_substantive_screening_failure_outranks_later_duplicate_attempt() -> None:
@@ -12238,6 +12307,7 @@ async def test_verified_runner_bounds_authoritative_candidates_across_iterations
         "conformance_counterexamples_by_stage": {},
         "repeated_contract_replacement_candidate_count": 0,
         "repeated_contract_replacement_candidate_ids": [],
+        "conformance_same_slot_repair_count": 0,
         "generation_stop_reason": "authoritative_candidate_limit_reached",
         "policy_filtered_candidate_count": 0,
         "max_authoritative_candidates": 2,
@@ -12557,6 +12627,8 @@ async def test_verified_runner_does_not_count_unmaterialized_strategy_switch(
     assert funnel["conformance_strategy_switch_count"] == 0
     assert funnel["conformance_strategy_switch_not_materialized"] is True
     assert funnel["repeated_contract_replacement_candidate_count"] == 2
+    assert funnel["conformance_same_slot_repair_count"] == 4
+    assert funnel["generated_candidate_slot_count"] == 0
     assert funnel["conformance_counterexamples_by_stage"] == {
         "capability_parse_schema": {
             "count": 1,
