@@ -1,0 +1,45 @@
+services:
+  mcp-gateway:
+    build:
+      context: mcp-gateway
+      dockerfile: Dockerfile
+    platform: linux/amd64
+    ports:
+      - 8000:8000
+    environment:
+      MCP_GATEWAY_TOKEN: 12345
+      MCP_GATEWAY_REDIS_URL: redis://redis-server:6379/0
+    restart: on-failure:3
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+
+  container-server:
+    build:
+      context: container-server
+      dockerfile: Dockerfile
+    platform: linux/amd64
+    restart: on-failure:3
+    privileged: true
+    depends_on:
+      - mcp-gateway
+    deploy:
+      resources:
+        limits:
+          memory: 8G
+
+  redis-server:
+    image: redis:7.2-alpine
+    platform: linux/amd64
+    ports:
+      - 6379:6379
+    volumes:
+      - ./.data/redis-data:/data
+    environment:
+      - REDIS_PASSWORD=12345
+    restart: on-failure:3
+    deploy:
+      resources:
+        limits:
+          memory: 2G
