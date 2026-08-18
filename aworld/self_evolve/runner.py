@@ -8164,7 +8164,11 @@ class SelfEvolveRunner:
                     active_screening_timeout = _candidate_screening_timeout(
                         self.replay_timeout_seconds,
                         max_steps=active_screening_max_steps,
-                        empirical_observation=None,
+                        empirical_observation=(
+                            self._candidate_screening_case_observations.get(
+                                active_case_id
+                            )
+                        ),
                     )
                     screening_experiment = self._plan_candidate_measurement(
                         run_id=run_id,
@@ -8223,6 +8227,12 @@ class SelfEvolveRunner:
                         active_control_case_ids = tuple(
                             case.case_id
                             for case in active_screening_dataset.cases
+                        )
+                        raw_replay_gate = replay_gate
+                        timeout_escalation_required = (
+                            _screening_invalid_control_is_timeout(
+                                raw_replay_gate
+                            )
                         )
                         control_identities = (
                             tuple(
@@ -8373,9 +8383,7 @@ class SelfEvolveRunner:
                                 ),
                             )
                             if not escalated
-                            and _screening_invalid_control_is_timeout(
-                                replay_gate
-                            )
+                            and timeout_escalation_required
                             else None
                         )
                         if escalated_timeout is None:
@@ -21742,19 +21750,26 @@ def _candidate_support_baseline_incompatibility_gate(
     ):
         return gate
     case_id = control_identity.get("case_id")
-    baseline_fingerprint = control_identity.get(
-        "baseline_skill_fingerprint"
-    )
     support_fingerprint = control_identity.get("support_fingerprint")
+    counterfactual_control_fields = (
+        "case_id",
+        "baseline_skill_fingerprint",
+        "timeout_envelope_fingerprint",
+        "timeout_seconds",
+        "max_steps",
+        "max_tool_calls",
+    )
     counterfactuals: list[dict[str, object]] = []
     for observation in control_observations.values():
         identity = observation.get("identity")
         if not isinstance(identity, Mapping):
             continue
         if (
-            identity.get("case_id") != case_id
-            or identity.get("baseline_skill_fingerprint")
-            != baseline_fingerprint
+            any(
+                identity.get(field_name)
+                != control_identity.get(field_name)
+                for field_name in counterfactual_control_fields
+            )
             or identity.get("support_fingerprint") == support_fingerprint
             or _non_negative_int(
                 observation.get("baseline_success_count")
@@ -21774,6 +21789,9 @@ def _candidate_support_baseline_incompatibility_gate(
                 "timeout_envelope_fingerprint": identity.get(
                     "timeout_envelope_fingerprint"
                 ),
+                "timeout_seconds": identity.get("timeout_seconds"),
+                "max_steps": identity.get("max_steps"),
+                "max_tool_calls": identity.get("max_tool_calls"),
             }
         )
     if not counterfactuals:

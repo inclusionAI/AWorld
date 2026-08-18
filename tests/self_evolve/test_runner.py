@@ -13716,6 +13716,213 @@ def test_screening_timeout_uses_one_bounded_same_case_escalation() -> None:
     ) is None
 
 
+@pytest.mark.asyncio
+async def test_population_screening_uses_historical_latency_for_initial_timeout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("---\nname: demo\n---\n# Demo\n", encoding="utf-8")
+    dataset = SelfEvolveDataset(
+        cases=(EvalCase(case_id="case-1", input="task"),),
+        recipe=DatasetRecipe(
+            source={"kind": "historical-screening-latency"},
+            split_seed="historical-screening-latency",
+            splits={"train": ["case-1"], "validation": [], "held_out": []},
+            trainable_case_ids=("case-1",),
+        ),
+    )
+    candidate = CandidateVariant(
+        candidate_id="candidate",
+        target=SelfEvolveTargetRef("skill", "demo", str(skill_path)),
+        content="# Demo\n\nCandidate.\n",
+        rationale="exercise empirical screening timeout",
+    )
+    runner = SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=SimpleNamespace(),
+        replay_enabled=True,
+        candidate_replay_backend=object(),
+        replay_max_steps=4,
+    )
+    runner._candidate_screening_case_observations["case-1"] = {
+        "baseline_success_count": 1,
+        "baseline_success_wall_seconds": 101.0,
+    }
+    monkeypatch.setattr(
+        runner,
+        "_prepare_replay_adaptation",
+        lambda **_kwargs: (
+            None,
+            GateResult("replay_adaptation", True, "ready"),
+        ),
+    )
+    observed_timeouts: list[int] = []
+
+    async def successful_screening(**kwargs):
+        observed_timeouts.append(kwargs["timeout_seconds"])
+        kwargs["lifecycle_callback"]("replay_started", {})
+        return (
+            None,
+            kwargs["dataset"],
+            GateResult("candidate_replay", True, "comparable pair"),
+        )
+
+    monkeypatch.setattr(
+        runner,
+        "_replay_selected_candidate",
+        successful_screening,
+    )
+
+    selected, report = await runner._screen_candidate_population(
+        run_id="run-empirical-screening-timeout",
+        target=SkillTextTarget(skill_path, allow_auto_apply=True),
+        dataset=dataset,
+        candidates=(candidate,),
+        apply_policy="verified_only",
+        require_single_candidate_screening=True,
+    )
+
+    assert selected == (candidate,)
+    assert observed_timeouts == [152]
+    assert report is not None
+
+
+@pytest.mark.asyncio
+async def test_candidate_support_attribution_preserves_raw_timeout_escalation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("---\nname: demo\n---\n# Demo\n", encoding="utf-8")
+    target = SkillTextTarget(skill_path, allow_auto_apply=True)
+    dataset = SelfEvolveDataset(
+        cases=(EvalCase(case_id="case-1", input="task"),),
+        recipe=DatasetRecipe(
+            source={"kind": "support-timeout-escalation"},
+            split_seed="support-timeout-escalation",
+            splits={"train": ["case-1"], "validation": [], "held_out": []},
+            trainable_case_ids=("case-1",),
+        ),
+    )
+    candidate = CandidateVariant(
+        candidate_id="candidate",
+        target=target.identity,
+        content="# Demo\n\nCandidate.\n",
+        rationale="preserve raw timeout evidence",
+    )
+    runner = SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=SimpleNamespace(),
+        replay_enabled=True,
+        candidate_replay_backend=object(),
+        replay_timeout_seconds=600,
+        replay_max_steps=4,
+    )
+    capability = SimpleNamespace(
+        capability_package_fingerprint="sha256:candidate-package",
+        fingerprint="sha256:candidate-capability",
+    )
+    adaptation = SimpleNamespace(
+        replay_capability=capability,
+        adaptation_fingerprint="sha256:candidate-adaptation",
+        support_fingerprint="sha256:candidate-support",
+    )
+    monkeypatch.setattr(
+        runner_module,
+        "replay_support_fingerprint",
+        lambda bundle: bundle.support_fingerprint,
+    )
+    monkeypatch.setattr(
+        runner,
+        "_prepare_replay_adaptation",
+        lambda **_kwargs: (
+            adaptation,
+            GateResult("replay_adaptation", True, "ready"),
+        ),
+    )
+    current_identity = runner_module._control_qualification_identity(
+        case_id="case-1",
+        baseline_skill_fingerprint=target.fingerprint_current_content(),
+        replay_adaptation=adaptation,
+        timeout_seconds=120,
+        max_steps=4,
+        max_tool_calls=8,
+    )
+    counterfactual_identity = {
+        **current_identity,
+        "capability_package_fingerprint": "sha256:qualified-package",
+        "replay_capability_fingerprint": "sha256:qualified-capability",
+        "adaptation_fingerprint": "sha256:qualified-adaptation",
+        "support_fingerprint": "sha256:qualified-support",
+        "control_identity_fingerprint": "sha256:qualified-control",
+    }
+    runner._candidate_screening_control_observations[
+        "sha256:qualified-control"
+    ] = {
+        "identity": counterfactual_identity,
+        "baseline_success_count": 1,
+    }
+    observed_timeouts: list[int] = []
+
+    async def timeout_then_succeed(**kwargs):
+        observed_timeouts.append(kwargs["timeout_seconds"])
+        kwargs["lifecycle_callback"]("replay_started", {})
+        if len(observed_timeouts) == 1:
+            return (
+                None,
+                None,
+                GateResult(
+                    "candidate_replay",
+                    False,
+                    "baseline member timed out",
+                    details={
+                        "failure_class": "framework",
+                        "failure_owner": "framework",
+                        "baseline_status": "failed",
+                        "candidate_status": "blocked",
+                        "baseline_failure": {
+                            "code": "replay_member_phase_timeout",
+                            "failure_owner": "framework",
+                        },
+                    },
+                ),
+            )
+        return (
+            None,
+            kwargs["dataset"],
+            GateResult("candidate_replay", True, "comparable pair"),
+        )
+
+    monkeypatch.setattr(
+        runner,
+        "_replay_selected_candidate",
+        timeout_then_succeed,
+    )
+
+    selected, report = await runner._screen_candidate_population(
+        run_id="run-support-timeout-escalation",
+        target=target,
+        dataset=dataset,
+        candidates=(candidate,),
+        apply_policy="verified_only",
+        require_single_candidate_screening=True,
+    )
+
+    assert selected == (candidate,)
+    assert observed_timeouts == [120, 180]
+    assert report is not None
+    screening = report["screening"]
+    assert screening["control_escalation_count"] == 1
+    first_attempt = screening["attempts"][0]["control_case_attempts"][0]
+    assert first_attempt["reason"] == (
+        "baseline is incompatible only with candidate-owned replay support; "
+        "repair the candidate support package"
+    )
+
+
 def test_candidate_owned_support_baseline_incompatibility_is_candidate_repair() -> None:
     timeout_failure = {
         "code": "replay_member_phase_timeout",
@@ -13745,7 +13952,6 @@ def test_candidate_owned_support_baseline_incompatibility_is_candidate_repair() 
         "capability_package_fingerprint": "framework-only",
         "replay_capability_fingerprint": "framework-only",
         "support_fingerprint": "sha256:framework-support",
-        "timeout_envelope_fingerprint": "sha256:framework-timeout",
     }
 
     attributed = runner_module._candidate_support_baseline_incompatibility_gate(
@@ -13767,6 +13973,59 @@ def test_candidate_owned_support_baseline_incompatibility_is_candidate_repair() 
     assert attributed.details["failure_owner"] == "candidate"
     assert attributed.details["next_action"] == "continue_candidate_repair"
     assert runner_module._screening_gate_has_invalid_control(attributed) is False
+
+
+def test_candidate_support_counterfactual_requires_identical_execution_envelope() -> None:
+    timeout_failure = {
+        "code": "replay_member_phase_timeout",
+        "failure_owner": "framework",
+    }
+    gate = GateResult(
+        gate_name="candidate_replay",
+        passed=False,
+        reason="baseline timed out under candidate support",
+        details={
+            "failure_class": "framework",
+            "failure_owner": "framework",
+            "baseline_failure": timeout_failure,
+        },
+    )
+    current_identity = {
+        "case_id": "case-1",
+        "baseline_skill_fingerprint": "sha256:baseline",
+        "capability_package_fingerprint": "sha256:candidate-package",
+        "replay_capability_fingerprint": "sha256:candidate-capability",
+        "adaptation_fingerprint": "sha256:candidate-adaptation",
+        "support_fingerprint": "sha256:candidate-support",
+        "timeout_envelope_fingerprint": "sha256:timeout-120",
+        "timeout_seconds": 120.0,
+        "max_steps": 4,
+        "max_tool_calls": 8,
+    }
+    longer_timeout_identity = {
+        **current_identity,
+        "capability_package_fingerprint": "sha256:other-package",
+        "replay_capability_fingerprint": "sha256:other-capability",
+        "adaptation_fingerprint": "sha256:other-adaptation",
+        "support_fingerprint": "sha256:other-support",
+        "timeout_envelope_fingerprint": "sha256:timeout-180",
+        "timeout_seconds": 180.0,
+    }
+
+    attributed = runner_module._candidate_support_baseline_incompatibility_gate(
+        gate,
+        control_identity=current_identity,
+        control_observations={
+            "sha256:longer-timeout-control": {
+                "identity": longer_timeout_identity,
+                "baseline_success_count": 1,
+            }
+        },
+    )
+
+    assert attributed is gate
+    assert attributed.details["failure_class"] == "framework"
+    assert runner_module._screening_gate_has_invalid_control(attributed) is True
 
 
 @pytest.mark.asyncio
