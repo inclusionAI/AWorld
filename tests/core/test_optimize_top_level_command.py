@@ -1717,6 +1717,19 @@ def test_render_optimize_summary_distinguishes_selected_from_best_candidate() ->
     )
 
     assert "Selected candidate: cand-selected" in summary
+
+
+def test_render_optimize_summary_labels_repair_focus_candidate() -> None:
+    summary = render_optimize_summary(
+        {
+            "status": "rejected",
+            "selected_candidate_id": None,
+            "repair_focus_candidate_id": "cand-repair-focus",
+        }
+    )
+
+    assert "Repair focus candidate: cand-repair-focus" in summary
+    assert "Selected candidate:" not in summary
     assert "Best candidate:" not in summary
 
 

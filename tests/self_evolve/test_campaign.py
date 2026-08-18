@@ -13,6 +13,7 @@ from aworld.self_evolve.campaign import (
     CampaignUsage,
     SelfImprovementCampaignController,
     SelfImprovementCampaignStatus,
+    SelfImprovementDisposition,
     SelfImprovementDispositionKind,
     derive_self_improvement_disposition,
     run_self_improvement_campaign,
@@ -1366,6 +1367,257 @@ def test_candidate_prerequisite_is_not_authoritative_consumption() -> None:
     }
 
     assert campaign_module._report_authoritative_candidate_count(report) == 0
+
+
+def test_screening_candidate_blocker_precedes_derived_measurement_gate() -> None:
+    event = {
+        "owner": "candidate",
+        "scope": "candidate",
+        "repairable": True,
+        "stage": "task_rollout",
+        "code": "candidate_runtime_policy_regressed",
+    }
+    report = {
+        "status": "rejected",
+        "gate_results": [
+            {
+                "gate_name": "candidate_replay",
+                "passed": False,
+                "details": {
+                    "failure_class": "candidate",
+                    "failure_owner": "candidate",
+                    "failure_scope": "candidate",
+                    "repairable": True,
+                    "evaluator_skipped": True,
+                    "checkpoint_stage": "screening",
+                    "failure_event": event,
+                    "causal_failure_events": [event],
+                },
+            },
+            {
+                "gate_name": "trusted_improvement_measurement",
+                "passed": False,
+                "details": {
+                    "failure_class": "measurement",
+                    "next_action": "repair_measurement",
+                },
+            },
+        ],
+        "measurement": {
+            "mode": "required",
+            "status": "invalid",
+            "validity_status": "invalid",
+            "promotion_eligible": False,
+            "next_action": "repair_measurement",
+        },
+        "verification_funnel": {
+            "authoritative_candidate_attempt_count": 1,
+            "authoritative_candidate_count": 1,
+            "authoritative_candidate_ids": ["candidate-earlier"],
+        },
+    }
+
+    disposition = derive_self_improvement_disposition(report)
+
+    assert disposition.kind is SelfImprovementDispositionKind.CONTINUE_CANDIDATE
+    assert disposition.owner == "candidate"
+    assert disposition.scope == "candidate"
+    assert disposition.reason_code == "candidate_repair_frontier_progressed"
+    assert campaign_module._report_authoritative_candidate_count(report) == 1
+
+
+def test_screening_candidate_blocker_continues_repair_without_checkpoint(
+    tmp_path: Path,
+) -> None:
+    calls: list[dict] = []
+
+    def run_once(**request):
+        calls.append(request)
+        run_id = f"{request['campaign_id']}-cycle-{request['campaign_cycle']:03d}"
+        if request["campaign_cycle"] == 1:
+            event = {
+                "owner": "candidate",
+                "scope": "candidate",
+                "repairable": True,
+                "stage": "task_rollout",
+                "code": "candidate_runtime_policy_regressed",
+            }
+            report = {
+                "run_id": run_id,
+                "status": "rejected",
+                "candidate_ids": ["candidate-repair-focus"],
+                "selected_candidate_id": None,
+                "repair_focus_candidate_id": "candidate-repair-focus",
+                "budget": _budget(10),
+                "gate_results": [
+                    {
+                        "gate_name": "candidate_replay",
+                        "passed": False,
+                        "details": {
+                            "failure_class": "candidate",
+                            "failure_owner": "candidate",
+                            "failure_scope": "candidate",
+                            "repairable": True,
+                            "evaluator_skipped": True,
+                            "checkpoint_stage": "screening",
+                            "failure_event": event,
+                            "causal_failure_events": [event],
+                        },
+                    },
+                    {
+                        "gate_name": "trusted_improvement_measurement",
+                        "passed": False,
+                        "details": {"failure_class": "measurement"},
+                    },
+                ],
+                "measurement": {
+                    "mode": "required",
+                    "status": "not_started",
+                    "validity_status": "prerequisite_blocked",
+                    "effect_direction": "unmeasured",
+                    "promotion_eligible": False,
+                    "next_action": "continue_candidate_repair",
+                },
+                "verification_funnel": {
+                    "authoritative_candidate_attempt_count": 1,
+                    "authoritative_candidate_count": 1,
+                    "authoritative_candidate_ids": ["candidate-earlier"],
+                },
+            }
+        else:
+            report = {
+                "run_id": run_id,
+                "status": "succeeded",
+                "budget": _budget(10),
+                "gate_results": [{"gate_name": "post_apply", "passed": True}],
+                "verification_funnel": {
+                    "authoritative_candidate_attempt_count": 1,
+                    "authoritative_candidate_count": 1,
+                    "authoritative_candidate_ids": ["candidate-fixed"],
+                },
+            }
+        report_path = tmp_path / ".aworld" / "self_evolve" / run_id / "report.json"
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+        report_path.write_text(json.dumps(report), encoding="utf-8")
+        return {
+            "run_id": run_id,
+            "status": report["status"],
+            "report_path": str(report_path),
+        }
+
+    result = run_self_improvement_campaign(
+        workspace_root=tmp_path,
+        request={
+            "from_trajectory": "trajectory.log",
+            "apply_policy": "verified_only",
+            "infer_target": True,
+        },
+        max_improvement_cycles=2,
+        run_once=run_once,
+    )
+
+    assert len(calls) == 2
+    assert calls[1].get("campaign_measurement_pending_run_id") is None
+    assert calls[1].get("campaign_measurement_pending_candidate_id") is None
+    assert result["campaign_status"] == "complete"
+    assert result["campaign_measurement_retry_count"] == 0
+    assert result["campaign_authoritative_candidate_count"] == 2
+
+
+def test_resume_migrates_misattributed_candidate_blocker_campaign(
+    tmp_path: Path,
+) -> None:
+    calls: list[dict] = []
+    controller = SelfImprovementCampaignController(
+        workspace_root=tmp_path,
+        run_once=lambda **request: _write_successful_campaign_fixture(
+            tmp_path,
+            calls,
+            request,
+        ),
+    )
+    campaign = controller.create(
+        {
+            "from_trajectory": "trajectory.log",
+            "apply_policy": "verified_only",
+            "infer_target": True,
+        },
+        max_cycles=2,
+    )
+    run_id = f"{campaign.campaign_id}-cycle-001"
+    event = {
+        "owner": "candidate",
+        "scope": "candidate",
+        "repairable": True,
+        "stage": "task_rollout",
+        "code": "candidate_runtime_policy_regressed",
+    }
+    report = {
+        "run_id": run_id,
+        "status": "rejected",
+        "gate_results": [
+            {
+                "gate_name": "candidate_replay",
+                "passed": False,
+                "details": {
+                    "failure_class": "candidate",
+                    "failure_owner": "candidate",
+                    "failure_scope": "candidate",
+                    "repairable": True,
+                    "evaluator_skipped": True,
+                    "checkpoint_stage": "screening",
+                    "failure_event": event,
+                    "causal_failure_events": [event],
+                },
+            }
+        ],
+        "measurement": {
+            "mode": "required",
+            "status": "invalid",
+            "validity_status": "invalid",
+            "promotion_eligible": False,
+            "next_action": "repair_measurement",
+        },
+        "budget": _budget(10),
+        "verification_funnel": {
+            "authoritative_candidate_count": 1,
+            "authoritative_candidate_attempt_count": 1,
+            "authoritative_candidate_ids": ["candidate-earlier"],
+        },
+    }
+    report_path = controller.store.write_report(run_id, report)
+    exhausted = campaign_module.replace(
+        campaign,
+        status=SelfImprovementCampaignStatus.EXHAUSTED,
+        cycle_index=1,
+        run_ids=(run_id,),
+        cumulative_authoritative_candidates=1,
+        latest_progress=self_improvement_progress(report),
+        latest_disposition=SelfImprovementDisposition(
+            kind=SelfImprovementDispositionKind.EXHAUSTED,
+            reason_code="measurement_authority_checkpoint_missing_or_invalid",
+            owner="evaluation_harness",
+            stage="measurement",
+            scope="shared_run",
+        ),
+        latest_report_path=str(report_path),
+    )
+    controller.store.write_campaign(exhausted)
+
+    result = run_self_improvement_campaign(
+        workspace_root=tmp_path,
+        request={},
+        resume_campaign=campaign.campaign_id,
+        run_once=controller.run_once,
+    )
+
+    assert len(calls) == 1
+    assert result["campaign_status"] == "complete"
+    assert result["campaign_authoritative_candidate_count"] == 2
+    migrated_report = controller.store.read_report(run_id)
+    assert migrated_report["campaign_causal_migration"]["action"] == (
+        "restore_candidate_repair_continuation"
+    )
 
 
 def test_shared_measurement_timeout_does_not_exhaust_authoritative_frontier(

@@ -11446,6 +11446,113 @@ async def test_shared_screening_measurement_prerequisite_preserves_causality(
 
 
 @pytest.mark.asyncio
+async def test_screening_candidate_blocker_is_reported_as_repair_focus(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    skill_path, dataset = _cycle1_runner_fixture(tmp_path)
+    candidate = CandidateVariant(
+        candidate_id="candidate-screening-repair-focus",
+        target=SelfEvolveTargetRef("skill", "demo", str(skill_path)),
+        content="---\nname: demo\n---\n# Demo\n\nRepair focus.\n",
+        rationale="candidate admission blocker fixture",
+    )
+
+    class Optimizer:
+        async def propose(self, request: OptimizerRequest) -> OptimizerResult:
+            return OptimizerResult(candidates=(candidate,))
+
+    store = FilesystemSelfEvolveStore(tmp_path)
+    runner = SelfEvolveRunner(
+        store=store,
+        optimizer=Optimizer(),
+        replay_enabled=True,
+        candidate_replay_backend=object(),
+        measurement_mode="required",
+        max_iterations=1,
+    )
+    event = ReplayFailureEvent(
+        code="candidate_runtime_policy_regressed",
+        owner=FailureOwner.CANDIDATE,
+        stage=FailureStage.TASK_ROLLOUT,
+        scope=FailureScope.CANDIDATE,
+        repairable=True,
+        category="verification_gate",
+        summary="candidate regressed a replay invariant",
+    ).to_dict()
+    details = {
+        "code": "candidate_runtime_policy_regressed",
+        "failure_class": "candidate",
+        "failure_owner": "candidate",
+        "failure_scope": "candidate",
+        "repairable": True,
+        "evaluator_skipped": True,
+        "checkpoint_stage": "screening",
+        "failure_event": event,
+        "causal_failure_events": [event],
+    }
+
+    async def blocked_screening(**kwargs):
+        attempt = {
+            "candidate_id": candidate.candidate_id,
+            "gate_name": "replay_evaluator_admission",
+            "passed": False,
+            "reason": "candidate replay invariant regressed",
+            "details": details,
+            "physical_pair_execution_count": 1,
+        }
+        screening = {
+            "generated_candidate_count": 1,
+            "attempted_candidate_count": 1,
+            "selected_candidate_ids": [],
+            "selected_candidate_id": None,
+            "candidate_dispositions": {
+                candidate.candidate_id: "screening_rejected"
+            },
+            "stopped_by_shared_infrastructure": False,
+            "stopped_by_shared_measurement": False,
+            "stopped_by_shared_validation": False,
+            "attempts": [attempt],
+        }
+        return (), {
+            "generated_candidate_count": 1,
+            "selected_candidate_ids": [],
+            "attempts": [attempt],
+            "conformance": None,
+            "screening": screening,
+        }
+
+    monkeypatch.setattr(runner, "_screen_candidate_population", blocked_screening)
+
+    result = await runner.run_explicit_target(
+        run_id="run-screening-repair-focus",
+        target=SkillTextTarget(skill_path),
+        dataset=dataset,
+        trace_packs=(),
+        apply_policy="verified_only",
+    )
+
+    report = json.loads(
+        (store.run_path(result.run.run_id) / "report.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert result.selected_candidate is None
+    assert result.run.selected_candidate_id is None
+    assert report["selected_candidate_id"] is None
+    assert report["repair_focus_candidate_id"] == candidate.candidate_id
+    assert report["measurement"]["status"] == "not_started"
+    assert report["measurement"]["measurement_readiness_stage"] == (
+        "candidate_admission_blocked"
+    )
+    assert report["measurement"]["next_action"] == "continue_candidate_repair"
+    assert not any(
+        gate["gate_name"] == "trusted_improvement_measurement"
+        for gate in report["gate_results"]
+    )
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "persistence_method",
     ("write_candidate", "write_optimizer_lineage"),
@@ -12047,6 +12154,14 @@ async def test_verified_runner_bounds_authoritative_candidates_across_iterations
         "max_authoritative_candidates": 2,
         "authoritative_candidate_attempt_count": 2,
         "authoritative_candidate_count": 2,
+        "authoritative_candidate_attempt_ids": [
+            "candidate-frontier-1",
+            "candidate-frontier-2",
+        ],
+        "authoritative_candidate_ids": [
+            "candidate-frontier-1",
+            "candidate-frontier-2",
+        ],
         "max_score_tiebreak_candidates": 0,
         "score_tiebreak_candidate_count": 0,
         "frontier_exhausted": True,

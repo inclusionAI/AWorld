@@ -509,6 +509,9 @@ def render_optimize_summary(report: Any) -> str:
     evaluator_report_paths = _read_report_value(report, "evaluator_report_paths") or []
     best_candidate_id = _read_report_value(report, "best_candidate_id")
     selected_candidate_id = _read_report_value(report, "selected_candidate_id")
+    repair_focus_candidate_id = _read_report_value(
+        report, "repair_focus_candidate_id"
+    )
     failed_gate_names = _failed_gate_names(_read_report_value(report, "gate_results"))
     run_id = _read_report_value(report, "run_id")
     grouping_summary = _target_grouping_summary(report)
@@ -672,6 +675,8 @@ def render_optimize_summary(report: Any) -> str:
         lines.append(f"Best candidate: {best_candidate_id}")
     elif selected_candidate_id:
         lines.append(f"Selected candidate: {selected_candidate_id}")
+    elif repair_focus_candidate_id:
+        lines.append(f"Repair focus candidate: {repair_focus_candidate_id}")
     if grouping_summary:
         lines.append(f"Target grouping: {grouping_summary}")
     if isinstance(promotion, Mapping) and promotion.get("status"):

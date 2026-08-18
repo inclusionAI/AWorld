@@ -13,6 +13,9 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping
 
 from aworld.self_evolve.counterexamples import normalize_counterexample
+from aworld.self_evolve.causal_admission import (
+    candidate_causal_admission_blocker,
+)
 from aworld.self_evolve.recovery_trace import (
     RECOVERY_TRACE_SCHEMA_VERSION,
     validate_public_recovery_trace,
@@ -1908,6 +1911,10 @@ def run_self_improvement_campaign(
                 + ", ".join(conflicting)
             )
         campaign = controller.load(resume_campaign)
+        campaign = _migrate_misattributed_candidate_blocker_for_resume(
+            controller,
+            campaign,
+        )
         if campaign.status in {
             SelfImprovementCampaignStatus.COMPLETE,
             SelfImprovementCampaignStatus.BUDGET_LIMITED,
@@ -2042,6 +2049,77 @@ def run_self_improvement_campaign(
         )
         return summary
     return controller.run_bounded(campaign, runtime_request=runtime_request)
+
+
+def _migrate_misattributed_candidate_blocker_for_resume(
+    controller: SelfImprovementCampaignController,
+    campaign: SelfImprovementCampaign,
+) -> SelfImprovementCampaign:
+    """Reopen a terminal Campaign only when causal authority was overwritten.
+
+    Earlier Campaign projection could exhaust a screening-rejected candidate
+    as ``measurement_authority_checkpoint_missing_or_invalid``.  Re-derive the
+    disposition from the immutable report under the shared causal-admission
+    contract; do not reopen genuinely terminal candidate or measurement runs.
+    """
+
+    if (
+        campaign.status is not SelfImprovementCampaignStatus.EXHAUSTED
+        or campaign.latest_disposition is None
+        or campaign.latest_disposition.reason_code
+        != "measurement_authority_checkpoint_missing_or_invalid"
+        or not campaign.run_ids
+        or campaign.cycle_index >= _campaign_effective_max_cycles(campaign)
+        or campaign.cumulative_authoritative_candidates
+        >= _campaign_effective_authoritative_candidate_limit(campaign)
+    ):
+        return campaign
+    latest_run_id = campaign.run_ids[-1]
+    try:
+        report = controller.store.read_report(latest_run_id)
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return campaign
+    if (
+        not _report_has_repairable_candidate_prerequisite_failure(report)
+        or _report_has_authoritative_measurement_observation(report)
+    ):
+        return campaign
+    previous_progress: SelfImprovementProgress | None = None
+    if len(campaign.run_ids) > 1:
+        try:
+            previous_progress = self_improvement_progress(
+                controller.store.read_report(campaign.run_ids[-2])
+            )
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            return campaign
+    corrected = derive_self_improvement_disposition(
+        report,
+        previous_progress=previous_progress,
+    )
+    if corrected.kind is not SelfImprovementDispositionKind.CONTINUE_CANDIDATE:
+        return campaign
+    migration = {
+        "schema_version": "aworld.self_evolve.causal_campaign_migration.v1",
+        "action": "restore_candidate_repair_continuation",
+        "source_run_id": latest_run_id,
+        "previous_reason_code": campaign.latest_disposition.reason_code,
+        "corrected_reason_code": corrected.reason_code,
+    }
+    report["campaign_causal_migration"] = migration
+    report["self_improvement_disposition"] = corrected.to_dict()
+    controller.store.write_report(latest_run_id, report)
+    migrated = replace(
+        campaign,
+        status=SelfImprovementCampaignStatus.ACTIVE,
+        latest_progress=self_improvement_progress(report),
+        latest_disposition=corrected,
+        latest_measurement_outcome=None,
+        measurement_pending_run_id=None,
+        measurement_pending_candidate_id=None,
+        goal_handoff_path=None,
+    )
+    controller.store.write_campaign(migrated)
+    return migrated
 
 
 def persistent_campaign_request(request: Mapping[str, Any]) -> dict[str, Any]:
@@ -3010,9 +3088,33 @@ def _report_authoritative_candidate_count(report: Mapping[str, Any]) -> int:
         if isinstance(funnel, Mapping)
         else None
     )
+    explicit_candidate_ids = (
+        funnel.get("authoritative_candidate_ids")
+        if isinstance(funnel, Mapping)
+        else None
+    )
+    authoritative_case_observations = (
+        funnel.get("authoritative_case_observations")
+        if isinstance(funnel, Mapping)
+        else None
+    )
+    has_explicit_authoritative_evidence = bool(
+        (
+            isinstance(explicit_candidate_ids, list)
+            and any(
+                isinstance(candidate_id, str) and candidate_id
+                for candidate_id in explicit_candidate_ids
+            )
+        )
+        or (
+            isinstance(authoritative_case_observations, Mapping)
+            and bool(authoritative_case_observations)
+        )
+    )
     if (
         _report_has_repairable_candidate_prerequisite_failure(report)
         and not _report_has_authoritative_measurement_observation(report)
+        and not has_explicit_authoritative_evidence
         and (
             isinstance(report.get("measurement"), Mapping)
             or explicit_attempt_count == 0
@@ -3083,6 +3185,22 @@ def _report_has_repairable_candidate_prerequisite_failure(
     the causal disposition when capability compilation or deterministic
     preflight already rejected the candidate package.
     """
+
+    raw_gates = report.get("gate_results")
+    if isinstance(raw_gates, list) and any(
+        candidate_causal_admission_blocker(
+            gate_name=str(item.get("gate_name") or ""),
+            passed=item.get("passed") is True,
+            details=(
+                item.get("details")
+                if isinstance(item.get("details"), Mapping)
+                else None
+            ),
+        )
+        for item in raw_gates
+        if isinstance(item, Mapping)
+    ):
+        return True
 
     prerequisite_stages = {
         "candidate_generation",
