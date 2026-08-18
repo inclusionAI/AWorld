@@ -11439,9 +11439,10 @@ async def test_shared_screening_measurement_prerequisite_preserves_causality(
         candidate.candidate_id
     )
     assert runner_module._measurement_pending_candidate_checkpoint(
-        run_path=store.run_path(result.run.run_id),
+        store=store,
+        run_id=result.run.run_id,
         report=report,
-    ) == (candidate.candidate_id, expected_fingerprint)
+    ) is None
 
 
 @pytest.mark.asyncio
@@ -14563,6 +14564,11 @@ async def test_population_screening_exhausts_distinct_control_panel(
     assert screening["screening_outcome"] == "invalid_control"
     assert screening["control_fallback_count"] == 2
     assert set(screening["invalid_control_case_ids"]) == set(case_ids)
+    terminal_details = screening["attempts"][0]["details"]
+    assert terminal_details["code"] == "screening_control_infeasible"
+    assert terminal_details["failure_class"] == "framework"
+    assert terminal_details["resume_safe"] is False
+    assert terminal_details.get("resume_candidate_id") is None
 
 
 @pytest.mark.asyncio
@@ -22874,7 +22880,7 @@ def test_shared_measurement_failure_does_not_create_iteration_learning_data() ->
     ) == ()
 
 
-def test_measurement_checkpoint_uses_exact_resume_candidate(
+def test_measurement_checkpoint_rejects_candidate_only_marker(
     tmp_path: Path,
 ) -> None:
     store = FilesystemSelfEvolveStore(tmp_path)
@@ -22906,14 +22912,15 @@ def test_measurement_checkpoint_uses_exact_resume_candidate(
     }
 
     checkpoint = runner_module._measurement_pending_candidate_checkpoint(
-        run_path=store.run_path(run_id),
+        store=store,
+        run_id=run_id,
         report=report,
     )
 
-    assert checkpoint == (candidates[1].candidate_id, expected_fingerprint)
+    assert checkpoint is None
 
 
-def test_measurement_checkpoint_uses_multi_candidate_screening_attempt(
+def test_measurement_checkpoint_rejects_screening_attempt(
     tmp_path: Path,
 ) -> None:
     store = FilesystemSelfEvolveStore(tmp_path)
@@ -22961,11 +22968,12 @@ def test_measurement_checkpoint_uses_multi_candidate_screening_attempt(
     }
 
     checkpoint = runner_module._measurement_pending_candidate_checkpoint(
-        run_path=store.run_path(run_id),
+        store=store,
+        run_id=run_id,
         report=report,
     )
 
-    assert checkpoint == (candidates[1].candidate_id, expected_fingerprint)
+    assert checkpoint is None
 
 
 def test_candidate_prerequisite_failure_does_not_create_measurement_checkpoint(
@@ -23021,7 +23029,8 @@ def test_candidate_prerequisite_failure_does_not_create_measurement_checkpoint(
     }
 
     checkpoint = runner_module._measurement_pending_candidate_checkpoint(
-        run_path=store.run_path(run_id),
+        store=store,
+        run_id=run_id,
         report=report,
     )
 

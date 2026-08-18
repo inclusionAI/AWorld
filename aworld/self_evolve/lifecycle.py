@@ -14,6 +14,11 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Mapping
 
+from aworld.self_evolve.measurement_checkpoint import (
+    MeasurementResumeCheckpointV1,
+    checkpoint_protects_path,
+)
+
 
 @dataclass(frozen=True)
 class SelfEvolveArtifactRetentionPolicy:
@@ -725,20 +730,61 @@ def _terminal_cleanup_candidates(
     *,
     prune_unselected_candidate_materializations: bool,
 ) -> Iterable[Path]:
+    resume_checkpoint = _run_measurement_resume_checkpoint(run_dir)
+    resumable_measurement = bool(
+        resume_checkpoint is not None
+        or _run_has_resumable_authoritative_measurement_work(run_dir)
+    )
     for name in sorted(_RAW_RUN_DIRS | _TEMP_RUN_DIRS):
         yield run_dir / name
-    yield from _replay_workspace_paths(run_dir)
+    for path in _replay_workspace_paths(run_dir):
+        if resume_checkpoint is not None:
+            if checkpoint_protects_path(
+                resume_checkpoint,
+                run_path=run_dir,
+                path=path,
+            ):
+                continue
+        elif resumable_measurement and _path_is_within(
+            path, run_dir / "replay"
+        ):
+            continue
+        yield path
     # A resumable v2 measurement plan owns its runtime seed until every work
     # unit reaches a terminal state. Removing the seed merely because the
     # enclosing Campaign cycle ended turns checkpoint continuation into an
     # unrecoverable replay-adaptation failure.
-    if not _run_has_pending_measurement_work(run_dir):
-        yield from _replay_adaptation_workspace_seed_paths(run_dir)
-    yield run_dir / "overlays"
+    for path in _replay_adaptation_workspace_seed_paths(run_dir):
+        if resume_checkpoint is not None:
+            if checkpoint_protects_path(
+                resume_checkpoint,
+                run_path=run_dir,
+                path=path,
+            ):
+                continue
+        elif resumable_measurement:
+            continue
+        yield path
+    overlays = run_dir / "overlays"
+    if not resumable_measurement:
+        yield overlays
     if prune_unselected_candidate_materializations:
-        yield from _candidate_materialization_paths(run_dir)
+        for path in _candidate_materialization_paths(run_dir):
+            if resume_checkpoint is not None:
+                if checkpoint_protects_path(
+                    resume_checkpoint,
+                    run_path=run_dir,
+                    path=path,
+                ):
+                    continue
+            elif resumable_measurement:
+                continue
+            yield path
     for child in sorted(run_dir.iterdir() if run_dir.exists() else ()):
-        if child.name in _DUPLICATE_OUTPUT_NAMES or child.suffix in {".stdout", ".stderr"}:
+        if child.name in _DUPLICATE_OUTPUT_NAMES or child.suffix in {
+            ".stdout",
+            ".stderr",
+        }:
             yield child
     yield from _evaluator_raw_paths(root, run_dir)
     # Release dead/terminal ownership proof only after every other cleanup
@@ -781,29 +827,94 @@ def _replay_adaptation_workspace_seed_paths(run_dir: Path) -> Iterable[Path]:
                 yield seed
 
 
-def _run_has_pending_measurement_work(run_dir: Path) -> bool:
-    control_root = run_dir / "measurement_control"
-    if not control_root.is_dir() or control_root.is_symlink():
+def _run_has_resumable_authoritative_measurement_work(run_dir: Path) -> bool:
+    replay_root = run_dir / "replay"
+    if not replay_root.is_dir() or replay_root.is_symlink():
         return False
-    terminal_states = {
-        "succeeded",
-        "task_failed",
-        "member_timed_out",
-        "evidence_invalid",
-        "cancelled_decisive",
-    }
-    for index_path in control_root.glob("plan-*/index.json"):
+    for request_path in replay_root.glob("*/request.json"):
+        if request_path.is_symlink() or not request_path.is_file():
+            continue
+        candidate_id = request_path.parent.name
+        if candidate_id.endswith("--screening"):
+            continue
+        request = _read_json_object(request_path)
+        raw_plan = request.get("measurement_plan") if request else None
+        if (
+            not isinstance(raw_plan, Mapping)
+            or request.get("run_id") != run_dir.name
+            or request.get("candidate_id") != candidate_id
+        ):
+            continue
+        fingerprint = raw_plan.get("measurement_plan_fingerprint")
+        if not isinstance(fingerprint, str) or not re.fullmatch(
+            r"sha256:[0-9a-f]{64}", fingerprint
+        ):
+            continue
+        index_path = (
+            run_dir
+            / "measurement_control"
+            / f"plan-{fingerprint.removeprefix('sha256:')}"
+            / "index.json"
+        )
         payload = _read_json_object(index_path)
         work_units = payload.get("work_units") if payload else None
         if not isinstance(work_units, list):
             continue
-        if any(
-            isinstance(item, Mapping)
-            and item.get("state") not in terminal_states
-            for item in work_units
-        ):
-            return True
+        for item in work_units:
+            if not isinstance(item, Mapping):
+                continue
+            state = item.get("state")
+            attempt_count = item.get("attempt_count")
+            if state not in {
+                "succeeded",
+                "task_failed",
+                "member_timed_out",
+                "evidence_invalid",
+                "cancelled_decisive",
+            }:
+                return True
+            if (
+                state in {"member_timed_out", "evidence_invalid"}
+                and isinstance(attempt_count, int)
+                and not isinstance(attempt_count, bool)
+                and attempt_count < 2
+            ):
+                return True
     return False
+
+
+def _run_has_pending_measurement_work(run_dir: Path) -> bool:
+    """Backward-compatible internal alias for the stronger admission check."""
+
+    return _run_has_resumable_authoritative_measurement_work(run_dir)
+
+
+def _run_measurement_resume_checkpoint(
+    run_dir: Path,
+) -> MeasurementResumeCheckpointV1 | None:
+    report = _read_json_object(run_dir / "report.json")
+    raw = report.get("measurement_resume_checkpoint") if report else None
+    if not isinstance(raw, Mapping):
+        return None
+    try:
+        checkpoint = MeasurementResumeCheckpointV1.from_dict(raw)
+    except (TypeError, ValueError):
+        return None
+    if checkpoint.source_run_id != run_dir.name:
+        return None
+    for relative in checkpoint.protected_paths:
+        path = run_dir / relative
+        if path.is_symlink() or not path.exists():
+            return None
+    return checkpoint
+
+
+def _path_is_within(path: Path, parent: Path) -> bool:
+    try:
+        path.relative_to(parent)
+    except ValueError:
+        return False
+    return True
 
 
 def _evaluator_raw_paths(root: Path, run_dir: Path) -> Iterable[Path]:

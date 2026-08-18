@@ -17,6 +17,10 @@ from aworld.self_evolve.recovery_trace import (
     RECOVERY_TRACE_SCHEMA_VERSION,
     validate_public_recovery_trace,
 )
+from aworld.self_evolve.measurement_checkpoint import (
+    MeasurementResumeCheckpointV1,
+    load_measurement_resume_checkpoint,
+)
 
 
 CAMPAIGN_SCHEMA_VERSION = "aworld.self_evolve.campaign.v1"
@@ -1311,6 +1315,36 @@ class SelfImprovementCampaignController:
         stored = self.store.read_campaign(campaign.campaign_id)
         if stored.to_dict() != campaign.to_dict():
             raise ValueError("campaign checkpoint changed before advance")
+        checkpoint_migration: dict[str, object] | None = None
+        # Legacy campaigns could persist a candidate-only pending marker after
+        # screening even though no authoritative replay checkpoint existed.
+        # Migrate that state before building the next request.  Continuing with
+        # a missing/invalid typed checkpoint would either crash in the runner or
+        # silently mix qualification evidence into authoritative measurement.
+        if (
+            campaign.measurement_pending_run_id is not None
+            and campaign.measurement_pending_candidate_id is not None
+            and _campaign_measurement_resume_checkpoint(
+                self.store,
+                campaign=campaign,
+            )
+            is None
+        ):
+            checkpoint_migration = {
+                "schema_version": (
+                    "aworld.self_evolve.measurement_checkpoint_migration.v1"
+                ),
+                "action": "cleared_invalid_legacy_pending_marker",
+                "source_run_id": campaign.measurement_pending_run_id,
+                "candidate_id": campaign.measurement_pending_candidate_id,
+                "reason_code": "authoritative_checkpoint_missing_or_invalid",
+            }
+            campaign = replace(
+                campaign,
+                measurement_pending_run_id=None,
+                measurement_pending_candidate_id=None,
+            )
+            self.store.write_campaign(campaign)
         if campaign.cycle_index >= _campaign_effective_max_cycles(campaign):
             exhausted = _exhaust_campaign(
                 campaign,
@@ -1508,8 +1542,8 @@ class SelfImprovementCampaignController:
             is CampaignMeasurementProjection.FRAMEWORK_BLOCKED
             and disposition.kind is SelfImprovementDispositionKind.HANDOFF_GOAL
         )
-        measurement_pending_candidate_id = (
-            _measurement_pending_candidate_id(
+        measurement_checkpoint = (
+            _measurement_resume_checkpoint(
                 self.store,
                 run_id=actual_run_id,
                 report=report,
@@ -1519,6 +1553,11 @@ class SelfImprovementCampaignController:
                 or measurement_continuation_requested
                 or framework_handoff_requested
             )
+            else None
+        )
+        measurement_pending_candidate_id = (
+            measurement_checkpoint.candidate_id
+            if measurement_checkpoint is not None
             else None
         )
         measurement_retry_available = bool(
@@ -1538,8 +1577,8 @@ class SelfImprovementCampaignController:
                 release_gates_passed=False,
                 continuation_available=False,
                 reason_code=(
-                    "measurement_checkpoint_candidate_missing"
-                    if measurement_pending_candidate_id is None
+                    "measurement_authority_checkpoint_missing_or_invalid"
+                    if measurement_checkpoint is None
                     else "campaign_measurement_retry_limit_reached"
                 ),
             )
@@ -1554,7 +1593,7 @@ class SelfImprovementCampaignController:
         )
         framework_handoff_checkpoint_available = bool(
             framework_handoff_requested
-            and measurement_pending_candidate_id is not None
+            and measurement_checkpoint is not None
         )
         framework_control_plane_blocked = bool(
             disposition.kind is SelfImprovementDispositionKind.HANDOFF_GOAL
@@ -1571,7 +1610,9 @@ class SelfImprovementCampaignController:
                 improvement_outcome=measurement_outcome.improvement_outcome,
                 release_gates_passed=False,
                 continuation_available=False,
-                reason_code="measurement_checkpoint_candidate_missing",
+                reason_code=(
+                    "measurement_authority_checkpoint_missing_or_invalid"
+                ),
             )
             disposition = _measurement_outcome_disposition(
                 measurement_outcome,
@@ -1678,8 +1719,8 @@ class SelfImprovementCampaignController:
             advanced = _exhaust_campaign(
                 advanced,
                 reason_code=(
-                    "campaign_measurement_retry_candidate_missing"
-                    if measurement_pending_candidate_id is None
+                    "measurement_authority_checkpoint_missing_or_invalid"
+                    if measurement_checkpoint is None
                     else "campaign_measurement_retry_limit_reached"
                 ),
             )
@@ -1770,6 +1811,7 @@ class SelfImprovementCampaignController:
                 _campaign_authoritative_candidate_limit(advanced)
             ),
             "exhaustion_axes": list(_campaign_exhaustion_axes(advanced)),
+            "checkpoint_migration": checkpoint_migration,
         }
         report["self_improvement_disposition"] = disposition.to_dict()
         if measurement_outcome is not None:
@@ -1796,6 +1838,8 @@ class SelfImprovementCampaignController:
         self.store.write_campaign(advanced)
         summary.update(_campaign_summary(advanced, summary))
         summary["self_improvement_disposition"] = disposition.to_dict()
+        if checkpoint_migration is not None:
+            summary["campaign_checkpoint_migration"] = checkpoint_migration
         return advanced, summary
 
     def run_bounded(
@@ -3079,35 +3123,42 @@ def _report_has_repairable_candidate_prerequisite_failure(
     return False
 
 
-def _measurement_pending_candidate_id(
+def _measurement_resume_checkpoint(
     store: Any,
     *,
     run_id: str,
     report: Mapping[str, Any],
-) -> str | None:
-    """Resolve the immutable candidate blocked by the measurement control plane."""
+) -> MeasurementResumeCheckpointV1 | None:
+    """Resolve only a typed, filesystem-validated authoritative checkpoint."""
 
-    candidate_ids: list[str] = []
-    for value in (
-        report.get("measurement_pending_candidate_id"),
-        report.get("selected_candidate_id"),
-    ):
-        if isinstance(value, str) and value:
-            candidate_ids.append(value)
-    raw_candidate_ids = report.get("candidate_ids")
-    if isinstance(raw_candidate_ids, (list, tuple)):
-        normalized = [
-            str(item) for item in raw_candidate_ids if isinstance(item, str) and item
-        ]
-        if len(normalized) == 1:
-            candidate_ids.extend(normalized)
-    for candidate_id in dict.fromkeys(candidate_ids):
-        candidate_path = (
-            store.run_path(run_id) / "candidates" / f"{candidate_id}.json"
-        )
-        if candidate_path.is_file() and not candidate_path.is_symlink():
-            return candidate_id
-    return None
+    return load_measurement_resume_checkpoint(
+        store,
+        run_id=run_id,
+        report=report,
+    )
+
+
+def _campaign_measurement_resume_checkpoint(
+    store: Any,
+    *,
+    campaign: SelfImprovementCampaign,
+) -> MeasurementResumeCheckpointV1 | None:
+    run_id = campaign.measurement_pending_run_id
+    candidate_id = campaign.measurement_pending_candidate_id
+    if run_id is None or candidate_id is None or run_id not in campaign.run_ids:
+        return None
+    try:
+        report = store.read_report(run_id)
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return None
+    checkpoint = _measurement_resume_checkpoint(
+        store,
+        run_id=run_id,
+        report=report,
+    )
+    if checkpoint is None or checkpoint.candidate_id != candidate_id:
+        return None
+    return checkpoint
 
 
 def _campaign_summary(

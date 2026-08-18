@@ -3,8 +3,10 @@ from __future__ import annotations
 import json
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
+import aworld.self_evolve.campaign as campaign_module
 
 from aworld.self_evolve.campaign import (
     CampaignMeasurementLedgerV2,
@@ -32,6 +34,24 @@ def _outcome(
         release_gates_passed=release_gates_passed,
         continuation_available=continuation_available,
         reason_code=reason_code,
+    )
+
+
+def _mock_valid_checkpoint(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    candidate_id: str,
+) -> None:
+    monkeypatch.setattr(
+        campaign_module,
+        "_measurement_resume_checkpoint",
+        lambda store, *, run_id, report: (
+            SimpleNamespace(candidate_id=candidate_id)
+            if (
+                store.run_path(run_id) / "candidates" / f"{candidate_id}.json"
+            ).is_file()
+            else None
+        ),
     )
 
 
@@ -194,8 +214,10 @@ def _write_report(
 def test_deadline_continuation_does_not_charge_candidate_or_retry(
     tmp_path: Path,
     deadline_reason: str,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list[dict[str, object]] = []
+    _mock_valid_checkpoint(monkeypatch, candidate_id="candidate-resume")
 
     def run_once(**request):
         calls.append(request)
@@ -312,7 +334,12 @@ def test_controller_projects_typed_terminal_outcome_without_guessing_legacy_stat
 
 def test_framework_blocker_handoff_preserves_candidate_without_charging_frontiers(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _mock_valid_checkpoint(
+        monkeypatch,
+        candidate_id="candidate-framework-blocked",
+    )
     def run_once(**request):
         run_id = f"{request['campaign_id']}-cycle-{request['campaign_cycle']:03d}"
         return _write_report(
@@ -362,8 +389,13 @@ def test_framework_blocker_handoff_preserves_candidate_without_charging_frontier
 
 def test_invalid_measurement_retry_uses_only_invalid_retry_ledger(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls = 0
+    _mock_valid_checkpoint(
+        monkeypatch,
+        candidate_id="candidate-invalid-measurement",
+    )
 
     def run_once(**request):
         nonlocal calls
