@@ -43,6 +43,9 @@ from aworld.self_evolve.counterexamples import (
     candidate_failure_counterexample,
     normalize_counterexample,
 )
+from aworld.self_evolve.causal_admission import (
+    candidate_causal_admission_blocker,
+)
 from aworld.self_evolve.datasets import (
     EvalCase,
     SelfEvolveDataset,
@@ -4311,6 +4314,8 @@ class SelfEvolveRunner:
         semantic_lesson_duplicate_attempt_count = 0
         authoritative_candidate_count = 0
         authoritative_candidate_attempt_count = 0
+        authoritative_candidate_ids: set[str] = set()
+        authoritative_candidate_attempt_ids: set[str] = set()
         score_tiebreak_candidate_count = 0
         prerequisite_candidate_ids: list[str] = []
         generated_candidate_slot_count = 0
@@ -6184,6 +6189,9 @@ class SelfEvolveRunner:
                 if counts_toward_authoritative:
                     authoritative_candidate_attempt_count += 1
                     authoritative_candidate_count += 1
+                    authoritative_candidate_attempt_ids.add(
+                        iteration_candidate.candidate_id
+                    )
                 state, report_item, candidate_feedback = await self._evaluate_iteration_candidate(
                     run_id=run_id,
                     target=target,
@@ -6242,6 +6250,10 @@ class SelfEvolveRunner:
                     # candidate observation release that reservation so a
                     # resumable Campaign is not exhausted by missing evidence.
                     authoritative_candidate_count -= 1
+                elif counts_toward_authoritative:
+                    authoritative_candidate_ids.add(
+                        iteration_candidate.candidate_id
+                    )
                 if any(
                     gate.gate_name == "score_improvement"
                     and isinstance(gate.details, Mapping)
@@ -6556,6 +6568,12 @@ class SelfEvolveRunner:
 
         candidate_prerequisite_blocked = (
             _gate_results_have_candidate_prerequisite_failure(gate_results)
+        )
+        repair_focus_candidate = (
+            selected_candidate if candidate_prerequisite_blocked else None
+        )
+        reported_selected_candidate = (
+            None if repair_focus_candidate is not None else selected_candidate
         )
         measurement_prerequisite_blocked = any(
             not gate.passed
@@ -6921,7 +6939,9 @@ class SelfEvolveRunner:
                     run_id
                 ),
                 selected_candidate_id=(
-                    selected_candidate.candidate_id if selected_candidate is not None else None
+                    reported_selected_candidate.candidate_id
+                    if reported_selected_candidate is not None
+                    else None
                 ),
                 post_apply=post_apply,
             )
@@ -6956,7 +6976,14 @@ class SelfEvolveRunner:
                 candidate.candidate_id for candidate in all_candidates
             ],
             "selected_candidate_id": (
-                selected_candidate.candidate_id if selected_candidate is not None else None
+                reported_selected_candidate.candidate_id
+                if reported_selected_candidate is not None
+                else None
+            ),
+            "repair_focus_candidate_id": (
+                repair_focus_candidate.candidate_id
+                if repair_focus_candidate is not None
+                else None
             ),
             "status": final_status.value,
             "target_provenance": target_provenance_report,
@@ -7085,6 +7112,12 @@ class SelfEvolveRunner:
                 "authoritative_candidate_attempt_count": (
                     authoritative_candidate_attempt_count
                 ),
+                "authoritative_candidate_ids": sorted(
+                    authoritative_candidate_ids
+                ),
+                "authoritative_candidate_attempt_ids": sorted(
+                    authoritative_candidate_attempt_ids
+                ),
                 **(
                     {
                         "authoritative_case_observations": {
@@ -7140,6 +7173,33 @@ class SelfEvolveRunner:
         }
         if measurement_summary is not None:
             report["measurement"] = measurement_summary.to_dict()
+        elif candidate_prerequisite_blocked:
+            prerequisite_gate = next(
+                gate
+                for gate in gate_results
+                if _gate_has_candidate_prerequisite_failure(gate)
+            )
+            prerequisite_details = (
+                prerequisite_gate.details
+                if isinstance(prerequisite_gate.details, Mapping)
+                else {}
+            )
+            report["measurement"] = {
+                "schema_version": "aworld.self_evolve.measurement_summary.v1",
+                "mode": self.measurement_mode.value,
+                "status": "not_started",
+                "validity_status": "prerequisite_blocked",
+                "measurement_readiness_stage": "candidate_admission_blocked",
+                "decision_reason": str(
+                    prerequisite_details.get("code")
+                    or "candidate_admission_blocked"
+                ),
+                "effect_direction": "unmeasured",
+                "independent_case_count": 0,
+                "comparable_pair_count": 0,
+                "promotion_eligible": False,
+                "next_action": "continue_candidate_repair",
+            }
         elif measurement_prerequisite_blocked:
             prerequisite_gate = next(
                 gate
@@ -7191,8 +7251,10 @@ class SelfEvolveRunner:
         rejection_attribution = _rejection_attribution(
             final_status=final_status,
             selected_candidate_id=(
-                selected_candidate.candidate_id
-                if selected_candidate is not None
+                repair_focus_candidate.candidate_id
+                if repair_focus_candidate is not None
+                else reported_selected_candidate.candidate_id
+                if reported_selected_candidate is not None
                 else None
             ),
             gate_results=gate_results,
@@ -7404,7 +7466,9 @@ class SelfEvolveRunner:
             target=target.identity,
             status=final_status,
             selected_candidate_id=(
-                selected_candidate.candidate_id if selected_candidate is not None else None
+                reported_selected_candidate.candidate_id
+                if reported_selected_candidate is not None
+                else None
             ),
             metrics=tuple(item for item in (baseline_summary, candidate_summary) if item is not None),
             gate_results=tuple(gate_results),
@@ -7422,7 +7486,10 @@ class SelfEvolveRunner:
             "completed",
             f"Self-evolve run {run_id} finished with status {completed_run.status.value}",
         )
-        return SelfEvolveRunnerResult(run=completed_run, selected_candidate=selected_candidate)
+        return SelfEvolveRunnerResult(
+            run=completed_run,
+            selected_candidate=reported_selected_candidate,
+        )
 
     async def _screen_candidate_population(
         self,
@@ -16022,11 +16089,15 @@ def optimize_from_cli_request(
         or report.get("measurement_pending_candidate_id") is not None
     ):
         store.write_report(run_id, report)
-    selected_candidate_id = (
-        result.selected_candidate.candidate_id
-        if result.selected_candidate is not None
-        else None
-    )
+    selected_candidate_id = report.get("selected_candidate_id")
+    if not isinstance(selected_candidate_id, str) or not selected_candidate_id:
+        selected_candidate_id = None
+    repair_focus_candidate_id = report.get("repair_focus_candidate_id")
+    if (
+        not isinstance(repair_focus_candidate_id, str)
+        or not repair_focus_candidate_id
+    ):
+        repair_focus_candidate_id = None
     summary = {
         "report_path": str(report_path),
         "best_candidate_id": (
@@ -16036,6 +16107,7 @@ def optimize_from_cli_request(
             else None
         ),
         "selected_candidate_id": selected_candidate_id,
+        "repair_focus_candidate_id": repair_focus_candidate_id,
         "run_id": result.run.run_id,
         "status": result.run.status.value,
     }
@@ -19234,43 +19306,10 @@ def _gate_results_have_candidate_prerequisite_failure(
 
 
 def _gate_has_candidate_prerequisite_failure(gate: GateResult) -> bool:
-    if gate.passed or not isinstance(gate.details, Mapping):
-        return False
-    details = gate.details
-    events = tuple(
-        event
-        for event in (
-            details.get("failure_event"),
-            *(details.get("causal_failure_events") or ()),
-        )
-        if isinstance(event, Mapping)
-    )
-    prerequisite_stages = {
-        "candidate_generation",
-        "candidate_repair_conformance",
-        "candidate_screening",
-        "capability_compile",
-        "capability_preflight",
-    }
-    if any(
-        event.get("owner") == FailureOwner.CANDIDATE.value
-        and event.get("scope") == FailureScope.CANDIDATE.value
-        and event.get("repairable") is True
-        and str(event.get("stage") or "") in prerequisite_stages
-        for event in events
-    ):
-        return True
-    return bool(
-        details.get("failure_class") == "candidate"
-        and details.get("repairable") is True
-        and (
-            gate.gate_name.startswith("candidate_capability_")
-            or gate.gate_name == "candidate_repair_conformance"
-            or str(
-                details.get("failure_stage") or details.get("stage") or ""
-            )
-            in prerequisite_stages
-        )
+    return candidate_causal_admission_blocker(
+        gate_name=gate.gate_name,
+        passed=gate.passed,
+        details=gate.details,
     )
 
 
@@ -19405,7 +19444,9 @@ def _repair_feedback_from_selected_candidate(
     *,
     report_path: Path,
 ) -> tuple[EvaluationSummary, ...]:
-    candidate_id = report.get("selected_candidate_id")
+    candidate_id = report.get("repair_focus_candidate_id") or report.get(
+        "selected_candidate_id"
+    )
     raw_gates = report.get("gate_results")
     if (
         not isinstance(candidate_id, str)

@@ -88,6 +88,7 @@ _EVALUATOR_RAW_FILE_NAMES = {
 _DURABLE_CANDIDATE_REFERENCE_KEYS = {
     "applied_candidate_id",
     "best_candidate_id",
+    "repair_focus_candidate_id",
     "selected_candidate_id",
     "source_candidate_id",
 }
