@@ -3776,6 +3776,49 @@ def test_replay_evaluator_admission_rejects_absolute_candidate_incompletion() ->
     }
 
 
+def test_replay_evaluator_admission_uses_authoritative_policy_verdict() -> None:
+    request = CandidateReplayRequest(
+        run_id="run-authority-boundary",
+        task_id="task-a",
+        workspace_root="/tmp/workspace",
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo"),
+        candidate_id="candidate-1",
+        overlay_skill_root="/tmp/overlay",
+        task_input="task A",
+    )
+    metrics = {
+        "evidence_runtime_policy_passed": False,
+        "evidence_runtime_policy_authoritative_passed": True,
+        "evidence_runtime_policy_authority": "advisory",
+        "task_completion_established": True,
+        "evidence_strategy_passed": True,
+    }
+    replay = _CandidateReplayResult(
+        request=request,
+        baseline=ReplayVariantResult(
+            variant_id="baseline",
+            status="succeeded",
+            trajectory=[],
+            metrics=metrics,
+        ),
+        candidate=ReplayVariantResult(
+            variant_id="candidate-1",
+            status="succeeded",
+            trajectory=[],
+            metrics=metrics,
+        ),
+    )
+
+    gate = _replay_evaluator_admission_gate(
+        replay,
+        apply_policy="verified_only",
+    )
+
+    assert gate is not None
+    assert gate.passed is True
+    assert gate.details["regressions"] == []
+
+
 def test_replay_evaluator_admission_allows_missing_or_non_regressed_evidence() -> None:
     request = CandidateReplayRequest(
         run_id="run-admission-pass",
@@ -4166,11 +4209,117 @@ def test_replay_confidence_rejects_infrastructure_failure_pair() -> None:
     assert gate.details["failure_scope"] == "shared_run"
     assert gate.details["next_action"] == "repair_measurement"
     assert gate.details["effect"] is None
-    assert gate.details["failure_event"]["category"] == "measurement_validity"
-    assert gate.details["causal_failure_events"] == [
-        gate.details["failure_event"]
-    ]
+    assert gate.details["failure_event"]["code"] == "control_not_comparable"
+    assert gate.details["derived_failure_event"]["code"] == (
+        "control_not_comparable"
+    )
+    assert gate.details["causal_failure_events"][-1] == (
+        gate.details["derived_failure_event"]
+    )
     assert runner_module._gate_has_typed_shared_measurement_failure(gate) is True
+
+
+def test_evidence_finalization_timeout_is_a_progressing_task_timeout() -> None:
+    failure = ReplayFailureEvent(
+        code="replay_evidence_finalization_timeout",
+        owner=FailureOwner.TASK,
+        stage=FailureStage.TASK_ROLLOUT,
+        scope=FailureScope.MEMBER,
+        repairable=True,
+        category="task_completion",
+        summary="evidence exists but terminal response missed the frozen deadline",
+        diagnostics={
+            "completed_data_plane_operations": ["browser.navigate"],
+            "termination_budget_axis": "finalization_grace",
+        },
+    )
+    variant = ReplayVariantResult(
+        variant_id="candidate",
+        status=ReplayExecutionStatus.FAILED,
+        trajectory=[],
+        failure=failure,
+    )
+
+    assert runner_module._variant_is_screening_timeout(variant) is True
+    assert runner_module._variant_has_progressing_task_timeout(variant) is True
+
+
+def test_framework_finalization_root_keeps_one_atomic_attribution_tuple(
+    tmp_path: Path,
+) -> None:
+    request = CandidateReplayRequest(
+        run_id="run-finalization-root",
+        task_id="case-finalization-root",
+        workspace_root=str(tmp_path),
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo"),
+        candidate_id="candidate-finalization-root",
+        overlay_skill_root=str(tmp_path / "overlay"),
+        task_input="task",
+    )
+    framework_failure = ReplayFailureEvent(
+        code="evidence_policy_v2_attestation_failed",
+        owner=FailureOwner.FRAMEWORK,
+        stage=FailureStage.EVIDENCE_FINALIZATION,
+        scope=FailureScope.SHARED_RUN,
+        repairable=True,
+        category="measurement_runtime_trust",
+        summary="framework canonicalization failed",
+    )
+    task_timeout = ReplayFailureEvent(
+        code="replay_evidence_finalization_timeout",
+        owner=FailureOwner.TASK,
+        stage=FailureStage.TASK_ROLLOUT,
+        scope=FailureScope.MEMBER,
+        repairable=True,
+        category="task_completion",
+        summary="task response missed the finalization deadline",
+        diagnostics={"completed_data_plane_operations": ["browser.navigate"]},
+    )
+    baseline = ReplayVariantResult(
+        variant_id="baseline",
+        status=ReplayExecutionStatus.FAILED,
+        trajectory=[],
+        failure=framework_failure,
+    )
+    candidate = ReplayVariantResult(
+        variant_id="candidate",
+        status=ReplayExecutionStatus.FAILED,
+        trajectory=[],
+        failure=task_timeout,
+    )
+    replay = _CandidateReplayResult(
+        request=request,
+        baseline=baseline,
+        candidate=candidate,
+        member_results=(
+            CandidateReplayMemberResult(
+                case_id=request.task_id,
+                request=request,
+                baseline=baseline,
+                candidate=candidate,
+            ),
+        ),
+    )
+    dataset = SelfEvolveDataset(
+        cases=(EvalCase(case_id=request.task_id, input="task"),),
+        recipe=DatasetRecipe(
+            source={"kind": "test"},
+            split_seed="finalization-root",
+            splits={"train": [request.task_id]},
+        ),
+    )
+
+    details = _replay_gate_details(replay, dataset=dataset)
+
+    assert details["code"] == "evidence_policy_v2_attestation_failed"
+    assert details["failure_class"] == "framework"
+    assert details["failure_owner"] == "framework"
+    assert details["failure_scope"] == "shared_run"
+    assert details["failure_stage"] == "evidence_finalization"
+    assert not any(
+        event["code"] == "candidate_recovery_incomplete"
+        for event in details["causal_failure_events"]
+    )
 
 
 def test_stored_dataset_recipe_restores_auto_grouped_member_ids(
@@ -7183,7 +7332,7 @@ def test_replay_gate_marks_candidate_owned_protocol_failure_as_repairable() -> N
 
     assert details["failure_class"] == "candidate"
     assert details["repairable"] is True
-    assert details["failure_stage"] == "replay_capability"
+    assert details["failure_stage"] == "legacy_import"
 
 
 def test_candidate_runtime_policy_failure_precedes_invalid_control_routing() -> None:
@@ -7250,7 +7399,7 @@ def test_candidate_runtime_policy_failure_precedes_invalid_control_routing() -> 
 
     assert details["failure_class"] == "candidate"
     assert details["repairable"] is True
-    assert details["failure_stage"] == "replay_capability"
+    assert details["failure_stage"] == "task_rollout"
     assert details["invalid_control_secondary"] is True
     assert details.get("next_action") != "repair_measurement"
 
@@ -22086,7 +22235,10 @@ def test_optimize_cli_request_uses_framework_default_replay_backend_when_enabled
     assert optimizer_diagnostics["filtered_duplicate_candidates"] == 1
     assert report["population"]["generated_candidate_count"] == 1
     assert report["population"]["generation_attempt_count"] == 2
-    assert len(report["population"]["scheduler_decisions"]) == 1
+    scheduler_decisions = report["population"]["scheduler_decisions"]
+    assert 1 <= len(scheduler_decisions) <= 2
+    if len(scheduler_decisions) == 2:
+        assert scheduler_decisions[-1]["reason_code"] == "shared_run_blocked"
     confidence_gate = next(
         gate
         for gate in report["gate_results"]

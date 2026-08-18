@@ -325,6 +325,8 @@ class EvidencePolicyProfileV2:
     )
     allowed_control_actions: tuple[str, ...] = ()
     max_consecutive_failed_actions: int = 2
+    scratch_max_files: int = 64
+    scratch_max_bytes: int = 256_000_000
     redaction_version: str = "redaction.v1"
     projection_version: str = "projection.v1"
     schema_version: str = EVIDENCE_POLICY_PROFILE_SCHEMA_VERSION
@@ -359,6 +361,8 @@ class EvidencePolicyProfileV2:
             "required_manifest_fields": list(self.required_manifest_fields),
             "allowed_control_actions": list(self.allowed_control_actions),
             "max_consecutive_failed_actions": self.max_consecutive_failed_actions,
+            "scratch_max_files": self.scratch_max_files,
+            "scratch_max_bytes": self.scratch_max_bytes,
             "redaction_version": self.redaction_version,
             "projection_version": self.projection_version,
         }
@@ -400,6 +404,13 @@ class EvidencePolicyProfileV2:
             max_consecutive_failed_actions=_strict_int(
                 value.get("max_consecutive_failed_actions"),
                 "max_consecutive_failed_actions",
+            ),
+            scratch_max_files=_strict_int(
+                value.get("scratch_max_files", 64), "scratch_max_files"
+            ),
+            scratch_max_bytes=_strict_int(
+                value.get("scratch_max_bytes", 256_000_000),
+                "scratch_max_bytes",
             ),
             redaction_version=_strict_text(
                 value.get("redaction_version"), "redaction_version"
@@ -502,6 +513,8 @@ class EvidencePolicyProfileV2:
                 self.required_task_response_fields
             ),
             "required_manifest_field_count": len(self.required_manifest_fields),
+            "scratch_max_files": self.scratch_max_files,
+            "scratch_max_bytes": self.scratch_max_bytes,
             "allowed_control_action_count": len(self.allowed_control_actions),
             "redaction_version": self.redaction_version,
             "projection_version": self.projection_version,
@@ -733,14 +746,27 @@ def compile_evidence_policy_profile_v2(
     ),
     allowed_control_actions: Iterable[str] = (),
     max_consecutive_failed_actions: int = 2,
+    scratch_max_files: int | None = None,
+    scratch_max_bytes: int | None = None,
     redaction_version: str = "redaction.v1",
     projection_version: str = "projection.v1",
 ) -> EvidencePolicyProfileV2:
+    frozen_policies = tuple(
+        item if isinstance(item, ArtifactPolicy) else ArtifactPolicy.from_dict(item)
+        for item in artifact_policies
+    )
+    if scratch_max_files is None:
+        scratch_max_files = min(
+            _ARTIFACT_FILE_LIMIT_MAX,
+            max(sum(item.max_files for item in frozen_policies) * 8, 1),
+        )
+    if scratch_max_bytes is None:
+        scratch_max_bytes = min(
+            _ARTIFACT_BYTE_LIMIT_MAX,
+            max(sum(item.max_bytes for item in frozen_policies) * 4, 1),
+        )
     profile = EvidencePolicyProfileV2(
-        artifact_policies=tuple(
-            item if isinstance(item, ArtifactPolicy) else ArtifactPolicy.from_dict(item)
-            for item in artifact_policies
-        ),
+        artifact_policies=frozen_policies,
         endpoint_bindings=tuple(
             item
             if isinstance(item, DynamicEndpointBinding)
@@ -757,6 +783,8 @@ def compile_evidence_policy_profile_v2(
         required_manifest_fields=tuple(required_manifest_fields),
         allowed_control_actions=tuple(allowed_control_actions),
         max_consecutive_failed_actions=max_consecutive_failed_actions,
+        scratch_max_files=scratch_max_files,
+        scratch_max_bytes=scratch_max_bytes,
         redaction_version=redaction_version,
         projection_version=projection_version,
     )
@@ -772,6 +800,20 @@ def validate_evidence_policy_profile_v2(
         issues.append(EvidencePolicyIssue("unsupported_schema", "schema_version"))
     if not profile.artifact_policies or len(profile.artifact_policies) > _PROFILE_ITEM_LIMIT:
         issues.append(EvidencePolicyIssue("invalid_policy_count", "artifact_policies"))
+    if (
+        isinstance(profile.scratch_max_files, bool)
+        or not isinstance(profile.scratch_max_files, int)
+        or profile.scratch_max_files <= 0
+        or profile.scratch_max_files > _ARTIFACT_FILE_LIMIT_MAX
+    ):
+        issues.append(EvidencePolicyIssue("invalid_scratch_file_budget", "scratch_max_files"))
+    if (
+        isinstance(profile.scratch_max_bytes, bool)
+        or not isinstance(profile.scratch_max_bytes, int)
+        or profile.scratch_max_bytes <= 0
+        or profile.scratch_max_bytes > _ARTIFACT_BYTE_LIMIT_MAX
+    ):
+        issues.append(EvidencePolicyIssue("invalid_scratch_byte_budget", "scratch_max_bytes"))
     types: set[str] = set()
     for index, item in enumerate(profile.artifact_policies):
         field = f"artifact_policies[{index}]"
@@ -811,6 +853,18 @@ def validate_evidence_policy_profile_v2(
             issues.append(EvidencePolicyIssue("invalid_projection", field))
         if not isinstance(item.required, bool):
             issues.append(EvidencePolicyIssue("invalid_required_flag", field))
+    if profile.artifact_policies and profile.scratch_max_files < max(
+        item.max_files for item in profile.artifact_policies
+    ):
+        issues.append(
+            EvidencePolicyIssue("scratch_below_artifact_file_budget", "scratch_max_files")
+        )
+    if profile.artifact_policies and profile.scratch_max_bytes < max(
+        item.max_bytes for item in profile.artifact_policies
+    ):
+        issues.append(
+            EvidencePolicyIssue("scratch_below_artifact_byte_budget", "scratch_max_bytes")
+        )
     ids: set[str] = set()
     env_names: set[str] = set()
     if len(profile.endpoint_bindings) > _PROFILE_ITEM_LIMIT:
@@ -1676,8 +1730,8 @@ class ReplayRuntimePolicy:
     def from_profile(cls, profile: EvidencePolicyProfileV2) -> "ReplayRuntimePolicy":
         _require_valid_profile(profile)
         return cls(
-            artifact_file_limit=sum(item.max_files for item in profile.artifact_policies),
-            artifact_byte_limit=sum(item.max_bytes for item in profile.artifact_policies),
+            artifact_file_limit=profile.scratch_max_files,
+            artifact_byte_limit=profile.scratch_max_bytes,
             max_consecutive_failed_actions=profile.max_consecutive_failed_actions,
             allowed_loopback_endpoints=frozenset(
                 item.authority for item in profile.endpoint_bindings
@@ -1756,6 +1810,9 @@ def enforce_replay_evidence_runtime_policy(
     if mode not in _REQUIRED_POLICY_MODES | _LEGACY_POLICY_MODES:
         return "evidence_policy_mode_required"
     required_v2 = mode in _REQUIRED_POLICY_MODES
+    policy_authority = "authoritative" if required_v2 else (
+        "advisory" if mode == "shadow" else "legacy"
+    )
     artifact_root_value = os.environ.get(
         "AWORLD_SELF_EVOLVE_REPLAY_ARTIFACT_DIR"
     )
@@ -1888,6 +1945,7 @@ def enforce_replay_evidence_runtime_policy(
         "tool_call_attempt_count": attempt_count,
         "manifest_entry_count": manifest_entry_count,
         "evidence_policy_mode": mode,
+        "evidence_policy_authority": policy_authority,
         "evidence_policy_profile_fingerprint": (
             profile.fingerprint if profile is not None else None
         ),
@@ -1988,6 +2046,13 @@ def enforce_replay_evidence_runtime_policy(
     }
     if not _append_violation(artifact_root, violation) and required_v2:
         return "evidence_policy_violation_persistence_failed"
+    # A replay child participating in parent-owned Evidence Policy v2 runs in
+    # shadow mode. It may surface bounded counterexamples, but it cannot deny
+    # execution or promote its untrusted manifest into an authoritative
+    # lifecycle decision. The parent validates the canonical inventory,
+    # TaskResponse, and signed manifest after the child exits.
+    if policy_authority == "advisory":
+        return None
     return violation_code
 
 

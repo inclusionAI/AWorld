@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -13,6 +14,133 @@ _SELF_EVOLVE_TASK_RESPONSE_SCHEMA = "aworld.self_evolve.task_response.v1"
 _TASK_RESPONSE_CAPABILITY_FD_ENV = (
     "AWORLD_SELF_EVOLVE_TASK_RESPONSE_CAPABILITY_FD"
 )
+_TASK_RESPONSE_CAPABILITY_MAX_BYTES_ENV = (
+    "AWORLD_SELF_EVOLVE_TASK_RESPONSE_CAPABILITY_MAX_BYTES"
+)
+_DEFAULT_TASK_RESPONSE_CAPABILITY_MAX_BYTES = 8_000_000
+
+
+def _bounded_text(value: object, *, max_chars: int) -> str:
+    text = value if isinstance(value, str) else str(value)
+    if len(text) <= max_chars:
+        return text
+    head = max(max_chars * 3 // 4, 1)
+    tail = max(max_chars - head, 0)
+    return text[:head] + ("\n…<bounded>…\n" if tail else "") + text[-tail:]
+
+
+def _terminal_trajectory_projection(
+    item: dict,
+    *,
+    text_budget: int,
+) -> dict:
+    projected: dict[str, object] = {}
+    meta = item.get("meta")
+    if isinstance(meta, dict):
+        projected["meta"] = {
+            str(key): value
+            for key, value in meta.items()
+            if isinstance(value, (str, int, float, bool)) or value is None
+        }
+    state = item.get("state")
+    if isinstance(state, dict) and "input" in state:
+        projected["state"] = {
+            "input": _bounded_text(
+                state.get("input"), max_chars=max(text_budget // 4, 256)
+            )
+        }
+    action = item.get("action")
+    if isinstance(action, dict):
+        projected_action: dict[str, object] = {
+            "content": _bounded_text(
+                action.get("content", ""), max_chars=max(text_budget, 1_024)
+            )
+        }
+        if "is_agent_finished" in action:
+            projected_action["is_agent_finished"] = action["is_agent_finished"]
+        tool_calls = action.get("tool_calls")
+        if isinstance(tool_calls, list):
+            projected_action["tool_call_count"] = len(tool_calls)
+            projected_action["tool_calls"] = []
+        projected["action"] = projected_action
+    reward = item.get("reward")
+    if isinstance(reward, dict):
+        projected["reward"] = {
+            str(key): value
+            for key, value in reward.items()
+            if isinstance(value, (str, int, float, bool)) or value is None
+        }
+    return projected or {"action": {"content": "task response completed"}}
+
+
+def _bounded_task_response_capability_payload(
+    sidecar: dict,
+    *,
+    max_bytes: int,
+) -> dict:
+    encoded = json.dumps(
+        sidecar,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    if len(encoded) <= max_bytes:
+        return sidecar
+    trajectory = sidecar.get("trajectory")
+    terminal = next(
+        (
+            item
+            for item in reversed(trajectory)
+            if isinstance(item, dict)
+        ),
+        {"action": {"content": "task response completed"}},
+    ) if isinstance(trajectory, list) else {
+        "action": {"content": "task response completed"}
+    }
+    # The capability transports a completion projection, not the full replay
+    # transcript. The supervisor already captures stdout and persists evidence;
+    # keeping the pipe payload bounded prevents a large trajectory from closing
+    # the parent reader and turning a successful baseline into BrokenPipeError.
+    text_budget = min(max(max_bytes // 4, 1_024), 256_000)
+    compact = {
+        "schema_version": sidecar.get("schema_version"),
+        "trajectory_capture_mode": "task_response",
+        "trajectory": [
+            _terminal_trajectory_projection(terminal, text_budget=text_budget)
+        ],
+        "trajectory_compacted": True,
+        "trajectory_original_count": (
+            len(trajectory) if isinstance(trajectory, list) else 0
+        ),
+        "trajectory_digest": "sha256:" + hashlib.sha256(encoded).hexdigest(),
+    }
+    compact_encoded = json.dumps(
+        compact,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    if len(compact_encoded) > max_bytes:
+        compact["trajectory"][0] = {
+            "action": {
+                "content": _bounded_text(
+                    terminal.get("action", {}).get("content", "")
+                    if isinstance(terminal.get("action"), dict)
+                    else "",
+                    max_chars=max(min(max_bytes // 8, 16_000), 256),
+                ),
+                "is_agent_finished": "True",
+            }
+        }
+    final_encoded = json.dumps(
+        compact,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    if len(final_encoded) > max_bytes:
+        raise RuntimeError("task-response capability projection exceeds its byte limit")
+    return compact
 
 
 def _consume_task_response_capability() -> int | None:
@@ -49,6 +177,19 @@ def _write_self_evolve_task_response(
         **payload,
     }
     if capability_fd is not None:
+        raw_limit = os.environ.get(_TASK_RESPONSE_CAPABILITY_MAX_BYTES_ENV)
+        try:
+            max_bytes = int(raw_limit) if raw_limit else (
+                _DEFAULT_TASK_RESPONSE_CAPABILITY_MAX_BYTES
+            )
+        except ValueError as exc:
+            raise RuntimeError("invalid task-response capability byte limit") from exc
+        if max_bytes < 1_024:
+            raise RuntimeError("task-response capability byte limit is too small")
+        sidecar = _bounded_task_response_capability_payload(
+            sidecar,
+            max_bytes=max_bytes,
+        )
         encoded = json.dumps(
             sidecar,
             ensure_ascii=False,

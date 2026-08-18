@@ -227,6 +227,32 @@ def test_dynamic_endpoint_binding_is_bound_to_fingerprint() -> None:
     assert binding.authority == "127.0.0.1:4100"
 
 
+def test_scratch_budget_is_frozen_and_cannot_be_smaller_than_trusted_source() -> None:
+    first = _profile()
+    second = compile_evidence_policy_profile_v2(
+        artifact_policies=(_artifact_policy(),),
+        endpoint_bindings=first.endpoint_bindings,
+        required_task_response_fields=("status", "summary"),
+        allowed_control_actions=("browser:close",),
+        scratch_max_files=first.scratch_max_files + 1,
+        scratch_max_bytes=first.scratch_max_bytes + 1,
+    )
+
+    assert first.fingerprint != second.fingerprint
+    assert ReplayRuntimePolicy.from_profile(second).artifact_byte_limit == (
+        second.scratch_max_bytes
+    )
+    with pytest.raises(EvidencePolicyValidationError) as raised:
+        compile_evidence_policy_profile_v2(
+            artifact_policies=(_artifact_policy(),),
+            scratch_max_files=1,
+            scratch_max_bytes=999_999,
+        )
+    assert "scratch_below_artifact_byte_budget" in {
+        issue.code for issue in raised.value.issues
+    }
+
+
 def test_compiler_input_contract_identities_are_canonical_and_authoritative() -> None:
     first = compile_evidence_policy_profile_v2(
         artifact_policies=(_artifact_policy(),),
@@ -278,8 +304,8 @@ def test_environment_round_trip_and_public_projection_are_bounded() -> None:
         "ws://127.0.0.1:4100/devtools"
     )
     runtime = ReplayRuntimePolicy.from_profile(profile)
-    assert runtime.artifact_file_limit == 2
-    assert runtime.artifact_byte_limit == 1_000_000
+    assert runtime.artifact_file_limit == profile.scratch_max_files
+    assert runtime.artifact_byte_limit == profile.scratch_max_bytes
     assert runtime.allowed_loopback_endpoints == frozenset(
         {"127.0.0.1:4100"}
     )
@@ -288,19 +314,22 @@ def test_environment_round_trip_and_public_projection_are_bounded() -> None:
     assert "4100" not in str(public)
     assert "browser.snapshotter" not in str(public)
     assert public["endpoint_binding_count"] == 1
+    assert public["scratch_max_files"] == profile.scratch_max_files
+    assert public["scratch_max_bytes"] == profile.scratch_max_bytes
     assert "endpoint_binding_fingerprints" not in public
 
 
 def test_legacy_runtime_policy_reads_v2_environment(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    environment = _profile().to_environment()
+    profile = _profile()
+    environment = profile.to_environment()
     for name, value in environment.items():
         monkeypatch.setenv(name, value)
 
     runtime = ReplayRuntimePolicy.from_environment()
 
-    assert runtime.artifact_file_limit == 2
+    assert runtime.artifact_file_limit == profile.scratch_max_files
     assert runtime.allowed_loopback_endpoints == frozenset(
         {"127.0.0.1:4100"}
     )
@@ -668,6 +697,54 @@ def test_required_runtime_uses_verified_v2_manifest_for_evidence_ready(
     assert enforce_replay_evidence_runtime_policy(
         "browser", (_runtime_action("ws://127.0.0.1:4100/devtools"),), _RuntimeOwner()
     ) == "tool_call_after_evidence_ready"
+
+
+def test_shadow_runtime_records_but_does_not_enforce_evidence_ready(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    root = tmp_path / "artifacts"
+    root.mkdir()
+    manifest_path = root / "evidence_manifest.jsonl"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "source_id": "candidate-advisory",
+                "extraction_method": "bounded_extract",
+                "summary": "untrusted child annotation",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("AWORLD_REPLAY_EVIDENCE_POLICY", "1")
+    monkeypatch.setenv("AWORLD_REPLAY_EVIDENCE_POLICY_MODE", "shadow")
+    monkeypatch.setenv(
+        "AWORLD_SELF_EVOLVE_REPLAY_ARTIFACT_DIR", str(root)
+    )
+    monkeypatch.setenv(
+        "AWORLD_SELF_EVOLVE_EVIDENCE_MANIFEST", str(manifest_path)
+    )
+
+    assert enforce_replay_evidence_runtime_policy(
+        "browser",
+        (_runtime_action("ws://127.0.0.1:4100/devtools"),),
+        _RuntimeOwner(),
+    ) is None
+
+    state = json.loads(
+        (root / "framework_evidence_state.json").read_text(encoding="utf-8")
+    )
+    assert state["evidence_policy_mode"] == "shadow"
+    assert state["evidence_policy_authority"] == "advisory"
+    violations = [
+        json.loads(line)
+        for line in (
+            root / "framework_evidence_policy.jsonl"
+        ).read_text(encoding="utf-8").splitlines()
+    ]
+    assert violations[0]["code"] == "tool_call_after_evidence_ready"
+    assert violations[0]["evidence_policy_authority"] == "advisory"
 
 
 def test_required_runtime_enforces_per_type_manifest_budget(

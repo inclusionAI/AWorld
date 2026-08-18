@@ -7127,6 +7127,39 @@ async def test_required_replay_runtime_builds_parent_attested_v2_manifest(
             + "\n",
             encoding="utf-8",
         )
+        (evidence_manifest.parent / "framework_evidence_state.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": "aworld.replay.evidence_policy.v1",
+                    "phase": "evidence_ready",
+                    "evidence_policy_mode": "shadow",
+                    "evidence_policy_authority": "advisory",
+                    "tool_call_attempt_count": 2,
+                    "manifest_entry_count": 1,
+                    "artifact_file_limit": 64,
+                    "artifact_byte_limit": 256_000_000,
+                }
+            ),
+            encoding="utf-8",
+        )
+        (
+            evidence_manifest.parent / "framework_evidence_policy.jsonl"
+        ).write_text(
+            json.dumps(
+                {
+                    "schema_version": "aworld.replay.evidence_policy.v1",
+                    "evidence_policy_mode": "shadow",
+                    "evidence_policy_authority": "advisory",
+                    "code": "tool_call_after_evidence_ready",
+                    "phase": "evidence_ready",
+                    "tool_name": "bash",
+                    "action_name": "run",
+                    "required_transition": "finalize_task_response",
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
         response = {
             "schema_version": "aworld.self_evolve.task_response.v1",
             "trajectory": trajectory,
@@ -7173,6 +7206,15 @@ async def test_required_replay_runtime_builds_parent_attested_v2_manifest(
 
     assert result.succeeded is True
     assert result.metrics["evidence_policy_v2_runtime_trust_passed"] is True
+    assert result.metrics["evidence_runtime_policy_passed"] is False
+    assert result.metrics["evidence_runtime_policy_authority"] == "advisory"
+    assert result.metrics[
+        "evidence_runtime_policy_authoritative_passed"
+    ] is True
+    assert result.metrics[
+        "evidence_runtime_policy_advisory_violation_count"
+    ] == 1
+    assert result.metrics["evidence_strategy_passed"] is True
     trusted_manifest = json.loads(
         Path(result.metrics["evidence_policy_v2_manifest_path"]).read_text(
             encoding="utf-8"
@@ -7371,8 +7413,102 @@ async def test_required_replay_uses_parent_inventory_when_child_path_repeats_roo
         )
     )
     assert bundle["valid"] is True
-    assert bundle["entries"][0]["source_id"] == "legacy.result"
+    assert bundle["entries"][0]["source_id"] == "framework.inventory.1"
+    assert bundle["entries"][0]["extraction_method"] == (
+        "framework_deterministic_projection"
+    )
+    assert bundle["entries"][0]["bounded_evidence"]["fields_used"] == [
+        "framework_bounded_source_preview"
+    ]
+    assert "fields" not in bundle["entries"][0]["bounded_evidence"]
     assert bundle["entries"][0]["artifact_path"].endswith("result.html")
+
+
+@pytest.mark.asyncio
+async def test_required_replay_projects_large_scratch_artifact_before_trust_budget(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    trajectory = [{"action": {"content": "done", "is_agent_finished": "True"}}]
+
+    def fake_run(command, **kwargs):
+        evidence_manifest = Path(kwargs["evidence_manifest"])
+        artifact = evidence_manifest.parent / "export.pdf"
+        artifact.write_bytes(b"%PDF-1.7\n" + b"\xff" * 4_800_000)
+        evidence_manifest.write_text(
+            json.dumps(
+                {
+                    "source_id": "candidate-claim-must-not-be-trusted",
+                    "artifact_path": "export.pdf",
+                    "extraction_method": "candidate-summary",
+                    "summary": "unverified candidate summary",
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        response = {
+            "schema_version": "aworld.self_evolve.task_response.v1",
+            "trajectory": trajectory,
+            "trajectory_capture_mode": "task_response",
+        }
+        response["framework_attestation"] = {
+            "schema_version": "aworld.self_evolve.task_response_attestation.v2",
+            "signature": _task_response_signature(
+                response, kwargs["task_response_attestation_key"]
+            ),
+        }
+        Path(kwargs["task_response_path"]).write_text(
+            json.dumps(response), encoding="utf-8"
+        )
+        assert int(kwargs["env"]["AWORLD_REPLAY_ARTIFACT_BYTE_LIMIT"]) > (
+            artifact.stat().st_size
+        )
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=json.dumps(
+                {
+                    "trajectory": trajectory,
+                    "trajectory_capture_mode": "task_response",
+                }
+            )
+            + "\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr("aworld.self_evolve.replay._run_replay_cli", fake_run)
+    result = await AWorldCliReplayExecutor()(
+        ReplayExecutionRequest(
+            variant_id="baseline",
+            task_id="task-large",
+            candidate_id="candidate-large",
+            workspace_root=str(tmp_path),
+            task_input="task",
+            task_text="task",
+            skill_root=None,
+            artifact_dir=str(tmp_path / "artifacts-large"),
+            evidence_policy_mode="required",
+        )
+    )
+
+    assert result.succeeded is True
+    assert result.metrics["framework_evidence_inventory_bytes"] > 4_000_000
+    assert result.metrics["evidence_policy_v2_runtime_trust_passed"] is True
+    bundle = json.loads(
+        (
+            tmp_path
+            / "artifacts-large"
+            / "evidence"
+            / "evidence_bundle.json"
+        ).read_text(encoding="utf-8")
+    )
+    entry = bundle["entries"][0]
+    assert entry["source_id"] == "framework.inventory.1"
+    assert "unverified candidate summary" not in json.dumps(entry)
+    assert entry["bounded_evidence"]["structured_summary"][
+        "projection_kind"
+    ] == "framework_binary_identity"
 
 
 @pytest.mark.asyncio
@@ -8619,6 +8755,33 @@ def test_replay_aggregate_metrics_include_bundle_validity() -> None:
     assert aggregate.metrics["evidence_bundle_path"] == "/tmp/bundle-2.json"
 
 
+def test_replay_aggregate_preserves_authoritative_policy_verdict() -> None:
+    results = [
+        ReplayVariantResult(
+            variant_id=f"candidate-{index}",
+            status="succeeded",
+            trajectory=[{"action": {"content": "completed"}}],
+            metrics={
+                "evidence_runtime_policy_passed": False,
+                "evidence_runtime_policy_authoritative_passed": True,
+            },
+        )
+        for index in range(2)
+    ]
+
+    aggregate = _aggregate_variant_results(
+        base_variant_id="candidate",
+        results=results,
+        artifact_dir=Path("/tmp/self-evolve-authority-aggregate"),
+    )
+
+    assert aggregate.metrics["evidence_runtime_policy_passed"] is False
+    assert (
+        aggregate.metrics["evidence_runtime_policy_authoritative_passed"]
+        is True
+    )
+
+
 def test_replay_aggregate_evidence_metrics_fail_closed_on_missing_repetition() -> None:
     from aworld.self_evolve.replay import _aggregate_variant_results
 
@@ -8770,6 +8933,9 @@ def test_replay_runtime_policy_violation_becomes_bounded_counterexample(
 
     assert metrics["evidence_runtime_policy_active"] is True
     assert metrics["evidence_runtime_policy_passed"] is False
+    assert metrics["evidence_runtime_policy_authority"] == "authoritative"
+    assert metrics["evidence_runtime_policy_authoritative_passed"] is False
+    assert metrics["evidence_runtime_policy_advisory_violation_count"] == 0
     assert metrics["evidence_runtime_policy_violation_count"] == 1
     assert metrics["replay_counterexamples"] == [
         {
@@ -9830,7 +9996,6 @@ def test_replay_cli_parent_attests_response_received_over_capability_fd(
 
 def test_replay_cli_supervisor_bounds_evidence_finalization_without_output(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     artifact_dir = tmp_path / "artifacts"
     evidence_dir = artifact_dir / "evidence"
@@ -9851,10 +10016,6 @@ def test_replay_cli_supervisor_bounds_evidence_finalization_without_output(
         f"Path({str(manifest_path)!r}).write_text({manifest_text!r}); "
         "time.sleep(30)"
     )
-    monkeypatch.setattr(
-        "aworld.self_evolve.replay._EVIDENCE_FINALIZATION_GRACE_SECONDS",
-        0.2,
-    )
     started = time.monotonic()
 
     with pytest.raises(subprocess.TimeoutExpired) as exc_info:
@@ -9873,6 +10034,7 @@ def test_replay_cli_supervisor_bounds_evidence_finalization_without_output(
             ),
             execution_started_at=time.time(),
             replay_environment={},
+            evidence_finalization_timeout_seconds=0.2,
         )
 
     assert time.monotonic() - started < 5

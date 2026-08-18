@@ -252,6 +252,42 @@ def test_execution_journal_records_exactly_once_terminal_observation(tmp_path: P
         )
 
 
+def test_infrastructure_retry_reopens_only_timed_out_unit(tmp_path: Path) -> None:
+    journal = _journal(tmp_path)
+    control = journal.plan.work_units[0]
+    handle = journal.begin(
+        work_unit_id=control.work_unit_id,
+        attempt_id="attempt-timeout-1",
+        now="2026-08-14T00:00:00Z",
+    )
+    journal.terminal(
+        handle,
+        terminal_state=MeasurementWorkUnitState.MEMBER_TIMED_OUT,
+        result_fingerprint=_fp("timeout-result"),
+        lane_attestation=_lane_attestation(journal, tmp_path),
+        now="2026-08-14T00:00:10Z",
+        attempt_cost_seconds=10.0,
+        reason_code="replay_member_failed",
+    )
+
+    scheduled = journal.schedule_infrastructure_retries(
+        now="2026-08-14T00:00:11Z",
+        maximum_attempts=2,
+    )
+
+    assert scheduled == (control.work_unit_id,)
+    entry = journal.index_entries()[0]
+    assert entry.state is MeasurementWorkUnitState.CHECKPOINTED
+    assert entry.attempt_count == 1
+    assert entry.actual_attempt_cost_seconds == 10.0
+    assert entry.observation_fingerprint is None
+    assert journal.terminal_observations() == {}
+    assert journal.schedule_infrastructure_retries(
+        now="2026-08-14T00:00:12Z",
+        maximum_attempts=2,
+    ) == ()
+
+
 def test_checkpoint_is_resumable_and_attempt_cost_is_not_lost(tmp_path: Path) -> None:
     journal = _journal(tmp_path)
     unit = journal.plan.work_units[0]

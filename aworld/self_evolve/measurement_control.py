@@ -138,6 +138,7 @@ class MeasurementControlEventKind(str, Enum):
     CHECKPOINT_RECORDED = "checkpoint_recorded"
     LEASE_RECOVERED = "lease_recovered"
     TERMINAL_RECORDED = "terminal_recorded"
+    RETRY_SCHEDULED = "retry_scheduled"
 
 
 class MeasurementControlCorruptionError(ValueError):
@@ -152,7 +153,7 @@ class MeasurementControlCorruptionError(ValueError):
 
 @dataclass(frozen=True)
 class DeadlinePolicy:
-    """Four non-interchangeable deadline layers.
+    """Frozen, non-interchangeable execution deadline layers.
 
     ``campaign_wall_deadline_seconds=None`` is intentional: a missing operator
     deadline remains absent rather than being synthesized from member timeout.
@@ -161,6 +162,7 @@ class DeadlinePolicy:
     attempt_timeout_seconds: float
     member_hard_deadline_seconds: float
     checkpoint_quantum_seconds: float
+    evidence_finalization_timeout_seconds: float = 45.0
     campaign_wall_deadline_seconds: float | None = None
     resumable_chunked: bool = False
     schema_version: str = DEADLINE_POLICY_SCHEMA_VERSION
@@ -172,6 +174,7 @@ class DeadlinePolicy:
             "attempt_timeout_seconds",
             "member_hard_deadline_seconds",
             "checkpoint_quantum_seconds",
+            "evidence_finalization_timeout_seconds",
         ):
             object.__setattr__(
                 self,
@@ -196,6 +199,9 @@ class DeadlinePolicy:
             "attempt_timeout_seconds": self.attempt_timeout_seconds,
             "member_hard_deadline_seconds": self.member_hard_deadline_seconds,
             "checkpoint_quantum_seconds": self.checkpoint_quantum_seconds,
+            "evidence_finalization_timeout_seconds": (
+                self.evidence_finalization_timeout_seconds
+            ),
             "campaign_wall_deadline_seconds": self.campaign_wall_deadline_seconds,
             "resumable_chunked": self.resumable_chunked,
         }
@@ -214,6 +220,10 @@ class DeadlinePolicy:
             checkpoint_quantum_seconds=_number(
                 value.get("checkpoint_quantum_seconds"),
                 "checkpoint_quantum_seconds",
+            ),
+            evidence_finalization_timeout_seconds=_number(
+                value.get("evidence_finalization_timeout_seconds", 45.0),
+                "evidence_finalization_timeout_seconds",
             ),
             campaign_wall_deadline_seconds=_optional_number(
                 value.get("campaign_wall_deadline_seconds"),
@@ -924,6 +934,18 @@ class WorkUnitJournalEvent:
                 raise ValueError("terminal event requires an immutable observation")
             if self.lease_expires_at is not None:
                 raise ValueError("terminal event cannot retain an active lease")
+        elif self.kind is MeasurementControlEventKind.RETRY_SCHEDULED:
+            if self.previous_state not in {
+                MeasurementWorkUnitState.MEMBER_TIMED_OUT,
+                MeasurementWorkUnitState.EVIDENCE_INVALID,
+            } or self.new_state is not MeasurementWorkUnitState.CHECKPOINTED:
+                raise ValueError("measurement retry has an invalid transition")
+            if self.lease_expires_at is not None:
+                raise ValueError("measurement retry cannot retain an active lease")
+            if self.reason_code != "measurement_infrastructure_retry":
+                raise ValueError(
+                    "measurement retry requires infrastructure retry ownership"
+                )
         if (
             self.kind is not MeasurementControlEventKind.TERMINAL_RECORDED
             and self.observation_fingerprint is not None
@@ -1960,7 +1982,10 @@ def advance_measurement_control_index(
             "measurement_journal_duplicate_event",
             "measurement journal contains a duplicate event id",
         )
-    if current.state.terminal:
+    if (
+        current.state.terminal
+        and event.kind is not MeasurementControlEventKind.RETRY_SCHEDULED
+    ):
         raise MeasurementControlCorruptionError(
             "measurement_journal_terminal_transition",
             "journal attempts to transition an already terminal work unit",
@@ -1996,6 +2021,10 @@ def advance_measurement_control_index(
         attempt_count = current.attempt_count + 1
         active_attempt = event.attempt_id
         active_started = event.occurred_at
+    elif event.kind is MeasurementControlEventKind.RETRY_SCHEDULED:
+        attempt_count = current.attempt_count
+        active_attempt = None
+        active_started = None
     else:
         attempt_count = current.attempt_count
         active_attempt = current.active_attempt_id
@@ -2010,7 +2039,7 @@ def advance_measurement_control_index(
         MeasurementWorkUnitState.RUNNING,
     }
     finalized = current.finalized_attempts
-    if not active:
+    if not active and event.kind is not MeasurementControlEventKind.RETRY_SCHEDULED:
         if active_started is None:
             raise MeasurementControlCorruptionError(
                 "measurement_attempt_start_missing",
