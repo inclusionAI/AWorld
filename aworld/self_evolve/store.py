@@ -2894,6 +2894,30 @@ class FilesystemSelfEvolveStore:
         self._write_json(path, payload)
         return path
 
+    def write_screening_control_preflight(
+        self,
+        run_id: str,
+        preflight: Mapping[str, Any],
+    ) -> Path:
+        """Persist the candidate-independent baseline feasibility cache."""
+
+        self._validate_id(run_id, "run_id")
+        if preflight.get("schema_version") != (
+            "aworld.self_evolve.screening_control_preflight.v1"
+        ):
+            raise ValueError("unsupported screening control preflight schema")
+        path = self.run_path(run_id) / "screening" / "control_preflight.json"
+        self._write_json_atomic(path, dict(preflight))
+        return path
+
+    def read_screening_control_preflight(
+        self,
+        run_id: str,
+    ) -> Mapping[str, Any]:
+        self._validate_id(run_id, "run_id")
+        path = self.run_path(run_id) / "screening" / "control_preflight.json"
+        return self._read_json(path)
+
     def write_handbook_slice(
         self,
         run_id: str,

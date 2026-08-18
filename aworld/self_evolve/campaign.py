@@ -2331,6 +2331,12 @@ def _measurement_policy_disposition(
             "evaluation_harness",
             True,
         ),
+        "repair_framework": (
+            SelfImprovementDispositionKind.HANDOFF_GOAL,
+            "typed_framework_or_shared_blocker",
+            "framework",
+            True,
+        ),
         "switch_generator": (
             SelfImprovementDispositionKind.SWITCH_GENERATOR,
             "trusted_measurement_switch_generator",

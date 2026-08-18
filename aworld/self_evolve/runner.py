@@ -1721,7 +1721,7 @@ def _default_iteration_budget(
 
 
 _DEFAULT_CANDIDATE_SCREENING_TIMEOUT_SECONDS = 90
-_MAX_CANDIDATE_SCREENING_TIMEOUT_SECONDS = 180
+_MAX_CANDIDATE_SCREENING_TIMEOUT_SECONDS = 300
 _DEFAULT_CANDIDATE_SCREENING_TRACE_HORIZON = 4
 _DEFAULT_CANDIDATE_SCREENING_TOOL_CALL_LIMIT = 8
 _SCREENING_STEP_TIMEOUT_SECONDS = 30
@@ -1732,18 +1732,47 @@ def _candidate_screening_timeout(
     authoritative_timeout_seconds: int,
     *,
     max_steps: int | None = None,
+    empirical_observation: Mapping[str, float | int] | None = None,
 ) -> int:
-    """Bound screening while giving every planned step a completion window."""
+    """Bound screening using the frozen envelope and prior case latency."""
 
     planned_seconds = (
         max(1, max_steps) * _SCREENING_STEP_TIMEOUT_SECONDS
         if max_steps is not None
         else _DEFAULT_CANDIDATE_SCREENING_TIMEOUT_SECONDS
     )
+    empirical_seconds = 0.0
+    if empirical_observation:
+        baseline_success_count = _non_negative_int(
+            empirical_observation.get("baseline_success_count")
+        )
+        baseline_wall_seconds = _non_negative_screening_float(
+            empirical_observation.get("baseline_success_wall_seconds")
+        )
+        if baseline_success_count > 0 and baseline_wall_seconds > 0:
+            empirical_seconds = max(
+                empirical_seconds,
+                baseline_wall_seconds / baseline_success_count * 1.5,
+            )
+        attempt_count = _non_negative_int(
+            empirical_observation.get("attempt_count")
+        )
+        total_wall_seconds = _non_negative_screening_float(
+            empirical_observation.get("total_wall_seconds")
+        )
+        if attempt_count > 0 and total_wall_seconds > 0:
+            empirical_seconds = max(
+                empirical_seconds,
+                total_wall_seconds / attempt_count * 1.25,
+            )
     return min(
         authoritative_timeout_seconds,
         _MAX_CANDIDATE_SCREENING_TIMEOUT_SECONDS,
-        max(_DEFAULT_CANDIDATE_SCREENING_TIMEOUT_SECONDS, planned_seconds),
+        max(
+            _DEFAULT_CANDIDATE_SCREENING_TIMEOUT_SECONDS,
+            planned_seconds,
+            math.ceil(empirical_seconds),
+        ),
     )
 
 
@@ -3862,6 +3891,21 @@ class SelfEvolveRunner:
             prior_run_ids=tuple(campaign_prior_run_ids or ()),
             loaded_run_ids=self._candidate_screening_loaded_run_ids,
         )
+        _restore_historical_screening_lifecycle_observations(
+            self._candidate_screening_case_observations,
+            store=self.store,
+            target=target.identity,
+            dataset=dataset,
+            current_run_id=run_id,
+        )
+        screening_control_preflight = _screening_control_preflight(
+            dataset,
+            observations=self._candidate_screening_case_observations,
+            timeout_ceiling_seconds=min(
+                self.replay_timeout_seconds,
+                _MAX_CANDIDATE_SCREENING_TIMEOUT_SECONDS,
+            ),
+        )
         budget_context = _RunBudgetContext(
             ledger=RunBudgetLedger(
                 BudgetCeilings(
@@ -4087,6 +4131,21 @@ class SelfEvolveRunner:
 
         run = SelfEvolveRun(run_id=run_id, target=target.identity, status=SelfEvolveRunStatus.RUNNING)
         self.store.create_run(run)
+        self.store.write_screening_control_preflight(
+            run_id,
+            screening_control_preflight,
+        )
+        _emit_progress(
+            self.progress_callback,
+            "candidate_screening_preflight",
+            (
+                "Control preflight before candidate generation: "
+                f"{screening_control_preflight.get('status')}; "
+                f"feasible {len(screening_control_preflight.get('feasible_case_ids', []))}; "
+                f"infeasible {len(screening_control_preflight.get('infeasible_case_ids', []))}; "
+                f"unknown {len(screening_control_preflight.get('unknown_case_ids', []))}"
+            ),
+        )
         attempt_tracker = _CandidateAttemptTracker(self.store, run_id)
         failure_cleanup.attempt_tracker = attempt_tracker
         self.store.write_dataset_recipe(run_id, dataset.recipe)
@@ -4289,6 +4348,48 @@ class SelfEvolveRunner:
         baseline_preflight_blocked = False
         infrastructure_blocked = False
         shared_validation_gate: GateResult | None = None
+        if screening_control_preflight.get("status") == "infeasible":
+            preflight_event = ReplayFailureEvent(
+                code="screening_control_preflight_infeasible",
+                owner=FailureOwner.FRAMEWORK,
+                stage=FailureStage.CAPABILITY_PREFLIGHT,
+                scope=FailureScope.SHARED_RUN,
+                repairable=True,
+                category="measurement_control",
+                summary=(
+                    "historical baseline lifecycles prove that no screening "
+                    "control case fits the current bounded execution envelope"
+                ),
+                diagnostics={
+                    "infeasible_case_ids": list(
+                        screening_control_preflight.get(
+                            "infeasible_case_ids", []
+                        )
+                    )[:32],
+                },
+            )
+            payload = preflight_event.to_dict()
+            shared_validation_gate = GateResult(
+                gate_name="candidate_screening_preflight",
+                passed=False,
+                reason=(
+                    "candidate generation was skipped because the frozen "
+                    "screening control panel is infeasible"
+                ),
+                details={
+                    **screening_control_preflight,
+                    "failure_class": "framework",
+                    "failure_owner": FailureOwner.FRAMEWORK.value,
+                    "failure_scope": FailureScope.SHARED_RUN.value,
+                    "failure_stage": FailureStage.CAPABILITY_PREFLIGHT.value,
+                    "repairable": True,
+                    "next_action": "repair_framework",
+                    "resume_safe": False,
+                    "failure_event": payload,
+                    "causal_failure_events": [payload],
+                },
+            )
+            baseline_preflight_blocked = True
         progress_repair_families: set[str] = set()
         duplicate_population_stalls = 0
         consecutive_policy_filter_stalls = 0
@@ -4418,6 +4519,8 @@ class SelfEvolveRunner:
             return tuple(items)
 
         for iteration_index in range(iteration_budget):
+            if baseline_preflight_blocked:
+                break
             if iteration_index >= self.max_iterations:
                 repair_family = _next_progress_repair_extension_family(
                     validation_feedback,
@@ -6993,6 +7096,7 @@ class SelfEvolveRunner:
                 else {"iterations": optimizer_diagnostics}
             ),
             "prior_feedback_count": len(prior_feedback),
+            "screening_control_preflight": screening_control_preflight,
             "iterations": iteration_reports,
             "execution": {
                 "stages": execution_stages,
@@ -7226,7 +7330,10 @@ class SelfEvolveRunner:
                 "independent_case_count": 0,
                 "comparable_pair_count": 0,
                 "promotion_eligible": False,
-                "next_action": "repair_measurement",
+                "next_action": str(
+                    prerequisite_details.get("next_action")
+                    or "repair_measurement"
+                ),
             }
         if candidate_source_dispositions:
             report["candidate_source_dispositions"] = {
@@ -7963,6 +8070,16 @@ class SelfEvolveRunner:
                         configured_max_steps=self.replay_max_steps,
                     )
                     active_case_id = active_screening_dataset.cases[0].case_id
+                    active_screening_timeout = _candidate_screening_timeout(
+                        self.replay_timeout_seconds,
+                        max_steps=active_screening_max_steps,
+                        empirical_observation=(
+                            self._candidate_screening_case_observations.get(
+                                active_case_id,
+                                {},
+                            )
+                        ),
+                    )
                     screening_experiment = self._plan_candidate_measurement(
                         run_id=run_id,
                         target=target,
@@ -7996,10 +8113,7 @@ class SelfEvolveRunner:
                             baseline_repetitions=1,
                             candidate_repetitions=1,
                             progress_stage="candidate_screening",
-                            timeout_seconds=_candidate_screening_timeout(
-                                self.replay_timeout_seconds,
-                                max_steps=active_screening_max_steps,
-                            ),
+                            timeout_seconds=active_screening_timeout,
                             max_steps=active_screening_max_steps,
                             max_tool_calls=(
                                 _DEFAULT_CANDIDATE_SCREENING_TOOL_CALL_LIMIT
@@ -8020,6 +8134,16 @@ class SelfEvolveRunner:
                             replay_gate,
                             fallback_case_ids=active_control_case_ids,
                         )
+                    )
+                    control_details = (
+                        replay_gate.details
+                        if replay_gate is not None
+                        and isinstance(replay_gate.details, Mapping)
+                        else {}
+                    )
+                    control_wall_seconds = max(
+                        0.0,
+                        time.monotonic() - control_attempt_started_at,
                     )
                     control_attempt = {
                         "case_ids": list(active_control_case_ids),
@@ -8045,6 +8169,20 @@ class SelfEvolveRunner:
                         "baseline_cache_offered": (
                             active_baseline_replay_dir is not None
                         ),
+                        "timeout_seconds": active_screening_timeout,
+                        "wall_seconds": control_wall_seconds,
+                        "baseline_status": control_details.get(
+                            "baseline_status"
+                        ),
+                        "candidate_status": control_details.get(
+                            "candidate_status"
+                        ),
+                        "baseline_failure": control_details.get(
+                            "baseline_failure"
+                        ),
+                        "candidate_failure": control_details.get(
+                            "candidate_failure"
+                        ),
                     }
                     control_case_attempts.append(control_attempt)
                     _record_candidate_screening_observation(
@@ -8058,10 +8196,7 @@ class SelfEvolveRunner:
                             "passed": bool(
                                 replay_gate is not None and replay_gate.passed
                             ),
-                            "wall_seconds": max(
-                                0.0,
-                                time.monotonic() - control_attempt_started_at,
-                            ),
+                            "wall_seconds": control_wall_seconds,
                             "details": (
                                 replay_gate.details
                                 if replay_gate is not None
@@ -8497,7 +8632,7 @@ class SelfEvolveRunner:
                 selected_candidates = eligible_candidates[:1]
             elif any(_screening_attempt_requires_candidate_repair(item) for item in attempts):
                 selection_reason = (
-                    "screening isolated a repairable candidate replay capability "
+                    "screening isolated a repairable candidate-owned replay "
                     "failure; authoritative replay deferred to candidate repair"
                 )
                 selected_candidates = ()
@@ -20428,6 +20563,43 @@ def _replay_gate_details(
             for member in normalized.members
             if not member.succeeded
         ]
+    candidate_screening_deadline = (
+        _paired_candidate_screening_deadline_failure(normalized)
+        if bounded_screening
+        else None
+    )
+    if candidate_screening_deadline is not None:
+        deadline_event, deadline_case_ids = candidate_screening_deadline
+        deadline_observations = tuple(
+            ReplayFailureObservation(
+                event=deadline_event,
+                case_id=case_id,
+                run_id=replay_result.request.run_id,
+                candidate_id=replay_result.request.candidate_id,
+            )
+            for case_id in deadline_case_ids
+        )
+        deadline_aggregate = aggregate_replay_failure_observations(
+            deadline_observations
+        )[0]
+        raw_events = details.get("causal_failure_events")
+        event_payloads = list(raw_events) if isinstance(raw_events, list) else []
+        event_payloads.append(deadline_aggregate.to_dict())
+        details.update(
+            {
+                "causal_failure_events": event_payloads,
+                "code": deadline_event.code,
+                "failure_class": "candidate",
+                "failure_owner": deadline_event.owner.value,
+                "failure_scope": deadline_event.scope.value,
+                "failure_stage": deadline_event.stage.value,
+                "repairable": True,
+                "evaluator_skipped": True,
+                "candidate_screening_deadline_case_ids": list(
+                    deadline_case_ids
+                ),
+            }
+        )
     recovery_trace_details = details.get("recovery_trace")
     intervention_unobserved = bool(
         isinstance(recovery_trace_details, Mapping)
@@ -20487,7 +20659,7 @@ def _replay_gate_details(
     candidate_repair_observed = (
         _candidate_replay_has_repairable_capability_failure(replay_result)
         and not intervention_unobserved
-    )
+    ) or candidate_screening_deadline is not None
     if (
         invalid_control_events
         and not screening_budget_censored
@@ -20515,6 +20687,58 @@ def _replay_gate_details(
             event.event_id for event in invalid_control_events
         ]
     return details
+
+
+def _paired_candidate_screening_deadline_failure(
+    normalized: NormalizedReplayMembers,
+) -> tuple[ReplayFailureEvent, tuple[str, ...]] | None:
+    """Promote candidate-only screening deadlines to candidate repair evidence."""
+
+    affected_case_ids: list[str] = []
+    timeout_seconds: list[float] = []
+    for member in normalized.members:
+        if not member.baseline.succeeded:
+            continue
+        failure = member.candidate.failure
+        if (
+            member.candidate.status is not ReplayExecutionStatus.FAILED
+            or not isinstance(failure, ReplayFailureEvent)
+            or failure.code != "replay_member_phase_timeout"
+            or failure.diagnostics.get("phase") != "candidate"
+        ):
+            continue
+        affected_case_ids.append(member.case_id)
+        timeout = failure.diagnostics.get("timeout_seconds")
+        if (
+            isinstance(timeout, (int, float))
+            and not isinstance(timeout, bool)
+            and math.isfinite(float(timeout))
+            and float(timeout) > 0
+        ):
+            timeout_seconds.append(float(timeout))
+    if not affected_case_ids:
+        return None
+    return (
+        ReplayFailureEvent(
+            code="candidate_screening_deadline_exceeded",
+            owner=FailureOwner.CANDIDATE,
+            stage=FailureStage.TASK_ROLLOUT,
+            scope=FailureScope.CANDIDATE,
+            repairable=True,
+            category="candidate_screening",
+            summary=(
+                "candidate exceeded the screening execution envelope after a "
+                "healthy baseline completed"
+            ),
+            diagnostics={
+                "case_ids": affected_case_ids[:32],
+                "timeout_seconds": sorted(set(timeout_seconds))[:8],
+                "baseline_control_valid": True,
+                "candidate_execution_observed": True,
+            },
+        ),
+        tuple(dict.fromkeys(affected_case_ids)),
+    )
 
 
 def _variant_is_screening_timeout(variant: ReplayVariantResult) -> bool:
@@ -21021,6 +21245,32 @@ def _screening_gate_has_invalid_control(
         # control and must consume a distinct fallback case rather than
         # promote an unobserved candidate.
         return gate.details.get("screening_censor_basis") == "baseline_horizon"
+    details = gate.details if isinstance(gate.details, Mapping) else {}
+    if (
+        details.get("failure_class") == "candidate"
+        and details.get("failure_owner", "candidate") == "candidate"
+        and details.get("evaluator_skipped") is True
+        and details.get("baseline_status")
+        == ReplayExecutionStatus.SUCCEEDED.value
+    ):
+        return False
+    baseline_failures: list[object] = [
+        details.get("baseline_failure"),
+        details.get("baseline_failure_event"),
+    ]
+    failed_members = details.get("failed_members")
+    if isinstance(failed_members, (list, tuple)):
+        for member in failed_members:
+            if not isinstance(member, Mapping):
+                continue
+            baseline_failures.extend(
+                (
+                    member.get("baseline_failure"),
+                    member.get("baseline_failure_event"),
+                )
+            )
+    if any(_framework_phase_timeout(failure) for failure in baseline_failures):
+        return True
     stack: list[object] = [gate.details]
     inspected = 0
     while stack and inspected < 256:
@@ -21035,15 +21285,30 @@ def _screening_gate_has_invalid_control(
                 "trusted_measurement_invalid_control_frontier",
             } and owner in {None, FailureOwner.FRAMEWORK.value}:
                 return True
-            if (
-                code == "replay_member_phase_timeout"
-                and owner == FailureOwner.FRAMEWORK.value
-            ):
-                return True
-            stack.extend(current.values())
+            # Candidate-phase timeouts are directional candidate evidence, not
+            # control invalidity. Only explicit control codes above or typed
+            # baseline failures may quarantine a control case.
+            stack.extend(
+                value
+                for key, value in current.items()
+                if str(key)
+                not in {
+                    "candidate_failure",
+                    "candidate_failure_event",
+                }
+            )
         elif isinstance(current, (list, tuple)):
             stack.extend(current)
     return False
+
+
+def _framework_phase_timeout(value: object) -> bool:
+    return bool(
+        isinstance(value, Mapping)
+        and value.get("code") == "replay_member_phase_timeout"
+        and (value.get("failure_owner") or value.get("owner"))
+        == FailureOwner.FRAMEWORK.value
+    )
 
 
 def _screening_invalid_control_case_ids(
@@ -24953,7 +25218,222 @@ def _restore_campaign_screening_case_observations(
                             _non_negative_int(current.get("passed_count"))
                             + int(control_attempt.get("passed") is True)
                         )
+                        wall_seconds = _non_negative_screening_float(
+                            control_attempt.get("wall_seconds")
+                        ) / max(1, len(case_ids))
+                        current["total_wall_seconds"] = (
+                            _non_negative_screening_float(
+                                current.get("total_wall_seconds")
+                            )
+                            + wall_seconds
+                        )
         loaded_run_ids.add(prior_run_id)
+
+
+def _restore_historical_screening_lifecycle_observations(
+    observations: dict[str, dict[str, float | int]],
+    *,
+    store: FilesystemSelfEvolveStore,
+    target: SelfEvolveTargetRef,
+    dataset: SelfEvolveDataset,
+    current_run_id: str,
+) -> None:
+    """Build a candidate-independent control profile from prior lifecycles."""
+
+    eligible_case_ids = {case.case_id for case in dataset.cases}
+    report_paths = sorted(
+        store.artifact_root.glob("*/report.json"),
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    )[:128]
+    for report_path in report_paths:
+        run_dir = report_path.parent
+        if run_dir.name == current_run_id or run_dir.is_symlink():
+            continue
+        try:
+            report = _load_json_mapping(report_path)
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            continue
+        if not _report_matches_target(report, target):
+            continue
+        screening_root = run_dir / "screening"
+        if not screening_root.is_dir() or screening_root.is_symlink():
+            continue
+        for case_dir in screening_root.iterdir():
+            if (
+                not case_dir.is_dir()
+                or case_dir.is_symlink()
+                or case_dir.name not in eligible_case_ids
+            ):
+                continue
+            replay_root = case_dir / "replay"
+            if not replay_root.is_dir() or replay_root.is_symlink():
+                continue
+            for replay_dir in replay_root.iterdir():
+                if not replay_dir.is_dir() or replay_dir.is_symlink():
+                    continue
+                current = observations.setdefault(case_dir.name, {})
+                _merge_screening_variant_lifecycle_observation(
+                    current,
+                    variant_dir=replay_dir / "baseline",
+                    phase="baseline",
+                )
+                candidate_dir = replay_dir / replay_dir.name
+                _merge_screening_variant_lifecycle_observation(
+                    current,
+                    variant_dir=candidate_dir,
+                    phase="candidate",
+                )
+                if not current:
+                    observations.pop(case_dir.name, None)
+
+
+def _merge_screening_variant_lifecycle_observation(
+    observation: dict[str, float | int],
+    *,
+    variant_dir: Path,
+    phase: str,
+) -> None:
+    lifecycle_path = variant_dir / "lifecycle.json"
+    if lifecycle_path.is_symlink() or not lifecycle_path.is_file():
+        return
+    try:
+        lifecycle = _load_json_mapping(lifecycle_path)
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return
+    status = str(lifecycle.get("status") or "")
+    if status in {"", "blocked", "not_run"}:
+        return
+    attempt_key = f"{phase}_attempt_count"
+    success_key = f"{phase}_success_count"
+    timeout_key = f"{phase}_timeout_count"
+    wall_key = f"{phase}_total_wall_seconds"
+    observation[attempt_key] = _non_negative_int(observation.get(attempt_key)) + 1
+    observation[success_key] = (
+        _non_negative_int(observation.get(success_key))
+        + int(status == ReplayExecutionStatus.SUCCEEDED.value)
+    )
+    failure = lifecycle.get("failure")
+    phase_timeout = bool(
+        isinstance(failure, Mapping)
+        and failure.get("code") == "replay_member_phase_timeout"
+    )
+    observation[timeout_key] = (
+        _non_negative_int(observation.get(timeout_key)) + int(phase_timeout)
+    )
+    metrics_path = variant_dir / "aggregate_metrics.json"
+    try:
+        metrics = _load_json_mapping(metrics_path)
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        metrics = {}
+    latency_ms = metrics.get("latency_ms")
+    wall_seconds = (
+        float(latency_ms) / 1000.0
+        if isinstance(latency_ms, (int, float))
+        and not isinstance(latency_ms, bool)
+        and math.isfinite(float(latency_ms))
+        and float(latency_ms) >= 0
+        else 0.0
+    )
+    if wall_seconds <= 0 and phase_timeout and isinstance(failure, Mapping):
+        diagnostics = failure.get("diagnostics")
+        timeout = (
+            diagnostics.get("timeout_seconds")
+            if isinstance(diagnostics, Mapping)
+            else None
+        )
+        if (
+            isinstance(timeout, (int, float))
+            and not isinstance(timeout, bool)
+            and math.isfinite(float(timeout))
+            and float(timeout) > 0
+        ):
+            wall_seconds = float(timeout)
+    if phase_timeout and isinstance(failure, Mapping):
+        diagnostics = failure.get("diagnostics")
+        timeout = (
+            diagnostics.get("timeout_seconds")
+            if isinstance(diagnostics, Mapping)
+            else None
+        )
+        if (
+            isinstance(timeout, (int, float))
+            and not isinstance(timeout, bool)
+            and math.isfinite(float(timeout))
+            and float(timeout) > 0
+        ):
+            observation[f"{phase}_timeout_max_seconds"] = max(
+                _non_negative_screening_float(
+                    observation.get(f"{phase}_timeout_max_seconds")
+                ),
+                float(timeout),
+            )
+    observation[wall_key] = (
+        _non_negative_screening_float(observation.get(wall_key)) + wall_seconds
+    )
+    if status == ReplayExecutionStatus.SUCCEEDED.value:
+        success_wall_key = f"{phase}_success_wall_seconds"
+        observation[success_wall_key] = (
+            _non_negative_screening_float(observation.get(success_wall_key))
+            + wall_seconds
+        )
+
+
+def _screening_control_preflight(
+    dataset: SelfEvolveDataset,
+    *,
+    observations: Mapping[str, Mapping[str, float | int]],
+    timeout_ceiling_seconds: float = _MAX_CANDIDATE_SCREENING_TIMEOUT_SECONDS,
+) -> dict[str, object]:
+    """Classify baseline feasibility before any candidate generation call."""
+
+    case_ids = tuple(
+        case.case_id for case in dataset.cases if _is_replayable_user_task_case(case)
+    )
+    feasible: list[str] = []
+    infeasible: list[str] = []
+    unknown: list[str] = []
+    for case_id in case_ids:
+        observation = observations.get(case_id, {})
+        attempts = _non_negative_int(observation.get("baseline_attempt_count"))
+        successes = _non_negative_int(observation.get("baseline_success_count"))
+        timeouts = _non_negative_int(observation.get("baseline_timeout_count"))
+        if successes > 0:
+            feasible.append(case_id)
+        elif (
+            attempts > 0
+            and timeouts >= attempts
+            and _non_negative_screening_float(
+                observation.get("baseline_timeout_max_seconds")
+            )
+            >= timeout_ceiling_seconds
+        ):
+            infeasible.append(case_id)
+        else:
+            unknown.append(case_id)
+    status = (
+        "feasible"
+        if feasible
+        else "infeasible"
+        if case_ids and not unknown and len(infeasible) == len(case_ids)
+        else "unknown"
+    )
+    return {
+        "schema_version": "aworld.self_evolve.screening_control_preflight.v1",
+        "status": status,
+        "case_count": len(case_ids),
+        "feasible_case_ids": feasible,
+        "infeasible_case_ids": infeasible,
+        "unknown_case_ids": unknown,
+        "candidate_generation_allowed": status != "infeasible",
+        "source": "historical_baseline_lifecycle",
+        "timeout_ceiling_seconds": timeout_ceiling_seconds,
+        "case_observations": {
+            case_id: dict(observations.get(case_id, {}))
+            for case_id in case_ids
+            if observations.get(case_id)
+        },
+    }
 
 
 def _candidate_screening_dataset(
@@ -24997,14 +25477,13 @@ def _candidate_screening_dataset(
     quarantined_control_case_ids = tuple(
         case.case_id
         for case in ordered_candidates
-        if _non_negative_int(
+        if _screening_case_has_only_invalid_baselines(
             (
                 empirical_observations.get(case.case_id, {})
                 if empirical_observations is not None
                 else {}
-            ).get("invalid_control_count")
+            )
         )
-        > 0
     )
     healthy_control_candidates = [
         case
@@ -25123,6 +25602,29 @@ def _candidate_screening_dataset(
             held_out_case_ids=(),
         ),
     )
+
+
+def _screening_case_has_only_invalid_baselines(
+    observation: Mapping[str, float | int],
+) -> bool:
+    baseline_attempts = _non_negative_int(
+        observation.get("baseline_attempt_count")
+    )
+    baseline_successes = _non_negative_int(
+        observation.get("baseline_success_count")
+    )
+    if baseline_attempts > 0:
+        return bool(
+            baseline_successes == 0
+            and _non_negative_int(observation.get("baseline_timeout_count"))
+            >= baseline_attempts
+            and _non_negative_screening_float(
+                observation.get("baseline_timeout_max_seconds")
+            )
+            >= _MAX_CANDIDATE_SCREENING_TIMEOUT_SECONDS
+        )
+    # Compatibility for reports written before phase-aware control telemetry.
+    return _non_negative_int(observation.get("invalid_control_count")) > 0
 
 
 def _authoritative_replay_dataset(
@@ -25251,6 +25753,18 @@ def _candidate_screening_case_cost(
     censored_count = _non_negative_int(
         empirical_observation.get("right_censored_count")
     )
+    baseline_attempt_count = _non_negative_int(
+        empirical_observation.get("baseline_attempt_count")
+    )
+    baseline_timeout_count = _non_negative_int(
+        empirical_observation.get("baseline_timeout_count")
+    )
+    if attempt_count <= 0 and baseline_attempt_count > 0:
+        attempt_count = baseline_attempt_count
+        total_wall_seconds = _non_negative_screening_float(
+            empirical_observation.get("baseline_total_wall_seconds")
+        )
+        censored_count = baseline_timeout_count
     if attempt_count <= 0:
         return static_cost
     average_wall_seconds = total_wall_seconds / attempt_count
@@ -25284,6 +25798,24 @@ def _record_candidate_screening_observation(
         )
     )
     termination_axes = _screening_attempt_termination_axes(attempt)
+    baseline_status = (
+        str(details.get("baseline_status") or "")
+        if isinstance(details, Mapping)
+        else ""
+    )
+    candidate_status = (
+        str(details.get("candidate_status") or "")
+        if isinstance(details, Mapping)
+        else ""
+    )
+    baseline_timeout = bool(
+        isinstance(details, Mapping)
+        and _framework_phase_timeout(details.get("baseline_failure"))
+    )
+    candidate_timeout = bool(
+        isinstance(details, Mapping)
+        and _framework_phase_timeout(details.get("candidate_failure"))
+    )
     for case_id in case_ids:
         current = observations.setdefault(case_id, {})
         current["attempt_count"] = (
@@ -25303,6 +25835,30 @@ def _record_candidate_screening_observation(
             _non_negative_int(current.get("passed_count"))
             + int(attempt.get("passed") is True)
         )
+        if baseline_status and baseline_status not in {"blocked", "not_run"}:
+            current["baseline_attempt_count"] = (
+                _non_negative_int(current.get("baseline_attempt_count")) + 1
+            )
+            current["baseline_success_count"] = (
+                _non_negative_int(current.get("baseline_success_count"))
+                + int(baseline_status == ReplayExecutionStatus.SUCCEEDED.value)
+            )
+            current["baseline_timeout_count"] = (
+                _non_negative_int(current.get("baseline_timeout_count"))
+                + int(baseline_timeout)
+            )
+        if candidate_status and candidate_status not in {"blocked", "not_run"}:
+            current["candidate_attempt_count"] = (
+                _non_negative_int(current.get("candidate_attempt_count")) + 1
+            )
+            current["candidate_success_count"] = (
+                _non_negative_int(current.get("candidate_success_count"))
+                + int(candidate_status == ReplayExecutionStatus.SUCCEEDED.value)
+            )
+            current["candidate_timeout_count"] = (
+                _non_negative_int(current.get("candidate_timeout_count"))
+                + int(candidate_timeout)
+            )
         if invalid_control or "invalid_control_count" in current:
             current["invalid_control_count"] = (
                 _non_negative_int(current.get("invalid_control_count"))
