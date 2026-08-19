@@ -3115,10 +3115,19 @@ def decide_staged_measurement(
 
     if policy.futility_enabled and progress.futility_proven:
         return _stop(AdaptiveDecisionKind.STOP_FUTILITY, "positive_policy_unattainable")
+    has_replacement_cases = any(
+        stage.kind in {SamplingStageKind.EXPANSION, SamplingStageKind.TIE_BREAK}
+        and any(
+            case_id not in progress.completed_case_ids
+            for case_id in stage.case_ids
+        )
+        for stage in plan.stages
+    )
     if (
         len(progress.completed_case_ids) >= policy.zero_yield_window
         and progress.new_comparable_pairs_in_window == 0
         and progress.uncertainty_reduction_in_window == 0
+        and not has_replacement_cases
     ):
         return _stop(
             AdaptiveDecisionKind.STOP_ZERO_YIELD,

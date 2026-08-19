@@ -1745,12 +1745,25 @@ def compile_repair_conformance_contract(
         return None
 
     counterexamples = _repair_counterexamples(repair_focus)
+    counterexample_runtime_transitions = tuple(
+        dict.fromkeys(
+            str(item["required_transition"])
+            for item in counterexamples
+            if isinstance(item.get("required_transition"), str)
+        )
+    )
+    task_behavior_repair_active = (
+        "repair_candidate_task_behavior" in counterexample_runtime_transitions
+    )
     direct_artifact_lifecycle_constraint = (
         _artifact_lifecycle_constraint_from_counterexamples(counterexamples)
     )
     package_content = package.get("content")
     if not raw_files and not (
-        direct_artifact_lifecycle_constraint is not None
+        (
+            direct_artifact_lifecycle_constraint is not None
+            or task_behavior_repair_active
+        )
         and isinstance(package_content, str)
         and package_content.strip()
     ):
@@ -1766,7 +1779,10 @@ def compile_repair_conformance_contract(
             continue
         base_sources[path] = content
     if (
-        direct_artifact_lifecycle_constraint is not None
+        (
+            direct_artifact_lifecycle_constraint is not None
+            or task_behavior_repair_active
+        )
         and isinstance(package_content, str)
         and package_content.strip()
     ):
@@ -1782,13 +1798,7 @@ def compile_repair_conformance_contract(
         for item in counterexamples
         if isinstance(item.get("failure_code"), str)
     )
-    required_runtime_transitions = tuple(
-        dict.fromkeys(
-            str(item["required_transition"])
-            for item in counterexamples
-            if isinstance(item.get("required_transition"), str)
-        )
-    )
+    required_runtime_transitions = counterexample_runtime_transitions
     inherited_contract = _inherited_repair_conformance_contract(diagnostics)
     artifact_lifecycle_constraint = _merge_artifact_lifecycle_constraints(
         (
@@ -2018,6 +2028,13 @@ def compile_repair_conformance_contract(
         branch_paths = inherited_owner_paths
     elif inherited_contract is not None and inherited_contract.required_branch_paths:
         branch_paths = inherited_contract.required_branch_paths
+    if task_behavior_repair_active:
+        # A task-rollout counterexample is produced by releasable skill
+        # guidance, even when an inherited compiler/runtime contract remains a
+        # preservation invariant.  Keep both owners in the active repair
+        # boundary so the optimizer can change the behavior that actually
+        # generated the violation.
+        branch_paths = tuple(dict.fromkeys((*branch_paths, "SKILL.md")))
     directly_observed_operations = _observed_operations(direct_diagnostics)
     observed_operations = directly_observed_operations or (
         inherited_contract.late_observed_operations
@@ -2562,6 +2579,25 @@ def evaluate_candidate_source_conformance(
         candidate_sources,
         contract.base_fixture_selector_fingerprints,
     )
+    if (
+        "repair_candidate_task_behavior"
+        in contract.required_runtime_transitions
+        and "SKILL.md" in contract.required_branch_paths
+        and "SKILL.md" not in changed_file_paths
+    ):
+        return RepairConformanceResult(
+            passed=False,
+            code="repair_target_behavior_unchanged",
+            reason=(
+                "task-rollout repair must materially change SKILL.md; support "
+                "file edits alone cannot repair the observed agent behavior"
+            ),
+            details={
+                "focus_candidate_id": contract.focus_candidate_id,
+                "required_changed_paths": ["SKILL.md"],
+                "observed_changed_paths": changed_file_paths,
+            },
+        )
     if changed_branch_slices or changed_selector_slices or (
         not contract.base_branch_fingerprints and changed_file_paths
     ):

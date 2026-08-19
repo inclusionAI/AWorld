@@ -4311,13 +4311,10 @@ class AWorldCliCandidateReplayBackend:
                     if not isinstance(failure, Mapping):
                         continue
                     event = _failure_event_from_persisted_mapping(failure)
-                    if event.owner in {
-                        FailureOwner.FRAMEWORK,
-                        FailureOwner.INFRASTRUCTURE,
-                    } and event.scope in {
-                        FailureScope.MEMBER,
-                        FailureScope.SHARED_RUN,
-                    }:
+                    if (
+                        event.owner is FailureOwner.INFRASTRUCTURE
+                        or event.scope is FailureScope.SHARED_RUN
+                    ):
                         return event.code
             return None
 
@@ -4595,10 +4592,10 @@ class AWorldCliCandidateReplayBackend:
                         member.candidate.failure,
                     )
                     if isinstance(blocker, ReplayFailureEvent)
-                    and blocker.owner
-                    in {FailureOwner.FRAMEWORK, FailureOwner.INFRASTRUCTURE}
-                    and blocker.scope
-                    in {FailureScope.MEMBER, FailureScope.SHARED_RUN}
+                    and (
+                        blocker.owner is FailureOwner.INFRASTRUCTURE
+                        or blocker.scope is FailureScope.SHARED_RUN
+                    )
                 ),
                 None,
             )
@@ -4606,6 +4603,7 @@ class AWorldCliCandidateReplayBackend:
                 member
                 for member in members
                 if member.case_id in primary_effect_case_ids
+                and member.case_id in comparable_case_ids
             )
             if primary_members:
                 observations = observations_from_replay(
@@ -4614,9 +4612,17 @@ class AWorldCliCandidateReplayBackend:
                     replay_result=partial_result(primary_members),
                     run_root=replay_dir,
                 )
-                validity = assess_experiment_validity(experiment, observations)
+                validity = assess_experiment_validity(
+                    experiment,
+                    observations,
+                    admitted_primary_case_ids=tuple(
+                        member.case_id for member in primary_members
+                    ),
+                )
                 latest_primary_effect = estimate_paired_effect(
-                    experiment, observations, validity=validity
+                    experiment,
+                    observations,
+                    validity=validity,
                 )
             effect = latest_primary_effect
             completed_stage_ids = tuple(
@@ -4830,7 +4836,30 @@ class AWorldCliCandidateReplayBackend:
             raise RuntimeError(
                 "measurement scheduler stopped before producing a complete pair"
             )
-        measurement_decision = to_json_dict(staged.decision)
+        invalid_control_case_ids = tuple(
+            member.case_id
+            for member in members
+            if _baseline_invalid_for_measurement(member.baseline)
+        )
+        baseline_qualified_members = tuple(
+            member
+            for member in members
+            if member.case_id not in invalid_control_case_ids
+        )
+        minimum_independent_cases = plan.decision_policy.minimum_independent_cases
+        result_members = (
+            baseline_qualified_members
+            if len(baseline_qualified_members) >= minimum_independent_cases
+            else members
+        )
+        measurement_decision = {
+            **to_json_dict(staged.decision),
+            "invalid_control_case_ids": list(invalid_control_case_ids),
+            "baseline_qualified_case_ids": [
+                member.case_id for member in baseline_qualified_members
+            ],
+            "minimum_independent_cases": minimum_independent_cases,
+        }
         framework_blocker = next(
             (
                 blocker
@@ -4851,10 +4880,10 @@ class AWorldCliCandidateReplayBackend:
                     member.candidate.failure,
                 )
                 if isinstance(blocker, ReplayFailureEvent)
-                and blocker.owner
-                in {FailureOwner.FRAMEWORK, FailureOwner.INFRASTRUCTURE}
-                and blocker.scope
-                in {FailureScope.SHARED_RUN, FailureScope.MEMBER}
+                and (
+                    blocker.owner is FailureOwner.INFRASTRUCTURE
+                    or blocker.scope is FailureScope.SHARED_RUN
+                )
             ),
             None,
         )
@@ -4884,7 +4913,7 @@ class AWorldCliCandidateReplayBackend:
                 "scheduler_decision": to_json_dict(staged.decision),
             }
         result = partial_result(
-            members,
+            result_members,
             measurement_decision=measurement_decision,
         )
         _write_json(

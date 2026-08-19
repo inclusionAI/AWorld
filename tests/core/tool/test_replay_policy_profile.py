@@ -676,6 +676,33 @@ def test_required_runtime_rejects_legacy_manifest_and_enforces_endpoint_path(
     ) is None
 
 
+def test_required_runtime_parses_declared_endpoint_from_raw_artifact_payload(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    profile = _profile()
+    root = tmp_path / "artifacts"
+    root.mkdir()
+    manifest_path = root / "manifest.json"
+    _install_required_runtime(monkeypatch, profile, root, manifest_path)
+    action = ActionModel(
+        tool_name="terminal",
+        action_name="mcp_execute_command",
+        tool_call_id="write-evidence",
+        params={
+            "command": (
+                "cat > evidence.json <<'EOF'\n"
+                '{"source_url":"ws://127.0.0.1:4100/devtools"}\n'
+                "EOF"
+            )
+        },
+    )
+
+    assert enforce_replay_evidence_runtime_policy(
+        "terminal", (action,), _RuntimeOwner()
+    ) is None
+
+
 def test_required_runtime_uses_verified_v2_manifest_for_evidence_ready(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,

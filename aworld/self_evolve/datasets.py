@@ -1023,7 +1023,13 @@ def _split_case_ids(case_ids: tuple[str, ...], *, split_seed: str) -> Mapping[st
         # kept out of the optimizer request and used only for release gates.
         return {"train": ordered[:1], "validation": [], "held_out": ordered[1:]}
 
-    held_out_count = max(1, count // 5)
+    # Authoritative replay needs a reserve beyond the minimum two independent
+    # controls. Agent trajectories are stochastic: one otherwise valid control
+    # can time out or fail to materialize evidence. For a sufficiently broad
+    # dataset, keep two replacement controls candidate-blind so measurement can
+    # substitute them without reusing search-visible cases.
+    held_out_count = 4 if count >= 8 else max(1, count // 5)
+    held_out_count = min(held_out_count, count - 2)
     validation_count = max(1, count // 5)
     train_count = count - validation_count - held_out_count
     return {

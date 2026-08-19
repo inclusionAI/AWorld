@@ -377,6 +377,42 @@ def test_repetitions_do_not_inflate_independent_case_count() -> None:
     assert effect.direction is EffectDirection.POSITIVE
 
 
+def test_attribution_accepts_frozen_baseline_qualified_sampling_subset() -> None:
+    spec = _spec(
+        case_ids=("case-1", "case-2", "case-3", "case-4"),
+        minimum_cases=2,
+    )
+    admitted = ("case-1", "case-3")
+    observations = tuple(
+        _observation(
+            spec,
+            case_id=case_id,
+            arm=arm,
+            success=(arm is ArmRole.TREATMENT),
+        )
+        for case_id in admitted
+        for arm in (ArmRole.CONTROL, ArmRole.TREATMENT)
+    )
+
+    report = build_attribution_report(
+        spec,
+        observations,
+        target_resolution=TargetResolutionConfidence(
+            confidence=1.0,
+            origin="operator_explicit",
+            inference_bypassed=True,
+        ),
+        admitted_primary_case_ids=admitted,
+    )
+
+    assert report.validity.status is ExperimentValidityStatus.VALID
+    assert report.validity.independent_case_count == 2
+    assert report.validity.scheduled_pair_count == 2
+    assert report.validity.missing_arm_count == 0
+    assert report.effect is not None
+    assert report.effect.direction is EffectDirection.POSITIVE
+
+
 def test_exact_zero_effect_is_neutral_at_zero_minimum() -> None:
     original = _spec(minimum_cases=2)
     spec = ControlledExperimentSpec.create(

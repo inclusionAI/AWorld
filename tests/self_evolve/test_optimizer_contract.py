@@ -285,6 +285,75 @@ def test_historical_support_constraints_do_not_own_new_target_repair() -> None:
     )
 
 
+def test_task_rollout_source_frontier_authorizes_skill_content_repair() -> None:
+    current_content = "# Demo\n\nKeep collecting after evidence is ready.\n"
+    request = OptimizerRequest(
+        target=_target(),
+        current_content=current_content,
+        target_fingerprint="sha256:old",
+        trace_packs=(_trace_pack(),),
+    )
+    repair_focus = {
+        "failed_gates": ["candidate_replay"],
+        "repair_conformance": {},
+        "repair_candidate_package": {
+            "candidate_id": "candidate-parent",
+            "content": current_content,
+            "files": [
+                {
+                    "path": "replay/runtime.py",
+                    "operation": "upsert",
+                    "content": "def respond():\n    return {}\n",
+                }
+            ],
+        },
+        "replay_counterexamples": [
+            {
+                "schema_version": "aworld.replay.counterexample.v1",
+                "sequence": 1,
+                "failure_code": "replay_evidence_invariant_regression",
+                "owner": "candidate",
+                "stage": "task_rollout",
+                "state_before": "evidence_ready",
+                "trigger": "tool_call",
+                "required_transition": "repair_candidate_task_behavior",
+            }
+        ],
+    }
+
+    _validate_focused_repair_mutation_scope(
+        request,
+        repair_focus=repair_focus,
+        candidate_content=(
+            "# Demo\n\nReturn immediately after the first valid evidence artifact.\n"
+        ),
+        candidate_files=(
+            CandidateFileDelta(
+                path="replay/runtime.py",
+                content="def respond():\n    return {}\n",
+            ),
+        ),
+    )
+
+
+def test_task_rollout_repair_prompt_requires_behavior_change() -> None:
+    instructions = _focused_repair_prompt_instructions(
+        {
+            "repair_conformance": {
+                "required_branch_paths": ["replay/runtime.py", "SKILL.md"],
+                "required_runtime_transitions": [
+                    "repair_candidate_task_behavior"
+                ],
+            }
+        }
+    )
+
+    assert (
+        "SKILL.md is an authorized and required producer branch" in instructions
+    )
+    assert "replay compiler/runtime edits alone are insufficient" in instructions
+
+
 @pytest.mark.asyncio
 async def test_llm_mutator_stops_population_after_infrastructure_failure() -> None:
     calls = 0

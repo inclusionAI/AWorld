@@ -2104,6 +2104,8 @@ class TrustedMeasurementService:
 def assess_experiment_validity(
     experiment: ControlledExperimentSpec,
     observations: Sequence[MeasurementObservation],
+    *,
+    admitted_primary_case_ids: Sequence[str] | None = None,
 ) -> ExperimentValidity:
     reasons: set[str] = set()
     if len(experiment.changed_axes) != 1 or experiment.changed_axes[0] is not experiment.swap_axis:
@@ -2117,6 +2119,17 @@ def assess_experiment_validity(
         ArmRole.CONTROL: experiment.control.fingerprint,
         ArmRole.TREATMENT: experiment.treatment.fingerprint,
     }
+    scheduled_primary_case_ids = tuple(
+        dict.fromkeys(
+            admitted_primary_case_ids
+            if admitted_primary_case_ids is not None
+            else experiment.sampling.independent_case_ids
+        )
+    )
+    if not set(scheduled_primary_case_ids).issubset(
+        experiment.sampling.independent_case_ids
+    ):
+        raise ValueError("admitted primary case is outside frozen sampling")
     grouped: dict[tuple[str, int, int | None, str | None], dict[ArmRole, MeasurementObservation]] = {}
     completed_arms = 0
     failed_arms = 0
@@ -2127,7 +2140,16 @@ def assess_experiment_validity(
         tuple[str, int, int | None, str | None, ArmRole]
     ] = set()
     identity_mismatch = False
+    declared_transfer_case_ids = {
+        case_id
+        for panel in experiment.transfer_panels
+        for case_id in panel.case_ids
+    }
     for observation in observations:
+        if observation.case_id in declared_transfer_case_ids:
+            # Transfer observations have their own sealed audit and must not
+            # inflate or invalidate the primary paired-effect panel.
+            continue
         if (
             observation.experiment_id != experiment.experiment_id
             or observation.run_id != experiment.run_id
@@ -2172,7 +2194,7 @@ def assess_experiment_validity(
         reasons.add("identity_mismatch")
 
     scheduled_pair_count = (
-        len(experiment.sampling.independent_case_ids)
+        len(scheduled_primary_case_ids)
         * experiment.sampling.repetitions_per_case
     )
     scheduled_arm_count = scheduled_pair_count * 2
@@ -2438,8 +2460,13 @@ def build_attribution_report(
     transfer_audits: Sequence[TransferAudit] | None = None,
     search_performance: SearchPerformance | None = None,
     stopping: MeasurementStopRecord | None = None,
+    admitted_primary_case_ids: Sequence[str] | None = None,
 ) -> AttributionReport:
-    validity = assess_experiment_validity(experiment, observations)
+    validity = assess_experiment_validity(
+        experiment,
+        observations,
+        admitted_primary_case_ids=admitted_primary_case_ids,
+    )
     effect = estimate_paired_effect(experiment, observations, validity=validity)
     secondary_effects = tuple(
         estimated

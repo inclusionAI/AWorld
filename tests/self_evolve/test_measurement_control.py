@@ -543,6 +543,7 @@ def test_plan_reader_rejects_non_boolean_persisted_values(
         ),
         (
             _progress(
+                completed_case_ids=("case-1", "case-2", "case-3", "case-4"),
                 new_comparable_pairs_in_window=0,
                 uncertainty_reduction_in_window=0,
             ),
@@ -563,6 +564,22 @@ def test_staged_decision_typed_stops(
     expected: AdaptiveDecisionKind,
 ) -> None:
     assert decide_staged_measurement(_plan(), progress).kind is expected
+
+
+def test_invalid_sentinel_control_admits_replacement_before_zero_yield() -> None:
+    decision = decide_staged_measurement(
+        _plan(),
+        _progress(
+            comparable_case_ids=("case-1",),
+            invalid_control_case_ids=("case-2",),
+            new_comparable_pairs_in_window=0,
+            uncertainty_reduction_in_window=0,
+        ),
+    )
+
+    assert decision.kind is AdaptiveDecisionKind.ADMIT_EXPANSION
+    assert len(decision.admit_case_ids) == 1
+    assert decision.admit_case_ids[0] in {"case-3", "case-4"}
 
 
 def test_positive_sentinel_admits_required_regression_stage() -> None:

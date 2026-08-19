@@ -214,6 +214,77 @@ def test_artifact_lifecycle_contract_owns_skill_content_without_replay_files() -
     assert unchanged_result.code == "repair_branch_unchanged"
 
 
+def test_task_rollout_repair_coowns_and_requires_skill_content() -> None:
+    parent_content = "# Skill\n\nKeep collecting evidence after the answer is known.\n"
+    runtime_source = "def respond():\n    return {'value': 'recorded'}\n"
+    repair_focus = {
+        "repair_candidate_package": {
+            "candidate_id": "candidate-failed",
+            "content": parent_content,
+            "files": [
+                {
+                    "path": "replay/runtime.py",
+                    "operation": "upsert",
+                    "content": runtime_source,
+                }
+            ],
+        },
+        "replay_counterexamples": [
+            {
+                "schema_version": "aworld.replay.counterexample.v1",
+                "sequence": 1,
+                "failure_code": "replay_evidence_invariant_regression",
+                "owner": "candidate",
+                "stage": "task_rollout",
+                "state_before": "evidence_ready",
+                "trigger": "tool_call",
+                "required_transition": "repair_candidate_task_behavior",
+            }
+        ],
+    }
+
+    contract = compile_repair_conformance_contract(repair_focus)
+
+    assert contract is not None
+    assert contract.required_branch_paths == (
+        "replay/runtime.py",
+        "SKILL.md",
+    )
+    assert "SKILL.md" in contract.base_file_fingerprints
+
+    support_only = CandidateVariant(
+        candidate_id="support-only",
+        target=SelfEvolveTargetRef(target_type="skill", target_id="generic"),
+        content=parent_content,
+        rationale="change only runtime",
+        files=(
+            CandidateFileDelta(
+                path="replay/runtime.py",
+                content="def respond():\n    return {'value': 'changed'}\n",
+            ),
+        ),
+    )
+    behavior_repair = replace(
+        support_only,
+        candidate_id="behavior-repair",
+        content=(
+            "# Skill\n\nPersist the first valid evidence artifact and return "
+            "without further collection.\n"
+        ),
+    )
+
+    support_result = evaluate_candidate_source_conformance(
+        support_only,
+        contract,
+    )
+    assert support_result.passed is False
+    assert support_result.code == "repair_target_behavior_unchanged"
+    assert evaluate_candidate_source_conformance(
+        behavior_repair,
+        contract,
+    ).passed is True
+
+
 def test_artifact_lifecycle_conformance_requires_runtime_behavioral_proof() -> None:
     contract = RepairConformanceContract(
         focus_candidate_id="candidate-failed",

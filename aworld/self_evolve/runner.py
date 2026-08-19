@@ -450,7 +450,7 @@ def _effective_replay_repetitions(
     if (
         _is_verified_apply_policy(apply_policy)
         and not repetitions_explicit
-        and replay_case_count >= max(4, measurement_min_independent_cases)
+        and replay_case_count >= max(2, measurement_min_independent_cases)
     ):
         # A broad independent-case panel supplies breadth. Repeating every
         # member here multiplies runtime without adding equivalent evidence.
@@ -9852,7 +9852,7 @@ class SelfEvolveRunner:
                     "required measurement has no executable user-task cases"
                 )
             return None
-        effective_repetitions = (
+        configured_repetitions = (
             repetitions
             if repetitions is not None
             else (
@@ -9865,6 +9865,17 @@ class SelfEvolveRunner:
                 if self.evaluation_backend is not None
                 else 1
             )
+        )
+        effective_repetitions = (
+            1
+            if (
+                repetitions is None
+                and replay_planned
+                and not self.replay_repetitions_explicit
+                and len(measurement_case_ids)
+                >= max(2, self.measurement_min_independent_cases)
+            )
+            else configured_repetitions
         )
         dataset_fingerprint = replay_dataset_fingerprint(dataset)
         budget_identity = {
@@ -10075,6 +10086,21 @@ class SelfEvolveRunner:
         target_resolution = _measurement_target_resolution(
             target_selection_report
         )
+        admitted_primary_case_ids: tuple[str, ...] | None = None
+        if replay_result is not None and isinstance(
+            replay_result.measurement_decision,
+            Mapping,
+        ):
+            raw_admitted = replay_result.measurement_decision.get(
+                "baseline_qualified_case_ids"
+            )
+            if isinstance(raw_admitted, (list, tuple)):
+                frozen_primary = set(experiment.sampling.independent_case_ids)
+                admitted_primary_case_ids = tuple(
+                    case_id
+                    for case_id in raw_admitted
+                    if isinstance(case_id, str) and case_id in frozen_primary
+                )
         attribution = build_attribution_report(
             experiment,
             observations,
@@ -10082,6 +10108,7 @@ class SelfEvolveRunner:
             total_usage=usage,
             generated_candidate_count=candidate_count,
             authoritative_candidate_count=authoritative_candidate_count,
+            admitted_primary_case_ids=admitted_primary_case_ids,
         )
         self.store.write_measurement_attribution_report(attribution)
         summary = attribution.summary(
@@ -12391,6 +12418,19 @@ class SelfEvolveRunner:
             if self.replay_total_timeout_seconds is not None
             else None
         )
+        raw_deferred_control_case_ids = dataset.recipe.source.get(
+            "authoritative_deferred_control_case_ids",
+            (),
+        )
+        deferred_control_case_ids = tuple(
+            case_id
+            for case_id in (
+                raw_deferred_control_case_ids
+                if isinstance(raw_deferred_control_case_ids, (list, tuple))
+                else ()
+            )
+            if isinstance(case_id, str)
+        )
         try:
             compile_plan = (
                 compile_screening_measurement_plan_v2
@@ -12451,6 +12491,10 @@ class SelfEvolveRunner:
                         "repair_screening_case_ids": (
                             experiment.search_visible_case_ids
                         ),
+                        "deferred_control_case_ids": deferred_control_case_ids,
+                        "sentinel_case_count": (
+                            experiment.outcomes.minimum_independent_cases
+                        ),
                     }
                     if measurement_stage == "authoritative"
                     else {}
@@ -12493,6 +12537,12 @@ class SelfEvolveRunner:
                 f"P50/P90 decision ETA "
                 f"{int(float(preflight['p50_time_to_decision_seconds']))}s/"
                 f"{int(float(preflight['p90_time_to_decision_seconds']))}s"
+                + (
+                    "; deferred unstable controls "
+                    + str(len(compiled.deferred_unstable_case_ids))
+                    if compiled.deferred_unstable_case_ids
+                    else ""
+                )
                 + (
                     "; isolation fallback "
                     + str(preflight["isolation_fallback"]["code"])
@@ -12551,6 +12601,16 @@ class SelfEvolveRunner:
                     gate_name="candidate_replay",
                     passed=False,
                     reason="auto_verified skill apply requires candidate replay backend",
+                ),
+            )
+        if progress_stage == "candidate_replay":
+            # Normalize authoritative controls before either execution or
+            # stored-evidence comparison so compaction/defer metadata has one
+            # stable dataset identity across Campaign cycles and reruns.
+            dataset = _authoritative_replay_dataset(
+                dataset,
+                empirical_observations=(
+                    self._candidate_screening_case_observations
                 ),
             )
         if isinstance(
@@ -12699,13 +12759,6 @@ class SelfEvolveRunner:
                         "candidate replay requires at least one user task eval case; "
                         "framework-generated evaluation contracts are not replayable"
                     ),
-                ),
-            )
-        if progress_stage == "candidate_replay":
-            dataset = _authoritative_replay_dataset(
-                dataset,
-                empirical_observations=(
-                    self._candidate_screening_case_observations
                 ),
             )
         replay_case_count = sum(
@@ -13253,6 +13306,21 @@ class SelfEvolveRunner:
         replay_validation_dataset = dataset
         if request.measurement_plan is not None:
             planned_case_ids = set(request.measurement_plan.case_ids)
+            baseline_qualified_case_ids = {
+                member.case_id
+                for member in (replay_result.member_results or ())
+                if not _baseline_invalid_for_measurement(member.baseline)
+            }
+            minimum_independent_cases = (
+                request.measurement_plan.decision_policy.minimum_independent_cases
+            )
+            if len(baseline_qualified_case_ids) >= minimum_independent_cases:
+                # The staged measurement plane may replace or intentionally
+                # skip invalid controls. Final replay admission validates the
+                # resulting baseline-qualified panel, not every frozen reserve
+                # case. Candidate failures after a healthy baseline remain in
+                # this panel and still fail comparability.
+                planned_case_ids = baseline_qualified_case_ids
             replay_validation_dataset = replace(
                 dataset,
                 cases=tuple(
@@ -13268,6 +13336,10 @@ class SelfEvolveRunner:
                             request.measurement_plan.measurement_plan_fingerprint
                         ),
                         "measurement_case_count": len(planned_case_ids),
+                        "measurement_invalid_control_case_ids": sorted(
+                            set(request.measurement_plan.case_ids)
+                            - baseline_qualified_case_ids
+                        ),
                     },
                     splits={
                         "train": [],
@@ -26473,6 +26545,105 @@ def _screening_case_has_only_invalid_baselines(
     return _non_negative_int(observation.get("invalid_control_count")) > 0
 
 
+_AUTHORITATIVE_CONTEXT_COMPACTION_CHARS = 8_000
+_AUTHORITATIVE_CONTEXT_RETAINED_TURNS = 2
+_AUTHORITATIVE_CONTEXT_TURN_CHARS = 2_000
+_AUTHORITATIVE_SHORT_CONTINUATION_CHARS = 16
+_AUTHORITATIVE_SHORT_CONTINUATION_TURNS = 4
+
+
+def _task_input_content(value: object) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, Mapping):
+        content = value.get("content")
+        return content if isinstance(content, str) else ""
+    return ""
+
+
+def _authoritative_control_should_defer(
+    case: EvalCase,
+    observation: Mapping[str, float | int],
+) -> bool:
+    """Identify controls that are valid evidence but unsafe sentinels."""
+
+    snapshot = case.context_snapshot
+    current_task = _task_input_content(
+        snapshot.task_input if snapshot is not None else case.input
+    ).strip()
+    if snapshot is not None:
+        if snapshot.context_status == "incomplete":
+            return True
+        if (
+            len(current_task) <= _AUTHORITATIVE_SHORT_CONTINUATION_CHARS
+            and len(snapshot.prior_turns)
+            >= _AUTHORITATIVE_SHORT_CONTINUATION_TURNS
+        ):
+            return True
+    baseline_attempts = _non_negative_int(
+        observation.get("baseline_attempt_count")
+    )
+    baseline_successes = _non_negative_int(
+        observation.get("baseline_success_count")
+    )
+    baseline_timeouts = _non_negative_int(
+        observation.get("baseline_timeout_count")
+    )
+    return bool(
+        _non_negative_int(observation.get("invalid_control_count")) > 0
+        or (
+            baseline_attempts >= 2
+            and baseline_timeouts > 0
+            and baseline_timeouts >= baseline_successes
+        )
+    )
+
+
+def _compact_authoritative_case_context(case: EvalCase) -> EvalCase:
+    snapshot = case.context_snapshot
+    content = _task_input_content(case.input)
+    if (
+        snapshot is None
+        or not snapshot.prior_turns
+        or len(content) <= _AUTHORITATIVE_CONTEXT_COMPACTION_CHARS
+    ):
+        return case
+    retained = snapshot.prior_turns[-_AUTHORITATIVE_CONTEXT_RETAINED_TURNS:]
+    transcript = "\n".join(
+        f"{turn.role.title()}: "
+        + sanitize_text(
+            turn.content,
+            max_chars=_AUTHORITATIVE_CONTEXT_TURN_CHARS,
+        )
+        for turn in retained
+    )
+    current_task = _task_input_content(snapshot.task_input)
+    compacted_content = (
+        "Recorded prior task context "
+        f"[{snapshot.link_strategy or 'recorded'}; compacted, retained "
+        f"{len(retained)}/{len(snapshot.prior_turns)} latest turns]:\n"
+        f"{transcript}\n\nCurrent task:\n{current_task}"
+    )
+    compacted_input: object
+    if isinstance(case.input, str):
+        compacted_input = compacted_content
+    elif isinstance(case.input, Mapping):
+        compacted_input = {**dict(case.input), "content": compacted_content}
+    else:
+        return case
+    return replace(
+        case,
+        input=compacted_input,
+        source={
+            **dict(case.source),
+            "authoritative_context_compacted": True,
+            "authoritative_context_original_chars": len(content),
+            "authoritative_context_compacted_chars": len(compacted_content),
+            "authoritative_context_retained_turns": len(retained),
+        },
+    )
+
+
 def _authoritative_replay_dataset(
     dataset: SelfEvolveDataset,
     *,
@@ -26490,13 +26661,23 @@ def _authoritative_replay_dataset(
     reproducible and cannot silently reuse evidence from another schedule.
     """
 
-    if not empirical_observations or len(dataset.cases) <= 1:
-        return dataset
-    indexed_cases = tuple(enumerate(dataset.cases))
+    observations = empirical_observations or {}
+    compacted_cases = tuple(
+        _compact_authoritative_case_context(case) for case in dataset.cases
+    )
+    deferred_case_ids = tuple(
+        case.case_id
+        for case in compacted_cases
+        if _authoritative_control_should_defer(
+            case,
+            observations.get(case.case_id, {}),
+        )
+    )
+    indexed_cases = tuple(enumerate(compacted_cases))
 
     def rank(item: tuple[int, EvalCase]) -> tuple[int, int, int, int]:
         index, case = item
-        observation = empirical_observations.get(case.case_id, {})
+        observation = observations.get(case.case_id, {})
         passed_count = _non_negative_int(observation.get("passed_count"))
         failure_count = _non_negative_int(
             observation.get("authoritative_failure_count")
@@ -26504,19 +26685,44 @@ def _authoritative_replay_dataset(
         invalid_count = _non_negative_int(
             observation.get("invalid_control_count")
         )
-        health_class = (
-            0
-            if failure_count > 0 or passed_count > 0
-            else 2
-            if invalid_count > 0
-            else 1
-        )
+        if case.case_id in deferred_case_ids:
+            health_class = 3
+        elif failure_count > 0 or passed_count > 0:
+            health_class = 0
+        elif invalid_count > 0:
+            health_class = 2
+        else:
+            health_class = 1
         return health_class, -failure_count, -passed_count, index
 
     ordered = tuple(case for _index, case in sorted(indexed_cases, key=rank))
-    if ordered == dataset.cases:
+    compacted_case_ids = tuple(
+        case.case_id
+        for original, case in zip(dataset.cases, compacted_cases)
+        if case.input != original.input
+    )
+    if (
+        ordered == dataset.cases
+        and not compacted_case_ids
+        and not deferred_case_ids
+    ):
         return dataset
-    return replace(dataset, cases=ordered)
+    return replace(
+        dataset,
+        cases=ordered,
+        recipe=replace(
+            dataset.recipe,
+            source={
+                **dict(dataset.recipe.source),
+                "authoritative_deferred_control_case_ids": list(
+                    deferred_case_ids
+                ),
+                "authoritative_compacted_context_case_ids": list(
+                    compacted_case_ids
+                ),
+            },
+        ),
+    )
 
 
 def _candidate_screening_dataset_for_case_ids(

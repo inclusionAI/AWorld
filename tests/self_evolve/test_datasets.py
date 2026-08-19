@@ -122,6 +122,23 @@ def test_two_case_recipe_preserves_one_independent_held_out_member() -> None:
     assert recipe.held_out_case_ids == tuple(recipe.splits["held_out"])
 
 
+def test_broad_recipe_reserves_authoritative_replacement_controls() -> None:
+    cases = tuple(
+        EvalCase(case_id=f"case-{index}", input=f"task {index}")
+        for index in range(11)
+    )
+    recipe = build_dataset_recipe(
+        cases,
+        source_config=SelfEvolveEvalSourceConfig(kind="trajectory_log"),
+        split_seed="replacement-controls",
+    )
+
+    assert len(recipe.splits["held_out"]) == 4
+    assert len(recipe.splits["validation"]) == 2
+    assert len(recipe.splits["train"]) == 5
+    assert recipe.held_out_case_ids == tuple(recipe.splits["held_out"])
+
+
 def test_build_dataset_from_jsonl_applies_task_id_filter_and_records_it(tmp_path) -> None:
     path = tmp_path / "cases.jsonl"
     path.write_text(
