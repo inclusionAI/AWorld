@@ -12772,6 +12772,109 @@ async def test_conformance_contract_upgrade_invalidates_stale_sibling(
 
 
 @pytest.mark.asyncio
+async def test_candidate_local_compile_failure_keeps_passing_siblings(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    skill_path, dataset = _cycle1_runner_fixture(tmp_path)
+    target_ref = SelfEvolveTargetRef("skill", "demo", str(skill_path))
+    candidates = tuple(
+        CandidateVariant(
+            candidate_id=f"candidate-{index}",
+            target=target_ref,
+            content="---\nname: demo\n---\n# Demo\n",
+            rationale="repair the shared capability contract",
+            files=(
+                CandidateFileDelta(
+                    path="replay/compiler.py",
+                    content=f"def compile_request():\n    return {index}\n",
+                ),
+                CandidateFileDelta(
+                    path="replay/runtime.py",
+                    content=f"def respond():\n    return {index}\n",
+                ),
+            ),
+        )
+        for index in range(3)
+    )
+    runner = SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=_FixedCandidateOptimizer(candidates[0], "source-run"),
+    )
+    contract = RepairConformanceContract(
+        focus_candidate_id="candidate-parent",
+        failure_codes=("schema_field_validation_failed",),
+        interaction_progress=0,
+        base_file_fingerprints={
+            "replay/compiler.py": "sha256:old-compiler",
+            "replay/runtime.py": "sha256:old-runtime",
+        },
+        required_branch_paths=("replay/compiler.py", "replay/runtime.py"),
+        base_branch_fingerprints={},
+        compiler_path="replay/compiler.py",
+        runtime_paths=("replay/runtime.py",),
+        required_runtime_transitions=("repair_replay_capability_contract",),
+    )
+    local_failure_contract = replace(
+        contract,
+        focus_candidate_id="candidate-1",
+        failure_codes=(
+            "schema_field_validation_failed",
+            "repair_capability_compile_failed",
+        ),
+    )
+    preflight_candidates: list[str] = []
+
+    async def sibling_preflight(**kwargs):
+        candidate_id = kwargs["candidate"].candidate_id
+        preflight_candidates.append(candidate_id)
+        if candidate_id != "candidate-1":
+            return GateResult(
+                gate_name="candidate_repair_conformance",
+                passed=True,
+                reason="candidate passed shared repair probes",
+                details={"code": "repair_conformance_passed"},
+            )
+        return GateResult(
+            gate_name="candidate_repair_conformance",
+            passed=False,
+            reason="duplicate replay service id",
+            details={
+                "failure_class": "candidate",
+                "repairable": True,
+                "code": "repair_capability_compile_failed",
+                "repair_conformance": local_failure_contract.to_public_dict(),
+            },
+        )
+
+    monkeypatch.setattr(
+        runner,
+        "_preflight_candidate_repair_conformance",
+        sibling_preflight,
+    )
+    passed, report = await runner._validate_candidate_repair_conformance_population(
+        run_id="run-local-compile-failure",
+        target=SkillTextTarget(skill_path),
+        dataset=dataset,
+        candidates=candidates,
+        capability_requirements=(),
+        repair_conformance_contracts={
+            candidate.candidate_id: contract for candidate in candidates
+        },
+    )
+
+    assert [candidate.candidate_id for candidate in passed] == [
+        "candidate-0",
+        "candidate-2",
+    ]
+    assert preflight_candidates == ["candidate-0", "candidate-1", "candidate-2"]
+    assert report is not None
+    assert report["passed_candidate_ids"] == ["candidate-0", "candidate-2"]
+    assert report["superseded_candidate_ids"] == []
+    assert report["superseding_contract_identity"] is None
+
+
+@pytest.mark.asyncio
 async def test_runner_carries_verified_support_prerequisite_into_composite_candidate(
     tmp_path: Path,
 ) -> None:

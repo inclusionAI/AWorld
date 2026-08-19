@@ -89,6 +89,7 @@ from aworld.self_evolve.replay import (
     _validate_websocket_handshake_response,
     _load_variant_result_from_dir,
     _load_self_evolve_task_response,
+    _measurement_terminal_state_for_variant,
 )
 from aworld.self_evolve.failure_events import (
     FailureEventSource,
@@ -108,6 +109,7 @@ from aworld.self_evolve.measurement import (
     SamplingPlan,
     SwapAxis,
 )
+from aworld.self_evolve.measurement_control import MeasurementWorkUnitState
 from aworld.self_evolve.types import SelfEvolveTargetRef
 from aworld.self_evolve.replay_adaptation import (
     ReplayAdaptationCompiler,
@@ -7394,6 +7396,35 @@ async def test_required_replay_keeps_evidence_requirement_after_tool_call(
     assert result.status == "failed"
     assert result.failure["code"] == "evidence_policy_v2_attestation_failed"
     assert result.failure["reason"] == "framework evidence inventory is empty"
+
+
+def test_measurement_terminal_state_keeps_framework_evidence_failure_retryable() -> None:
+    failure = ReplayFailureEvent(
+        code="evidence_policy_v2_attestation_failed",
+        owner=FailureOwner.FRAMEWORK,
+        stage=FailureStage.EVIDENCE_FINALIZATION,
+        scope=FailureScope.SHARED_RUN,
+        repairable=True,
+    )
+    failed = ReplayVariantResult(
+        variant_id="baseline",
+        status=ReplayExecutionStatus.FAILED,
+        trajectory=[],
+        failure=failure,
+    )
+    blocked = ReplayVariantResult(
+        variant_id="candidate",
+        status=ReplayExecutionStatus.BLOCKED,
+        trajectory=[],
+        blocked_by=(failure,),
+    )
+
+    assert _measurement_terminal_state_for_variant(failed) is (
+        MeasurementWorkUnitState.EVIDENCE_INVALID
+    )
+    assert _measurement_terminal_state_for_variant(blocked) is (
+        MeasurementWorkUnitState.EVIDENCE_INVALID
+    )
 
 
 @pytest.mark.asyncio

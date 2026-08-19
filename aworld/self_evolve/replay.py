@@ -3311,6 +3311,29 @@ def candidate_replay_artifact_directory(
     return replay_root / "replay" / _safe_path(candidate_id)
 
 
+def _measurement_terminal_state_for_variant(
+    result: ReplayVariantResult,
+) -> MeasurementWorkUnitState:
+    """Map typed replay ownership to durable retry semantics."""
+
+    if result.status is ReplayExecutionStatus.SUCCEEDED:
+        return MeasurementWorkUnitState.SUCCEEDED
+    events = tuple(
+        event
+        for event in (result.failure, *result.blocked_by)
+        if isinstance(event, ReplayFailureEvent)
+    )
+    if any(event.code == "replay_member_phase_timeout" for event in events):
+        return MeasurementWorkUnitState.MEMBER_TIMED_OUT
+    if any(
+        event.stage is FailureStage.EVIDENCE_FINALIZATION
+        and event.owner in {FailureOwner.FRAMEWORK, FailureOwner.INFRASTRUCTURE}
+        for event in events
+    ):
+        return MeasurementWorkUnitState.EVIDENCE_INVALID
+    return MeasurementWorkUnitState.TASK_FAILED
+
+
 class AWorldCliCandidateReplayBackend:
     supports_member_progress = True
 
@@ -4172,13 +4195,8 @@ class AWorldCliCandidateReplayBackend:
                 )
                 journal.terminal(
                     handle,
-                    terminal_state=(
-                        MeasurementWorkUnitState.SUCCEEDED
-                        if result.status is ReplayExecutionStatus.SUCCEEDED
-                        else MeasurementWorkUnitState.MEMBER_TIMED_OUT
-                        if result.failure is not None
-                        and result.failure.code == "replay_member_phase_timeout"
-                        else MeasurementWorkUnitState.TASK_FAILED
+                    terminal_state=_measurement_terminal_state_for_variant(
+                        result
                     ),
                     result_fingerprint=resolved.result_fingerprint,
                     lane_attestation=context.lane_attestation,
@@ -4367,7 +4385,9 @@ class AWorldCliCandidateReplayBackend:
                     )
                     journal.terminal(
                         handle,
-                        terminal_state=MeasurementWorkUnitState.TASK_FAILED,
+                        terminal_state=_measurement_terminal_state_for_variant(
+                            blocked
+                        ),
                         result_fingerprint=ResolvedControl.from_value(
                             to_json_dict(blocked)
                         ).result_fingerprint,

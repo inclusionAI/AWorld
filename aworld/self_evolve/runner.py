@@ -2358,6 +2358,48 @@ def _candidate_conformance_strategy_switch_feedback(
     )
 
 
+def _repair_conformance_validation_surface_changed(
+    current: RepairConformanceContract,
+    evolved: Mapping[str, object],
+) -> bool:
+    """Return whether a failed sibling discovered a shared new constraint.
+
+    Contract identity also includes candidate lineage, failure codes, and base
+    source fingerprints. Those fields legitimately change when one sibling has
+    a local compile bug (for example a duplicate service id), but they do not
+    invalidate another sibling that already passed the shared probes. Only a
+    change to the executable validation surface may supersede passed/stale
+    siblings.
+    """
+
+    try:
+        evolved_contract = RepairConformanceContract.from_public_dict(evolved)
+    except (TypeError, ValueError):
+        # Fail closed for an unparseable evolved contract.
+        return True
+
+    def surface(contract: RepairConformanceContract) -> tuple[object, ...]:
+        return (
+            contract.required_branch_paths,
+            contract.manifest_path,
+            contract.compiler_path,
+            contract.runtime_paths,
+            contract.exact_probe,
+            contract.late_observed_operations,
+            contract.requires_compiler_fixture_reconstruction,
+            contract.requires_fixture_derived_probe,
+            contract.required_fixture_probe_operations,
+            contract.fixture_probe_constraints,
+            contract.schema_field_constraints,
+            contract.runtime_response_constraints,
+            contract.runtime_artifact_constraints,
+            contract.required_runtime_transitions,
+            contract.artifact_lifecycle_constraint,
+        )
+
+    return surface(current) != surface(evolved_contract)
+
+
 def _candidate_materialization_failure_event(
     failure: Mapping[str, object],
 ) -> dict[str, object]:
@@ -9288,7 +9330,13 @@ class SelfEvolveRunner:
                 evolved_identity = repair_conformance_contract_identity(
                     evolved_contract
                 )
-                if evolved_identity != contract.contract_identity:
+                if (
+                    evolved_identity != contract.contract_identity
+                    and _repair_conformance_validation_surface_changed(
+                        contract,
+                        evolved_contract,
+                    )
+                ):
                     # The first member has discovered a deeper cumulative
                     # contract. Remaining siblings were leased against stale
                     # evidence and must not spend compile/replay budget or be
@@ -12370,8 +12418,15 @@ class SelfEvolveRunner:
             )
             resume_now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
             journal.recover_expired(now=resume_now)
+            legacy_retryable_ids = (
+                _legacy_retryable_measurement_task_failed_work_unit_ids(
+                    source_request
+                )
+            )
             retried = journal.schedule_infrastructure_retries(
-                now=resume_now, maximum_attempts=2
+                now=resume_now,
+                maximum_attempts=2,
+                retryable_task_failed_work_unit_ids=legacy_retryable_ids,
             )
             entries = journal.index_entries()
             pending = sum(not entry.state.terminal for entry in entries)
@@ -18297,6 +18352,56 @@ def _replay_request_artifact_path(request: CandidateReplayRequest) -> Path:
         candidate_id=request.candidate_id,
         artifact_namespace=request.artifact_namespace,
     )
+
+
+def _legacy_retryable_measurement_task_failed_work_unit_ids(
+    request: CandidateReplayRequest,
+) -> tuple[str, ...]:
+    """Recover pre-fix framework failures persisted as task failures."""
+
+    plan = request.measurement_plan
+    if plan is None:
+        return ()
+    members_root = _replay_request_artifact_path(request) / "members"
+    retryable: list[str] = []
+    for unit in plan.work_units:
+        variant_id = (
+            "baseline"
+            if unit.arm.value == "control"
+            else request.candidate_id
+        )
+        artifact_dir = (
+            members_root
+            / _member_artifact_name(unit.case_id)
+            / variant_id
+            / str(unit.repetition_id)
+        )
+        if not (artifact_dir / "lifecycle.json").is_file():
+            continue
+        try:
+            result = _load_variant_result_from_dir(
+                artifact_dir,
+                base_variant_id=variant_id,
+            )
+        except (OSError, TypeError, ValueError):
+            continue
+        events = tuple(
+            event
+            for event in (result.failure, *result.blocked_by)
+            if isinstance(event, ReplayFailureEvent)
+        )
+        if any(
+            event.repairable
+            and event.owner
+            in {FailureOwner.FRAMEWORK, FailureOwner.INFRASTRUCTURE}
+            and (
+                event.stage is FailureStage.EVIDENCE_FINALIZATION
+                or event.scope is FailureScope.SHARED_RUN
+            )
+            for event in events
+        ):
+            retryable.append(unit.work_unit_id)
+    return tuple(retryable)
 
 
 def _replay_timeout_checkpoint_details(
