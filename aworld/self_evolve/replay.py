@@ -6777,6 +6777,7 @@ def _framework_canonical_evidence_manifest(
     evidence_dir: Path,
     candidate_manifest: Path,
     profile: EvidencePolicyProfileV2,
+    task_response_only_digest: str | None = None,
 ) -> tuple[Path, dict[str, Any]]:
     """Build the parent-owned evidence truth from the producer namespace.
 
@@ -6825,6 +6826,33 @@ def _framework_canonical_evidence_manifest(
             ):
                 raise ValueError("candidate evidence exceeds its scratch budget")
             inventory.append((resolved, relative, size))
+    task_response_only_evidence = False
+    if not inventory and task_response_only_digest is not None:
+        receipt = evidence_dir / "framework_task_response_only_evidence.json"
+        receipt.write_text(
+            json.dumps(
+                {
+                    "schema_version": (
+                        "aworld.self_evolve.task_response_only_evidence.v1"
+                    ),
+                    "source": "framework.parent",
+                    "external_tool_call_count": 0,
+                    "task_response_content_digest": task_response_only_digest,
+                },
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        resolved_receipt = receipt.resolve()
+        receipt_size = receipt.stat().st_size
+        inventory.append(
+            (resolved_receipt, resolved_receipt.relative_to(root), receipt_size)
+        )
+        total_bytes += receipt_size
+        task_response_only_evidence = True
     if not inventory:
         raise ValueError("framework evidence inventory is empty")
 
@@ -6931,6 +6959,7 @@ def _framework_canonical_evidence_manifest(
         "framework_scratch_file_limit": scratch_file_limit,
         "framework_scratch_byte_limit": scratch_byte_limit,
         "framework_evidence_manifest_path": str(canonical_manifest),
+        "framework_task_response_only_evidence": task_response_only_evidence,
     }
     if advisory_invalid_reasons:
         diagnostics["candidate_evidence_manifest_diagnostic_count"] = len(
@@ -7583,6 +7612,38 @@ class AWorldCliReplayExecutor:
         try:
             effective_evidence_manifest = evidence_manifest
             if trust_context is not None:
+                response_policy = _profile_artifact_policy(
+                    trust_context.profile,
+                    _REPLAY_TRUSTED_RESPONSE_TYPE,
+                )
+                trusted_task_response = _load_self_evolve_task_response(
+                    task_response_path,
+                    attestation_key=trust_context.signing_key,
+                    max_bytes=response_policy.max_bytes,
+                )
+                trusted_trajectory_value = (
+                    trusted_task_response.get("trajectory")
+                    if isinstance(trusted_task_response, Mapping)
+                    else None
+                )
+                trusted_trajectory = (
+                    [
+                        item
+                        for item in trusted_trajectory_value
+                        if isinstance(item, Mapping)
+                    ]
+                    if isinstance(trusted_trajectory_value, list)
+                    else []
+                )
+                final_answer = _replay_final_answer(trusted_trajectory)
+                task_response_only_digest = (
+                    "sha256:"
+                    + hashlib.sha256(final_answer.encode("utf-8")).hexdigest()
+                    if final_answer
+                    and _trajectory_external_tool_call_count(trusted_trajectory)
+                    == 0
+                    else None
+                )
                 (
                     effective_evidence_manifest,
                     framework_evidence_metrics,
@@ -7590,6 +7651,7 @@ class AWorldCliReplayExecutor:
                     evidence_dir=evidence_dir,
                     candidate_manifest=evidence_manifest,
                     profile=trust_context.profile,
+                    task_response_only_digest=task_response_only_digest,
                 )
             evidence_metrics = _replay_evidence_metrics(
                 stdout=stdout,
@@ -11427,6 +11489,41 @@ def _final_answer_artifact_reference_metrics(
             for value in unresolved[:32]
         ]
     return metrics
+
+
+def _trajectory_external_tool_call_count(
+    trajectory: Sequence[Mapping[str, Any]],
+) -> int:
+    """Count bounded task-plane tool calls without retaining arguments."""
+
+    tool_call_ids: set[str] = set()
+    anonymous_count = 0
+    for step in trajectory[:256]:
+        containers: list[object] = []
+        action = step.get("action")
+        if isinstance(action, Mapping):
+            containers.append(action.get("tool_calls"))
+        state = step.get("state")
+        if isinstance(state, Mapping):
+            messages = state.get("messages")
+            if isinstance(messages, (list, tuple)):
+                containers.extend(
+                    message.get("tool_calls")
+                    for message in messages[:512]
+                    if isinstance(message, Mapping)
+                )
+        for raw_calls in containers:
+            if not isinstance(raw_calls, (list, tuple)):
+                continue
+            for raw_call in raw_calls[:256]:
+                if not isinstance(raw_call, Mapping):
+                    continue
+                call_id = raw_call.get("id")
+                if isinstance(call_id, str) and call_id:
+                    tool_call_ids.add(call_id)
+                else:
+                    anonymous_count += 1
+    return len(tool_call_ids) + anonymous_count
 
 
 def _replay_final_answer(trajectory: list[Mapping[str, Any]]) -> str:
