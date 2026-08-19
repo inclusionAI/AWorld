@@ -938,6 +938,7 @@ class WorkUnitJournalEvent:
             if self.previous_state not in {
                 MeasurementWorkUnitState.MEMBER_TIMED_OUT,
                 MeasurementWorkUnitState.EVIDENCE_INVALID,
+                MeasurementWorkUnitState.TASK_FAILED,
             } or self.new_state is not MeasurementWorkUnitState.CHECKPOINTED:
                 raise ValueError("measurement retry has an invalid transition")
             if self.lease_expires_at is not None:

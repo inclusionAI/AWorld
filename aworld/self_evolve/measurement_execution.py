@@ -84,6 +84,7 @@ class MeasurementExecutionJournal:
         *,
         now: str,
         maximum_attempts: int = 2,
+        retryable_task_failed_work_unit_ids: tuple[str, ...] = (),
     ) -> tuple[str, ...]:
         """Re-open only retryable terminal infrastructure observations.
 
@@ -98,12 +99,17 @@ class MeasurementExecutionJournal:
             or maximum_attempts <= 0
         ):
             raise ValueError("maximum_attempts must be a positive integer")
+        legacy_retryable_ids = frozenset(retryable_task_failed_work_unit_ids)
         scheduled: list[str] = []
         for entry in self.index_entries():
-            if entry.state not in {
+            retryable_state = entry.state in {
                 MeasurementWorkUnitState.MEMBER_TIMED_OUT,
                 MeasurementWorkUnitState.EVIDENCE_INVALID,
-            } or entry.attempt_count >= maximum_attempts:
+            } or (
+                entry.state is MeasurementWorkUnitState.TASK_FAILED
+                and entry.work_unit_id in legacy_retryable_ids
+            )
+            if not retryable_state or entry.attempt_count >= maximum_attempts:
                 continue
             event = WorkUnitJournalEvent.create(
                 measurement_plan_fingerprint=self._plan.measurement_plan_fingerprint,
