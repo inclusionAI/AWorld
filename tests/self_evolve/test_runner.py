@@ -2366,6 +2366,128 @@ def test_candidate_screening_quarantines_campaign_invalid_controls() -> None:
     assert screening.recipe.source["control_case_retry_suppressed_count"] == 2
 
 
+def test_candidate_screening_anchors_known_feasible_control_before_timeout_cases() -> None:
+    case_ids = (
+        "task_20260521171856",
+        "task_20260522081541",
+        "task_20260522081711",
+        "task_20260522105248",
+    )
+    dataset = SelfEvolveDataset(
+        cases=tuple(
+            EvalCase(case_id=case_id, input={"content": case_id})
+            for case_id in case_ids
+        ),
+        recipe=DatasetRecipe(
+            source={"kind": "trajectory_set"},
+            split_seed="feasible-control-anchor",
+            splits={
+                "train": [
+                    "task_20260521171856",
+                    "task_20260522081711",
+                    "task_20260522105248",
+                ],
+                "validation": [],
+                "held_out": ["task_20260522081541"],
+            },
+            trainable_case_ids=(
+                "task_20260521171856",
+                "task_20260522081711",
+                "task_20260522105248",
+            ),
+            held_out_case_ids=("task_20260522081541",),
+        ),
+    )
+    requirements = tuple(
+        ReplayCapabilityRequirement(
+            requirement_id=f"requirement-{index}",
+            kind="local_endpoint",
+            identifier=f"http://127.0.0.1:{9000 + index}",
+            case_ids=(case_id,),
+            evidence_refs=(f"context:{index}",),
+            status="unbound",
+        )
+        for index, case_id in enumerate(
+            (
+                "task_20260521171856",
+                "task_20260522081711",
+                "task_20260522105248",
+            )
+        )
+    )
+    observations = {
+        "task_20260521171856": {
+            "baseline_attempt_count": 9,
+            "baseline_success_count": 0,
+            "baseline_timeout_count": 9,
+            "baseline_timeout_max_seconds": 120.0,
+        },
+        "task_20260522081541": {
+            "baseline_attempt_count": 32,
+            "baseline_success_count": 21,
+            "baseline_timeout_count": 11,
+            "passed_count": 1,
+        },
+        "task_20260522081711": {
+            "baseline_attempt_count": 12,
+            "baseline_success_count": 0,
+            "baseline_timeout_count": 10,
+            "baseline_timeout_max_seconds": 90.0,
+            "invalid_control_count": 1,
+        },
+        "task_20260522105248": {
+            "baseline_attempt_count": 2,
+            "baseline_success_count": 0,
+            "baseline_timeout_count": 2,
+            "baseline_timeout_max_seconds": 90.0,
+        },
+    }
+
+    screening = _candidate_screening_dataset(
+        dataset,
+        capability_requirements=requirements,
+        max_cases=3,
+        allow_held_out_control_rescue=True,
+        empirical_observations=observations,
+    )
+    qualification = _candidate_screening_dataset(
+        dataset,
+        capability_requirements=requirements,
+        max_cases=1,
+        allow_held_out_control_rescue=True,
+        empirical_observations=observations,
+    )
+    population_ranking = _candidate_screening_dataset(
+        dataset,
+        capability_requirements=requirements,
+        max_cases=3,
+        empirical_observations=observations,
+    )
+
+    assert screening is not None
+    assert qualification is not None
+    assert population_ranking is not None
+    assert "task_20260522081541" not in {
+        case.case_id for case in population_ranking.cases
+    }
+    assert screening.cases[0].case_id == "task_20260522081541"
+    assert qualification.cases[0].case_id == "task_20260522081541"
+    assert screening.recipe.source["screening_anchor_case_id"] == (
+        "task_20260522081541"
+    )
+    assert screening.recipe.source["known_feasible_control_case_ids"] == [
+        "task_20260522081541"
+    ]
+    assert screening.recipe.source["held_out_control_rescue_case_ids"] == [
+        "task_20260522081541"
+    ]
+    assert set(screening.recipe.source["quarantined_control_case_ids"]) == {
+        "task_20260521171856",
+        "task_20260522081711",
+        "task_20260522105248",
+    }
+
+
 def test_candidate_screening_observation_tracks_physical_termination_axis() -> None:
     observations: dict[str, dict[str, float | int]] = {}
 
@@ -13989,6 +14111,107 @@ async def test_population_screening_uses_historical_latency_for_initial_timeout(
     assert selected == (candidate,)
     assert observed_timeouts == [152]
     assert report is not None
+
+
+@pytest.mark.asyncio
+async def test_single_candidate_screening_rescues_feasible_held_out_control(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("---\nname: demo\n---\n# Demo\n", encoding="utf-8")
+    dataset = SelfEvolveDataset(
+        cases=(
+            EvalCase(case_id="case-timeout", input="slow task"),
+            EvalCase(case_id="case-healthy", input="healthy task"),
+        ),
+        recipe=DatasetRecipe(
+            source={"kind": "held-out-control-rescue"},
+            split_seed="held-out-control-rescue",
+            splits={
+                "train": ["case-timeout"],
+                "validation": [],
+                "held_out": ["case-healthy"],
+            },
+            trainable_case_ids=("case-timeout",),
+            held_out_case_ids=("case-healthy",),
+        ),
+    )
+    candidate = CandidateVariant(
+        candidate_id="candidate",
+        target=SelfEvolveTargetRef("skill", "demo", str(skill_path)),
+        content="# Demo\n\nCandidate.\n",
+        rationale="qualify sole candidate on a feasible control",
+    )
+    runner = SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=SimpleNamespace(),
+        replay_enabled=True,
+        candidate_replay_backend=object(),
+    )
+    runner._candidate_screening_case_observations.update(
+        {
+            "case-timeout": {
+                "baseline_attempt_count": 3,
+                "baseline_success_count": 0,
+                "baseline_timeout_count": 3,
+                "baseline_timeout_max_seconds": 90.0,
+            },
+            "case-healthy": {
+                "baseline_attempt_count": 4,
+                "baseline_success_count": 3,
+                "passed_count": 1,
+            },
+        }
+    )
+    monkeypatch.setattr(
+        runner,
+        "_prepare_replay_adaptation",
+        lambda **_kwargs: (
+            None,
+            GateResult("replay_adaptation", True, "ready"),
+        ),
+    )
+    screened_case_ids: list[str] = []
+
+    async def successful_screening(**kwargs):
+        screened_case_ids.append(kwargs["dataset"].cases[0].case_id)
+        kwargs["lifecycle_callback"]("replay_started", {})
+        return (
+            None,
+            kwargs["dataset"],
+            GateResult("candidate_replay", True, "comparable pair"),
+        )
+
+    monkeypatch.setattr(
+        runner,
+        "_replay_selected_candidate",
+        successful_screening,
+    )
+
+    selected, report = await runner._screen_candidate_population(
+        run_id="run-held-out-control-rescue",
+        target=SkillTextTarget(skill_path, allow_auto_apply=True),
+        dataset=dataset,
+        candidates=(candidate,),
+        apply_policy="verified_only",
+        require_single_candidate_screening=True,
+    )
+
+    assert selected == (candidate,)
+    assert screened_case_ids == ["case-healthy"]
+    assert report is not None
+    assert report["screening"]["representative_case_ids"] == [
+        "case-healthy"
+    ]
+    assert report["screening"]["screening_anchor_case_id"] == "case-healthy"
+    assert report["screening"]["held_out_control_rescue_case_ids"] == [
+        "case-healthy"
+    ]
+    assert report["screening"]["quarantined_control_case_ids"] == [
+        "case-timeout"
+    ]
 
 
 @pytest.mark.asyncio

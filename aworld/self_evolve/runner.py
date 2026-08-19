@@ -7961,6 +7961,9 @@ class SelfEvolveRunner:
             dataset,
             capability_requirements=capability_requirements,
             max_cases=self.candidate_screening_max_cases,
+            allow_held_out_control_rescue=(
+                len(conformance_candidates) == 1
+            ),
             empirical_observations=(
                 self._candidate_screening_case_observations
             ),
@@ -7973,6 +7976,9 @@ class SelfEvolveRunner:
             dataset,
             capability_requirements=capability_requirements,
             max_cases=qualification_case_limit,
+            allow_held_out_control_rescue=(
+                len(conformance_candidates) == 1
+            ),
             empirical_observations=(
                 self._candidate_screening_case_observations
             ),
@@ -9037,6 +9043,34 @@ class SelfEvolveRunner:
                 ),
                 "configured_representative_case_count": len(
                     configured_representative_case_ids
+                ),
+                "screening_anchor_case_id": (
+                    configured_screening_panel.recipe.source.get(
+                        "screening_anchor_case_id"
+                    )
+                    if configured_screening_panel is not None
+                    else None
+                ),
+                "known_feasible_control_case_ids": list(
+                    configured_screening_panel.recipe.source.get(
+                        "known_feasible_control_case_ids", []
+                    )
+                    if configured_screening_panel is not None
+                    else []
+                ),
+                "held_out_control_rescue_case_ids": list(
+                    configured_screening_panel.recipe.source.get(
+                        "held_out_control_rescue_case_ids", []
+                    )
+                    if configured_screening_panel is not None
+                    else []
+                ),
+                "quarantined_control_case_ids": list(
+                    configured_screening_panel.recipe.source.get(
+                        "quarantined_control_case_ids", []
+                    )
+                    if configured_screening_panel is not None
+                    else []
                 ),
                 "invalid_control_case_ids": sorted(
                     case_id
@@ -26466,6 +26500,7 @@ def _candidate_screening_dataset(
     *,
     capability_requirements: tuple[ReplayCapabilityRequirement, ...] = (),
     max_cases: int = 1,
+    allow_held_out_control_rescue: bool = False,
     empirical_observations: Mapping[
         str, Mapping[str, float | int]
     ] | None = None,
@@ -26499,6 +26534,61 @@ def _candidate_screening_dataset(
             seen_case_ids.add(case_id)
     if not ordered_candidates:
         ordered_candidates = list(replayable_cases)
+    held_out_control_rescue_case_ids: tuple[str, ...] = ()
+    if allow_held_out_control_rescue and empirical_observations is not None:
+        has_trainable_feasible_control = any(
+            _screening_case_has_feasible_baseline(
+                empirical_observations.get(case.case_id, {})
+            )
+            for case in ordered_candidates
+        )
+        held_out_feasible_controls = tuple(
+            case
+            for case in replayable_cases
+            if case.case_id in held_out_case_ids
+            and _screening_case_has_feasible_baseline(
+                empirical_observations.get(case.case_id, {})
+            )
+        )
+        if not has_trainable_feasible_control and held_out_feasible_controls:
+            # Screening a sole conforming candidate is a support qualification
+            # gate, not population ranking. In that narrow mode a historically
+            # executable held-out case is safer than declaring the framework
+            # infeasible after exhausting controls known to time out.
+            rescue_control = max(
+                held_out_feasible_controls,
+                key=lambda case: (
+                    _non_negative_int(
+                        empirical_observations.get(case.case_id, {}).get(
+                            "baseline_success_count"
+                        )
+                    ),
+                    _non_negative_int(
+                        empirical_observations.get(case.case_id, {}).get(
+                            "passed_count"
+                        )
+                    ),
+                    -_candidate_screening_case_cost(
+                        case,
+                        empirical_observation=empirical_observations.get(
+                            case.case_id
+                        ),
+                    ),
+                ),
+            )
+            ordered_candidates.insert(0, rescue_control)
+            held_out_control_rescue_case_ids = (rescue_control.case_id,)
+    known_feasible_control_case_ids = tuple(
+        case.case_id
+        for case in ordered_candidates
+        if _screening_case_has_feasible_baseline(
+            (
+                empirical_observations.get(case.case_id, {})
+                if empirical_observations is not None
+                else {}
+            )
+        )
+    )
     quarantined_control_case_ids = tuple(
         case.case_id
         for case in ordered_candidates
@@ -26535,13 +26625,26 @@ def _candidate_screening_dataset(
     covered_strata: set[str] = set()
     while ordered_candidates and len(selected) < min(max_cases, len(ordered_candidates)):
         remaining = [case for case in ordered_candidates if case not in selected]
+        # A target-only success is the best available evidence that screening
+        # can produce a baseline/candidate pair on the current task surface.
+        # Anchor the panel with such a control before optimizing capability
+        # coverage; otherwise requirement-rich, persistently timing-out cases
+        # can consume every bounded qualification slot.
+        if not selected and known_feasible_control_case_ids:
+            remaining = [
+                case
+                for case in remaining
+                if case.case_id in known_feasible_control_case_ids
+            ]
         representative = max(
             remaining,
             key=lambda case: (
+                case.case_id not in quarantined_control_case_ids,
                 len(
                     requirement_ids_by_case.get(case.case_id, set())
                     - covered_requirements
                 ),
+                case.case_id in known_feasible_control_case_ids,
                 _non_negative_int(
                     (
                         empirical_observations.get(case.case_id, {})
@@ -26608,6 +26711,18 @@ def _candidate_screening_dataset(
                     for case in selected
                     if empirical_observations is not None
                 },
+                "known_feasible_control_case_ids": list(
+                    known_feasible_control_case_ids
+                ),
+                "screening_anchor_case_id": (
+                    representative_ids[0]
+                    if representative_ids[0]
+                    in known_feasible_control_case_ids
+                    else None
+                ),
+                "held_out_control_rescue_case_ids": list(
+                    held_out_control_rescue_case_ids
+                ),
                 "quarantined_control_case_ids": list(
                     quarantined_control_case_ids
                 ),
@@ -26627,6 +26742,15 @@ def _candidate_screening_dataset(
     )
 
 
+def _screening_case_has_feasible_baseline(
+    observation: Mapping[str, float | int],
+) -> bool:
+    return bool(
+        _non_negative_int(observation.get("baseline_success_count")) > 0
+        or _non_negative_int(observation.get("passed_count")) > 0
+    )
+
+
 def _screening_case_has_only_invalid_baselines(
     observation: Mapping[str, float | int],
 ) -> bool:
@@ -26636,18 +26760,32 @@ def _screening_case_has_only_invalid_baselines(
     baseline_successes = _non_negative_int(
         observation.get("baseline_success_count")
     )
+    if baseline_successes > 0:
+        return False
+    invalid_controls = _non_negative_int(
+        observation.get("invalid_control_count")
+    )
     if baseline_attempts > 0:
-        return bool(
-            baseline_successes == 0
-            and _non_negative_int(observation.get("baseline_timeout_count"))
-            >= baseline_attempts
+        timeout_count = _non_negative_int(
+            observation.get("baseline_timeout_count")
+        )
+        timeout_only_history = bool(
+            baseline_attempts >= 2 and timeout_count >= baseline_attempts
+        )
+        reached_timeout_ceiling = bool(
+            timeout_count > 0
             and _non_negative_screening_float(
                 observation.get("baseline_timeout_max_seconds")
             )
             >= _MAX_CANDIDATE_SCREENING_TIMEOUT_SECONDS
         )
+        return bool(
+            invalid_controls > 0
+            or timeout_only_history
+            or reached_timeout_ceiling
+        )
     # Compatibility for reports written before phase-aware control telemetry.
-    return _non_negative_int(observation.get("invalid_control_count")) > 0
+    return invalid_controls > 0
 
 
 _AUTHORITATIVE_CONTEXT_COMPACTION_CHARS = 8_000
