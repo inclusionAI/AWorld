@@ -88,6 +88,65 @@ def test_disposition_is_cardinality_neutral(member_count: int) -> None:
     assert len(disposition.progress_delta_ids) == 2
 
 
+def test_screening_intervention_failure_does_not_request_measurement_checkpoint() -> None:
+    event = {
+        "code": "candidate_intervention_unobserved",
+        "owner": "framework",
+        "stage": "adaptation",
+        "scope": "shared_run",
+        "repairable": True,
+    }
+    report = {
+        "run_id": "screening-intervention-unobserved",
+        "status": "rejected",
+        "budget": _budget(),
+        "gate_results": [
+            {
+                "gate_name": "candidate_replay",
+                "passed": False,
+                "details": {
+                    "code": event["code"],
+                    "failure_class": "framework",
+                    "failure_owner": "framework",
+                    "failure_scope": "shared_run",
+                    "failure_stage": "adaptation",
+                    "repairable": True,
+                    "checkpoint_stage": "screening",
+                    "causal_failure_events": [event],
+                },
+            },
+            {
+                "gate_name": "trusted_improvement_measurement",
+                "passed": False,
+                "details": {"failure_class": "measurement"},
+            },
+        ],
+        "measurement": {
+            "mode": "required",
+            "status": "invalid",
+            "validity_status": "invalid",
+            "effect_direction": "unmeasured",
+            "promotion_eligible": False,
+            "next_action": "repair_measurement",
+        },
+        "campaign_failure_attribution": {
+            "primary_gate": "candidate_replay",
+            "code": event["code"],
+            "failure_class": "framework",
+            "failure_owner": "framework",
+            "failure_scope": "shared_run",
+            "failure_stage": "adaptation",
+            "repairable": True,
+        },
+    }
+
+    disposition = derive_self_improvement_disposition(report)
+
+    assert disposition.kind is SelfImprovementDispositionKind.HANDOFF_GOAL
+    assert disposition.reason_code == "typed_framework_or_shared_blocker"
+    assert disposition.owner == "framework"
+
+
 def test_candidate_prerequisite_failure_precedes_derived_measurement_gate() -> None:
     event = _event(constraint="services[*].readiness.kind")
     report = _report(event)
@@ -1929,6 +1988,111 @@ def test_infrastructure_retry_preserves_measurement_candidate_checkpoint(
         calls[0]["campaign_id"] + "-cycle-001"
     )
     assert result["campaign_status"] == "complete"
+
+
+def test_resume_migrates_legacy_unobserved_intervention_campaign(
+    tmp_path: Path,
+) -> None:
+    calls: list[dict] = []
+    controller = SelfImprovementCampaignController(
+        workspace_root=tmp_path,
+        run_once=lambda **request: _write_successful_campaign_fixture(
+            tmp_path,
+            calls,
+            request,
+        ),
+    )
+    campaign = controller.create(
+        {
+            "from_trajectory": "trajectory.log",
+            "apply_policy": "verified_only",
+            "infer_target": True,
+        },
+        max_cycles=2,
+    )
+    run_id = f"{campaign.campaign_id}-cycle-001"
+    legacy_details = {
+        "code": "candidate_intervention_unobserved",
+        "failure_class": "framework",
+        "failure_owner": "framework",
+        "failure_scope": "shared_run",
+        "failure_stage": "adaptation",
+        "repairable": False,
+    }
+    report = {
+        "run_id": run_id,
+        "status": "rejected",
+        "budget": _budget(),
+        "gate_results": [
+            {
+                "gate_name": "candidate_replay",
+                "passed": False,
+                "details": dict(legacy_details),
+            }
+        ],
+        "measurement": {
+            "mode": "required",
+            "status": "invalid",
+            "validity_status": "invalid",
+            "effect_direction": "unmeasured",
+            "promotion_eligible": False,
+            "next_action": "repair_measurement",
+        },
+        "campaign_failure_attribution": {
+            "primary_gate": "candidate_replay",
+            **legacy_details,
+        },
+        "population": {
+            "screening": {
+                "attempts": [
+                    {
+                        "candidate_id": "candidate-replay-only",
+                        "passed": True,
+                        "details": dict(legacy_details),
+                    }
+                ]
+            }
+        },
+        "verification_funnel": {
+            "authoritative_candidate_count": 0,
+            "authoritative_candidate_attempt_count": 0,
+            "authoritative_candidate_ids": [],
+        },
+    }
+    report_path = controller.store.write_report(run_id, report)
+    exhausted = campaign_module.replace(
+        campaign,
+        status=SelfImprovementCampaignStatus.EXHAUSTED,
+        cycle_index=1,
+        run_ids=(run_id,),
+        latest_progress=self_improvement_progress(report),
+        latest_disposition=SelfImprovementDisposition(
+            kind=SelfImprovementDispositionKind.EXHAUSTED,
+            reason_code="measurement_authority_checkpoint_missing_or_invalid",
+            owner="evaluation_harness",
+            stage="measurement",
+            scope="shared_run",
+        ),
+        latest_report_path=str(report_path),
+    )
+    controller.store.write_campaign(exhausted)
+
+    result = run_self_improvement_campaign(
+        workspace_root=tmp_path,
+        request={},
+        resume_campaign=campaign.campaign_id,
+        run_once=controller.run_once,
+    )
+
+    assert len(calls) == 1
+    assert result["campaign_status"] == "complete"
+    migrated_report = controller.store.read_report(run_id)
+    assert migrated_report["campaign_causal_migration"]["action"] == (
+        "restore_framework_control_selection_continuation"
+    )
+    assert migrated_report["gate_results"][0]["details"][
+        "checkpoint_stage"
+    ] == "screening"
 
 
 def test_shared_measurement_retry_fails_closed_without_candidate_checkpoint(

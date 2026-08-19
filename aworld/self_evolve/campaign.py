@@ -14,7 +14,7 @@ from typing import Any, Callable, Iterable, Mapping
 
 from aworld.self_evolve.counterexamples import normalize_counterexample
 from aworld.self_evolve.causal_admission import (
-    candidate_causal_admission_blocker,
+    causal_admission_prerequisite_blocker,
 )
 from aworld.self_evolve.recovery_trace import (
     RECOVERY_TRACE_SCHEMA_VERSION,
@@ -2083,11 +2083,19 @@ def _migrate_misattributed_candidate_blocker_for_resume(
         report = controller.store.read_report(latest_run_id)
     except (OSError, TypeError, ValueError, json.JSONDecodeError):
         return campaign
+    legacy_unobserved_intervention = (
+        _report_has_legacy_unobserved_intervention_screening_failure(report)
+    )
     if (
-        not _report_has_repairable_candidate_prerequisite_failure(report)
+        not (
+            _report_has_repairable_candidate_prerequisite_failure(report)
+            or legacy_unobserved_intervention
+        )
         or _report_has_authoritative_measurement_observation(report)
     ):
         return campaign
+    if legacy_unobserved_intervention:
+        _normalize_legacy_unobserved_intervention_screening_failure(report)
     previous_progress: SelfImprovementProgress | None = None
     if len(campaign.run_ids) > 1:
         try:
@@ -2100,11 +2108,26 @@ def _migrate_misattributed_candidate_blocker_for_resume(
         report,
         previous_progress=previous_progress,
     )
-    if corrected.kind is not SelfImprovementDispositionKind.CONTINUE_CANDIDATE:
+    if legacy_unobserved_intervention:
+        corrected = SelfImprovementDisposition(
+            kind=SelfImprovementDispositionKind.CONTINUE_CAMPAIGN,
+            reason_code="framework_control_selection_repaired",
+            owner="framework",
+            stage="candidate_screening",
+            scope="shared_run",
+            repairable=True,
+            progress_delta_ids=corrected.progress_delta_ids,
+            diagnostic_refs=corrected.diagnostic_refs,
+        )
+    elif corrected.kind is not SelfImprovementDispositionKind.CONTINUE_CANDIDATE:
         return campaign
     migration = {
         "schema_version": "aworld.self_evolve.causal_campaign_migration.v1",
-        "action": "restore_candidate_repair_continuation",
+        "action": (
+            "restore_framework_control_selection_continuation"
+            if legacy_unobserved_intervention
+            else "restore_candidate_repair_continuation"
+        ),
         "source_run_id": latest_run_id,
         "previous_reason_code": campaign.latest_disposition.reason_code,
         "corrected_reason_code": corrected.reason_code,
@@ -2124,6 +2147,77 @@ def _migrate_misattributed_candidate_blocker_for_resume(
     )
     controller.store.write_campaign(migrated)
     return migrated
+
+
+def _report_has_legacy_unobserved_intervention_screening_failure(
+    report: Mapping[str, Any],
+) -> bool:
+    """Recognize reports written before intervention-aware panel selection."""
+
+    population = report.get("population")
+    screening = (
+        population.get("screening")
+        if isinstance(population, Mapping)
+        else None
+    )
+    attempts = (
+        screening.get("attempts")
+        if isinstance(screening, Mapping)
+        else None
+    )
+    if not isinstance(attempts, list) or not any(
+        isinstance(attempt, Mapping)
+        and isinstance(attempt.get("details"), Mapping)
+        and attempt["details"].get("code")
+        == "candidate_intervention_unobserved"
+        for attempt in attempts
+    ):
+        return False
+    raw_gates = report.get("gate_results")
+    return bool(
+        isinstance(raw_gates, list)
+        and any(
+            isinstance(gate, Mapping)
+            and gate.get("gate_name") == "candidate_replay"
+            and gate.get("passed") is not True
+            and isinstance(gate.get("details"), Mapping)
+            and gate["details"].get("code")
+            == "candidate_intervention_unobserved"
+            for gate in raw_gates
+        )
+    )
+
+
+def _normalize_legacy_unobserved_intervention_screening_failure(
+    report: dict[str, Any],
+) -> None:
+    """Upgrade the old terminal screening blocker to the typed prerequisite."""
+
+    raw_gates = report.get("gate_results")
+    if isinstance(raw_gates, list):
+        for gate in raw_gates:
+            if (
+                not isinstance(gate, dict)
+                or gate.get("gate_name") != "candidate_replay"
+                or not isinstance(gate.get("details"), dict)
+                or gate["details"].get("code")
+                != "candidate_intervention_unobserved"
+            ):
+                continue
+            gate["details"].update(
+                {
+                    "repairable": True,
+                    "checkpoint_stage": "screening",
+                    "evaluator_skipped": True,
+                    "next_action": "repair_framework_control_selection",
+                }
+            )
+    attribution = report.get("campaign_failure_attribution")
+    if (
+        isinstance(attribution, dict)
+        and attribution.get("code") == "candidate_intervention_unobserved"
+    ):
+        attribution["repairable"] = True
 
 
 def _migrate_lost_repair_champion_for_resume(
@@ -3291,7 +3385,7 @@ def _report_has_repairable_candidate_prerequisite_failure(
 
     raw_gates = report.get("gate_results")
     if isinstance(raw_gates, list) and any(
-        candidate_causal_admission_blocker(
+        causal_admission_prerequisite_blocker(
             gate_name=str(item.get("gate_name") or ""),
             passed=item.get("passed") is True,
             details=(

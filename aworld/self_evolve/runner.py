@@ -44,7 +44,7 @@ from aworld.self_evolve.counterexamples import (
     normalize_counterexample,
 )
 from aworld.self_evolve.causal_admission import (
-    candidate_causal_admission_blocker,
+    causal_admission_prerequisite_blocker,
 )
 from aworld.self_evolve.datasets import (
     EvalCase,
@@ -7424,7 +7424,15 @@ class SelfEvolveRunner:
                 "independent_case_count": 0,
                 "comparable_pair_count": 0,
                 "promotion_eligible": False,
-                "next_action": "continue_candidate_repair",
+                "next_action": str(
+                    prerequisite_details.get("next_action")
+                    or (
+                        "repair_framework_control_selection"
+                        if prerequisite_details.get("failure_owner")
+                        == FailureOwner.FRAMEWORK.value
+                        else "continue_candidate_repair"
+                    )
+                ),
             }
         elif measurement_prerequisite_blocked:
             prerequisite_gate = next(
@@ -7957,10 +7965,21 @@ class SelfEvolveRunner:
                 ),
             )
 
+        intervention_case_ids = (
+            _candidate_task_plane_intervention_case_ids(
+                capability_requirements
+            )
+            if any(
+                _candidate_requires_task_plane_intervention(candidate)
+                for candidate in conformance_candidates
+            )
+            else ()
+        )
         configured_screening_panel = _candidate_screening_dataset(
             dataset,
             capability_requirements=capability_requirements,
             max_cases=self.candidate_screening_max_cases,
+            required_case_ids=intervention_case_ids,
             allow_held_out_control_rescue=(
                 len(conformance_candidates) == 1
             ),
@@ -7976,6 +7995,7 @@ class SelfEvolveRunner:
             dataset,
             capability_requirements=capability_requirements,
             max_cases=qualification_case_limit,
+            required_case_ids=intervention_case_ids,
             allow_held_out_control_rescue=(
                 len(conformance_candidates) == 1
             ),
@@ -9061,6 +9081,20 @@ class SelfEvolveRunner:
                 "held_out_control_rescue_case_ids": list(
                     configured_screening_panel.recipe.source.get(
                         "held_out_control_rescue_case_ids", []
+                    )
+                    if configured_screening_panel is not None
+                    else []
+                ),
+                "required_intervention_case_ids": list(
+                    configured_screening_panel.recipe.source.get(
+                        "required_intervention_case_ids", []
+                    )
+                    if configured_screening_panel is not None
+                    else []
+                ),
+                "intervention_exposure_case_ids": list(
+                    configured_screening_panel.recipe.source.get(
+                        "intervention_exposure_case_ids", []
                     )
                     if configured_screening_panel is not None
                     else []
@@ -12794,6 +12828,9 @@ class SelfEvolveRunner:
                     bounded_screening=(progress_stage == "candidate_screening"),
                 ),
             }
+            intervention_unobserved = (
+                _candidate_intervention_unobserved(reuse_details)
+            )
             if not comparable:
                 return (
                     replay_result,
@@ -12804,6 +12841,20 @@ class SelfEvolveRunner:
                         reason=(
                             "stored replay evidence is not comparable for the "
                             "current trajectory set"
+                        ),
+                        details=reuse_details,
+                    ),
+                )
+            if intervention_unobserved:
+                return (
+                    replay_result,
+                    None,
+                    GateResult(
+                        gate_name="candidate_replay_evidence_reuse",
+                        passed=False,
+                        reason=(
+                            "stored replay evidence did not exercise the "
+                            "candidate-owned intervention"
                         ),
                         details=reuse_details,
                     ),
@@ -13484,6 +13535,29 @@ class SelfEvolveRunner:
                 None,
                 replay_gate,
             )
+        replay_details = _replay_gate_details(
+            replay_result,
+            dataset=replay_validation_dataset,
+            normalized=normalized,
+            candidate_requires_intervention_exposure=(
+                candidate_requires_intervention_exposure
+            ),
+            bounded_screening=(progress_stage == "candidate_screening"),
+        )
+        if _candidate_intervention_unobserved(replay_details):
+            return (
+                replay_result,
+                None,
+                GateResult(
+                    gate_name="candidate_replay",
+                    passed=False,
+                    reason=(
+                        "candidate replay did not exercise the candidate-owned "
+                        "intervention"
+                    ),
+                    details=replay_details,
+                ),
+            )
         replay_dataset = build_paired_replay_dataset(
             dataset=replay_validation_dataset,
             replay_result=replay_result,
@@ -13508,15 +13582,7 @@ class SelfEvolveRunner:
                 gate_name="candidate_replay",
                 passed=True,
                 reason="candidate replay produced comparable paired outcomes",
-                details=_replay_gate_details(
-                    replay_result,
-                    dataset=replay_validation_dataset,
-                    normalized=normalized,
-                    candidate_requires_intervention_exposure=(
-                        candidate_requires_intervention_exposure
-                    ),
-                    bounded_screening=(progress_stage == "candidate_screening"),
-                ),
+                details=replay_details,
             ),
         )
 
@@ -19992,7 +20058,7 @@ def _gate_results_have_candidate_prerequisite_failure(
 
 
 def _gate_has_candidate_prerequisite_failure(gate: GateResult) -> bool:
-    return candidate_causal_admission_blocker(
+    return causal_admission_prerequisite_blocker(
         gate_name=gate.gate_name,
         passed=gate.passed,
         details=gate.details,
@@ -21019,19 +21085,24 @@ def _replay_gate_details(
         event_payloads = list(raw_events) if isinstance(raw_events, list) else []
         event_payloads.append(censor_event.to_dict())
         details["causal_failure_events"] = event_payloads
+    candidate_execution_observed = any(
+        member.candidate.executed for member in normalized.members
+    )
+    intervention_observed = (
+        (
+            not candidate_requires_intervention_exposure
+            or _candidate_task_plane_intervention_observed(normalized)
+        )
+        if candidate_execution_observed
+        else None
+    )
+    details["candidate_execution_observed"] = candidate_execution_observed
+    details["candidate_intervention_required"] = (
+        candidate_requires_intervention_exposure
+    )
+    details["candidate_intervention_observed"] = intervention_observed
     recovery_trace = replay_recovery_trace(normalized.members)
     if recovery_trace is not None:
-        candidate_execution_observed = any(
-            member.candidate.executed for member in normalized.members
-        )
-        intervention_observed = (
-            (
-                not candidate_requires_intervention_exposure
-                or _candidate_task_plane_intervention_observed(normalized)
-            )
-            if candidate_execution_observed
-            else None
-        )
         recovery_trace["candidate_execution_observed"] = (
             candidate_execution_observed
         )
@@ -21094,8 +21165,41 @@ def _replay_gate_details(
                         "failure_scope": recovery_failure.scope.value,
                         "failure_stage": recovery_failure.stage.value,
                         "repairable": recovery_failure.repairable,
+                        "next_action": "repair_framework_control_selection",
                     }
                 )
+    elif (
+        intervention_observed is False
+        and framework_blocker is None
+        and not screening_budget_censored
+        and completion_failure is None
+    ):
+        recovery_failure = _candidate_intervention_unobserved_failure_event(
+            {
+                "member_count": len(normalized.members),
+                "candidate_repetition_count": sum(
+                    len(member.candidate.repetition_results) or 1
+                    for member in normalized.members
+                ),
+            }
+        )
+        raw_events = details.get("causal_failure_events")
+        event_payloads = (
+            list(raw_events) if isinstance(raw_events, list) else []
+        )
+        event_payloads.append(recovery_failure.to_dict())
+        details.update(
+            {
+                "causal_failure_events": event_payloads,
+                "code": recovery_failure.code,
+                "failure_class": "framework",
+                "failure_owner": recovery_failure.owner.value,
+                "failure_scope": recovery_failure.scope.value,
+                "failure_stage": recovery_failure.stage.value,
+                "repairable": recovery_failure.repairable,
+                "next_action": "repair_framework_control_selection",
+            }
+        )
     if normalized.members:
         details["failed_members"] = [
             {
@@ -21595,7 +21699,7 @@ def _candidate_intervention_unobserved_failure_event(
         owner=FailureOwner.FRAMEWORK,
         stage=FailureStage.ADAPTATION,
         scope=FailureScope.SHARED_RUN,
-        repairable=False,
+        repairable=True,
         category="recovery_trace",
         summary=(
             "task rollout did not exercise the candidate-owned replay intervention; "
@@ -21612,6 +21716,24 @@ def _candidate_intervention_unobserved_failure_event(
     )
 
 
+def _candidate_intervention_unobserved(
+    details: Mapping[str, object],
+) -> bool:
+    recovery_trace = details.get("recovery_trace")
+    return bool(
+        details.get("code") == "candidate_intervention_unobserved"
+        or (
+            details.get("candidate_intervention_required") is True
+            and details.get("candidate_intervention_observed") is False
+        )
+        or (
+            isinstance(recovery_trace, Mapping)
+            and recovery_trace.get("candidate_intervention_required") is True
+            and recovery_trace.get("candidate_intervention_observed") is False
+        )
+    )
+
+
 def _candidate_requires_task_plane_intervention(
     candidate: CandidateVariant,
 ) -> bool:
@@ -21623,6 +21745,21 @@ def _candidate_requires_task_plane_intervention(
     return bool(changed_paths) and all(
         path == "replay/capability.json" or path.startswith("replay/")
         for path in changed_paths
+    )
+
+
+def _candidate_task_plane_intervention_case_ids(
+    capability_requirements: tuple[ReplayCapabilityRequirement, ...],
+) -> tuple[str, ...]:
+    """Return cases that can exercise a candidate-owned replay service."""
+
+    return tuple(
+        dict.fromkeys(
+            case_id
+            for requirement in capability_requirements
+            if requirement.kind != "conversation_context"
+            for case_id in requirement.case_ids
+        )
     )
 
 
@@ -26500,6 +26637,7 @@ def _candidate_screening_dataset(
     *,
     capability_requirements: tuple[ReplayCapabilityRequirement, ...] = (),
     max_cases: int = 1,
+    required_case_ids: tuple[str, ...] = (),
     allow_held_out_control_rescue: bool = False,
     empirical_observations: Mapping[
         str, Mapping[str, float | int]
@@ -26534,30 +26672,77 @@ def _candidate_screening_dataset(
             seen_case_ids.add(case_id)
     if not ordered_candidates:
         ordered_candidates = list(replayable_cases)
+    required_case_id_set = set(required_case_ids)
+    requirement_ids_by_case: dict[str, set[str]] = {}
+    context_requirement_count_by_case: dict[str, int] = {}
+    for requirement in capability_requirements:
+        for case_id in requirement.case_ids:
+            if requirement.kind == "conversation_context":
+                context_requirement_count_by_case[case_id] = (
+                    context_requirement_count_by_case.get(case_id, 0) + 1
+                )
+                continue
+            requirement_ids_by_case.setdefault(case_id, set()).add(
+                requirement.requirement_id
+            )
     held_out_control_rescue_case_ids: tuple[str, ...] = ()
     if allow_held_out_control_rescue and empirical_observations is not None:
+        trainable_control_candidates = tuple(
+            case
+            for case in ordered_candidates
+            if not required_case_id_set
+            or case.case_id in required_case_id_set
+        )
         has_trainable_feasible_control = any(
             _screening_case_has_feasible_baseline(
                 empirical_observations.get(case.case_id, {})
             )
-            for case in ordered_candidates
+            for case in trainable_control_candidates
         )
-        held_out_feasible_controls = tuple(
+        has_trainable_viable_control = any(
+            not _screening_case_has_only_invalid_baselines(
+                empirical_observations.get(case.case_id, {})
+            )
+            for case in trainable_control_candidates
+        )
+        held_out_controls = tuple(
             case
             for case in replayable_cases
             if case.case_id in held_out_case_ids
-            and _screening_case_has_feasible_baseline(
+            and case.case_id not in seen_case_ids
+            and (
+                not required_case_id_set
+                or case.case_id in required_case_id_set
+            )
+        )
+        held_out_feasible_controls = tuple(
+            case
+            for case in held_out_controls
+            if _screening_case_has_feasible_baseline(
                 empirical_observations.get(case.case_id, {})
             )
         )
-        if not has_trainable_feasible_control and held_out_feasible_controls:
+        rescue_controls = (
+            held_out_controls
+            if required_case_id_set and not has_trainable_viable_control
+            else held_out_feasible_controls
+            if not has_trainable_feasible_control
+            else ()
+        )
+        if rescue_controls:
             # Screening a sole conforming candidate is a support qualification
-            # gate, not population ranking. In that narrow mode a historically
-            # executable held-out case is safer than declaring the framework
-            # infeasible after exhausting controls known to time out.
+            # gate, not population ranking. In that narrow mode a held-out
+            # control may rescue either a historically healthy task or the
+            # only remaining task capable of exercising candidate replay code.
             rescue_control = max(
-                held_out_feasible_controls,
+                rescue_controls,
                 key=lambda case: (
+                    _screening_case_has_feasible_baseline(
+                        empirical_observations.get(case.case_id, {})
+                    ),
+                    not _screening_case_has_only_invalid_baselines(
+                        empirical_observations.get(case.case_id, {})
+                    ),
                     _non_negative_int(
                         empirical_observations.get(case.case_id, {}).get(
                             "baseline_success_count"
@@ -26570,6 +26755,11 @@ def _candidate_screening_dataset(
                     ),
                     -_candidate_screening_case_cost(
                         case,
+                        context_requirement_count=(
+                            context_requirement_count_by_case.get(
+                                case.case_id, 0
+                            )
+                        ),
                         empirical_observation=empirical_observations.get(
                             case.case_id
                         ),
@@ -26578,6 +26768,17 @@ def _candidate_screening_dataset(
             )
             ordered_candidates.insert(0, rescue_control)
             held_out_control_rescue_case_ids = (rescue_control.case_id,)
+    intervention_exposure_case_ids = tuple(
+        case.case_id
+        for case in ordered_candidates
+        if case.case_id in required_case_id_set
+    )
+    if required_case_id_set and intervention_exposure_case_ids:
+        ordered_candidates = [
+            case
+            for case in ordered_candidates
+            if case.case_id in required_case_id_set
+        ]
     known_feasible_control_case_ids = tuple(
         case.case_id
         for case in ordered_candidates
@@ -26605,18 +26806,6 @@ def _candidate_screening_dataset(
     ordered_candidates.sort(
         key=lambda case: case.case_id in quarantined_control_case_ids
     )
-    requirement_ids_by_case: dict[str, set[str]] = {}
-    context_requirement_count_by_case: dict[str, int] = {}
-    for requirement in capability_requirements:
-        for case_id in requirement.case_ids:
-            if requirement.kind == "conversation_context":
-                context_requirement_count_by_case[case_id] = (
-                    context_requirement_count_by_case.get(case_id, 0) + 1
-                )
-                continue
-            requirement_ids_by_case.setdefault(case_id, set()).add(
-                requirement.requirement_id
-            )
     case_index = {
         case.case_id: index for index, case in enumerate(ordered_candidates)
     }
@@ -26722,6 +26911,10 @@ def _candidate_screening_dataset(
                 ),
                 "held_out_control_rescue_case_ids": list(
                     held_out_control_rescue_case_ids
+                ),
+                "required_intervention_case_ids": list(required_case_ids),
+                "intervention_exposure_case_ids": list(
+                    intervention_exposure_case_ids
                 ),
                 "quarantined_control_case_ids": list(
                     quarantined_control_case_ids
