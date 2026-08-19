@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from aworld.self_evolve.causal_admission import (
+    causal_admission_prerequisite_blocker,
     candidate_causal_admission_blocker,
 )
 
@@ -61,5 +62,32 @@ def test_derived_measurement_failure_is_not_candidate_blocker() -> None:
         details={
             "failure_class": "measurement",
             "next_action": "repair_measurement",
+        },
+    )
+
+
+def test_unobserved_intervention_is_screening_prerequisite_blocker() -> None:
+    assert causal_admission_prerequisite_blocker(
+        gate_name="candidate_replay",
+        passed=False,
+        details={
+            "code": "candidate_intervention_unobserved",
+            "failure_class": "framework",
+            "failure_owner": "framework",
+            "failure_scope": "shared_run",
+            "repairable": True,
+            "checkpoint_stage": "screening",
+        },
+    )
+    assert not causal_admission_prerequisite_blocker(
+        gate_name="candidate_replay",
+        passed=False,
+        details={
+            "code": "candidate_intervention_unobserved",
+            "failure_class": "framework",
+            "failure_owner": "framework",
+            "failure_scope": "shared_run",
+            "repairable": True,
+            "checkpoint_stage": "authoritative_replay",
         },
     )

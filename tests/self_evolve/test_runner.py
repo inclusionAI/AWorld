@@ -2488,6 +2488,84 @@ def test_candidate_screening_anchors_known_feasible_control_before_timeout_cases
     }
 
 
+def test_candidate_screening_requires_replay_intervention_exposure() -> None:
+    dataset = SelfEvolveDataset(
+        cases=(
+            EvalCase(case_id="healthy-unrelated", input="summarize prior text"),
+            EvalCase(case_id="timeout-required", input="fetch required resource"),
+            EvalCase(case_id="held-out-required", input="fetch held-out resource"),
+        ),
+        recipe=DatasetRecipe(
+            source={"kind": "trajectory_set"},
+            split_seed="intervention-exposure",
+            splits={
+                "train": ["healthy-unrelated", "timeout-required"],
+                "validation": [],
+                "held_out": ["held-out-required"],
+            },
+            trainable_case_ids=("healthy-unrelated", "timeout-required"),
+            held_out_case_ids=("held-out-required",),
+        ),
+    )
+    requirements = (
+        ReplayCapabilityRequirement(
+            requirement_id="runtime-train",
+            kind="http_resource",
+            identifier="https://example.test/train",
+            case_ids=("timeout-required",),
+            evidence_refs=("context:train",),
+            status="runtime_required",
+        ),
+        ReplayCapabilityRequirement(
+            requirement_id="runtime-held-out",
+            kind="http_resource",
+            identifier="https://example.test/held-out",
+            case_ids=("held-out-required",),
+            evidence_refs=("context:held-out",),
+            status="runtime_required",
+        ),
+    )
+    observations = {
+        "healthy-unrelated": {
+            "baseline_attempt_count": 5,
+            "baseline_success_count": 5,
+            "passed_count": 2,
+        },
+        "timeout-required": {
+            "baseline_attempt_count": 3,
+            "baseline_success_count": 0,
+            "baseline_timeout_count": 3,
+            "baseline_timeout_max_seconds": 135.0,
+        },
+    }
+
+    screening = _candidate_screening_dataset(
+        dataset,
+        capability_requirements=requirements,
+        required_case_ids=("timeout-required", "held-out-required"),
+        max_cases=3,
+        allow_held_out_control_rescue=True,
+        empirical_observations=observations,
+    )
+
+    assert screening is not None
+    assert [case.case_id for case in screening.cases] == [
+        "held-out-required",
+        "timeout-required",
+    ]
+    assert screening.recipe.source["held_out_control_rescue_case_ids"] == [
+        "held-out-required"
+    ]
+    assert screening.recipe.source["required_intervention_case_ids"] == [
+        "timeout-required",
+        "held-out-required",
+    ]
+    assert screening.recipe.source["intervention_exposure_case_ids"] == [
+        "held-out-required",
+        "timeout-required",
+    ]
+
+
 def test_candidate_screening_observation_tracks_physical_termination_axis() -> None:
     observations: dict[str, dict[str, float | int]] = {}
 
@@ -8328,7 +8406,8 @@ def test_replay_gate_attributes_unobserved_candidate_intervention_to_framework(
     )
     assert not any(event["code"] == "candidate_recovery_incomplete" for event in events)
     assert details["failure_class"] == "framework"
-    assert details["repairable"] is False
+    assert details["repairable"] is True
+    assert details["next_action"] == "repair_framework_control_selection"
     assert details["recovery_trace"]["candidate_intervention_required"] is True
     assert details["recovery_trace"]["candidate_intervention_observed"] is False
 
@@ -8347,7 +8426,64 @@ def test_replay_gate_attributes_unobserved_candidate_intervention_to_framework(
     )
     assert terminal_gate.gate_name == "candidate_replay"
     assert terminal_gate.details["failure_class"] == "framework"
-    assert terminal_gate.details["repairable"] is False
+    assert terminal_gate.details["repairable"] is True
+
+
+def test_replay_gate_requires_intervention_trace_even_when_both_variants_succeed(
+    tmp_path: Path,
+) -> None:
+    request = CandidateReplayRequest(
+        run_id="run-unobserved-success",
+        task_id="case-unobserved-success",
+        workspace_root=str(tmp_path),
+        target=SelfEvolveTargetRef(target_type="skill", target_id="recovery"),
+        candidate_id="candidate-unobserved-success",
+        overlay_skill_root=str(tmp_path / "overlay"),
+        task_input="complete task",
+    )
+    replay_result = _CandidateReplayResult(
+        request=request,
+        baseline=ReplayVariantResult(
+            variant_id="baseline",
+            status="succeeded",
+            trajectory=[{"action": {"content": "baseline"}}],
+        ),
+        candidate=ReplayVariantResult(
+            variant_id="candidate-unobserved-success",
+            status="succeeded",
+            trajectory=[{"action": {"content": "candidate"}}],
+        ),
+    )
+    dataset = SelfEvolveDataset(
+        cases=(
+            EvalCase(
+                case_id="case-unobserved-success",
+                input="complete task",
+            ),
+        ),
+        recipe=DatasetRecipe(
+            source={"kind": "trajectory_log"},
+            split_seed="unobserved-success",
+            splits={"train": ["case-unobserved-success"]},
+            trainable_case_ids=("case-unobserved-success",),
+        ),
+    )
+
+    details = _replay_gate_details(
+        replay_result,
+        dataset=dataset,
+        candidate_requires_intervention_exposure=True,
+    )
+
+    assert details["candidate_execution_observed"] is True
+    assert details["candidate_intervention_observed"] is False
+    assert details["code"] == "candidate_intervention_unobserved"
+    assert details["failure_class"] == "framework"
+    assert details["repairable"] is True
+    assert any(
+        event["code"] == "candidate_intervention_unobserved"
+        for event in details["causal_failure_events"]
+    )
 
 
 def test_replay_gate_repairs_candidate_only_after_intervention_is_observed(

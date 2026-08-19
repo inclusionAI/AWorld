@@ -82,6 +82,45 @@ def candidate_causal_admission_blocker(
     return False
 
 
+def causal_admission_prerequisite_blocker(
+    *,
+    gate_name: str,
+    passed: bool,
+    details: Mapping[str, object] | None,
+) -> bool:
+    """Return whether qualification failed before authoritative measurement.
+
+    Besides candidate-owned repair failures, this includes the narrow shared
+    framework case where screening selected a task that could not exercise a
+    replay-only candidate. Such a control-selection failure has no resumable
+    authoritative measurement checkpoint and must not be projected as an
+    invalid measurement retry.
+    """
+
+    if candidate_causal_admission_blocker(
+        gate_name=gate_name,
+        passed=passed,
+        details=details,
+    ):
+        return True
+    if passed or not isinstance(details, Mapping):
+        return False
+    admission_boundary = bool(
+        gate_name in _CANDIDATE_ADMISSION_GATES
+        and (
+            details.get("evaluator_skipped") is True
+            or details.get("checkpoint_stage") == "screening"
+        )
+    )
+    return bool(
+        admission_boundary
+        and details.get("code") == "candidate_intervention_unobserved"
+        and details.get("failure_owner") == "framework"
+        and details.get("failure_scope") == "shared_run"
+        and details.get("repairable") is True
+    )
+
+
 def _failure_events(
     details: Mapping[str, object],
 ) -> tuple[Mapping[str, object], ...]:
