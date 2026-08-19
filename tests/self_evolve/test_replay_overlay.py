@@ -7325,6 +7325,100 @@ async def test_required_replay_attests_signed_zero_tool_task_response(
 
 
 @pytest.mark.asyncio
+async def test_required_replay_ignores_unexecuted_message_tool_call_proposal(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    rejected_call = {
+        "id": "call-rejected",
+        "function": {
+            "name": "bash",
+            "arguments": (
+                '{"_aworld_replay":"compacted_tool_call_arguments",'
+                '"sanitized_reason":"invalid_json_arguments"}'
+            ),
+        },
+    }
+    trajectory = [
+        {
+            "state": {
+                "input": "continue the discussion",
+                "messages": [
+                    {
+                        "role": "assistant",
+                        "tool_calls": [rejected_call],
+                    }
+                ],
+            },
+            "action": {
+                "content": "A complete answer derived from supplied context.",
+                "is_agent_finished": "True",
+                "tool_calls": [],
+            },
+            "reward": {"tool_outputs": []},
+        }
+    ]
+
+    def fake_run(command, **kwargs):
+        response = {
+            "schema_version": "aworld.self_evolve.task_response.v1",
+            "trajectory": trajectory,
+            "trajectory_capture_mode": "task_response",
+        }
+        response["framework_attestation"] = {
+            "schema_version": "aworld.self_evolve.task_response_attestation.v2",
+            "signature": _task_response_signature(
+                response,
+                kwargs["task_response_attestation_key"],
+            ),
+        }
+        Path(kwargs["task_response_path"]).write_text(
+            json.dumps(response),
+            encoding="utf-8",
+        )
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=json.dumps(
+                {
+                    "trajectory": trajectory,
+                    "trajectory_capture_mode": "task_response",
+                }
+            )
+            + "\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr("aworld.self_evolve.replay._run_replay_cli", fake_run)
+    result = await AWorldCliReplayExecutor()(
+        ReplayExecutionRequest(
+            variant_id="baseline",
+            task_id="task-1",
+            candidate_id="cand-1",
+            workspace_root=str(tmp_path),
+            task_input="continue the discussion",
+            task_text="continue the discussion",
+            skill_root=None,
+            artifact_dir=str(tmp_path / "artifacts"),
+            evidence_policy_mode="required",
+        )
+    )
+
+    assert result.succeeded is True
+    assert result.metrics["evidence_policy_v2_runtime_trust_passed"] is True
+    assert result.metrics["framework_task_response_only_evidence"] is True
+    receipt = (
+        tmp_path
+        / "artifacts"
+        / "evidence"
+        / "framework_task_response_only_evidence.json"
+    )
+    assert json.loads(receipt.read_text(encoding="utf-8"))[
+        "external_tool_call_count"
+    ] == 0
+
+
+@pytest.mark.asyncio
 async def test_required_replay_keeps_evidence_requirement_after_tool_call(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

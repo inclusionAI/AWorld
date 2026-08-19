@@ -11514,35 +11514,37 @@ def _final_answer_artifact_reference_metrics(
 def _trajectory_external_tool_call_count(
     trajectory: Sequence[Mapping[str, Any]],
 ) -> int:
-    """Count bounded task-plane tool calls without retaining arguments."""
+    """Count authoritative task-plane tool calls without retaining arguments.
+
+    ``state.messages`` is a diagnostic conversation snapshot rather than the
+    executed action ledger.  Some providers preserve a rejected or truncated
+    tool-call proposal there even when the gateway discards it and emits a
+    normal terminal text action.  Treating those proposals as executed calls
+    makes a valid response-only replay impossible to attest because no tool
+    evidence can exist for an action that never crossed the tool boundary.
+
+    The signed trajectory's per-step ``action.tool_calls`` field is the
+    authoritative execution intent used by the replay gateway, so only count
+    calls from that field.  Repeated snapshots remain deduplicated by call id.
+    """
 
     tool_call_ids: set[str] = set()
     anonymous_count = 0
     for step in trajectory[:256]:
-        containers: list[object] = []
         action = step.get("action")
-        if isinstance(action, Mapping):
-            containers.append(action.get("tool_calls"))
-        state = step.get("state")
-        if isinstance(state, Mapping):
-            messages = state.get("messages")
-            if isinstance(messages, (list, tuple)):
-                containers.extend(
-                    message.get("tool_calls")
-                    for message in messages[:512]
-                    if isinstance(message, Mapping)
-                )
-        for raw_calls in containers:
-            if not isinstance(raw_calls, (list, tuple)):
+        if not isinstance(action, Mapping):
+            continue
+        raw_calls = action.get("tool_calls")
+        if not isinstance(raw_calls, (list, tuple)):
+            continue
+        for raw_call in raw_calls[:256]:
+            if not isinstance(raw_call, Mapping):
                 continue
-            for raw_call in raw_calls[:256]:
-                if not isinstance(raw_call, Mapping):
-                    continue
-                call_id = raw_call.get("id")
-                if isinstance(call_id, str) and call_id:
-                    tool_call_ids.add(call_id)
-                else:
-                    anonymous_count += 1
+            call_id = raw_call.get("id")
+            if isinstance(call_id, str) and call_id:
+                tool_call_ids.add(call_id)
+            else:
+                anonymous_count += 1
     return len(tool_call_ids) + anonymous_count
 
 
