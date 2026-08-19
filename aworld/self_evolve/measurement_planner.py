@@ -39,6 +39,7 @@ class CompiledMeasurementPlan:
     plan: MeasurementPlanV2
     feasibility: MeasurementFeasibility
     excluded_repair_screening_case_ids: tuple[str, ...]
+    deferred_unstable_case_ids: tuple[str, ...] = ()
 
 
 def compile_measurement_plan_v2(
@@ -51,6 +52,7 @@ def compile_measurement_plan_v2(
     deadlines: DeadlinePolicy,
     case_strata: Mapping[str, str] | None = None,
     repair_screening_case_ids: Sequence[str] = (),
+    deferred_control_case_ids: Sequence[str] = (),
     sentinel_case_count: int | None = None,
     plan_revision: int = 1,
     reusable_work_unit_ids: Sequence[str] = (),
@@ -59,8 +61,9 @@ def compile_measurement_plan_v2(
     """Compile one consistent plan without exposing repair cases to validation.
 
     Input order does not decide the sentinel panel. Cases are deterministically
-    interleaved across declared strata, so the same frozen experiment compiles
-    to the same work topology across Campaign cycles.
+    interleaved across declared strata, while unstable controls are isolated in
+    a final optional stage. The same frozen experiment therefore compiles to the
+    same work topology across Campaign cycles.
     """
 
     control_fingerprint = experiment.control.fingerprint
@@ -90,12 +93,44 @@ def compile_measurement_plan_v2(
         if case_id not in hidden_primary and case_id not in transfer_case_ids
     )
     minimum_cases = experiment.outcomes.minimum_independent_cases
-    if len(authoritative_primary) < minimum_cases:
+    requested_deferred = tuple(dict.fromkeys(deferred_control_case_ids))
+    unknown_deferred = set(requested_deferred) - set(all_primary)
+    if unknown_deferred:
+        raise ValueError(
+            "deferred control case is outside the experiment sampling plan"
+        )
+    deferred_primary = tuple(
+        case_id
+        for case_id in authoritative_primary
+        if case_id in requested_deferred
+    )
+    stable_primary = tuple(
+        case_id
+        for case_id in authoritative_primary
+        if case_id not in deferred_primary
+    )
+    if len(stable_primary) < minimum_cases:
+        # Isolation is advisory to reach a sound decision, not permission to
+        # make that decision unreachable. Re-admit the minimum deterministic
+        # subset only when no sufficiently large stable panel exists.
+        deferred_order = _stratified_case_order(
+            deferred_primary,
+            case_strata={
+                case_id: declared_strata[case_id]
+                for case_id in deferred_primary
+                if case_id in declared_strata
+            },
+            salt=dataset_fingerprint,
+        )
+        re_admit_count = minimum_cases - len(stable_primary)
+        stable_primary = (*stable_primary, *deferred_order[:re_admit_count])
+        deferred_primary = deferred_order[re_admit_count:]
+    if len(stable_primary) < minimum_cases:
         raise ValueError(
             "positive conclusion is unreachable after excluding candidate-influencing cases"
         )
     if sentinel_case_count is None:
-        requested_sentinel = min(3, len(authoritative_primary))
+        requested_sentinel = min(3, len(stable_primary))
     elif (
         isinstance(sentinel_case_count, bool)
         or not isinstance(sentinel_case_count, int)
@@ -105,18 +140,27 @@ def compile_measurement_plan_v2(
     else:
         requested_sentinel = sentinel_case_count
     sentinel_count = min(
-        len(authoritative_primary), max(minimum_cases, requested_sentinel)
+        len(stable_primary), max(minimum_cases, requested_sentinel)
     )
     ordered_primary = _stratified_case_order(
-        authoritative_primary,
+        stable_primary,
         case_strata={
             case_id: declared_strata[case_id]
-            for case_id in authoritative_primary
+            for case_id in stable_primary
             if case_id in declared_strata
         },
         salt=dataset_fingerprint,
     )
     sentinel_ids = ordered_primary[:sentinel_count]
+    deferred_order = _stratified_case_order(
+        deferred_primary,
+        case_strata={
+            case_id: declared_strata[case_id]
+            for case_id in deferred_primary
+            if case_id in declared_strata
+        },
+        salt=dataset_fingerprint,
+    )
     expansion_ids = ordered_primary[sentinel_count:]
     stages: list[SamplingStage] = [
         SamplingStage(
@@ -135,7 +179,19 @@ def compile_measurement_plan_v2(
                 kind=SamplingStageKind.EXPANSION,
                 case_ids=expansion_ids,
                 minimum_case_count=0,
-                batch_size=min(2, len(expansion_ids)),
+                batch_size=1,
+                optional=True,
+                visibility_role=CaseVisibilityRole.AUTHORITATIVE_VALIDATION,
+            )
+        )
+    if deferred_order:
+        stages.append(
+            SamplingStage(
+                stage_id="deferred-controls",
+                kind=SamplingStageKind.EXPANSION,
+                case_ids=deferred_order,
+                minimum_case_count=0,
+                batch_size=1,
                 optional=True,
                 visibility_role=CaseVisibilityRole.AUTHORITATIVE_VALIDATION,
             )
@@ -194,6 +250,7 @@ def compile_measurement_plan_v2(
         plan=plan,
         feasibility=feasibility,
         excluded_repair_screening_case_ids=screening,
+        deferred_unstable_case_ids=deferred_primary,
     )
 
 
@@ -281,6 +338,7 @@ def compile_screening_measurement_plan_v2(
         plan=plan,
         feasibility=feasibility,
         excluded_repair_screening_case_ids=(),
+        deferred_unstable_case_ids=(),
     )
 
 

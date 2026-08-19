@@ -2225,7 +2225,7 @@ def _action_policy_violation(
         return "action_parameters_uninspectable", {
             "action_fingerprint": fingerprint,
         }
-    observed_bindings = _loopback_bindings(serialized)
+    observed_bindings = _action_parameter_loopback_bindings(action)
     observed_endpoints = frozenset(
         _normalized_endpoint_authority(item) for item in observed_bindings
     )
@@ -2409,6 +2409,41 @@ def _checked_action_parameters(action: Any) -> str | None:
     if len(serialized.encode("utf-8", errors="replace")) > _ACTION_PARAMETER_BYTE_LIMIT:
         return None
     return serialized
+
+
+def _action_parameter_loopback_bindings(action: Any) -> frozenset[str]:
+    """Extract endpoints from raw parameter strings without JSON escapes.
+
+    The serialized parameter envelope is useful for enforcing a total byte
+    bound, but scanning that JSON text changes a valid terminal payload such as
+    ``{"source_url": "http://127.0.0.1:4100"}`` into an escaped string.  The
+    endpoint regex can then consume the escape backslash and report the declared
+    endpoint as malformed.  Walk the already-bounded parameter value instead so
+    policy decisions are made on the exact strings supplied by the caller.
+    """
+
+    pending: list[object] = [getattr(action, "params", None)]
+    strings: list[str] = []
+    inspected = 0
+    while pending and inspected < 2_048:
+        current = pending.pop()
+        inspected += 1
+        if isinstance(current, str):
+            strings.append(current)
+            continue
+        if isinstance(current, Mapping):
+            for key, value in list(current.items())[:256]:
+                if isinstance(key, str):
+                    strings.append(key)
+                pending.append(value)
+            continue
+        if isinstance(current, (list, tuple, set, frozenset)):
+            pending.extend(list(current)[:256])
+    return frozenset(
+        endpoint
+        for value in strings
+        for endpoint in _loopback_bindings(value)
+    )
 
 
 def _loopback_bindings(value: str) -> frozenset[str]:

@@ -154,6 +154,25 @@ def test_candidate_influencing_cases_are_excluded_from_authoritative_plan() -> N
     assert compiled.excluded_repair_screening_case_ids == ("case-1", "case-2")
 
 
+def test_unstable_controls_are_deferred_out_of_sentinel_but_remain_optional() -> None:
+    compiled = _compile(
+        _experiment(),
+        deferred_control_case_ids=("case-3", "case-4"),
+        sentinel_case_count=2,
+    )
+
+    sentinel, expansion, deferred = compiled.plan.stages
+    assert sentinel.kind is SamplingStageKind.SENTINEL
+    assert set(sentinel.case_ids).isdisjoint({"case-3", "case-4"})
+    assert expansion.optional is True
+    assert deferred.stage_id == "deferred-controls"
+    assert deferred.kind is SamplingStageKind.EXPANSION
+    assert deferred.optional is True
+    assert deferred.batch_size == 1
+    assert set(deferred.case_ids) == {"case-3", "case-4"}
+    assert set(compiled.deferred_unstable_case_ids) == {"case-3", "case-4"}
+
+
 def test_screening_plan_is_frozen_as_non_authoritative_qualification() -> None:
     experiment = _experiment(
         selection_protocol="staged_qualification_candidate"

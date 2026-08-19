@@ -171,6 +171,10 @@ from aworld.self_evolve.schema_diagnostics import SchemaFieldRepairConstraint
 from aworld.self_evolve.store import FilesystemSelfEvolveStore
 from aworld.self_evolve.targets import SkillTextTarget
 from aworld.self_evolve.trace_pack import build_trace_pack
+from aworld.self_evolve.trajectory_context import (
+    TrajectoryContextSnapshot,
+    TrajectoryContextTurn,
+)
 from aworld.self_evolve.credit_assignment import (
     TargetInventory,
     TargetSelectionDecision,
@@ -3864,7 +3868,7 @@ def test_replay_evaluator_admission_rejects_absolute_candidate_incompletion() ->
     }
 
 
-def test_replay_evaluator_admission_uses_authoritative_policy_verdict() -> None:
+def test_replay_evaluator_admission_keeps_behavioral_policy_regressions() -> None:
     request = CandidateReplayRequest(
         run_id="run-authority-boundary",
         task_id="task-a",
@@ -3874,12 +3878,18 @@ def test_replay_evaluator_admission_uses_authoritative_policy_verdict() -> None:
         overlay_skill_root="/tmp/overlay",
         task_input="task A",
     )
-    metrics = {
+    baseline_metrics = {
         "evidence_runtime_policy_passed": False,
         "evidence_runtime_policy_authoritative_passed": True,
         "evidence_runtime_policy_authority": "advisory",
+        "evidence_runtime_policy_violation_count": 0,
         "task_completion_established": True,
         "evidence_strategy_passed": True,
+    }
+    candidate_metrics = {
+        **baseline_metrics,
+        "evidence_runtime_policy_violation_count": 2,
+        "evidence_runtime_policy_advisory_violation_count": 2,
     }
     replay = _CandidateReplayResult(
         request=request,
@@ -3887,13 +3897,13 @@ def test_replay_evaluator_admission_uses_authoritative_policy_verdict() -> None:
             variant_id="baseline",
             status="succeeded",
             trajectory=[],
-            metrics=metrics,
+            metrics=baseline_metrics,
         ),
         candidate=ReplayVariantResult(
             variant_id="candidate-1",
             status="succeeded",
             trajectory=[],
-            metrics=metrics,
+            metrics=candidate_metrics,
         ),
     )
 
@@ -3903,8 +3913,15 @@ def test_replay_evaluator_admission_uses_authoritative_policy_verdict() -> None:
     )
 
     assert gate is not None
-    assert gate.passed is True
-    assert gate.details["regressions"] == []
+    assert gate.passed is False
+    assert gate.details["regressions"] == [
+        {
+            "metric": "evidence_runtime_policy_violation_count",
+            "baseline": 0,
+            "candidate": 2,
+            "direction": "increased",
+        }
+    ]
 
 
 def test_replay_evaluator_admission_allows_missing_or_non_regressed_evidence() -> None:
@@ -13567,6 +13584,88 @@ def test_authoritative_invalid_control_is_persisted_and_deprioritized(
         "case-1": {"attempt_count": 1, "invalid_control_count": 1}
     }
     assert ordered.cases[-1].case_id == "case-1"
+
+
+def test_authoritative_replay_compacts_and_defers_short_context_continuation() -> None:
+    current_task = {"content": "rollout阶段的策略"}
+    prior_turns = tuple(
+        TrajectoryContextTurn(
+            role="assistant" if index % 2 else "user",
+            content=(f"turn-{index}: " + "context " * 240),
+            source_task_id=f"prior-{index}",
+            evidence_ref=f"evidence-{index}",
+        )
+        for index in range(5)
+    )
+    transcript = "\n".join(
+        f"{turn.role.title()}: {turn.content}" for turn in prior_turns
+    )
+    reconstructed = {
+        "content": (
+            "Recorded prior task context [same_session_predecessor]:\n"
+            f"{transcript}\n\nCurrent task:\n{current_task['content']}"
+        )
+    }
+    snapshot = TrajectoryContextSnapshot(
+        schema_version="aworld.self_evolve.trajectory_context.v2",
+        case_id="unstable-continuation",
+        source_kind="trajectory_log",
+        source_record_index=1,
+        source_fingerprint="sha256:source",
+        session_id="session-1",
+        task_input=current_task,
+        steps=(),
+        step_count=1,
+        omitted_step_count=0,
+        prior_turns=prior_turns,
+        link_strategy="same_session_predecessor",
+        context_status="complete",
+        context_reason=None,
+        fingerprint="sha256:context",
+    )
+    dataset = SelfEvolveDataset(
+        cases=(
+            EvalCase(
+                case_id="unstable-continuation",
+                input=reconstructed,
+                context_snapshot=snapshot,
+            ),
+            EvalCase(case_id="healthy-a", input={"content": "Analyze A"}),
+            EvalCase(case_id="healthy-b", input={"content": "Analyze B"}),
+        ),
+        recipe=DatasetRecipe(
+            source={"kind": "trajectory_log"},
+            split_seed="authoritative-context-compaction",
+            splits={
+                "train": [
+                    "unstable-continuation",
+                    "healthy-a",
+                    "healthy-b",
+                ]
+            },
+            trainable_case_ids=(
+                "unstable-continuation",
+                "healthy-a",
+                "healthy-b",
+            ),
+        ),
+    )
+
+    authoritative = runner_module._authoritative_replay_dataset(dataset)
+
+    assert authoritative.cases[-1].case_id == "unstable-continuation"
+    compacted = authoritative.cases[-1]
+    compacted_content = compacted.input["content"]
+    assert len(compacted_content) < len(reconstructed["content"])
+    assert "compacted, retained 2/5 latest turns" in compacted_content
+    assert "turn-0" not in compacted_content
+    assert "turn-4" in compacted_content
+    assert authoritative.recipe.source[
+        "authoritative_deferred_control_case_ids"
+    ] == ["unstable-continuation"]
+    assert authoritative.recipe.source[
+        "authoritative_compacted_context_case_ids"
+    ] == ["unstable-continuation"]
 
 
 def test_historical_baseline_lifecycles_preflight_control_before_generation(
@@ -23964,6 +24063,14 @@ def test_effective_replay_repetitions_share_planning_and_execution_policy() -> N
         repetitions_explicit=False,
         replay_case_count=11,
         measurement_min_independent_cases=4,
+        baseline_repetitions=2,
+        candidate_repetitions=3,
+    ) == (1, 1, "independent_case_adaptive")
+    assert runner_module._effective_replay_repetitions(
+        apply_policy="verified_only",
+        repetitions_explicit=False,
+        replay_case_count=2,
+        measurement_min_independent_cases=2,
         baseline_repetitions=2,
         candidate_repetitions=3,
     ) == (1, 1, "independent_case_adaptive")

@@ -479,6 +479,7 @@ def test_runner_compiles_screening_plan_with_stable_candidate_identity(
     ),
     (
         (1.0, None, 1, "stop_confident_positive", "succeeded"),
+        (1.0, "baseline-member", 1, "stop_confident_positive", "succeeded"),
         (-1.0, None, 1, "stop_regression", "candidate_rejected"),
         (None, "baseline", 1, "stop_framework_blocked", "framework_blocked"),
         (
@@ -591,6 +592,7 @@ async def test_authoritative_replay_executes_adaptive_plan_not_legacy_batch(
             checkpoint_quantum_seconds=60,
             resumable_chunked=True,
         ),
+        sentinel_case_count=(2 if framework_failure_variant == "baseline-member" else None),
     )
     persist_compiled_measurement_plan(
         store,
@@ -614,6 +616,24 @@ async def test_authoritative_replay_executes_adaptive_plan_not_legacy_batch(
             compiled.plan.deadlines.evidence_finalization_timeout_seconds
         )
         calls.append((execution.task_id, execution.variant_id))
+        if (
+            framework_failure_variant == "baseline-member"
+            and execution.variant_id == "baseline"
+            and execution.task_id == neutral_case
+        ):
+            return ReplayExecutionResult(
+                status="failed",
+                trajectory=[],
+                failure={
+                    "code": "replay_member_phase_timeout",
+                    "outcome": "framework_failure",
+                    "failure_owner": "framework",
+                    "failure_scope": "member",
+                    "failure_stage": "evaluation",
+                    "repairable": True,
+                    "reason": "one stochastic control member timed out",
+                },
+            )
         if (
             framework_failure_variant == "baseline-policy"
             and execution.variant_id == "baseline"
@@ -733,12 +753,22 @@ async def test_authoritative_replay_executes_adaptive_plan_not_legacy_batch(
         assert set(normalized.intentionally_unadmitted_case_ids) == {
             case.case_id for case in dataset.cases
         } - returned_case_ids
-    else:
-        assert {member.case_id for member in result.member_results or ()} == {
-            *primary,
-            transfer,
+    elif framework_failure_variant == "baseline-member":
+        returned_ids = {
+            member.case_id for member in result.member_results or ()
         }
-        assert len(calls) == len(dataset.cases) * 2
+        assert neutral_case not in returned_ids
+        assert transfer in returned_ids
+        assert len(returned_ids & set(primary)) == 2
+        assert len(calls) == 7
+    else:
+        returned_ids = {
+            member.case_id for member in result.member_results or ()
+        }
+        assert transfer in returned_ids
+        assert len(returned_ids & set(primary)) >= 2
+        assert len(returned_ids & set(primary)) < len(primary)
+        assert len(calls) == len(returned_ids) * 2
     schedule = json.loads(
         (
             tmp_path
@@ -754,6 +784,14 @@ async def test_authoritative_replay_executes_adaptive_plan_not_legacy_batch(
     if transfer_score is None:
         assert schedule["schedule_count"] == 1
         assert transfer not in schedule["admitted_case_ids"]
+    elif framework_failure_variant == "baseline-member":
+        assert schedule["schedule_count"] == 3
+        assert neutral_case in schedule["decision"]["invalid_control_case_ids"]
+        assert len(schedule["decision"]["baseline_qualified_case_ids"]) == 3
+        assert any(
+            decision["kind"] == "admit_expansion"
+            for decision in schedule["decision_history"]
+        )
     else:
         assert schedule["schedule_count"] == 3
         assert transfer in schedule["admitted_case_ids"]

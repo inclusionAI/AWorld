@@ -766,6 +766,11 @@ def _focused_repair_prompt_instructions(
         for value in contract_mapping.get("failure_codes", ())
         if isinstance(value, str)
     }
+    required_runtime_transitions = {
+        str(value)
+        for value in contract_mapping.get("required_runtime_transitions", ())
+        if isinstance(value, str)
+    }
     raw_fixture_probe_constraints = contract_mapping.get(
         "fixture_probe_constraints",
         (),
@@ -1062,6 +1067,17 @@ def _focused_repair_prompt_instructions(
             "byte-for-byte and produce a semantic change to the releasable target content. "
             "A files-only response, current_content, frontmatter-only provenance change, "
             "or another support repair does not satisfy this composition frontier. "
+        )
+    if "repair_candidate_task_behavior" in required_runtime_transitions:
+        instructions += (
+            "The active counterexample occurred during task rollout, so SKILL.md is "
+            "an authorized and required producer branch. Start from the focused "
+            "package content and materially change the guidance that caused the "
+            "observed action sequence; replay compiler/runtime edits alone are "
+            "insufficient. Preserve inherited typed support constraints while "
+            "removing redundant collection, stopping immediately after valid "
+            "artifact-backed evidence, and never embedding a replay endpoint literal "
+            "in generated evidence when a stable source identifier is sufficient. "
         )
     if (
         "align_compiler_runtime_recorded_response_selection"
@@ -1612,6 +1628,7 @@ def _validate_focused_repair_mutation_scope(
     contract = compile_repair_conformance_contract(repair_focus)
     if contract is None or not contract.required_branch_paths:
         return
+    authorized_paths = frozenset(contract.required_branch_paths)
     package = repair_focus.get("repair_candidate_package")
     if not isinstance(package, Mapping):
         return
@@ -1622,6 +1639,7 @@ def _validate_focused_repair_mutation_scope(
         and parent_content.strip()
         and candidate_content_semantic_fingerprint(candidate_content)
         != candidate_content_semantic_fingerprint(parent_content)
+        and "SKILL.md" not in authorized_paths
     ):
         raise CandidateSemanticValidationError(
             "focused_repair_target_scope_violation",
@@ -1659,7 +1677,6 @@ def _validate_focused_repair_mutation_scope(
             if isinstance(raw, Mapping)
         )
     }
-    authorized_paths = frozenset(contract.required_branch_paths)
     unauthorized_changes: list[str] = []
     for item in validate_candidate_files(candidate_files):
         if item.path in authorized_paths:
