@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 
 from aworld_cli.runtime_bootstrap import RuntimeBootstrapError, bootstrap_runtime
 
@@ -35,6 +36,17 @@ def _register_run_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--judge-backend-ref", type=str)
     parser.add_argument("--judge-model-profile", type=str)
     parser.add_argument("--emit-trajectory", action="store_true")
+    parser.add_argument(
+        "--trajectory-output",
+        type=str,
+        help="Write the direct-run trajectory to this file.",
+    )
+    parser.add_argument(
+        "--trajectory-format",
+        choices=("atif",),
+        default="atif",
+        help="Trajectory output format (default: atif).",
+    )
 
 
 def _parse_global_evolve_options(argv) -> argparse.Namespace:
@@ -170,6 +182,25 @@ class RunTopLevelCommand:
                     ensure_ascii=False,
                 )
             )
+        if args.trajectory_output:
+            import aworld
+
+            from aworld_cli.atif import build_atif_trajectory, write_atif_trajectory
+            from aworld_cli.main import _trajectory_payload_from_direct_run_summary
+
+            trajectory_payload = _trajectory_payload_from_direct_run_summary(
+                summary,
+                prompt=args.task,
+                agent_name=agent_name,
+            )
+            trajectory = build_atif_trajectory(
+                trajectory_payload,
+                prompt=args.task,
+                agent_name=agent_name,
+                agent_version=getattr(aworld, "__version__", "unknown"),
+                model_name=os.environ.get("LLM_MODEL_NAME"),
+            )
+            write_atif_trajectory(args.trajectory_output, trajectory)
         return 0
 
     def _resolve_agent_name(self, args) -> str | None:
