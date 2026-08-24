@@ -19,7 +19,9 @@ from aworld.self_evolve.campaign import (
     run_self_improvement_campaign,
     self_improvement_progress,
 )
+from aworld.self_evolve.candidate_package import candidate_package_fingerprint
 from aworld.self_evolve.sanitization import public_diagnostic_projection
+from aworld.self_evolve.types import CandidateVariant, SelfEvolveTargetRef
 
 
 def _budget(tokens: int = 10) -> dict:
@@ -77,6 +79,56 @@ def _report(*events: dict, status: str = "rejected", tokens: int = 10) -> dict:
     }
 
 
+def _write_paired_replay_timeout_artifacts(
+    controller: SelfImprovementCampaignController,
+    *,
+    run_id: str,
+    candidate: CandidateVariant,
+) -> str:
+    fingerprint = candidate_package_fingerprint(candidate)
+    controller.store.write_candidate(run_id, candidate)
+    replay_dir = (
+        controller.store.run_path(run_id) / "replay" / candidate.candidate_id
+    )
+    members_dir = replay_dir / "members"
+    members_dir.mkdir(parents=True)
+    (replay_dir / "request.json").write_text(
+        json.dumps(
+            {
+                "run_id": run_id,
+                "candidate_id": candidate.candidate_id,
+                "verified_candidate_package_fingerprint": fingerprint,
+                "measurement_plan": None,
+                "repetition_semantics": "per_member_v3",
+                "replay_adaptation": {
+                    "cases": [
+                        {"case_id": "case-complete"},
+                        {"case_id": "case-pending"},
+                    ]
+                },
+            },
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    (members_dir / "paired_replay_checkpoint.json").write_text(
+        json.dumps(
+            {
+                "schema_version": (
+                    "aworld.self_evolve.paired_replay_checkpoint.v1"
+                ),
+                "schedule": "progressive_paired",
+                "resume_safe": True,
+                "pending_case_ids": ["case-pending"],
+                "comparable_pair_case_ids": ["case-complete"],
+            },
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    return fingerprint
+
+
 @pytest.mark.parametrize("member_count", [1, 3])
 def test_disposition_is_cardinality_neutral(member_count: int) -> None:
     disposition = derive_self_improvement_disposition(
@@ -86,6 +138,113 @@ def test_disposition_is_cardinality_neutral(member_count: int) -> None:
     assert disposition.kind is SelfImprovementDispositionKind.CONTINUE_CANDIDATE
     assert disposition.owner == "candidate"
     assert len(disposition.progress_delta_ids) == 2
+
+
+def test_safe_paired_replay_timeout_is_collect_more_evidence() -> None:
+    report = {
+        "status": "rejected",
+        "rejection_attribution": {
+            "code": "replay_total_timeout",
+            "failure_class": "measurement",
+            "failure_owner": "framework",
+            "failure_scope": "shared_run",
+            "failure_stage": "evaluation",
+            "repairable": True,
+            "resume_safe": True,
+            "next_action": "continue_measurement",
+            "resume_candidate_id": "candidate-paired",
+            "resume_candidate_package_fingerprint": "sha256:" + "a" * 64,
+        },
+    }
+
+    disposition = derive_self_improvement_disposition(report)
+
+    assert disposition.kind is SelfImprovementDispositionKind.COLLECT_MORE_EVIDENCE
+    assert disposition.reason_code == "replay_total_timeout"
+    assert disposition.continuable is True
+
+
+def test_resume_migrates_exhausted_safe_paired_replay_timeout(
+    tmp_path: Path,
+) -> None:
+    controller = SelfImprovementCampaignController(workspace_root=tmp_path)
+    campaign = controller.create(
+        request={
+            "task": "resume paired replay",
+            "from_trajectory": "trajectory.log",
+            "apply_policy": "verified_only",
+        },
+        max_cycles=1,
+    )
+    run_id = f"{campaign.campaign_id}-cycle-001"
+    candidate = CandidateVariant(
+        candidate_id="candidate-paired-replay",
+        target=SelfEvolveTargetRef("skill", "demo", "/skills/demo/SKILL.md"),
+        content="# Demo\n\nImproved.\n",
+        rationale="resume paired replay",
+    )
+    fingerprint = _write_paired_replay_timeout_artifacts(
+        controller,
+        run_id=run_id,
+        candidate=candidate,
+    )
+    report = {
+        "run_id": run_id,
+        "status": "rejected",
+        "budget": _budget(),
+        "candidate_ids": [candidate.candidate_id],
+        "selected_candidate_id": candidate.candidate_id,
+        "rejection_attribution": {
+            "code": "replay_total_timeout",
+            "failure_class": "measurement",
+            "failure_owner": "framework",
+            "failure_scope": "shared_run",
+            "failure_stage": "evaluation",
+            "repairable": True,
+            "resume_safe": True,
+            "next_action": "continue_measurement",
+            "resume_candidate_id": candidate.candidate_id,
+            "resume_candidate_package_fingerprint": fingerprint,
+        },
+        "campaign": {},
+    }
+    report_path = controller.store.write_report(run_id, report)
+    exhausted = campaign_module.replace(
+        campaign,
+        status=SelfImprovementCampaignStatus.EXHAUSTED,
+        cycle_index=1,
+        run_ids=(run_id,),
+        latest_disposition=SelfImprovementDisposition(
+            kind=SelfImprovementDispositionKind.EXHAUSTED,
+            reason_code="measurement_authority_checkpoint_missing_or_invalid",
+            owner="evaluation_harness",
+            stage="evaluation",
+            scope="shared_run",
+        ),
+        latest_report_path=str(report_path),
+    )
+    controller.store.write_campaign(exhausted)
+
+    migrated = campaign_module._migrate_paired_replay_timeout_for_resume(
+        controller,
+        exhausted,
+    )
+
+    assert migrated.status is SelfImprovementCampaignStatus.ACTIVE
+    assert migrated.measurement_pending_run_id == run_id
+    assert migrated.measurement_pending_candidate_id == candidate.candidate_id
+    assert migrated.measurement_continuation_count == 1
+    assert migrated.latest_disposition is not None
+    assert migrated.latest_disposition.kind is (
+        SelfImprovementDispositionKind.COLLECT_MORE_EVIDENCE
+    )
+    migrated_report = controller.store.read_report(run_id)
+    assert migrated_report["paired_replay_resume_checkpoint"]["stage"] == (
+        "paired_replay"
+    )
+    assert migrated_report["campaign_causal_migration"]["action"] == (
+        "restore_paired_replay_timeout_checkpoint"
+    )
 
 
 def test_screening_intervention_failure_does_not_request_measurement_checkpoint() -> None:

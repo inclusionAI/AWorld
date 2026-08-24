@@ -22,7 +22,10 @@ from aworld.self_evolve.recovery_trace import (
 )
 from aworld.self_evolve.measurement_checkpoint import (
     MeasurementResumeCheckpointV1,
+    PairedReplayResumeCheckpointV1,
+    discover_paired_replay_resume_checkpoint,
     load_measurement_resume_checkpoint,
+    load_paired_replay_resume_checkpoint,
 )
 from aworld.self_evolve.schema_diagnostics import (
     websocket_handshake_http_version_constraint,
@@ -1532,19 +1535,26 @@ class SelfImprovementCampaignController:
             campaign.cumulative_authoritative_candidates
             + _report_authoritative_candidate_count(report)
         )
+        paired_replay_continuation_requested = (
+            _report_requests_paired_replay_continuation(report)
+        )
         measurement_retry_requested = (
             disposition.kind
             is SelfImprovementDispositionKind.REPAIR_MEASUREMENT
             and disposition.scope == "shared_run"
+            and not paired_replay_continuation_requested
             and (
                 measurement_outcome is None
                 or measurement_outcome.continuation_available
             )
         )
         measurement_continuation_requested = bool(
-            measurement_outcome is not None
-            and measurement_outcome.projection
-            is CampaignMeasurementProjection.MEASUREMENT_INCOMPLETE
+            paired_replay_continuation_requested
+            or (
+                measurement_outcome is not None
+                and measurement_outcome.projection
+                is CampaignMeasurementProjection.MEASUREMENT_INCOMPLETE
+            )
         )
         framework_handoff_requested = bool(
             measurement_outcome is not None
@@ -1621,6 +1631,9 @@ class SelfImprovementCampaignController:
         framework_handoff_checkpoint_available = bool(
             framework_handoff_requested
             and measurement_checkpoint is not None
+            and not isinstance(
+                measurement_checkpoint, PairedReplayResumeCheckpointV1
+            )
         )
         framework_control_plane_blocked = bool(
             disposition.kind is SelfImprovementDispositionKind.HANDOFF_GOAL
@@ -1643,6 +1656,20 @@ class SelfImprovementCampaignController:
             )
             disposition = _measurement_outcome_disposition(
                 measurement_outcome,
+                progress_delta_ids=disposition.progress_delta_ids,
+            )
+            status = _status_for_disposition(disposition)
+        elif (
+            paired_replay_continuation_requested
+            and not measurement_continuation_available
+        ):
+            disposition = SelfImprovementDisposition(
+                kind=SelfImprovementDispositionKind.EXHAUSTED,
+                reason_code="paired_replay_checkpoint_missing_or_invalid",
+                owner="evaluation_harness",
+                stage="candidate_replay",
+                scope="shared_run",
+                repairable=False,
                 progress_delta_ids=disposition.progress_delta_ids,
             )
             status = _status_for_disposition(disposition)
@@ -1988,6 +2015,10 @@ def run_self_improvement_campaign(
             campaign,
         )
         campaign = _migrate_regressing_measurement_checkpoint_for_resume(
+            controller,
+            campaign,
+        )
+        campaign = _migrate_paired_replay_timeout_for_resume(
             controller,
             campaign,
         )
@@ -4300,6 +4331,129 @@ def _migrate_regressing_measurement_checkpoint_for_resume(
     return migrated
 
 
+def _migrate_paired_replay_timeout_for_resume(
+    controller: SelfImprovementCampaignController,
+    campaign: SelfImprovementCampaign,
+) -> SelfImprovementCampaign:
+    """Reopen a campaign that discarded a safe progressive replay cursor."""
+
+    migration_action = "restore_paired_replay_timeout_checkpoint"
+    if (
+        campaign.status is not SelfImprovementCampaignStatus.EXHAUSTED
+        or not campaign.run_ids
+        or campaign.latest_disposition is None
+        or campaign.latest_disposition.reason_code
+        not in {
+            "measurement_authority_checkpoint_missing_or_invalid",
+            "paired_replay_checkpoint_missing_or_invalid",
+        }
+    ):
+        return campaign
+    latest_run_id = campaign.run_ids[-1]
+    try:
+        report = controller.store.read_report(latest_run_id)
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return campaign
+    prior_migration = report.get("campaign_causal_migration")
+    if (
+        isinstance(prior_migration, Mapping)
+        and prior_migration.get("action") == migration_action
+    ):
+        return campaign
+    if not _report_requests_paired_replay_continuation(report):
+        return campaign
+    attribution = next(
+        item
+        for item in (
+            report.get("rejection_attribution"),
+            report.get("campaign_failure_attribution"),
+        )
+        if isinstance(item, Mapping)
+        and item.get("code") == "replay_total_timeout"
+    )
+    candidate_id = attribution.get("resume_candidate_id")
+    verified_candidate_package_fingerprint = attribution.get(
+        "resume_candidate_package_fingerprint"
+    )
+    if not (
+        isinstance(candidate_id, str)
+        and candidate_id
+        and isinstance(verified_candidate_package_fingerprint, str)
+        and verified_candidate_package_fingerprint
+    ):
+        return campaign
+    checkpoint = discover_paired_replay_resume_checkpoint(
+        controller.store,
+        run_id=latest_run_id,
+        candidate_id=candidate_id,
+        verified_candidate_package_fingerprint=(
+            verified_candidate_package_fingerprint
+        ),
+    )
+    if checkpoint is None:
+        return campaign
+
+    corrected_disposition = SelfImprovementDisposition(
+        kind=SelfImprovementDispositionKind.COLLECT_MORE_EVIDENCE,
+        reason_code="replay_total_timeout",
+        owner="evaluation_harness",
+        stage=_optional_string(
+            attribution.get("failure_stage") or "candidate_replay"
+        ),
+        scope="shared_run",
+        repairable=True,
+        progress_delta_ids=campaign.latest_disposition.progress_delta_ids,
+        diagnostic_refs=_string_tuple(attribution.get("diagnostic_refs")),
+    )
+    ledger = campaign.measurement_ledger.charge_continuation(latest_run_id)
+    report["paired_replay_resume_checkpoint"] = checkpoint.to_dict()
+    report["measurement_pending_candidate_id"] = checkpoint.candidate_id
+    report["measurement_pending_candidate_fingerprint"] = (
+        checkpoint.candidate_fingerprint
+    )
+    report["campaign_causal_migration"] = {
+        "schema_version": (
+            "aworld.self_evolve.paired_replay_timeout_migration.v1"
+        ),
+        "action": migration_action,
+        "source_run_id": latest_run_id,
+        "candidate_id": checkpoint.candidate_id,
+        "continuation_granted": True,
+    }
+    report["self_improvement_disposition"] = corrected_disposition.to_dict()
+    raw_campaign = report.get("campaign")
+    if isinstance(raw_campaign, dict):
+        raw_campaign.update(
+            {
+                "measurement_continuation_count": ledger.continuation_count,
+                "measurement_pending_run_id": checkpoint.source_run_id,
+                "measurement_pending_candidate_id": checkpoint.candidate_id,
+                "max_cycles": (
+                    campaign.max_cycles
+                    + ledger.control_plane_run_count
+                    + int(campaign.repair_continuation_used)
+                ),
+            }
+        )
+    controller.store.write_report(latest_run_id, report)
+    migrated = replace(
+        campaign,
+        status=SelfImprovementCampaignStatus.ACTIVE,
+        measurement_ledger=ledger,
+        latest_progress=self_improvement_progress(report),
+        latest_disposition=corrected_disposition,
+        latest_measurement_outcome=None,
+        latest_report_path=str(
+            controller.store.run_path(latest_run_id) / "report.json"
+        ),
+        measurement_pending_run_id=checkpoint.source_run_id,
+        measurement_pending_candidate_id=checkpoint.candidate_id,
+        goal_handoff_path=None,
+    )
+    controller.store.write_campaign(migrated)
+    return migrated
+
+
 def _migrate_retryable_member_measurement_for_resume(
     controller: SelfImprovementCampaignController,
     campaign: SelfImprovementCampaign,
@@ -5438,6 +5592,33 @@ def _measurement_policy_disposition(
     )
 
 
+def _report_requests_paired_replay_continuation(
+    report: Mapping[str, Any],
+) -> bool:
+    """Recognize the typed, safe continuation contract for progressive replay."""
+
+    return any(
+        isinstance(attribution, Mapping)
+        and attribution.get("code") == "replay_total_timeout"
+        and attribution.get("failure_class") == "measurement"
+        and attribution.get("failure_owner")
+        in {"framework", "infrastructure", "evaluation_harness"}
+        and attribution.get("failure_scope") == "shared_run"
+        and attribution.get("repairable") is True
+        and attribution.get("resume_safe") is True
+        and attribution.get("next_action") == "continue_measurement"
+        and isinstance(attribution.get("resume_candidate_id"), str)
+        and bool(attribution.get("resume_candidate_id"))
+        and isinstance(
+            attribution.get("resume_candidate_package_fingerprint"), str
+        )
+        for attribution in (
+            report.get("rejection_attribution"),
+            report.get("campaign_failure_attribution"),
+        )
+    )
+
+
 def derive_self_improvement_disposition(
     report: Mapping[str, Any],
     previous_progress: SelfImprovementProgress | None = None,
@@ -5494,6 +5675,27 @@ def derive_self_improvement_disposition(
     terminal = report.get("terminal_cause")
     attribution = report.get("rejection_attribution")
     campaign_attribution = report.get("campaign_failure_attribution")
+    if _report_requests_paired_replay_continuation(report):
+        typed_attribution = next(
+            item
+            for item in (attribution, campaign_attribution)
+            if isinstance(item, Mapping)
+            and item.get("code") == "replay_total_timeout"
+        )
+        return SelfImprovementDisposition(
+            kind=SelfImprovementDispositionKind.COLLECT_MORE_EVIDENCE,
+            reason_code="replay_total_timeout",
+            owner="evaluation_harness",
+            stage=_optional_string(
+                typed_attribution.get("failure_stage") or "candidate_replay"
+            ),
+            scope="shared_run",
+            repairable=True,
+            progress_delta_ids=delta,
+            diagnostic_refs=_string_tuple(
+                typed_attribution.get("diagnostic_refs")
+            ),
+        )
     shared_measurement = next(
         (
             item
@@ -6344,10 +6546,17 @@ def _measurement_resume_checkpoint(
     *,
     run_id: str,
     report: Mapping[str, Any],
-) -> MeasurementResumeCheckpointV1 | None:
-    """Resolve only a typed, filesystem-validated authoritative checkpoint."""
+) -> MeasurementResumeCheckpointV1 | PairedReplayResumeCheckpointV1 | None:
+    """Resolve a typed, filesystem-validated shared replay checkpoint."""
 
-    return load_measurement_resume_checkpoint(
+    authoritative = load_measurement_resume_checkpoint(
+        store,
+        run_id=run_id,
+        report=report,
+    )
+    if authoritative is not None:
+        return authoritative
+    return load_paired_replay_resume_checkpoint(
         store,
         run_id=run_id,
         report=report,
@@ -6358,7 +6567,7 @@ def _campaign_measurement_resume_checkpoint(
     store: Any,
     *,
     campaign: SelfImprovementCampaign,
-) -> MeasurementResumeCheckpointV1 | None:
+) -> MeasurementResumeCheckpointV1 | PairedReplayResumeCheckpointV1 | None:
     run_id = campaign.measurement_pending_run_id
     candidate_id = campaign.measurement_pending_candidate_id
     if run_id is None or candidate_id is None or run_id not in campaign.run_ids:

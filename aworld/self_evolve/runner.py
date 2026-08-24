@@ -136,8 +136,11 @@ from aworld.self_evolve.measurement_control import (
 )
 from aworld.self_evolve.measurement_checkpoint import (
     MeasurementResumeCheckpointV1,
+    PairedReplayResumeCheckpointV1,
     discover_measurement_resume_checkpoint,
+    discover_paired_replay_resume_checkpoint,
     load_measurement_resume_checkpoint,
+    load_paired_replay_resume_checkpoint,
 )
 from aworld.self_evolve.measurement_planner import (
     compile_measurement_plan_v2,
@@ -16647,6 +16650,7 @@ def optimize_from_cli_request(
 
     measurement_pending_candidate: CandidateVariant | None = None
     measurement_resume_replay_dir: Path | None = None
+    authoritative_measurement_resume = False
     pending_measurement_values = (
         campaign_measurement_pending_run_id,
         campaign_measurement_pending_candidate_id,
@@ -16673,9 +16677,18 @@ def optimize_from_cli_request(
             report=pending_source_report,
         )
         if resume_checkpoint is None:
-            raise ValueError(
-                "campaign measurement resume checkpoint is missing or invalid"
+            resume_checkpoint = load_paired_replay_resume_checkpoint(
+                store,
+                run_id=campaign_measurement_pending_run_id,
+                report=pending_source_report,
             )
+        if resume_checkpoint is None:
+            raise ValueError(
+                "campaign replay resume checkpoint is missing or invalid"
+            )
+        authoritative_measurement_resume = isinstance(
+            resume_checkpoint, MeasurementResumeCheckpointV1
+        )
         if (
             resume_checkpoint.candidate_id
             != campaign_measurement_pending_candidate_id
@@ -16803,7 +16816,7 @@ def optimize_from_cli_request(
         replay_resume_dir=measurement_resume_replay_dir,
         measurement_resume_run_id=(
             str(campaign_measurement_pending_run_id)
-            if measurement_pending_candidate is not None
+            if authoritative_measurement_resume
             else None
         ),
         replay_max_steps=replay_max_steps,
@@ -16902,6 +16915,21 @@ def optimize_from_cli_request(
         report["measurement_pending_candidate_fingerprint"] = (
             measurement_checkpoint.candidate_fingerprint
         )
+    paired_replay_checkpoint = _paired_replay_pending_candidate_checkpoint(
+        store=store,
+        run_id=run_id,
+        report=report,
+    )
+    if paired_replay_checkpoint is not None:
+        report["paired_replay_resume_checkpoint"] = (
+            paired_replay_checkpoint.to_dict()
+        )
+        report["measurement_pending_candidate_id"] = (
+            paired_replay_checkpoint.candidate_id
+        )
+        report["measurement_pending_candidate_fingerprint"] = (
+            paired_replay_checkpoint.candidate_fingerprint
+        )
     if measurement_pending_candidate is not None:
         report["measurement_resume"] = {
             "schema_version": "aworld.self_evolve.measurement_resume.v1",
@@ -16911,7 +16939,11 @@ def optimize_from_cli_request(
                 measurement_pending_candidate
             ),
             "generation_skipped": True,
-            "resume_scope": "shared_measurement",
+            "resume_scope": (
+                "authoritative_measurement"
+                if authoritative_measurement_resume
+                else "paired_replay"
+            ),
             "source_replay_dir": (
                 str(measurement_resume_replay_dir)
                 if measurement_resume_replay_dir is not None
@@ -20237,6 +20269,49 @@ def _measurement_pending_candidate_checkpoint(
             run_id=run_id,
             candidate_id=candidate_id,
             candidate_fingerprint=fingerprint,
+        )
+        if checkpoint is not None:
+            return checkpoint
+    return None
+
+
+def _paired_replay_pending_candidate_checkpoint(
+    *,
+    store: FilesystemSelfEvolveStore,
+    run_id: str,
+    report: Mapping[str, Any],
+) -> PairedReplayResumeCheckpointV1 | None:
+    """Admit a typed continuation only for a safe progressive replay timeout."""
+
+    for key in ("campaign_failure_attribution", "rejection_attribution"):
+        attribution = report.get(key)
+        if not isinstance(attribution, Mapping):
+            continue
+        if not (
+            attribution.get("code") == "replay_total_timeout"
+            and attribution.get("failure_class") == "measurement"
+            and attribution.get("failure_owner")
+            in {"framework", "infrastructure", "evaluation_harness"}
+            and attribution.get("failure_scope") == "shared_run"
+            and attribution.get("repairable") is True
+            and attribution.get("resume_safe") is True
+            and attribution.get("next_action") == "continue_measurement"
+        ):
+            continue
+        candidate_id = attribution.get("resume_candidate_id")
+        fingerprint = attribution.get("resume_candidate_package_fingerprint")
+        if not (
+            isinstance(candidate_id, str)
+            and candidate_id
+            and isinstance(fingerprint, str)
+            and fingerprint
+        ):
+            continue
+        checkpoint = discover_paired_replay_resume_checkpoint(
+            store,
+            run_id=run_id,
+            candidate_id=candidate_id,
+            verified_candidate_package_fingerprint=fingerprint,
         )
         if checkpoint is not None:
             return checkpoint

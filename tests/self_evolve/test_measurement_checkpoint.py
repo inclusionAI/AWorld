@@ -20,7 +20,9 @@ from aworld.self_evolve.measurement import (
 )
 from aworld.self_evolve.measurement_checkpoint import (
     discover_measurement_resume_checkpoint,
+    discover_paired_replay_resume_checkpoint,
     load_measurement_resume_checkpoint,
+    load_paired_replay_resume_checkpoint,
 )
 from aworld.self_evolve.measurement_control import (
     AdaptiveMeasurementPolicy,
@@ -35,7 +37,10 @@ from aworld.self_evolve.replay_adaptation import (
     IsolationExclusiveFallback,
 )
 from aworld.self_evolve.store import FilesystemSelfEvolveStore
-from aworld.self_evolve.runner import _measurement_pending_candidate_checkpoint
+from aworld.self_evolve.runner import (
+    _measurement_pending_candidate_checkpoint,
+    _paired_replay_pending_candidate_checkpoint,
+)
 from aworld.self_evolve.types import CandidateVariant, SelfEvolveTargetRef
 
 
@@ -178,6 +183,59 @@ def _authoritative_fixture(
     return store, candidate, plan
 
 
+def _paired_replay_fixture(
+    tmp_path: Path,
+) -> tuple[FilesystemSelfEvolveStore, CandidateVariant]:
+    run_id = "run-paired-replay-checkpoint"
+    candidate = CandidateVariant(
+        candidate_id="candidate-paired-replay",
+        target=SelfEvolveTargetRef("skill", "demo", "/skills/demo/SKILL.md"),
+        content="# Demo\n\nImproved.\n",
+        rationale="paired replay checkpoint fixture",
+    )
+    verified_fingerprint = _fp("verified-paired-package")
+    store = FilesystemSelfEvolveStore(tmp_path)
+    store.write_candidate(run_id, candidate)
+    replay_dir = store.run_path(run_id) / "replay" / candidate.candidate_id
+    members_dir = replay_dir / "members"
+    members_dir.mkdir(parents=True)
+    (replay_dir / "request.json").write_text(
+        json.dumps(
+            {
+                "run_id": run_id,
+                "candidate_id": candidate.candidate_id,
+                "verified_candidate_package_fingerprint": verified_fingerprint,
+                "measurement_plan": None,
+                "repetition_semantics": "per_member_v3",
+                "replay_adaptation": {
+                    "cases": [
+                        {"case_id": "case-complete"},
+                        {"case_id": "case-pending"},
+                    ]
+                },
+            },
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    (members_dir / "paired_replay_checkpoint.json").write_text(
+        json.dumps(
+            {
+                "schema_version": (
+                    "aworld.self_evolve.paired_replay_checkpoint.v1"
+                ),
+                "schedule": "progressive_paired",
+                "resume_safe": True,
+                "pending_case_ids": ["case-pending"],
+                "comparable_pair_case_ids": ["case-complete"],
+            },
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    return store, candidate
+
+
 def test_authoritative_checkpoint_round_trips_and_binds_runtime_dependencies(
     tmp_path: Path,
 ) -> None:
@@ -210,6 +268,89 @@ def test_authoritative_checkpoint_round_trips_and_binds_runtime_dependencies(
         run_id=run_id,
         report=store.read_report(run_id),
     ) == checkpoint
+
+
+def test_paired_replay_checkpoint_round_trips_without_claiming_authority(
+    tmp_path: Path,
+) -> None:
+    store, candidate = _paired_replay_fixture(tmp_path)
+    run_id = "run-paired-replay-checkpoint"
+    fingerprint = candidate_package_fingerprint(candidate)
+    verified_fingerprint = _fp("verified-paired-package")
+
+    checkpoint = discover_paired_replay_resume_checkpoint(
+        store,
+        run_id=run_id,
+        candidate_id=candidate.candidate_id,
+        verified_candidate_package_fingerprint=verified_fingerprint,
+    )
+
+    assert checkpoint is not None
+    assert checkpoint.stage == "paired_replay"
+    assert checkpoint.candidate_fingerprint == fingerprint
+    assert (
+        checkpoint.verified_candidate_package_fingerprint
+        == verified_fingerprint
+    )
+    assert checkpoint.pending_case_ids == ("case-pending",)
+    assert checkpoint.completed_pair_case_ids == ("case-complete",)
+    report = {"paired_replay_resume_checkpoint": checkpoint.to_dict()}
+    assert load_paired_replay_resume_checkpoint(
+        store,
+        run_id=run_id,
+        report=report,
+    ) == checkpoint
+    assert load_measurement_resume_checkpoint(
+        store,
+        run_id=run_id,
+        report=report,
+    ) is None
+
+    progress_path = (
+        store.run_path(run_id)
+        / "replay"
+        / candidate.candidate_id
+        / "members"
+        / "paired_replay_checkpoint.json"
+    )
+    progress = json.loads(progress_path.read_text(encoding="utf-8"))
+    progress["resumed_pair_case_ids"] = ["case-complete"]
+    progress_path.write_text(json.dumps(progress, sort_keys=True), encoding="utf-8")
+    assert load_paired_replay_resume_checkpoint(
+        store,
+        run_id=run_id,
+        report=report,
+    ) is None
+
+
+def test_runner_admits_safe_paired_replay_timeout_checkpoint(
+    tmp_path: Path,
+) -> None:
+    store, candidate = _paired_replay_fixture(tmp_path)
+    run_id = "run-paired-replay-checkpoint"
+    verified_fingerprint = _fp("verified-paired-package")
+    report = {
+        "rejection_attribution": {
+            "code": "replay_total_timeout",
+            "failure_class": "measurement",
+            "failure_owner": "framework",
+            "failure_scope": "shared_run",
+            "repairable": True,
+            "resume_safe": True,
+            "next_action": "continue_measurement",
+            "resume_candidate_id": candidate.candidate_id,
+            "resume_candidate_package_fingerprint": verified_fingerprint,
+        }
+    }
+
+    checkpoint = _paired_replay_pending_candidate_checkpoint(
+        store=store,
+        run_id=run_id,
+        report=report,
+    )
+
+    assert checkpoint is not None
+    assert checkpoint.candidate_id == candidate.candidate_id
 
 
 def test_runner_admits_checkpoint_only_from_authoritative_graph(
