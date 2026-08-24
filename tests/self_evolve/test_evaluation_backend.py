@@ -1741,6 +1741,197 @@ def test_candidate_confidence_counts_independent_held_out_members_not_repetition
     assert decision.held_out_case_count == 1
 
 
+def test_candidate_confidence_accepts_independent_multi_member_paired_replay() -> None:
+    replay_dataset = SelfEvolveDataset(
+        cases=tuple(
+            EvalCase(
+                case_id=f"held-task-{index}",
+                input="held",
+                metadata={
+                    "replay": {
+                        "source_case_id": f"held-task-{index}",
+                        "independence_unit_id": f"held-task-{index}",
+                    }
+                },
+            )
+            for index in range(1, 5)
+        ),
+        recipe=DatasetRecipe(
+            source={
+                "kind": "trajectory_log",
+                "paired_replay": True,
+                "paired_replay_dataset_schema": (
+                    "aworld.self_evolve.paired_replay_dataset.v1"
+                ),
+                "original_case_count": 4,
+                "member_replay_count": 4,
+                "held_out_member_count": 4,
+                "replay_case_count": 4,
+            },
+            split_seed="seed",
+            splits={
+                "train": [],
+                "validation": [],
+                "held_out": [f"held-task-{index}" for index in range(1, 5)],
+            },
+            held_out_case_ids=tuple(
+                f"held-task-{index}" for index in range(1, 5)
+            ),
+        ),
+    )
+
+    decision = determine_candidate_confidence(
+        dataset=replay_dataset,
+        validation_summary=EvaluationSummary(
+            variant_id="cand-1",
+            metrics={"deterministic_signal": True},
+            dataset_split="validation",
+        ),
+        held_out_summary=EvaluationSummary(
+            variant_id="cand-1",
+            metrics={"deterministic_signal": True},
+            dataset_split="held_out",
+        ),
+        min_eval_cases=30,
+    )
+
+    assert decision.confidence == "verified"
+    assert decision.verification_mode == "trajectory_set_validation"
+    assert decision.held_out_case_count == 4
+
+
+def test_candidate_confidence_rejects_inconsistent_paired_member_counts() -> None:
+    replay_dataset = SelfEvolveDataset(
+        cases=tuple(
+            EvalCase(
+                case_id=f"held-task-{index}",
+                input="held",
+                metadata={
+                    "replay": {
+                        "source_case_id": f"held-task-{index}",
+                        "independence_unit_id": f"held-task-{index}",
+                    }
+                },
+            )
+            for index in range(1, 5)
+        ),
+        recipe=DatasetRecipe(
+            source={
+                "kind": "trajectory_log",
+                "paired_replay": True,
+                "paired_replay_dataset_schema": (
+                    "aworld.self_evolve.paired_replay_dataset.v1"
+                ),
+                "original_case_count": 2,
+                "member_replay_count": 4,
+                "held_out_member_count": 4,
+                "replay_case_count": 4,
+            },
+            split_seed="seed",
+            splits={
+                "train": [],
+                "validation": [],
+                "held_out": [f"held-task-{index}" for index in range(1, 5)],
+            },
+            held_out_case_ids=tuple(
+                f"held-task-{index}" for index in range(1, 5)
+            ),
+        ),
+    )
+
+    decision = determine_candidate_confidence(
+        dataset=replay_dataset,
+        validation_summary=EvaluationSummary(
+            variant_id="cand-1",
+            metrics={"deterministic_signal": True},
+            dataset_split="validation",
+        ),
+        held_out_summary=EvaluationSummary(
+            variant_id="cand-1",
+            metrics={"deterministic_signal": True},
+            dataset_split="held_out",
+        ),
+        min_eval_cases=30,
+    )
+
+    assert decision.confidence == "limited"
+
+
+def test_candidate_confidence_rejects_source_member_crossing_splits() -> None:
+    cases = (
+        EvalCase(
+            case_id="source-a__replay_1",
+            input="train",
+            metadata={
+                "replay": {
+                    "source_case_id": "source-a",
+                    "independence_unit_id": "source-a",
+                }
+            },
+        ),
+        EvalCase(
+            case_id="source-a__replay_2",
+            input="held",
+            metadata={
+                "replay": {
+                    "source_case_id": "source-a",
+                    "independence_unit_id": "source-a",
+                }
+            },
+        ),
+        EvalCase(
+            case_id="source-b",
+            input="held",
+            metadata={
+                "replay": {
+                    "source_case_id": "source-b",
+                    "independence_unit_id": "source-b",
+                }
+            },
+        ),
+    )
+    replay_dataset = SelfEvolveDataset(
+        cases=cases,
+        recipe=DatasetRecipe(
+            source={
+                "kind": "trajectory_log",
+                "paired_replay": True,
+                "paired_replay_dataset_schema": (
+                    "aworld.self_evolve.paired_replay_dataset.v1"
+                ),
+                "original_case_count": 2,
+                "member_replay_count": 2,
+                "held_out_member_count": 2,
+                "replay_case_count": 3,
+            },
+            split_seed="seed",
+            splits={
+                "train": ["source-a__replay_1"],
+                "validation": [],
+                "held_out": ["source-a__replay_2", "source-b"],
+            },
+            held_out_case_ids=("source-a__replay_2", "source-b"),
+        ),
+    )
+
+    decision = determine_candidate_confidence(
+        dataset=replay_dataset,
+        validation_summary=EvaluationSummary(
+            variant_id="cand-1",
+            metrics={"deterministic_signal": True},
+            dataset_split="validation",
+        ),
+        held_out_summary=EvaluationSummary(
+            variant_id="cand-1",
+            metrics={"deterministic_signal": True},
+            dataset_split="held_out",
+        ),
+        min_eval_cases=30,
+    )
+
+    assert decision.confidence == "limited"
+
+
 def test_candidate_confidence_accepts_stable_single_case_replay() -> None:
     single_case_replay_dataset = SelfEvolveDataset(
         cases=(
@@ -2119,6 +2310,43 @@ def test_candidate_confidence_accepts_trajectory_set_validation_with_small_held_
     assert decision.verification_split == "trajectory_set_validation"
     assert decision.verification_mode == "trajectory_set_validation"
     assert decision.held_out_case_count == 1
+
+
+def test_candidate_confidence_accepts_native_multi_case_trajectory_log() -> None:
+    dataset = SelfEvolveDataset(
+        cases=(
+            EvalCase(case_id="case-validation", input="validation"),
+            EvalCase(case_id="case-held-out", input="held-out"),
+        ),
+        recipe=DatasetRecipe(
+            source={"kind": "trajectory_log", "case_count": 2},
+            split_seed="seed",
+            splits={
+                "train": [],
+                "validation": ["case-validation"],
+                "held_out": ["case-held-out"],
+            },
+            held_out_case_ids=("case-held-out",),
+        ),
+    )
+
+    decision = determine_candidate_confidence(
+        dataset=dataset,
+        validation_summary=EvaluationSummary(
+            variant_id="candidate",
+            metrics={"deterministic_signal": True},
+            dataset_split="validation",
+        ),
+        held_out_summary=EvaluationSummary(
+            variant_id="candidate",
+            metrics={"deterministic_signal": True},
+            dataset_split="held_out",
+        ),
+        min_eval_cases=30,
+    )
+
+    assert decision.confidence == "verified"
+    assert decision.verification_mode == "trajectory_set_validation"
 
 
 def test_candidate_confidence_keeps_single_case_replay_limited_when_repetitions_are_low() -> None:

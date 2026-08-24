@@ -508,12 +508,70 @@ class LLMModel:
             merged.usage = self._safe_copy(next_response.usage)
         if self._usage_has_meaningful_value(getattr(next_response, "raw_usage", None)):
             merged.raw_usage = self._safe_copy(next_response.raw_usage)
+        if getattr(next_response, "usage_reported", False) is True:
+            merged.usage_reported = True
         if message is not None:
             merged.message = message
         return merged
 
     def _resolve_request_model_name(self, **kwargs) -> Optional[str]:
         return kwargs.get("model_name") or getattr(self.provider, "model_name", None)
+
+    def _begin_llm_call_record(
+        self,
+        *,
+        context: Context,
+        request_id: str,
+        messages: List[Dict[str, str]],
+        temperature: float,
+        max_tokens: int,
+        stop: List[str],
+        started_at: float,
+        **kwargs,
+    ) -> None:
+        """Register every provider attempt before control enters the provider."""
+
+        if context is None:
+            return
+        agent_id = (
+            getattr(context.agent_info, "current_agent_id", None)
+            if context.agent_info
+            else None
+        )
+        context.append_llm_call(
+            {
+                "request_id": request_id,
+                "record_kind": "model_attempt",
+                "provider_request_id": None,
+                "task_id": context.task_id,
+                "agent_id": agent_id,
+                "model": self._resolve_request_model_name(**kwargs),
+                "provider_name": self.provider_name,
+                "status": "started",
+                "started_at": started_at,
+                "finished_at": None,
+                "request": {
+                    "messages": self._safe_copy(messages),
+                    "tools": self._safe_copy(kwargs.get("tools")),
+                    "params": {
+                        "temperature": temperature,
+                        "max_tokens": max_tokens,
+                        "stop": self._safe_copy(stop),
+                    },
+                },
+                "response": None,
+                "usage_normalized": {},
+                "usage_raw": {},
+                "usage_reported": False,
+                "single_attempt_proven": bool(
+                    getattr(
+                        self.provider,
+                        "authoritative_usage_single_attempt",
+                        False,
+                    )
+                ),
+            }
+        )
 
     def _append_llm_call_record(
         self,
@@ -533,11 +591,16 @@ class LLMModel:
             return
 
         usage_normalized = self._safe_copy(getattr(response, "usage", None) or {})
-        usage_raw = self._safe_copy(getattr(response, "raw_usage", None) or usage_normalized)
+        provider_usage = getattr(response, "raw_usage", None)
+        usage_raw = self._safe_copy(
+            provider_usage if isinstance(provider_usage, dict) else {}
+        )
+        usage_reported = getattr(response, "usage_reported", False) is True
         agent_id = getattr(context.agent_info, "current_agent_id", None) if context.agent_info else None
 
         llm_call = {
             "request_id": request_id,
+            "record_kind": "model_attempt",
             "provider_request_id": getattr(response, "provider_request_id", None),
             "task_id": context.task_id,
             "agent_id": agent_id,
@@ -562,7 +625,25 @@ class LLMModel:
             },
             "usage_normalized": usage_normalized,
             "usage_raw": usage_raw,
+            "usage_reported": usage_reported,
+            "single_attempt_proven": bool(
+                getattr(
+                    self.provider,
+                    "authoritative_usage_single_attempt",
+                    False,
+                )
+            ),
         }
+        calls = context.get_llm_calls()
+        for index in range(len(calls) - 1, -1, -1):
+            existing = calls[index]
+            if (
+                isinstance(existing, dict)
+                and existing.get("request_id") == request_id
+                and existing.get("status") == "started"
+            ):
+                calls[index] = llm_call
+                return
         context.append_llm_call(llm_call)
 
     def _apply_updated_output(self, response: ModelResponse, updated_output: Any, *, sync_mode: bool = False) -> ModelResponse:
@@ -674,6 +755,16 @@ class LLMModel:
             except Exception as e:
                 logger.warning(f"BEFORE_LLM_CALL hook execution failed: {e}")
 
+        self._begin_llm_call_record(
+            context=context,
+            request_id=request_id,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            stop=stop,
+            started_at=start_ms,
+            **kwargs,
+        )
         try:
             resp = await self.provider.acompletion(
                 messages=messages,
@@ -834,6 +925,16 @@ class LLMModel:
             except Exception as e:
                 logger.warning(f"BEFORE_LLM_CALL hook execution failed: {e}")
 
+        self._begin_llm_call_record(
+            context=context,
+            request_id=request_id,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            stop=stop,
+            started_at=start_ms,
+            **kwargs,
+        )
         resp = self.provider.completion(
             messages=messages,
             temperature=temperature,
@@ -936,6 +1037,17 @@ class LLMModel:
         log_llm_record("INPUT", self.provider.model_name, messages, log_params, context_trace_id)
         stream_started_at = start_ms
 
+        self._begin_llm_call_record(
+            context=context,
+            request_id=request_id,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            stop=stop,
+            started_at=stream_started_at,
+            **kwargs,
+        )
+
         final_chunk = None
         record_chunk = None
         for chunk in self.provider.stream_completion(
@@ -1006,6 +1118,16 @@ class LLMModel:
         kwargs["llm_request_id"] = request_id
         log_llm_record("INPUT", self.provider.model_name, messages, log_params, context_trace_id)
         stream_started_at = start_ms
+        self._begin_llm_call_record(
+            context=context,
+            request_id=request_id,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            stop=stop,
+            started_at=stream_started_at,
+            **kwargs,
+        )
         final_chunk = None
         record_chunk = None
         async for chunk in self.provider.astream_completion(

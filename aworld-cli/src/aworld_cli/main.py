@@ -50,6 +50,81 @@ def _trajectory_from_direct_run_summary(
     return trajectory
 
 
+def _validated_complete_llm_usage_summary(value: object) -> dict | None:
+    if not isinstance(value, dict):
+        return None
+    call_count = value.get("call_count")
+    usage_call_count = value.get("usage_call_count")
+    total_tokens = value.get("total_tokens")
+    if (
+        value.get("schema_version") != "aworld.llm_usage_summary.v1"
+        or value.get("coverage_complete") is not True
+        or value.get("ledger_consistent") is not True
+        or isinstance(call_count, bool)
+        or not isinstance(call_count, int)
+        or call_count <= 0
+        or usage_call_count != call_count
+        or isinstance(total_tokens, bool)
+        or not isinstance(total_tokens, int)
+        or total_tokens < 0
+    ):
+        return None
+    normalized = {
+        "schema_version": "aworld.llm_usage_summary.v1",
+        "call_count": call_count,
+        "usage_call_count": usage_call_count,
+        "total_tokens": total_tokens,
+        "coverage_complete": True,
+        "ledger_consistent": True,
+    }
+    input_tokens = value.get("input_tokens")
+    output_tokens = value.get("output_tokens")
+    if (
+        not isinstance(input_tokens, bool)
+        and isinstance(input_tokens, int)
+        and input_tokens >= 0
+        and not isinstance(output_tokens, bool)
+        and isinstance(output_tokens, int)
+        and output_tokens >= 0
+    ):
+        normalized["input_tokens"] = input_tokens
+        normalized["output_tokens"] = output_tokens
+    return normalized
+
+
+def _complete_llm_usage_from_direct_run_summary(summary: dict) -> dict | None:
+    results = summary.get("results")
+    if not isinstance(results, list) or not results:
+        return None
+    summaries: list[dict] = []
+    for result in results:
+        if not isinstance(result, dict):
+            return None
+        usage = _validated_complete_llm_usage_summary(result.get("llm_usage"))
+        if usage is None:
+            return None
+        summaries.append(usage)
+    aggregate = {
+        "schema_version": "aworld.llm_usage_summary.v1",
+        "call_count": sum(item["call_count"] for item in summaries),
+        "usage_call_count": sum(
+            item["usage_call_count"] for item in summaries
+        ),
+        "total_tokens": sum(item["total_tokens"] for item in summaries),
+        "coverage_complete": True,
+        "ledger_consistent": True,
+        "iteration_count": len(summaries),
+    }
+    if all("input_tokens" in item and "output_tokens" in item for item in summaries):
+        aggregate["input_tokens"] = sum(
+            item["input_tokens"] for item in summaries
+        )
+        aggregate["output_tokens"] = sum(
+            item["output_tokens"] for item in summaries
+        )
+    return aggregate
+
+
 def _trajectory_payload_from_direct_run_summary(
     summary: dict | None,
     *,
@@ -76,6 +151,9 @@ def _trajectory_payload_from_direct_run_summary(
                 "trajectory": task_response_trajectory,
                 "trajectory_capture_mode": "task_response",
             }
+            llm_usage = _complete_llm_usage_from_direct_run_summary(summary)
+            if llm_usage is not None:
+                payload["llm_usage"] = llm_usage
             if llm_calls:
                 payload["llm_calls"] = llm_calls
             return payload

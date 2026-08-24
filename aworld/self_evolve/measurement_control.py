@@ -3085,6 +3085,8 @@ def decide_staged_measurement(
     confident_positive = (
         progress.confidence_lower_bound is not None
         and progress.confidence_lower_bound >= policy.minimum_effect
+        and progress.point_estimate is not None
+        and progress.point_estimate > 0.0
         and len(progress.comparable_case_ids) >= policy.minimum_independent_cases
     )
     regression_stage = next(

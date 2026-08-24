@@ -24,6 +24,9 @@ from aworld.self_evolve.measurement_checkpoint import (
     MeasurementResumeCheckpointV1,
     load_measurement_resume_checkpoint,
 )
+from aworld.self_evolve.schema_diagnostics import (
+    websocket_handshake_http_version_constraint,
+)
 
 
 CAMPAIGN_SCHEMA_VERSION = "aworld.self_evolve.campaign.v1"
@@ -37,6 +40,7 @@ DISPOSITION_SCHEMA_VERSION = "aworld.self_evolve.disposition.v1"
 PROGRESS_SCHEMA_VERSION = "aworld.self_evolve.progress.v1"
 DEFAULT_MAX_IMPROVEMENT_CYCLES = 3
 DEFAULT_MAX_MEASUREMENT_RETRIES = 2
+LEGACY_SINGLE_TURN_REPLAY_REPLACEMENT_STEPS = 24
 
 _ID_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]{0,159}$")
 _RUNTIME_ONLY_REQUEST_KEYS = {
@@ -1440,6 +1444,9 @@ class SelfImprovementCampaignController:
                 "campaign_id": campaign.campaign_id,
                 "campaign_cycle": next_cycle,
                 "campaign_prior_run_ids": prior_run_ids,
+                # Candidate feedback is champion-ordered, but scheduler state
+                # is a checkpoint log and must follow Campaign chronology.
+                "campaign_scheduler_checkpoint_run_ids": campaign.run_ids,
             }
         )
         if (
@@ -1558,6 +1565,23 @@ class SelfImprovementCampaignController:
             )
             else None
         )
+        if (
+            measurement_checkpoint is None
+            and (
+                measurement_retry_requested
+                or measurement_continuation_requested
+                or framework_handoff_requested
+            )
+            and campaign.measurement_pending_run_id is not None
+            and campaign.measurement_pending_candidate_id is not None
+        ):
+            # Resumed execution appends to the original frozen authority
+            # graph. A later timeout has no cycle-local journal to discover,
+            # so revalidate and retain the source checkpoint instead.
+            measurement_checkpoint = _campaign_measurement_resume_checkpoint(
+                self.store,
+                campaign=campaign,
+            )
         measurement_pending_candidate_id = (
             measurement_checkpoint.candidate_id
             if measurement_checkpoint is not None
@@ -1666,7 +1690,7 @@ class SelfImprovementCampaignController:
             goal_handoff_path=None,
             measurement_ledger=measurement_ledger,
             measurement_pending_run_id=(
-                actual_run_id
+                getattr(measurement_checkpoint, "source_run_id", actual_run_id)
                 if (
                     measurement_retry_available
                     or measurement_continuation_available
@@ -1692,9 +1716,13 @@ class SelfImprovementCampaignController:
             disposition.kind is SelfImprovementDispositionKind.CONTINUE_CANDIDATE
             and disposition.owner == "candidate"
             and disposition.repairable
-            and next_cycle >= _campaign_effective_max_cycles(campaign)
+            and (
+                next_cycle >= _campaign_effective_max_cycles(campaign)
+                or cumulative_authoritative_candidates
+                >= _campaign_effective_authoritative_candidate_limit(campaign)
+            )
             and not campaign.repair_continuation_used
-            and _report_has_new_candidate_counterexample(
+            and _report_has_new_candidate_repair_evidence(
                 report,
                 prior_reports=(
                     self.store.read_report(run_id)
@@ -1919,6 +1947,70 @@ def run_self_improvement_campaign(
             controller,
             campaign,
         )
+        campaign = _migrate_repairable_no_effect_for_resume(
+            controller,
+            campaign,
+        )
+        campaign = _migrate_unattempted_task_behavior_repair_for_resume(
+            controller,
+            campaign,
+        )
+        campaign = _migrate_unattempted_websocket_http_version_repair_for_resume(
+            controller,
+            campaign,
+        )
+        campaign = _migrate_no_work_constraint_frontier_for_resume(
+            controller,
+            campaign,
+        )
+        campaign = _migrate_no_work_after_screening_control_fix_for_resume(
+            controller,
+            campaign,
+        )
+        campaign = _migrate_discarded_screening_baseline_cache_for_resume(
+            controller,
+            campaign,
+        )
+        campaign = _migrate_suppressed_task_behavior_materialization_for_resume(
+            controller,
+            campaign,
+        )
+        campaign = _migrate_source_behavior_materialization_for_resume(
+            controller,
+            campaign,
+        )
+        campaign = _migrate_fixture_source_selection_for_resume(
+            controller,
+            campaign,
+        )
+        campaign = _migrate_no_work_after_fixture_source_selection_for_resume(
+            controller,
+            campaign,
+        )
+        campaign = _migrate_regressing_measurement_checkpoint_for_resume(
+            controller,
+            campaign,
+        )
+        campaign = _migrate_retryable_member_measurement_for_resume(
+            controller,
+            campaign,
+        )
+        campaign = _migrate_unobserved_support_timeout_for_resume(
+            controller,
+            campaign,
+        )
+        campaign = _migrate_legacy_single_turn_replay_budget_for_resume(
+            controller,
+            campaign,
+        )
+        campaign = _migrate_insufficient_evidence_replay_budget_for_resume(
+            controller,
+            campaign,
+        )
+        campaign = _migrate_no_work_after_single_turn_budget_fix_for_resume(
+            controller,
+            campaign,
+        )
         if campaign.status in {
             SelfImprovementCampaignStatus.COMPLETE,
             SelfImprovementCampaignStatus.BUDGET_LIMITED,
@@ -2086,10 +2178,14 @@ def _migrate_misattributed_candidate_blocker_for_resume(
     legacy_unobserved_intervention = (
         _report_has_legacy_unobserved_intervention_screening_failure(report)
     )
+    framework_screening_admission = (
+        _report_has_repairable_framework_screening_admission_failure(report)
+    )
     if (
         not (
             _report_has_repairable_candidate_prerequisite_failure(report)
             or legacy_unobserved_intervention
+            or framework_screening_admission
         )
         or _report_has_authoritative_measurement_observation(report)
     ):
@@ -2119,6 +2215,17 @@ def _migrate_misattributed_candidate_blocker_for_resume(
             progress_delta_ids=corrected.progress_delta_ids,
             diagnostic_refs=corrected.diagnostic_refs,
         )
+    elif framework_screening_admission:
+        corrected = SelfImprovementDisposition(
+            kind=SelfImprovementDispositionKind.CONTINUE_CAMPAIGN,
+            reason_code="framework_screening_admission_repaired",
+            owner="framework",
+            stage="candidate_screening",
+            scope="shared_run",
+            repairable=True,
+            progress_delta_ids=corrected.progress_delta_ids,
+            diagnostic_refs=corrected.diagnostic_refs,
+        )
     elif corrected.kind is not SelfImprovementDispositionKind.CONTINUE_CANDIDATE:
         return campaign
     migration = {
@@ -2126,6 +2233,8 @@ def _migrate_misattributed_candidate_blocker_for_resume(
         "action": (
             "restore_framework_control_selection_continuation"
             if legacy_unobserved_intervention
+            else "restore_framework_screening_admission_continuation"
+            if framework_screening_admission
             else "restore_candidate_repair_continuation"
         ),
         "source_run_id": latest_run_id,
@@ -2147,6 +2256,73 @@ def _migrate_misattributed_candidate_blocker_for_resume(
     )
     controller.store.write_campaign(migrated)
     return migrated
+
+
+def _report_has_repairable_framework_screening_admission_failure(
+    report: Mapping[str, Any],
+) -> bool:
+    """Recognize a pre-authority framework failure in screening plan admission.
+
+    This is deliberately narrower than a generic measurement failure.  No
+    treatment observation or authoritative candidate may exist, and the typed
+    candidate-replay gate must identify the screening checkpoint.  Therefore a
+    resume starts a new framework Campaign cycle; it never requests measurement
+    checkpoint reuse or consumes the candidate repair reserve.
+    """
+
+    attribution = report.get("campaign_failure_attribution")
+    if not isinstance(attribution, Mapping) or not (
+        attribution.get("primary_gate") == "candidate_replay"
+        and attribution.get("code") == "measurement_plan_admission_failed"
+        and attribution.get("failure_class") == "measurement"
+        and attribution.get("failure_owner") == "framework"
+        and attribution.get("failure_scope") == "shared_run"
+        and attribution.get("repairable") is True
+    ):
+        return False
+    raw_gates = report.get("gate_results")
+    screening_gate = bool(
+        isinstance(raw_gates, list)
+        and any(
+            isinstance(gate, Mapping)
+            and gate.get("gate_name") == "candidate_replay"
+            and gate.get("passed") is False
+            and isinstance(gate.get("details"), Mapping)
+            and gate["details"].get("code")
+            == "measurement_plan_admission_failed"
+            and gate["details"].get("checkpoint_stage") == "screening"
+            and gate["details"].get("failure_owner") == "framework"
+            and gate["details"].get("failure_scope") == "shared_run"
+            and gate["details"].get("repairable") is True
+            for gate in raw_gates
+        )
+    )
+    if not screening_gate or _report_has_authoritative_measurement_observation(
+        report
+    ):
+        return False
+    measurement = report.get("measurement")
+    if not isinstance(measurement, Mapping) or not (
+        measurement.get("status") == "not_started"
+        and measurement.get("validity_status") == "prerequisite_blocked"
+        and measurement.get("decision_reason")
+        == "measurement_plan_admission_failed"
+    ):
+        return False
+    funnel = report.get("verification_funnel")
+    if not isinstance(funnel, Mapping):
+        return False
+    raw_count = funnel.get("authoritative_candidate_count", 0)
+    if isinstance(raw_count, bool) or not isinstance(raw_count, (int, float)):
+        return False
+    # Generation/screening telemetry in legacy reports may project one
+    # advisory historical observation into the raw funnel.  The Campaign
+    # causal counter already discounts exactly that shared framework failure.
+    if raw_count > 0 and funnel.get(
+        "authoritative_case_observations_advisory_only"
+    ) is not True:
+        return False
+    return _report_authoritative_candidate_count(report) == 0
 
 
 def _report_has_legacy_unobserved_intervention_screening_failure(
@@ -2313,6 +2489,2680 @@ def _migrate_lost_repair_champion_for_resume(
     return migrated
 
 
+def _migrate_repairable_no_effect_for_resume(
+    controller: SelfImprovementCampaignController,
+    campaign: SelfImprovementCampaign,
+) -> SelfImprovementCampaign:
+    """Restore one bounded repair for legacy terminal neutral measurements.
+
+    Reports written before candidate release failures were projected into the
+    typed measurement outcome can say ``no_effect`` and terminally pause even
+    though the same immutable report contains a new candidate-owned repair
+    constraint.  Reopen only that typed case and consume the existing one-shot
+    repair reserve when either Campaign frontier is already full.
+    """
+
+    if (
+        campaign.status
+        not in {
+            SelfImprovementCampaignStatus.PAUSED,
+            SelfImprovementCampaignStatus.EXHAUSTED,
+        }
+        or not campaign.run_ids
+    ):
+        return campaign
+    latest_run_id = campaign.run_ids[-1]
+    try:
+        report = controller.store.read_report(latest_run_id)
+        outcome = campaign_measurement_outcome_from_report(report)
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return campaign
+    if (
+        outcome is None
+        or outcome.execution_status is not MeasurementExecutionStatus.COMPLETED
+        or outcome.improvement_outcome is not CandidateImprovementOutcome.NO_EFFECT
+        or outcome.continuation_available
+        or not any(
+            event.get("owner") == "candidate"
+            and event.get("repairable") is True
+            for event in _typed_failure_events(report)
+        )
+    ):
+        return campaign
+
+    needs_reserve = bool(
+        campaign.cycle_index >= _campaign_effective_max_cycles(campaign)
+        or campaign.cumulative_authoritative_candidates
+        >= _campaign_effective_authoritative_candidate_limit(campaign)
+    )
+    prior_reports: list[Mapping[str, Any]] = []
+    try:
+        prior_reports = [
+            controller.store.read_report(run_id)
+            for run_id in campaign.run_ids[:-1]
+        ]
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return campaign
+    if needs_reserve and (
+        campaign.repair_continuation_used
+        or not _report_has_new_candidate_repair_evidence(
+            report,
+            prior_reports=prior_reports,
+        )
+    ):
+        return campaign
+
+    corrected_outcome = CampaignMeasurementOutcomeV2(
+        execution_status=outcome.execution_status,
+        improvement_outcome=outcome.improvement_outcome,
+        release_gates_passed=False,
+        continuation_available=True,
+        reason_code="no_effect_candidate_repair_available",
+    )
+    corrected = _measurement_outcome_disposition(
+        corrected_outcome,
+        progress_delta_ids=(
+            campaign.latest_disposition.progress_delta_ids
+            if campaign.latest_disposition is not None
+            else ()
+        ),
+    )
+    migration = {
+        "schema_version": "aworld.self_evolve.neutral_repair_migration.v1",
+        "action": "restore_repairable_neutral_candidate",
+        "source_run_id": latest_run_id,
+        "previous_reason_code": outcome.reason_code,
+        "corrected_reason_code": corrected_outcome.reason_code,
+        "repair_reserve_consumed": needs_reserve,
+    }
+    report["campaign_causal_migration"] = migration
+    report["campaign_measurement_outcome"] = corrected_outcome.to_dict()
+    report["self_improvement_disposition"] = corrected.to_dict()
+    raw_campaign = report.get("campaign")
+    if isinstance(raw_campaign, dict):
+        raw_campaign["repair_continuation_used"] = bool(
+            campaign.repair_continuation_used or needs_reserve
+        )
+        raw_campaign["max_cycles"] = (
+            campaign.max_cycles
+            + campaign.measurement_ledger.control_plane_run_count
+            + int(campaign.repair_continuation_used or needs_reserve)
+        )
+        raw_campaign["max_authoritative_candidates"] = (
+            _campaign_authoritative_candidate_limit(campaign)
+            + int(campaign.repair_continuation_used or needs_reserve)
+        )
+    controller.store.write_report(latest_run_id, report)
+    migrated = replace(
+        campaign,
+        status=SelfImprovementCampaignStatus.ACTIVE,
+        repair_continuation_used=(
+            campaign.repair_continuation_used or needs_reserve
+        ),
+        latest_progress=self_improvement_progress(report),
+        latest_disposition=corrected,
+        latest_measurement_outcome=corrected_outcome,
+        latest_report_path=str(
+            controller.store.run_path(latest_run_id) / "report.json"
+        ),
+        measurement_pending_run_id=None,
+        measurement_pending_candidate_id=None,
+        goal_handoff_path=None,
+    )
+    controller.store.write_campaign(migrated)
+    return migrated
+
+
+def _migrate_unattempted_task_behavior_repair_for_resume(
+    controller: SelfImprovementCampaignController,
+    campaign: SelfImprovementCampaign,
+) -> SelfImprovementCampaign:
+    """Reopen a stalled frontier after task-behavior routing is introduced."""
+
+    if (
+        campaign.status is not SelfImprovementCampaignStatus.EXHAUSTED
+        or campaign.latest_disposition is None
+        or campaign.latest_disposition.reason_code
+        != "candidate_repair_frontier_stalled"
+        or not campaign.run_ids
+        or campaign.cycle_index >= _campaign_effective_max_cycles(campaign)
+        or campaign.cumulative_authoritative_candidates
+        >= _campaign_effective_authoritative_candidate_limit(campaign)
+    ):
+        return campaign
+    latest_run_id = campaign.run_ids[-1]
+    try:
+        report = controller.store.read_report(latest_run_id)
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return campaign
+    migration = report.get("campaign_causal_migration")
+    if (
+        isinstance(migration, Mapping)
+        and migration.get("action")
+        == "restore_unattempted_task_behavior_repair"
+    ):
+        return campaign
+    task_event = next(
+        (
+            event
+            for event in _typed_failure_events(report)
+            if event.get("owner") == "candidate"
+            and event.get("repairable") is True
+            and event.get("stage") == "task_rollout"
+            and event.get("code")
+            in {
+                "candidate_recovery_incomplete",
+                "target_behavior_completion_missing",
+            }
+        ),
+        None,
+    )
+    if task_event is None:
+        return campaign
+    semantic_key = task_event.get("semantic_key")
+    repair_state = report.get("repair_frontier_state")
+    scheduler_state = (
+        repair_state.get("scheduler_state")
+        if isinstance(repair_state, Mapping)
+        else None
+    )
+    family_map = (
+        scheduler_state.get("frontier_mutation_families")
+        if isinstance(scheduler_state, Mapping)
+        else None
+    )
+    attempted_families = (
+        family_map.get(semantic_key, ())
+        if isinstance(family_map, Mapping)
+        and isinstance(semantic_key, str)
+        else ()
+    )
+    if (
+        isinstance(attempted_families, (list, tuple))
+        and "target_behavior_composition" in attempted_families
+    ):
+        return campaign
+
+    corrected = _event_disposition(
+        SelfImprovementDispositionKind.CONTINUE_CANDIDATE,
+        "candidate_task_behavior_repair_available",
+        task_event,
+        (),
+    )
+    report["campaign_causal_migration"] = {
+        "schema_version": "aworld.self_evolve.task_behavior_repair_migration.v1",
+        "action": "restore_unattempted_task_behavior_repair",
+        "source_run_id": latest_run_id,
+        "frontier_semantic_key": semantic_key,
+        "required_mutation_family": "target_behavior_composition",
+    }
+    report["self_improvement_disposition"] = corrected.to_dict()
+    controller.store.write_report(latest_run_id, report)
+    migrated = replace(
+        campaign,
+        status=SelfImprovementCampaignStatus.ACTIVE,
+        latest_progress=self_improvement_progress(report),
+        latest_disposition=corrected,
+        latest_report_path=str(
+            controller.store.run_path(latest_run_id) / "report.json"
+        ),
+        goal_handoff_path=None,
+    )
+    controller.store.write_campaign(migrated)
+    return migrated
+
+
+def _migrate_unattempted_websocket_http_version_repair_for_resume(
+    controller: SelfImprovementCampaignController,
+    campaign: SelfImprovementCampaign,
+) -> SelfImprovementCampaign:
+    """Restore one bounded repair after a legacy WebSocket diagnostic collapse.
+
+    Older reports classified an invalid HTTP/1.0 WebSocket upgrade as a generic
+    protocol-trace failure. Reopen only a candidate-owned, pre-authority
+    conformance frontier whose bounded diagnostic proves that exact failure,
+    then persist the new typed producer constraint before generation resumes.
+    """
+
+    if (
+        campaign.status is not SelfImprovementCampaignStatus.EXHAUSTED
+        or campaign.latest_disposition is None
+        or campaign.latest_disposition.reason_code
+        != "candidate_repair_frontier_stalled"
+        or campaign.repair_continuation_used
+        or not campaign.run_ids
+        or campaign.cumulative_authoritative_candidates
+        >= _campaign_effective_authoritative_candidate_limit(campaign)
+    ):
+        return campaign
+    latest_run_id = campaign.run_ids[-1]
+    try:
+        report = controller.store.read_report(latest_run_id)
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return campaign
+    migration = report.get("campaign_causal_migration")
+    if (
+        isinstance(migration, Mapping)
+        and migration.get("action")
+        == "restore_unattempted_websocket_http_version_repair"
+    ):
+        return campaign
+    focus_candidate_id = report.get("repair_focus_candidate_id")
+    if not isinstance(focus_candidate_id, str) or not (
+        controller.store.run_path(latest_run_id)
+        / "candidates"
+        / f"{focus_candidate_id}.json"
+    ).is_file():
+        return campaign
+
+    matching_details: list[dict[str, Any]] = []
+    raw_gates = report.get("gate_results")
+    if isinstance(raw_gates, list):
+        for gate in raw_gates:
+            if not (
+                isinstance(gate, dict)
+                and gate.get("gate_name") == "candidate_repair_conformance"
+                and gate.get("passed") is False
+                and isinstance(gate.get("details"), dict)
+                and gate["details"].get("code")
+                == "repair_probe_execution_failed"
+                and gate["details"].get("failure_class") == "candidate"
+                and gate["details"].get("repairable") is True
+            ):
+                continue
+            diagnostics = gate["details"].get("diagnostics")
+            if not isinstance(diagnostics, list):
+                continue
+            if any(
+                isinstance(item, Mapping)
+                and item.get("code")
+                == "websocket_handshake_http_version_invalid"
+                for item in diagnostics
+            ):
+                # The typed constraint was already attempted; this migration is
+                # reserved for reports written before that constraint existed.
+                return campaign
+            if any(
+                isinstance(item, Mapping)
+                and item.get("code") == "protocol_trace_contract_failed"
+                and str(item.get("reason") or "").startswith(
+                    "advertised WebSocket handshake requires HTTP/1.1"
+                )
+                for item in diagnostics
+            ):
+                matching_details.append(gate["details"])
+    if not matching_details or _report_has_authoritative_measurement_observation(
+        report
+    ):
+        return campaign
+    funnel = report.get("verification_funnel")
+    if not isinstance(funnel, Mapping) or _report_authoritative_candidate_count(
+        report
+    ) != 0:
+        return campaign
+
+    constraint_object = websocket_handshake_http_version_constraint()
+    constraint = constraint_object.to_dict()
+    for details in matching_details:
+        details["schema_field_constraints"] = _merge_constraint_dicts(
+            details.get("schema_field_constraints"),
+            constraint,
+        )
+        diagnostics = details.get("diagnostics")
+        if isinstance(diagnostics, list):
+            for item in diagnostics:
+                if not (
+                    isinstance(item, dict)
+                    and item.get("code") == "protocol_trace_contract_failed"
+                    and str(item.get("reason") or "").startswith(
+                        "advertised WebSocket handshake requires HTTP/1.1"
+                    )
+                ):
+                    continue
+                item["code"] = "websocket_handshake_http_version_invalid"
+                item["schema_field_constraints"] = _merge_constraint_dicts(
+                    item.get("schema_field_constraints"),
+                    constraint,
+                )
+        repair_conformance = details.get("repair_conformance")
+        if isinstance(repair_conformance, dict):
+            repair_conformance["schema_field_constraints"] = (
+                _merge_constraint_dicts(
+                    repair_conformance.get("schema_field_constraints"),
+                    constraint,
+                )
+            )
+            raw_failure_codes = repair_conformance.get("failure_codes")
+            failure_codes = (
+                [
+                    str(item)
+                    for item in raw_failure_codes
+                    if isinstance(item, str)
+                ]
+                if isinstance(raw_failure_codes, list)
+                else []
+            )
+            repair_conformance["failure_codes"] = list(
+                dict.fromkeys(
+                    [
+                        *failure_codes,
+                        "websocket_handshake_http_version_invalid",
+                    ]
+                )
+            )
+
+    corrected_progress = self_improvement_progress(report)
+    corrected = SelfImprovementDisposition(
+        kind=SelfImprovementDispositionKind.CONTINUE_CANDIDATE,
+        reason_code="candidate_websocket_http_version_repair_available",
+        owner="candidate",
+        stage="capability_preflight",
+        scope="candidate",
+        repairable=True,
+        progress_delta_ids=corrected_progress.delta_from(
+            campaign.latest_progress
+        ),
+    )
+    report["campaign_causal_migration"] = {
+        "schema_version": (
+            "aworld.self_evolve.websocket_http_version_repair_migration.v1"
+        ),
+        "action": "restore_unattempted_websocket_http_version_repair",
+        "source_run_id": latest_run_id,
+        "constraint_identity_digest": constraint_object.identity_digest,
+        "repair_reserve_consumed": True,
+    }
+    report["self_improvement_disposition"] = corrected.to_dict()
+    raw_campaign = report.get("campaign")
+    if isinstance(raw_campaign, dict):
+        raw_campaign["repair_continuation_used"] = True
+        raw_campaign["max_cycles"] = (
+            campaign.max_cycles
+            + campaign.measurement_ledger.control_plane_run_count
+            + 1
+        )
+        raw_campaign["max_authoritative_candidates"] = (
+            _campaign_authoritative_candidate_limit(campaign) + 1
+        )
+    controller.store.write_report(latest_run_id, report)
+    migrated = replace(
+        campaign,
+        status=SelfImprovementCampaignStatus.ACTIVE,
+        repair_continuation_used=True,
+        latest_progress=corrected_progress,
+        latest_disposition=corrected,
+        latest_report_path=str(
+            controller.store.run_path(latest_run_id) / "report.json"
+        ),
+        measurement_pending_run_id=None,
+        measurement_pending_candidate_id=None,
+        goal_handoff_path=None,
+    )
+    controller.store.write_campaign(migrated)
+    return migrated
+
+
+def _merge_constraint_dicts(
+    raw_constraints: Any,
+    constraint: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    constraints = (
+        [dict(item) for item in raw_constraints if isinstance(item, Mapping)]
+        if isinstance(raw_constraints, list)
+        else []
+    )
+    identity = json.dumps(
+        constraint,
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    if all(
+        json.dumps(
+            item,
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        != identity
+        for item in constraints
+    ):
+        constraints.append(dict(constraint))
+    return constraints
+
+
+def _migrate_no_work_constraint_frontier_for_resume(
+    controller: SelfImprovementCampaignController,
+    campaign: SelfImprovementCampaign,
+) -> SelfImprovementCampaign:
+    """Recover a migrated repair contract that scheduler state kept dormant.
+
+    The candidate repair reserve is still the sole candidate-work allowance.
+    A cycle that scheduled zero optimizer iterations is charged as one
+    framework control-plane run, and only the semantic frontier owning the new
+    typed constraint is reactivated.
+    """
+
+    if (
+        campaign.status is not SelfImprovementCampaignStatus.EXHAUSTED
+        or not campaign.repair_continuation_used
+        or campaign.latest_disposition is None
+        or campaign.latest_disposition.reason_code
+        != "candidate_repair_frontier_stalled"
+        or len(campaign.run_ids) < 2
+    ):
+        return campaign
+    no_work_run_id = campaign.run_ids[-1]
+    if no_work_run_id in campaign.measurement_ledger.framework_blocked_run_ids:
+        return campaign
+    try:
+        no_work_report = controller.store.read_report(no_work_run_id)
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return campaign
+    source_run_id: str | None = None
+    source_report: Mapping[str, Any] | None = None
+    prior_reactivation_run_id: str | None = None
+    prior_reactivation_report: Mapping[str, Any] | None = None
+    checkpoint_lineage_repair_already_applied = False
+    for prior_run_id in reversed(campaign.run_ids[:-1]):
+        try:
+            prior_report = controller.store.read_report(prior_run_id)
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            continue
+        migration = prior_report.get("campaign_causal_migration")
+        action = (
+            migration.get("action")
+            if isinstance(migration, Mapping)
+            else None
+        )
+        if action == (
+            "reactivate_migrated_constraint_after_checkpoint_lineage_regression"
+        ):
+            checkpoint_lineage_repair_already_applied = True
+        elif (
+            prior_reactivation_report is None
+            and action == "reactivate_migrated_constraint_after_no_work_cycle"
+        ):
+            prior_reactivation_run_id = prior_run_id
+            prior_reactivation_report = prior_report
+        elif (
+            source_report is None
+            and action == "restore_unattempted_websocket_http_version_repair"
+        ):
+            source_run_id = prior_run_id
+            source_report = prior_report
+    if source_run_id is None or source_report is None:
+        return campaign
+    raw_gates = no_work_report.get("gate_results")
+    no_work_gate = bool(
+        isinstance(raw_gates, list)
+        and len(raw_gates) == 1
+        and isinstance(raw_gates[0], Mapping)
+        and raw_gates[0].get("gate_name") == "candidate_generation"
+        and raw_gates[0].get("passed") is False
+        and isinstance(raw_gates[0].get("details"), Mapping)
+        and raw_gates[0]["details"].get("generated_candidate_count") == 0
+        and raw_gates[0]["details"].get("iterations") == 0
+    )
+    if not no_work_gate or _report_authoritative_candidate_count(
+        no_work_report
+    ) != 0:
+        return campaign
+    frontier_keys = _websocket_http_version_frontier_keys(source_report)
+    if not frontier_keys:
+        return campaign
+    repair_state = no_work_report.get("repair_frontier_state")
+    scheduler_state = (
+        repair_state.get("scheduler_state")
+        if isinstance(repair_state, dict)
+        else None
+    )
+    if not isinstance(scheduler_state, dict):
+        return campaign
+    raw_progress = scheduler_state.get("frontier_progress")
+    raw_stalls = scheduler_state.get("frontier_stalls")
+    raw_families = scheduler_state.get("frontier_mutation_families")
+    if not all(
+        isinstance(value, dict)
+        for value in (raw_progress, raw_stalls, raw_families)
+    ):
+        return campaign
+    eligible_keys = tuple(
+        key
+        for key in frontier_keys
+        if key in raw_progress and key in raw_stalls
+    )
+    if not eligible_keys:
+        return campaign
+    checkpoint_lineage_regressed = prior_reactivation_report is not None
+    if checkpoint_lineage_regressed:
+        if (
+            checkpoint_lineage_repair_already_applied
+            or prior_reactivation_run_id
+            not in campaign.measurement_ledger.framework_blocked_run_ids
+        ):
+            return campaign
+        prior_repair_state = prior_reactivation_report.get(
+            "repair_frontier_state"
+        )
+        prior_scheduler_state = (
+            prior_repair_state.get("scheduler_state")
+            if isinstance(prior_repair_state, Mapping)
+            else None
+        )
+        prior_stalls = (
+            prior_scheduler_state.get("frontier_stalls")
+            if isinstance(prior_scheduler_state, Mapping)
+            else None
+        )
+        prior_families = (
+            prior_scheduler_state.get("frontier_mutation_families")
+            if isinstance(prior_scheduler_state, Mapping)
+            else None
+        )
+        prior_reset_is_authoritative = bool(
+            isinstance(prior_stalls, Mapping)
+            and isinstance(prior_families, Mapping)
+            and prior_scheduler_state.get("last_focused_frontier") is None
+            and all(prior_stalls.get(key) == 0 for key in eligible_keys)
+            and all(prior_families.get(key) == [] for key in eligible_keys)
+        )
+        current_state_reverted = bool(
+            any(raw_stalls.get(key) != 0 for key in eligible_keys)
+            or any(raw_families.get(key) != [] for key in eligible_keys)
+            or scheduler_state.get("last_focused_frontier") is not None
+        )
+        if not prior_reset_is_authoritative or not current_state_reverted:
+            return campaign
+    for key in eligible_keys:
+        raw_stalls[key] = 0
+        raw_families[key] = []
+    scheduler_state["last_focused_frontier"] = None
+    records = repair_state.get("records")
+    if isinstance(records, list):
+        for record in records:
+            if not (
+                isinstance(record, dict)
+                and record.get("semantic_key") in eligible_keys
+            ):
+                continue
+            record["status"] = "active"
+            record["mutation_families"] = []
+        repair_state["active_count"] = sum(
+            isinstance(record, Mapping) and record.get("status") == "active"
+            for record in records
+        )
+        repair_state["dormant_count"] = sum(
+            isinstance(record, Mapping) and record.get("status") == "dormant"
+            for record in records
+        )
+        repair_state["resolved_count"] = sum(
+            isinstance(record, Mapping) and record.get("status") == "resolved"
+            for record in records
+        )
+        repair_state["regressed_count"] = sum(
+            isinstance(record, Mapping) and record.get("status") == "regressed"
+            for record in records
+        )
+
+    corrected = SelfImprovementDisposition(
+        kind=SelfImprovementDispositionKind.CONTINUE_CAMPAIGN,
+        reason_code=(
+            "framework_scheduler_checkpoint_lineage_repaired"
+            if checkpoint_lineage_regressed
+            else "framework_migrated_constraint_frontier_reactivated"
+        ),
+        owner="framework",
+        stage="candidate_generation",
+        scope="shared_run",
+        repairable=True,
+        progress_delta_ids=(
+            campaign.latest_disposition.progress_delta_ids
+            if campaign.latest_disposition is not None
+            else ()
+        ),
+    )
+    no_work_report["campaign_causal_migration"] = {
+        "schema_version": (
+            "aworld.self_evolve.scheduler_checkpoint_lineage_migration.v1"
+            if checkpoint_lineage_regressed
+            else "aworld.self_evolve.no_work_frontier_migration.v1"
+        ),
+        "action": (
+            "reactivate_migrated_constraint_after_checkpoint_lineage_regression"
+            if checkpoint_lineage_regressed
+            else "reactivate_migrated_constraint_after_no_work_cycle"
+        ),
+        "source_run_id": source_run_id,
+        "no_work_run_id": no_work_run_id,
+        "superseded_checkpoint_run_id": (
+            prior_reactivation_run_id
+            if checkpoint_lineage_regressed
+            else None
+        ),
+        "reactivated_frontier_keys": list(eligible_keys),
+        "candidate_generation_iterations": 0,
+        "candidate_generation_count": 0,
+    }
+    no_work_report["self_improvement_disposition"] = corrected.to_dict()
+    ledger = campaign.measurement_ledger.charge_framework_blocked(
+        no_work_run_id
+    )
+    raw_campaign = no_work_report.get("campaign")
+    if isinstance(raw_campaign, dict):
+        raw_campaign["framework_blocked_count"] = ledger.framework_blocked_count
+        raw_campaign["max_cycles"] = (
+            campaign.max_cycles
+            + ledger.control_plane_run_count
+            + int(campaign.repair_continuation_used)
+        )
+    controller.store.write_report(no_work_run_id, no_work_report)
+    source_progress = self_improvement_progress(source_report)
+    migrated = replace(
+        campaign,
+        status=SelfImprovementCampaignStatus.ACTIVE,
+        measurement_ledger=ledger,
+        latest_progress=source_progress,
+        latest_disposition=corrected,
+        latest_measurement_outcome=None,
+        latest_report_path=str(
+            controller.store.run_path(no_work_run_id) / "report.json"
+        ),
+        measurement_pending_run_id=None,
+        measurement_pending_candidate_id=None,
+        goal_handoff_path=None,
+    )
+    controller.store.write_campaign(migrated)
+    return migrated
+
+
+def _websocket_http_version_frontier_keys(
+    report: Mapping[str, Any],
+) -> tuple[str, ...]:
+    keys: list[str] = []
+    raw_gates = report.get("gate_results")
+    if not isinstance(raw_gates, list):
+        return ()
+    for gate in raw_gates:
+        details = gate.get("details") if isinstance(gate, Mapping) else None
+        if not (
+            gate.get("gate_name") == "candidate_repair_conformance"
+            and gate.get("passed") is False
+            and isinstance(details, Mapping)
+        ):
+            continue
+        diagnostics = details.get("diagnostics")
+        if not (
+            isinstance(diagnostics, list)
+            and any(
+                isinstance(item, Mapping)
+                and item.get("code")
+                == "websocket_handshake_http_version_invalid"
+                for item in diagnostics
+            )
+        ):
+            continue
+        raw_events = details.get("causal_failure_events")
+        if not isinstance(raw_events, list):
+            continue
+        for event in raw_events:
+            if not (
+                isinstance(event, Mapping)
+                and event.get("code") == "protocol_trace_contract_failed"
+                and event.get("owner") == "candidate"
+                and event.get("scope") == "candidate"
+                and event.get("stage") == "capability_preflight"
+                and event.get("repairable") is True
+                and isinstance(event.get("semantic_key"), str)
+            ):
+                continue
+            keys.append(str(event["semantic_key"]))
+    return tuple(dict.fromkeys(keys))
+
+
+def _migrate_no_work_after_screening_control_fix_for_resume(
+    controller: SelfImprovementCampaignController,
+    campaign: SelfImprovementCampaign,
+) -> SelfImprovementCampaign:
+    """Recover zero-work scheduler state after a framework screening blocker."""
+
+    migration_action = "restore_exploration_after_screening_control_no_work"
+    if (
+        campaign.status is not SelfImprovementCampaignStatus.EXHAUSTED
+        or campaign.latest_disposition is None
+        or campaign.latest_disposition.reason_code
+        != "candidate_repair_frontier_stalled"
+        or len(campaign.run_ids) < 2
+    ):
+        return campaign
+    no_work_run_id = campaign.run_ids[-1]
+    source_run_id: str | None = None
+    if no_work_run_id in campaign.measurement_ledger.framework_blocked_run_ids:
+        return campaign
+    try:
+        no_work_report = controller.store.read_report(no_work_run_id)
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return campaign
+    prior_migration = no_work_report.get("campaign_causal_migration")
+    if (
+        isinstance(prior_migration, Mapping)
+        and prior_migration.get("action") == migration_action
+    ):
+        return campaign
+    raw_gates = no_work_report.get("gate_results")
+    no_work_gate = bool(
+        isinstance(raw_gates, list)
+        and len(raw_gates) == 1
+        and isinstance(raw_gates[0], Mapping)
+        and raw_gates[0].get("gate_name") == "candidate_generation"
+        and raw_gates[0].get("passed") is False
+        and isinstance(raw_gates[0].get("details"), Mapping)
+        and raw_gates[0]["details"].get("generated_candidate_count") == 0
+        and raw_gates[0]["details"].get("iterations") == 0
+        and _report_authoritative_candidate_count(no_work_report) == 0
+    )
+    source_report: Mapping[str, Any] | None = None
+    for prior_run_id in reversed(campaign.run_ids[:-1]):
+        try:
+            prior_report = controller.store.read_report(prior_run_id)
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            continue
+        source_attribution = prior_report.get("campaign_failure_attribution")
+        if not (
+            isinstance(source_attribution, Mapping)
+            and source_attribution.get("primary_gate") == "candidate_replay"
+            and source_attribution.get("code") == "screening_control_infeasible"
+            and source_attribution.get("failure_owner") == "framework"
+            and source_attribution.get("failure_scope") == "shared_run"
+            and source_attribution.get("repairable") is True
+            and _report_authoritative_candidate_count(prior_report) == 0
+        ):
+            continue
+        source_run_id = prior_run_id
+        source_report = prior_report
+        break
+    if not no_work_gate or source_run_id is None or source_report is None:
+        return campaign
+    repair_state = no_work_report.get("repair_frontier_state")
+    scheduler_state = (
+        repair_state.get("scheduler_state")
+        if isinstance(repair_state, dict)
+        else None
+    )
+    if not (
+        isinstance(repair_state, dict)
+        and isinstance(scheduler_state, dict)
+        and repair_state.get("active_count") == 0
+        and int(repair_state.get("dormant_count") or 0) > 0
+    ):
+        return campaign
+    frontier_keys = _report_generation_frontier_keys(source_report)
+    raw_stalls = scheduler_state.get("frontier_stalls")
+    raw_families = scheduler_state.get("frontier_mutation_families")
+    if not (
+        frontier_keys
+        and isinstance(raw_stalls, dict)
+        and isinstance(raw_families, dict)
+    ):
+        return campaign
+    reactivated_keys = tuple(
+        key for key in frontier_keys if key in raw_stalls and key in raw_families
+    )
+    if not reactivated_keys:
+        return campaign
+    for key in reactivated_keys:
+        raw_stalls[key] = 0
+        raw_families[key] = []
+    scheduler_state["initial_exploration_scheduled"] = False
+    scheduler_state["untyped_frontier_exploration_scheduled"] = False
+    scheduler_state["last_focused_frontier"] = None
+    records = repair_state.get("records")
+    if isinstance(records, list):
+        for record in records:
+            if (
+                isinstance(record, dict)
+                and record.get("semantic_key") in reactivated_keys
+            ):
+                record["status"] = "active"
+                record["mutation_families"] = []
+        repair_state["active_count"] = sum(
+            isinstance(record, Mapping) and record.get("status") == "active"
+            for record in records
+        )
+        repair_state["dormant_count"] = sum(
+            isinstance(record, Mapping) and record.get("status") == "dormant"
+            for record in records
+        )
+
+    corrected = SelfImprovementDisposition(
+        kind=SelfImprovementDispositionKind.CONTINUE_CAMPAIGN,
+        reason_code="framework_screening_scheduler_checkpoint_repaired",
+        owner="framework",
+        stage="candidate_generation",
+        scope="shared_run",
+        repairable=True,
+        progress_delta_ids=campaign.latest_disposition.progress_delta_ids,
+    )
+    ledger = campaign.measurement_ledger.charge_framework_blocked(
+        no_work_run_id
+    )
+    no_work_report["campaign_causal_migration"] = {
+        "schema_version": (
+            "aworld.self_evolve.screening_no_work_migration.v1"
+        ),
+        "action": migration_action,
+        "source_run_id": source_run_id,
+        "no_work_run_id": no_work_run_id,
+        "candidate_generation_iterations": 0,
+        "candidate_generation_count": 0,
+        "reactivated_frontier_keys": list(reactivated_keys),
+        "candidate_reserve_granted": False,
+        "measurement_retry_granted": False,
+    }
+    no_work_report["self_improvement_disposition"] = corrected.to_dict()
+    raw_campaign = no_work_report.get("campaign")
+    if isinstance(raw_campaign, dict):
+        raw_campaign["framework_blocked_count"] = ledger.framework_blocked_count
+        raw_campaign["max_cycles"] = (
+            campaign.max_cycles
+            + ledger.control_plane_run_count
+            + int(campaign.repair_continuation_used)
+        )
+    controller.store.write_report(no_work_run_id, no_work_report)
+    migrated = replace(
+        campaign,
+        status=SelfImprovementCampaignStatus.ACTIVE,
+        measurement_ledger=ledger,
+        latest_progress=self_improvement_progress(source_report),
+        latest_disposition=corrected,
+        latest_measurement_outcome=None,
+        latest_report_path=str(
+            controller.store.run_path(no_work_run_id) / "report.json"
+        ),
+        measurement_pending_run_id=None,
+        measurement_pending_candidate_id=None,
+        goal_handoff_path=None,
+    )
+    controller.store.write_campaign(migrated)
+    return migrated
+
+
+def _report_generation_frontier_keys(
+    report: Mapping[str, Any],
+) -> tuple[str, ...]:
+    diagnostics = report.get("optimizer_diagnostics")
+    stack: list[object] = [diagnostics]
+    keys: list[str] = []
+    inspected = 0
+    while stack and inspected < 2_000:
+        current = stack.pop()
+        inspected += 1
+        if isinstance(current, Mapping):
+            key = current.get("active_frontier_key")
+            if isinstance(key, str) and key:
+                keys.append(key)
+            stack.extend(current.values())
+        elif isinstance(current, (list, tuple)):
+            stack.extend(current)
+    if keys:
+        return tuple(dict.fromkeys(keys))
+    repair_state = report.get("repair_frontier_state")
+    scheduler_state = (
+        repair_state.get("scheduler_state")
+        if isinstance(repair_state, Mapping)
+        else None
+    )
+    focused = (
+        scheduler_state.get("last_focused_frontier")
+        if isinstance(scheduler_state, Mapping)
+        else None
+    )
+    return (focused,) if isinstance(focused, str) and focused else ()
+
+
+def _migrate_discarded_screening_baseline_cache_for_resume(
+    controller: SelfImprovementCampaignController,
+    campaign: SelfImprovementCampaign,
+) -> SelfImprovementCampaign:
+    """Reopen one run whose qualified control cache was silently discarded.
+
+    The legacy screening loop reported a cache at candidate admission, then
+    unconditionally cleared it before the first control request.  Reopen only
+    when the immutable report proves a successful baseline for a case followed
+    by an uncached invalid baseline on that same case.  The failed cycle is
+    charged to the framework ledger and no candidate or measurement reserve is
+    granted.
+    """
+
+    migration_action = "restore_discarded_screening_baseline_cache"
+    if (
+        campaign.status is not SelfImprovementCampaignStatus.EXHAUSTED
+        or campaign.latest_disposition is None
+        or campaign.latest_disposition.reason_code
+        != "campaign_infrastructure_retry_limit_reached"
+        or not campaign.run_ids
+        or campaign.cumulative_authoritative_candidates
+        >= _campaign_effective_authoritative_candidate_limit(campaign)
+    ):
+        return campaign
+    for run_id in campaign.run_ids:
+        try:
+            prior_report = controller.store.read_report(run_id)
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            continue
+        migration = prior_report.get("campaign_causal_migration")
+        if (
+            isinstance(migration, Mapping)
+            and migration.get("action") == migration_action
+        ):
+            return campaign
+    latest_run_id = campaign.run_ids[-1]
+    try:
+        report = controller.store.read_report(latest_run_id)
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return campaign
+    raw_gates = report.get("gate_results")
+    typed_failure = bool(
+        isinstance(raw_gates, list)
+        and any(
+            isinstance(gate, Mapping)
+            and gate.get("gate_name") == "candidate_replay"
+            and gate.get("passed") is False
+            and isinstance(gate.get("details"), Mapping)
+            and gate["details"].get("code") == "screening_control_infeasible"
+            and gate["details"].get("checkpoint_stage") == "screening"
+            and gate["details"].get("failure_class") == "framework"
+            and gate["details"].get("failure_owner") == "framework"
+            and gate["details"].get("failure_scope") == "shared_run"
+            and gate["details"].get("repairable") is True
+            for gate in raw_gates
+        )
+    )
+    measurement = report.get("measurement")
+    if not typed_failure or not (
+        isinstance(measurement, Mapping)
+        and measurement.get("status") == "not_started"
+        and measurement.get("decision_reason") == "screening_control_infeasible"
+    ):
+        return campaign
+    population = report.get("population")
+    screening = (
+        population.get("screening")
+        if isinstance(population, Mapping)
+        else None
+    )
+    attempts = (
+        screening.get("attempts")
+        if isinstance(screening, Mapping)
+        else None
+    )
+    if not isinstance(attempts, list):
+        return campaign
+    successful_uncached_controls: set[str] = set()
+    later_uncached_invalid_controls: set[str] = set()
+    for attempt in attempts:
+        control_attempts = (
+            attempt.get("control_case_attempts")
+            if isinstance(attempt, Mapping)
+            else None
+        )
+        if not isinstance(control_attempts, list):
+            continue
+        for control in control_attempts:
+            if not isinstance(control, Mapping):
+                continue
+            raw_case_ids = control.get("case_ids")
+            case_ids = tuple(
+                str(case_id)
+                for case_id in (
+                    raw_case_ids
+                    if isinstance(raw_case_ids, (list, tuple))
+                    else ()
+                )
+                if isinstance(case_id, str) and case_id
+            )
+            if control.get("baseline_cache_offered") is not False:
+                continue
+            if control.get("baseline_status") == "succeeded":
+                successful_uncached_controls.update(case_ids)
+            elif (
+                control.get("invalid_control") is True
+                and control.get("baseline_status") == "failed"
+            ):
+                later_uncached_invalid_controls.update(case_ids)
+    affected_case_ids = tuple(
+        sorted(successful_uncached_controls & later_uncached_invalid_controls)
+    )
+    if not affected_case_ids:
+        return campaign
+
+    corrected = SelfImprovementDisposition(
+        kind=SelfImprovementDispositionKind.CONTINUE_CAMPAIGN,
+        reason_code="framework_screening_baseline_reuse_repaired",
+        owner="framework",
+        stage="candidate_screening",
+        scope="shared_run",
+        repairable=True,
+        progress_delta_ids=(
+            campaign.latest_disposition.progress_delta_ids
+            if campaign.latest_disposition is not None
+            else ()
+        ),
+    )
+    ledger = campaign.measurement_ledger.charge_framework_blocked(latest_run_id)
+    report["campaign_causal_migration"] = {
+        "schema_version": (
+            "aworld.self_evolve.screening_baseline_cache_migration.v1"
+        ),
+        "action": migration_action,
+        "source_run_id": latest_run_id,
+        "affected_case_ids": list(affected_case_ids),
+        "candidate_reserve_granted": False,
+        "measurement_retry_granted": False,
+    }
+    report["self_improvement_disposition"] = corrected.to_dict()
+    raw_campaign = report.get("campaign")
+    if isinstance(raw_campaign, dict):
+        raw_campaign["framework_blocked_count"] = ledger.framework_blocked_count
+        raw_campaign["max_cycles"] = (
+            campaign.max_cycles
+            + ledger.control_plane_run_count
+            + int(campaign.repair_continuation_used)
+        )
+    controller.store.write_report(latest_run_id, report)
+    migrated = replace(
+        campaign,
+        status=SelfImprovementCampaignStatus.ACTIVE,
+        measurement_ledger=ledger,
+        latest_progress=self_improvement_progress(report),
+        latest_disposition=corrected,
+        latest_measurement_outcome=None,
+        latest_report_path=str(
+            controller.store.run_path(latest_run_id) / "report.json"
+        ),
+        measurement_pending_run_id=None,
+        measurement_pending_candidate_id=None,
+        goal_handoff_path=None,
+    )
+    controller.store.write_campaign(migrated)
+    return migrated
+
+
+def _migrate_suppressed_task_behavior_materialization_for_resume(
+    controller: SelfImprovementCampaignController,
+    campaign: SelfImprovementCampaign,
+) -> SelfImprovementCampaign:
+    """Recover one frontier whose SKILL.md delta was overwritten by framework.
+
+    Legacy materialization inherited parent content for every source contract,
+    including task-rollout contracts that explicitly named SKILL.md as a
+    producer. Require repeated typed materialization failures and an otherwise
+    unmeasured cycle before charging one framework control-plane continuation.
+    """
+
+    migration_action = "restore_suppressed_task_behavior_materialization"
+    if (
+        campaign.status is not SelfImprovementCampaignStatus.EXHAUSTED
+        or campaign.latest_disposition is None
+        or campaign.latest_disposition.reason_code
+        != "candidate_repair_frontier_stalled"
+        or not campaign.run_ids
+        or campaign.cumulative_authoritative_candidates
+        >= _campaign_effective_authoritative_candidate_limit(campaign)
+    ):
+        return campaign
+    for run_id in campaign.run_ids:
+        try:
+            prior_report = controller.store.read_report(run_id)
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            continue
+        migration = prior_report.get("campaign_causal_migration")
+        if (
+            isinstance(migration, Mapping)
+            and migration.get("action") == migration_action
+        ):
+            return campaign
+    latest_run_id = campaign.run_ids[-1]
+    try:
+        report = controller.store.read_report(latest_run_id)
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return campaign
+    funnel = report.get("verification_funnel")
+    if not (
+        isinstance(funnel, Mapping)
+        and funnel.get("generation_materialization_frontier_exhausted") is True
+        and funnel.get("generation_stop_reason")
+        == "materialization_frontier_repeated"
+        and _report_authoritative_candidate_count(report) == 0
+    ):
+        return campaign
+    raw_gates = report.get("gate_results")
+    candidate_frontier = bool(
+        isinstance(raw_gates, list)
+        and any(
+            isinstance(gate, Mapping)
+            and gate.get("gate_name") == "candidate_replay"
+            and gate.get("passed") is False
+            and isinstance(gate.get("details"), Mapping)
+            and gate["details"].get("code")
+            == "candidate_screening_deadline_exceeded"
+            and gate["details"].get("failure_owner") == "candidate"
+            and gate["details"].get("failure_scope") == "candidate"
+            and gate["details"].get("repairable") is True
+            for gate in raw_gates
+        )
+    )
+    optimizer = report.get("optimizer_diagnostics")
+    raw_iterations = (
+        optimizer.get("iterations")
+        if isinstance(optimizer, Mapping)
+        else None
+    )
+    if not candidate_frontier or not isinstance(raw_iterations, list):
+        return campaign
+    suppressed_count = 0
+    contract_identity_digests: set[str] = set()
+    for iteration in raw_iterations:
+        diagnostics = (
+            iteration.get("diagnostics")
+            if isinstance(iteration, Mapping)
+            else None
+        )
+        failures = (
+            diagnostics.get("candidate_materialization_failures")
+            if isinstance(diagnostics, Mapping)
+            else None
+        )
+        if not isinstance(failures, list):
+            continue
+        for failure in failures:
+            if not isinstance(failure, Mapping) or not (
+                failure.get("code") == "repair_target_behavior_unchanged"
+                and failure.get("stage") == "candidate_semantic_validation"
+                and failure.get("representation") == "candidate_package"
+                and failure.get("repairable") is True
+            ):
+                continue
+            details = failure.get("details")
+            conformance = (
+                details.get("repair_conformance")
+                if isinstance(details, Mapping)
+                else None
+            )
+            reason = (
+                str(conformance.get("reason") or "")
+                if isinstance(conformance, Mapping)
+                else ""
+            )
+            if "task-rollout repair must materially change SKILL.md" not in reason:
+                continue
+            suppressed_count += 1
+            digest = failure.get("contract_identity_digest")
+            if isinstance(digest, str) and digest:
+                contract_identity_digests.add(digest)
+    if suppressed_count < 2:
+        return campaign
+
+    corrected = SelfImprovementDisposition(
+        kind=SelfImprovementDispositionKind.CONTINUE_CAMPAIGN,
+        reason_code="framework_task_behavior_materialization_repaired",
+        owner="framework",
+        stage="candidate_generation",
+        scope="shared_run",
+        repairable=True,
+        progress_delta_ids=(
+            campaign.latest_disposition.progress_delta_ids
+            if campaign.latest_disposition is not None
+            else ()
+        ),
+    )
+    ledger = campaign.measurement_ledger.charge_framework_blocked(latest_run_id)
+    report["campaign_causal_migration"] = {
+        "schema_version": (
+            "aworld.self_evolve.task_behavior_materialization_migration.v1"
+        ),
+        "action": migration_action,
+        "source_run_id": latest_run_id,
+        "suppressed_candidate_count": suppressed_count,
+        "contract_identity_digests": sorted(contract_identity_digests),
+        "candidate_reserve_granted": False,
+        "measurement_retry_granted": False,
+    }
+    report["self_improvement_disposition"] = corrected.to_dict()
+    raw_campaign = report.get("campaign")
+    if isinstance(raw_campaign, dict):
+        raw_campaign["framework_blocked_count"] = ledger.framework_blocked_count
+        raw_campaign["max_cycles"] = (
+            campaign.max_cycles
+            + ledger.control_plane_run_count
+            + int(campaign.repair_continuation_used)
+        )
+    controller.store.write_report(latest_run_id, report)
+    migrated = replace(
+        campaign,
+        status=SelfImprovementCampaignStatus.ACTIVE,
+        measurement_ledger=ledger,
+        latest_progress=self_improvement_progress(report),
+        latest_disposition=corrected,
+        latest_measurement_outcome=None,
+        latest_report_path=str(
+            controller.store.run_path(latest_run_id) / "report.json"
+        ),
+        measurement_pending_run_id=None,
+        measurement_pending_candidate_id=None,
+        goal_handoff_path=None,
+    )
+    controller.store.write_campaign(migrated)
+    return migrated
+
+
+def _migrate_source_behavior_materialization_for_resume(
+    controller: SelfImprovementCampaignController,
+    campaign: SelfImprovementCampaign,
+) -> SelfImprovementCampaign:
+    """Reopen one cycle after adding deterministic source canonicalization.
+
+    Legacy generation could spend both model attempts on the same valid
+    response-index helper topology even though the bounded analyzer cannot
+    follow returned helper values.  The new mutator canonicalizes that exact
+    topology before validation.  Charge the historical zero-candidate cycle to
+    framework control-plane work and grant no candidate or measurement reserve.
+    """
+
+    migration_action = "restore_source_behavior_materialization_frontier"
+    if (
+        campaign.status is not SelfImprovementCampaignStatus.EXHAUSTED
+        or campaign.latest_disposition is None
+        or campaign.latest_disposition.reason_code
+        != "candidate_repair_frontier_stalled"
+        or not campaign.run_ids
+        or campaign.cumulative_authoritative_candidates
+        >= _campaign_effective_authoritative_candidate_limit(campaign)
+    ):
+        return campaign
+    for run_id in campaign.run_ids:
+        try:
+            prior_report = controller.store.read_report(run_id)
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            continue
+        migration = prior_report.get("campaign_causal_migration")
+        if (
+            isinstance(migration, Mapping)
+            and migration.get("action") == migration_action
+        ):
+            return campaign
+
+    latest_run_id = campaign.run_ids[-1]
+    try:
+        report = controller.store.read_report(latest_run_id)
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return campaign
+    funnel = report.get("verification_funnel")
+    if not (
+        isinstance(funnel, Mapping)
+        and funnel.get("generation_materialization_frontier_exhausted") is True
+        and funnel.get("generation_stop_reason")
+        == "materialization_frontier_repeated"
+        and _report_authoritative_candidate_count(report) == 0
+        and not _report_has_authoritative_measurement_observation(report)
+    ):
+        return campaign
+
+    optimizer = report.get("optimizer_diagnostics")
+    iterations = (
+        optimizer.get("iterations") if isinstance(optimizer, Mapping) else None
+    )
+    if not isinstance(iterations, list):
+        return campaign
+    source_behavior_failures: list[Mapping[str, Any]] = []
+    all_materialization_failures: list[Mapping[str, Any]] = []
+    for iteration in iterations:
+        diagnostics = (
+            iteration.get("diagnostics")
+            if isinstance(iteration, Mapping)
+            else None
+        )
+        failures = (
+            diagnostics.get("candidate_materialization_failures")
+            if isinstance(diagnostics, Mapping)
+            else None
+        )
+        if not isinstance(failures, list):
+            continue
+        for failure in failures:
+            if not isinstance(failure, Mapping):
+                continue
+            all_materialization_failures.append(failure)
+            if (
+                failure.get("code") == "source_behavior_proof_failed"
+                and failure.get("stage") == "candidate_semantic_validation"
+                and failure.get("representation") == "candidate_package"
+                and failure.get("repairable") is True
+            ):
+                source_behavior_failures.append(failure)
+    if (
+        len(source_behavior_failures) < 2
+        or len(source_behavior_failures) != len(all_materialization_failures)
+    ):
+        return campaign
+    contract_identity_digests = {
+        str(failure["contract_identity_digest"])
+        for failure in source_behavior_failures
+        if isinstance(failure.get("contract_identity_digest"), str)
+        and failure.get("contract_identity_digest")
+    }
+    if len(contract_identity_digests) != 1:
+        return campaign
+
+    corrected = SelfImprovementDisposition(
+        kind=SelfImprovementDispositionKind.CONTINUE_CAMPAIGN,
+        reason_code="framework_source_behavior_canonicalization_repaired",
+        owner="framework",
+        stage="candidate_generation",
+        scope="shared_run",
+        repairable=True,
+        progress_delta_ids=campaign.latest_disposition.progress_delta_ids,
+    )
+    ledger = campaign.measurement_ledger.charge_framework_blocked(latest_run_id)
+    report["campaign_causal_migration"] = {
+        "schema_version": (
+            "aworld.self_evolve.source_behavior_materialization_migration.v1"
+        ),
+        "action": migration_action,
+        "source_run_id": latest_run_id,
+        "failed_generation_attempt_count": len(source_behavior_failures),
+        "contract_identity_digests": sorted(contract_identity_digests),
+        "candidate_reserve_granted": False,
+        "measurement_retry_granted": False,
+    }
+    report["self_improvement_disposition"] = corrected.to_dict()
+    raw_campaign = report.get("campaign")
+    if isinstance(raw_campaign, dict):
+        raw_campaign["framework_blocked_count"] = ledger.framework_blocked_count
+        raw_campaign["max_cycles"] = (
+            campaign.max_cycles
+            + ledger.control_plane_run_count
+            + int(campaign.repair_continuation_used)
+        )
+    controller.store.write_report(latest_run_id, report)
+    migrated = replace(
+        campaign,
+        status=SelfImprovementCampaignStatus.ACTIVE,
+        measurement_ledger=ledger,
+        latest_progress=self_improvement_progress(report),
+        latest_disposition=corrected,
+        latest_measurement_outcome=None,
+        latest_report_path=str(
+            controller.store.run_path(latest_run_id) / "report.json"
+        ),
+        measurement_pending_run_id=None,
+        measurement_pending_candidate_id=None,
+        goal_handoff_path=None,
+    )
+    controller.store.write_campaign(migrated)
+    return migrated
+
+
+def _migrate_fixture_source_selection_for_resume(
+    controller: SelfImprovementCampaignController,
+    campaign: SelfImprovementCampaign,
+) -> SelfImprovementCampaign:
+    """Reopen the exact compile frontier fixed by source selection normalization.
+
+    A legacy selector ranked every evidence fragment by minimum byte length,
+    before checking whether it carried recorded responses.  Reclassify only a
+    repeated, zero-authority ``protocol_probe_not_fixture_derived`` frontier as
+    framework control-plane work.  This grants neither candidate nor
+    measurement reserve; the charged control-plane cycle is the sole retry.
+    """
+
+    migration_action = "restore_fixture_source_selection_frontier"
+    if (
+        campaign.status is not SelfImprovementCampaignStatus.EXHAUSTED
+        or campaign.latest_disposition is None
+        or campaign.latest_disposition.reason_code
+        != "campaign_cycle_limit_reached"
+        or campaign.latest_disposition.stage != "capability_compile"
+        or not campaign.run_ids
+        or campaign.cumulative_authoritative_candidates
+        >= _campaign_effective_authoritative_candidate_limit(campaign)
+    ):
+        return campaign
+    for run_id in campaign.run_ids:
+        try:
+            prior_report = controller.store.read_report(run_id)
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            continue
+        migration = prior_report.get("campaign_causal_migration")
+        if (
+            isinstance(migration, Mapping)
+            and migration.get("action") == migration_action
+        ):
+            return campaign
+
+    latest_run_id = campaign.run_ids[-1]
+    try:
+        report = controller.store.read_report(latest_run_id)
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return campaign
+    attribution = report.get("campaign_failure_attribution")
+    rejection = report.get("rejection_attribution")
+    funnel = report.get("verification_funnel")
+    if not (
+        isinstance(attribution, Mapping)
+        and attribution.get("code") == "repair_capability_compile_failed"
+        and attribution.get("primary_gate") == "candidate_repair_conformance"
+        and attribution.get("repairable") is True
+        and isinstance(rejection, Mapping)
+        and rejection.get("code") == "repair_capability_compile_failed"
+        and rejection.get("primary_gate") == "candidate_repair_conformance"
+        and rejection.get("capability_error_code")
+        == "protocol_probe_not_fixture_derived"
+        and rejection.get("repairable") is True
+        and isinstance(funnel, Mapping)
+        and _report_authoritative_candidate_count(report) == 0
+        and funnel.get("authoritative_candidate_attempt_count") == 0
+        and not _report_has_authoritative_measurement_observation(report)
+    ):
+        return campaign
+    repeated_failure_count = funnel.get("conformance_same_slot_repair_count")
+    occurrence_count = attribution.get("occurrence_count")
+    affected_candidate_count = attribution.get("affected_candidate_count")
+    if not (
+        isinstance(repeated_failure_count, int)
+        and not isinstance(repeated_failure_count, bool)
+        and repeated_failure_count >= 2
+        and occurrence_count == repeated_failure_count
+        and affected_candidate_count == repeated_failure_count
+    ):
+        return campaign
+
+    corrected = SelfImprovementDisposition(
+        kind=SelfImprovementDispositionKind.CONTINUE_CAMPAIGN,
+        reason_code="framework_fixture_source_selection_repaired",
+        owner="framework",
+        stage="capability_compile",
+        scope="shared_run",
+        repairable=True,
+        progress_delta_ids=campaign.latest_disposition.progress_delta_ids,
+    )
+    ledger = campaign.measurement_ledger.charge_framework_blocked(latest_run_id)
+    report["campaign_causal_migration"] = {
+        "schema_version": (
+            "aworld.self_evolve.fixture_source_selection_migration.v1"
+        ),
+        "action": migration_action,
+        "source_run_id": latest_run_id,
+        "capability_error_code": "protocol_probe_not_fixture_derived",
+        "repeated_same_slot_failure_count": repeated_failure_count,
+        "candidate_reserve_granted": False,
+        "measurement_retry_granted": False,
+    }
+    report["self_improvement_disposition"] = corrected.to_dict()
+    raw_campaign = report.get("campaign")
+    if isinstance(raw_campaign, dict):
+        raw_campaign["framework_blocked_count"] = ledger.framework_blocked_count
+        raw_campaign["max_cycles"] = (
+            campaign.max_cycles
+            + ledger.control_plane_run_count
+            + int(campaign.repair_continuation_used)
+        )
+    controller.store.write_report(latest_run_id, report)
+    migrated = replace(
+        campaign,
+        status=SelfImprovementCampaignStatus.ACTIVE,
+        measurement_ledger=ledger,
+        latest_progress=self_improvement_progress(report),
+        latest_disposition=corrected,
+        latest_measurement_outcome=None,
+        latest_report_path=str(
+            controller.store.run_path(latest_run_id) / "report.json"
+        ),
+        measurement_pending_run_id=None,
+        measurement_pending_candidate_id=None,
+        goal_handoff_path=None,
+    )
+    controller.store.write_campaign(migrated)
+    return migrated
+
+
+def _migrate_no_work_after_fixture_source_selection_for_resume(
+    controller: SelfImprovementCampaignController,
+    campaign: SelfImprovementCampaign,
+) -> SelfImprovementCampaign:
+    """Reactivate compile frontiers suppressed by their stale scheduler checkpoint."""
+
+    migration_action = "reactivate_fixture_source_frontier_after_no_work_cycle"
+    if (
+        campaign.status is not SelfImprovementCampaignStatus.EXHAUSTED
+        or campaign.latest_disposition is None
+        or campaign.latest_disposition.reason_code
+        != "candidate_repair_frontier_stalled"
+        or len(campaign.run_ids) < 2
+        or campaign.cumulative_authoritative_candidates
+        >= _campaign_effective_authoritative_candidate_limit(campaign)
+    ):
+        return campaign
+    no_work_run_id = campaign.run_ids[-1]
+    if no_work_run_id in campaign.measurement_ledger.framework_blocked_run_ids:
+        return campaign
+    try:
+        no_work_report = controller.store.read_report(no_work_run_id)
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return campaign
+    raw_gates = no_work_report.get("gate_results")
+    if not (
+        isinstance(raw_gates, list)
+        and len(raw_gates) == 1
+        and isinstance(raw_gates[0], Mapping)
+        and raw_gates[0].get("gate_name") == "candidate_generation"
+        and raw_gates[0].get("passed") is False
+        and isinstance(raw_gates[0].get("details"), Mapping)
+        and raw_gates[0]["details"].get("generated_candidate_count") == 0
+        and raw_gates[0]["details"].get("iterations") == 0
+        and _report_authoritative_candidate_count(no_work_report) == 0
+        and not _report_has_authoritative_measurement_observation(no_work_report)
+    ):
+        return campaign
+
+    source_run_id: str | None = None
+    source_report: Mapping[str, Any] | None = None
+    for prior_run_id in reversed(campaign.run_ids[:-1]):
+        try:
+            prior_report = controller.store.read_report(prior_run_id)
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            continue
+        migration = prior_report.get("campaign_causal_migration")
+        if not (
+            isinstance(migration, Mapping)
+            and migration.get("action")
+            == "restore_fixture_source_selection_frontier"
+            and migration.get("candidate_reserve_granted") is False
+            and migration.get("measurement_retry_granted") is False
+        ):
+            continue
+        source_run_id = prior_run_id
+        source_report = prior_report
+        break
+    if source_run_id is None or source_report is None:
+        return campaign
+
+    repair_state = no_work_report.get("repair_frontier_state")
+    scheduler_state = (
+        repair_state.get("scheduler_state")
+        if isinstance(repair_state, dict)
+        else None
+    )
+    if not (
+        isinstance(repair_state, dict)
+        and isinstance(scheduler_state, dict)
+        and repair_state.get("active_count") == 0
+        and int(repair_state.get("dormant_count") or 0) > 0
+    ):
+        return campaign
+    frontier_keys = _report_generation_frontier_keys(source_report)
+    raw_stalls = scheduler_state.get("frontier_stalls")
+    raw_families = scheduler_state.get("frontier_mutation_families")
+    if not (
+        frontier_keys
+        and isinstance(raw_stalls, dict)
+        and isinstance(raw_families, dict)
+    ):
+        return campaign
+    reactivated_keys = tuple(
+        sorted(
+            key
+            for key in frontier_keys
+            if key in raw_stalls and key in raw_families
+        )
+    )
+    if not reactivated_keys:
+        return campaign
+    for key in reactivated_keys:
+        raw_stalls[key] = 0
+        raw_families[key] = []
+    scheduler_state["last_focused_frontier"] = None
+    records = repair_state.get("records")
+    if isinstance(records, list):
+        for record in records:
+            if (
+                isinstance(record, dict)
+                and record.get("semantic_key") in reactivated_keys
+            ):
+                record["status"] = "active"
+                record["mutation_families"] = []
+        repair_state["active_count"] = sum(
+            isinstance(record, Mapping) and record.get("status") == "active"
+            for record in records
+        )
+        repair_state["dormant_count"] = sum(
+            isinstance(record, Mapping) and record.get("status") == "dormant"
+            for record in records
+        )
+
+    corrected = SelfImprovementDisposition(
+        kind=SelfImprovementDispositionKind.CONTINUE_CAMPAIGN,
+        reason_code="framework_fixture_source_frontier_reactivated",
+        owner="framework",
+        stage="candidate_generation",
+        scope="shared_run",
+        repairable=True,
+        progress_delta_ids=campaign.latest_disposition.progress_delta_ids,
+    )
+    ledger = campaign.measurement_ledger.charge_framework_blocked(no_work_run_id)
+    no_work_report["campaign_causal_migration"] = {
+        "schema_version": (
+            "aworld.self_evolve.fixture_source_no_work_migration.v1"
+        ),
+        "action": migration_action,
+        "source_run_id": source_run_id,
+        "no_work_run_id": no_work_run_id,
+        "reactivated_frontier_keys": list(reactivated_keys),
+        "candidate_generation_iterations": 0,
+        "candidate_generation_count": 0,
+        "candidate_reserve_granted": False,
+        "measurement_retry_granted": False,
+    }
+    no_work_report["self_improvement_disposition"] = corrected.to_dict()
+    raw_campaign = no_work_report.get("campaign")
+    if isinstance(raw_campaign, dict):
+        raw_campaign["framework_blocked_count"] = ledger.framework_blocked_count
+        raw_campaign["max_cycles"] = (
+            campaign.max_cycles
+            + ledger.control_plane_run_count
+            + int(campaign.repair_continuation_used)
+        )
+    controller.store.write_report(no_work_run_id, no_work_report)
+    migrated = replace(
+        campaign,
+        status=SelfImprovementCampaignStatus.ACTIVE,
+        measurement_ledger=ledger,
+        latest_progress=self_improvement_progress(source_report),
+        latest_disposition=corrected,
+        latest_measurement_outcome=None,
+        latest_report_path=str(
+            controller.store.run_path(no_work_run_id) / "report.json"
+        ),
+        measurement_pending_run_id=None,
+        measurement_pending_candidate_id=None,
+        goal_handoff_path=None,
+    )
+    controller.store.write_campaign(migrated)
+    return migrated
+
+
+def _migrate_regressing_measurement_checkpoint_for_resume(
+    controller: SelfImprovementCampaignController,
+    campaign: SelfImprovementCampaign,
+) -> SelfImprovementCampaign:
+    """Discard a legacy checkpoint selected by absolute rather than paired score.
+
+    A framework-blocked rejected state used to rank candidates by their raw
+    candidate score. Because every candidate can have a different judge
+    baseline, that could retain a proven regression even when the same run had
+    already measured a positive paired effect. The stale immutable checkpoint
+    must not be resumed after the ranking and projection-attestation fixes.
+    """
+
+    migration_action = "discard_regressing_measurement_checkpoint"
+    if (
+        campaign.status is not SelfImprovementCampaignStatus.PAUSED
+        or campaign.latest_disposition is None
+        or campaign.latest_disposition.reason_code
+        != "baseline_evidence_policy_infeasible"
+        or campaign.measurement_pending_run_id is None
+        or campaign.measurement_pending_candidate_id is None
+        or not campaign.run_ids
+        or campaign.measurement_pending_run_id != campaign.run_ids[-1]
+    ):
+        return campaign
+    latest_run_id = campaign.run_ids[-1]
+    try:
+        report = controller.store.read_report(latest_run_id)
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return campaign
+    prior_migration = report.get("campaign_causal_migration")
+    if (
+        isinstance(prior_migration, Mapping)
+        and prior_migration.get("action") == migration_action
+    ):
+        return campaign
+    selected_candidate_id = campaign.measurement_pending_candidate_id
+    if report.get("selected_candidate_id") != selected_candidate_id:
+        return campaign
+    deltas = _report_iteration_score_deltas(report)
+    selected_delta = deltas.get(selected_candidate_id)
+    positive_candidates = tuple(
+        (candidate_id, delta)
+        for candidate_id, delta in deltas.items()
+        if delta > 0.0
+    )
+    if selected_delta is None or selected_delta >= 0.0 or not positive_candidates:
+        return campaign
+    preferred_candidate_id, preferred_delta = max(
+        positive_candidates,
+        key=lambda item: (item[1], item[0]),
+    )
+    if not _report_has_unattested_mixed_projection_constraint(
+        report,
+        candidate_id=selected_candidate_id,
+    ):
+        return campaign
+
+    corrected = SelfImprovementDisposition(
+        kind=SelfImprovementDispositionKind.CONTINUE_CAMPAIGN,
+        reason_code="framework_candidate_checkpoint_selection_repaired",
+        owner="framework",
+        stage="measurement",
+        scope="shared_run",
+        repairable=True,
+        progress_delta_ids=campaign.latest_disposition.progress_delta_ids,
+    )
+    ledger = campaign.measurement_ledger.charge_framework_blocked(latest_run_id)
+    report["campaign_causal_migration"] = {
+        "schema_version": (
+            "aworld.self_evolve.paired_candidate_checkpoint_migration.v1"
+        ),
+        "action": migration_action,
+        "source_run_id": latest_run_id,
+        "discarded_candidate_id": selected_candidate_id,
+        "discarded_score_delta": selected_delta,
+        "preferred_candidate_id": preferred_candidate_id,
+        "preferred_score_delta": preferred_delta,
+        "candidate_reserve_granted": False,
+        "measurement_retry_granted": False,
+    }
+    report["self_improvement_disposition"] = corrected.to_dict()
+    raw_campaign = report.get("campaign")
+    if isinstance(raw_campaign, dict):
+        raw_campaign["framework_blocked_count"] = ledger.framework_blocked_count
+        raw_campaign["max_cycles"] = (
+            campaign.max_cycles
+            + ledger.control_plane_run_count
+            + int(campaign.repair_continuation_used)
+        )
+    controller.store.write_report(latest_run_id, report)
+    migrated = replace(
+        campaign,
+        status=SelfImprovementCampaignStatus.ACTIVE,
+        measurement_ledger=ledger,
+        latest_progress=self_improvement_progress(report),
+        latest_disposition=corrected,
+        latest_measurement_outcome=None,
+        latest_report_path=str(
+            controller.store.run_path(latest_run_id) / "report.json"
+        ),
+        measurement_pending_run_id=None,
+        measurement_pending_candidate_id=None,
+        goal_handoff_path=None,
+    )
+    controller.store.write_campaign(migrated)
+    return migrated
+
+
+def _migrate_retryable_member_measurement_for_resume(
+    controller: SelfImprovementCampaignController,
+    campaign: SelfImprovementCampaign,
+) -> SelfImprovementCampaign:
+    """Restore a frozen measurement after legacy member-timeout attribution.
+
+    Older reports projected a retryable framework-owned member timeout as a
+    completed no-effect candidate conclusion. That both charged the immutable
+    candidate again and discarded the original measurement journal, even when
+    all other work units were trusted and reusable.
+    """
+
+    migration_action = "restore_retryable_member_measurement_checkpoint"
+    if (
+        campaign.status is not SelfImprovementCampaignStatus.EXHAUSTED
+        or not campaign.run_ids
+        or campaign.measurement_retry_count >= campaign.max_measurement_retries
+    ):
+        return campaign
+    latest_run_id = campaign.run_ids[-1]
+    try:
+        report = controller.store.read_report(latest_run_id)
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return campaign
+    prior_migration = report.get("campaign_causal_migration")
+    if (
+        isinstance(prior_migration, Mapping)
+        and prior_migration.get("action") == migration_action
+    ):
+        return campaign
+    if not _report_has_retryable_framework_member_measurement_failure(report):
+        return campaign
+
+    raw_candidate_ids = report.get("candidate_ids")
+    candidate_ids = {
+        item
+        for item in (
+            raw_candidate_ids
+            if isinstance(raw_candidate_ids, (list, tuple))
+            else ()
+        )
+        if isinstance(item, str) and item
+    }
+    if not candidate_ids:
+        replay = report.get("replay")
+        candidate = replay.get("candidate") if isinstance(replay, Mapping) else None
+        variant_id = (
+            candidate.get("variant_id") if isinstance(candidate, Mapping) else None
+        )
+        if isinstance(variant_id, str) and variant_id:
+            candidate_ids.add(variant_id)
+    checkpoint: MeasurementResumeCheckpointV1 | None = None
+    for source_run_id in reversed(campaign.run_ids):
+        try:
+            source_report = controller.store.read_report(source_run_id)
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            continue
+        candidate_checkpoint = _measurement_resume_checkpoint(
+            controller.store,
+            run_id=source_run_id,
+            report=source_report,
+        )
+        if candidate_checkpoint is not None and (
+            not candidate_ids or candidate_checkpoint.candidate_id in candidate_ids
+        ):
+            checkpoint = candidate_checkpoint
+            break
+    if checkpoint is None:
+        return campaign
+
+    charged_candidate_count = _report_authoritative_candidate_count(report)
+    corrected_outcome = CampaignMeasurementOutcomeV2(
+        execution_status=MeasurementExecutionStatus.INVALID,
+        improvement_outcome=CandidateImprovementOutcome.UNKNOWN,
+        release_gates_passed=False,
+        continuation_available=True,
+        reason_code="measurement_infrastructure_retry",
+    )
+    corrected_disposition = _measurement_outcome_disposition(
+        corrected_outcome,
+        progress_delta_ids=(
+            campaign.latest_disposition.progress_delta_ids
+            if campaign.latest_disposition is not None
+            else ()
+        ),
+    )
+    ledger = campaign.measurement_ledger.charge_invalid_retry(latest_run_id)
+    authoritative_count = max(
+        0,
+        campaign.cumulative_authoritative_candidates - charged_candidate_count,
+    )
+    report["campaign_causal_migration"] = {
+        "schema_version": (
+            "aworld.self_evolve.retryable_member_measurement_migration.v1"
+        ),
+        "action": migration_action,
+        "source_run_id": latest_run_id,
+        "checkpoint_run_id": checkpoint.source_run_id,
+        "candidate_id": checkpoint.candidate_id,
+        "candidate_reserve_restored": charged_candidate_count,
+        "measurement_retry_granted": True,
+    }
+    report["campaign_measurement_outcome"] = corrected_outcome.to_dict()
+    report["self_improvement_disposition"] = corrected_disposition.to_dict()
+    raw_campaign = report.get("campaign")
+    if isinstance(raw_campaign, dict):
+        raw_campaign.update(
+            {
+                "measurement_retry_count": ledger.invalid_retry_count,
+                "measurement_projection": corrected_outcome.projection.value,
+                "measurement_execution_status": (
+                    corrected_outcome.execution_status.value
+                ),
+                "candidate_improvement_outcome": (
+                    corrected_outcome.improvement_outcome.value
+                ),
+                "measurement_pending_run_id": checkpoint.source_run_id,
+                "measurement_pending_candidate_id": checkpoint.candidate_id,
+                "authoritative_candidate_count": authoritative_count,
+                "max_cycles": (
+                    campaign.max_cycles
+                    + ledger.control_plane_run_count
+                    + int(campaign.repair_continuation_used)
+                ),
+            }
+        )
+    controller.store.write_report(latest_run_id, report)
+    migrated = replace(
+        campaign,
+        status=SelfImprovementCampaignStatus.ACTIVE,
+        cumulative_authoritative_candidates=authoritative_count,
+        measurement_ledger=ledger,
+        latest_progress=self_improvement_progress(report),
+        latest_disposition=corrected_disposition,
+        latest_measurement_outcome=corrected_outcome,
+        latest_report_path=str(
+            controller.store.run_path(latest_run_id) / "report.json"
+        ),
+        measurement_pending_run_id=checkpoint.source_run_id,
+        measurement_pending_candidate_id=checkpoint.candidate_id,
+        goal_handoff_path=None,
+    )
+    controller.store.write_campaign(migrated)
+    return migrated
+
+
+def _report_has_retryable_framework_member_measurement_failure(
+    report: Mapping[str, Any],
+) -> bool:
+    retryable_codes = {
+        "replay_member_phase_timeout",
+        "evidence_policy_v2_attestation_failed",
+        "replay_evidence_runtime_policy_violation",
+    }
+    return any(
+        item.get("code") in retryable_codes
+        and (item.get("owner") or item.get("failure_owner"))
+        in {"framework", "infrastructure"}
+        and (item.get("scope") or item.get("failure_scope")) == "member"
+        and item.get("repairable") is True
+        for item in _walk_mappings(report)
+    )
+
+
+def _migrate_unobserved_support_timeout_for_resume(
+    controller: SelfImprovementCampaignController,
+    campaign: SelfImprovementCampaign,
+) -> SelfImprovementCampaign:
+    """Reopen a cycle exhausted by a legacy baseline-timeout misattribution."""
+
+    migration_action = "restore_unobserved_support_timeout_control_cycle"
+    if (
+        campaign.status is not SelfImprovementCampaignStatus.EXHAUSTED
+        or campaign.latest_disposition is None
+        or campaign.latest_disposition.reason_code
+        != "candidate_repair_frontier_stalled"
+        or not campaign.run_ids
+    ):
+        return campaign
+    latest_run_id = campaign.run_ids[-1]
+    try:
+        report = controller.store.read_report(latest_run_id)
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return campaign
+    prior_migration = report.get("campaign_causal_migration")
+    if (
+        isinstance(prior_migration, Mapping)
+        and prior_migration.get("action") == migration_action
+    ):
+        return campaign
+    affected = _report_unobserved_support_timeout_candidates(report)
+    if not affected or _report_has_authoritative_measurement_observation(report):
+        return campaign
+
+    corrected = SelfImprovementDisposition(
+        kind=SelfImprovementDispositionKind.CONTINUE_CAMPAIGN,
+        reason_code="framework_screening_control_attribution_repaired",
+        owner="framework",
+        stage="candidate_screening",
+        scope="shared_run",
+        repairable=True,
+        progress_delta_ids=(
+            campaign.latest_disposition.progress_delta_ids
+        ),
+    )
+    ledger = campaign.measurement_ledger.charge_framework_blocked(latest_run_id)
+    report["campaign_causal_migration"] = {
+        "schema_version": (
+            "aworld.self_evolve.unobserved_support_timeout_migration.v1"
+        ),
+        "action": migration_action,
+        "source_run_id": latest_run_id,
+        "affected_case_ids": sorted(affected),
+        "affected_candidate_ids": sorted(
+            {
+                candidate_id
+                for candidate_ids in affected.values()
+                for candidate_id in candidate_ids
+            }
+        ),
+        "candidate_reserve_granted": False,
+        "measurement_retry_granted": False,
+    }
+    report["self_improvement_disposition"] = corrected.to_dict()
+    raw_campaign = report.get("campaign")
+    if isinstance(raw_campaign, dict):
+        raw_campaign["framework_blocked_count"] = ledger.framework_blocked_count
+        raw_campaign["max_cycles"] = (
+            campaign.max_cycles
+            + ledger.control_plane_run_count
+            + int(campaign.repair_continuation_used)
+        )
+    controller.store.write_report(latest_run_id, report)
+    migrated = replace(
+        campaign,
+        status=SelfImprovementCampaignStatus.ACTIVE,
+        measurement_ledger=ledger,
+        latest_progress=self_improvement_progress(report),
+        latest_disposition=corrected,
+        latest_measurement_outcome=None,
+        measurement_pending_run_id=None,
+        measurement_pending_candidate_id=None,
+        goal_handoff_path=None,
+    )
+    controller.store.write_campaign(migrated)
+    return migrated
+
+
+def _migrate_legacy_single_turn_replay_budget_for_resume(
+    controller: SelfImprovementCampaignController,
+    campaign: SelfImprovementCampaign,
+) -> SelfImprovementCampaign:
+    """Reopen an implicitly one-turn campaign censored before tool results.
+
+    Older optimize defaults froze ``max_steps=1`` into authoritative
+    measurement even when the user did not specify ``--replay-max-runs``.  A
+    browser agent can issue its first action in that envelope but cannot
+    observe the result or emit a terminal response.  Upgrade only that exact
+    implicit historical shape; an explicitly persisted one-turn budget remains
+    an operator-owned contract.
+    """
+
+    migration_action = "replace_implicit_single_turn_replay_budget"
+    if (
+        campaign.status is not SelfImprovementCampaignStatus.EXHAUSTED
+        or campaign.latest_disposition is None
+        or campaign.latest_disposition.reason_code
+        != "campaign_cycle_limit_reached"
+        or "replay_max_steps" in campaign.request
+        or not campaign.run_ids
+        or campaign.cumulative_authoritative_candidates
+        >= _campaign_effective_authoritative_candidate_limit(campaign)
+    ):
+        return campaign
+    latest_run_id = campaign.run_ids[-1]
+    try:
+        report = controller.store.read_report(latest_run_id)
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return campaign
+    prior_migration = report.get("campaign_causal_migration")
+    if (
+        isinstance(prior_migration, Mapping)
+        and prior_migration.get("action") == migration_action
+    ):
+        return campaign
+
+    raw_gates = report.get("gate_results")
+    affected_case_ids: set[str] = set()
+    exact_legacy_budget = False
+    if isinstance(raw_gates, list):
+        for gate in raw_gates:
+            details = (
+                gate.get("details")
+                if isinstance(gate, Mapping)
+                and gate.get("gate_name") == "candidate_replay"
+                and gate.get("passed") is False
+                else None
+            )
+            if not isinstance(details, Mapping):
+                continue
+            control_identity = details.get("control_identity")
+            if not (
+                isinstance(control_identity, Mapping)
+                and control_identity.get("max_steps") == 1
+            ):
+                continue
+            failed_members = details.get("failed_members")
+            if not isinstance(failed_members, list):
+                continue
+            for member in failed_members:
+                if not isinstance(member, Mapping):
+                    continue
+                failures = (
+                    member.get("baseline_failure"),
+                    member.get("candidate_failure"),
+                )
+                if not any(
+                    isinstance(failure, Mapping)
+                    and failure.get("code")
+                    == "replay_task_completion_not_established"
+                    for failure in failures
+                ):
+                    continue
+                case_id = member.get("case_id")
+                if isinstance(case_id, str) and case_id:
+                    affected_case_ids.add(case_id)
+            exact_legacy_budget = bool(affected_case_ids)
+            if exact_legacy_budget:
+                break
+    if not exact_legacy_budget:
+        return campaign
+
+    corrected = SelfImprovementDisposition(
+        kind=SelfImprovementDispositionKind.CONTINUE_CAMPAIGN,
+        reason_code="framework_single_turn_replay_budget_repaired",
+        owner="framework",
+        stage="measurement",
+        scope="shared_run",
+        repairable=True,
+        progress_delta_ids=campaign.latest_disposition.progress_delta_ids,
+    )
+    ledger = campaign.measurement_ledger.charge_framework_blocked(latest_run_id)
+    upgraded_request = dict(campaign.request)
+    upgraded_request["replay_max_steps"] = (
+        LEGACY_SINGLE_TURN_REPLAY_REPLACEMENT_STEPS
+    )
+    report["campaign_causal_migration"] = {
+        "schema_version": (
+            "aworld.self_evolve.single_turn_replay_budget_migration.v1"
+        ),
+        "action": migration_action,
+        "source_run_id": latest_run_id,
+        "affected_case_ids": sorted(affected_case_ids),
+        "previous_replay_max_steps": 1,
+        "replacement_replay_max_steps": (
+            LEGACY_SINGLE_TURN_REPLAY_REPLACEMENT_STEPS
+        ),
+        "operator_budget_overridden": False,
+        "candidate_reserve_granted": False,
+        "measurement_retry_granted": False,
+    }
+    report["self_improvement_disposition"] = corrected.to_dict()
+    raw_campaign = report.get("campaign")
+    if isinstance(raw_campaign, dict):
+        raw_campaign["framework_blocked_count"] = ledger.framework_blocked_count
+        raw_campaign["max_cycles"] = (
+            campaign.max_cycles
+            + ledger.control_plane_run_count
+            + int(campaign.repair_continuation_used)
+        )
+    controller.store.write_report(latest_run_id, report)
+    migrated = replace(
+        campaign,
+        status=SelfImprovementCampaignStatus.ACTIVE,
+        request=upgraded_request,
+        request_fingerprint=_fingerprint(upgraded_request),
+        verification_fingerprint=_fingerprint(
+            _verification_request(upgraded_request)
+        ),
+        measurement_ledger=ledger,
+        latest_progress=self_improvement_progress(report),
+        latest_disposition=corrected,
+        latest_measurement_outcome=None,
+        measurement_pending_run_id=None,
+        measurement_pending_candidate_id=None,
+        goal_handoff_path=None,
+    )
+    controller.store.write_campaign(migrated)
+    return migrated
+
+
+def _migrate_insufficient_evidence_replay_budget_for_resume(
+    controller: SelfImprovementCampaignController,
+    campaign: SelfImprovementCampaign,
+) -> SelfImprovementCampaign:
+    """Replace the intermediate ten-slot budget that cannot close evidence."""
+
+    migration_action = "replace_insufficient_evidence_replay_budget"
+    if (
+        campaign.status is not SelfImprovementCampaignStatus.PAUSED
+        or campaign.latest_disposition is None
+        or campaign.latest_disposition.reason_code
+        != "evidence_policy_v2_attestation_failed"
+        or campaign.request.get("replay_max_steps") != 10
+        or not campaign.run_ids
+    ):
+        return campaign
+    latest_run_id = campaign.run_ids[-1]
+    try:
+        report = controller.store.read_report(latest_run_id)
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return campaign
+    prior_migration = report.get("campaign_causal_migration")
+    if (
+        isinstance(prior_migration, Mapping)
+        and prior_migration.get("action") == migration_action
+    ):
+        return campaign
+    raw_gates = report.get("gate_results")
+    affected_case_ids: set[str] = set()
+    exact_budget_censor = False
+    if isinstance(raw_gates, list):
+        for gate in raw_gates:
+            details = (
+                gate.get("details")
+                if isinstance(gate, Mapping)
+                and gate.get("gate_name") == "candidate_replay"
+                and gate.get("passed") is False
+                else None
+            )
+            if not (
+                isinstance(details, Mapping)
+                and details.get("code")
+                == "evidence_policy_v2_attestation_failed"
+            ):
+                continue
+            baseline_failure = details.get("baseline_failure")
+            candidate_failure = details.get("candidate_failure")
+            if not (
+                isinstance(baseline_failure, Mapping)
+                and baseline_failure.get("code")
+                == "replay_task_completion_not_established"
+                and isinstance(candidate_failure, Mapping)
+                and candidate_failure.get("code")
+                == "evidence_policy_v2_attestation_failed"
+                and candidate_failure.get("reason")
+                == "framework evidence inventory is empty"
+            ):
+                continue
+            failed_members = details.get("failed_members")
+            if isinstance(failed_members, list):
+                affected_case_ids.update(
+                    str(member["case_id"])
+                    for member in failed_members
+                    if isinstance(member, Mapping)
+                    and isinstance(member.get("case_id"), str)
+                    and member.get("case_id")
+                )
+            exact_budget_censor = bool(affected_case_ids)
+            if exact_budget_censor:
+                break
+    if not exact_budget_censor:
+        return campaign
+
+    corrected = SelfImprovementDisposition(
+        kind=SelfImprovementDispositionKind.CONTINUE_CAMPAIGN,
+        reason_code="framework_evidence_rollout_budget_repaired",
+        owner="framework",
+        stage="measurement",
+        scope="shared_run",
+        repairable=True,
+        progress_delta_ids=campaign.latest_disposition.progress_delta_ids,
+    )
+    ledger = campaign.measurement_ledger.charge_framework_blocked(latest_run_id)
+    upgraded_request = dict(campaign.request)
+    upgraded_request["replay_max_steps"] = (
+        LEGACY_SINGLE_TURN_REPLAY_REPLACEMENT_STEPS
+    )
+    report["campaign_causal_migration"] = {
+        "schema_version": (
+            "aworld.self_evolve.evidence_rollout_budget_migration.v1"
+        ),
+        "action": migration_action,
+        "source_run_id": latest_run_id,
+        "affected_case_ids": sorted(affected_case_ids),
+        "previous_replay_max_steps": 10,
+        "replacement_replay_max_steps": (
+            LEGACY_SINGLE_TURN_REPLAY_REPLACEMENT_STEPS
+        ),
+        "candidate_reserve_granted": False,
+        "measurement_retry_granted": False,
+    }
+    report["self_improvement_disposition"] = corrected.to_dict()
+    raw_campaign = report.get("campaign")
+    if isinstance(raw_campaign, dict):
+        raw_campaign["framework_blocked_count"] = ledger.framework_blocked_count
+        raw_campaign["max_cycles"] = (
+            campaign.max_cycles
+            + ledger.control_plane_run_count
+            + int(campaign.repair_continuation_used)
+        )
+    controller.store.write_report(latest_run_id, report)
+    migrated = replace(
+        campaign,
+        status=SelfImprovementCampaignStatus.ACTIVE,
+        request=upgraded_request,
+        request_fingerprint=_fingerprint(upgraded_request),
+        verification_fingerprint=_fingerprint(
+            _verification_request(upgraded_request)
+        ),
+        measurement_ledger=ledger,
+        latest_progress=self_improvement_progress(report),
+        latest_disposition=corrected,
+        latest_measurement_outcome=None,
+        measurement_pending_run_id=None,
+        measurement_pending_candidate_id=None,
+        goal_handoff_path=None,
+    )
+    controller.store.write_campaign(migrated)
+    return migrated
+
+
+def _migrate_no_work_after_single_turn_budget_fix_for_resume(
+    controller: SelfImprovementCampaignController,
+    campaign: SelfImprovementCampaign,
+) -> SelfImprovementCampaign:
+    """Reactivate the exact frontier suppressed after budget migration."""
+
+    migration_action = "restore_exploration_after_single_turn_budget_fix"
+    if (
+        campaign.status is not SelfImprovementCampaignStatus.EXHAUSTED
+        or campaign.latest_disposition is None
+        or campaign.latest_disposition.reason_code
+        != "candidate_repair_frontier_stalled"
+        or len(campaign.run_ids) < 2
+    ):
+        return campaign
+    no_work_run_id = campaign.run_ids[-1]
+    if no_work_run_id in campaign.measurement_ledger.framework_blocked_run_ids:
+        return campaign
+    try:
+        no_work_report = controller.store.read_report(no_work_run_id)
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return campaign
+    prior_migration = no_work_report.get("campaign_causal_migration")
+    if (
+        isinstance(prior_migration, Mapping)
+        and prior_migration.get("action") == migration_action
+    ):
+        return campaign
+    raw_gates = no_work_report.get("gate_results")
+    no_work_gate = bool(
+        isinstance(raw_gates, list)
+        and len(raw_gates) == 1
+        and isinstance(raw_gates[0], Mapping)
+        and raw_gates[0].get("gate_name") == "candidate_generation"
+        and raw_gates[0].get("passed") is False
+        and isinstance(raw_gates[0].get("details"), Mapping)
+        and raw_gates[0]["details"].get("generated_candidate_count") == 0
+        and raw_gates[0]["details"].get("iterations") == 0
+        and _report_authoritative_candidate_count(no_work_report) == 0
+    )
+    if not no_work_gate:
+        return campaign
+
+    source_run_id: str | None = None
+    source_report: Mapping[str, Any] | None = None
+    for prior_run_id in reversed(campaign.run_ids[:-1]):
+        try:
+            prior_report = controller.store.read_report(prior_run_id)
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            continue
+        migration = prior_report.get("campaign_causal_migration")
+        if not (
+            isinstance(migration, Mapping)
+            and migration.get("action")
+            in {
+                "replace_implicit_single_turn_replay_budget",
+                "replace_insufficient_evidence_replay_budget",
+            }
+        ):
+            continue
+        source_run_id = prior_run_id
+        source_report = prior_report
+        break
+    if source_run_id is None or source_report is None:
+        return campaign
+
+    repair_state = no_work_report.get("repair_frontier_state")
+    scheduler_state = (
+        repair_state.get("scheduler_state")
+        if isinstance(repair_state, dict)
+        else None
+    )
+    if not (
+        isinstance(repair_state, dict)
+        and isinstance(scheduler_state, dict)
+        and repair_state.get("active_count") == 0
+        and int(repair_state.get("dormant_count") or 0) > 0
+    ):
+        return campaign
+    frontier_keys = _report_generation_frontier_keys(source_report)
+    raw_stalls = scheduler_state.get("frontier_stalls")
+    raw_families = scheduler_state.get("frontier_mutation_families")
+    if not (
+        frontier_keys
+        and isinstance(raw_stalls, dict)
+        and isinstance(raw_families, dict)
+    ):
+        return campaign
+    reactivated_keys = tuple(
+        key for key in frontier_keys if key in raw_stalls and key in raw_families
+    )
+    if not reactivated_keys:
+        return campaign
+    for key in reactivated_keys:
+        raw_stalls[key] = 0
+        raw_families[key] = []
+    scheduler_state["initial_exploration_scheduled"] = False
+    scheduler_state["untyped_frontier_exploration_scheduled"] = False
+    scheduler_state["last_focused_frontier"] = None
+    records = repair_state.get("records")
+    if isinstance(records, list):
+        for record in records:
+            if (
+                isinstance(record, dict)
+                and record.get("semantic_key") in reactivated_keys
+            ):
+                record["status"] = "active"
+                record["mutation_families"] = []
+        repair_state["active_count"] = sum(
+            isinstance(record, Mapping) and record.get("status") == "active"
+            for record in records
+        )
+        repair_state["dormant_count"] = sum(
+            isinstance(record, Mapping) and record.get("status") == "dormant"
+            for record in records
+        )
+
+    corrected = SelfImprovementDisposition(
+        kind=SelfImprovementDispositionKind.CONTINUE_CAMPAIGN,
+        reason_code="framework_single_turn_scheduler_checkpoint_repaired",
+        owner="framework",
+        stage="candidate_generation",
+        scope="shared_run",
+        repairable=True,
+        progress_delta_ids=campaign.latest_disposition.progress_delta_ids,
+    )
+    ledger = campaign.measurement_ledger.charge_framework_blocked(
+        no_work_run_id
+    )
+    no_work_report["campaign_causal_migration"] = {
+        "schema_version": (
+            "aworld.self_evolve.single_turn_no_work_migration.v1"
+        ),
+        "action": migration_action,
+        "source_run_id": source_run_id,
+        "no_work_run_id": no_work_run_id,
+        "candidate_generation_iterations": 0,
+        "candidate_generation_count": 0,
+        "reactivated_frontier_keys": list(reactivated_keys),
+        "candidate_reserve_granted": False,
+        "measurement_retry_granted": False,
+    }
+    no_work_report["self_improvement_disposition"] = corrected.to_dict()
+    raw_campaign = no_work_report.get("campaign")
+    if isinstance(raw_campaign, dict):
+        raw_campaign["framework_blocked_count"] = ledger.framework_blocked_count
+        raw_campaign["max_cycles"] = (
+            campaign.max_cycles
+            + ledger.control_plane_run_count
+            + int(campaign.repair_continuation_used)
+        )
+    controller.store.write_report(no_work_run_id, no_work_report)
+    migrated = replace(
+        campaign,
+        status=SelfImprovementCampaignStatus.ACTIVE,
+        measurement_ledger=ledger,
+        latest_progress=self_improvement_progress(source_report),
+        latest_disposition=corrected,
+        latest_measurement_outcome=None,
+        latest_report_path=str(
+            controller.store.run_path(no_work_run_id) / "report.json"
+        ),
+        measurement_pending_run_id=None,
+        measurement_pending_candidate_id=None,
+        goal_handoff_path=None,
+    )
+    controller.store.write_campaign(migrated)
+    return migrated
+
+
+def _report_unobserved_support_timeout_candidates(
+    report: Mapping[str, Any],
+) -> dict[str, set[str]]:
+    """Find screening timeouts rewritten as candidate support failures."""
+
+    attribution = report.get("campaign_failure_attribution")
+    if not (
+        isinstance(attribution, Mapping)
+        and attribution.get("code")
+        == "candidate_replay_support_baseline_incompatible"
+        and attribution.get("failure_owner") == "candidate"
+    ):
+        return {}
+    affected: dict[str, set[str]] = {}
+    stack: list[object] = [report.get("population")]
+    inspected = 0
+    while stack and inspected < 20_000:
+        current = stack.pop()
+        inspected += 1
+        if isinstance(current, Mapping):
+            attempts = current.get("attempts")
+            if (
+                current.get("screening_strategy") is not None
+                and isinstance(attempts, list)
+            ):
+                for attempt in attempts:
+                    if not isinstance(attempt, Mapping):
+                        continue
+                    candidate_id = attempt.get("candidate_id")
+                    details = attempt.get("details")
+                    if not (
+                        isinstance(candidate_id, str)
+                        and isinstance(details, Mapping)
+                        and details.get("code")
+                        == "candidate_replay_support_baseline_incompatible"
+                        and details.get("candidate_intervention_required") is True
+                        and details.get("candidate_intervention_observed")
+                        is not True
+                        and details.get("candidate_execution_observed") is False
+                        and _legacy_framework_timeout(
+                            details.get("baseline_failure")
+                        )
+                    ):
+                        continue
+                    case_ids = {
+                        str(member.get("case_id"))
+                        for member in details.get("failed_members", [])
+                        if isinstance(member, Mapping)
+                        and isinstance(member.get("case_id"), str)
+                    }
+                    control_identity = details.get("control_identity")
+                    if (
+                        not case_ids
+                        and isinstance(control_identity, Mapping)
+                        and isinstance(control_identity.get("case_id"), str)
+                    ):
+                        case_ids.add(str(control_identity["case_id"]))
+                    for case_id in case_ids:
+                        affected.setdefault(case_id, set()).add(candidate_id)
+            stack.extend(current.values())
+        elif isinstance(current, (list, tuple)):
+            stack.extend(current)
+    return {
+        case_id: candidate_ids
+        for case_id, candidate_ids in affected.items()
+        if len(candidate_ids) >= 2
+    }
+
+
+def _legacy_framework_timeout(value: object) -> bool:
+    return bool(
+        isinstance(value, Mapping)
+        and value.get("code") == "replay_member_phase_timeout"
+        and (value.get("failure_owner") or value.get("owner", "framework"))
+        == "framework"
+    )
+
+
+def _report_iteration_score_deltas(
+    report: Mapping[str, Any],
+) -> dict[str, float]:
+    raw_iterations = report.get("iterations")
+    if not isinstance(raw_iterations, list):
+        return {}
+    deltas: dict[str, float] = {}
+    for iteration in raw_iterations:
+        if not isinstance(iteration, Mapping):
+            continue
+        candidate_id = iteration.get("candidate_id")
+        baseline = iteration.get("baseline_metrics")
+        candidate = iteration.get("candidate_metrics")
+        if not (
+            isinstance(candidate_id, str)
+            and candidate_id
+            and isinstance(baseline, Mapping)
+            and isinstance(candidate, Mapping)
+        ):
+            continue
+        baseline_score = baseline.get("score")
+        candidate_score = candidate.get("score")
+        if not (
+            isinstance(baseline_score, (int, float))
+            and not isinstance(baseline_score, bool)
+            and math.isfinite(float(baseline_score))
+            and isinstance(candidate_score, (int, float))
+            and not isinstance(candidate_score, bool)
+            and math.isfinite(float(candidate_score))
+        ):
+            continue
+        deltas[candidate_id] = float(candidate_score) - float(baseline_score)
+    return deltas
+
+
+def _report_has_unattested_mixed_projection_constraint(
+    report: Mapping[str, Any],
+    *,
+    candidate_id: str,
+) -> bool:
+    raw_iterations = report.get("iterations")
+    selected_metrics: Mapping[str, Any] | None = None
+    if isinstance(raw_iterations, list):
+        for iteration in raw_iterations:
+            if not (
+                isinstance(iteration, Mapping)
+                and iteration.get("candidate_id") == candidate_id
+            ):
+                continue
+            metrics = iteration.get("candidate_metrics")
+            if isinstance(metrics, Mapping):
+                selected_metrics = metrics
+                break
+    if selected_metrics is None or (
+        selected_metrics.get("judge_artifact_read_budget_exhausted") is True
+        and selected_metrics.get("judge_artifact_projection_incomplete") is True
+    ):
+        return False
+    raw_gates = report.get("gate_results")
+    if not isinstance(raw_gates, list):
+        return False
+    for gate in raw_gates:
+        if not isinstance(gate, Mapping):
+            continue
+        details = gate.get("details")
+        constraints = (
+            details.get("evidence_repair_constraints")
+            if isinstance(details, Mapping)
+            else None
+        )
+        if not (
+            gate.get("gate_name") == "evidence_quality"
+            and gate.get("passed") is False
+            and isinstance(constraints, list)
+        ):
+            continue
+        has_framework_projection = any(
+            isinstance(item, Mapping)
+            and item.get("owner") == "framework"
+            and item.get("failure_mode") == "projection_compacted"
+            and item.get("source_layer") == "artifact_projection"
+            and item.get("required_action") == "expand_bounded_projection"
+            for item in constraints
+        )
+        has_candidate_constraint = any(
+            isinstance(item, Mapping) and item.get("owner") == "candidate"
+            for item in constraints
+        )
+        if has_framework_projection and has_candidate_constraint:
+            return True
+    return False
+
+
 def persistent_campaign_request(request: Mapping[str, Any]) -> dict[str, Any]:
     payload = {
         str(key): _json_value(value)
@@ -2323,6 +5173,7 @@ def persistent_campaign_request(request: Mapping[str, Any]) -> dict[str, Any]:
             "campaign_id",
             "campaign_cycle",
             "campaign_prior_run_ids",
+            "campaign_scheduler_checkpoint_run_ids",
             "campaign_expected_target",
             "campaign_measurement_pending_run_id",
             "campaign_measurement_pending_candidate_id",
@@ -2410,9 +5261,16 @@ def _measurement_outcome_disposition(
             outcome.improvement_outcome
             is CandidateImprovementOutcome.REGRESSION
         )
+        candidate_repair_available = (
+            outcome.improvement_outcome
+            is not CandidateImprovementOutcome.REGRESSION
+            and outcome.continuation_available
+        )
         return SelfImprovementDisposition(
             kind=(
-                SelfImprovementDispositionKind.STOP_NEGATIVE_EFFECT
+                SelfImprovementDispositionKind.CONTINUE_CANDIDATE
+                if candidate_repair_available
+                else SelfImprovementDispositionKind.STOP_NEGATIVE_EFFECT
                 if negative
                 else SelfImprovementDispositionKind.STOP_NO_EFFECT
             ),
@@ -2420,7 +5278,7 @@ def _measurement_outcome_disposition(
             owner="candidate",
             stage="measurement",
             scope="candidate",
-            repairable=False,
+            repairable=candidate_repair_available,
             progress_delta_ids=progress_delta_ids,
         )
     if projection is CampaignMeasurementProjection.MEASUREMENT_INCOMPLETE:
@@ -3276,6 +6134,49 @@ def _report_has_new_candidate_counterexample(
     for prior_report in prior_reports:
         prior.update(_report_candidate_counterexample_fingerprints(prior_report))
     return bool(current - prior)
+
+
+def _report_has_new_candidate_repair_evidence(
+    report: Mapping[str, Any],
+    *,
+    prior_reports: Iterable[Mapping[str, Any]],
+) -> bool:
+    """Recognize replay counterexamples and typed release constraints alike."""
+
+    prior_reports = tuple(prior_reports)
+    if _report_has_new_candidate_counterexample(
+        report,
+        prior_reports=prior_reports,
+    ):
+        return True
+    current_constraints = _candidate_evidence_repair_constraint_identities(
+        report
+    )
+    if not current_constraints:
+        return False
+    prior_constraints: set[str] = set()
+    for prior_report in prior_reports:
+        prior_constraints.update(
+            _candidate_evidence_repair_constraint_identities(prior_report)
+        )
+    return bool(current_constraints - prior_constraints)
+
+
+def _candidate_evidence_repair_constraint_identities(
+    report: Mapping[str, Any],
+) -> set[str]:
+    identities: set[str] = set()
+    for item in _walk_mappings(report):
+        if (
+            item.get("schema_version")
+            != "aworld.self_evolve.evidence_repair_constraint.v1"
+            or item.get("owner") != "candidate"
+        ):
+            continue
+        digest = item.get("constraint_identity_digest")
+        if isinstance(digest, str) and digest:
+            identities.add(digest.removeprefix("sha256:"))
+    return identities
 
 
 def _report_authoritative_candidate_count(report: Mapping[str, Any]) -> int:

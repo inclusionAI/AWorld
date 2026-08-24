@@ -81,11 +81,13 @@ from aworld.self_evolve.replay import (
     _replay_service_start_failure_details,
     _stored_baseline_matches_request,
     _task_response_signature,
+    _trusted_task_response_usage_metrics,
     _replay_failure_outcome,
     replay_dataset_fingerprint,
     _run_replay_cli,
     _validate_nonempty_correlated_json_response,
     _validate_replay_service_protocol_trace,
+    _wait_for_replay_service_protocol_trace,
     _validate_websocket_handshake_response,
     _load_variant_result_from_dir,
     _load_self_evolve_task_response,
@@ -3545,7 +3547,10 @@ def test_advertised_websocket_invalid_port_reports_actionable_protocol_error() -
 
 
 def test_websocket_probe_rejects_http_1_0_upgrade_response() -> None:
-    with pytest.raises(OSError, match="requires HTTP/1.1"):
+    with pytest.raises(
+        ReplayServiceProtocolError,
+        match="requires HTTP/1.1",
+    ) as error:
         _validate_websocket_handshake_response(
             (
                 b"HTTP/1.0 101 Switching Protocols\r\n"
@@ -3555,6 +3560,23 @@ def test_websocket_probe_rejects_http_1_0_upgrade_response() -> None:
             ),
             expected_accept="expected",
         )
+
+    assert error.value.code == "websocket_handshake_http_version_invalid"
+    assert error.value.details["schema_field_constraints"] == [
+        {
+            "schema_layer": "runtime",
+            "field_path": "websocket_handshake.http_version",
+            "rule": "enum",
+            "expected": ["HTTP/1.1"],
+            "value_domain": "source_behavior",
+            "required_operations": [
+                "emit_http_1_1_websocket_upgrade_status_line"
+            ],
+            "forbidden_operations": [
+                "emit_http_1_0_websocket_upgrade_status_line"
+            ],
+        }
+    ]
 
 
 def test_websocket_probe_reports_content_free_invalid_handshake_diagnostics() -> None:
@@ -4182,6 +4204,59 @@ def test_protocol_trace_reset_separates_preflight_from_task_interactions(
 
     assert "preflight" not in trace.read_text(encoding="utf-8")
     assert '"kind":"task"' in trace.read_text(encoding="utf-8")
+
+
+@pytest.mark.asyncio
+async def test_protocol_trace_wait_tolerates_post_response_flush_race(
+    tmp_path: Path,
+) -> None:
+    trace = tmp_path / "scratch" / "protocol_trace.jsonl"
+    trace.parent.mkdir(parents=True)
+    trace.write_text("", encoding="utf-8")
+
+    class RunningProcess:
+        @staticmethod
+        def poll() -> None:
+            return None
+
+    async def finish_trace() -> None:
+        await asyncio.sleep(0.03)
+        trace.write_text(
+            '{"direction":"in","sequence":1,"kind":"http_request",'
+            '"fields":["path"],"correlation":{}}\n'
+            '{"direction":"out","sequence":2,"kind":"http_response",'
+            '"fields":["status"],"correlation":{}}\n',
+            encoding="utf-8",
+        )
+
+    writer = asyncio.create_task(finish_trace())
+    await _wait_for_replay_service_protocol_trace(
+        RunningProcess(),  # type: ignore[arg-type]
+        trace,
+        timeout_seconds=0.5,
+    )
+    await writer
+
+
+@pytest.mark.asyncio
+async def test_protocol_trace_wait_keeps_empty_trace_failure_at_deadline(
+    tmp_path: Path,
+) -> None:
+    trace = tmp_path / "scratch" / "protocol_trace.jsonl"
+    trace.parent.mkdir(parents=True)
+    trace.write_text("", encoding="utf-8")
+
+    class RunningProcess:
+        @staticmethod
+        def poll() -> None:
+            return None
+
+    with pytest.raises(ReplayServiceProtocolError, match="empty"):
+        await _wait_for_replay_service_protocol_trace(
+            RunningProcess(),  # type: ignore[arg-type]
+            trace,
+            timeout_seconds=0.03,
+        )
 
 
 def test_successful_replay_records_task_plane_intervention_metric(
@@ -6937,7 +7012,18 @@ async def test_aworld_cli_replay_executor_requests_machine_readable_trajectory_a
     trajectory = [
         {
             "meta": {"step": 1, "agent_id": "Aworld", "pre_agent": "runner"},
-            "state": {"input": {"content": "Replay this task"}},
+            "state": {
+                "input": {"content": "Replay this task"},
+                "messages": [
+                    {
+                        "role": "assistant",
+                        "raw_response": {
+                            "id": "response-usage-1",
+                            "usage": {"total_tokens": 321},
+                        },
+                    }
+                ],
+            },
             "action": {"content": "Replay completed.", "is_agent_finished": "True"},
             "reward": {"status": "ok"},
         }
@@ -6994,6 +7080,7 @@ async def test_aworld_cli_replay_executor_requests_machine_readable_trajectory_a
 
     assert result.succeeded is True
     assert result.trajectory == trajectory
+    assert "total_tokens" not in result.metrics
     assert "--emit-trajectory" in captured["command"]
     assert captured["command"][
         captured["command"].index("--skill") + 1
@@ -7488,8 +7575,132 @@ async def test_required_replay_keeps_evidence_requirement_after_tool_call(
     )
 
     assert result.status == "failed"
-    assert result.failure["code"] == "evidence_policy_v2_attestation_failed"
-    assert result.failure["reason"] == "framework evidence inventory is empty"
+    assert result.failure["code"] == "replay_task_completion_not_established"
+    assert result.failure["failure_stage"] == "task_rollout"
+    assert result.metrics["signed_task_response_validated"] is True
+    assert result.metrics["task_completion_established"] is False
+    assert result.metrics["replay_counterexamples"][0]["trigger"] == (
+        "agent_not_finished"
+    )
+    assert result.metrics["replay_counterexamples"][0][
+        "required_transition"
+    ] == "continue_rollout_until_terminal_action"
+
+
+@pytest.mark.asyncio
+async def test_required_replay_classifies_signed_unfinished_tool_turn_before_evidence_finalization(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    trajectory = [
+        {
+            "state": {"input": "framework placeholder"},
+            "action": {
+                "content": "None",
+                "is_agent_finished": True,
+                "tool_calls": [],
+            },
+        },
+        {
+            "state": {"input": "inspect the supplied page"},
+            "action": {
+                "content": "I opened the page and need to inspect it next.",
+                "is_agent_finished": False,
+                "tool_calls": [
+                    {
+                        "id": "call-open",
+                        "function": {
+                            "name": "mcp",
+                            "arguments": json.dumps(
+                                {
+                                    "command": (
+                                        "agent-browser open "
+                                        "supplied-page"
+                                    )
+                                }
+                            ),
+                        },
+                    }
+                ],
+            },
+        }
+    ]
+
+    def fake_run(command, **kwargs):
+        protocol_trace = (
+            Path(kwargs["artifact_dir"])
+            / "replay_services"
+            / "service_1"
+            / "protocol_trace.log"
+        )
+        protocol_trace.parent.mkdir(parents=True)
+        protocol_trace.write_text(
+            '{"kind":"http_response","status":200}\n',
+            encoding="utf-8",
+        )
+        response = {
+            "schema_version": "aworld.self_evolve.task_response.v1",
+            "trajectory": trajectory,
+            "trajectory_capture_mode": "task_response",
+        }
+        response["framework_attestation"] = {
+            "schema_version": "aworld.self_evolve.task_response_attestation.v2",
+            "signature": _task_response_signature(
+                response,
+                kwargs["task_response_attestation_key"],
+            ),
+        }
+        Path(kwargs["task_response_path"]).write_text(
+            json.dumps(response),
+            encoding="utf-8",
+        )
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=json.dumps(
+                {
+                    "trajectory": trajectory,
+                    "trajectory_capture_mode": "task_response",
+                }
+            )
+            + "\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr("aworld.self_evolve.replay._run_replay_cli", fake_run)
+    result = await AWorldCliReplayExecutor()(
+        ReplayExecutionRequest(
+            variant_id="baseline",
+            task_id="task-1",
+            candidate_id="cand-1",
+            workspace_root=str(tmp_path),
+            task_input="inspect the supplied page",
+            task_text="inspect the supplied page",
+            skill_root=None,
+            artifact_dir=str(tmp_path / "artifacts"),
+            evidence_policy_mode="required",
+            max_steps=1,
+        )
+    )
+
+    assert result.status == "failed"
+    assert result.failure["code"] == "replay_task_completion_not_established"
+    assert result.failure["outcome"] == "task_failure"
+    assert result.failure["failure_stage"] == "task_rollout"
+    assert result.metrics["signed_task_response_validated"] is True
+    assert result.metrics["task_completion_established"] is False
+    assert result.metrics["replay_counterexamples"][0]["trigger"] == (
+        "agent_not_finished"
+    )
+    assert result.metrics["replay_counterexamples"][0][
+        "required_transition"
+    ] == "continue_rollout_until_terminal_action"
+    assert not (
+        tmp_path
+        / "artifacts"
+        / "evidence"
+        / "framework_canonical_evidence_manifest.jsonl"
+    ).exists()
 
 
 def test_measurement_terminal_state_keeps_framework_evidence_failure_retryable() -> None:
@@ -10242,6 +10453,14 @@ def test_replay_cli_parent_attests_response_received_over_capability_fd(
         "schema_version": "aworld.self_evolve.task_response.v1",
         "trajectory": [{"action": {"content": "done"}}],
         "trajectory_capture_mode": "task_response",
+        "llm_usage": {
+            "schema_version": "aworld.llm_usage_summary.v1",
+            "call_count": 2,
+            "usage_call_count": 2,
+            "total_tokens": 321,
+            "coverage_complete": True,
+            "ledger_consistent": True,
+        },
     }
     script = (
         "import json, os; "
@@ -10276,6 +10495,26 @@ def test_replay_cli_parent_attests_response_received_over_capability_fd(
     )
     assert attested is not None
     assert attested["trajectory"] == payload["trajectory"]
+    assert _trusted_task_response_usage_metrics(attested) == {
+        "total_tokens": 321,
+        "llm_usage_call_count": 2,
+        "llm_usage_coverage_complete": True,
+    }
+
+
+def test_trusted_task_response_usage_rejects_partial_coverage() -> None:
+    assert _trusted_task_response_usage_metrics(
+        {
+            "llm_usage": {
+                "schema_version": "aworld.llm_usage_summary.v1",
+                "call_count": 2,
+                "usage_call_count": 1,
+                "total_tokens": 321,
+                "coverage_complete": True,
+                "ledger_consistent": True,
+            }
+        }
+    ) == {}
 
 
 def test_replay_cli_supervisor_bounds_evidence_finalization_without_output(

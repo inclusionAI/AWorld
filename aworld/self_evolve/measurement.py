@@ -6,7 +6,7 @@ import math
 import random
 import re
 import statistics
-from dataclasses import asdict, dataclass, field, is_dataclass
+from dataclasses import asdict, dataclass, field, is_dataclass, replace
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path, PurePosixPath
@@ -2940,6 +2940,61 @@ def observations_from_evaluation(
                     )
                 )
     return tuple(observations)
+
+
+def observations_with_usage_fallback(
+    observations: Sequence[MeasurementObservation],
+    usage_observations: Sequence[MeasurementObservation],
+) -> tuple[MeasurementObservation, ...]:
+    """Fill missing usage from the exact paired task-execution coordinate.
+
+    Judge score observations and replay observations describe the same frozen
+    case/arm/repetition coordinates but different outcome layers. Multi-case
+    evaluator summaries cannot safely distribute aggregate usage, while replay
+    owns per-member signed runtime telemetry. Only a complete exact-coordinate
+    fallback is accepted; ambiguous or partial telemetry remains missing.
+    """
+
+    def coordinate(item: MeasurementObservation) -> tuple[object, ...]:
+        return (
+            item.experiment_id,
+            item.run_id,
+            item.case_id,
+            item.case_fingerprint,
+            item.arm,
+            item.split,
+            item.panel_id,
+            item.repetition_index,
+            item.seed,
+            item.component_fingerprint,
+            item.frozen_identity_fingerprint,
+        )
+
+    usage_by_coordinate: dict[tuple[object, ...], MeasurementUsage] = {}
+    ambiguous_coordinates: set[tuple[object, ...]] = set()
+    for item in usage_observations:
+        if not item.usage.complete:
+            continue
+        item_coordinate = coordinate(item)
+        if item_coordinate in usage_by_coordinate:
+            ambiguous_coordinates.add(item_coordinate)
+            usage_by_coordinate.pop(item_coordinate, None)
+            continue
+        if item_coordinate not in ambiguous_coordinates:
+            usage_by_coordinate[item_coordinate] = item.usage
+    return tuple(
+        replace(
+            item,
+            # Once the per-execution replay layer exists, it is the sole
+            # authority for usage. A single-case evaluator aggregate cannot
+            # mask missing, partial, or ambiguous replay telemetry.
+            usage=usage_by_coordinate.get(
+                coordinate(item),
+                MeasurementUsage(),
+            ),
+        )
+        for item in observations
+    )
 
 
 def stable_measurement_fingerprint(value: object) -> str:

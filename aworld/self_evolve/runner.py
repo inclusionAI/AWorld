@@ -126,6 +126,7 @@ from aworld.self_evolve.measurement import (
     evaluate_measurement_stopping,
     observations_from_evaluation,
     observations_from_replay,
+    observations_with_usage_fallback,
     stable_measurement_fingerprint,
 )
 from aworld.self_evolve.measurement_control import (
@@ -228,6 +229,16 @@ from aworld.self_evolve.candidate_protocol import (
 )
 from aworld.self_evolve.capability_contracts import (
     validate_applicable_capabilities,
+)
+from aworld.self_evolve.campaign_policy import (
+    CANDIDATE_REPAIRABLE_GATE_STAGES as _CANDIDATE_REPAIRABLE_GATE_STAGES,
+    FRAMEWORK_SHARED_GATE_STAGES as _FRAMEWORK_SHARED_GATE_STAGES,
+    campaign_measurement_outcome_for_replay as _campaign_measurement_outcome_for_replay,
+    effective_cli_measurement_mode as _effective_cli_measurement_mode,
+    effective_replay_repetitions as _effective_replay_repetitions,
+    gate_has_candidate_owned_repair as _gate_has_candidate_owned_repair,
+    is_verified_apply_policy as _is_verified_apply_policy,
+    rebase_measurement_experiment_for_materialization as _rebase_measurement_experiment_for_materialization,
 )
 from aworld.self_evolve.candidate_generation import (
     CandidateGenerationAgent,
@@ -428,34 +439,7 @@ _MAX_CONFORMANCE_STRATEGY_SWITCH_ATTEMPTS = 2
 _REPLAY_PROGRESS_HEARTBEAT_SECONDS = 30.0
 _SEMANTIC_DEDUP_IDENTITY_VERSION = "aworld.self_evolve.semantic_dedup.v2"
 _VERIFICATION_CONTRACT_VERSION = "aworld.self_evolve.verification_contract.v2"
-_VERIFIED_APPLY_POLICIES = frozenset({"auto_verified", "verified_only"})
 _SAFE_VERIFIED_TARGET_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
-
-
-def _is_verified_apply_policy(apply_policy: str) -> bool:
-    return apply_policy in _VERIFIED_APPLY_POLICIES
-
-
-def _effective_replay_repetitions(
-    *,
-    apply_policy: str,
-    repetitions_explicit: bool,
-    replay_case_count: int,
-    measurement_min_independent_cases: int,
-    baseline_repetitions: int,
-    candidate_repetitions: int,
-) -> tuple[int, int, str]:
-    """Resolve one replay repetition policy for planning and execution."""
-
-    if (
-        _is_verified_apply_policy(apply_policy)
-        and not repetitions_explicit
-        and replay_case_count >= max(2, measurement_min_independent_cases)
-    ):
-        # A broad independent-case panel supplies breadth. Repeating every
-        # member here multiplies runtime without adding equivalent evidence.
-        return 1, 1, "independent_case_adaptive"
-    return baseline_repetitions, candidate_repetitions, "configured"
 
 
 @dataclass(frozen=True)
@@ -1729,6 +1713,7 @@ _DEFAULT_CANDIDATE_SCREENING_TRACE_HORIZON = 4
 _DEFAULT_CANDIDATE_SCREENING_TOOL_CALL_LIMIT = 8
 _SCREENING_STEP_TIMEOUT_SECONDS = 30
 _SCREENING_BUDGET_CENSORED_CODE = "screening_budget_censored"
+_DEFAULT_AUTHORITATIVE_REPLAY_MAX_STEPS = 24
 
 
 def _candidate_screening_timeout(
@@ -1923,6 +1908,23 @@ def _nonnegative_numeric_count(value: object) -> int | None:
     ):
         return int(value)
     return None
+
+
+def _authoritative_evidence_finalization_timeout_seconds(
+    member_timeout_seconds: float,
+) -> float:
+    """Reserve a bounded, latency-aware terminal synthesis window.
+
+    Authoritative browser replays regularly need one additional model turn
+    after the evidence manifest is persisted.  A fixed 120-second ceiling is
+    below the observed end-to-end turn latency under provider retry/backoff and
+    censors otherwise recoverable controls.  Keep the window proportional to
+    the immutable member deadline and cap it at five minutes so finalization
+    remains bounded and cannot consume an entire long-running member budget.
+    """
+
+    timeout = float(member_timeout_seconds)
+    return min(timeout, min(max(timeout * 0.25, 45.0), 300.0))
 
 
 def _positive_metric_count(value: object) -> int:
@@ -3110,28 +3112,6 @@ def _rejection_attribution(
     return attribution
 
 
-_CANDIDATE_REPAIRABLE_GATE_STAGES = {
-    "candidate_package": FailureStage.CANDIDATE_GENERATION,
-    "skill_markdown": FailureStage.CANDIDATE_GENERATION,
-    "skill_release_fidelity": FailureStage.CANDIDATE_GENERATION,
-    "score_improvement": FailureStage.EVALUATION,
-    "cost_latency_regression": FailureStage.EVALUATION,
-    "replay_stability_margin": FailureStage.EVALUATION,
-    "evidence_quality": FailureStage.EVALUATION,
-    "replay_confidence": FailureStage.TASK_ROLLOUT,
-    "replay_evaluator_admission": FailureStage.TASK_ROLLOUT,
-    "target_behavior_delta": FailureStage.CANDIDATE_GENERATION,
-}
-_FRAMEWORK_SHARED_GATE_STAGES = {
-    "challenger_admission": FailureStage.EVALUATION,
-    "handbook_locator_integrity": FailureStage.CANDIDATE_GENERATION,
-    "evaluation_runtime_health": FailureStage.EVALUATION,
-    "held_out_verification": FailureStage.EVALUATION,
-    "judge_only_signal": FailureStage.EVALUATION,
-    "global_regression_benchmark": FailureStage.EVALUATION,
-}
-
-
 def _campaign_failure_attribution(
     iteration_states: Iterable[Mapping[str, object]],
     *,
@@ -3414,6 +3394,18 @@ def _with_typed_gate_failure_event(gate: GateResult) -> GateResult:
     if candidate_stage is not None and owner is None:
         owner = FailureOwner.CANDIDATE
         scope = FailureScope.CANDIDATE
+    elif (
+        gate.gate_name in {"held_out_verification", "judge_only_signal"}
+        and owner is None
+        and details.get("deterministic_signal_present") is False
+    ):
+        # A completed evaluator that rejects the candidate does not become a
+        # shared framework blocker merely because verification is derivative.
+        # Retain framework ownership only for genuinely missing/infeasible
+        # verification authority (where no negative candidate signal exists).
+        owner = FailureOwner.CANDIDATE
+        scope = FailureScope.CANDIDATE
+        stage = FailureStage.EVALUATION
     elif gate.gate_name == "required_verification" and owner is None:
         command_case_count = _non_negative_int(
             details.get("command_case_count")
@@ -3528,7 +3520,7 @@ class SelfEvolveRunner:
         replay_total_timeout_seconds: int | None = None,
         replay_resume_dir: str | Path | None = None,
         measurement_resume_run_id: str | None = None,
-        replay_max_steps: int | None = 1,
+        replay_max_steps: int | None = None,
         replay_candidate_limit: int = 2,
         candidate_screening_max_cases: int = 3,
         max_generated_candidates: int = 6,
@@ -3913,6 +3905,13 @@ class SelfEvolveRunner:
             None
         )
         self._candidate_screening_loaded_run_ids: set[str] = set()
+        # A control that fails before candidate execution is a run-level
+        # framework observation. Keep it quarantined across optimizer batches
+        # and candidate variants so one unstable task cannot consume the same
+        # physical baseline horizon repeatedly within a run.
+        self._candidate_screening_run_invalid_control_case_ids: dict[
+            str, set[str]
+        ] = {}
         self._current_run_authoritative_case_observations: dict[
             str, dict[str, int]
         ] = {}
@@ -3929,6 +3928,7 @@ class SelfEvolveRunner:
         target_provenance: TargetProvenance | None = None,
         target_selection_decision: TargetSelectionDecision | None = None,
         campaign_prior_run_ids: tuple[str, ...] | None = None,
+        campaign_scheduler_checkpoint_run_ids: tuple[str, ...] | None = None,
         campaign_id: str | None = None,
         campaign_cycle: int | None = None,
     ) -> SelfEvolveRunnerResult:
@@ -3944,6 +3944,9 @@ class SelfEvolveRunner:
                 target_provenance=target_provenance,
                 target_selection_decision=target_selection_decision,
                 campaign_prior_run_ids=campaign_prior_run_ids,
+                campaign_scheduler_checkpoint_run_ids=(
+                    campaign_scheduler_checkpoint_run_ids
+                ),
                 campaign_id=campaign_id,
                 campaign_cycle=campaign_cycle,
                 failure_cleanup=failure_cleanup,
@@ -3953,6 +3956,10 @@ class SelfEvolveRunner:
             raise
         finally:
             self._run_environment_fingerprints.pop(run_id, None)
+            self._candidate_screening_run_invalid_control_case_ids.pop(
+                run_id,
+                None,
+            )
 
     async def _run_explicit_target(
         self,
@@ -3966,6 +3973,7 @@ class SelfEvolveRunner:
         target_provenance: TargetProvenance | None = None,
         target_selection_decision: TargetSelectionDecision | None = None,
         campaign_prior_run_ids: tuple[str, ...] | None = None,
+        campaign_scheduler_checkpoint_run_ids: tuple[str, ...] | None = None,
         campaign_id: str | None = None,
         campaign_cycle: int | None = None,
         failure_cleanup: _RunFailureCleanup,
@@ -4088,7 +4096,11 @@ class SelfEvolveRunner:
             self.store,
             target.identity,
             current_run_id=run_id,
-            allowed_run_ids=campaign_prior_run_ids,
+            allowed_run_ids=(
+                campaign_scheduler_checkpoint_run_ids
+                if campaign_scheduler_checkpoint_run_ids is not None
+                else campaign_prior_run_ids
+            ),
         )
         scheduler_decisions: list[dict[str, object]] = []
         if apply_policy not in {"proposal", "auto_verified", "verified_only"}:
@@ -6800,6 +6812,7 @@ class SelfEvolveRunner:
                             measurement_summary = (
                                 self._materialize_candidate_measurement(
                                     experiment=experiment,
+                                    materialization_run_id=run_id,
                                     candidate=state_candidate,
                                     dataset=dataset,
                                     replay_result=(
@@ -6901,6 +6914,7 @@ class SelfEvolveRunner:
                 try:
                     measurement_summary = self._materialize_candidate_measurement(
                         experiment=fallback_experiment,
+                        materialization_run_id=run_id,
                         candidate=fallback_candidate,
                         dataset=dataset,
                         replay_result=None,
@@ -7581,6 +7595,7 @@ class SelfEvolveRunner:
                 _campaign_measurement_outcome_for_replay(
                     replay_result,
                     final_status=final_status,
+                    gate_results=gate_results,
                 )
             )
             if campaign_measurement_outcome is not None:
@@ -8058,11 +8073,42 @@ class SelfEvolveRunner:
         stopped_by_shared_screening = False
         stopped_by_shared_measurement = False
         stopped_after_budget_censor = False
+        deferred_to_authoritative_after_invalid_control = False
+        population_requires_artifact_lifecycle_proof = any(
+            repair_conformance_contracts.get(candidate.candidate_id) is not None
+            and repair_conformance_contracts[
+                candidate.candidate_id
+            ].artifact_lifecycle_constraint
+            is not None
+            for candidate in conformance_candidates
+        )
         # Every member of the already-bounded representative panel is a
         # distinct control experiment.  ``invalid_control_patience`` must not
         # truncate that panel and leave a known candidate unevaluated merely
         # because earlier controls were unhealthy.
         control_fallback_limit = len(configured_representative_case_ids)
+        run_invalid_control_case_ids = (
+            self._candidate_screening_run_invalid_control_case_ids.setdefault(
+                run_id,
+                set(),
+            )
+        )
+        prequalified_invalid_control_case_ids = tuple(
+            case_id
+            for case_id in (
+                configured_screening_panel.recipe.source.get(
+                    "quarantined_control_case_ids",
+                    (),
+                )
+                if configured_screening_panel is not None
+                else ()
+            )
+            if isinstance(case_id, str)
+            and case_id in configured_representative_case_ids
+        )
+        run_invalid_control_case_ids.update(
+            prequalified_invalid_control_case_ids
+        )
         for candidate_index, candidate in enumerate(
             conformance_candidates,
             start=1,
@@ -8167,13 +8213,32 @@ class SelfEvolveRunner:
             active_baseline_replay_dir = screening_baseline_replay_dir
             control_case_attempts: list[dict[str, object]] = []
             control_frontier_exhausted = False
+            replay_result: CandidateReplayResult | None = None
+            replay_dataset: SelfEvolveDataset | None = None
+            replay_gate: GateResult | None = None
             try:
+                active_representative_case_ids = tuple(
+                    case_id
+                    for case_id in representative_case_ids
+                    if case_id not in run_invalid_control_case_ids
+                )
                 fallback_case_ids = tuple(
                     case_id
                     for case_id in configured_representative_case_ids
-                    if case_id not in representative_case_ids
+                    if case_id not in active_representative_case_ids
+                    and case_id not in run_invalid_control_case_ids
                 )
-                control_case_datasets = [screening_dataset]
+                control_case_datasets: list[SelfEvolveDataset] = []
+                if active_representative_case_ids:
+                    control_case_datasets.append(
+                        screening_dataset
+                        if active_representative_case_ids
+                        == representative_case_ids
+                        else _candidate_screening_dataset_for_case_ids(
+                            configured_screening_panel or screening_dataset,
+                            case_ids=active_representative_case_ids,
+                        )
+                    )
                 control_case_datasets.extend(
                     _candidate_screening_dataset_for_case_ids(
                         configured_screening_panel,
@@ -8188,7 +8253,17 @@ class SelfEvolveRunner:
                     start=1,
                 ):
                     active_screening_dataset = candidate_screening_dataset
-                    active_baseline_replay_dir = None
+                    candidate_screening_case_ids = tuple(
+                        case.case_id
+                        for case in candidate_screening_dataset.cases
+                    )
+                    active_baseline_replay_dir = (
+                        screening_baseline_replay_dir
+                        if control_panel_index == 1
+                        and candidate_screening_case_ids
+                        == representative_case_ids
+                        else None
+                    )
                     if control_panel_index > 1:
                         _emit_progress(
                             self.progress_callback,
@@ -8301,6 +8376,9 @@ class SelfEvolveRunner:
                             _screening_invalid_control_is_timeout(
                                 raw_replay_gate
                             )
+                            and not _screening_required_intervention_unobserved(
+                                raw_replay_gate
+                            )
                         )
                         control_identities = (
                             tuple(
@@ -8348,6 +8426,10 @@ class SelfEvolveRunner:
                                 fallback_case_ids=active_control_case_ids,
                             )
                         )
+                        if _screening_gate_has_invalid_control(replay_gate):
+                            run_invalid_control_case_ids.update(
+                                invalid_control_case_ids
+                            )
                         control_details = (
                             replay_gate.details
                             if replay_gate is not None
@@ -8477,11 +8559,15 @@ class SelfEvolveRunner:
                     control_fallback_limit,
                 )
                 control_frontier_exhausted = bool(
-                    attempted_control_limit > 0
-                    and attempted_control_dataset_count >= attempted_control_limit
-                    and all(
-                        attempt.get("invalid_control") is True
-                        for attempt in control_case_attempts
+                    not control_case_datasets
+                    or (
+                        attempted_control_limit > 0
+                        and attempted_control_dataset_count
+                        >= attempted_control_limit
+                        and all(
+                            attempt.get("invalid_control") is True
+                            for attempt in control_case_attempts
+                        )
                     )
                 )
                 if control_frontier_exhausted:
@@ -8504,6 +8590,9 @@ class SelfEvolveRunner:
                         ),
                         diagnostics={
                             "attempted_control_count": len(control_case_attempts),
+                            "prequalified_invalid_control_case_ids": list(
+                                prequalified_invalid_control_case_ids
+                            ),
                             "invalid_control_case_ids": [
                                 case_id
                                 for attempt in control_case_attempts
@@ -8532,6 +8621,16 @@ class SelfEvolveRunner:
                             "repairable": True,
                             "next_action": "repair_framework",
                             "screening_outcome": "invalid_control",
+                            "candidate_execution_observed": False,
+                            "candidate_intervention_required": bool(
+                                intervention_case_ids
+                            ),
+                            "candidate_intervention_observed": (
+                                False if intervention_case_ids else None
+                            ),
+                            "prequalified_invalid_control_case_ids": list(
+                                prequalified_invalid_control_case_ids
+                            ),
                             "resume_safe": False,
                             "failure_event": payload,
                             "causal_failure_events": [payload],
@@ -8605,6 +8704,13 @@ class SelfEvolveRunner:
                 replay_gate is not None
                 and _gate_has_typed_shared_measurement_failure(replay_gate)
             )
+            defer_invalid_control_to_authoritative = bool(
+                not population_requires_artifact_lifecycle_proof
+                and _screening_control_infeasible_before_candidate_observation(
+                    replay_gate,
+                    control_case_attempts=control_case_attempts,
+                )
+            )
             if (
                 attempt_tracker is not None
                 and attempt_key is not None
@@ -8614,6 +8720,7 @@ class SelfEvolveRunner:
                     or not replay_gate.passed
                     or replay_dataset is None
                 )
+                and not defer_invalid_control_to_authoritative
                 and not attempt_tracker.terminal(attempt_key)
             ):
                 terminal_stage = (
@@ -8841,6 +8948,15 @@ class SelfEvolveRunner:
                 # authoritative replay, which owns the full execution budget.
                 stopped_after_budget_censor = True
                 break
+            if defer_invalid_control_to_authoritative:
+                # Screening is only a bounded ranking optimization. When every
+                # eligible train/validation control fails in the baseline phase,
+                # it has observed no candidate treatment and therefore cannot
+                # reject or rank the frozen candidates. Defer the bounded
+                # population to the authoritative full-dataset replay, which
+                # retains intervention, evidence, held-out, and promotion gates.
+                deferred_to_authoritative_after_invalid_control = True
+                break
             if shared_screening_failure and not _screening_attempt_requires_candidate_repair(
                 attempts[-1]
             ):
@@ -8919,6 +9035,18 @@ class SelfEvolveRunner:
                     else "screening stopped after a shared infrastructure failure"
                 )
                 selected_candidates = ()
+            elif deferred_to_authoritative_after_invalid_control:
+                selection_reason = (
+                    "all bounded screening controls failed before candidate "
+                    "observation; authoritative full replay preserved the "
+                    "frozen conforming population"
+                )
+                selected_candidates = tuple(
+                    candidate
+                    for candidate in conformance_candidates
+                    if candidate.candidate_id not in screening_budget_denied_ids
+                    and candidate.candidate_id not in screening_terminal_ids
+                )
             elif artifact_lifecycle_admission_failed:
                 selection_reason = (
                     "artifact lifecycle repair lacked behavioral screening proof; "
@@ -9219,8 +9347,13 @@ class SelfEvolveRunner:
                 "stopped_by_shared_validation": stopped_by_shared_screening,
                 "stopped_by_invalid_control": control_frontier_exhausted,
                 "stopped_after_budget_censor": stopped_after_budget_censor,
+                "deferred_to_authoritative_after_invalid_control": (
+                    deferred_to_authoritative_after_invalid_control
+                ),
                 "screening_outcome": (
-                    "invalid_control"
+                    "authoritative_fallback"
+                    if deferred_to_authoritative_after_invalid_control
+                    else "invalid_control"
                     if control_frontier_exhausted
                     else (
                         "right_censored"
@@ -10154,6 +10287,7 @@ class SelfEvolveRunner:
         self,
         *,
         experiment: ControlledExperimentSpec,
+        materialization_run_id: str,
         candidate: CandidateVariant,
         dataset: SelfEvolveDataset,
         replay_result: CandidateReplayResult | None,
@@ -10164,6 +10298,11 @@ class SelfEvolveRunner:
         authoritative_candidate_count: int,
         target_selection_report: TargetSelectionReport | None,
     ) -> MeasurementSummary:
+        experiment = _rebase_measurement_experiment_for_materialization(
+            experiment,
+            run_id=materialization_run_id,
+        )
+        self.store.write_measurement_experiment(experiment)
         key = (experiment.run_id, candidate.candidate_id)
         cached = self._measurement_summaries.get(key)
         if cached is not None:
@@ -10183,6 +10322,11 @@ class SelfEvolveRunner:
             baseline_summary=baseline_summary,
             candidate_summary=candidate_summary,
         )
+        if evaluation_observations and replay_observations:
+            evaluation_observations = observations_with_usage_fallback(
+                evaluation_observations,
+                replay_observations,
+            )
         observations = (
             evaluation_observations
             if self.measurement_primary_metric != "task_success"
@@ -11684,6 +11828,7 @@ class SelfEvolveRunner:
             try:
                 measurement_summary = self._materialize_candidate_measurement(
                     experiment=measurement_experiment,
+                    materialization_run_id=run_id,
                     candidate=candidate,
                     dataset=dataset,
                     replay_result=replay_result,
@@ -12591,12 +12736,10 @@ class SelfEvolveRunner:
                         float(member_timeout_seconds) * 2.0,
                         60.0,
                     ),
-                    evidence_finalization_timeout_seconds=min(
-                        float(member_timeout_seconds),
-                        min(
-                            max(float(member_timeout_seconds) * 0.25, 45.0),
-                            120.0,
-                        ),
+                    evidence_finalization_timeout_seconds=(
+                        _authoritative_evidence_finalization_timeout_seconds(
+                            float(member_timeout_seconds)
+                        )
                     ),
                     campaign_wall_deadline_seconds=campaign_deadline,
                     resumable_chunked=True,
@@ -12969,7 +13112,13 @@ class SelfEvolveRunner:
             else timeout_seconds
         )
         effective_max_steps = (
-            self.replay_max_steps if max_steps is None else max_steps
+            max_steps
+            if max_steps is not None
+            else (
+                self.replay_max_steps
+                if self.replay_max_steps is not None
+                else _DEFAULT_AUTHORITATIVE_REPLAY_MAX_STEPS
+            )
         )
         effective_max_tool_calls = max_tool_calls
         # Baseline reuse is resolved only after the candidate-owned support has
@@ -15707,7 +15856,7 @@ def optimize_from_cli_request(
     regression_replay_backend: CandidateReplayBackend | None = None,
     replay_timeout_seconds: int = 600,
     replay_total_timeout_seconds: int | None = None,
-    replay_max_steps: int | None = 1,
+    replay_max_steps: int | None = None,
     replay_candidate_limit: int = 2,
     candidate_screening_max_cases: int = 3,
     max_generated_candidates: int = 6,
@@ -15734,6 +15883,7 @@ def optimize_from_cli_request(
     campaign_id: str | None = None,
     campaign_cycle: int | None = None,
     campaign_prior_run_ids: Iterable[str] | None = None,
+    campaign_scheduler_checkpoint_run_ids: Iterable[str] | None = None,
     campaign_expected_target: Mapping[str, Any] | None = None,
     campaign_measurement_pending_run_id: str | None = None,
     campaign_measurement_pending_candidate_id: str | None = None,
@@ -16717,6 +16867,9 @@ def optimize_from_cli_request(
                 "target_provenance": target_provenance,
                 "target_selection_decision": target_selection_decision,
                 "campaign_prior_run_ids": tuple(campaign_prior_run_ids or ()),
+                "campaign_scheduler_checkpoint_run_ids": tuple(
+                    campaign_scheduler_checkpoint_run_ids or ()
+                ),
                 "campaign_id": campaign_id,
                 "campaign_cycle": campaign_cycle,
             },
@@ -18299,112 +18452,6 @@ def _replay_report(replay_result: CandidateReplayResult) -> dict[str, object]:
     return report
 
 
-def _campaign_measurement_outcome_for_replay(
-    replay_result: CandidateReplayResult,
-    *,
-    final_status: SelfEvolveRunStatus,
-) -> dict[str, object] | None:
-    """Project the authoritative scheduler stop into Campaign causal state."""
-
-    decision = replay_result.measurement_decision
-    if not isinstance(decision, Mapping):
-        return None
-    kind = str(decision.get("kind") or "")
-    from aworld.self_evolve.campaign import (
-        CampaignMeasurementOutcomeV2,
-        CandidateImprovementOutcome,
-        MeasurementExecutionStatus,
-    )
-
-    if kind == "stop_framework_blocked":
-        outcome = CampaignMeasurementOutcomeV2(
-            execution_status=MeasurementExecutionStatus.FRAMEWORK_BLOCKED,
-            improvement_outcome=CandidateImprovementOutcome.UNKNOWN,
-            release_gates_passed=False,
-            # The candidate package remains immutable and reusable after the
-            # external framework repair. Campaign must pause for a goal handoff,
-            # not spend another mutation or invalid-measurement retry.
-            continuation_available=True,
-            reason_code=str(
-                decision.get("reason_code") or "measurement_framework_blocked"
-            ),
-        )
-    elif kind in {
-        "measurement_incomplete_checkpoint",
-        "measurement_incomplete_campaign_deadline",
-    }:
-        outcome = CampaignMeasurementOutcomeV2(
-            execution_status=MeasurementExecutionStatus.CHECKPOINTED,
-            improvement_outcome=CandidateImprovementOutcome.UNKNOWN,
-            release_gates_passed=False,
-            continuation_available=decision.get("resume_safe") is True,
-            reason_code=kind,
-        )
-    elif kind == "stop_confident_positive":
-        outcome = CampaignMeasurementOutcomeV2(
-            execution_status=MeasurementExecutionStatus.COMPLETED,
-            improvement_outcome=CandidateImprovementOutcome.POSITIVE,
-            release_gates_passed=final_status is SelfEvolveRunStatus.SUCCEEDED,
-            continuation_available=False,
-            reason_code="verified_positive_effect",
-        )
-    elif kind in {"stop_negative", "stop_regression"}:
-        outcome = CampaignMeasurementOutcomeV2(
-            execution_status=MeasurementExecutionStatus.COMPLETED,
-            improvement_outcome=CandidateImprovementOutcome.REGRESSION,
-            release_gates_passed=False,
-            continuation_available=False,
-            reason_code=(
-                "decisive_regression"
-                if kind == "stop_regression"
-                else "decisive_negative_effect"
-            ),
-        )
-    elif kind == "stop_invalid_control":
-        outcome = CampaignMeasurementOutcomeV2(
-            execution_status=MeasurementExecutionStatus.INVALID,
-            improvement_outcome=CandidateImprovementOutcome.UNKNOWN,
-            release_gates_passed=False,
-            continuation_available=True,
-            reason_code="repeated_invalid_control",
-        )
-    else:
-        outcome = CampaignMeasurementOutcomeV2(
-            execution_status=MeasurementExecutionStatus.COMPLETED,
-            improvement_outcome=CandidateImprovementOutcome.NO_EFFECT,
-            release_gates_passed=False,
-            continuation_available=False,
-            reason_code=(
-                kind.removeprefix("stop_") + "_effect"
-                if kind.startswith("stop_")
-                else "measurement_no_effect"
-            ),
-        )
-    return outcome.to_dict()
-
-
-def _effective_cli_measurement_mode(
-    configured_mode: MeasurementPolicyMode | str | None,
-    *,
-    apply_policy: str,
-    replay_enabled: bool,
-) -> MeasurementPolicyMode:
-    """Make verified replay authoritative unless another mode was selected.
-
-    An omitted mode is distinct from an explicit ``off``. A verified skill replay
-    must not silently retain the legacy batch executor, while operators and
-    compatibility tests can still deliberately disable the v2 control plane.
-    """
-
-    if (
-        configured_mode is None
-        and replay_enabled
-        and _is_verified_apply_policy(apply_policy)
-    ):
-        return MeasurementPolicyMode.REQUIRED
-    return MeasurementPolicyMode(configured_mode or MeasurementPolicyMode.OFF)
-
-
 def _replay_capability_report(
     replay_result: CandidateReplayResult,
 ) -> dict[str, object] | None:
@@ -19784,6 +19831,11 @@ def _prior_run_eval_cases(
                 },
                 source={
                     "kind": "prior_self_evolve_run",
+                    # Prior-run cases are bounded optimizer feedback, not user
+                    # tasks.  Keep them in the trainable context while routing
+                    # every executable replay panel through the shared
+                    # ``_is_replayable_user_task_case`` predicate.
+                    "framework_generated": True,
                     "path": str(report_path),
                     "source_run_id": str(report.get("run_id") or report_path.parent.name),
                     "candidate_id": candidate_id,
@@ -21737,11 +21789,16 @@ def _candidate_intervention_unobserved(
 def _candidate_requires_task_plane_intervention(
     candidate: CandidateVariant,
 ) -> bool:
-    changed_paths = tuple(
-        item.path
-        for item in candidate.files
-        if item.operation in {"upsert", "delete"}
+    mutation = classify_candidate_mutation(
+        candidate,
+        current_content=(
+            Path(candidate.target.path).read_text(encoding="utf-8")
+            if candidate.target.path
+            and Path(candidate.target.path).is_file()
+            else candidate.content
+        ),
     )
+    changed_paths = mutation.support_file_paths
     return bool(changed_paths) and all(
         path == "replay/capability.json" or path.startswith("replay/")
         for path in changed_paths
@@ -22097,6 +22154,12 @@ def _candidate_support_baseline_incompatibility_gate(
         == "framework-only"
     ):
         return gate
+    if _screening_required_intervention_unobserved(gate):
+        # A baseline-only framework failure cannot prove that the candidate's
+        # required data-plane intervention caused the failure. Historical
+        # success under a different support package is control-health evidence,
+        # not a treatment observation, so preserve the framework owner.
+        return gate
     case_id = control_identity.get("case_id")
     support_fingerprint = control_identity.get("support_fingerprint")
     counterfactual_control_fields = (
@@ -22188,12 +22251,62 @@ def _candidate_support_baseline_incompatibility_gate(
     )
 
 
+def _screening_required_intervention_unobserved(
+    gate: GateResult | None,
+) -> bool:
+    if gate is None or not isinstance(gate.details, Mapping):
+        return False
+    return bool(
+        gate.details.get("candidate_intervention_required") is True
+        and gate.details.get("candidate_intervention_observed") is not True
+    )
+
+
+def _screening_control_infeasible_before_candidate_observation(
+    gate: GateResult | None,
+    *,
+    control_case_attempts: tuple[Mapping[str, object], ...]
+    | list[Mapping[str, object]],
+) -> bool:
+    """Admit authoritative fallback only for baseline-only control failures."""
+
+    if (
+        gate is None
+        or gate.passed
+        or not isinstance(gate.details, Mapping)
+        or gate.details.get("code") != "screening_control_infeasible"
+        or gate.details.get("failure_owner") != FailureOwner.FRAMEWORK.value
+        or not _screening_required_intervention_unobserved(gate)
+    ):
+        return False
+    if not control_case_attempts:
+        prequalified = gate.details.get(
+            "prequalified_invalid_control_case_ids"
+        )
+        return bool(
+            isinstance(prequalified, (list, tuple))
+            and prequalified
+            and all(isinstance(case_id, str) for case_id in prequalified)
+        )
+    for attempt in control_case_attempts:
+        if (
+            attempt.get("invalid_control") is not True
+            or attempt.get("candidate_status") not in {"blocked", "not_run"}
+            or not _framework_phase_timeout(attempt.get("baseline_failure"))
+        ):
+            return False
+    return True
+
+
 def _framework_phase_timeout(value: object) -> bool:
     return bool(
         isinstance(value, Mapping)
         and value.get("code") == "replay_member_phase_timeout"
-        and (value.get("failure_owner") or value.get("owner"))
-        == FailureOwner.FRAMEWORK.value
+        and (
+            (value.get("failure_owner") or value.get("owner"))
+            == FailureOwner.FRAMEWORK.value
+            or value.get("outcome") == "framework_failure"
+        )
     )
 
 
@@ -25264,33 +25377,6 @@ def _verified_prerequisite_files(
     return None
 
 
-def _gate_has_candidate_owned_repair(gate: GateResult) -> bool:
-    details = gate.details if isinstance(gate.details, Mapping) else {}
-    causal_events = details.get("causal_failure_events")
-    if isinstance(causal_events, (list, tuple)):
-        typed_events = [
-            item for item in causal_events if isinstance(item, Mapping)
-        ]
-        if typed_events:
-            return any(
-                item.get("owner") == FailureOwner.CANDIDATE.value
-                and item.get("repairable") is True
-                for item in typed_events
-            )
-    failure_owner = details.get("failure_owner") or details.get("failure_class")
-    if isinstance(failure_owner, str) and failure_owner:
-        return (
-            failure_owner == FailureOwner.CANDIDATE.value
-            and details.get("repairable") is not False
-        )
-    return gate.gate_name in {
-        *_CANDIDATE_REPAIRABLE_GATE_STAGES,
-        "candidate_repair_conformance",
-        "candidate_replay",
-        "required_verification",
-    }
-
-
 def _iteration_report_item(
     *,
     iteration_number: int,
@@ -26953,8 +27039,6 @@ def _screening_case_has_only_invalid_baselines(
     baseline_successes = _non_negative_int(
         observation.get("baseline_success_count")
     )
-    if baseline_successes > 0:
-        return False
     invalid_controls = _non_negative_int(
         observation.get("invalid_control_count")
     )
@@ -26972,10 +27056,16 @@ def _screening_case_has_only_invalid_baselines(
             )
             >= _MAX_CANDIDATE_SCREENING_TIMEOUT_SECONDS
         )
+        mixed_control_regressed = bool(
+            baseline_successes > 0
+            and invalid_controls >= 2
+            and timeout_count >= baseline_successes
+        )
         return bool(
-            invalid_controls > 0
+            (invalid_controls > 0 and baseline_successes == 0)
             or timeout_only_history
-            or reached_timeout_ceiling
+            or (reached_timeout_ceiling and invalid_controls >= 2)
+            or mixed_control_regressed
         )
     # Compatibility for reports written before phase-aware control telemetry.
     return invalid_controls > 0
@@ -27768,7 +27858,7 @@ def _select_iteration_state(
 
 def _iteration_candidate_score(
     state: Mapping[str, object],
-) -> tuple[int, int, float, int, int]:
+) -> tuple[int, int, int, float, float, int, int]:
     summary = state.get("candidate_summary")
     score = float("-inf")
     if isinstance(summary, EvaluationSummary):
@@ -27822,13 +27912,63 @@ def _iteration_candidate_score(
         if adaptation_compiled
         else 0
     )
+    paired_delta = _iteration_candidate_paired_delta(state, gates=gates)
     return (
         int(substantive_evaluation),
         progress_rank,
+        int(paired_delta is not None),
+        paired_delta if paired_delta is not None else float("-inf"),
         score,
         -failed_count,
         passed_count,
     )
+
+
+def _iteration_candidate_paired_delta(
+    state: Mapping[str, object],
+    *,
+    gates: Sequence[object],
+) -> float | None:
+    """Return a comparable baseline-to-candidate score effect when available.
+
+    Candidate evaluations can use different judge baselines. Absolute score is
+    therefore not a causal ranking signal across rejected candidates: a proven
+    regression against a high baseline must not displace a positive paired
+    effect against a lower baseline and become the Campaign checkpoint.
+    """
+
+    for gate in gates:
+        if not isinstance(gate, GateResult) or gate.gate_name != "score_improvement":
+            continue
+        details = gate.details
+        if not isinstance(details, Mapping):
+            continue
+        comparability = details.get("comparability")
+        if (
+            isinstance(comparability, Mapping)
+            and comparability.get("comparable") is False
+        ):
+            return None
+        delta = details.get("delta")
+        if (
+            isinstance(delta, (int, float))
+            and not isinstance(delta, bool)
+            and math.isfinite(float(delta))
+        ):
+            return float(delta)
+
+    baseline = state.get("baseline_summary")
+    candidate = state.get("candidate_summary")
+    if not isinstance(baseline, EvaluationSummary) or not isinstance(
+        candidate, EvaluationSummary
+    ):
+        return None
+    baseline_score = _metric_number(baseline.metrics, "score")
+    candidate_score = _metric_number(candidate.metrics, "score")
+    if baseline_score is None or candidate_score is None:
+        return None
+    delta = candidate_score - baseline_score
+    return delta if math.isfinite(delta) else None
 
 
 def _candidate_generation_limit(

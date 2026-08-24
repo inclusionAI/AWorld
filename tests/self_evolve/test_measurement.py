@@ -44,6 +44,7 @@ from aworld.self_evolve.measurement import (
     measurement_summary_from_report,
     observations_from_evaluation,
     observations_from_replay,
+    observations_with_usage_fallback,
     validate_transfer_panel,
 )
 from aworld.self_evolve.datasets import EvalCase, SelfEvolveDataset
@@ -1207,3 +1208,96 @@ def test_evaluation_adapter_preserves_repetition_major_case_coordinates() -> Non
         item.comparability is ComparabilityStatus.COMPARABLE
         for item in observations
     )
+
+
+def test_evaluation_observations_use_exact_replay_coordinate_usage_fallback() -> None:
+    spec = _spec(
+        case_ids=("case-a", "case-b"),
+        repetitions=1,
+        minimum_cases=2,
+        primary_metric="score",
+    )
+    dataset = SelfEvolveDataset(
+        cases=(
+            EvalCase(case_id="case-a", input={"task": "a"}),
+            EvalCase(case_id="case-b", input={"task": "b"}),
+        ),
+        recipe=DatasetRecipe(
+            source={"kind": "trajectory_log"},
+            split_seed="seed",
+            splits={"held_out": ["case-a", "case-b"]},
+        ),
+    )
+    evaluation = observations_from_evaluation(
+        spec,
+        dataset=dataset,
+        baseline_summary=SimpleNamespace(metrics={"score_samples": [1.0, 2.0]}),
+        candidate_summary=SimpleNamespace(metrics={"score_samples": [3.0, 4.0]}),
+    )
+    replay_usage = tuple(
+        replace(
+            observation,
+            usage=MeasurementUsage(
+                tokens=100 + index,
+                wall_seconds=10.0 + index,
+            ),
+        )
+        for index, observation in enumerate(evaluation)
+    )
+
+    merged = observations_with_usage_fallback(evaluation, replay_usage)
+
+    assert [item.metrics["score"] for item in merged] == [1.0, 3.0, 2.0, 4.0]
+    assert [item.usage.tokens for item in merged] == [100, 101, 102, 103]
+    assert all(item.usage.complete for item in merged)
+
+
+def test_usage_fallback_rejects_duplicate_or_different_full_coordinates() -> None:
+    spec = _spec(
+        case_ids=("case-a",),
+        repetitions=1,
+        minimum_cases=1,
+        primary_metric="score",
+    )
+    dataset = SelfEvolveDataset(
+        cases=(EvalCase(case_id="case-a", input={"task": "a"}),),
+        recipe=DatasetRecipe(
+            source={"kind": "trajectory_log"},
+            split_seed="seed",
+            splits={"held_out": ["case-a"]},
+        ),
+    )
+    evaluation = observations_from_evaluation(
+        spec,
+        dataset=dataset,
+        baseline_summary=SimpleNamespace(metrics={"score_samples": [1.0]}),
+        candidate_summary=SimpleNamespace(metrics={"score_samples": [2.0]}),
+    )
+    evaluation = tuple(
+        replace(
+            item,
+            usage=MeasurementUsage(tokens=999, wall_seconds=9.0),
+        )
+        for item in evaluation
+    )
+    control = replace(
+        evaluation[0],
+        usage=MeasurementUsage(tokens=10, wall_seconds=1.0),
+    )
+    duplicate_control = replace(
+        evaluation[0],
+        usage=MeasurementUsage(tokens=20, wall_seconds=2.0),
+    )
+    different_seed_treatment = replace(
+        evaluation[1],
+        seed=999,
+        usage=MeasurementUsage(tokens=30, wall_seconds=3.0),
+    )
+
+    merged = observations_with_usage_fallback(
+        evaluation,
+        (control, duplicate_control, different_seed_treatment),
+    )
+
+    assert merged[0].usage.complete is False
+    assert merged[1].usage.complete is False

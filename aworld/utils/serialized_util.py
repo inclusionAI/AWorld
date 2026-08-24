@@ -18,6 +18,11 @@ class NumpyEncoder(json.JSONEncoder):
 
 
 def to_serializable(obj, _memo=None):
+    # Immutable scalar interning is not a reference cycle. Tracking primitive
+    # object ids turns repeated small integers/strings into their repr on the
+    # second occurrence (for example raw token usage 5 -> "5").
+    if obj is None or isinstance(obj, (str, int, float, bool)):
+        return obj
     if _memo is None:
         _memo = set()
     obj_id = id(obj)

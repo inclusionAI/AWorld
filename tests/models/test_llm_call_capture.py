@@ -10,6 +10,7 @@ from aworld.core.context.base import Context
 from aworld.core.task import Task, TaskResponse
 from aworld.models.llm import LLMModel
 from aworld.models.model_response import ModelResponse
+from aworld.models.openai_provider import OpenAIProvider
 from aworld.core.llm_provider import LLMProviderBase
 from aworld.runners.event_runner import TaskEventRunner
 
@@ -112,6 +113,21 @@ class RecordingLLMProvider(LLMProviderBase):
             provider_request_id="provider-stream-async",
             finish_reason="stop",
         )
+
+
+def test_openai_provider_disables_hidden_retries_for_authoritative_usage(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("AWORLD_SELF_EVOLVE_DISABLE_PROVIDER_RETRIES", "1")
+    provider = OpenAIProvider(
+        model_name="gpt-4.1",
+        sync_enabled=False,
+        async_enabled=False,
+    )
+
+    assert provider._authoritative_max_retries(http_handler=False) == 0
+    assert provider._authoritative_max_retries(http_handler=True) == 1
+    assert provider.authoritative_usage_single_attempt is True
 
 
 class TerminalMarkerStreamProvider(RecordingLLMProvider):
@@ -219,6 +235,102 @@ async def test_acompletion_appends_llm_call_with_final_messages_and_usage(monkey
         "prompt_tokens_details": {"cached_tokens": 5},
         "cache_hit_tokens": 5,
     }
+    assert llm_call["usage_reported"] is True
+
+
+def test_llm_call_record_distinguishes_missing_usage_from_zero_tokens() -> None:
+    llm_model = LLMModel(custom_provider=RecordingLLMProvider())
+    context = Context(task_id="task-no-provider-usage")
+    response = ModelResponse(
+        id="response-no-usage",
+        model="mock-model",
+        content="done",
+    )
+
+    llm_model._append_llm_call_record(
+        context=context,
+        request_id="llm_req_no_usage",
+        messages=[{"role": "user", "content": "hello"}],
+        temperature=0.0,
+        max_tokens=100,
+        stop=[],
+        response=response,
+        started_at=1.0,
+        finished_at=2.0,
+    )
+
+    llm_call = context.get_llm_calls()[0]
+    assert llm_call["usage_normalized"] == {
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0,
+    }
+    assert llm_call["usage_raw"] == {}
+    assert llm_call["usage_reported"] is False
+
+
+def test_llm_call_record_accepts_explicit_usage_without_raw_usage() -> None:
+    llm_model = LLMModel(custom_provider=RecordingLLMProvider())
+    context = Context(task_id="task-provider-usage-only")
+    response = ModelResponse(
+        id="response-provider-usage-only",
+        model="mock-model",
+        content="done",
+        usage={
+            "prompt_tokens": 19,
+            "completion_tokens": 5,
+            "total_tokens": 24,
+        },
+    )
+    # Reproduce providers whose terminal streaming marker carries the
+    # aggregate usage but no native raw payload.
+    response.raw_usage = None
+
+    llm_model._append_llm_call_record(
+        context=context,
+        request_id="llm_req_provider_usage_only",
+        messages=[{"role": "user", "content": "hello"}],
+        temperature=0.0,
+        max_tokens=100,
+        stop=[],
+        response=response,
+        started_at=1.0,
+        finished_at=2.0,
+    )
+
+    llm_call = context.get_llm_calls()[0]
+    assert llm_call["usage_normalized"]["total_tokens"] == 24
+    assert llm_call["usage_raw"] == {}
+    assert llm_call["usage_reported"] is True
+
+
+@pytest.mark.asyncio
+async def test_failed_provider_attempt_remains_in_llm_call_ledger() -> None:
+    class FailThenSucceedProvider(RecordingLLMProvider):
+        async def acompletion(self, messages, **kwargs):
+            self.seen_requests.append(messages)
+            if len(self.seen_requests) == 1:
+                raise TimeoutError("first wire attempt failed")
+            return self._build_response()
+
+    provider = FailThenSucceedProvider()
+    llm_model = LLMModel(custom_provider=provider)
+    provider.authoritative_usage_single_attempt = True
+    context = Context(task_id="task-retry-ledger")
+
+    with pytest.raises(ConnectionError):
+        await llm_model.acompletion([{"role": "user", "content": "first"}], context=context)
+    await llm_model.acompletion(
+        [{"role": "user", "content": "second"}],
+        context=context,
+    )
+
+    llm_calls = context.get_llm_calls()
+    assert len(llm_calls) == 2
+    assert llm_calls[0]["status"] == "started"
+    assert llm_calls[0]["usage_reported"] is False
+    assert llm_calls[1]["status"] == "success"
+    assert llm_calls[1]["usage_reported"] is True
 
 
 @pytest.mark.asyncio
@@ -320,6 +432,20 @@ def test_merge_context_from_deep_copy_appends_only_new_llm_calls():
     ]
 
 
+def test_transport_deep_copy_preserves_unmerged_llm_call_baseline():
+    parent = Context(task_id="parent-task")
+    child = parent.deep_copy()
+    child.append_llm_call({"request_id": "child-call"})
+
+    transported = child.deep_copy(preserve_merge_baseline=True)
+    parent.merge_context(transported)
+
+    assert transported._merge_llm_calls_baseline == 0
+    assert parent.context_info.get("llm_calls") == [
+        {"request_id": "child-call"},
+    ]
+
+
 def test_stream_completion_appends_one_final_llm_call_record():
     provider = RecordingLLMProvider()
     llm_model = LLMModel(custom_provider=provider)
@@ -339,6 +465,7 @@ def test_stream_completion_appends_one_final_llm_call_record():
         "completion_tokens": 8,
         "total_tokens": 21,
     }
+    assert llm_calls[0]["usage_reported"] is True
     assert llm_calls[0]["response"]["finish_reason"] == "stop"
 
 
@@ -359,6 +486,7 @@ def test_stream_completion_uses_last_meaningful_chunk_for_llm_call_record():
         "total_tokens": 21,
     }
     assert llm_call["usage_raw"]["cache_hit_tokens"] == 3
+    assert llm_call["usage_reported"] is True
     assert llm_call["response"]["message"] == {"role": "assistant", "content": "final"}
     assert llm_call["response"]["finish_reason"] == "stop"
 
@@ -384,6 +512,7 @@ async def test_astream_completion_appends_one_final_llm_call_record():
         "total_tokens": 26,
         "cache_hit_tokens": 4,
     }
+    assert llm_calls[0]["usage_reported"] is True
     assert llm_calls[0]["response"]["finish_reason"] == "stop"
 
 
@@ -405,6 +534,7 @@ async def test_astream_completion_uses_last_meaningful_chunk_for_llm_call_record
         "total_tokens": 26,
     }
     assert llm_call["usage_raw"]["cache_hit_tokens"] == 4
+    assert llm_call["usage_reported"] is True
     assert llm_call["response"]["message"] == {"role": "assistant", "content": "final"}
     assert llm_call["response"]["finish_reason"] == "stop"
 

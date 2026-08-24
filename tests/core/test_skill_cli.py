@@ -869,6 +869,14 @@ def test_run_top_level_command_prefers_task_response_trajectory(
                     "success": True,
                     "trajectory": full_trajectory,
                     "trajectory_capture_mode": "task_response",
+                    "llm_usage": {
+                        "schema_version": "aworld.llm_usage_summary.v1",
+                        "call_count": 2,
+                        "usage_call_count": 2,
+                        "total_tokens": 123,
+                        "coverage_complete": True,
+                        "ledger_consistent": True,
+                    },
                 }
             ]
         }
@@ -910,6 +918,37 @@ def test_run_top_level_command_prefers_task_response_trajectory(
     assert payload["trajectory_capture_mode"] == "task_response"
     assert payload["trajectory"] == full_trajectory
     assert payload["trajectory"][0]["action"]["tool_calls"][0]["name"] == "browser"
+    assert payload["llm_usage"]["total_tokens"] == 123
+
+
+def test_direct_run_payload_omits_usage_if_any_iteration_is_incomplete() -> None:
+    summary = {
+        "results": [
+            {
+                "trajectory": [{"action": {"content": "working"}}],
+                "llm_usage": {
+                    "schema_version": "aworld.llm_usage_summary.v1",
+                    "call_count": 1,
+                    "usage_call_count": 1,
+                    "total_tokens": 10,
+                    "coverage_complete": True,
+                    "ledger_consistent": True,
+                },
+            },
+            {
+                "trajectory": [{"action": {"content": "done"}}],
+            },
+        ]
+    }
+
+    payload = main_module._trajectory_payload_from_direct_run_summary(
+        summary,
+        prompt="Replay this task",
+        agent_name="Aworld",
+    )
+
+    assert payload["trajectory_capture_mode"] == "task_response"
+    assert "llm_usage" not in payload
 
 
 def test_run_top_level_command_publishes_atomic_self_evolve_task_response(
@@ -1029,6 +1068,15 @@ def test_task_response_capability_compacts_oversized_trajectory() -> None:
             }
         ],
         "llm_calls": [{"payload": "secretly huge" * 8_000}],
+        "llm_usage": {
+            "schema_version": "aworld.llm_usage_summary.v1",
+            "call_count": 3,
+            "usage_call_count": 3,
+            "total_tokens": 456,
+            "coverage_complete": True,
+            "ledger_consistent": True,
+            "iteration_count": 1,
+        },
     }
 
     compact = _bounded_task_response_capability_payload(
@@ -1049,6 +1097,7 @@ def test_task_response_capability_compacts_oversized_trajectory() -> None:
     assert compact["trajectory_digest"].startswith("sha256:")
     assert compact["trajectory"][0]["action"]["is_agent_finished"] == "True"
     assert "llm_calls" not in compact
+    assert compact["llm_usage"] == sidecar["llm_usage"]
 
 
 @pytest.mark.asyncio

@@ -174,6 +174,69 @@ async def test_trajectory_log_source_replays_rollout_state_with_standard_metrics
     assert result["metadata"]["standard_metrics"]["n_tool_calls"] == 1
 
 
+@pytest.mark.parametrize(
+    ("state_input", "expected_question"),
+    [
+        ("plain string question", "plain string question"),
+        (
+            repr(
+                {
+                    "content": "serialized tool output",
+                    "action_result": [
+                        {
+                            "tool_name": "terminal",
+                            "content": "tool result",
+                        }
+                    ],
+                }
+            ),
+            None,
+        ),
+    ],
+)
+def test_trajectory_log_source_accepts_string_state_input_without_promoting_transport(
+    tmp_path: Path,
+    state_input: str,
+    expected_question: str | None,
+) -> None:
+    task_id = "task-string-input"
+    trajectory = [
+        {
+            "state": {"input": state_input},
+            "meta": {"step": 1, "pre_agent": "async_mcp", "agent_id": "agent"},
+            "action": {
+                "content": "final answer",
+                "is_agent_finished": "True",
+                "tool_calls": [],
+            },
+        }
+    ]
+    log_path = tmp_path / "trajectory.log"
+    log_path.write_text(
+        repr(
+            {
+                "task_id": task_id,
+                "is_sub_task": False,
+                "trajectory": json.dumps(trajectory),
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    record = next(
+        iter(
+            AWorldTrajectoryLogSource(
+                path=log_path,
+                task_ids=[task_id],
+            ).iter_records()
+        )
+    )
+
+    assert record.raw_payload["question"] == expected_question
+    assert record.raw_payload["final_answer"] == "final answer"
+
+
 def test_trajectory_log_source_extracts_action_result_tool_evidence(tmp_path: Path) -> None:
     task_id = "task-action-result"
     trajectory = [

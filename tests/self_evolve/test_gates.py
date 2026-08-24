@@ -123,6 +123,35 @@ def test_target_behavior_delta_gate_accepts_target_and_support_composite() -> No
     assert result.details["kind"] == "target_behavior_with_support"
 
 
+def test_noop_gate_rejects_json_formatting_only_support_delta(tmp_path: Path) -> None:
+    current = "---\nname: demo\n---\n# Demo\n"
+    skill_path = tmp_path / "demo" / "SKILL.md"
+    capability_path = skill_path.parent / "replay" / "capability.json"
+    capability_path.parent.mkdir(parents=True)
+    skill_path.write_text(current, encoding="utf-8")
+    capability_path.write_text(
+        '{\n  "capability_id": "demo",\n  "handles": ["http_resource"]\n}\n',
+        encoding="utf-8",
+    )
+    candidate = replace(
+        _candidate(current, path=str(skill_path)),
+        files=(
+            CandidateFileDelta(
+                path="replay/capability.json",
+                content='{"handles":["http_resource"],"capability_id":"demo"}',
+            ),
+        ),
+    )
+
+    result = NoopCandidateGate().evaluate(
+        current_content=current,
+        candidate=candidate,
+    )
+
+    assert result.passed is False
+    assert result.details["kind"] == "no_change"
+
+
 def test_candidate_package_gate_requires_referenced_release_files(tmp_path) -> None:
     skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
     skill_path.parent.mkdir(parents=True)
@@ -322,6 +351,10 @@ def test_score_improvement_gate_treats_noisy_negative_delta_as_inconclusive() ->
         "point_estimate_below_minimum_delta"
     )
     assert result.details["delta_confidence_upper_bound"] > 0
+    assert result.details["failure_class"] == "candidate"
+    assert result.details["failure_owner"] == "candidate"
+    assert result.details["failure_scope"] == "candidate"
+    assert result.details["repairable"] is True
 
 
 def test_score_improvement_gate_uses_paired_case_deltas_for_noninferiority() -> None:
@@ -1541,6 +1574,28 @@ def test_held_out_gate_accepts_trajectory_set_validation() -> None:
     assert result.reason == "candidate is verified by trajectory-set validation"
     assert result.details["verification_mode"] == "trajectory_set_validation"
     assert result.details["held_out_case_count"] == 1
+
+
+def test_held_out_and_judge_only_gates_expose_negative_candidate_signal() -> None:
+    decision = CandidateConfidenceDecision(
+        confidence="limited",
+        reason="verified confidence requires a deterministic signal",
+        selection_split="validation",
+        verification_split="held_out",
+        deterministic_signal_present=False,
+        held_out_case_count=4,
+        verification_mode="held_out",
+    )
+
+    held_out = HeldOutVerificationGate(min_eval_cases=30).evaluate(decision)
+    judge_only = JudgeOnlySignalGate().evaluate(decision)
+
+    assert held_out.passed is False
+    assert held_out.details["deterministic_signal_present"] is False
+    assert held_out.details["decision_reason"] == decision.reason
+    assert judge_only.passed is False
+    assert judge_only.details["deterministic_signal_present"] is False
+    assert judge_only.details["decision_reason"] == decision.reason
 
 
 def test_trust_provenance_gate_rejects_protected_generated_and_external_targets() -> None:

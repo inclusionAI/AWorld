@@ -576,9 +576,10 @@ mappings are deprecated compatibility paths, not additional independent budgets.
 SDK callers and background `SelfEvolveConfig` jobs can enable controlled
 measurement with `measurement_mode="shadow"`, `"advisory"`, or `"required"`.
 The CLI exposes the same policy through `--measurement-mode`. When the option is
-omitted, verified skill replay (`verified_only` or `auto_verified`) uses
-`required`; proposal/non-replay runs use `off`. An explicit `off` remains the
-legacy compatibility switch. For example:
+omitted, verified skill replay (`verified_only` or `auto_verified`) uses `shadow`
+until calibration is accepted; proposal/non-replay runs use `off`. Select
+`required` explicitly only after reviewing calibration and transfer evidence. An
+explicit `off` remains the legacy compatibility switch. For example:
 
 ```bash
 aworld-cli optimize \

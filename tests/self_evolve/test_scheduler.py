@@ -483,7 +483,7 @@ def test_job_worker_passes_configured_judge_to_framework_job(monkeypatch, tmp_pa
     assert captured["inferred_new_skill_policy"] == "draft_only"
     assert captured["replay_timeout_seconds"] == 600
     assert captured["replay_total_timeout_seconds"] == 1_800
-    assert captured["replay_max_steps"] == 1
+    assert captured["replay_max_steps"] is None
     assert captured["replay_candidate_limit"] == 2
     assert captured["total_run_token_budget"] == 90_000
     assert captured["per_attempt_replay_token_limit"] == 9_000

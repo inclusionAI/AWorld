@@ -304,10 +304,22 @@ class ScoreImprovementGate:
                         if paired_delta >= self.min_delta
                         else "point_estimate_below_minimum_delta"
                     ),
-                    "failure_class": "framework",
-                    "failure_owner": "framework",
-                    "failure_scope": "shared_run",
-                    "repairable": False,
+                    "failure_class": (
+                        "framework"
+                        if paired_delta >= self.min_delta
+                        else "candidate"
+                    ),
+                    "failure_owner": (
+                        "framework"
+                        if paired_delta >= self.min_delta
+                        else "candidate"
+                    ),
+                    "failure_scope": (
+                        "shared_run"
+                        if paired_delta >= self.min_delta
+                        else "candidate"
+                    ),
+                    "repairable": paired_delta < self.min_delta,
                 },
             )
         if (
@@ -367,10 +379,16 @@ class ScoreImprovementGate:
                         if delta >= self.min_delta
                         else "point_estimate_below_minimum_delta"
                     ),
-                    "failure_class": "framework",
-                    "failure_owner": "framework",
-                    "failure_scope": "shared_run",
-                    "repairable": False,
+                    "failure_class": (
+                        "framework" if delta >= self.min_delta else "candidate"
+                    ),
+                    "failure_owner": (
+                        "framework" if delta >= self.min_delta else "candidate"
+                    ),
+                    "failure_scope": (
+                        "shared_run" if delta >= self.min_delta else "candidate"
+                    ),
+                    "repairable": delta < self.min_delta,
                 },
             )
 
@@ -545,11 +563,19 @@ class CostLatencyRegressionGate:
 
 class NoopCandidateGate:
     def evaluate(self, *, current_content: str, candidate: CandidateVariant) -> GateResult:
-        changed = candidate.content != current_content or bool(candidate.files)
+        classification = classify_candidate_mutation(
+            candidate,
+            current_content=current_content,
+        )
+        changed = (
+            classification.target_behavior_changed
+            or classification.evaluation_support_changed
+        )
         return GateResult(
             gate_name="noop_candidate",
             passed=changed,
             reason="candidate changes target content" if changed else "candidate content is unchanged",
+            details=classification.to_dict(),
         )
 
 
@@ -1176,7 +1202,15 @@ class JudgeOnlySignalGate:
                 if passed
                 else "judge-only improvements remain limited confidence"
             ),
-            details={"confidence": decision.confidence},
+            details={
+                "confidence": decision.confidence,
+                "decision_reason": decision.reason,
+                "deterministic_signal_present": (
+                    decision.deterministic_signal_present
+                ),
+                "held_out_case_count": decision.held_out_case_count,
+                "verification_mode": decision.verification_mode,
+            },
         )
 
 
@@ -1285,6 +1319,10 @@ class HeldOutVerificationGate:
             reason=reason,
             details={
                 "confidence": decision.confidence,
+                "decision_reason": decision.reason,
+                "deterministic_signal_present": (
+                    decision.deterministic_signal_present
+                ),
                 "held_out_case_count": decision.held_out_case_count,
                 "min_eval_cases": self.min_eval_cases,
                 "verification_split": decision.verification_split,

@@ -210,6 +210,7 @@ class ModelResponse:
             finish_reason: str = None,
             reasoning_details: Dict[str, Any] = None,
             video_result: VideoGenerationResult = None,
+            usage_reported: Optional[bool] = None,
     ):
         """
         Initialize ModelResponse object
@@ -224,11 +225,21 @@ class ModelResponse:
             raw_response: Original response object
             message: Complete message object, can be used for subsequent API calls
             video_result: Video generation result, populated when using video generation interfaces.
+            usage_reported: Whether the provider explicitly reported usage.
         """
         self.id = id
         self.model = model
         self.content = content
         self.tool_calls = tool_calls
+        # Provider-reporting provenance is independent from the normalized
+        # usage payload.  Streaming adapters may synthesize/aggregate a final
+        # ``usage`` dictionary even when ``raw_usage`` belongs to an earlier
+        # chunk (or is unavailable on the terminal marker).
+        self.usage_reported = (
+            bool(usage_reported)
+            if usage_reported is not None
+            else usage is not None or raw_usage is not None
+        )
         if raw_usage is None and usage is not None:
             raw_usage = to_serializable(usage)
         self.usage = normalize_usage(usage) if usage is not None else {
@@ -368,11 +379,13 @@ class ModelResponse:
             )
 
         # Extract usage information
-        raw_usage = {}
-        if hasattr(response, 'usage'):
-            raw_usage = cls._extract_usage_payload(response.usage)
-        elif isinstance(response, dict) and response.get('usage'):
-            raw_usage = cls._extract_usage_payload(response['usage'])
+        provider_usage = (
+            getattr(response, "usage", None)
+            if not isinstance(response, dict)
+            else response.get("usage")
+        )
+        usage_reported = provider_usage is not None
+        raw_usage = cls._extract_usage_payload(provider_usage)
 
         # Build message object
         message_dict = {}
@@ -459,7 +472,8 @@ class ModelResponse:
             message=message_dict,
             reasoning_content=reasoning_content,
             finish_reason=finish_reason,
-            reasoning_details=reasoning_details
+            reasoning_details=reasoning_details,
+            usage_reported=usage_reported,
         )
 
     @classmethod
@@ -486,11 +500,13 @@ class ModelResponse:
             )
 
         # Extract usage information
-        raw_usage = {}
-        if hasattr(chunk, 'usage') and chunk.usage:
-            raw_usage = cls._extract_usage_payload(chunk.usage)
-        elif isinstance(chunk, dict) and chunk.get('usage'):
-            raw_usage = cls._extract_usage_payload(chunk['usage'])
+        provider_usage = (
+            getattr(chunk, "usage", None)
+            if not isinstance(chunk, dict)
+            else chunk.get("usage")
+        )
+        usage_reported = provider_usage is not None
+        raw_usage = cls._extract_usage_payload(provider_usage)
 
         # Handle finish reason chunk (end of stream)
         finish_reason = None
@@ -512,7 +528,8 @@ class ModelResponse:
                     raw_response=chunk,
                     tool_calls=delta.get('tool_calls'),
                     message={"role": "assistant", "content": "", "finish_reason": finish_reason},
-                    finish_reason=finish_reason
+                    finish_reason=finish_reason,
+                    usage_reported=usage_reported,
                 )
             else:
                 # Object type access for SDK client
@@ -527,7 +544,8 @@ class ModelResponse:
                     raw_response=chunk,
                     tool_calls=delta.tool_calls if hasattr(delta, 'tool_calls') else None,
                     message={"role": "assistant", "content": "", "finish_reason": chunk.choices[0].finish_reason},
-                    finish_reason=finish_reason
+                    finish_reason=finish_reason,
+                    usage_reported=usage_reported,
                 )
 
         # Normal chunk with delta content
@@ -587,7 +605,8 @@ class ModelResponse:
             raw_usage=raw_usage,
             provider_request_id=cls._extract_provider_request_id(chunk),
             raw_response=chunk,
-            message=message
+            message=message,
+            usage_reported=usage_reported,
         )
 
     @classmethod
@@ -724,7 +743,8 @@ class ModelResponse:
                 message["tool_calls"] = [tool_call.to_dict() for tool_call in processed_tool_calls]
 
             # Extract usage information
-            raw_usage = cls._extract_usage_payload(getattr(response, "usage", None))
+            provider_usage = getattr(response, "usage", None)
+            raw_usage = cls._extract_usage_payload(provider_usage)
             usage = dict(raw_usage)
             if not usage:
                 usage = {
@@ -747,10 +767,15 @@ class ModelResponse:
                 content=message["content"],
                 tool_calls=processed_tool_calls or None,
                 usage=usage,
-                raw_usage=raw_usage or usage,
+                # Keep the empty provider payload distinguishable from the
+                # normalized 0/0/0 compatibility placeholder. Trusted usage
+                # coverage must not treat an absent provider report as zero
+                # billable tokens.
+                raw_usage=raw_usage,
                 provider_request_id=cls._extract_provider_request_id(response),
                 raw_response=response,
-                message=message
+                message=message,
+                usage_reported=provider_usage is not None,
             )
         except Exception as e:
             if isinstance(e, LLMResponseError):
@@ -797,6 +822,7 @@ class ModelResponse:
             "tool_calls": tool_calls_dict,
             "usage": self.usage,
             "raw_usage": self.raw_usage,
+            "usage_reported": self.usage_reported,
             "provider_request_id": self.provider_request_id,
             "error": self.error,
             "message": self.message,

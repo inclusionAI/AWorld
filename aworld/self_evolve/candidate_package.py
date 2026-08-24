@@ -84,8 +84,9 @@ def classify_candidate_mutation(
     candidate: CandidateVariant,
     *,
     current_content: str,
+    current_package_root: str | Path | None = None,
 ) -> CandidateMutationClassification:
-    """Classify a candidate without using task- or target-id-specific rules."""
+    """Classify only effective package changes, not transport-only rewrites."""
 
     current_fingerprint = candidate_target_behavior_fingerprint(
         current_content,
@@ -96,8 +97,19 @@ def classify_candidate_mutation(
         target_type=candidate.target.target_type,
     )
     target_changed = candidate_fingerprint != current_fingerprint
+    package_root = (
+        Path(current_package_root)
+        if current_package_root is not None
+        else _candidate_target_package_root(candidate)
+    )
     support_paths = tuple(
-        item.path for item in validate_candidate_files(candidate.files)
+        item.path
+        for item in validate_candidate_files(candidate.files)
+        if package_root is None
+        or candidate_file_delta_changes_package(
+            item,
+            package_root=package_root,
+        )
     )
     support_changed = bool(support_paths)
     if target_changed and support_changed:
@@ -292,7 +304,10 @@ def candidate_file_semantic_fingerprint(item: CandidateFileDelta) -> str:
         "path": normalized.path,
         "operation": normalized.operation,
         "content": (
-            _semantic_candidate_file_content(normalized.content)
+            _semantic_candidate_file_content(
+                normalized.content,
+                path=normalized.path,
+            )
             if normalized.content is not None
             else None
         ),
@@ -345,9 +360,10 @@ def candidate_semantic_package_fingerprint(
                 "content_fingerprint": (
                     "sha256:"
                     + hashlib.sha256(
-                        _semantic_candidate_file_content(item.content).encode(
-                            "utf-8"
-                        )
+                        _semantic_candidate_file_content(
+                            item.content,
+                            path=item.path,
+                        ).encode("utf-8")
                     ).hexdigest()
                     if item.content is not None
                     else None
@@ -403,14 +419,72 @@ def _structural_edit_intent_fingerprint(
     return "sha256:" + hashlib.sha256(encoded).hexdigest()
 
 
-def _semantic_candidate_file_content(content: str) -> str:
+def candidate_file_delta_changes_package(
+    item: CandidateFileDelta,
+    *,
+    package_root: str | Path,
+) -> bool:
+    """Return whether a file delta materially changes the current package."""
+
+    normalized = validate_candidate_files((item,))[0]
+    destination = Path(package_root).joinpath(
+        *PurePosixPath(normalized.path).parts
+    )
+    if normalized.operation == "delete":
+        return destination.exists() or destination.is_symlink()
+    if (
+        destination.is_symlink()
+        or not destination.exists()
+        or not destination.is_file()
+        or normalized.content is None
+    ):
+        return True
+    try:
+        current_content = destination.read_text(encoding="utf-8")
+        executable = bool(destination.stat().st_mode & 0o111)
+    except (OSError, UnicodeError):
+        return True
+    current = CandidateFileDelta(
+        path=normalized.path,
+        operation="upsert",
+        content=current_content,
+        executable=executable,
+    )
+    return candidate_file_semantic_fingerprint(
+        normalized
+    ) != candidate_file_semantic_fingerprint(current)
+
+
+def _candidate_target_package_root(candidate: CandidateVariant) -> Path | None:
+    if candidate.target.target_type != "skill" or not candidate.target.path:
+        return None
+    return Path(candidate.target.path).parent
+
+
+def _semantic_candidate_file_content(
+    content: str,
+    *,
+    path: str | None = None,
+) -> str:
     """Normalize transport-only text differences without rewriting source."""
 
     normalized = content.replace("\r\n", "\n").replace("\r", "\n")
     lines = normalized.split("\n")
     while lines and not lines[-1].strip():
         lines.pop()
-    return "\n".join(lines)
+    normalized = "\n".join(lines)
+    if path is not None and PurePosixPath(path).suffix.casefold() == ".json":
+        try:
+            payload = json.loads(normalized)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return normalized
+        return json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+    return normalized
 
 
 def candidate_files_total_bytes(files: Iterable[CandidateFileDelta]) -> int:

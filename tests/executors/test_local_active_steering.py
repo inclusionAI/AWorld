@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from io import StringIO
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -186,6 +187,51 @@ async def test_local_executor_active_steering_commits_final_answer_without_messa
         for event in events
     )
     assert "All done." not in output_buffer.getvalue()
+
+
+@pytest.mark.asyncio
+async def test_local_executor_usage_uses_fresh_completed_task_response(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    executor, _output_buffer = _build_executor()
+
+    def llm_call(request_id: str, total_tokens: int) -> dict:
+        return {
+            "request_id": request_id,
+            "record_kind": "model_attempt",
+            "task_id": "task-1",
+            "status": "success",
+            "usage_reported": True,
+            "single_attempt_proven": True,
+            "usage_normalized": {"total_tokens": total_tokens},
+        }
+
+    initial = TaskResponse(
+        id="task-1",
+        success=True,
+        answer="initial",
+        llm_calls=[llm_call("old", 10)],
+    )
+    fresh = TaskResponse(
+        id="task-1",
+        success=True,
+        answer="fresh",
+        llm_calls=[llm_call("fresh", 20)],
+    )
+    outputs = _FakeStreamingOutputs(response=initial)
+    outputs.is_complete = False
+
+    async def final_result() -> dict:
+        return {"task-1": fresh}
+
+    outputs._run_impl_task = asyncio.create_task(final_result())
+    _stub_chat_dependencies(executor, monkeypatch, outputs)
+
+    result = await executor.chat("hello")
+
+    assert result == "fresh"
+    assert executor.last_task_response is fresh
+    assert executor.last_llm_usage["total_tokens"] == 20
 
 
 @pytest.mark.asyncio

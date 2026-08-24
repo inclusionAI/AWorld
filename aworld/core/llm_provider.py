@@ -34,6 +34,9 @@ class LLMProviderBase(abc.ABC):
         self.base_url = base_url
         self.model_name = model_name
         self.kwargs = kwargs
+        # Providers opt in only when they can prove that a logical model call
+        # maps to exactly one wire attempt for trusted usage accounting.
+        self.authoritative_usage_single_attempt = False
         # Determine whether to initialize sync and async providers
         self.need_sync = sync_enabled if sync_enabled is not None else async_enabled is not True
         self.need_async = async_enabled if async_enabled is not None else sync_enabled is not True

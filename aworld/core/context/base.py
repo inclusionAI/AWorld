@@ -428,7 +428,22 @@ class Context:
             except Exception:
                 new_context._agent_token_id_traj = copy.copy(self._agent_token_id_traj)
 
-        new_context._merge_llm_calls_baseline = len(new_context.get_llm_calls())
+        current_llm_call_count = len(new_context.get_llm_calls())
+        new_context._merge_llm_calls_baseline = (
+            max(
+                0,
+                min(
+                    getattr(
+                        self,
+                        "_merge_llm_calls_baseline",
+                        current_llm_call_count,
+                    ),
+                    current_llm_call_count,
+                ),
+            )
+            if preserve_merge_baseline
+            else current_llm_call_count
+        )
 
         return new_context
 

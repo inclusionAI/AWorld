@@ -631,7 +631,9 @@ Modes:
 `online` requires `apply_policy="auto_verified"`. `auto_verified` also requires `requires_post_apply_reevaluation=True`, which is the default. Useful verification knobs include `replay_timeout_seconds`, `replay_max_steps`, `baseline_replay_repetitions`, `candidate_replay_repetitions`, `replay_candidate_limit`, `replay_stability_margin`, `judge_repetitions`, and `judge_timeout_seconds`.
 
 Trusted improvement measurement is independently configurable. Verified CLI
-replay defaults to `required`; SDK/background configuration remains explicit:
+replay defaults to `shadow` until calibration is accepted; SDK/background
+configuration remains explicit. Select `required` only after reviewing shadow
+validity, evaluator-drift, budget-overhead, and transfer-panel evidence:
 
 ```python
 SelfEvolveConfig(

@@ -205,6 +205,29 @@ class SchemaFieldRepairConstraint:
         return False
 
 
+def websocket_handshake_http_version_constraint() -> SchemaFieldRepairConstraint:
+    """Return the implementation-neutral HTTP version contract for WebSocket.
+
+    The executable protocol probe owns the dynamic proof. This bounded source
+    behavior projection gives candidate repair an exact, payload-free producer
+    obligation without prescribing a server library or handler class.
+    """
+
+    return SchemaFieldRepairConstraint(
+        schema_layer="runtime",
+        field_path="websocket_handshake.http_version",
+        rule="enum",
+        expected=("HTTP/1.1",),
+        value_domain="source_behavior",
+        required_operations=(
+            "emit_http_1_1_websocket_upgrade_status_line",
+        ),
+        forbidden_operations=(
+            "emit_http_1_0_websocket_upgrade_status_line",
+        ),
+    )
+
+
 @dataclass(frozen=True)
 class SchemaFieldViolation:
     constraint: SchemaFieldRepairConstraint

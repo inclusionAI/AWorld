@@ -608,6 +608,324 @@ async def test_llm_mutator_repairs_source_behavior_proof_in_same_slot() -> None:
     ]
 
 
+def test_response_index_reader_chain_is_canonicalized_before_model_repair() -> None:
+    source = (
+        "import json\n"
+        "import os\n"
+        "\n"
+        "def read_environment_path(env_name):\n"
+        "    return os.environ.get(env_name, '')\n"
+        "\n"
+        "def read_json_file(file_path):\n"
+        "    if not file_path or not os.path.exists(file_path):\n"
+        "        return None\n"
+        "    with open(file_path, 'r', encoding='utf-8') as stream:\n"
+        "        return json.load(stream)\n"
+        "\n"
+        "def response_for(operation):\n"
+        "    file_path = read_environment_path(\n"
+        "        'AWORLD_REPLAY_RESPONSE_INDEX'\n"
+        "    )\n"
+        "    index_data = read_json_file(file_path)\n"
+        "    records = index_data.get('records', []) if index_data else []\n"
+        "    for record in records:\n"
+        "        if record.get('operation') == operation:\n"
+        "            return record['value']\n"
+        "    return None\n"
+        "\n"
+        "def main():\n"
+        "    return response_for('AWORLD_REPLAY_RESPONSE_INDEX')\n"
+    )
+
+    initial = llm_mutator_module.recorded_response_index_source_behavior_proof(
+        source
+    )
+    assert initial["missing_operations"] == [
+        "read_environment_binding_as_path",
+        "bind_environment_path_to_json_file_reader",
+    ]
+
+    rewritten = (
+        llm_mutator_module._canonicalize_recorded_response_index_reader_chain(
+            source
+        )
+    )
+
+    assert rewritten is not None
+    assert (
+        'file_path = os.environ.get("AWORLD_REPLAY_RESPONSE_INDEX", "")'
+        in rewritten
+    )
+    assert "index_data = read_json_file(file_path)" in rewritten
+    assert llm_mutator_module.recorded_response_index_source_behavior_proof(
+        rewritten
+    )["proven"] is True
+
+
+def test_response_index_reader_chain_allows_only_a_null_path_guard() -> None:
+    guarded_source = (
+        "import json\n"
+        "import os\n"
+        "def environment_path(env_name):\n"
+        "    return os.environ.get(env_name, '')\n"
+        "def json_reader(path):\n"
+        "    with open(path, encoding='utf-8') as stream:\n"
+        "        return json.load(stream)\n"
+        "def response(env_name):\n"
+        "    path = environment_path(env_name)\n"
+        "    if not path:\n"
+        "        return None\n"
+        "    index = json_reader(path)\n"
+        "    return index['records'][0]['value']\n"
+        "def main():\n"
+        "    return response('AWORLD_REPLAY_RESPONSE_INDEX')\n"
+    )
+
+    rewritten = (
+        llm_mutator_module._canonicalize_recorded_response_index_reader_chain(
+            guarded_source
+        )
+    )
+
+    assert rewritten is not None
+    assert "if not path:\n        return None" in rewritten
+    assert llm_mutator_module.recorded_response_index_source_behavior_proof(
+        rewritten
+    )["proven"] is True
+
+
+def test_response_index_reader_chain_rejects_ambiguous_producers() -> None:
+    ambiguous_source = (
+        "import json\n"
+        "import os\n"
+        "def environment_path(env_name):\n"
+        "    return os.environ.get(env_name, '')\n"
+        "def json_reader(path):\n"
+        "    with open(path, encoding='utf-8') as stream:\n"
+        "        return json.load(stream)\n"
+        "def first(env_name):\n"
+        "    path = environment_path(env_name)\n"
+        "    index = json_reader(path)\n"
+        "    return index['records'][0]['value']\n"
+        "def second(env_name):\n"
+        "    path = environment_path(env_name)\n"
+        "    index = json_reader(path)\n"
+        "    return index['records'][0]['value']\n"
+        "def main():\n"
+        "    first('AWORLD_REPLAY_RESPONSE_INDEX')\n"
+        "    return second('AWORLD_REPLAY_RESPONSE_INDEX')\n"
+    )
+
+    assert (
+        llm_mutator_module._canonicalize_recorded_response_index_reader_chain(
+            ambiguous_source
+        )
+        is None
+    )
+
+
+def test_fixture_source_selector_prefers_authoritative_record_coverage() -> None:
+    rewritten = llm_mutator_module._canonicalize_fixture_source_selector(
+        llm_mutator_module._MINIMUM_BYTE_SOURCE_SELECTOR
+    )
+
+    assert rewritten is not None
+    namespace: dict[str, object] = {}
+    exec(compile(rewritten, "<selector>", "exec"), namespace)
+    select_source = namespace["_select_source"]
+    derivations = {
+        "evidence": [
+            {"path": "tiny", "byte_length": 10},
+            {
+                "path": "partial",
+                "byte_length": 100,
+                "response_index_path": "partial.responses.json",
+                "response_record_count": 2,
+            },
+            {
+                "path": "complete",
+                "byte_length": 1000,
+                "response_index_path": "complete.responses.json",
+                "response_record_count": 7,
+            },
+        ],
+        "no-response": [
+            {"path": "large", "byte_length": 20},
+            {"path": "small", "byte_length": 5},
+        ],
+    }
+
+    assert select_source("evidence", derivations)["path"] == "complete"
+    assert select_source("no-response", derivations)["path"] == "small"
+
+
+@pytest.mark.asyncio
+async def test_llm_mutator_canonicalizes_cycle_007_reader_chain_without_repair() -> None:
+    helper_runtime = (
+        "import json\n"
+        "import os\n"
+        "def _read_environment_binding_as_path(env_name):\n"
+        "    return os.environ.get(env_name, '')\n"
+        "def _bind_environment_path_to_json_file_reader(path):\n"
+        "    with open(path, encoding='utf-8') as stream:\n"
+        "        return json.load(stream)\n"
+        "def _load_response_index_value(env_name, operation):\n"
+        "    path = _read_environment_binding_as_path(env_name)\n"
+        "    if not path:\n"
+        "        return None\n"
+        "    index = _bind_environment_path_to_json_file_reader(path)\n"
+        "    for record in index['records']:\n"
+        "        if record.get('operation') == operation:\n"
+        "            return record['value']\n"
+        "    return None\n"
+        "def main():\n"
+        "    return _load_response_index_value(\n"
+        "        'AWORLD_REPLAY_RESPONSE_INDEX', '/data'\n"
+        "    )\n"
+    )
+    constraint = {
+        "schema_layer": "runtime",
+        "field_path": "environment.AWORLD_REPLAY_RESPONSE_INDEX.consumer",
+        "rule": "enum",
+        "expected": ["json_sidecar_record_value_projector"],
+        "value_domain": "source_behavior",
+        "required_operations": [
+            "read_environment_binding_as_path",
+            "bind_environment_path_to_json_file_reader",
+            "access_records_array",
+            "project_record_value_field_directly",
+        ],
+    }
+    feedback = EvaluationSummary(
+        variant_id="candidate-failed",
+        dataset_split="validation",
+        metrics={
+            "failed_gates": ["candidate_repair_conformance"],
+            "failure_class": "candidate",
+            "repairable": True,
+            "repair_candidate_package": {
+                "candidate_id": "candidate-failed",
+                "content": "# Demo\n\nUse the reusable workflow.\n",
+                "files": [
+                    {
+                        "path": "replay/capability.json",
+                        "operation": "upsert",
+                        "content": json.dumps(
+                            {
+                                "schema_version": (
+                                    "aworld.skill.replay_capability.v1"
+                                ),
+                                "capability_id": "generic.replay",
+                                "protocol": "aworld.replay.subprocess.v1",
+                                "entrypoint": "replay/compiler.py",
+                                "handles": ["local_endpoint"],
+                                "runtime_files": ["replay/runtime.py"],
+                            }
+                        ),
+                    },
+                    {
+                        "path": "replay/compiler.py",
+                        "operation": "upsert",
+                        "content": "def compile_request():\n    return None\n",
+                    },
+                    {
+                        "path": "replay/runtime.py",
+                        "operation": "upsert",
+                        "content": "# prior runtime\n",
+                    },
+                ],
+            },
+            "candidate_validation_diagnostics": [
+                {
+                    "code": "invalid_replay_capability_compile",
+                    "capability_error_code": "schema_field_validation_failed",
+                    "schema_field_constraints": [constraint],
+                }
+            ],
+        },
+    )
+    request = OptimizerRequest(
+        target=SelfEvolveTargetRef(
+            target_type="skill",
+            target_id="demo",
+            path="/tmp/demo/SKILL.md",
+        ),
+        current_content="# Demo\n\nOld guidance.\n",
+        target_fingerprint="sha256:old",
+        trace_packs=(),
+        validation_feedback=(feedback,),
+        trainable_cases=(EvalCase(case_id="train-1", input="task"),),
+        max_candidates=1,
+    )
+
+    async def run_task(task: Task):
+        assert not task.id.endswith("-repair")
+        return {
+            task.id: TaskResponse(
+                id=task.id,
+                success=True,
+                answer=json.dumps(
+                    {
+                        "content": "# Demo\n\nUse the reusable workflow.\n",
+                        "rationale": "repair response index consumption",
+                        "addressed_improvement_signal_ids": [],
+                        "files": [
+                            {
+                                "path": "replay/runtime.py",
+                                "operation": "upsert",
+                                "content": helper_runtime,
+                            }
+                        ],
+                    }
+                ),
+            )
+        }
+
+    executor = AWorldCandidatePopulationExecutor(
+        agent_factory=_FakeCandidateAgent,
+        parse_output=lambda raw: normalize_candidate_output(
+            raw,
+            current_content=request.current_content,
+        ),
+        repair_prompt_builder=lambda *_args, **_kwargs: pytest.fail(
+            "deterministic canonicalization must avoid a model repair"
+        ),
+        repair_output_merger=merge_candidate_repair_output,
+        task_batch_executor=DeterministicTaskBatchExecutor(run_task=run_task),
+    )
+
+    async def contextual_population(
+        prompts,
+        max_concurrency,
+        *,
+        validate_output=None,
+    ):
+        return await executor.run(
+            prompts,
+            max_concurrency=max_concurrency,
+            validate_output=validate_output,
+        )
+
+    result = await TraceReflectiveLLMMutator(
+        mutate_text=lambda prompt: None,
+        population_callable=contextual_population,
+    ).propose(request)
+
+    assert len(result.candidates) == 1
+    runtime = next(
+        item.content
+        for item in result.candidates[0].files
+        if item.path == "replay/runtime.py"
+    )
+    assert runtime is not None
+    assert llm_mutator_module.recorded_response_index_source_behavior_proof(
+        runtime
+    )["proven"] is True
+    execution = result.diagnostics["candidate_population_execution"]
+    assert execution["repair_attempt_count"] == 0
+    assert execution["repair_success_count"] == 0
+
+
 @pytest.mark.asyncio
 async def test_llm_mutator_repairs_any_candidate_owned_conformance_failure(
     monkeypatch,

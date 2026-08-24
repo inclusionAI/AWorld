@@ -36,7 +36,12 @@ from aworld_cli.core.skill_activation_resolver import (
 )
 from .base_executor import BaseAgentExecutor
 from .hooks import ExecutorHookPoint, ExecutorHook
-from .stats import StreamTokenStats, build_llm_usage_observability, format_elapsed
+from .stats import (
+    StreamTokenStats,
+    build_complete_llm_usage_summary,
+    build_llm_usage_observability,
+    format_elapsed,
+)
 from .stream import (
     ActiveSteeringCommitBuffer,
     StreamDisplayConfig,
@@ -934,6 +939,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
                 from .._globals import console as global_console
                 self.console = global_console
             self.last_task_response = None
+            self.last_llm_usage = None
 
             # 2. Parse message - handle both string and tuple format
             if isinstance(message, tuple):
@@ -1711,6 +1717,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                     self.console.print(f"[dim]📋 TaskResponse type: {type(task_response)}[/dim]")
                                 if isinstance(task_response, TaskResponse):
                                     self.last_task_response = task_response
+                                    final_task_response = task_response
                                 
                                 # Try different ways to get the answer
                                 if hasattr(task_response, 'answer'):
@@ -1750,6 +1757,9 @@ class LocalAgentExecutor(BaseAgentExecutor):
                     final_llm_calls = copy.deepcopy(task.context.context_info.get("llm_calls", []))
 
                 final_usage = self._publish_hud_llm_observability(task.id, final_llm_calls)
+                self.last_llm_usage = build_complete_llm_usage_summary(
+                    final_llm_calls,
+                )
                 
                 # Return answer without printing (already displayed in stream)
                 # 💾 Save query to history (only if not already saved per round)

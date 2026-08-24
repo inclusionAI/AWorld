@@ -95,6 +95,47 @@ def test_candidate_mutation_requires_target_delta_for_composite_quality() -> Non
     assert classification.quality_evaluation_allowed is True
 
 
+def test_candidate_mutation_ignores_semantically_equivalent_json_rewrite(
+    tmp_path,
+) -> None:
+    skill_path = tmp_path / "agent-browser" / "SKILL.md"
+    capability_path = skill_path.parent / "replay" / "capability.json"
+    capability_path.parent.mkdir(parents=True)
+    skill_path.write_text(SKILL, encoding="utf-8")
+    capability_path.write_text(
+        '{\n  "handles": ["http_resource", "local_file"],\n'
+        '  "protocol": "aworld.replay.subprocess.v1"\n}\n',
+        encoding="utf-8",
+    )
+    candidate = replace(
+        _candidate(
+            files=(
+                CandidateFileDelta(
+                    path="replay/capability.json",
+                    content=(
+                        '{"protocol":"aworld.replay.subprocess.v1",'
+                        '"handles":["http_resource","local_file"]}'
+                    ),
+                ),
+            )
+        ),
+        target=SelfEvolveTargetRef(
+            target_type="skill",
+            target_id="agent-browser",
+            path=str(skill_path),
+        ),
+    )
+
+    classification = classify_candidate_mutation(
+        candidate,
+        current_content=SKILL,
+    )
+
+    assert classification.kind is CandidateMutationKind.NO_CHANGE
+    assert classification.evaluation_support_changed is False
+    assert classification.support_file_paths == ()
+
+
 def test_target_behavior_fingerprint_ignores_release_bookkeeping() -> None:
     released = (
         "---\n"

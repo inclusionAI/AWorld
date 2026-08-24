@@ -292,14 +292,18 @@ class OptimizeTopLevelCommand:
             default=None,
             dest="measurement_mode",
             help=(
-                "Controlled improvement measurement policy (default: required "
-                "for verified replay, otherwise off)."
+                "Controlled improvement measurement policy (default: shadow "
+                "for verified replay until calibration is accepted, otherwise off)."
             ),
         )
         parser.add_argument(
             "--measurement-primary-metric",
-            default="task_success",
+            default=None,
             dest="measurement_primary_metric",
+            help=(
+                "Primary controlled-effect metric. Defaults to score when a "
+                "judge is configured, otherwise task_success."
+            ),
         )
         parser.add_argument(
             "--measurement-minimum-effect",
@@ -467,8 +471,21 @@ class OptimizeTopLevelCommand:
                     args, "max_score_tiebreak_candidates", 1
                 ),
                 measurement_mode=getattr(args, "measurement_mode", None),
-                measurement_primary_metric=getattr(
-                    args, "measurement_primary_metric", "task_success"
+                measurement_primary_metric=(
+                    getattr(args, "measurement_primary_metric", None)
+                    or (
+                        "score"
+                        if any(
+                            getattr(args, name, None)
+                            for name in (
+                                "judge_agent",
+                                "judge_agent_name",
+                                "judge_backend_ref",
+                                "judge_model_profile",
+                            )
+                        )
+                        else "task_success"
+                    )
                 ),
                 measurement_minimum_effect=getattr(
                     args, "measurement_minimum_effect", 0.0

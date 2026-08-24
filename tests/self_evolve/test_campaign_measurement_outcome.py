@@ -16,6 +16,8 @@ from aworld.self_evolve.campaign import (
     MeasurementExecutionStatus,
     SelfImprovementCampaign,
     SelfImprovementCampaignController,
+    SelfImprovementDispositionKind,
+    _measurement_outcome_disposition,
     run_self_improvement_campaign,
 )
 
@@ -157,6 +159,40 @@ def test_success_requires_completed_positive_measurement_and_release_gates() -> 
         ).projection
         is CampaignMeasurementProjection.CANDIDATE_REJECTED
     )
+
+
+def test_positive_measurement_with_failed_release_gates_continues_candidate() -> None:
+    disposition = _measurement_outcome_disposition(
+        _outcome(
+            MeasurementExecutionStatus.COMPLETED,
+            CandidateImprovementOutcome.POSITIVE,
+            continuation_available=True,
+            reason_code="positive_effect_release_gates_failed",
+        ),
+        progress_delta_ids=("release-gate-failure",),
+    )
+
+    assert disposition.kind is SelfImprovementDispositionKind.CONTINUE_CANDIDATE
+    assert disposition.owner == "candidate"
+    assert disposition.scope == "candidate"
+    assert disposition.repairable is True
+
+
+def test_neutral_measurement_with_actionable_failure_continues_candidate() -> None:
+    disposition = _measurement_outcome_disposition(
+        _outcome(
+            MeasurementExecutionStatus.COMPLETED,
+            CandidateImprovementOutcome.NO_EFFECT,
+            continuation_available=True,
+            reason_code="no_effect_candidate_repair_available",
+        ),
+        progress_delta_ids=("candidate-evidence-constraint",),
+    )
+
+    assert disposition.kind is SelfImprovementDispositionKind.CONTINUE_CANDIDATE
+    assert disposition.reason_code == "no_effect_candidate_repair_available"
+    assert disposition.owner == "candidate"
+    assert disposition.repairable is True
 
 
 def _budget() -> dict[str, object]:

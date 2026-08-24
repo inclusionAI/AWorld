@@ -34,16 +34,14 @@ def _merge_usage_dicts(accumulator: Dict[str, Any], usage: Dict[str, Any]) -> Di
     return accumulator
 
 
-def build_llm_usage_observability(
+def _llm_calls_for_task(
     llm_calls: Optional[List[Dict[str, Any]]],
     *,
-    task_id: Optional[str] = None,
-) -> Dict[str, Any]:
-    """Build a HUD/plugin-friendly usage snapshot from captured llm_calls."""
+    task_id: Optional[str],
+) -> List[Dict[str, Any]]:
     if not llm_calls:
-        return {}
-
-    candidate_calls = []
+        return []
+    candidate_calls: List[Dict[str, Any]] = []
     for llm_call in reversed(llm_calls):
         if not isinstance(llm_call, dict):
             continue
@@ -57,11 +55,125 @@ def build_llm_usage_observability(
         candidate_calls.append(llm_call)
 
     if task_id is not None:
-        exact_task_calls = [call for call in candidate_calls if call.get("task_id") == task_id]
+        exact_task_calls = [
+            call for call in candidate_calls if call.get("task_id") == task_id
+        ]
         if exact_task_calls:
-            candidate_calls = exact_task_calls
-        elif any(isinstance(call, dict) and call.get("task_id") is not None for call in llm_calls):
-            return {}
+            return exact_task_calls
+        if any(
+            isinstance(call, dict) and call.get("task_id") is not None
+            for call in llm_calls
+        ):
+            return []
+    return candidate_calls
+
+
+def _non_negative_token_count(value: Any) -> Optional[int]:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return None
+    return value
+
+
+def build_complete_llm_usage_summary(
+    llm_calls: Optional[List[Dict[str, Any]]],
+) -> Dict[str, Any]:
+    """Summarize usage while proving coverage of the captured call ledger.
+
+    The final ``TaskResponse.llm_calls``/task-context ledger is the execution
+    authority. A token total is publishable to trusted measurement only when
+    every call in that ledger has provider usage; a partial aggregate remains
+    explicitly incomplete instead of silently authorizing a budget sample.
+    """
+
+    # Trusted execution usage covers the complete merged task ledger, including
+    # child/subagent calls. Task-scoped filtering remains HUD-only.
+    raw_calls = [
+        call
+        for call in (llm_calls or [])
+        if isinstance(call, dict) and call.get("record_kind") == "model_attempt"
+    ]
+    calls_by_request_id: Dict[str, Dict[str, Any]] = {}
+    missing_identity_calls: List[Dict[str, Any]] = []
+    ledger_consistent = True
+    for llm_call in raw_calls:
+        request_id = llm_call.get("request_id")
+        if not isinstance(request_id, str) or not request_id.strip():
+            missing_identity_calls.append(llm_call)
+            ledger_consistent = False
+            continue
+        existing = calls_by_request_id.get(request_id)
+        if existing is None:
+            calls_by_request_id[request_id] = llm_call
+        elif existing != llm_call:
+            ledger_consistent = False
+    candidate_calls = [*calls_by_request_id.values(), *missing_identity_calls]
+    total_tokens = 0
+    input_tokens = 0
+    output_tokens = 0
+    usage_call_count = 0
+    component_counts_complete = True
+    for llm_call in candidate_calls:
+        if (
+            llm_call.get("usage_reported") is not True
+            or llm_call.get("single_attempt_proven") is not True
+            or llm_call.get("status") != "success"
+        ):
+            component_counts_complete = False
+            continue
+        usage = llm_call.get("usage_normalized")
+        if not isinstance(usage, dict):
+            component_counts_complete = False
+            continue
+        prompt_tokens = _non_negative_token_count(
+            usage.get("prompt_tokens", usage.get("input_tokens"))
+        )
+        completion_tokens = _non_negative_token_count(
+            usage.get("completion_tokens", usage.get("output_tokens"))
+        )
+        call_total = _non_negative_token_count(usage.get("total_tokens"))
+        if call_total is None and prompt_tokens is not None and completion_tokens is not None:
+            call_total = prompt_tokens + completion_tokens
+        if call_total is None:
+            component_counts_complete = False
+            continue
+        usage_call_count += 1
+        total_tokens += call_total
+        if prompt_tokens is None or completion_tokens is None:
+            component_counts_complete = False
+        else:
+            input_tokens += prompt_tokens
+            output_tokens += completion_tokens
+
+    call_count = len(candidate_calls)
+    coverage_complete = bool(
+        call_count > 0
+        and usage_call_count == call_count
+        and ledger_consistent
+    )
+    summary: Dict[str, Any] = {
+        "schema_version": "aworld.llm_usage_summary.v1",
+        "call_count": call_count,
+        "usage_call_count": usage_call_count,
+        "total_tokens": total_tokens,
+        "coverage_complete": coverage_complete,
+        "ledger_consistent": ledger_consistent,
+    }
+    if coverage_complete and component_counts_complete:
+        summary["input_tokens"] = input_tokens
+        summary["output_tokens"] = output_tokens
+    return summary
+
+
+def build_llm_usage_observability(
+    llm_calls: Optional[List[Dict[str, Any]]],
+    *,
+    task_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Build a HUD/plugin-friendly usage snapshot from captured llm_calls."""
+    if not llm_calls:
+        return {}
+
+    candidate_calls = _llm_calls_for_task(llm_calls, task_id=task_id)
 
     if not candidate_calls:
         return {}
