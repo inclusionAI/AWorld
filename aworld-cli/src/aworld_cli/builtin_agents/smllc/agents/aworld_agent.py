@@ -261,7 +261,12 @@ def build_aworld_agent(include_skills: Optional[str] = None):
             "terminal": {
                 "command": sys.executable,
                 "args": ["-m", "examples.gaia.mcp_collections.tools.terminal"],
-                "env": {},
+                # The CLI may be mounted into a task container under a custom
+                # PYTHONPATH. MCP stdio clients start child processes with a
+                # filtered environment, so pass the runtime path explicitly.
+                "env": {
+                    "PYTHONPATH": os.environ.get("PYTHONPATH", ""),
+                },
                 "client_session_timeout_seconds": 9999.0,
             }
         }
@@ -275,7 +280,10 @@ def build_aworld_agent(include_skills: Optional[str] = None):
         builtin_tools=builtin_tools,
         workspaces=[os.getcwd()]  # Allow current working directory
     )
-    sandbox.reuse = True
+    sandbox.reuse = os.environ.get(
+        "AWORLD_SANDBOX_REUSE",
+        "true",
+    ).lower() in ("true", "1", "yes")
 
     # Create the Aworld agent with filesystem and terminal tools enabled
     # Note: Aworld is a coordinator with lightweight tool access for information gathering

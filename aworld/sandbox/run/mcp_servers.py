@@ -238,8 +238,32 @@ class McpServers:
                 return []
             self.server_instances[server_name] = server
 
-        return await mcp_run(
+        tools = await mcp_run(
             mcp_servers=[server],
+            black_tool_actions=self.black_tool_actions,
+            tool_actions=self.tool_actions,
+        )
+        if tools:
+            return tools
+
+        logger.warning(
+            "MCP server %s returned no tools; clearing the cached instance "
+            "and retrying once",
+            server_name,
+        )
+        await cleanup_server(server)
+        self.server_instances.pop(server_name, None)
+        retry_server, _ = await get_server_instance(
+            server_name,
+            mcp_config=self.mcp_config,
+            context=context,
+            sandbox_id=sandbox_id,
+        )
+        if retry_server is None:
+            return []
+        self.server_instances[server_name] = retry_server
+        return await mcp_run(
+            mcp_servers=[retry_server],
             black_tool_actions=self.black_tool_actions,
             tool_actions=self.tool_actions,
         )
