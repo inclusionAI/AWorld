@@ -1,7 +1,21 @@
-from datetime import datetime
+from datetime import datetime, timedelta
+
+import aworld_cli.builtin_agents.smllc.agents.aworld_agent as aworld_agent
 from zoneinfo import ZoneInfo
 
 from aworld_cli.builtin_agents.smllc.agents.aworld_agent import render_aworld_system_prompt
+
+
+def test_beijing_timezone_falls_back_without_system_tzdata(monkeypatch) -> None:
+    def missing_zone(_name: str):
+        raise aworld_agent.ZoneInfoNotFoundError
+
+    monkeypatch.setattr(aworld_agent, "ZoneInfo", missing_zone)
+
+    fallback = aworld_agent._beijing_timezone()
+
+    assert fallback.utcoffset(None) == timedelta(hours=8)
+    assert fallback.tzname(None) == "Asia/Shanghai"
 
 
 def test_render_aworld_system_prompt_injects_beijing_datetime() -> None:
