@@ -2079,6 +2079,7 @@ class ReplayExecutionRequest:
     service_logical_ids: str | None = None
     service_endpoint: str | None = None
     service_startup_status: str | None = None
+    framework_endpoint_bindings: Mapping[str, str] = field(default_factory=dict)
     evidence_policy_mode: str = "legacy"
     measurement_plan_fingerprint: str | None = None
     measurement_work_unit: MeasurementWorkUnitV1 | None = None
@@ -5488,6 +5489,17 @@ class AWorldCliCandidateReplayBackend:
                 if replay_capability is not None
                 else None
             ),
+            framework_endpoint_bindings=(
+                _framework_resolved_endpoint_bindings(
+                    request.measurement_evidence_policy_profile,
+                    environment=environment,
+                    service_endpoints=(
+                        service_session.endpoints
+                        if service_session is not None
+                        else {}
+                    ),
+                )
+            ),
             evidence_policy_mode=request.evidence_policy_mode,
             measurement_plan_fingerprint=(
                 request.measurement_plan.measurement_plan_fingerprint
@@ -6284,6 +6296,63 @@ def _runtime_endpoint_bindings(
     return tuple(bindings)
 
 
+def _framework_resolved_endpoint_bindings(
+    profile: EvidencePolicyProfileV2 | None,
+    *,
+    environment: Mapping[str, str],
+    service_endpoints: Mapping[str, str],
+) -> Mapping[str, str]:
+    """Freeze the endpoints resolved by framework-owned replay setup.
+
+    Environment names are a transport detail and are not a stable logical
+    identity for skill-owned replay services.  Preserve adapter-provided
+    bindings from the environment, then let the service supervisor's explicit
+    ``service_id -> endpoint`` result override the corresponding logical
+    binding.  The evidence-policy preflight still performs the authoritative
+    exact endpoint comparison.
+    """
+
+    if profile is None:
+        return {}
+    resolved = {
+        binding.binding_id: str(environment[binding.environment_name])
+        for binding in profile.endpoint_bindings
+        if binding.environment_name in environment
+    }
+    known_binding_ids = {
+        binding.binding_id for binding in profile.endpoint_bindings
+    }
+    resolved.update(
+        {
+            str(binding_id): str(endpoint)
+            for binding_id, endpoint in service_endpoints.items()
+            if str(binding_id) in known_binding_ids
+        }
+    )
+    return dict(sorted(resolved.items()))
+
+
+def _runtime_resolved_endpoint_bindings(
+    request: ReplayExecutionRequest,
+    profile: EvidencePolicyProfileV2,
+) -> Mapping[str, str]:
+    """Resolve only framework-attested bindings for evidence preflight."""
+
+    resolved = {
+        str(binding_id): str(endpoint)
+        for binding_id, endpoint in request.framework_endpoint_bindings.items()
+    }
+    for binding in profile.endpoint_bindings:
+        if (
+            binding.binding_id not in resolved
+            and binding.environment_name in request.environment
+        ):
+            resolved[binding.binding_id] = str(
+                request.environment[binding.environment_name]
+            )
+    return dict(sorted(resolved.items()))
+
+
 def compile_replay_evidence_policy_profile_v2(
     *,
     endpoint_bindings: Sequence[DynamicEndpointBinding] = (),
@@ -6595,11 +6664,7 @@ def _prepare_replay_evidence_trust(
             },
         ),
     )
-    resolved = {
-        binding.binding_id: request.environment[binding.environment_name]
-        for binding in profile.endpoint_bindings
-        if binding.environment_name in request.environment
-    }
+    resolved = _runtime_resolved_endpoint_bindings(request, profile)
     preflight = preflight_evidence_policy_v2(
         profile,
         artifact_root=artifact_dir,
@@ -6611,8 +6676,10 @@ def _prepare_replay_evidence_trust(
         producer_capabilities=producer_capabilities,
     )
     if not preflight.passed:
-        codes = ",".join(item.code for item in preflight.issues)
-        raise ValueError("replay evidence v2 preflight failed: " + codes)
+        issues = ",".join(
+            f"{item.code}:{item.field}" for item in preflight.issues
+        )
+        raise ValueError("replay evidence v2 preflight failed: " + issues)
     return _ReplayEvidenceTrustContext(
         profile=profile,
         writer=writer,
