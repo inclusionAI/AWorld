@@ -19,6 +19,7 @@ from typing import Any
 
 import pytest
 
+from aworld.core.tool.replay_policy import DynamicEndpointBinding
 from aworld.self_evolve.datasets import (
     EvalCase,
     SelfEvolveDataset,
@@ -42,6 +43,7 @@ from aworld.self_evolve.replay import (
     build_paired_replay_dataset,
     build_replay_request,
     compile_authoritative_replay_evidence_policy_profile_v2,
+    compile_replay_evidence_policy_profile_v2,
     candidate_replay_is_comparable,
     candidate_replay_artifact_directory,
     candidate_replay_pair_coverage,
@@ -53,6 +55,7 @@ from aworld.self_evolve.replay import (
     _infer_baseline_skill_root_from_target,
     _evidence_manifest_metrics,
     _final_answer_artifact_reference_metrics,
+    _framework_resolved_endpoint_bindings,
     _frozen_replay_capability_from_mapping,
     _execution_failure_event,
     _extract_trajectory_payload_from_stdout,
@@ -83,6 +86,7 @@ from aworld.self_evolve.replay import (
     _task_response_signature,
     _trusted_task_response_usage_metrics,
     _replay_failure_outcome,
+    _runtime_resolved_endpoint_bindings,
     replay_dataset_fingerprint,
     _run_replay_cli,
     _validate_nonempty_correlated_json_response,
@@ -111,7 +115,11 @@ from aworld.self_evolve.measurement import (
     SamplingPlan,
     SwapAxis,
 )
-from aworld.self_evolve.measurement_control import MeasurementWorkUnitState
+from aworld.self_evolve.measurement_control import (
+    MeasurementArm,
+    MeasurementWorkUnitState,
+    MeasurementWorkUnitV1,
+)
 from aworld.self_evolve.types import SelfEvolveTargetRef
 from aworld.self_evolve.replay_adaptation import (
     ReplayAdaptationCompiler,
@@ -243,6 +251,124 @@ def test_authoritative_evidence_profile_binds_all_compiler_inputs_and_services(
     assert service_decision.safe_lane_count == 1
     assert service_decision.fallback is not None
     assert service_decision.fallback.limiting_resource == "replay_service:service-0"
+
+
+def test_framework_endpoint_resolution_uses_supervisor_service_identity() -> None:
+    profile = compile_replay_evidence_policy_profile_v2(
+        endpoint_bindings=(
+            DynamicEndpointBinding(
+                binding_id="service_1",
+                service_identity="replay.demo.service_1",
+                endpoint="http://127.0.0.1:25346",
+            ),
+            DynamicEndpointBinding(
+                binding_id="runtime.adapter",
+                service_identity="replay.adapter",
+                endpoint="http://127.0.0.1:31000",
+            ),
+        )
+    )
+    environment = {
+        # A stale environment value must not replace the endpoint that the
+        # framework service supervisor actually started.
+        "AWORLD_REPLAY_ENDPOINT_SERVICE_1": "http://127.0.0.1:29999",
+        "AWORLD_REPLAY_ENDPOINT_RUNTIME_ADAPTER": "http://127.0.0.1:31000",
+    }
+    framework_bindings = _framework_resolved_endpoint_bindings(
+        profile,
+        environment=environment,
+        service_endpoints={"service_1": "http://127.0.0.1:25346"},
+    )
+    request = ReplayExecutionRequest(
+        variant_id="baseline",
+        task_id="case-1",
+        candidate_id="candidate-1",
+        workspace_root="/tmp/workspace",
+        task_input="task",
+        task_text="task",
+        skill_root=None,
+        artifact_dir="/tmp/artifact",
+        environment=environment,
+        framework_endpoint_bindings=framework_bindings,
+    )
+
+    assert framework_bindings == {
+        "runtime.adapter": "http://127.0.0.1:31000",
+        "service_1": "http://127.0.0.1:25346",
+    }
+    assert _runtime_resolved_endpoint_bindings(request, profile) == {
+        "runtime.adapter": "http://127.0.0.1:31000",
+        "service_1": "http://127.0.0.1:25346",
+    }
+
+
+@pytest.mark.asyncio
+async def test_required_measurement_preflight_uses_framework_endpoint_binding(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    profile = compile_replay_evidence_policy_profile_v2(
+        endpoint_bindings=(
+            DynamicEndpointBinding(
+                binding_id="service_1",
+                service_identity="replay.demo.service_1",
+                endpoint="http://127.0.0.1:25346",
+            ),
+        )
+    )
+    fp = lambda value: "sha256:" + hashlib.sha256(value.encode()).hexdigest()
+    plan_fingerprint = fp("measurement-plan")
+    work_unit = MeasurementWorkUnitV1.create(
+        measurement_plan_fingerprint=plan_fingerprint,
+        experiment_id="experiment-1",
+        artifact_fingerprint=fp("control"),
+        pairing_control_fingerprint=fp("control"),
+        dataset_fingerprint=fp("dataset"),
+        case_id="case-1",
+        arm=MeasurementArm.CONTROL,
+        repetition_id=1,
+        execution_contract_fingerprint=fp("execution"),
+        evidence_policy_fingerprint=profile.fingerprint,
+        sampling_contract_fingerprint=fp("sampling"),
+        isolation_decision_fingerprint=fp("isolation"),
+        stage_id="qualification",
+    )
+    called = False
+
+    def fake_run(command, **kwargs):
+        nonlocal called
+        called = True
+        return subprocess.CompletedProcess(command, 1, stdout="", stderr="stopped")
+
+    monkeypatch.setattr("aworld.self_evolve.replay._run_replay_cli", fake_run)
+    result = await AWorldCliReplayExecutor()(
+        ReplayExecutionRequest(
+            variant_id="baseline",
+            task_id="case-1",
+            candidate_id="candidate-1",
+            workspace_root=str(tmp_path),
+            task_input="task",
+            task_text="task",
+            skill_root=None,
+            artifact_dir=str(tmp_path / "artifacts"),
+            environment={
+                "AWORLD_REPLAY_ENDPOINT_SERVICE_1": "http://127.0.0.1:29999"
+            },
+            framework_endpoint_bindings={
+                "service_1": "http://127.0.0.1:25346"
+            },
+            evidence_policy_mode="required",
+            measurement_plan_fingerprint=plan_fingerprint,
+            measurement_work_unit=work_unit,
+            measurement_evidence_policy_profile=profile,
+            lane_materialization_fingerprint=fp("lane"),
+            evidence_finalization_timeout_seconds=10,
+        )
+    )
+
+    assert called is True
+    assert result.failure is not None
+    assert result.failure.get("code") != "evidence_policy_v2_preflight_failed"
 
 
 def test_run_owned_inferred_draft_is_not_used_as_baseline_skill_root(
