@@ -27,3 +27,12 @@ def test_render_aworld_system_prompt_injects_beijing_datetime() -> None:
     assert "{{current_datetime}}" not in prompt
     assert "Today is 2026-05-10, 2026-05-10 09:08:07" in prompt
     assert "(Beijing time)" in prompt
+
+
+def test_aworld_subagents_can_be_disabled_for_constrained_runtimes(monkeypatch) -> None:
+    monkeypatch.setenv("AWORLD_ENABLE_SUBAGENTS", "false")
+
+    assert aworld_agent.aworld_subagents_enabled() is False
+
+    monkeypatch.delenv("AWORLD_ENABLE_SUBAGENTS")
+    assert aworld_agent.aworld_subagents_enabled() is True
