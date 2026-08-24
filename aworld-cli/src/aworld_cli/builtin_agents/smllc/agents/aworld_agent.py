@@ -99,6 +99,15 @@ def render_aworld_system_prompt(now: Optional[datetime] = None) -> str:
 def load_aworld_system_prompt() -> str:
     return render_aworld_system_prompt()
 
+def aworld_subagents_enabled() -> bool:
+    """Allow constrained runtimes to hide delegation when no subagents are available."""
+    return os.environ.get("AWORLD_ENABLE_SUBAGENTS", "true").lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+
+
 def extract_agents_from_swarm(swarm: Swarm) -> List[BaseAgent]:
     """
     Extract all Agent instances from a Swarm.
@@ -302,6 +311,15 @@ def build_aworld_agent(include_skills: Optional[str] = None):
         if prompt_budget_policy is not None
         else {}
     )
+    enable_subagents = aworld_subagents_enabled()
+    tool_names = [
+        CONTEXT_TOOL,
+        'CAST_SEARCH',
+        'cron',
+    ]
+    if enable_subagents:
+        tool_names.append('async_spawn_subagent')
+
     aworld_agent = agent_class(
         name="Aworld",
         desc="Aworld - A versatile AI assistant capable of executing tasks directly or delegating to agent teams",
@@ -309,15 +327,14 @@ def build_aworld_agent(include_skills: Optional[str] = None):
         system_prompt=load_aworld_system_prompt(),
         mcp_servers=aworld_mcp_servers,  # Keep default terminal access and opt-in macOS UI automation when enabled
         sandbox=sandbox,  # Shared sandbox (tools filtered by agent's mcp_servers config)
-        tool_names=[
-            CONTEXT_TOOL,      # Core: Context management
-            'CAST_SEARCH',     # Core: Lightweight code search
-            'async_spawn_subagent',  # Core: Dynamic subagent delegation (AsyncTool, needs async_ prefix)
-            'cron',            # Core: Scheduled task management
-        ],
-        enable_subagent=True,  # Enable subagent capability (Aworld-specific default)
+        tool_names=tool_names,
+        enable_subagent=enable_subagents,
         **budgeted_agent_kwargs,
     )
+
+    if not enable_subagents:
+        logger.info("ℹ️ Aworld sub-agent delegation disabled by AWORLD_ENABLE_SUBAGENTS")
+        return TeamSwarm(aworld_agent)
 
     # Directly instantiate developer, evaluator, and diffusion as sub-agents
     # Pass shared sandbox to enable resource sharing while maintaining tool access control
