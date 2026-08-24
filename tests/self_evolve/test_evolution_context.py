@@ -1356,6 +1356,45 @@ def test_candidate_owned_evidence_frontier_uses_dedicated_strategy() -> None:
     assert context.population_strategies[0] == "evidence_quality_repair"
 
 
+def test_candidate_recovery_frontier_requires_target_behavior_composition() -> None:
+    recovery_event = ReplayFailureEvent(
+        code="candidate_recovery_incomplete",
+        owner=FailureOwner.CANDIDATE,
+        stage=FailureStage.TASK_ROLLOUT,
+        scope=FailureScope.CANDIDATE,
+        repairable=True,
+        category="recovery_trace",
+        summary="candidate failed to complete after repeated evidence calls",
+    ).to_dict()
+    context = compile_evolution_context(
+        replace(
+            _request(),
+            validation_feedback=(
+                EvaluationSummary(
+                    variant_id="candidate-recovery",
+                    dataset_split="validation",
+                    metrics={
+                        "failed_gates": ["candidate_replay"],
+                        "failure_class": "candidate",
+                        "repairable": True,
+                        "candidate_validation_diagnostics": [
+                            {"causal_failure_events": [recovery_event]}
+                        ],
+                        "repair_candidate_package": {
+                            "candidate_id": "candidate-recovery",
+                            "content": "# Demo\n\nUnbounded evidence loop.\n",
+                            "files": [],
+                        },
+                    },
+                ),
+            ),
+            prior_feedback=(),
+        )
+    )
+
+    assert context.population_strategies[0] == "target_behavior_composition"
+
+
 def test_judged_repair_does_not_inherit_sibling_schema_mutation_surface() -> None:
     judged = EvaluationSummary(
         variant_id="candidate-judged",

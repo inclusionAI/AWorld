@@ -21,6 +21,7 @@ from aworld.self_evolve.optimizers.base import (
 from aworld.self_evolve.optimizers.dspy_adapter import DSPyGEPAOptimizer, DSPyMIPROOptimizer
 from aworld.self_evolve.optimizers.llm_mutator import (
     TraceReflectiveLLMMutator,
+    _canonicalize_replay_manifest_path_heading_output,
     _focused_repair_prompt_instructions,
     _validate_focused_repair_mutation_scope,
     _validate_prerequisite_composition_target_delta,
@@ -791,6 +792,170 @@ def test_contextual_validation_rejects_unresolved_candidate_package_reference() 
     assert exc_info.value.field_path == "files"
 
 
+def test_contextual_validation_closes_one_patch_local_trailing_fence() -> None:
+    request = OptimizerRequest(
+        target=_target(),
+        current_content=(
+            "---\nname: demo-skill\ndescription: demo\n---\n\n"
+            "# Demo\n\nOld guidance.\n"
+        ),
+        target_fingerprint="sha256:old",
+        trace_packs=(_trace_pack(),),
+        target_package_inventory=("SKILL.md",),
+        max_candidates=1,
+    )
+    output = {
+        "patch_intent": {
+            "operations": [
+                {
+                    "op": "append_section",
+                    "heading": "Evidence workflow",
+                    "content": "```bash\nagent-browser snapshot -i\n",
+                }
+            ]
+        },
+        "rationale": "add a bounded evidence workflow",
+    }
+
+    normalized = _validate_mutator_output_context(
+        output,
+        request=request,
+        candidate_index=0,
+    )
+
+    assert normalized["patch_intent"]["operations"][0]["content"].endswith(
+        "agent-browser snapshot -i\n```\n"
+    )
+
+
+def test_contextual_validation_removes_exact_replay_manifest_path_heading() -> None:
+    request = OptimizerRequest(
+        target=_target(),
+        current_content="# Demo\n\nOld guidance.\n",
+        target_fingerprint="sha256:old",
+        trace_packs=(_trace_pack(),),
+        target_package_inventory=("SKILL.md",),
+        max_candidates=1,
+    )
+    manifest = {
+        "schema_version": "aworld.skill.replay_capability.v1",
+        "capability_id": "demo-replay",
+        "protocol": "aworld.replay.subprocess.v1",
+        "entrypoint": "replay/compiler.py",
+        "handles": ["http_resource"],
+        "runtime_files": [],
+    }
+    output = {
+        "content": "# Demo\n\nUse bounded evidence.\n",
+        "rationale": "add deterministic replay support",
+        "files": [
+            {
+                "path": "replay/capability.json",
+                "operation": "upsert",
+                "content": (
+                    "# replay/capability.json\n"
+                    + json.dumps(manifest, sort_keys=True)
+                    + "\n"
+                ),
+            }
+        ],
+    }
+
+    normalized = _canonicalize_replay_manifest_path_heading_output(
+        output,
+        request=request,
+        candidate_index=0,
+    )
+
+    normalized_content = normalized["files"][0]["content"]
+    assert json.loads(normalized_content) == manifest
+    assert not normalized_content.startswith("#")
+
+
+@pytest.mark.parametrize(
+    "manifest_content",
+    (
+        "# different/path.json\n{}\n",
+        "# replay/capability.json\n{not-json}\n",
+        "# replay/capability.json\n[]\n",
+        "// replay/capability.json\n{}\n",
+    ),
+)
+def test_replay_manifest_path_heading_normalization_fails_closed(
+    manifest_content: str,
+) -> None:
+    request = OptimizerRequest(
+        target=_target(),
+        current_content="# Demo\n",
+        target_fingerprint="sha256:old",
+        trace_packs=(_trace_pack(),),
+        target_package_inventory=("SKILL.md",),
+        max_candidates=1,
+    )
+    output = {
+        "content": "# Demo\n\nUse bounded evidence.\n",
+        "rationale": "invalid manifest remains invalid",
+        "files": [
+            {
+                "path": "replay/capability.json",
+                "operation": "upsert",
+                "content": manifest_content,
+            }
+        ],
+    }
+
+    assert (
+        _canonicalize_replay_manifest_path_heading_output(
+            output,
+            request=request,
+            candidate_index=0,
+        )
+        == output
+    )
+
+
+def test_contextual_validation_does_not_repair_multiple_unclosed_patch_fences() -> None:
+    request = OptimizerRequest(
+        target=_target(),
+        current_content=(
+            "---\nname: demo-skill\ndescription: demo\n---\n\n"
+            "# Demo\n\nOld guidance.\n"
+        ),
+        target_fingerprint="sha256:old",
+        trace_packs=(_trace_pack(),),
+        target_package_inventory=("SKILL.md",),
+        max_candidates=1,
+    )
+    output = {
+        "patch_intent": {
+            "operations": [
+                {
+                    "op": "append_section",
+                    "heading": "First workflow",
+                    "content": "```bash\nagent-browser snapshot -i\n",
+                },
+                {
+                    "op": "append_section",
+                    "heading": "Second workflow",
+                    "content": "~~~text\nverify the artifact\n",
+                },
+            ]
+        },
+        "rationale": "add two incomplete evidence workflows",
+    }
+
+    with pytest.raises(CandidateSemanticValidationError) as exc_info:
+        _validate_mutator_output_context(
+            output,
+            request=request,
+            candidate_index=0,
+        )
+
+    assert exc_info.value.code == "skill_code_fence_unclosed"
+    assert exc_info.value.field_path == "code_fences"
+    assert exc_info.value.representation == "patch_intent"
+
+
 @pytest.mark.asyncio
 async def test_llm_mutator_unwraps_structured_expected_output_envelope() -> None:
     async def mutate(prompt: str) -> dict:
@@ -1356,6 +1521,85 @@ def test_compile_fixture_uniqueness_contract_selects_collision_safe_topology() -
     assert "requirement-qualified unique path" in instructions
     assert "reuse a single fixture path while merging" in instructions
     assert "changing only the hash algorithm" in instructions
+    assert "never shutil.copy2" in instructions
+    assert "overwrite a read-only output fixture" in instructions
+
+
+def test_source_behavior_prompt_requires_analyzer_supported_lexical_topology() -> None:
+    instructions = _focused_repair_prompt_instructions(
+        {
+            "repair_conformance": {
+                "required_branch_paths": ["replay/runtime.py"],
+                "schema_field_constraints": [
+                    {
+                        "schema_layer": "runtime",
+                        "field_path": (
+                            "environment.AWORLD_REPLAY_RESPONSE_INDEX.consumer"
+                        ),
+                        "rule": "enum",
+                        "expected": ["json_sidecar_record_value_projector"],
+                        "value_domain": "source_behavior",
+                    }
+                ],
+            }
+        }
+    )
+
+    assert 'path = os.getenv("AWORLD_REPLAY_RESPONSE_INDEX")' in instructions
+    assert "environment read and file open must be in the same function" in (
+        instructions
+    )
+    assert "Do not put either operation behind a returning helper" in instructions
+
+
+def test_fixture_probe_prompt_prioritizes_recorded_response_sources() -> None:
+    instructions = _focused_repair_prompt_instructions(
+        {
+            "repair_conformance": {
+                "failure_codes": ["protocol_probe_not_fixture_derived"],
+                "fixture_probe_constraints": [
+                    {
+                        "kind": "http",
+                        "path": "/data",
+                        "max_response_chars": 4096,
+                    }
+                ],
+            }
+        }
+    )
+
+    assert "positive integer response_record_count" in instructions
+    assert "prefer the greatest record count" in instructions
+    assert "Never rank all sources by smallest byte_length" in instructions
+
+
+def test_websocket_http_version_constraint_targets_live_runtime_status_line() -> None:
+    instructions = _focused_repair_prompt_instructions(
+        {
+            "repair_conformance": {
+                "required_branch_paths": ["replay/runtime.py"],
+                "schema_field_constraints": [
+                    {
+                        "schema_layer": "runtime",
+                        "field_path": "websocket_handshake.http_version",
+                        "rule": "enum",
+                        "expected": ["HTTP/1.1"],
+                        "value_domain": "source_behavior",
+                        "required_operations": [
+                            "emit_http_1_1_websocket_upgrade_status_line"
+                        ],
+                        "forbidden_operations": [
+                            "emit_http_1_0_websocket_upgrade_status_line"
+                        ],
+                    }
+                ],
+            }
+        }
+    )
+
+    assert "actual upgrade status line must use HTTP/1.1" in instructions
+    assert 'protocol_version = "HTTP/1.1"' in instructions
+    assert "executable WebSocket probe prove the repair" in instructions
 
 
 def test_runtime_artifact_contract_targets_live_runtime_producer() -> None:
@@ -1690,9 +1934,47 @@ async def test_llm_mutator_repairs_first_transport_response_completion_policy() 
     assert "Do not issue more tool calls after that single fallback" in (
         result.candidates[0].content
     )
+    assert "configuration, bibliographic, quantitative, symbolic" in (
+        result.candidates[0].content
+    )
+    assert "do not expand evidence with remembered details" in (
+        result.candidates[0].content.lower()
+    )
     assert result.diagnostics[
         "repaired_transport_completion_violation_candidates"
     ] == 1
+
+
+@pytest.mark.asyncio
+async def test_llm_mutator_bounds_claim_evidence_completion_loops() -> None:
+    async def mutate(prompt: str) -> dict:
+        return {
+            "content": (
+                "# Demo\n\n## Evidence workflow\n\n"
+                "Capture an artifact for each claim. If any claim is unsupported, "
+                "continue acquisition with one different artifact or omit it.\n"
+            ),
+            "rationale": "Ground every claim in artifact evidence.",
+        }
+
+    request = OptimizerRequest(
+        target=_target(),
+        current_content="# Demo\n\nOld guidance.\n",
+        target_fingerprint="sha256:old",
+        trace_packs=(_trace_pack(),),
+        trainable_cases=(EvalCase(case_id="train-1", input="web task"),),
+        max_candidates=1,
+    )
+
+    result = await TraceReflectiveLLMMutator(mutate_text=mutate).propose(request)
+
+    assert len(result.candidates) == 1
+    assert "make exactly one materially different bounded" in (
+        result.candidates[0].content
+    )
+    assert "Do not issue more tool calls after that single fallback" in (
+        result.candidates[0].content
+    )
 
 
 @pytest.mark.asyncio
@@ -2366,6 +2648,9 @@ async def test_llm_mutator_compacts_feedback_before_prompting() -> None:
 async def test_judged_target_repair_freezes_empty_replay_file_set() -> None:
     async def mutate(prompt: str) -> dict:
         assert "<CLAIM>" in prompt
+        assert "Never write your own draft answer" in prompt
+        assert "existing canonical artifact path" in prompt
+        assert "computed from the final manifest" in prompt
         return {
             "content": (
                 "# Demo\n\nVerify each generic claim against bounded artifact evidence.\n"
@@ -2575,6 +2860,72 @@ async def test_source_focused_repair_deterministically_inherits_parent_content()
     assert files["replay/compiler.py"] == "def compile():\n    return 'repaired'\n"
     assert files["replay/runtime.py"] == "def run():\n    return True\n"
     assert "focused_parent_content" in result.diagnostics[
+        "candidate_strategies"
+    ][0]["materialization"]
+
+
+@pytest.mark.asyncio
+async def test_task_rollout_focused_repair_preserves_skill_content_delta() -> None:
+    parent_content = "# Demo\n\nKeep collecting after evidence is ready.\n"
+    repaired_content = (
+        "# Demo\n\nPersist the first valid evidence artifact and return "
+        "without redundant collection.\n"
+    )
+    request = OptimizerRequest(
+        target=_target(),
+        current_content="# Demo\n\nRepository current guidance.\n",
+        target_fingerprint="sha256:old",
+        trace_packs=(_trace_pack(),),
+        validation_feedback=(
+            EvaluationSummary(
+                variant_id="candidate-task-parent",
+                metrics={
+                    "failed_gates": ["candidate_replay"],
+                    "failure_class": "candidate",
+                    "repairable": True,
+                    "repair_candidate_package": {
+                        "candidate_id": "candidate-task-parent",
+                        "content": parent_content,
+                        "files": [
+                            {
+                                "path": "replay/runtime.py",
+                                "operation": "upsert",
+                                "content": "def run():\n    return True\n",
+                            }
+                        ],
+                    },
+                    "replay_counterexamples": [
+                        {
+                            "schema_version": "aworld.replay.counterexample.v1",
+                            "sequence": 1,
+                            "failure_code": "target_behavior_completion_missing",
+                            "owner": "candidate",
+                            "stage": "task_rollout",
+                            "state_before": "evidence_ready",
+                            "trigger": "tool_call",
+                            "required_transition": (
+                                "repair_candidate_task_behavior"
+                            ),
+                        }
+                    ],
+                },
+                dataset_split="validation",
+            ),
+        ),
+        max_candidates=1,
+    )
+
+    result = await TraceReflectiveLLMMutator(
+        mutate_text=lambda prompt: {
+            "content": repaired_content,
+            "files": [],
+            "rationale": "Repair the typed task-rollout behavior.",
+        }
+    ).propose(request)
+
+    assert len(result.candidates) == 1
+    assert result.candidates[0].content == repaired_content
+    assert "focused_parent_content" not in result.diagnostics[
         "candidate_strategies"
     ][0]["materialization"]
 

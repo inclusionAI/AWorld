@@ -651,7 +651,14 @@ class AgentJudgeBackend:
                 round_index=artifact_read_policy.max_rounds + 1,
                 read_results=[exhausted_result],
             )
-        payload = _coerce_judge_payload(response, judge_schema=getattr(suite, "judge_schema", None))
+        payload = _coerce_judge_payload(
+            response,
+            judge_schema=getattr(suite, "judge_schema", None),
+        )
+        payload = _attest_framework_projection_constraints(
+            payload,
+            diagnostics=diagnostics,
+        )
         return JudgeExecution(
             backend_id=self.backend_id,
             payload=payload,
@@ -2021,6 +2028,87 @@ def _judge_call_diagnostic(
         ),
         "timeout_seconds": timeout_seconds,
     }
+
+
+def _attest_framework_projection_constraints(
+    payload: Mapping[str, Any],
+    *,
+    diagnostics: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Bind framework projection ownership to runtime-enforced read bounds.
+
+    A judge can diagnose claim support, but it cannot authoritatively declare
+    that the framework prevented inspection. That ownership requires runtime
+    evidence that unread indexed content remained when the bounded artifact
+    read budget was exhausted. Without that attestation, the safe fail-closed
+    outcome is a candidate support-or-omit obligation, not a framework blocker.
+    """
+
+    constraints = payload.get("evidence_repair_constraints")
+    if not isinstance(constraints, list):
+        return dict(payload)
+    framework_projection_count = sum(
+        int(_is_framework_projection_constraint(item))
+        for item in constraints
+    )
+    if framework_projection_count == 0:
+        return dict(payload)
+    runtime_attested = any(
+        diagnostic.get("artifact_read_budget_exhausted") is True
+        and diagnostic.get("artifact_read_projection_incomplete") is True
+        for diagnostic in diagnostics
+    )
+
+    def reconcile(items: object) -> object:
+        if not isinstance(items, list):
+            return items
+        return [
+            (
+                {
+                    **dict(item),
+                    "failure_mode": "support_incomplete",
+                    "source_layer": "candidate_output",
+                    "required_action": "support_or_omit",
+                    "owner": "candidate",
+                }
+                if not runtime_attested
+                and _is_framework_projection_constraint(item)
+                else dict(item)
+                if isinstance(item, Mapping)
+                else item
+            )
+            for item in items
+        ]
+
+    reconciled = dict(payload)
+    reconciled["evidence_repair_constraints"] = reconcile(constraints)
+    evidence_quality = reconciled.get("evidence_quality")
+    if isinstance(evidence_quality, Mapping):
+        quality = dict(evidence_quality)
+        quality["evidence_repair_constraints"] = reconcile(
+            quality.get("evidence_repair_constraints")
+        )
+        reconciled["evidence_quality"] = quality
+    reconciled["evidence_projection_attestation"] = {
+        "framework_constraint_count": framework_projection_count,
+        "runtime_attested_count": (
+            framework_projection_count if runtime_attested else 0
+        ),
+        "reclassified_count": (
+            0 if runtime_attested else framework_projection_count
+        ),
+    }
+    return reconciled
+
+
+def _is_framework_projection_constraint(value: object) -> bool:
+    return bool(
+        isinstance(value, Mapping)
+        and value.get("owner") == "framework"
+        and value.get("failure_mode") == "projection_compacted"
+        and value.get("source_layer") == "artifact_projection"
+        and value.get("required_action") == "expand_bounded_projection"
+    )
 
 
 def _elapsed_monotonic_ms(started_at: float) -> float:

@@ -124,6 +124,7 @@ from aworld.self_evolve.schema_diagnostics import (
     SchemaFieldRepairConstraint,
     SchemaFieldViolation,
     schema_field_diagnostic_details,
+    websocket_handshake_http_version_constraint,
 )
 from aworld.self_evolve.types import CandidateVariant, DatasetRecipe, SelfEvolveTargetRef, to_json_dict
 
@@ -1349,6 +1350,39 @@ def _has_replay_execution_evidence(result: ReplayVariantResult) -> bool:
             )
         )
     )
+
+
+def _trusted_task_response_usage_metrics(
+    task_response: Mapping[str, Any] | None,
+) -> dict[str, int | bool]:
+    """Project usage only from the parent-attested complete call ledger."""
+
+    if not isinstance(task_response, Mapping):
+        return {}
+    usage = task_response.get("llm_usage")
+    if not isinstance(usage, Mapping):
+        return {}
+    call_count = usage.get("call_count")
+    usage_call_count = usage.get("usage_call_count")
+    total_tokens = usage.get("total_tokens")
+    if (
+        usage.get("schema_version") != "aworld.llm_usage_summary.v1"
+        or usage.get("coverage_complete") is not True
+        or usage.get("ledger_consistent") is not True
+        or isinstance(call_count, bool)
+        or not isinstance(call_count, int)
+        or call_count <= 0
+        or usage_call_count != call_count
+        or isinstance(total_tokens, bool)
+        or not isinstance(total_tokens, int)
+        or total_tokens < 0
+    ):
+        return {}
+    return {
+        "total_tokens": total_tokens,
+        "llm_usage_call_count": call_count,
+        "llm_usage_coverage_complete": True,
+    }
 
 
 class CandidateReplayBackend(Protocol):
@@ -2603,6 +2637,36 @@ def _validate_replay_service_protocol_trace(trace_path: Path) -> None:
                 )
             ),
         )
+
+
+async def _wait_for_replay_service_protocol_trace(
+    process: subprocess.Popen[Any],
+    trace_path: Path,
+    *,
+    timeout_seconds: float = 1.0,
+) -> None:
+    """Wait briefly for post-response trace writes to become observable.
+
+    A service may flush the HTTP response before appending its outbound trace
+    record. The client can therefore return a few scheduler ticks before the
+    post-probe artifact reaches its complete ``in``/``out`` state. Preserve the
+    strict validator, but give that already-running producer a small, bounded
+    completion window. Missing, malformed, or incomplete traces still raise the
+    original typed error at the deadline.
+    """
+
+    deadline = time.monotonic() + max(0.0, float(timeout_seconds))
+    last_error: ReplayServiceProtocolError | None = None
+    while True:
+        try:
+            _validate_replay_service_protocol_trace(trace_path)
+            return
+        except ReplayServiceProtocolError as exc:
+            last_error = exc
+        if process.poll() is not None or time.monotonic() >= deadline:
+            assert last_error is not None
+            raise last_error
+        await asyncio.sleep(min(0.02, max(0.0, deadline - time.monotonic())))
 
 
 def _replay_service_protocol_diagnostics(
@@ -7334,6 +7398,9 @@ class AWorldCliReplayExecutor:
                     for name, path in isolated_runtime_paths.items()
                 },
                 "AWORLD_SELF_EVOLVE_AUTO_DRAIN": "0",
+                "AWORLD_SELF_EVOLVE_DISABLE_PROVIDER_RETRIES": (
+                    "1" if trust_context is not None else "0"
+                ),
                 "AWORLD_REPLAY_ARTIFACT_DIR": str(evidence_dir),
                 "AWORLD_SELF_EVOLVE_REPLAY_ARTIFACT_DIR": str(evidence_dir),
                 "AWORLD_SELF_EVOLVE_EVIDENCE_MANIFEST": str(evidence_manifest),
@@ -7629,6 +7696,7 @@ class AWorldCliReplayExecutor:
         evidence_metrics: dict[str, Any] = {}
         trust_metrics: dict[str, Any] = {}
         framework_evidence_metrics: dict[str, Any] = {}
+        trusted_usage_metrics: dict[str, int | bool] = {}
         try:
             effective_evidence_manifest = evidence_manifest
             if trust_context is not None:
@@ -7655,6 +7723,79 @@ class AWorldCliReplayExecutor:
                     if isinstance(trusted_trajectory_value, list)
                     else []
                 )
+                # The signed TaskResponse is the parent-owned trajectory
+                # authority in required mode.  A zero exit after reaching
+                # ``--max-runs`` is not task completion when the last action
+                # still requests another agent turn.  Detect that before
+                # evidence finalization so an ordinary rollout budget censor
+                # cannot be misreported as a framework attestation failure.
+                trajectory = trusted_trajectory
+                trusted_capture_mode = (
+                    trusted_task_response.get("trajectory_capture_mode")
+                    if isinstance(trusted_task_response, Mapping)
+                    else None
+                )
+                if isinstance(trusted_capture_mode, str):
+                    capture_mode = trusted_capture_mode
+                trusted_usage_metrics = _trusted_task_response_usage_metrics(
+                    trusted_task_response
+                )
+                if (
+                    isinstance(trusted_task_response, Mapping)
+                    and not _trajectory_task_completion_established(
+                        trusted_trajectory,
+                        capture_mode=capture_mode,
+                    )
+                ):
+                    metrics = {
+                        "returncode": completed.returncode,
+                        "evidence_ready_early_stop": bool(
+                            getattr(completed, "evidence_ready_early_stop", False)
+                        ),
+                        "trajectory_capture_mode": capture_mode,
+                        "task_completion_established": False,
+                        "timeout_evidence_recovered": False,
+                        "evidence_policy_v2_required": True,
+                        "evidence_policy_v2_preflight_passed": True,
+                        "evidence_policy_v2_runtime_trust_passed": False,
+                        "signed_task_response_validated": True,
+                    }
+                    boundary_failure = _replay_dependency_boundary_failure(
+                        trusted_trajectory,
+                        environment=request.environment,
+                    )
+                    if boundary_failure is not None:
+                        return ReplayExecutionResult(
+                            status="failed",
+                            trajectory=trusted_trajectory,
+                            stdout=stdout,
+                            stderr=stderr,
+                            metrics={
+                                **metrics,
+                                "replay_dependency_boundary_passed": False,
+                                "undeclared_loopback_endpoint_count": len(
+                                    boundary_failure[
+                                        "undeclared_loopback_endpoints"
+                                    ]
+                                ),
+                            },
+                            failure=boundary_failure,
+                        )
+                    return _task_completion_not_established_result(
+                        request=request,
+                        trajectory=trusted_trajectory,
+                        stdout=stdout,
+                        stderr=stderr,
+                        metrics={
+                            **metrics,
+                            "replay_dependency_boundary_passed": True,
+                            "undeclared_loopback_endpoint_count": 0,
+                        },
+                        trigger="agent_not_finished",
+                        required_transition=(
+                            "continue_rollout_until_terminal_action"
+                        ),
+                    )
                 final_answer = _replay_final_answer(trusted_trajectory)
                 task_response_only_digest = (
                     "sha256:"
@@ -7728,10 +7869,13 @@ class AWorldCliReplayExecutor:
             "trajectory_capture_mode": capture_mode,
             "task_completion_established": bool(
                 completed.returncode == 0
-                and trajectory
-                and capture_mode == "task_response"
+                and _trajectory_task_completion_established(
+                    trajectory,
+                    capture_mode=capture_mode,
+                )
             ),
             "timeout_evidence_recovered": False,
+            **trusted_usage_metrics,
             **evidence_metrics,
             **trust_metrics,
         }
@@ -7796,56 +7940,26 @@ class AWorldCliReplayExecutor:
                 failure=evidence_failure,
             )
         if metrics.get("task_completion_established") is not True:
-            counterexample = _task_completion_counterexample(
-                metrics,
-                failure_code="replay_task_completion_not_established",
-                trigger=(
-                    "trajectory_unavailable"
-                    if not trajectory
-                    else "unsupported_trajectory_capture_mode"
-                ),
-                required_transition="emit_task_response_trajectory",
-                owner=(
-                    "task"
-                    if request.variant_id == "baseline"
-                    else "candidate"
-                ),
-            )
-            metrics = {
-                **metrics,
-                "replay_counterexamples": [counterexample],
-            }
-            return ReplayExecutionResult(
-                status="failed",
+            return _task_completion_not_established_result(
+                request=request,
                 trajectory=trajectory,
                 stdout=stdout,
                 stderr=stderr,
                 metrics=metrics,
-                failure={
-                    "code": "replay_task_completion_not_established",
-                    "outcome": (
-                        "task_failure"
-                        if request.variant_id == "baseline"
-                        else "candidate_failure"
-                    ),
-                    "failure_class": (
-                        "baseline_task_incomplete"
-                        if request.variant_id == "baseline"
-                        else "candidate_task_behavior"
-                    ),
-                    "failure_stage": "task_rollout",
-                    "repairable": request.variant_id != "baseline",
-                    "category": "task_completion",
-                    "reason": (
-                        "replay process exited without establishing task "
-                        "completion through TaskResponse.trajectory"
-                    ),
-                    "diagnostics": {
-                        "trajectory_capture_mode": capture_mode,
-                        "task_completion_established": False,
-                        "replay_counterexamples": [counterexample],
-                    },
-                },
+                trigger=(
+                    "trajectory_unavailable"
+                    if not trajectory
+                    else (
+                        "unsupported_trajectory_capture_mode"
+                        if capture_mode != "task_response"
+                        else "agent_not_finished"
+                    )
+                ),
+                required_transition=(
+                    "emit_task_response_trajectory"
+                    if not trajectory or capture_mode != "task_response"
+                    else "continue_rollout_until_terminal_action"
+                ),
             )
         return ReplayExecutionResult(
             status="succeeded",
@@ -8925,7 +9039,10 @@ async def _start_replay_services(
                     protocol_trace = (
                         service_scratch / _REPLAY_SERVICE_PROTOCOL_TRACE_NAME
                     )
-                    _validate_replay_service_protocol_trace(protocol_trace)
+                    await _wait_for_replay_service_protocol_trace(
+                        process,
+                        protocol_trace,
+                    )
                     _reset_replay_service_protocol_trace(protocol_trace)
             except Exception as exc:
                 if isinstance(exc, ReplayServiceProtocolError):
@@ -10201,7 +10318,13 @@ def _validate_websocket_handshake_response(
     }
     if not header_lines or not header_lines[0].startswith(b"HTTP/1.1 "):
         raise ReplayServiceProtocolError(
-            "advertised WebSocket handshake requires HTTP/1.1"
+            "advertised WebSocket handshake requires HTTP/1.1",
+            code="websocket_handshake_http_version_invalid",
+            details={
+                "schema_field_constraints": [
+                    websocket_handshake_http_version_constraint().to_dict()
+                ],
+            },
         )
     if (
         re.match(br"HTTP/1\.1 101(?: |$)", header_lines[0]) is None
@@ -11548,23 +11671,75 @@ def _trajectory_external_tool_call_count(
     return len(tool_call_ids) + anonymous_count
 
 
-def _replay_final_answer(trajectory: list[Mapping[str, Any]]) -> str:
-    fallback = ""
+def _trajectory_task_completion_established(
+    trajectory: list[Mapping[str, Any]],
+    *,
+    capture_mode: str,
+) -> bool:
+    if capture_mode != "task_response":
+        return False
+    last_meaningful_action: Mapping[str, Any] | None = None
     for step in trajectory:
         action = step.get("action") if isinstance(step, Mapping) else None
         if not isinstance(action, Mapping):
             continue
         content = action.get("content")
-        if not isinstance(content, str) or not content.strip():
+        meaningful_content = bool(
+            isinstance(content, str)
+            and content.strip()
+            and content.strip().casefold() not in {"none", "null"}
+        )
+        tool_calls = action.get("tool_calls")
+        has_tool_calls = bool(isinstance(tool_calls, (list, tuple)) and tool_calls)
+        if meaningful_content or has_tool_calls:
+            last_meaningful_action = action
+    if last_meaningful_action is None:
+        return False
+    finished = last_meaningful_action.get("is_agent_finished")
+    terminal = finished is True or (
+        isinstance(finished, str)
+        and finished.strip().casefold() == "true"
+    )
+    terminal_tool_calls = last_meaningful_action.get("tool_calls")
+    return bool(
+        terminal
+        and not (
+            isinstance(terminal_tool_calls, (list, tuple))
+            and terminal_tool_calls
+        )
+    )
+
+
+def _replay_final_answer(trajectory: list[Mapping[str, Any]]) -> str:
+    fallback = ""
+    terminal_answer = ""
+    for step in trajectory:
+        action = step.get("action") if isinstance(step, Mapping) else None
+        if not isinstance(action, Mapping):
+            continue
+        content = action.get("content")
+        if (
+            not isinstance(content, str)
+            or not content.strip()
+            or content.strip().casefold() in {"none", "null"}
+        ):
             continue
         fallback = content
         finished = action.get("is_agent_finished")
-        if finished is True or (
-            isinstance(finished, str)
-            and finished.strip().casefold() == "true"
+        tool_calls = action.get("tool_calls")
+        if (
+            finished is True
+            or (
+                isinstance(finished, str)
+                and finished.strip().casefold() == "true"
+            )
+        ) and not (
+            isinstance(tool_calls, (list, tuple)) and tool_calls
         ):
-            return content
-    return fallback
+            terminal_answer = content
+        else:
+            terminal_answer = ""
+    return terminal_answer or fallback
 
 
 def _bounded_final_answer_artifact_references(final_answer: str) -> tuple[str, ...]:
@@ -12260,6 +12435,65 @@ def _task_completion_counterexample(
         ),
         "required_transition": required_transition,
     }
+
+
+def _task_completion_not_established_result(
+    *,
+    request: ReplayExecutionRequest,
+    trajectory: list[Mapping[str, Any]],
+    stdout: str,
+    stderr: str,
+    metrics: Mapping[str, Any],
+    trigger: str,
+    required_transition: str,
+) -> ReplayExecutionResult:
+    owner = "task" if request.variant_id == "baseline" else "candidate"
+    counterexample = _task_completion_counterexample(
+        metrics,
+        failure_code="replay_task_completion_not_established",
+        trigger=trigger,
+        required_transition=required_transition,
+        owner=owner,
+    )
+    result_metrics = {
+        **metrics,
+        "task_completion_established": False,
+        "replay_counterexamples": [counterexample],
+    }
+    return ReplayExecutionResult(
+        status="failed",
+        trajectory=trajectory,
+        stdout=stdout,
+        stderr=stderr,
+        metrics=result_metrics,
+        failure={
+            "code": "replay_task_completion_not_established",
+            "outcome": (
+                "task_failure"
+                if request.variant_id == "baseline"
+                else "candidate_failure"
+            ),
+            "failure_class": (
+                "baseline_task_incomplete"
+                if request.variant_id == "baseline"
+                else "candidate_task_behavior"
+            ),
+            "failure_stage": "task_rollout",
+            "repairable": request.variant_id != "baseline",
+            "category": "task_completion",
+            "reason": (
+                "replay process exited without establishing a terminal "
+                "task action through TaskResponse.trajectory"
+            ),
+            "diagnostics": {
+                "trajectory_capture_mode": metrics.get(
+                    "trajectory_capture_mode"
+                ),
+                "task_completion_established": False,
+                "replay_counterexamples": [counterexample],
+            },
+        },
+    )
 
 
 def _is_evidence_quality_failure(result: ReplayVariantResult) -> bool:
@@ -13671,6 +13905,8 @@ def build_paired_replay_dataset(
                 candidate.candidate_id: candidate_result.trajectory,
             }
             metadata["replay"] = {
+                "source_case_id": case.case_id,
+                "independence_unit_id": case.case_id,
                 "request": {
                     "run_id": replay_request.run_id,
                     "task_id": replay_request.task_id,
@@ -13776,6 +14012,9 @@ def build_paired_replay_dataset(
             source={
                 **dict(dataset.recipe.source),
                 "paired_replay": True,
+                "paired_replay_dataset_schema": (
+                    "aworld.self_evolve.paired_replay_dataset.v1"
+                ),
                 "candidate_id": candidate.candidate_id,
                 "original_case_count": len(dataset.cases),
                 "replay_case_count": len(cases),

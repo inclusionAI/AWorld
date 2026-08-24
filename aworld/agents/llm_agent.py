@@ -358,6 +358,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         llm_calls.append(
             {
                 "call_id": call_id,
+                "record_kind": "agent_observability",
                 "step_id": message.context.current_step_id() if message.context else None,
                 "agent_id": self.id(),
                 "started_at": started_at,
@@ -1930,6 +1931,15 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                             llm_response.model = chunk.model
                             llm_response.usage = nest_dict_counter(
                                 llm_response.usage, chunk.usage, ignore_zero=False)
+                            if getattr(chunk, "usage_reported", False) is True:
+                                llm_response.usage_reported = True
+                            chunk_raw_usage = getattr(chunk, "raw_usage", None)
+                            if isinstance(chunk_raw_usage, dict) and chunk_raw_usage:
+                                llm_response.raw_usage = nest_dict_counter(
+                                    llm_response.raw_usage or {},
+                                    chunk_raw_usage,
+                                    ignore_zero=False,
+                                )
                             llm_response.message.update(chunk.message)
                             if llm_response.tool_calls:
                                 llm_response.message["tool_calls"] = [tc.to_dict() for tc in llm_response.tool_calls]

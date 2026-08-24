@@ -6,11 +6,15 @@ import pytest
 
 from aworld.self_evolve.datasets import EvalCase, SelfEvolveDataset
 from aworld.self_evolve.measurement import (
+    ArmRole,
+    ComparabilityStatus,
     ComponentIdentity,
     ControlledExperimentSpec,
     ExperimentBudget,
     FrozenIdentities,
+    MeasurementObservation,
     MeasurementPolicyMode,
+    ObservationExecutionStatus,
     OutcomePlan,
     SamplingPlan,
     SwapAxis,
@@ -47,6 +51,7 @@ from aworld.self_evolve.failure_events import (
     FailureStage,
     ReplayFailureEvent,
 )
+from aworld.self_evolve.gates import GateResult
 from aworld.self_evolve.replay_adaptation import (
     IsolationDecision,
     IsolationExclusiveFallback,
@@ -58,6 +63,7 @@ from aworld.self_evolve.runner import (
     SelfEvolveRunner,
     _campaign_measurement_outcome_for_replay,
     _effective_cli_measurement_mode,
+    _rebase_measurement_experiment_for_materialization,
 )
 from aworld.self_evolve.targets import SkillTextTarget
 from aworld.self_evolve.types import (
@@ -71,6 +77,72 @@ from aworld.self_evolve.types import (
 
 def _fp(label: str) -> str:
     return stable_measurement_fingerprint({"label": label})
+
+
+def test_resumed_measurement_materializes_in_cycle_local_namespace(
+    tmp_path: Path,
+) -> None:
+    source = ControlledExperimentSpec.create(
+        run_id="campaign-cycle-1",
+        mode=MeasurementPolicyMode.REQUIRED,
+        swap_axis=SwapAxis.ARTIFACT,
+        control=ComponentIdentity("control", _fp("control")),
+        treatment=ComponentIdentity("treatment", _fp("treatment")),
+        frozen_identities=FrozenIdentities(
+            task_model=_fp("task-model"),
+            generator=_fp("generator"),
+            scheduler=_fp("scheduler"),
+            evaluator=_fp("evaluator"),
+            dataset=_fp("dataset"),
+            environment=_fp("environment"),
+            runtime=_fp("runtime"),
+            prompt_context=_fp("prompt"),
+            budget=_fp("budget"),
+        ),
+        sampling=SamplingPlan(independent_case_ids=("case-1",)),
+        outcomes=OutcomePlan(primary_metric="score"),
+        budgets=ExperimentBudget(),
+    )
+    source_payload = source.to_dict()
+    source_payload["resume_authority"] = "campaign-cycle-1"
+    source = ControlledExperimentSpec.from_dict(source_payload)
+    rebased = _rebase_measurement_experiment_for_materialization(
+        source,
+        run_id="campaign-cycle-2",
+    )
+
+    assert rebased.run_id == "campaign-cycle-2"
+    assert rebased.experiment_id != source.experiment_id
+    assert rebased.extensions == source.extensions
+    assert rebased.sampling == source.sampling
+    assert rebased.outcomes == source.outcomes
+
+    store = FilesystemSelfEvolveStore(tmp_path)
+    store.write_measurement_experiment(source)
+    store.write_measurement_experiment(rebased)
+    observations = []
+    for experiment, score in ((source, 0.0), (rebased, 1.0)):
+        observation = MeasurementObservation.create(
+            experiment=experiment,
+            arm=ArmRole.CONTROL,
+            case_id="case-1",
+            case_fingerprint=_fp("case-1"),
+            split="validation",
+            repetition_index=1,
+            seed=None,
+            component_fingerprint=experiment.control.fingerprint,
+            execution_status=ObservationExecutionStatus.SUCCEEDED,
+            comparability=ComparabilityStatus.COMPARABLE,
+            task_success=bool(score),
+            metrics={"score": score},
+        )
+        store.append_measurement_observations(
+            experiment.run_id,
+            experiment.experiment_id,
+            (observation,),
+        )
+        observations.append(observation)
+    assert observations[0].observation_id != observations[1].observation_id
 
 
 def test_measurement_result_projection_content_addresses_large_replay_artifacts(
@@ -115,15 +187,15 @@ def test_measurement_result_projection_content_addresses_large_replay_artifacts(
 @pytest.mark.parametrize(
     ("configured", "apply_policy", "replay_enabled", "expected"),
     (
-        (None, "verified_only", True, MeasurementPolicyMode.REQUIRED),
-        (None, "auto_verified", True, MeasurementPolicyMode.REQUIRED),
+        (None, "verified_only", True, MeasurementPolicyMode.SHADOW),
+        (None, "auto_verified", True, MeasurementPolicyMode.SHADOW),
         ("off", "proposal", True, MeasurementPolicyMode.OFF),
         ("off", "verified_only", True, MeasurementPolicyMode.OFF),
         ("off", "verified_only", False, MeasurementPolicyMode.OFF),
         ("shadow", "verified_only", True, MeasurementPolicyMode.SHADOW),
     ),
 )
-def test_verified_replay_defaults_to_authoritative_measurement_v2(
+def test_verified_replay_defaults_to_shadow_measurement_v2(
     configured: str | None,
     apply_policy: str,
     replay_enabled: bool,
@@ -852,3 +924,54 @@ async def test_authoritative_replay_executes_adaptive_plan_not_legacy_batch(
     )
     assert outcome is not None
     assert outcome["projection"] == expected_projection
+
+
+def test_positive_measurement_with_failed_release_gates_remains_repairable() -> None:
+    class ReplayResult:
+        measurement_decision = {"kind": "stop_confident_positive"}
+        member_results = ()
+
+    outcome = _campaign_measurement_outcome_for_replay(
+        ReplayResult(),  # type: ignore[arg-type]
+        final_status=SelfEvolveRunStatus.REJECTED,
+    )
+
+    assert outcome is not None
+    assert outcome["projection"] == "candidate_rejected"
+    assert outcome["improvement_outcome"] == "positive"
+    assert outcome["continuation_available"] is True
+    assert outcome["reason_code"] == "positive_effect_release_gates_failed"
+
+
+def test_neutral_measurement_with_candidate_release_failure_remains_repairable() -> None:
+    class ReplayResult:
+        measurement_decision = {"kind": "inconclusive"}
+        member_results = ()
+
+    event = ReplayFailureEvent(
+        code="candidate_evidence_incomplete",
+        owner=FailureOwner.CANDIDATE,
+        stage=FailureStage.EVALUATION,
+        scope=FailureScope.CANDIDATE,
+        repairable=True,
+        category="verification_gate",
+        summary="candidate claims lack required evidence",
+    ).to_dict()
+    outcome = _campaign_measurement_outcome_for_replay(
+        ReplayResult(),  # type: ignore[arg-type]
+        final_status=SelfEvolveRunStatus.REJECTED,
+        gate_results=(
+            GateResult(
+                gate_name="evidence_quality",
+                passed=False,
+                reason="candidate evidence is incomplete",
+                details={"causal_failure_events": [event]},
+            ),
+        ),
+    )
+
+    assert outcome is not None
+    assert outcome["projection"] == "candidate_rejected"
+    assert outcome["improvement_outcome"] == "no_effect"
+    assert outcome["continuation_available"] is True
+    assert outcome["reason_code"] == "no_effect_candidate_repair_available"

@@ -293,6 +293,40 @@ def _dedupe_evidence(evidence: Iterable[Mapping[str, Any]]) -> list[dict[str, An
     return deduped
 
 
+def _question_from_state_input(value: Any) -> str | None:
+    """Extract a user question without promoting tool transport snapshots.
+
+    AWorld providers have emitted ``state.input`` both as a mapping and as a
+    serialized mapping string.  A non-empty ``action_result`` identifies the
+    latter as a tool-result transport snapshot, not the original user prompt.
+    Plain strings remain valid direct task inputs.
+    """
+
+    parsed = value
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return None
+        if stripped.startswith("{") and stripped.endswith("}"):
+            for loader in (ast.literal_eval, json.loads):
+                try:
+                    candidate = loader(stripped)
+                except (SyntaxError, ValueError, TypeError, json.JSONDecodeError):
+                    continue
+                if isinstance(candidate, Mapping):
+                    parsed = candidate
+                    break
+        if isinstance(parsed, str):
+            return parsed
+    if not isinstance(parsed, Mapping):
+        return None
+    action_results = parsed.get("action_result")
+    if isinstance(action_results, (list, tuple)) and action_results:
+        return None
+    content = parsed.get("content")
+    return content if isinstance(content, str) and content.strip() else None
+
+
 def extract_aworld_trajectory_payload(
     trajectory: Iterable[Mapping[str, Any]],
     *,
@@ -307,7 +341,11 @@ def extract_aworld_trajectory_payload(
     system_prompt = ""
     if trajectory:
         first_state = trajectory[0].get("state", {}) if isinstance(trajectory[0], Mapping) else {}
-        question = (first_state.get("input", {}) or {}).get("content") if isinstance(first_state, Mapping) else None
+        question = (
+            _question_from_state_input(first_state.get("input"))
+            if isinstance(first_state, Mapping)
+            else None
+        )
         first_messages = first_state.get("messages", []) if isinstance(first_state, Mapping) else []
         if first_messages and isinstance(first_messages[0], Mapping) and first_messages[0].get("role") == "system":
             system_prompt = str(first_messages[0].get("content") or "")

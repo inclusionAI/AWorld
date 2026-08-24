@@ -1319,6 +1319,78 @@ def test_campaign_grants_one_bounded_repair_for_new_terminal_counterexample(
     assert result["campaign_exhaustion_axes"] == []
 
 
+def test_campaign_grants_bounded_repair_at_authoritative_frontier(
+    tmp_path: Path,
+) -> None:
+    calls: list[dict] = []
+
+    def run_once(**request):
+        calls.append(request)
+        run_id = f"{request['campaign_id']}-cycle-{request['campaign_cycle']:03d}"
+        if request["campaign_cycle"] == 1:
+            event = _event(code="candidate_evidence_incomplete")
+            report = _report(event)
+            report["campaign_measurement_outcome"] = {
+                "schema_version": "aworld.self_evolve.campaign_measurement_outcome.v2",
+                "execution_status": "completed",
+                "improvement_outcome": "no_effect",
+                "release_gates_passed": False,
+                "continuation_available": True,
+                "reason_code": "no_effect_candidate_repair_available",
+                "projection": "candidate_rejected",
+            }
+            report["gate_results"][0]["details"]["replay_counterexamples"] = [
+                {
+                    "schema_version": "aworld.replay.counterexample.v1",
+                    "sequence": 1,
+                    "failure_code": "candidate_evidence_incomplete",
+                    "owner": "candidate",
+                    "stage": "evaluation",
+                    "state_before": "answer_ready",
+                    "trigger": "required_verification",
+                    "required_transition": "capture_grounded_evidence",
+                }
+            ]
+            report["verification_funnel"] = {
+                "authoritative_candidate_count": 1,
+            }
+        else:
+            report = {
+                "status": "succeeded",
+                "budget": _budget(10),
+                "gate_results": [{"gate_name": "post_apply", "passed": True}],
+                "verification_funnel": {"authoritative_candidate_count": 1},
+            }
+        report["run_id"] = run_id
+        report_path = tmp_path / ".aworld" / "self_evolve" / run_id / "report.json"
+        report_path.parent.mkdir(parents=True)
+        report_path.write_text(json.dumps(report), encoding="utf-8")
+        return {
+            "run_id": run_id,
+            "status": report["status"],
+            "report_path": str(report_path),
+        }
+
+    result = run_self_improvement_campaign(
+        workspace_root=tmp_path,
+        request={
+            "from_trajectory": "trajectory.log",
+            "apply_policy": "verified_only",
+            "infer_target": True,
+            "max_full_evaluation_candidates": 1,
+        },
+        max_improvement_cycles=2,
+        run_once=run_once,
+    )
+
+    assert len(calls) == 2
+    assert [call["max_full_evaluation_candidates"] for call in calls] == [1, 1]
+    assert result["campaign_status"] == "complete"
+    assert result["campaign_repair_continuation_used"] is True
+    assert result["campaign_configured_max_cycles"] == 2
+    assert result["campaign_max_authoritative_candidates"] == 2
+
+
 def test_conformance_counterexample_counts_as_new_repair_evidence() -> None:
     report = {
         "gate_results": [
@@ -1396,6 +1468,27 @@ def test_schema_parse_counterexample_counts_as_new_repair_evidence() -> None:
     )
     assert "constraint-schema-counterexample-abc" in (
         campaign_module._constraint_identities(report)
+    )
+
+
+def test_typed_release_constraint_counts_as_new_candidate_repair_evidence() -> None:
+    report = _report(_event(code="candidate_evidence_incomplete"))
+    report["gate_results"][0]["details"]["evidence_repair_constraints"] = [
+        {
+            "schema_version": "aworld.self_evolve.evidence_repair_constraint.v1",
+            "constraint_identity_digest": "sha256:candidate-evidence-abc",
+            "owner": "candidate",
+            "required_action": "support_or_omit",
+        }
+    ]
+
+    assert campaign_module._report_has_new_candidate_repair_evidence(
+        report,
+        prior_reports=(),
+    )
+    assert not campaign_module._report_has_new_candidate_repair_evidence(
+        report,
+        prior_reports=(report,),
     )
 
 
@@ -1791,6 +1884,178 @@ def test_resume_restores_deeper_abandoned_repair_champion(
     )
 
 
+def test_resume_restores_legacy_repairable_neutral_measurement(
+    tmp_path: Path,
+) -> None:
+    calls: list[dict] = []
+    controller = SelfImprovementCampaignController(
+        workspace_root=tmp_path,
+        run_once=lambda **request: _write_successful_campaign_fixture(
+            tmp_path,
+            calls,
+            request,
+        ),
+    )
+    campaign = controller.create(
+        {
+            "from_trajectory": "trajectory.log",
+            "apply_policy": "verified_only",
+            "infer_target": True,
+            "max_full_evaluation_candidates": 1,
+        },
+        max_cycles=2,
+    )
+    run_id = f"{campaign.campaign_id}-cycle-001"
+    event = _event(code="candidate_evidence_incomplete")
+    report = _report(event)
+    report.update(
+        {
+            "run_id": run_id,
+            "campaign_measurement_outcome": {
+                "schema_version": "aworld.self_evolve.campaign_measurement_outcome.v2",
+                "execution_status": "completed",
+                "improvement_outcome": "no_effect",
+                "release_gates_passed": False,
+                "continuation_available": False,
+                "reason_code": "inconclusive_effect",
+                "projection": "candidate_rejected",
+            },
+            "verification_funnel": {"authoritative_candidate_count": 1},
+        }
+    )
+    report["gate_results"][0]["details"]["evidence_repair_constraints"] = [
+        {
+            "schema_version": "aworld.self_evolve.evidence_repair_constraint.v1",
+            "constraint_identity_digest": "sha256:candidate-evidence-abc",
+            "owner": "candidate",
+            "required_action": "support_or_omit",
+        }
+    ]
+    report_path = controller.store.write_report(run_id, report)
+    paused = campaign_module.replace(
+        campaign,
+        status=SelfImprovementCampaignStatus.PAUSED,
+        cycle_index=1,
+        run_ids=(run_id,),
+        cumulative_authoritative_candidates=1,
+        latest_progress=self_improvement_progress(report),
+        latest_disposition=SelfImprovementDisposition(
+            kind=SelfImprovementDispositionKind.STOP_NO_EFFECT,
+            reason_code="inconclusive_effect",
+            owner="candidate",
+            stage="measurement",
+            scope="candidate",
+        ),
+        latest_measurement_outcome=(
+            campaign_module.CampaignMeasurementOutcomeV2.from_dict(
+                report["campaign_measurement_outcome"]
+            )
+        ),
+        latest_report_path=str(report_path),
+    )
+    controller.store.write_campaign(paused)
+
+    result = run_self_improvement_campaign(
+        workspace_root=tmp_path,
+        request={},
+        resume_campaign=campaign.campaign_id,
+        run_once=controller.run_once,
+    )
+
+    assert len(calls) == 1
+    assert calls[0]["campaign_cycle"] == 2
+    assert calls[0]["max_full_evaluation_candidates"] == 1
+    assert result["campaign_status"] == "complete"
+    assert result["campaign_repair_continuation_used"] is True
+    migrated_report = controller.store.read_report(run_id)
+    assert migrated_report["campaign_causal_migration"]["action"] == (
+        "restore_repairable_neutral_candidate"
+    )
+    assert migrated_report["campaign_measurement_outcome"][
+        "continuation_available"
+    ] is True
+
+
+def test_resume_restores_unattempted_task_behavior_repair_family(
+    tmp_path: Path,
+) -> None:
+    calls: list[dict] = []
+    controller = SelfImprovementCampaignController(
+        workspace_root=tmp_path,
+        run_once=lambda **request: _write_successful_campaign_fixture(
+            tmp_path,
+            calls,
+            request,
+        ),
+    )
+    campaign = controller.create(
+        {
+            "from_trajectory": "trajectory.log",
+            "apply_policy": "verified_only",
+            "infer_target": True,
+            "max_full_evaluation_candidates": 1,
+        },
+        max_cycles=2,
+    )
+    run_id = f"{campaign.campaign_id}-cycle-001"
+    event = {
+        "semantic_key": "replay-failure-candidate-recovery",
+        "code": "candidate_recovery_incomplete",
+        "owner": "candidate",
+        "stage": "task_rollout",
+        "scope": "candidate",
+        "repairable": True,
+        "category": "recovery_trace",
+    }
+    report = _report(event)
+    report.update(
+        {
+            "run_id": run_id,
+            "repair_frontier_state": {
+                "scheduler_state": {
+                    "frontier_mutation_families": {
+                        event["semantic_key"]: []
+                    }
+                }
+            },
+            "verification_funnel": {"authoritative_candidate_count": 0},
+        }
+    )
+    report_path = controller.store.write_report(run_id, report)
+    exhausted = campaign_module.replace(
+        campaign,
+        status=SelfImprovementCampaignStatus.EXHAUSTED,
+        cycle_index=1,
+        run_ids=(run_id,),
+        repair_continuation_used=True,
+        latest_progress=self_improvement_progress(report),
+        latest_disposition=SelfImprovementDisposition(
+            kind=SelfImprovementDispositionKind.EXHAUSTED,
+            reason_code="candidate_repair_frontier_stalled",
+            owner="candidate",
+            stage="candidate_generation",
+            scope="candidate",
+        ),
+        latest_report_path=str(report_path),
+    )
+    controller.store.write_campaign(exhausted)
+
+    result = run_self_improvement_campaign(
+        workspace_root=tmp_path,
+        request={},
+        resume_campaign=campaign.campaign_id,
+        run_once=controller.run_once,
+    )
+
+    assert len(calls) == 1
+    assert calls[0]["campaign_cycle"] == 2
+    assert result["campaign_status"] == "complete"
+    migrated_report = controller.store.read_report(run_id)
+    assert migrated_report["campaign_causal_migration"]["action"] == (
+        "restore_unattempted_task_behavior_repair"
+    )
+
+
 def test_shared_measurement_timeout_does_not_exhaust_authoritative_frontier(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2143,6 +2408,959 @@ def test_shared_measurement_retry_fails_closed_without_candidate_checkpoint(
     )
 
 
+def test_resume_reopens_repairable_framework_screening_admission_failure(
+    tmp_path: Path,
+) -> None:
+    calls: list[dict] = []
+    controller = SelfImprovementCampaignController(
+        workspace_root=tmp_path,
+        run_once=lambda **request: _write_successful_campaign_fixture(
+            tmp_path,
+            calls,
+            request,
+        ),
+    )
+    campaign = controller.create(
+        {
+            "from_trajectory": "trajectory.log",
+            "apply_policy": "verified_only",
+            "infer_target": True,
+        },
+        max_cycles=3,
+    )
+    run_id = f"{campaign.campaign_id}-cycle-001"
+    failure_details = {
+        "code": "measurement_plan_admission_failed",
+        "failure_class": "measurement",
+        "failure_owner": "framework",
+        "failure_scope": "shared_run",
+        "failure_stage": "evaluation",
+        "repairable": True,
+        "checkpoint_stage": "screening",
+        "next_action": "repair_measurement",
+        "resume_safe": False,
+    }
+    report = {
+        "run_id": run_id,
+        "status": "rejected",
+        "budget": _budget(),
+        "gate_results": [
+            {
+                "gate_name": "candidate_replay",
+                "passed": False,
+                "reason": "invalid replay artifact namespace",
+                "details": dict(failure_details),
+            }
+        ],
+        "campaign_failure_attribution": {
+            "primary_gate": "candidate_replay",
+            **failure_details,
+        },
+        "measurement": {
+            "mode": "required",
+            "status": "not_started",
+            "validity_status": "prerequisite_blocked",
+            "comparable_pair_count": 0,
+            "independent_case_count": 0,
+            "effect_direction": "unmeasured",
+            "promotion_eligible": False,
+            "next_action": "repair_measurement",
+            "decision_reason": "measurement_plan_admission_failed",
+        },
+        "verification_funnel": {
+            "authoritative_candidate_attempt_count": 1,
+            "authoritative_candidate_count": 1,
+            "authoritative_candidate_ids": ["candidate-screened"],
+            "authoritative_case_observations": {
+                "user-task": {"attempt_count": 1, "passed_count": 1}
+            },
+            "authoritative_case_observations_advisory_only": True,
+        },
+    }
+    report_path = controller.store.write_report(run_id, report)
+    exhausted = campaign_module.replace(
+        campaign,
+        status=SelfImprovementCampaignStatus.EXHAUSTED,
+        cycle_index=1,
+        run_ids=(run_id,),
+        latest_progress=self_improvement_progress(report),
+        latest_disposition=SelfImprovementDisposition(
+            kind=SelfImprovementDispositionKind.EXHAUSTED,
+            reason_code="measurement_authority_checkpoint_missing_or_invalid",
+            owner="evaluation_harness",
+            stage="evaluation",
+            scope="shared_run",
+        ),
+        latest_report_path=str(report_path),
+    )
+    controller.store.write_campaign(exhausted)
+
+    result = run_self_improvement_campaign(
+        workspace_root=tmp_path,
+        request={},
+        resume_campaign=campaign.campaign_id,
+        run_once=controller.run_once,
+    )
+
+    assert len(calls) == 1
+    assert calls[0]["campaign_cycle"] == 2
+    assert calls[0].get("campaign_measurement_pending_run_id") is None
+    assert calls[0].get("campaign_measurement_pending_candidate_id") is None
+    assert result["campaign_status"] == "complete"
+    assert result["campaign_measurement_retry_count"] == 0
+    assert result["campaign_repair_continuation_used"] is False
+    assert result["campaign_authoritative_candidate_count"] == 1
+    migrated_report = controller.store.read_report(run_id)
+    assert migrated_report["campaign_causal_migration"]["action"] == (
+        "restore_framework_screening_admission_continuation"
+    )
+    assert migrated_report["self_improvement_disposition"]["kind"] == (
+        "continue_campaign"
+    )
+
+
+def test_resume_adds_unattempted_websocket_http_version_repair_constraint(
+    tmp_path: Path,
+) -> None:
+    calls: list[dict] = []
+    controller = SelfImprovementCampaignController(
+        workspace_root=tmp_path,
+        run_once=lambda **request: _write_successful_campaign_fixture(
+            tmp_path,
+            calls,
+            request,
+        ),
+    )
+    campaign = controller.create(
+        {
+            "from_trajectory": "trajectory.log",
+            "apply_policy": "verified_only",
+            "infer_target": True,
+        },
+        max_cycles=3,
+    )
+    run_id = f"{campaign.campaign_id}-cycle-003"
+    report = {
+        "run_id": run_id,
+        "status": "rejected",
+        "budget": _budget(),
+        "repair_focus_candidate_id": "candidate-http-1-0",
+        "gate_results": [
+            {
+                "gate_name": "candidate_repair_conformance",
+                "passed": False,
+                "reason": "candidate declared repair probe failed before task rollout",
+                "details": {
+                    "code": "repair_probe_execution_failed",
+                    "failure_class": "candidate",
+                    "repairable": True,
+                    "diagnostics": [
+                        {
+                            "code": "protocol_trace_contract_failed",
+                            "error_type": "ReplayServiceProtocolError",
+                            "reason": (
+                                "advertised WebSocket handshake requires HTTP/1.1; "
+                                "service stderr: bounded"
+                            ),
+                        }
+                    ],
+                    "repair_conformance": {
+                        "projection_schema_version": (
+                            "aworld.self_evolve.repair_conformance.public.v1"
+                        ),
+                        "failure_codes": ["protocol_trace_contract_failed"],
+                        "schema_field_constraints": [],
+                    },
+                },
+            }
+        ],
+        "verification_funnel": {
+            "authoritative_candidate_attempt_count": 0,
+            "authoritative_candidate_count": 0,
+            "authoritative_candidate_ids": [],
+        },
+    }
+    report_path = controller.store.write_report(run_id, report)
+    prior_run_ids = tuple(
+        f"{campaign.campaign_id}-cycle-{cycle:03d}" for cycle in (1, 2)
+    )
+    for prior_run_id in prior_run_ids:
+        controller.store.write_report(
+            prior_run_id,
+            {
+                "run_id": prior_run_id,
+                "status": "rejected",
+                "budget": _budget(),
+                "gate_results": [],
+            },
+        )
+    candidate_path = (
+        controller.store.run_path(run_id)
+        / "candidates"
+        / "candidate-http-1-0.json"
+    )
+    candidate_path.parent.mkdir(parents=True, exist_ok=True)
+    candidate_path.write_text("{}", encoding="utf-8")
+    exhausted = campaign_module.replace(
+        campaign,
+        status=SelfImprovementCampaignStatus.EXHAUSTED,
+        cycle_index=3,
+        run_ids=(*prior_run_ids, run_id),
+        latest_progress=self_improvement_progress(report),
+        latest_disposition=SelfImprovementDisposition(
+            kind=SelfImprovementDispositionKind.EXHAUSTED,
+            reason_code="candidate_repair_frontier_stalled",
+            owner="candidate",
+            stage="capability_preflight",
+            scope="candidate",
+            repairable=True,
+        ),
+        latest_report_path=str(report_path),
+    )
+    controller.store.write_campaign(exhausted)
+
+    result = run_self_improvement_campaign(
+        workspace_root=tmp_path,
+        request={},
+        resume_campaign=campaign.campaign_id,
+        run_once=controller.run_once,
+    )
+
+    assert len(calls) == 1
+    assert calls[0]["campaign_cycle"] == 4
+    assert result["campaign_status"] == "complete"
+    assert result["campaign_repair_continuation_used"] is True
+    assert result["campaign_measurement_retry_count"] == 0
+    migrated_report = controller.store.read_report(run_id)
+    assert migrated_report["campaign_causal_migration"]["action"] == (
+        "restore_unattempted_websocket_http_version_repair"
+    )
+    constraint = migrated_report["gate_results"][0]["details"][
+        "schema_field_constraints"
+    ][0]
+    assert constraint["field_path"] == "websocket_handshake.http_version"
+    assert constraint["expected"] == ["HTTP/1.1"]
+    assert migrated_report["self_improvement_disposition"]["kind"] == (
+        "continue_candidate"
+    )
+
+
+def test_resume_recovers_no_work_cycle_after_constraint_frontier_migration(
+    tmp_path: Path,
+) -> None:
+    calls: list[dict] = []
+    controller = SelfImprovementCampaignController(
+        workspace_root=tmp_path,
+        run_once=lambda **request: _write_successful_campaign_fixture(
+            tmp_path,
+            calls,
+            request,
+        ),
+    )
+    campaign = controller.create(
+        {
+            "from_trajectory": "trajectory.log",
+            "apply_policy": "verified_only",
+            "infer_target": True,
+        },
+        max_cycles=3,
+    )
+    frontier_key = "replay-failure-http-version"
+    run_ids = tuple(
+        f"{campaign.campaign_id}-cycle-{cycle:03d}" for cycle in range(1, 5)
+    )
+    for run_id in run_ids[:2]:
+        controller.store.write_report(
+            run_id,
+            {
+                "run_id": run_id,
+                "status": "rejected",
+                "budget": _budget(),
+                "gate_results": [],
+            },
+        )
+    repaired_report = {
+        "run_id": run_ids[2],
+        "status": "rejected",
+        "budget": _budget(),
+        "gate_results": [
+            {
+                "gate_name": "candidate_repair_conformance",
+                "passed": False,
+                "details": {
+                    "code": "repair_probe_execution_failed",
+                    "failure_class": "candidate",
+                    "repairable": True,
+                    "diagnostics": [
+                        {
+                            "code": "websocket_handshake_http_version_invalid",
+                            "reason": (
+                                "advertised WebSocket handshake requires HTTP/1.1"
+                            ),
+                        }
+                    ],
+                    "causal_failure_events": [
+                        {
+                            "semantic_key": frontier_key,
+                            "code": "protocol_trace_contract_failed",
+                            "owner": "candidate",
+                            "scope": "candidate",
+                            "stage": "capability_preflight",
+                            "repairable": True,
+                        }
+                    ],
+                },
+            }
+        ],
+        "campaign_causal_migration": {
+            "schema_version": (
+                "aworld.self_evolve.websocket_http_version_repair_migration.v1"
+            ),
+            "action": "restore_unattempted_websocket_http_version_repair",
+        },
+    }
+    controller.store.write_report(run_ids[2], repaired_report)
+    no_work_report = {
+        "run_id": run_ids[3],
+        "status": "rejected",
+        "budget": _budget(),
+        "gate_results": [
+            {
+                "gate_name": "candidate_generation",
+                "passed": False,
+                "reason": "optimizer did not produce a replayable candidate",
+                "details": {"generated_candidate_count": 0, "iterations": 0},
+            }
+        ],
+        "verification_funnel": {
+            "authoritative_candidate_attempt_count": 0,
+            "authoritative_candidate_count": 0,
+            "authoritative_candidate_ids": [],
+        },
+        "repair_frontier_state": {
+            "schema_version": "aworld.self_evolve.repair_frontier_state.v1",
+            "records": [
+                {
+                    "semantic_key": frontier_key,
+                    "status": "dormant",
+                    "mutation_families": [
+                        "minimal_behavior_delta",
+                        "missing_capability_completion",
+                    ],
+                }
+            ],
+            "active_count": 0,
+            "dormant_count": 1,
+            "resolved_count": 0,
+            "regressed_count": 0,
+            "scheduler_state": {
+                "initial_exploration_scheduled": True,
+                "untyped_frontier_exploration_scheduled": False,
+                "frontier_progress": {frontier_key: 4},
+                "frontier_stalls": {frontier_key: 2},
+                "frontier_mutation_families": {
+                    frontier_key: [
+                        "minimal_behavior_delta",
+                        "missing_capability_completion",
+                    ]
+                },
+                "last_focused_frontier": frontier_key,
+            },
+        },
+    }
+    report_path = controller.store.write_report(run_ids[3], no_work_report)
+    exhausted = campaign_module.replace(
+        campaign,
+        status=SelfImprovementCampaignStatus.EXHAUSTED,
+        cycle_index=4,
+        run_ids=run_ids,
+        repair_continuation_used=True,
+        latest_progress=self_improvement_progress(no_work_report),
+        latest_disposition=SelfImprovementDisposition(
+            kind=SelfImprovementDispositionKind.EXHAUSTED,
+            reason_code="candidate_repair_frontier_stalled",
+            owner="candidate",
+            stage="candidate_generation",
+            scope="candidate",
+            repairable=False,
+        ),
+        latest_report_path=str(report_path),
+    )
+    controller.store.write_campaign(exhausted)
+
+    result = run_self_improvement_campaign(
+        workspace_root=tmp_path,
+        request={},
+        resume_campaign=campaign.campaign_id,
+        run_once=controller.run_once,
+    )
+
+    assert len(calls) == 1
+    assert calls[0]["campaign_cycle"] == 5
+    assert result["campaign_status"] == "complete"
+    assert result["campaign_framework_blocked_count"] == 1
+    assert result["campaign_repair_continuation_used"] is True
+    migrated_report = controller.store.read_report(run_ids[3])
+    assert migrated_report["campaign_causal_migration"]["action"] == (
+        "reactivate_migrated_constraint_after_no_work_cycle"
+    )
+    scheduler = migrated_report["repair_frontier_state"]["scheduler_state"]
+    assert scheduler["frontier_stalls"][frontier_key] == 0
+    assert scheduler["frontier_mutation_families"][frontier_key] == []
+    assert scheduler["last_focused_frontier"] is None
+
+
+def test_resume_recovers_scheduler_checkpoint_lineage_regression(
+    tmp_path: Path,
+) -> None:
+    calls: list[dict] = []
+    controller = SelfImprovementCampaignController(
+        workspace_root=tmp_path,
+        run_once=lambda **request: _write_successful_campaign_fixture(
+            tmp_path,
+            calls,
+            request,
+        ),
+    )
+    campaign = controller.create(
+        {
+            "from_trajectory": "trajectory.log",
+            "apply_policy": "verified_only",
+            "infer_target": True,
+        },
+        max_cycles=3,
+    )
+    frontier_key = "replay-failure-http-version"
+    run_ids = tuple(
+        f"{campaign.campaign_id}-cycle-{cycle:03d}" for cycle in range(1, 6)
+    )
+    for run_id in run_ids[:2]:
+        controller.store.write_report(
+            run_id,
+            {
+                "run_id": run_id,
+                "status": "rejected",
+                "budget": _budget(),
+                "gate_results": [],
+            },
+        )
+    controller.store.write_report(
+        run_ids[2],
+        {
+            "run_id": run_ids[2],
+            "status": "rejected",
+            "budget": _budget(),
+            "gate_results": [
+                {
+                    "gate_name": "candidate_repair_conformance",
+                    "passed": False,
+                    "details": {
+                        "diagnostics": [
+                            {
+                                "code": (
+                                    "websocket_handshake_http_version_invalid"
+                                )
+                            }
+                        ],
+                        "causal_failure_events": [
+                            {
+                                "semantic_key": frontier_key,
+                                "code": "protocol_trace_contract_failed",
+                                "owner": "candidate",
+                                "scope": "candidate",
+                                "stage": "capability_preflight",
+                                "repairable": True,
+                            }
+                        ],
+                    },
+                }
+            ],
+            "campaign_causal_migration": {
+                "action": "restore_unattempted_websocket_http_version_repair"
+            },
+        },
+    )
+    reset_scheduler = {
+        "initial_exploration_scheduled": True,
+        "untyped_frontier_exploration_scheduled": False,
+        "frontier_progress": {frontier_key: 4},
+        "frontier_stalls": {frontier_key: 0},
+        "frontier_mutation_families": {frontier_key: []},
+        "last_focused_frontier": None,
+    }
+    controller.store.write_report(
+        run_ids[3],
+        {
+            "run_id": run_ids[3],
+            "status": "rejected",
+            "budget": _budget(),
+            "gate_results": [
+                {
+                    "gate_name": "candidate_generation",
+                    "passed": False,
+                    "details": {
+                        "generated_candidate_count": 0,
+                        "iterations": 0,
+                    },
+                }
+            ],
+            "repair_frontier_state": {
+                "records": [],
+                "scheduler_state": reset_scheduler,
+            },
+            "campaign_causal_migration": {
+                "action": "reactivate_migrated_constraint_after_no_work_cycle"
+            },
+        },
+    )
+    reverted_scheduler = {
+        **reset_scheduler,
+        "frontier_stalls": {frontier_key: 2},
+        "frontier_mutation_families": {
+            frontier_key: ["minimal_behavior_delta"]
+        },
+        "last_focused_frontier": frontier_key,
+    }
+    latest_report = {
+        "run_id": run_ids[4],
+        "status": "rejected",
+        "budget": _budget(),
+        "gate_results": [
+            {
+                "gate_name": "candidate_generation",
+                "passed": False,
+                "details": {
+                    "generated_candidate_count": 0,
+                    "iterations": 0,
+                },
+            }
+        ],
+        "verification_funnel": {
+            "authoritative_candidate_count": 0,
+        },
+        "repair_frontier_state": {
+            "records": [],
+            "scheduler_state": reverted_scheduler,
+        },
+    }
+    report_path = controller.store.write_report(run_ids[4], latest_report)
+    exhausted = campaign_module.replace(
+        campaign,
+        status=SelfImprovementCampaignStatus.EXHAUSTED,
+        cycle_index=5,
+        run_ids=run_ids,
+        repair_continuation_used=True,
+        measurement_ledger=(
+            campaign.measurement_ledger.charge_framework_blocked(run_ids[3])
+        ),
+        latest_progress=self_improvement_progress(latest_report),
+        latest_disposition=SelfImprovementDisposition(
+            kind=SelfImprovementDispositionKind.EXHAUSTED,
+            reason_code="candidate_repair_frontier_stalled",
+            owner="candidate",
+            stage="candidate_generation",
+            scope="candidate",
+            repairable=False,
+        ),
+        latest_report_path=str(report_path),
+    )
+    controller.store.write_campaign(exhausted)
+
+    result = run_self_improvement_campaign(
+        workspace_root=tmp_path,
+        request={},
+        resume_campaign=campaign.campaign_id,
+        run_once=controller.run_once,
+    )
+
+    assert len(calls) == 1
+    assert calls[0]["campaign_cycle"] == 6
+    assert calls[0]["campaign_scheduler_checkpoint_run_ids"] == run_ids
+    assert result["campaign_status"] == "complete"
+    assert result["campaign_framework_blocked_count"] == 2
+    migrated = controller.store.read_report(run_ids[4])
+    assert migrated["campaign_causal_migration"]["action"] == (
+        "reactivate_migrated_constraint_after_checkpoint_lineage_regression"
+    )
+    scheduler = migrated["repair_frontier_state"]["scheduler_state"]
+    assert scheduler["frontier_stalls"][frontier_key] == 0
+    assert scheduler["frontier_mutation_families"][frontier_key] == []
+    assert scheduler["last_focused_frontier"] is None
+
+
+def test_resume_recovers_discarded_screening_baseline_cache(
+    tmp_path: Path,
+) -> None:
+    calls: list[dict] = []
+    controller = SelfImprovementCampaignController(
+        workspace_root=tmp_path,
+        run_once=lambda **request: _write_successful_campaign_fixture(
+            tmp_path,
+            calls,
+            request,
+        ),
+    )
+    campaign = controller.create(
+        {
+            "from_trajectory": "trajectory.log",
+            "apply_policy": "verified_only",
+            "infer_target": True,
+        },
+        max_cycles=1,
+    )
+    run_id = f"{campaign.campaign_id}-cycle-001"
+    report = {
+        "run_id": run_id,
+        "status": "failed",
+        "budget": _budget(),
+        "gate_results": [
+            {
+                "gate_name": "candidate_replay",
+                "passed": False,
+                "details": {
+                    "code": "screening_control_infeasible",
+                    "checkpoint_stage": "screening",
+                    "failure_class": "framework",
+                    "failure_owner": "framework",
+                    "failure_scope": "shared_run",
+                    "repairable": True,
+                },
+            }
+        ],
+        "measurement": {
+            "status": "not_started",
+            "decision_reason": "screening_control_infeasible",
+        },
+        "population": {
+            "screening": {
+                "attempts": [
+                    {
+                        "candidate_id": "candidate-a",
+                        "control_case_attempts": [
+                            {
+                                "case_ids": ["task-a"],
+                                "baseline_cache_offered": False,
+                                "baseline_status": "succeeded",
+                                "invalid_control": False,
+                            }
+                        ],
+                    },
+                    {
+                        "candidate_id": "candidate-b",
+                        "control_case_attempts": [
+                            {
+                                "case_ids": ["task-a"],
+                                "baseline_cache_offered": False,
+                                "baseline_status": "failed",
+                                "invalid_control": True,
+                            }
+                        ],
+                    },
+                ]
+            }
+        },
+    }
+    report_path = controller.store.write_report(run_id, report)
+    exhausted = campaign_module.replace(
+        campaign,
+        status=SelfImprovementCampaignStatus.EXHAUSTED,
+        cycle_index=1,
+        run_ids=(run_id,),
+        cumulative_authoritative_candidates=1,
+        latest_progress=self_improvement_progress(report),
+        latest_disposition=SelfImprovementDisposition(
+            kind=SelfImprovementDispositionKind.EXHAUSTED,
+            reason_code="campaign_infrastructure_retry_limit_reached",
+            owner="infrastructure",
+            stage="candidate_generation",
+            scope="shared_run",
+            repairable=False,
+        ),
+        latest_report_path=str(report_path),
+    )
+    controller.store.write_campaign(exhausted)
+
+    result = run_self_improvement_campaign(
+        workspace_root=tmp_path,
+        request={},
+        resume_campaign=campaign.campaign_id,
+        run_once=controller.run_once,
+    )
+
+    assert len(calls) == 1
+    assert calls[0]["campaign_cycle"] == 2
+    assert calls[0]["max_full_evaluation_candidates"] == 2
+    assert result["campaign_status"] == "complete"
+    assert result["campaign_framework_blocked_count"] == 1
+    assert result["campaign_authoritative_candidate_count"] == 2
+    migrated = controller.store.read_report(run_id)
+    assert migrated["campaign_causal_migration"]["action"] == (
+        "restore_discarded_screening_baseline_cache"
+    )
+    assert migrated["campaign_causal_migration"]["affected_case_ids"] == [
+        "task-a"
+    ]
+
+
+def test_resume_recovers_suppressed_task_behavior_materialization(
+    tmp_path: Path,
+) -> None:
+    calls: list[dict] = []
+    controller = SelfImprovementCampaignController(
+        workspace_root=tmp_path,
+        run_once=lambda **request: _write_successful_campaign_fixture(
+            tmp_path,
+            calls,
+            request,
+        ),
+    )
+    campaign = controller.create(
+        {
+            "from_trajectory": "trajectory.log",
+            "apply_policy": "verified_only",
+            "infer_target": True,
+        },
+        max_cycles=1,
+    )
+    run_id = f"{campaign.campaign_id}-cycle-001"
+    materialization_failure = {
+        "code": "repair_target_behavior_unchanged",
+        "stage": "candidate_semantic_validation",
+        "representation": "candidate_package",
+        "repairable": True,
+        "contract_identity_digest": "task-contract",
+        "details": {
+            "repair_conformance": {
+                "reason": (
+                    "task-rollout repair must materially change SKILL.md; "
+                    "support file edits alone cannot repair the observed agent behavior"
+                )
+            }
+        },
+    }
+    report = {
+        "run_id": run_id,
+        "status": "rejected",
+        "budget": _budget(),
+        "gate_results": [
+            {
+                "gate_name": "candidate_replay",
+                "passed": False,
+                "details": {
+                    "code": "candidate_screening_deadline_exceeded",
+                    "failure_owner": "candidate",
+                    "failure_scope": "candidate",
+                    "repairable": True,
+                },
+            }
+        ],
+        "verification_funnel": {
+            "authoritative_candidate_count": 0,
+            "generation_materialization_frontier_exhausted": True,
+            "generation_stop_reason": "materialization_frontier_repeated",
+        },
+        "optimizer_diagnostics": {
+            "iterations": [
+                {
+                    "diagnostics": {
+                        "candidate_materialization_failures": [
+                            materialization_failure
+                        ]
+                    }
+                },
+                {
+                    "diagnostics": {
+                        "candidate_materialization_failures": [
+                            materialization_failure
+                        ]
+                    }
+                },
+            ]
+        },
+    }
+    report_path = controller.store.write_report(run_id, report)
+    exhausted = campaign_module.replace(
+        campaign,
+        status=SelfImprovementCampaignStatus.EXHAUSTED,
+        cycle_index=1,
+        run_ids=(run_id,),
+        latest_progress=self_improvement_progress(report),
+        latest_disposition=SelfImprovementDisposition(
+            kind=SelfImprovementDispositionKind.EXHAUSTED,
+            reason_code="candidate_repair_frontier_stalled",
+            owner="candidate",
+            stage="candidate_generation",
+            scope="candidate",
+            repairable=False,
+        ),
+        latest_report_path=str(report_path),
+    )
+    controller.store.write_campaign(exhausted)
+
+    result = run_self_improvement_campaign(
+        workspace_root=tmp_path,
+        request={},
+        resume_campaign=campaign.campaign_id,
+        run_once=controller.run_once,
+    )
+
+    assert len(calls) == 1
+    assert calls[0]["campaign_cycle"] == 2
+    assert result["campaign_status"] == "complete"
+    assert result["campaign_framework_blocked_count"] == 1
+    migrated = controller.store.read_report(run_id)
+    assert migrated["campaign_causal_migration"]["action"] == (
+        "restore_suppressed_task_behavior_materialization"
+    )
+    assert migrated["campaign_causal_migration"][
+        "suppressed_candidate_count"
+    ] == 2
+
+
+def test_resume_discards_regressing_checkpoint_when_positive_candidate_was_missed(
+    tmp_path: Path,
+) -> None:
+    calls: list[dict] = []
+    controller = SelfImprovementCampaignController(
+        workspace_root=tmp_path,
+        run_once=lambda **request: _write_successful_campaign_fixture(
+            tmp_path,
+            calls,
+            request,
+        ),
+    )
+    campaign = controller.create(
+        {
+            "from_trajectory": "trajectory.log",
+            "apply_policy": "verified_only",
+            "infer_target": True,
+        },
+        max_cycles=1,
+    )
+    run_id = f"{campaign.campaign_id}-cycle-001"
+    selected_candidate_id = "candidate-regressed-high-score"
+    positive_candidate_id = "candidate-positive-effect"
+    projection_constraint = {
+        "schema_version": "aworld.self_evolve.evidence_repair_constraint.v1",
+        "subject_kind": "artifact",
+        "failure_mode": "projection_compacted",
+        "source_layer": "artifact_projection",
+        "required_action": "expand_bounded_projection",
+        "owner": "framework",
+        "occurrence_count": 1,
+    }
+    candidate_constraint = {
+        "schema_version": "aworld.self_evolve.evidence_repair_constraint.v1",
+        "subject_kind": "general_claim",
+        "failure_mode": "support_incomplete",
+        "source_layer": "candidate_output",
+        "required_action": "support_or_omit",
+        "owner": "candidate",
+        "occurrence_count": 1,
+    }
+    report = {
+        "run_id": run_id,
+        "status": "rejected",
+        "budget": _budget(),
+        "selected_candidate_id": selected_candidate_id,
+        "candidate_ids": [selected_candidate_id, positive_candidate_id],
+        "iterations": [
+            {
+                "candidate_id": selected_candidate_id,
+                "baseline_metrics": {"score": 86.0},
+                "candidate_metrics": {
+                    "score": 84.2,
+                    "judge_artifact_read_budget_exhausted": False,
+                    "judge_artifact_projection_incomplete": False,
+                },
+            },
+            {
+                "candidate_id": positive_candidate_id,
+                "baseline_metrics": {"score": 79.425},
+                "candidate_metrics": {"score": 82.825},
+            },
+        ],
+        "gate_results": [
+            {
+                "gate_name": "score_improvement",
+                "passed": False,
+                "details": {
+                    "code": "score_improvement_below_minimum",
+                    "delta": -1.8,
+                    "failure_owner": "candidate",
+                    "failure_scope": "candidate",
+                    "repairable": True,
+                },
+            },
+            {
+                "gate_name": "evidence_quality",
+                "passed": False,
+                "details": {
+                    "failure_class": "framework",
+                    "failure_owner": "framework",
+                    "failure_scope": "shared_run",
+                    "repairable": True,
+                    "evidence_repair_constraints": [
+                        projection_constraint,
+                        candidate_constraint,
+                    ],
+                },
+            },
+        ],
+    }
+    report_path = controller.store.write_report(run_id, report)
+    paused = campaign_module.replace(
+        campaign,
+        status=SelfImprovementCampaignStatus.PAUSED,
+        cycle_index=1,
+        run_ids=(run_id,),
+        cumulative_authoritative_candidates=1,
+        measurement_ledger=campaign.measurement_ledger.charge_framework_blocked(
+            run_id
+        ),
+        latest_progress=self_improvement_progress(report),
+        latest_disposition=SelfImprovementDisposition(
+            kind=SelfImprovementDispositionKind.HANDOFF_GOAL,
+            reason_code="baseline_evidence_policy_infeasible",
+            owner="framework",
+            stage="measurement",
+            scope="shared_run",
+            repairable=True,
+        ),
+        latest_report_path=str(report_path),
+        measurement_pending_run_id=run_id,
+        measurement_pending_candidate_id=selected_candidate_id,
+    )
+    controller.store.write_campaign(paused)
+
+    result = run_self_improvement_campaign(
+        workspace_root=tmp_path,
+        request={},
+        resume_campaign=campaign.campaign_id,
+        run_once=controller.run_once,
+    )
+
+    assert len(calls) == 1
+    assert calls[0]["campaign_cycle"] == 2
+    assert "campaign_measurement_pending_run_id" not in calls[0]
+    assert "campaign_measurement_pending_candidate_id" not in calls[0]
+    assert result["campaign_status"] == "complete"
+    migrated = controller.store.read_report(run_id)
+    assert migrated["campaign_causal_migration"] == {
+        "schema_version": (
+            "aworld.self_evolve.paired_candidate_checkpoint_migration.v1"
+        ),
+        "action": "discard_regressing_measurement_checkpoint",
+        "source_run_id": run_id,
+        "discarded_candidate_id": selected_candidate_id,
+        "discarded_score_delta": pytest.approx(-1.8),
+        "preferred_candidate_id": positive_candidate_id,
+        "preferred_score_delta": pytest.approx(3.4),
+        "candidate_reserve_granted": False,
+        "measurement_retry_granted": False,
+    }
+
+
 def test_legacy_candidate_only_pending_marker_is_cleared_before_next_cycle(
     tmp_path: Path,
 ) -> None:
@@ -2203,6 +3421,992 @@ def test_legacy_candidate_only_pending_marker_is_cleared_before_next_cycle(
     assert summary["campaign_checkpoint_migration"]["reason_code"] == (
         "authoritative_checkpoint_missing_or_invalid"
     )
+
+
+def test_resume_reopens_unobserved_support_timeout_as_framework_control_cycle(
+    tmp_path: Path,
+) -> None:
+    calls: list[dict] = []
+    controller = SelfImprovementCampaignController(
+        workspace_root=tmp_path,
+        run_once=lambda **request: _write_successful_campaign_fixture(
+            tmp_path,
+            calls,
+            request,
+        ),
+    )
+    campaign = controller.create(
+        {
+            "from_trajectory": "trajectory.log",
+            "apply_policy": "verified_only",
+            "infer_target": True,
+        },
+        max_cycles=1,
+    )
+    run_id = f"{campaign.campaign_id}-cycle-001"
+    timeout = {
+        "code": "replay_member_phase_timeout",
+        "failure_owner": "framework",
+    }
+
+    def attempt(candidate_id: str) -> dict:
+        return {
+            "candidate_id": candidate_id,
+            "details": {
+                "code": "candidate_replay_support_baseline_incompatible",
+                "failure_owner": "candidate",
+                "baseline_failure": timeout,
+                "candidate_execution_observed": False,
+                "candidate_intervention_required": True,
+                "candidate_intervention_observed": None,
+                "failed_members": [
+                    {
+                        "case_id": "task-unstable",
+                        "baseline_failure": timeout,
+                        "candidate_status": "blocked",
+                    }
+                ],
+            },
+        }
+
+    report = {
+        "run_id": run_id,
+        "status": "rejected",
+        "budget": _budget(),
+        "campaign_failure_attribution": {
+            "code": "candidate_replay_support_baseline_incompatible",
+            "failure_owner": "candidate",
+        },
+        "verification_funnel": {"authoritative_candidate_count": 0},
+        "population": {
+            "screening_batches": [
+                {
+                    "screening_strategy": (
+                        "adaptive_qualification_then_authoritative"
+                    ),
+                    "attempts": [attempt("candidate-a")],
+                },
+                {
+                    "screening_strategy": (
+                        "adaptive_qualification_then_authoritative"
+                    ),
+                    "attempts": [attempt("candidate-b")],
+                },
+            ]
+        },
+    }
+    report_path = controller.store.write_report(run_id, report)
+    exhausted = campaign_module.replace(
+        campaign,
+        status=SelfImprovementCampaignStatus.EXHAUSTED,
+        cycle_index=1,
+        run_ids=(run_id,),
+        latest_progress=self_improvement_progress(report),
+        latest_disposition=SelfImprovementDisposition(
+            kind=SelfImprovementDispositionKind.EXHAUSTED,
+            reason_code="candidate_repair_frontier_stalled",
+            owner="candidate",
+            stage="adaptation",
+            scope="candidate",
+            repairable=True,
+        ),
+        latest_report_path=str(report_path),
+    )
+    controller.store.write_campaign(exhausted)
+
+    result = run_self_improvement_campaign(
+        workspace_root=tmp_path,
+        request={},
+        resume_campaign=campaign.campaign_id,
+        run_once=controller.run_once,
+    )
+
+    assert len(calls) == 1
+    assert calls[0]["campaign_cycle"] == 2
+    assert result["campaign_status"] == "complete"
+    assert result["campaign_framework_blocked_count"] == 1
+    migrated = controller.store.read_report(run_id)
+    migration = migrated["campaign_causal_migration"]
+    assert migration["action"] == (
+        "restore_unobserved_support_timeout_control_cycle"
+    )
+    assert migration["affected_case_ids"] == ["task-unstable"]
+    assert migration["affected_candidate_ids"] == [
+        "candidate-a",
+        "candidate-b",
+    ]
+    assert migration["candidate_reserve_granted"] is False
+    assert migration["measurement_retry_granted"] is False
+
+
+def test_resume_reopens_repeated_source_behavior_materialization_frontier(
+    tmp_path: Path,
+) -> None:
+    calls: list[dict] = []
+    controller = SelfImprovementCampaignController(
+        workspace_root=tmp_path,
+        run_once=lambda **request: _write_successful_campaign_fixture(
+            tmp_path,
+            calls,
+            request,
+        ),
+    )
+    campaign = controller.create(
+        {
+            "from_trajectory": "trajectory.log",
+            "apply_policy": "verified_only",
+            "infer_target": True,
+        },
+        max_cycles=1,
+    )
+    run_id = f"{campaign.campaign_id}-cycle-001"
+    contract_digest = "sha256:source-behavior-contract"
+
+    def iteration(index: int) -> dict:
+        return {
+            "iteration": index,
+            "diagnostics": {
+                "candidate_materialization_failures": [
+                    {
+                        "code": "source_behavior_proof_failed",
+                        "stage": "candidate_semantic_validation",
+                        "representation": "candidate_package",
+                        "repairable": True,
+                        "contract_identity_digest": contract_digest,
+                    }
+                ]
+            },
+        }
+
+    report = {
+        "run_id": run_id,
+        "status": "rejected",
+        "budget": _budget(),
+        "verification_funnel": {
+            "authoritative_candidate_count": 0,
+            "generation_materialization_frontier_exhausted": True,
+            "generation_stop_reason": "materialization_frontier_repeated",
+        },
+        "optimizer_diagnostics": {
+            "iterations": [iteration(1), iteration(2)],
+        },
+    }
+    report_path = controller.store.write_report(run_id, report)
+    exhausted = campaign_module.replace(
+        campaign,
+        status=SelfImprovementCampaignStatus.EXHAUSTED,
+        cycle_index=1,
+        run_ids=(run_id,),
+        latest_progress=self_improvement_progress(report),
+        latest_disposition=SelfImprovementDisposition(
+            kind=SelfImprovementDispositionKind.EXHAUSTED,
+            reason_code="candidate_repair_frontier_stalled",
+            owner="candidate",
+            stage="candidate_generation",
+            scope="candidate",
+            repairable=True,
+        ),
+        latest_report_path=str(report_path),
+    )
+    controller.store.write_campaign(exhausted)
+
+    result = run_self_improvement_campaign(
+        workspace_root=tmp_path,
+        request={},
+        resume_campaign=campaign.campaign_id,
+        run_once=controller.run_once,
+    )
+
+    assert len(calls) == 1
+    assert calls[0]["campaign_cycle"] == 2
+    assert result["campaign_status"] == "complete"
+    assert result["campaign_framework_blocked_count"] == 1
+    migrated = controller.store.read_report(run_id)
+    assert migrated["campaign_causal_migration"] == {
+        "schema_version": (
+            "aworld.self_evolve.source_behavior_materialization_migration.v1"
+        ),
+        "action": "restore_source_behavior_materialization_frontier",
+        "source_run_id": run_id,
+        "failed_generation_attempt_count": 2,
+        "contract_identity_digests": [contract_digest],
+        "candidate_reserve_granted": False,
+        "measurement_retry_granted": False,
+    }
+
+
+def test_resume_reopens_repeated_fixture_source_selection_frontier(
+    tmp_path: Path,
+) -> None:
+    calls: list[dict] = []
+    controller = SelfImprovementCampaignController(
+        workspace_root=tmp_path,
+        run_once=lambda **request: _write_successful_campaign_fixture(
+            tmp_path,
+            calls,
+            request,
+        ),
+    )
+    campaign = controller.create(
+        {
+            "from_trajectory": "trajectory.log",
+            "apply_policy": "verified_only",
+            "infer_target": True,
+            "max_full_evaluation_candidates": 3,
+        },
+        max_cycles=1,
+    )
+    run_id = f"{campaign.campaign_id}-cycle-001"
+    report = {
+        "run_id": run_id,
+        "status": "rejected",
+        "budget": _budget(),
+        "campaign_failure_attribution": {
+            "code": "repair_capability_compile_failed",
+            "primary_gate": "candidate_repair_conformance",
+            "repairable": True,
+            "occurrence_count": 3,
+            "affected_candidate_count": 3,
+        },
+        "rejection_attribution": {
+            "code": "repair_capability_compile_failed",
+            "primary_gate": "candidate_repair_conformance",
+            "capability_error_code": "protocol_probe_not_fixture_derived",
+            "repairable": True,
+        },
+        "verification_funnel": {
+            "authoritative_candidate_count": 0,
+            "authoritative_candidate_attempt_count": 0,
+            "conformance_same_slot_repair_count": 3,
+        },
+    }
+    report_path = controller.store.write_report(run_id, report)
+    exhausted = campaign_module.replace(
+        campaign,
+        status=SelfImprovementCampaignStatus.EXHAUSTED,
+        cycle_index=1,
+        cumulative_authoritative_candidates=2,
+        run_ids=(run_id,),
+        latest_progress=self_improvement_progress(report),
+        latest_disposition=SelfImprovementDisposition(
+            kind=SelfImprovementDispositionKind.EXHAUSTED,
+            reason_code="campaign_cycle_limit_reached",
+            owner="candidate",
+            stage="capability_compile",
+            scope="candidate",
+            repairable=False,
+        ),
+        latest_report_path=str(report_path),
+    )
+    controller.store.write_campaign(exhausted)
+
+    result = run_self_improvement_campaign(
+        workspace_root=tmp_path,
+        request={},
+        resume_campaign=campaign.campaign_id,
+        run_once=controller.run_once,
+    )
+
+    assert len(calls) == 1
+    assert calls[0]["campaign_cycle"] == 2
+    assert result["campaign_status"] == "complete"
+    assert result["campaign_framework_blocked_count"] == 1
+    migrated = controller.store.read_report(run_id)
+    assert migrated["campaign_causal_migration"] == {
+        "schema_version": (
+            "aworld.self_evolve.fixture_source_selection_migration.v1"
+        ),
+        "action": "restore_fixture_source_selection_frontier",
+        "source_run_id": run_id,
+        "capability_error_code": "protocol_probe_not_fixture_derived",
+        "repeated_same_slot_failure_count": 3,
+        "candidate_reserve_granted": False,
+        "measurement_retry_granted": False,
+    }
+
+
+@pytest.mark.parametrize(
+    ("report_patch", "campaign_candidates"),
+    [
+        (
+            {"rejection_attribution.capability_error_code": "other_failure"},
+            2,
+        ),
+        (
+            {"verification_funnel.conformance_same_slot_repair_count": 1},
+            2,
+        ),
+        ({}, 3),
+    ],
+)
+def test_fixture_source_selection_resume_migration_fails_closed(
+    tmp_path: Path,
+    report_patch: dict[str, object],
+    campaign_candidates: int,
+) -> None:
+    calls: list[dict] = []
+    controller = SelfImprovementCampaignController(
+        workspace_root=tmp_path,
+        run_once=lambda **request: _write_successful_campaign_fixture(
+            tmp_path,
+            calls,
+            request,
+        ),
+    )
+    campaign = controller.create(
+        {
+            "from_trajectory": "trajectory.log",
+            "apply_policy": "verified_only",
+            "infer_target": True,
+            "max_full_evaluation_candidates": 3,
+        },
+        max_cycles=1,
+    )
+    run_id = f"{campaign.campaign_id}-cycle-001"
+    report = {
+        "run_id": run_id,
+        "status": "rejected",
+        "budget": _budget(),
+        "campaign_failure_attribution": {
+            "code": "repair_capability_compile_failed",
+            "primary_gate": "candidate_repair_conformance",
+            "repairable": True,
+            "occurrence_count": 3,
+            "affected_candidate_count": 3,
+        },
+        "rejection_attribution": {
+            "code": "repair_capability_compile_failed",
+            "primary_gate": "candidate_repair_conformance",
+            "capability_error_code": "protocol_probe_not_fixture_derived",
+            "repairable": True,
+        },
+        "verification_funnel": {
+            "authoritative_candidate_count": 0,
+            "authoritative_candidate_attempt_count": 0,
+            "conformance_same_slot_repair_count": 3,
+        },
+    }
+    for dotted_path, value in report_patch.items():
+        section, key = dotted_path.split(".", 1)
+        report[section][key] = value
+    report_path = controller.store.write_report(run_id, report)
+    exhausted = campaign_module.replace(
+        campaign,
+        status=SelfImprovementCampaignStatus.EXHAUSTED,
+        cycle_index=1,
+        cumulative_authoritative_candidates=campaign_candidates,
+        run_ids=(run_id,),
+        latest_progress=self_improvement_progress(report),
+        latest_disposition=SelfImprovementDisposition(
+            kind=SelfImprovementDispositionKind.EXHAUSTED,
+            reason_code="campaign_cycle_limit_reached",
+            owner="candidate",
+            stage="capability_compile",
+            scope="candidate",
+            repairable=False,
+        ),
+        latest_report_path=str(report_path),
+    )
+    controller.store.write_campaign(exhausted)
+
+    with pytest.raises(ValueError, match="is terminal"):
+        run_self_improvement_campaign(
+            workspace_root=tmp_path,
+            request={},
+            resume_campaign=campaign.campaign_id,
+            run_once=controller.run_once,
+        )
+
+    assert calls == []
+    assert controller.store.read_campaign(campaign.campaign_id).status is (
+        SelfImprovementCampaignStatus.EXHAUSTED
+    )
+    assert "campaign_causal_migration" not in controller.store.read_report(run_id)
+
+
+def test_resume_reactivates_fixture_source_frontier_after_no_work_cycle(
+    tmp_path: Path,
+) -> None:
+    calls: list[dict] = []
+    controller = SelfImprovementCampaignController(
+        workspace_root=tmp_path,
+        run_once=lambda **request: _write_successful_campaign_fixture(
+            tmp_path,
+            calls,
+            request,
+        ),
+    )
+    campaign = controller.create(
+        {
+            "from_trajectory": "trajectory.log",
+            "apply_policy": "verified_only",
+            "infer_target": True,
+            "max_full_evaluation_candidates": 3,
+        },
+        max_cycles=1,
+    )
+    source_run_id = f"{campaign.campaign_id}-cycle-001"
+    no_work_run_id = f"{campaign.campaign_id}-cycle-002"
+    frontier_keys = ("replay-failure-compile-a", "replay-failure-compile-b")
+    controller.store.write_report(
+        source_run_id,
+        {
+            "run_id": source_run_id,
+            "status": "rejected",
+            "budget": _budget(),
+            "campaign_causal_migration": {
+                "action": "restore_fixture_source_selection_frontier",
+                "candidate_reserve_granted": False,
+                "measurement_retry_granted": False,
+            },
+            "optimizer_diagnostics": {
+                "iterations": [
+                    {"diagnostics": {"active_frontier_key": frontier_keys[0]}},
+                    {"diagnostics": {"active_frontier_key": frontier_keys[1]}},
+                ]
+            },
+        },
+    )
+    stalled_scheduler = {
+        "initial_exploration_scheduled": True,
+        "untyped_frontier_exploration_scheduled": False,
+        "frontier_progress": {key: 1 for key in frontier_keys},
+        "frontier_stalls": {key: 2 for key in frontier_keys},
+        "frontier_mutation_families": {
+            key: ["minimal_behavior_delta", "target_behavior_composition"]
+            for key in frontier_keys
+        },
+        "last_focused_frontier": frontier_keys[-1],
+    }
+    no_work_report = {
+        "run_id": no_work_run_id,
+        "status": "rejected",
+        "budget": _budget(),
+        "gate_results": [
+            {
+                "gate_name": "candidate_generation",
+                "passed": False,
+                "details": {"generated_candidate_count": 0, "iterations": 0},
+            }
+        ],
+        "verification_funnel": {
+            "authoritative_candidate_count": 0,
+            "authoritative_candidate_attempt_count": 0,
+        },
+        "repair_frontier_state": {
+            "active_count": 0,
+            "dormant_count": 2,
+            "records": [
+                {
+                    "semantic_key": key,
+                    "status": "dormant",
+                    "mutation_families": stalled_scheduler[
+                        "frontier_mutation_families"
+                    ][key],
+                }
+                for key in frontier_keys
+            ],
+            "scheduler_state": stalled_scheduler,
+        },
+    }
+    report_path = controller.store.write_report(no_work_run_id, no_work_report)
+    exhausted = campaign_module.replace(
+        campaign,
+        status=SelfImprovementCampaignStatus.EXHAUSTED,
+        cycle_index=2,
+        cumulative_authoritative_candidates=2,
+        run_ids=(source_run_id, no_work_run_id),
+        measurement_ledger=(
+            campaign.measurement_ledger.charge_framework_blocked(source_run_id)
+        ),
+        latest_progress=self_improvement_progress(no_work_report),
+        latest_disposition=SelfImprovementDisposition(
+            kind=SelfImprovementDispositionKind.EXHAUSTED,
+            reason_code="candidate_repair_frontier_stalled",
+            owner="candidate",
+            stage="candidate_generation",
+            scope="candidate",
+            repairable=False,
+        ),
+        latest_report_path=str(report_path),
+    )
+    controller.store.write_campaign(exhausted)
+
+    result = run_self_improvement_campaign(
+        workspace_root=tmp_path,
+        request={},
+        resume_campaign=campaign.campaign_id,
+        run_once=controller.run_once,
+    )
+
+    assert len(calls) == 1
+    assert calls[0]["campaign_cycle"] == 3
+    assert result["campaign_status"] == "complete"
+    assert result["campaign_framework_blocked_count"] == 2
+    migrated = controller.store.read_report(no_work_run_id)
+    migration = migrated["campaign_causal_migration"]
+    assert migration["action"] == (
+        "reactivate_fixture_source_frontier_after_no_work_cycle"
+    )
+    assert migration["reactivated_frontier_keys"] == list(frontier_keys)
+    assert migration["candidate_reserve_granted"] is False
+    assert migration["measurement_retry_granted"] is False
+    scheduler = migrated["repair_frontier_state"]["scheduler_state"]
+    assert scheduler["frontier_stalls"] == {key: 0 for key in frontier_keys}
+    assert scheduler["frontier_mutation_families"] == {
+        key: [] for key in frontier_keys
+    }
+    assert scheduler["last_focused_frontier"] is None
+
+
+def test_resume_replaces_implicit_single_turn_authoritative_replay_budget(
+    tmp_path: Path,
+) -> None:
+    calls: list[dict] = []
+    controller = SelfImprovementCampaignController(
+        workspace_root=tmp_path,
+        run_once=lambda **request: _write_successful_campaign_fixture(
+            tmp_path,
+            calls,
+            request,
+        ),
+    )
+    campaign = controller.create(
+        {
+            "from_trajectory": "trajectory.log",
+            "apply_policy": "verified_only",
+            "infer_target": True,
+        },
+        max_cycles=1,
+    )
+    run_id = f"{campaign.campaign_id}-cycle-001"
+    completion_failure = {
+        "code": "replay_task_completion_not_established",
+        "failure_stage": "task_rollout",
+        "outcome": "task_failure",
+        "repairable": False,
+    }
+    report = {
+        "run_id": run_id,
+        "status": "rejected",
+        "budget": _budget(),
+        "gate_results": [
+            {
+                "gate_name": "candidate_replay",
+                "passed": False,
+                "details": {
+                    "code": "candidate_replay_support_baseline_incompatible",
+                    "control_identity": {"max_steps": 1},
+                    "failed_members": [
+                        {
+                            "case_id": "task-browser",
+                            "baseline_failure": completion_failure,
+                            "candidate_failure": {
+                                **completion_failure,
+                                "outcome": "candidate_failure",
+                                "repairable": True,
+                            },
+                        }
+                    ],
+                },
+            }
+        ],
+        "verification_funnel": {"authoritative_candidate_count": 1},
+    }
+    report_path = controller.store.write_report(run_id, report)
+    exhausted = campaign_module.replace(
+        campaign,
+        status=SelfImprovementCampaignStatus.EXHAUSTED,
+        cycle_index=1,
+        run_ids=(run_id,),
+        cumulative_authoritative_candidates=1,
+        latest_progress=self_improvement_progress(report),
+        latest_disposition=SelfImprovementDisposition(
+            kind=SelfImprovementDispositionKind.EXHAUSTED,
+            reason_code="campaign_cycle_limit_reached",
+            owner="candidate",
+            stage="measurement",
+            scope="candidate",
+            repairable=False,
+        ),
+        latest_report_path=str(report_path),
+    )
+    controller.store.write_campaign(exhausted)
+
+    result = run_self_improvement_campaign(
+        workspace_root=tmp_path,
+        request={},
+        resume_campaign=campaign.campaign_id,
+        run_once=controller.run_once,
+    )
+
+    assert len(calls) == 1
+    assert calls[0]["campaign_cycle"] == 2
+    assert calls[0]["replay_max_steps"] == 24
+    assert result["campaign_status"] == "complete"
+    assert result["campaign_framework_blocked_count"] == 1
+    migrated = controller.store.read_report(run_id)
+    assert migrated["campaign_causal_migration"] == {
+        "schema_version": (
+            "aworld.self_evolve.single_turn_replay_budget_migration.v1"
+        ),
+        "action": "replace_implicit_single_turn_replay_budget",
+        "source_run_id": run_id,
+        "affected_case_ids": ["task-browser"],
+        "previous_replay_max_steps": 1,
+        "replacement_replay_max_steps": 24,
+        "operator_budget_overridden": False,
+        "candidate_reserve_granted": False,
+        "measurement_retry_granted": False,
+    }
+
+
+def test_resume_repairs_zero_work_after_single_turn_budget_migration(
+    tmp_path: Path,
+) -> None:
+    calls: list[dict] = []
+    controller = SelfImprovementCampaignController(
+        workspace_root=tmp_path,
+        run_once=lambda **request: _write_successful_campaign_fixture(
+            tmp_path,
+            calls,
+            request,
+        ),
+    )
+    campaign = controller.create(
+        {
+            "from_trajectory": "trajectory.log",
+            "apply_policy": "verified_only",
+            "infer_target": True,
+            "replay_max_steps": 10,
+        },
+        max_cycles=1,
+    )
+    source_run_id = f"{campaign.campaign_id}-cycle-001"
+    no_work_run_id = f"{campaign.campaign_id}-cycle-002"
+    frontier_key = "replay-failure-single-turn"
+    source_report = {
+        "run_id": source_run_id,
+        "status": "rejected",
+        "budget": _budget(),
+        "optimizer_diagnostics": {
+            "candidate_generation_outcomes": [
+                {"active_frontier_key": frontier_key}
+            ]
+        },
+        "campaign_causal_migration": {
+            "action": "replace_implicit_single_turn_replay_budget"
+        },
+        "verification_funnel": {"authoritative_candidate_count": 1},
+    }
+    no_work_report = {
+        "run_id": no_work_run_id,
+        "status": "rejected",
+        "budget": _budget(),
+        "gate_results": [
+            {
+                "gate_name": "candidate_generation",
+                "passed": False,
+                "details": {
+                    "generated_candidate_count": 0,
+                    "iterations": 0,
+                },
+            }
+        ],
+        "verification_funnel": {"authoritative_candidate_count": 0},
+        "repair_frontier_state": {
+            "active_count": 0,
+            "dormant_count": 1,
+            "records": [
+                {
+                    "semantic_key": frontier_key,
+                    "status": "dormant",
+                    "mutation_families": ["missing_capability_completion"],
+                }
+            ],
+            "scheduler_state": {
+                "frontier_stalls": {frontier_key: 2},
+                "frontier_mutation_families": {
+                    frontier_key: ["missing_capability_completion"]
+                },
+                "initial_exploration_scheduled": True,
+                "untyped_frontier_exploration_scheduled": False,
+                "last_focused_frontier": frontier_key,
+            },
+        },
+    }
+    controller.store.write_report(source_run_id, source_report)
+    no_work_path = controller.store.write_report(
+        no_work_run_id,
+        no_work_report,
+    )
+    exhausted = campaign_module.replace(
+        campaign,
+        status=SelfImprovementCampaignStatus.EXHAUSTED,
+        cycle_index=2,
+        run_ids=(source_run_id, no_work_run_id),
+        repair_continuation_used=True,
+        measurement_ledger=campaign.measurement_ledger.charge_framework_blocked(
+            source_run_id
+        ),
+        latest_progress=self_improvement_progress(no_work_report),
+        latest_disposition=SelfImprovementDisposition(
+            kind=SelfImprovementDispositionKind.EXHAUSTED,
+            reason_code="candidate_repair_frontier_stalled",
+            owner="candidate",
+            stage="candidate_generation",
+            scope="candidate",
+            repairable=False,
+        ),
+        latest_report_path=str(no_work_path),
+    )
+    controller.store.write_campaign(exhausted)
+
+    result = run_self_improvement_campaign(
+        workspace_root=tmp_path,
+        request={},
+        resume_campaign=campaign.campaign_id,
+        run_once=controller.run_once,
+    )
+
+    assert len(calls) == 1
+    assert calls[0]["campaign_cycle"] == 3
+    assert result["campaign_status"] == "complete"
+    assert result["campaign_framework_blocked_count"] == 2
+    migrated = controller.store.read_report(no_work_run_id)
+    migration = migrated["campaign_causal_migration"]
+    assert migration["action"] == (
+        "restore_exploration_after_single_turn_budget_fix"
+    )
+    assert migration["reactivated_frontier_keys"] == [frontier_key]
+    assert migration["candidate_reserve_granted"] is False
+    assert migration["measurement_retry_granted"] is False
+    scheduler = migrated["repair_frontier_state"]["scheduler_state"]
+    assert scheduler["frontier_stalls"][frontier_key] == 0
+    assert scheduler["frontier_mutation_families"][frontier_key] == []
+    assert scheduler["last_focused_frontier"] is None
+
+
+def test_resume_replaces_evidence_rollout_budget_and_discards_old_checkpoint(
+    tmp_path: Path,
+) -> None:
+    calls: list[dict] = []
+    controller = SelfImprovementCampaignController(
+        workspace_root=tmp_path,
+        run_once=lambda **request: _write_successful_campaign_fixture(
+            tmp_path,
+            calls,
+            request,
+        ),
+    )
+    campaign = controller.create(
+        {
+            "from_trajectory": "trajectory.log",
+            "apply_policy": "verified_only",
+            "infer_target": True,
+            "replay_max_steps": 10,
+        },
+        max_cycles=1,
+    )
+    run_id = f"{campaign.campaign_id}-cycle-001"
+    report = {
+        "run_id": run_id,
+        "status": "rejected",
+        "budget": _budget(),
+        "gate_results": [
+            {
+                "gate_name": "candidate_replay",
+                "passed": False,
+                "details": {
+                    "code": "evidence_policy_v2_attestation_failed",
+                    "baseline_failure": {
+                        "code": "replay_task_completion_not_established"
+                    },
+                    "candidate_failure": {
+                        "code": "evidence_policy_v2_attestation_failed",
+                        "reason": "framework evidence inventory is empty",
+                    },
+                    "failed_members": [{"case_id": "task-browser"}],
+                },
+            }
+        ],
+        "verification_funnel": {"authoritative_candidate_count": 0},
+    }
+    report_path = controller.store.write_report(run_id, report)
+    paused = campaign_module.replace(
+        campaign,
+        status=SelfImprovementCampaignStatus.PAUSED,
+        cycle_index=1,
+        run_ids=(run_id,),
+        latest_progress=self_improvement_progress(report),
+        latest_disposition=SelfImprovementDisposition(
+            kind=SelfImprovementDispositionKind.HANDOFF_GOAL,
+            reason_code="evidence_policy_v2_attestation_failed",
+            owner="framework",
+            stage="measurement",
+            scope="shared_run",
+            repairable=True,
+        ),
+        latest_report_path=str(report_path),
+        measurement_pending_run_id=run_id,
+        measurement_pending_candidate_id="candidate-old-budget",
+    )
+    controller.store.write_campaign(paused)
+
+    result = run_self_improvement_campaign(
+        workspace_root=tmp_path,
+        request={},
+        resume_campaign=campaign.campaign_id,
+        run_once=controller.run_once,
+    )
+
+    assert len(calls) == 1
+    assert calls[0]["campaign_cycle"] == 2
+    assert calls[0]["replay_max_steps"] == 24
+    assert "campaign_measurement_pending_run_id" not in calls[0]
+    assert "campaign_measurement_pending_candidate_id" not in calls[0]
+    assert result["campaign_status"] == "complete"
+    migrated = controller.store.read_report(run_id)
+    migration = migrated["campaign_causal_migration"]
+    assert migration["action"] == (
+        "replace_insufficient_evidence_replay_budget"
+    )
+    assert migration["affected_case_ids"] == ["task-browser"]
+    assert migration["previous_replay_max_steps"] == 10
+    assert migration["replacement_replay_max_steps"] == 24
+    assert migration["candidate_reserve_granted"] is False
+    assert migration["measurement_retry_granted"] is False
+
+
+def test_resume_repairs_zero_work_checkpoint_after_screening_control_blocker(
+    tmp_path: Path,
+) -> None:
+    calls: list[dict] = []
+    controller = SelfImprovementCampaignController(
+        workspace_root=tmp_path,
+        run_once=lambda **request: _write_successful_campaign_fixture(
+            tmp_path,
+            calls,
+            request,
+        ),
+    )
+    campaign = controller.create(
+        {
+            "from_trajectory": "trajectory.log",
+            "apply_policy": "verified_only",
+            "infer_target": True,
+        },
+        max_cycles=1,
+    )
+    source_run_id = f"{campaign.campaign_id}-cycle-001"
+    no_work_run_id = f"{campaign.campaign_id}-cycle-002"
+    source_report = {
+        "run_id": source_run_id,
+        "status": "rejected",
+        "budget": _budget(),
+        "candidate_ids": ["candidate-frozen"],
+        "optimizer_diagnostics": {
+            "candidate_generation_outcomes": [
+                {"active_frontier_key": "legacy-candidate-frontier"}
+            ]
+        },
+        "campaign_failure_attribution": {
+            "primary_gate": "candidate_replay",
+            "code": "screening_control_infeasible",
+            "failure_owner": "framework",
+            "failure_scope": "shared_run",
+            "repairable": True,
+        },
+        "verification_funnel": {"authoritative_candidate_count": 0},
+    }
+    no_work_report = {
+        "run_id": no_work_run_id,
+        "status": "rejected",
+        "budget": _budget(),
+        "gate_results": [
+            {
+                "gate_name": "candidate_generation",
+                "passed": False,
+                "details": {
+                    "generated_candidate_count": 0,
+                    "iterations": 0,
+                },
+            }
+        ],
+        "verification_funnel": {"authoritative_candidate_count": 0},
+        "repair_frontier_state": {
+            "active_count": 0,
+            "dormant_count": 1,
+            "records": [
+                {
+                    "semantic_key": "legacy-candidate-frontier",
+                    "status": "dormant",
+                    "mutation_families": ["quality_regression_repair"],
+                }
+            ],
+            "scheduler_state": {
+                "frontier_stalls": {"legacy-candidate-frontier": 2},
+                "frontier_mutation_families": {
+                    "legacy-candidate-frontier": [
+                        "quality_regression_repair"
+                    ]
+                },
+                "initial_exploration_scheduled": True,
+                "untyped_frontier_exploration_scheduled": False,
+                "last_focused_frontier": "legacy-candidate-frontier",
+            },
+        },
+    }
+    controller.store.write_report(source_run_id, source_report)
+    no_work_path = controller.store.write_report(
+        no_work_run_id,
+        no_work_report,
+    )
+    exhausted = campaign_module.replace(
+        campaign,
+        status=SelfImprovementCampaignStatus.EXHAUSTED,
+        cycle_index=2,
+        run_ids=(source_run_id, no_work_run_id),
+        repair_continuation_used=True,
+        measurement_ledger=campaign.measurement_ledger.charge_framework_blocked(
+            source_run_id
+        ),
+        latest_progress=self_improvement_progress(no_work_report),
+        latest_disposition=SelfImprovementDisposition(
+            kind=SelfImprovementDispositionKind.EXHAUSTED,
+            reason_code="candidate_repair_frontier_stalled",
+            owner="candidate",
+            stage="candidate_generation",
+            scope="candidate",
+            repairable=False,
+        ),
+        latest_report_path=str(no_work_path),
+    )
+    controller.store.write_campaign(exhausted)
+
+    result = run_self_improvement_campaign(
+        workspace_root=tmp_path,
+        request={},
+        resume_campaign=campaign.campaign_id,
+        run_once=controller.run_once,
+    )
+
+    assert len(calls) == 1
+    assert calls[0]["campaign_cycle"] == 3
+    assert result["campaign_status"] == "complete"
+    assert result["campaign_framework_blocked_count"] == 2
+    migrated = controller.store.read_report(no_work_run_id)
+    migration = migrated["campaign_causal_migration"]
+    assert migration["action"] == (
+        "restore_exploration_after_screening_control_no_work"
+    )
+    assert migration["candidate_reserve_granted"] is False
+    assert migration["measurement_retry_granted"] is False
+    scheduler = migrated["repair_frontier_state"]["scheduler_state"]
+    assert scheduler["initial_exploration_scheduled"] is False
+    assert scheduler["last_focused_frontier"] is None
+    assert scheduler["frontier_stalls"]["legacy-candidate-frontier"] == 0
+    assert migrated["repair_frontier_state"]["active_count"] == 1
 
 
 def _write_successful_campaign_fixture(
@@ -2383,6 +4587,216 @@ def test_shared_measurement_retries_are_bounded_separately_from_candidate_cycles
     )
 
 
+def test_resume_restores_retryable_member_timeout_checkpoint(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict] = []
+    controller = SelfImprovementCampaignController(
+        workspace_root=tmp_path,
+        run_once=lambda **request: _write_successful_campaign_fixture(
+            tmp_path,
+            calls,
+            request,
+        ),
+    )
+    campaign = controller.create(
+        {
+            "from_trajectory": "trajectory.log",
+            "apply_policy": "verified_only",
+            "infer_target": True,
+        },
+        max_cycles=3,
+    )
+    run_ids = tuple(
+        f"{campaign.campaign_id}-cycle-{index:03d}" for index in range(1, 6)
+    )
+    candidate_id = "candidate-member-timeout"
+    for run_id in run_ids[:-1]:
+        controller.store.write_report(
+            run_id,
+            {"run_id": run_id, "status": "rejected", "budget": _budget()},
+        )
+    latest_report = {
+        "run_id": run_ids[-1],
+        "status": "rejected",
+        "budget": _budget(),
+        "candidate_ids": [candidate_id],
+        "replay": {
+            "candidate": {
+                "variant_id": candidate_id,
+                "failure": {
+                    "code": "replay_member_phase_timeout",
+                    "owner": "framework",
+                    "scope": "member",
+                    "repairable": True,
+                },
+            }
+        },
+        "campaign_measurement_outcome": {
+            "schema_version": "aworld.self_evolve.campaign_measurement_outcome.v2",
+            "execution_status": "completed",
+            "improvement_outcome": "no_effect",
+            "release_gates_passed": False,
+            "continuation_available": True,
+            "reason_code": "no_effect_candidate_repair_available",
+            "projection": "candidate_rejected",
+        },
+        "verification_funnel": {
+            "authoritative_candidate_attempt_count": 1,
+            "authoritative_candidate_count": 1,
+            "authoritative_candidate_ids": [candidate_id],
+        },
+    }
+    latest_report_path = controller.store.write_report(
+        run_ids[-1], latest_report
+    )
+    exhausted = campaign_module.replace(
+        campaign,
+        status=SelfImprovementCampaignStatus.EXHAUSTED,
+        cycle_index=5,
+        run_ids=run_ids,
+        cumulative_authoritative_candidates=3,
+        measurement_ledger=(
+            campaign.measurement_ledger.charge_continuation(run_ids[1])
+            .charge_continuation(run_ids[3])
+        ),
+        latest_progress=self_improvement_progress(latest_report),
+        latest_disposition=SelfImprovementDisposition(
+            kind=SelfImprovementDispositionKind.EXHAUSTED,
+            reason_code="campaign_cycle_and_authoritative_frontier_exhausted",
+            owner="candidate",
+            stage="measurement",
+            scope="candidate",
+            repairable=False,
+        ),
+        latest_measurement_outcome=(
+            campaign_module.CampaignMeasurementOutcomeV2.from_dict(
+                latest_report["campaign_measurement_outcome"]
+            )
+        ),
+        latest_report_path=str(latest_report_path),
+    )
+    controller.store.write_campaign(exhausted)
+    checkpoint = SimpleNamespace(
+        candidate_id=candidate_id,
+        source_run_id=run_ids[3],
+    )
+    monkeypatch.setattr(
+        campaign_module,
+        "_measurement_resume_checkpoint",
+        lambda store, *, run_id, report: (
+            checkpoint if run_id == run_ids[3] else None
+        ),
+    )
+
+    result = run_self_improvement_campaign(
+        workspace_root=tmp_path,
+        request={},
+        resume_campaign=campaign.campaign_id,
+        run_once=controller.run_once,
+    )
+
+    assert len(calls) == 1
+    assert calls[0]["campaign_cycle"] == 6
+    assert calls[0]["campaign_measurement_pending_run_id"] == run_ids[3]
+    assert calls[0]["campaign_measurement_pending_candidate_id"] == candidate_id
+    assert calls[0]["max_full_evaluation_candidates"] == 1
+    assert result["campaign_status"] == "complete"
+    assert result["campaign_measurement_retry_count"] == 1
+    assert result["campaign_authoritative_candidate_count"] == 3
+    migrated = controller.store.read_report(run_ids[-1])
+    assert migrated["campaign_causal_migration"]["action"] == (
+        "restore_retryable_member_measurement_checkpoint"
+    )
+    assert migrated["campaign_causal_migration"]["candidate_reserve_restored"] == 1
+
+
+def test_measurement_retry_reuses_source_checkpoint_after_resumed_timeout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict] = []
+    candidate_id = "candidate-frozen-measurement"
+
+    def run_once(**request):
+        calls.append(request)
+        run_id = f"{request['campaign_id']}-cycle-{request['campaign_cycle']:03d}"
+        if request["campaign_cycle"] < 3:
+            report = {
+                "run_id": run_id,
+                "status": "rejected",
+                "budget": _budget(),
+                "candidate_ids": [candidate_id],
+                "selected_candidate_id": candidate_id,
+                "campaign_failure_attribution": {
+                    "primary_gate": "candidate_replay",
+                    "code": "replay_member_phase_timeout",
+                    "failure_class": "measurement",
+                    "failure_owner": "framework",
+                    "failure_scope": "shared_run",
+                    "failure_stage": "evaluation",
+                    "repairable": True,
+                },
+            }
+            candidate_path = (
+                tmp_path
+                / ".aworld"
+                / "self_evolve"
+                / run_id
+                / "candidates"
+                / f"{candidate_id}.json"
+            )
+            candidate_path.parent.mkdir(parents=True, exist_ok=True)
+            candidate_path.write_text("{}", encoding="utf-8")
+        else:
+            report = {
+                "run_id": run_id,
+                "status": "succeeded",
+                "budget": _budget(),
+                "gate_results": [{"gate_name": "post_apply", "passed": True}],
+                "verification_funnel": {"authoritative_candidate_count": 1},
+            }
+        report_path = tmp_path / ".aworld" / "self_evolve" / run_id / "report.json"
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+        report_path.write_text(json.dumps(report), encoding="utf-8")
+        return {"run_id": run_id, "status": report["status"], "report_path": str(report_path)}
+
+    source_run_id: str | None = None
+
+    def checkpoint_for_source(store, *, run_id, report):
+        nonlocal source_run_id
+        if source_run_id is None:
+            source_run_id = run_id
+        if run_id != source_run_id:
+            return None
+        return SimpleNamespace(candidate_id=candidate_id, source_run_id=source_run_id)
+
+    monkeypatch.setattr(
+        campaign_module,
+        "_measurement_resume_checkpoint",
+        checkpoint_for_source,
+    )
+
+    result = run_self_improvement_campaign(
+        workspace_root=tmp_path,
+        request={
+            "from_trajectory": "trajectory.log",
+            "apply_policy": "verified_only",
+            "infer_target": True,
+        },
+        max_improvement_cycles=1,
+        run_once=run_once,
+    )
+
+    assert len(calls) == 3
+    assert source_run_id is not None
+    assert calls[1]["campaign_measurement_pending_run_id"] == source_run_id
+    assert calls[2]["campaign_measurement_pending_run_id"] == source_run_id
+    assert result["campaign_status"] == "complete"
+    assert result["campaign_measurement_retry_count"] == 2
+
+
 def test_campaign_has_no_implicit_default_budget_per_cycle(
     tmp_path: Path,
 ) -> None:
@@ -2520,6 +4934,10 @@ def test_campaign_prioritizes_cross_run_champion_feedback(tmp_path: Path) -> Non
     assert calls[2]["campaign_prior_run_ids"] == (
         f"{calls[0]['campaign_id']}-cycle-002",
         f"{calls[0]['campaign_id']}-cycle-001",
+    )
+    assert calls[2]["campaign_scheduler_checkpoint_run_ids"] == (
+        f"{calls[0]['campaign_id']}-cycle-001",
+        f"{calls[0]['campaign_id']}-cycle-002",
     )
 
 

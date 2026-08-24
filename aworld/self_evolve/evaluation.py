@@ -1606,10 +1606,115 @@ def _successful_replay_count(payload: Any) -> int:
     return min(successful_count, repetition_count)
 
 
+def _paired_replay_independence_mapping_is_valid(
+    dataset: SelfEvolveDataset,
+    *,
+    original_case_count: int,
+    member_replay_count: int,
+    held_out_member_count: int,
+    replay_case_count: int,
+) -> bool:
+    if (
+        replay_case_count != len(dataset.cases)
+        or held_out_member_count > member_replay_count
+        or member_replay_count > original_case_count
+        or member_replay_count > replay_case_count
+    ):
+        return False
+
+    split_by_case_id: dict[str, str] = {}
+    for split, case_ids in dataset.recipe.splits.items():
+        for case_id in case_ids:
+            if case_id in split_by_case_id:
+                return False
+            split_by_case_id[case_id] = str(split)
+
+    source_to_unit: dict[str, str] = {}
+    unit_to_source: dict[str, str] = {}
+    source_to_split: dict[str, str] = {}
+    for case in dataset.cases:
+        replay = case.metadata.get("replay")
+        if not isinstance(replay, Mapping):
+            return False
+        source_case_id = replay.get("source_case_id")
+        independence_unit_id = replay.get("independence_unit_id")
+        if (
+            not isinstance(source_case_id, str)
+            or not source_case_id.strip()
+            or not isinstance(independence_unit_id, str)
+            or not independence_unit_id.strip()
+        ):
+            return False
+        split = split_by_case_id.get(case.case_id)
+        if split is None:
+            return False
+        if source_to_unit.setdefault(source_case_id, independence_unit_id) != independence_unit_id:
+            return False
+        if unit_to_source.setdefault(independence_unit_id, source_case_id) != source_case_id:
+            return False
+        if source_to_split.setdefault(source_case_id, split) != split:
+            return False
+
+    held_out_sources = {
+        source_case_id
+        for source_case_id, split in source_to_split.items()
+        if split == "held_out"
+    }
+    return bool(
+        len(source_to_unit) == member_replay_count
+        and len(held_out_sources) == held_out_member_count
+        and set(dataset.recipe.held_out_case_ids)
+        == set(dataset.recipe.splits.get("held_out", ()))
+    )
+
+
 def _has_trajectory_set_validation_source(dataset: SelfEvolveDataset) -> bool:
     source = dataset.recipe.source
     if source.get("kind") == "trajectory_set":
         return True
+    if (
+        source.get("kind") == "trajectory_log"
+        and len(dataset.cases) > 1
+        and source.get("paired_replay") is not True
+    ):
+        return True
+    if (
+        source.get("kind") == "trajectory_log"
+        and source.get("paired_replay") is True
+    ):
+        original_case_count = source.get("original_case_count")
+        member_replay_count = source.get("member_replay_count")
+        held_out_member_count = source.get("held_out_member_count")
+        replay_case_count = source.get("replay_case_count")
+        # Paired replay can expand one source member into several repetition
+        # rows. Only the explicit independent-member cardinalities compiled by
+        # build_paired_replay_dataset may retain trajectory-set verification.
+        # Repetition-derived rows therefore cannot satisfy this branch.
+        if (
+            source.get("paired_replay_dataset_schema")
+            == "aworld.self_evolve.paired_replay_dataset.v1"
+            and isinstance(original_case_count, int)
+            and not isinstance(original_case_count, bool)
+            and original_case_count > 1
+            and isinstance(member_replay_count, int)
+            and not isinstance(member_replay_count, bool)
+            and member_replay_count > 1
+            and isinstance(held_out_member_count, int)
+            and not isinstance(held_out_member_count, bool)
+            and held_out_member_count > 1
+            and held_out_member_count <= member_replay_count
+            and member_replay_count <= original_case_count
+            and isinstance(replay_case_count, int)
+            and not isinstance(replay_case_count, bool)
+            and _paired_replay_independence_mapping_is_valid(
+                dataset,
+                original_case_count=original_case_count,
+                member_replay_count=member_replay_count,
+                held_out_member_count=held_out_member_count,
+                replay_case_count=replay_case_count,
+            )
+        ):
+            return True
     auto_grouping = source.get("auto_grouping")
     if not isinstance(auto_grouping, Mapping):
         return False

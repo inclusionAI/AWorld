@@ -1071,6 +1071,7 @@ def compile_evolution_context(request: OptimizerRequest) -> EvolutionContext:
             has_capability_contracts=bool(contracts),
             requires_target_behavior_composition=any(
                 _repair_feedback_is_prerequisite_composition(item)
+                or _feedback_has_candidate_owned_task_behavior_frontier(item)
                 for item in feedback
             ),
             requires_evidence_quality_repair=(
@@ -1222,6 +1223,68 @@ def _feedback_has_candidate_owned_evidence_frontier(
             or typed_metrics.get("repairable") is True
         )
     )
+
+
+def _feedback_has_candidate_owned_task_behavior_frontier(
+    feedback: Mapping[str, object],
+) -> bool:
+    """Recognize typed task-rollout failures that require SKILL.md repair."""
+
+    metrics = feedback.get("metrics")
+    recovery_trace = feedback.get("recovery_trace")
+    regressed_member_count = (
+        recovery_trace.get("regressed_member_count")
+        if isinstance(recovery_trace, Mapping)
+        else None
+    )
+    recovery_success_delta = (
+        recovery_trace.get("recovery_success_delta")
+        if isinstance(recovery_trace, Mapping)
+        else None
+    )
+    if (
+        isinstance(metrics, Mapping)
+        and metrics.get("failure_class") == "candidate"
+        and metrics.get("repairable") is True
+        and isinstance(recovery_trace, Mapping)
+        and (
+            (
+                isinstance(regressed_member_count, (int, float))
+                and not isinstance(regressed_member_count, bool)
+                and regressed_member_count > 0
+            )
+            or (
+                isinstance(recovery_success_delta, (int, float))
+                and not isinstance(recovery_success_delta, bool)
+                and recovery_success_delta < 0
+            )
+        )
+    ):
+        return True
+    pending: list[object] = [feedback]
+    visited = 0
+    while pending and visited < 512:
+        current = pending.pop()
+        visited += 1
+        if isinstance(current, Mapping):
+            if (
+                current.get("owner") == "candidate"
+                and current.get("repairable") is True
+                and current.get("stage") == "task_rollout"
+                and (
+                    current.get("category") == "recovery_trace"
+                    or current.get("code")
+                    in {
+                        "candidate_recovery_incomplete",
+                        "target_behavior_completion_missing",
+                    }
+                )
+            ):
+                return True
+            pending.extend(current.values())
+        elif isinstance(current, (list, tuple)):
+            pending.extend(current[:128])
+    return False
 
 
 def _deduplicate_feedback(

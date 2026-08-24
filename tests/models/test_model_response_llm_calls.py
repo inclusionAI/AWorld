@@ -4,6 +4,23 @@ from aworld.models.model_response import ModelResponse
 from aworld.models.openai_provider import OpenAIProvider
 
 
+def test_model_response_tracks_usage_reporting_before_normalization():
+    missing = ModelResponse(id="missing", model="mock")
+    explicit = ModelResponse(
+        id="explicit",
+        model="mock",
+        usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+    )
+
+    assert missing.usage_reported is False
+    assert missing.usage == {
+        "completion_tokens": 0,
+        "prompt_tokens": 0,
+        "total_tokens": 0,
+    }
+    assert explicit.usage_reported is True
+
+
 def test_from_openai_response_preserves_normalized_and_raw_usage_for_dict_response():
     response = {
         "id": "chatcmpl_123",
@@ -30,6 +47,8 @@ def test_from_openai_response_preserves_normalized_and_raw_usage_for_dict_respon
         "prompt_tokens": 100,
         "completion_tokens": 25,
         "total_tokens": 125,
+        "prompt_tokens_details": {"cached_tokens": 80},
+        "cache_hit_tokens": 80,
     }
     assert model_response.raw_usage == {
         "prompt_tokens": 100,
@@ -71,6 +90,8 @@ def test_from_openai_response_preserves_openai_object_request_id_and_raw_usage()
         "prompt_tokens": 200,
         "completion_tokens": 50,
         "total_tokens": 250,
+        "prompt_tokens_details": {"cached_tokens": 150},
+        "cache_hit_tokens": 150,
     }
     assert model_response.raw_usage["prompt_tokens"] == 200
     assert model_response.raw_usage["prompt_tokens_details"]["cached_tokens"] == 150
@@ -117,6 +138,8 @@ def test_from_openai_stream_chunk_preserves_raw_usage_and_provider_request_id():
         "prompt_tokens": 100,
         "completion_tokens": 25,
         "total_tokens": 125,
+        "prompt_tokens_details": {"cached_tokens": 80},
+        "cache_hit_tokens": 80,
     }
     assert model_response.raw_usage["cache_hit_tokens"] == 80
     assert model_response.provider_request_id == "req_provider_stream_direct"
@@ -183,6 +206,8 @@ def test_postprocess_stream_response_preserves_raw_usage_and_request_id_for_buff
         "prompt_tokens": 100,
         "completion_tokens": 25,
         "total_tokens": 125,
+        "prompt_tokens_details": {"cached_tokens": 80},
+        "cache_hit_tokens": 80,
     }
     assert buffered_response.raw_usage["cache_hit_tokens"] == 80
     assert buffered_response.provider_request_id == "req_provider_stream_buffered"

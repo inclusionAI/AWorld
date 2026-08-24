@@ -586,6 +586,7 @@ def test_positive_sentinel_admits_required_regression_stage() -> None:
     progress = _progress(
         comparable_case_ids=("case-1", "case-2"),
         confidence_lower_bound=0.2,
+        point_estimate=0.2,
     )
 
     decision = decide_staged_measurement(_plan(), progress)
@@ -605,12 +606,32 @@ def test_positive_after_regression_stops_with_confidence() -> None:
         completed_case_ids=("case-1", "case-2", "case-r1"),
         comparable_case_ids=("case-1", "case-2", "case-r1"),
         confidence_lower_bound=0.2,
+        point_estimate=0.2,
         completed_stage_ids=("sentinel", "regression"),
     )
 
     assert (
         decide_staged_measurement(_plan(), progress).kind
         is AdaptiveDecisionKind.STOP_CONFIDENT_POSITIVE
+    )
+
+
+def test_zero_effect_never_stops_as_confident_positive() -> None:
+    progress = _progress(
+        current_stage_id="regression",
+        completed_case_ids=("case-1", "case-2", "case-r1"),
+        comparable_case_ids=("case-1", "case-2", "case-r1"),
+        confidence_lower_bound=0.0,
+        point_estimate=0.0,
+        completed_stage_ids=("sentinel", "regression"),
+    )
+    plan = _plan(
+        policy=replace(_plan().decision_policy, minimum_effect=0.0),
+    )
+
+    assert (
+        decide_staged_measurement(plan, progress).kind
+        is not AdaptiveDecisionKind.STOP_CONFIDENT_POSITIVE
     )
 
 

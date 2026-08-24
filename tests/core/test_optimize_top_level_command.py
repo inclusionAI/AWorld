@@ -76,6 +76,7 @@ def test_optimize_command_passes_generic_target_dataset_and_apply_to_framework(
     assert calls["max_run_cost_usd"] is None
     assert calls["max_run_wall_seconds"] is None
     assert calls["per_attempt_replay_token_limit"] is None
+    assert calls["measurement_primary_metric"] == "task_success"
     assert callable(calls["progress_callback"])
     assert calls["from_trajectory"] is None
     assert calls["task"] is None
@@ -596,6 +597,7 @@ def test_optimize_command_passes_judge_agent_selector(
     assert calls["judge_agent_name"] is None
     assert calls["judge_backend_ref"] is None
     assert calls["judge_model_profile"] == "judge"
+    assert calls["measurement_primary_metric"] == "score"
 
 
 def test_optimize_command_passes_replay_runtime_limits(

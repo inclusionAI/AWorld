@@ -190,6 +190,10 @@
 
 ## 13. Rollout and acceptance
 
+Manual evidence collection and sign-off follow
+[`manual-validation.md`](./manual-validation.md). Keep the tasks below unchecked
+until representative campaign artifacts have been reviewed.
+
 - [ ] 13.1 Ship schema and artifact generation behind `shadow` mode and calibrate
   validity reason codes on existing AWorld self-evolve campaigns.
 - [ ] 13.2 Run shadow measurements across multiple tasks and Skill families; review

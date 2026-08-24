@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import hashlib
 import inspect
 import json
@@ -48,9 +49,16 @@ from aworld.self_evolve.repair_conformance import (
     compile_repair_conformance_contract,
     evaluate_candidate_source_conformance,
 )
+from aworld.self_evolve.replay_capability import (
+    REPLAY_RESPONSE_INDEX_CONSUMER,
+    recorded_response_index_source_behavior_proof,
+)
 from aworld.self_evolve.sanitization import sanitize_text
 from aworld.self_evolve.types import CandidateFileDelta, CandidateVariant, OptimizerLineage
-from aworld.skills.structure import build_skill_structural_edit_intent
+from aworld.skills.structure import (
+    build_skill_structural_edit_intent,
+    validate_skill_markdown_structure,
+)
 from aworld.skills.structure_types import SkillStructuralEditIntent
 
 
@@ -662,8 +670,11 @@ def _build_mutation_prompt(request: OptimizerRequest, *, candidate_index: int) -
         "handshake, HTTP status, structured envelope, metadata record, or tool-execution "
         "summary is only a delivery signal. Persist the first usable response immediately, "
         "then verify that its payload directly supports the claims requested by the user. "
-        "Stop only when that semantic check passes; otherwise try one materially different "
-        "bounded artifact-backed source or return an explicit insufficiency. Never encode "
+        "Stop only when that semantic check passes; otherwise make exactly one materially "
+        "different bounded artifact-backed attempt, then return supported claims or an "
+        "explicit insufficiency without another tool call. Before finalizing, omit every "
+        "unsupported factual, configuration, bibliographic, quantitative, symbolic, or "
+        "quoted claim; do not expand captured evidence with remembered details. Never encode "
         "a blanket first-response-means-complete rule or a case-specific endpoint or prompt. "
         "Keep replay schema layers distinct: replay/capability.json protocol is exactly "
         "aworld.replay.subprocess.v1; its handles are request requirement kinds such as "
@@ -675,6 +686,10 @@ def _build_mutation_prompt(request: OptimizerRequest, *, candidate_index: int) -
         "The framework creates only the compiler output root. The compiler owns every "
         "declared subdirectory and must create parents such as output/fixtures before "
         "copying or writing files; it must not assume those directories already exist. "
+        "Evidence inputs may be immutable: copy fixture bytes with shutil.copyfile or "
+        "an explicit read/write, never shutil.copy2, copymode, or copied source metadata. "
+        "Use a requirement-qualified destination or deduplicate before writing so two "
+        "requirements selecting the same source never overwrite a read-only fixture. "
         "The compiler is a deterministic artifact transform and runs without network or "
         "loopback access: never bind/connect sockets, select a live port, launch the runtime, "
         "or probe readiness during compile. Declare the runtime in result.json; the framework "
@@ -748,8 +763,12 @@ def _build_mutation_prompt(request: OptimizerRequest, *, candidate_index: int) -
         "Include every added or changed package file in files. Every concrete replay/... "
         "path named by content or patch_intent must already exist in "
         "target_package_inventory or be supplied as an upsert in files; never describe "
-        "a file that is absent from the candidate package. "
-        "Return the value of expected_output as exactly one JSON object, without a wrapper; "
+        "a file that is absent from the candidate package. A files[*].content value "
+        "starts with the file's first byte: never place a Markdown filename heading "
+        "such as '# replay/capability.json' inside JSON or source file content. "
+        "Every Markdown fenced block in content or patch_intent must be balanced inside the "
+        "same field. Do not duplicate or partially splice an existing section. Return the "
+        "value of expected_output as exactly one JSON object, without a wrapper; "
         "use at most one of content or patch_intent, and omit both only when candidate-owned "
         "files implement the reusable delta.\n"
         + json.dumps(payload, ensure_ascii=False, sort_keys=True)
@@ -873,6 +892,13 @@ def _focused_repair_prompt_instructions(
         and item.get("rule") == "unique"
         for item in schema_field_constraints
     )
+    requires_http_1_1_websocket_upgrade = any(
+        item.get("schema_layer") == "runtime"
+        and item.get("field_path") == "websocket_handshake.http_version"
+        and item.get("rule") == "enum"
+        and item.get("expected") == ["HTTP/1.1"]
+        for item in schema_field_constraints
+    )
     instructions = (
         "Repair the focused candidate package using the machine-readable "
         "diagnostics and repair_conformance contract in this EvolutionContext. "
@@ -894,8 +920,11 @@ def _focused_repair_prompt_instructions(
         "For every repair, distinguish transport completion from task completion. Persist the "
         "first usable response immediately, but stop only if its payload directly supports "
         "the requested claims. A handshake, HTTP status, structured envelope, metadata "
-        "record, or tool-execution summary alone is insufficient; otherwise try one "
-        "materially different bounded artifact-backed source or report the insufficiency. "
+        "record, or tool-execution summary alone is insufficient; otherwise make exactly "
+        "one materially different bounded artifact-backed attempt, then report supported "
+        "claims or the insufficiency without another tool call. Omit every unsupported "
+        "factual, configuration, bibliographic, quantitative, symbolic, or quoted claim; "
+        "do not expand captured evidence with remembered details. "
         "Never add a blanket first-response-means-complete rule or case-specific behavior. "
         "For an enum schema_field_constraint with one expected value, copy its single "
         "expected value exactly into that field at the declared schema_layer. Treat the "
@@ -926,7 +955,15 @@ def _focused_repair_prompt_instructions(
             "When unsupported_boundaries are reported, carry the environment-derived "
             "value through local variables or explicit parameters until the required "
             "reader and projection operations occur. Do not claim a direct read in "
-            "the rationale unless that data-flow edge exists in the source. "
+            "the rationale unless that data-flow edge exists in the source. Use this "
+            "supported topology inside the actual response-producing lexical scope: "
+            "`path = os.getenv(\"AWORLD_REPLAY_RESPONSE_INDEX\")`; "
+            "`with open(path, encoding=\"utf-8\") as stream: index = "
+            "json.load(stream)`; `records = index[\"records\"]`; then project "
+            "`record[\"value\"]`. The environment read and file open must be in the "
+            "same function. Do not put either operation behind a returning helper, "
+            "even when the helper takes explicit parameters, and do not rely on helper "
+            "names to express the proof. "
         )
     if isinstance(artifact_lifecycle_constraint, Mapping):
         instructions += (
@@ -1036,10 +1073,20 @@ def _focused_repair_prompt_instructions(
             "change capability declarations, compilers, runtimes, probes, or fixtures. "
             "A successful handshake, HTTP status, structured envelope, metadata record, "
             "or tool-execution summary is not by itself task completion. Before finalizing, "
-            "check whether the persisted payload directly supports the claims requested by "
-            "the user. If it does not, continue with one materially different bounded "
-            "artifact-backed source or return only an explicit insufficiency; never invent "
-            "the missing content and never encode case-specific endpoints or prompts. "
+            "check whether a bounded non-compacted artifact excerpt or structured field "
+            "directly supports each claim requested by the user. If not, make exactly one "
+            "materially different bounded artifact-backed attempt, then immediately omit "
+            "the unsupported claim or return an explicit insufficiency without another "
+            "tool call. A source artifact must be captured directly from a tool or primary "
+            "source. Never write your own draft answer, synthesis, inferred comparison, or "
+            "remembered knowledge into a file and then cite that self-authored file as "
+            "evidence. Read the captured source artifact before answering, and make every "
+            "ledger entry refer to an existing canonical artifact path plus the exact "
+            "bounded excerpt or structured fields actually used. Do not claim an artifact "
+            "or manifest-entry count unless it was computed from the final manifest. "
+            "Apply this support-or-omit rule to factual, configuration, "
+            "bibliographic, quantitative, symbolic, and quoted claims; never fill a missing "
+            "claim from memory or encode case-specific endpoints or prompts. "
         )
     if (
         "duplicate_prior_candidate" in feedback_text
@@ -1094,7 +1141,9 @@ def _focused_repair_prompt_instructions(
             "to echo the mismatched diagnostic preview. "
         )
     if (
-        "invalid_replay_capability_compile" in feedback_text
+        "invalid_replay_capability_compile" in failure_codes
+        or "repair_capability_compile_failed" in failure_codes
+        or "invalid_replay_capability_compile" in feedback_text
         or "repair_capability_compile_failed" in feedback_text
     ):
         instructions += (
@@ -1107,7 +1156,11 @@ def _focused_repair_prompt_instructions(
             "fields. Preserve the compiler's --request/--output interface and write "
             "the declared result schema to output/result.json. The framework creates "
             "only the output root; create every declared subdirectory and its parents "
-            "before copying or writing fixtures or runtime artifacts. "
+            "before copying or writing fixtures or runtime artifacts. Evidence inputs "
+            "may be immutable: copy bytes with shutil.copyfile or explicit read/write, "
+            "never shutil.copy2, copymode, or copied source metadata. Use a "
+            "requirement-qualified destination or deduplicate before writing so repeated "
+            "source selection cannot overwrite a read-only output fixture. "
             "The compiler runs as a deterministic, network-disabled artifact transform: "
             "do not bind or connect sockets, allocate a live port, launch runtime code, or "
             "probe readiness. Declare runtime_entrypoint in result.json and let the framework "
@@ -1130,6 +1183,12 @@ def _focused_repair_prompt_instructions(
             "multiple scalar descendants into one assertion. Do not serialize a "
             "metadata wrapper containing fixture hashes, byte counts, shapes, keys, "
             "or previews; those values are not descendants of the fixture payload. "
+            "When an evidence_ref resolves to multiple source objects, first restrict "
+            "selection to objects with a non-empty response_index_path and a positive "
+            "integer response_record_count, then prefer the greatest record count (and "
+            "byte length only as a deterministic tie-break). Never rank all sources by "
+            "smallest byte_length before recorded-response eligibility: a compact tool-call "
+            "fragment can contain no replayable response, leaving only an invented fallback. "
             "Treat required_branch_paths as the producer repair boundary: "
             "a schema constraint from another layer is a preservation invariant and "
             "cannot substitute for materially changing the named failing branch. "
@@ -1173,6 +1232,17 @@ def _focused_repair_prompt_instructions(
             "in a compile-result service field. Repair the compiler or manifest "
             "that owns the field rather than suppressing validation, changing the "
             "diagnostic, or special-casing a recorded case. "
+        )
+    if requires_http_1_1_websocket_upgrade:
+        instructions += (
+            "The runtime advertises a WebSocket endpoint, so its actual upgrade "
+            "status line must use HTTP/1.1. Change the live runtime producer, not "
+            "the compiler declaration or diagnostic. If the runtime subclasses "
+            "Python BaseHTTPRequestHandler, set protocol_version = \"HTTP/1.1\" "
+            "on the handler class; for another server implementation, configure "
+            "the equivalent wire protocol. Keep status 101 and the Upgrade, "
+            "Connection, and Sec-WebSocket-Accept headers, then let the executable "
+            "WebSocket probe prove the repair. "
         )
     if requires_unique_result_fixtures:
         instructions += (
@@ -1339,8 +1409,12 @@ def _focused_repair_prompt_instructions(
         "Include every added or changed package file in files. Every concrete replay/... "
         "path named by content or patch_intent must already exist in "
         "target_package_inventory or be supplied as an upsert in files; never describe "
-        "a file that is absent from the candidate package. "
-        "Return the value of expected_output as exactly one JSON object without a "
+        "a file that is absent from the candidate package. A files[*].content value "
+        "starts with the file's first byte: never place a Markdown filename heading "
+        "such as '# replay/capability.json' inside JSON or source file content. "
+        "Every Markdown fenced block in content or patch_intent must be balanced inside the "
+        "same field. Do not duplicate or partially splice an existing section. Return the "
+        "value of expected_output as exactly one JSON object without a "
         "wrapper. Use at most one of content or patch_intent; both may be omitted "
         "when candidate-owned files implement the reusable behavior delta.\n"
     )
@@ -1356,11 +1430,57 @@ def _validate_mutator_output_context(
     """Validate request-bound semantics while same-slot repair is available."""
 
     try:
+        output = _canonicalize_single_trailing_patch_fence_output(
+            output,
+            request=request,
+        )
+        output = _canonicalize_replay_manifest_path_heading_output(
+            output,
+            request=request,
+            candidate_index=candidate_index,
+        )
+        output = _canonicalize_recorded_response_index_output(
+            output,
+            request=request,
+            candidate_index=candidate_index,
+        )
+        output = _canonicalize_fixture_source_selector_output(
+            output,
+            request=request,
+            candidate_index=candidate_index,
+        )
         content, _, _, files = _materialize_mutator_output(
             output,
             request=request,
             candidate_index=candidate_index,
         )
+        if request.target.target_type == "skill":
+            base_structure = validate_skill_markdown_structure(
+                _focused_repair_patch_base(
+                    request,
+                    candidate_index=candidate_index,
+                )
+            )
+            structure = validate_skill_markdown_structure(content)
+            if base_structure.passed and not structure.passed:
+                raise CandidateSemanticValidationError(
+                    structure.code,
+                    structure.reason,
+                    field_path=structure.field_path,
+                    representation=(
+                        _candidate_output_representation(output).value
+                    ),
+                    repairable=True,
+                    allowed_improvement_signal_ids=(
+                        exposed_improvement_signal_ids(request)
+                    ),
+                    details={
+                        "contract_fingerprint": (
+                            structure.contract_fingerprint
+                        ),
+                        **dict(structure.details),
+                    },
+                )
         declared_addressed_improvement_signal_ids(request, output)
         files, _ = _overlay_repair_focus_files(
             request,
@@ -1465,6 +1585,771 @@ def _validate_mutator_output_context(
             request=request,
         ) from exc
     return output
+
+
+_MARKDOWN_FENCE_LINE = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
+
+
+def _canonicalize_replay_manifest_path_heading_output(
+    output: Mapping[str, Any],
+    *,
+    request: OptimizerRequest,
+    candidate_index: int,
+) -> Mapping[str, Any]:
+    """Remove one model-added filename label from an otherwise valid manifest.
+
+    Structured-output models sometimes include ``# replay/capability.json`` as
+    the first line of that file's content.  The label is presentation metadata,
+    not JSON, and otherwise makes every focused repair inherit a manifest that
+    fails before the compiler can expose a typed repair constraint.  Normalize
+    only this exact path-local shape and only when the remaining bytes decode to
+    a JSON object.  Arbitrary comments and malformed manifests remain invalid.
+    """
+
+    if request.target.target_type != "skill":
+        return output
+    try:
+        _, _, _, explicit_files = _materialize_mutator_output(
+            output,
+            request=request,
+            candidate_index=candidate_index,
+        )
+    except (CandidateMaterializationError, ValueError):
+        return output
+
+    manifest_indexes = [
+        index
+        for index, item in enumerate(explicit_files)
+        if item.path == "replay/capability.json"
+        and item.operation == "upsert"
+        and isinstance(item.content, str)
+    ]
+    if len(manifest_indexes) != 1:
+        return output
+    manifest_index = manifest_indexes[0]
+    manifest = explicit_files[manifest_index]
+    assert isinstance(manifest.content, str)
+    first_line, separator, remainder = manifest.content.partition("\n")
+    if not separator or first_line.rstrip("\r") != "# replay/capability.json":
+        return output
+    try:
+        decoded = json.loads(remainder)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return output
+    if not isinstance(decoded, Mapping):
+        return output
+
+    normalized_files = list(explicit_files)
+    normalized_files[manifest_index] = CandidateFileDelta(
+        path=manifest.path,
+        operation=manifest.operation,
+        content=remainder,
+        executable=manifest.executable,
+    )
+    return _replace_output_files(output, tuple(normalized_files))
+
+
+def _canonicalize_single_trailing_patch_fence_output(
+    output: Mapping[str, Any],
+    *,
+    request: OptimizerRequest,
+) -> Mapping[str, Any]:
+    """Close one patch-local trailing fence without repairing arbitrary Markdown.
+
+    Structured-output models occasionally omit only the final fence delimiter from a
+    bounded ``patch_intent`` body.  The complete base skill is independently valid, and
+    the omitted delimiter otherwise turns a representation defect into an authoritative
+    candidate.  Normalize only one such patch-local defect.  Full-content responses,
+    multiple affected operations, ambiguous delimiter shapes, and all other Markdown
+    damage remain unchanged and fail through the normal structural validator.
+    """
+
+    if request.target.target_type != "skill":
+        return output
+    patch_intent = output.get("patch_intent")
+    if not isinstance(patch_intent, Mapping):
+        return output
+    operations = patch_intent.get("operations")
+    if not isinstance(operations, list):
+        return output
+
+    repairs: list[tuple[int, str]] = []
+    for index, operation in enumerate(operations):
+        if not isinstance(operation, Mapping):
+            continue
+        body = operation.get("content")
+        if not isinstance(body, str):
+            continue
+        delimiter = _single_trailing_unclosed_fence_delimiter(body)
+        if delimiter is not None:
+            repairs.append((index, delimiter))
+    if len(repairs) != 1:
+        return output
+
+    repair_index, delimiter = repairs[0]
+    normalized_operations: list[object] = list(operations)
+    repaired_operation = dict(normalized_operations[repair_index])
+    body = repaired_operation.get("content")
+    assert isinstance(body, str)
+    repaired_operation["content"] = body.rstrip("\n") + "\n" + delimiter + "\n"
+    normalized_operations[repair_index] = repaired_operation
+    normalized_patch = dict(patch_intent)
+    normalized_patch["operations"] = normalized_operations
+    normalized_output = dict(output)
+    normalized_output["patch_intent"] = normalized_patch
+    return normalized_output
+
+
+def _single_trailing_unclosed_fence_delimiter(content: str) -> str | None:
+    open_character: str | None = None
+    open_length = 0
+    for line in content.splitlines():
+        match = _MARKDOWN_FENCE_LINE.fullmatch(line)
+        if match is None:
+            continue
+        marker = match.group(1)
+        suffix = match.group(2)
+        if open_character is None:
+            open_character = marker[0]
+            open_length = len(marker)
+            continue
+        if (
+            marker[0] == open_character
+            and len(marker) >= open_length
+            and not suffix.strip()
+        ):
+            open_character = None
+            open_length = 0
+    if open_character is None:
+        return None
+    return open_character * open_length
+
+
+def _canonicalize_recorded_response_index_output(
+    output: Mapping[str, Any],
+    *,
+    request: OptimizerRequest,
+    candidate_index: int,
+) -> Mapping[str, Any]:
+    """Normalize one provably equivalent generated reader-helper chain.
+
+    Model repairs commonly split the response-index environment read and JSON
+    reader into two returning helpers.  That implementation is operationally
+    reasonable, but return-value propagation is deliberately outside the
+    bounded source analyzer.  Rewrite only the conservative two-assignment
+    shape whose helpers demonstrably own those operations, then require the
+    unchanged analyzer to prove the rewritten source before accepting it.
+
+    This is a candidate-source normalization, not a gate bypass: unrelated
+    source shapes, missing ``records``/``value`` projections, and attribute or
+    container propagation remain rejected and continue through same-slot LLM
+    repair.
+    """
+
+    context = request.evolution_context or compile_evolution_context(request)
+    repair_focus = context.repair_focus_for_candidate(
+        candidate_index=candidate_index
+    )
+    contract = compile_repair_conformance_contract(repair_focus)
+    required_operations = {
+        "read_environment_binding_as_path",
+        "bind_environment_path_to_json_file_reader",
+        "access_records_array",
+        "project_record_value_field_directly",
+    }
+    if contract is None or not any(
+        constraint.schema_layer == "runtime"
+        and constraint.value_domain == "source_behavior"
+        and constraint.field_path
+        == "environment.AWORLD_REPLAY_RESPONSE_INDEX.consumer"
+        and REPLAY_RESPONSE_INDEX_CONSUMER in constraint.expected
+        and required_operations.issubset(constraint.required_operations)
+        for constraint in contract.schema_field_constraints
+    ):
+        return output
+
+    try:
+        _, _, _, explicit_files = _materialize_mutator_output(
+            output,
+            request=request,
+            candidate_index=candidate_index,
+        )
+    except (CandidateMaterializationError, ValueError):
+        return output
+
+    runtime_paths = frozenset(contract.runtime_paths)
+    rewritten_files: list[CandidateFileDelta] = []
+    changed = False
+    for item in explicit_files:
+        rewritten = None
+        if (
+            item.path in runtime_paths
+            and item.path in contract.required_branch_paths
+            and item.operation == "upsert"
+            and isinstance(item.content, str)
+        ):
+            rewritten = _canonicalize_recorded_response_index_reader_chain(
+                item.content
+            )
+        if rewritten is not None:
+            item = CandidateFileDelta(
+                path=item.path,
+                operation=item.operation,
+                content=rewritten,
+                executable=item.executable,
+            )
+            changed = True
+        rewritten_files.append(item)
+    if not changed:
+        return output
+    return _replace_output_files(output, tuple(rewritten_files))
+
+
+def _replace_output_files(
+    output: Mapping[str, Any],
+    files: tuple[CandidateFileDelta, ...],
+) -> Mapping[str, Any]:
+    serialized = [
+        {
+            "path": item.path,
+            "operation": item.operation,
+            **(
+                {"content": item.content}
+                if isinstance(item.content, str)
+                else {}
+            ),
+            **({"executable": True} if item.executable else {}),
+        }
+        for item in files
+    ]
+    normalized = dict(output)
+    envelope = normalized.get("expected_output")
+    if isinstance(envelope, Mapping):
+        normalized["expected_output"] = {**dict(envelope), "files": serialized}
+    else:
+        normalized["files"] = serialized
+    return normalized
+
+
+def _canonicalize_fixture_source_selector_output(
+    output: Mapping[str, Any],
+    *,
+    request: OptimizerRequest,
+    candidate_index: int,
+) -> Mapping[str, Any]:
+    """Prefer evidence with recorded responses for fixture-derived probes."""
+
+    context = request.evolution_context or compile_evolution_context(request)
+    repair_focus = context.repair_focus_for_candidate(
+        candidate_index=candidate_index
+    )
+    contract = compile_repair_conformance_contract(repair_focus)
+    if (
+        contract is None
+        or "protocol_probe_not_fixture_derived" not in contract.failure_codes
+        or not contract.requires_compiler_fixture_reconstruction
+        or contract.compiler_path is None
+        or contract.compiler_path not in contract.required_branch_paths
+    ):
+        return output
+    try:
+        _, _, _, explicit_files = _materialize_mutator_output(
+            output,
+            request=request,
+            candidate_index=candidate_index,
+        )
+    except (CandidateMaterializationError, ValueError):
+        return output
+
+    rewritten_files: list[CandidateFileDelta] = []
+    changed = False
+    for item in explicit_files:
+        rewritten = None
+        if (
+            item.path == contract.compiler_path
+            and item.operation == "upsert"
+            and isinstance(item.content, str)
+        ):
+            rewritten = _canonicalize_fixture_source_selector(item.content)
+        if rewritten is not None:
+            item = CandidateFileDelta(
+                path=item.path,
+                operation=item.operation,
+                content=rewritten,
+                executable=item.executable,
+            )
+            changed = True
+        rewritten_files.append(item)
+    if not changed:
+        return output
+    return _replace_output_files(output, tuple(rewritten_files))
+
+
+_MINIMUM_BYTE_SOURCE_SELECTOR = '''def _select_source(evidence_ref: str, derivations: dict) -> dict | None:
+    sources = derivations.get(evidence_ref, [])
+    if not sources:
+        return None
+    ranked = sorted(sources, key=lambda s: s.get("byte_length", 0))
+    return ranked[0]
+'''
+
+_RECORDED_RESPONSE_SOURCE_SELECTOR = '''def _select_source(evidence_ref: str, derivations: dict) -> dict | None:
+    sources = derivations.get(evidence_ref, [])
+    if not sources:
+        return None
+    eligible = [
+        source
+        for source in sources
+        if isinstance(source, dict)
+        and isinstance(source.get("response_index_path"), str)
+        and bool(source["response_index_path"].strip())
+        and isinstance(source.get("response_record_count"), int)
+        and not isinstance(source.get("response_record_count"), bool)
+        and source["response_record_count"] > 0
+    ]
+    if eligible:
+        return max(
+            eligible,
+            key=lambda source: (
+                source["response_record_count"],
+                source.get("byte_length", 0)
+                if isinstance(source.get("byte_length"), int)
+                and not isinstance(source.get("byte_length"), bool)
+                else 0,
+            ),
+        )
+    ranked = sorted(sources, key=lambda source: source.get("byte_length", 0))
+    return ranked[0]
+'''
+
+
+def _canonicalize_fixture_source_selector(source: str) -> str | None:
+    """Rewrite the exact selector that discards recorded-response evidence."""
+
+    try:
+        tree = ast.parse(source)
+        legacy_function = ast.parse(_MINIMUM_BYTE_SOURCE_SELECTOR).body[0]
+    except SyntaxError:
+        return None
+    matches = [
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef)
+        and ast.dump(node, include_attributes=False)
+        == ast.dump(legacy_function, include_attributes=False)
+    ]
+    if len(matches) != 1:
+        return None
+    function = matches[0]
+    lines = source.splitlines(keepends=True)
+    start = int(function.lineno) - 1
+    end = int(function.end_lineno or function.lineno)
+    rewritten = (
+        "".join(lines[:start])
+        + _RECORDED_RESPONSE_SOURCE_SELECTOR
+        + "".join(lines[end:])
+    )
+    try:
+        compile(rewritten, "<candidate-compiler>", "exec")
+    except (SyntaxError, TypeError, ValueError):
+        return None
+    return rewritten
+
+
+def _canonicalize_recorded_response_index_reader_chain(
+    source: str,
+) -> str | None:
+    proof = recorded_response_index_source_behavior_proof(source)
+    missing_operations = set(proof.get("missing_operations", ()))
+    operation_status = proof.get("operation_status")
+    if (
+        proof.get("proven") is True
+        or not isinstance(operation_status, Mapping)
+        or operation_status.get("access_records_array") is not True
+        or operation_status.get("project_record_value_field_directly") is not True
+        or "bind_environment_path_to_json_file_reader" not in missing_operations
+        or not missing_operations.issubset(
+            {
+                "read_environment_binding_as_path",
+                "bind_environment_path_to_json_file_reader",
+            }
+        )
+    ):
+        return None
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return None
+    if not _has_direct_module_import(tree, "os") or not _has_direct_module_import(
+        tree, "json"
+    ):
+        return None
+
+    function_nodes = [
+        node
+        for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    ]
+    function_name_counts: dict[str, int] = {}
+    for function in function_nodes:
+        function_name_counts[function.name] = (
+            function_name_counts.get(function.name, 0) + 1
+        )
+    functions = {
+        node.name: node
+        for node in function_nodes
+        if function_name_counts[node.name] == 1 and not node.decorator_list
+    }
+    environment_helpers = {
+        name
+        for name, function in functions.items()
+        if isinstance(function, ast.FunctionDef)
+        and _function_is_transparent_environment_reader(function)
+    }
+    json_reader_helpers = {
+        name
+        for name, function in functions.items()
+        if isinstance(function, ast.FunctionDef)
+        and _function_reads_json_parameter(function)
+    }
+    if not environment_helpers or not json_reader_helpers:
+        return None
+
+    lines = source.splitlines(keepends=True)
+    proven_rewrites: list[str] = []
+    for function in functions.values():
+        locally_bound = {
+            node.id
+            for node in ast.walk(function)
+            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store)
+        }
+        if "os" in locally_bound or "json" in locally_bound:
+            continue
+        body = function.body
+        for index in range(len(body) - 1):
+            path_assignment = body[index]
+            if not isinstance(path_assignment, ast.Assign):
+                continue
+            path_name = _simple_assignment_name(path_assignment)
+            if path_name is None:
+                continue
+            path_call = getattr(path_assignment, "value", None)
+            if not (
+                isinstance(path_call, ast.Call)
+                and isinstance(path_call.func, ast.Name)
+                and path_call.func.id in environment_helpers
+                and _response_index_key_reaches_call(
+                    tree,
+                    caller=function,
+                    call=path_call,
+                )
+            ):
+                continue
+            reader_positions = [
+                position
+                for position in range(index + 1, len(body))
+                if _reader_assignment_consumes_path(
+                    body[position],
+                    path_name=path_name,
+                    json_reader_helpers=json_reader_helpers,
+                )
+            ]
+            if len(reader_positions) != 1:
+                continue
+            reader_position = reader_positions[0]
+            if not all(
+                _is_response_path_absence_guard(
+                    statement,
+                    path_name=path_name,
+                )
+                for statement in body[index + 1 : reader_position]
+            ):
+                continue
+            index_assignment = body[reader_position]
+            index_name = _simple_assignment_name(index_assignment)
+            reader_call = getattr(index_assignment, "value", None)
+            if not (
+                index_name is not None
+                and isinstance(reader_call, ast.Call)
+                and isinstance(reader_call.func, ast.Name)
+                and reader_call.func.id in json_reader_helpers
+                and reader_call.args
+                and isinstance(reader_call.args[0], ast.Name)
+                and reader_call.args[0].id == path_name
+                and any(
+                    isinstance(node, ast.Name)
+                    and isinstance(node.ctx, ast.Load)
+                    and node.id == index_name
+                    for statement in body[reader_position + 1 :]
+                    for node in ast.walk(statement)
+                )
+            ):
+                continue
+            start = int(path_assignment.lineno) - 1
+            end = int(path_assignment.end_lineno or path_assignment.lineno)
+            indent = lines[start][: len(lines[start]) - len(lines[start].lstrip())]
+            replacement = (
+                f'{indent}{path_name} = os.environ.get('
+                '"AWORLD_REPLAY_RESPONSE_INDEX", "")\n'
+            )
+            rewritten = "".join(lines[:start]) + replacement + "".join(lines[end:])
+            try:
+                compile(rewritten, "<candidate-runtime>", "exec")
+            except (SyntaxError, ValueError, TypeError):
+                continue
+            if recorded_response_index_source_behavior_proof(rewritten).get(
+                "proven"
+            ) is True:
+                proven_rewrites.append(rewritten)
+    unique_rewrites = list(dict.fromkeys(proven_rewrites))
+    return unique_rewrites[0] if len(unique_rewrites) == 1 else None
+
+
+def _reader_assignment_consumes_path(
+    statement: ast.stmt,
+    *,
+    path_name: str,
+    json_reader_helpers: set[str],
+) -> bool:
+    value = getattr(statement, "value", None)
+    return bool(
+        _simple_assignment_name(statement) is not None
+        and isinstance(value, ast.Call)
+        and isinstance(value.func, ast.Name)
+        and value.func.id in json_reader_helpers
+        and len(value.args) == 1
+        and isinstance(value.args[0], ast.Name)
+        and value.args[0].id == path_name
+        and not value.keywords
+    )
+
+
+def _is_response_path_absence_guard(
+    statement: ast.stmt,
+    *,
+    path_name: str,
+) -> bool:
+    """Allow only ``if not path: return None`` between the two assignments."""
+
+    return bool(
+        isinstance(statement, ast.If)
+        and isinstance(statement.test, ast.UnaryOp)
+        and isinstance(statement.test.op, ast.Not)
+        and isinstance(statement.test.operand, ast.Name)
+        and statement.test.operand.id == path_name
+        and not statement.orelse
+        and len(statement.body) == 1
+        and isinstance(statement.body[0], ast.Return)
+        and (
+            statement.body[0].value is None
+            or (
+                isinstance(statement.body[0].value, ast.Constant)
+                and statement.body[0].value.value is None
+            )
+        )
+    )
+
+
+def _response_index_key_reaches_call(
+    tree: ast.Module,
+    *,
+    caller: ast.FunctionDef | ast.AsyncFunctionDef,
+    call: ast.Call,
+) -> bool:
+    """Prove the dynamic helper key is the framework response-index key."""
+
+    if not call.args:
+        return False
+    key_argument = call.args[0]
+    if (
+        isinstance(key_argument, ast.Constant)
+        and key_argument.value == "AWORLD_REPLAY_RESPONSE_INDEX"
+    ):
+        return True
+    if not isinstance(key_argument, ast.Name):
+        return False
+    positional_parameters = [
+        *caller.args.posonlyargs,
+        *caller.args.args,
+    ]
+    parameter_index = next(
+        (
+            index
+            for index, argument in enumerate(positional_parameters)
+            if argument.arg == key_argument.id
+        ),
+        None,
+    )
+    if parameter_index is None:
+        return False
+    call_sites = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == caller.name
+    ]
+    call_function_nodes = {id(node.func) for node in call_sites}
+    if any(
+        isinstance(node, ast.Name)
+        and isinstance(node.ctx, ast.Load)
+        and node.id == caller.name
+        and id(node) not in call_function_nodes
+        for node in ast.walk(tree)
+    ):
+        return False
+    if not call_sites:
+        return False
+    for call_site in call_sites:
+        if any(isinstance(argument, ast.Starred) for argument in call_site.args):
+            return False
+        if any(keyword.arg is None for keyword in call_site.keywords):
+            return False
+        keyword_values = [
+            keyword.value
+            for keyword in call_site.keywords
+            if keyword.arg == key_argument.id
+        ]
+        if len(call_site.args) > parameter_index:
+            if keyword_values:
+                return False
+            resolved_argument = call_site.args[parameter_index]
+        elif len(keyword_values) == 1:
+            resolved_argument = keyword_values[0]
+        else:
+            return False
+        if not (
+            isinstance(resolved_argument, ast.Constant)
+            and resolved_argument.value == "AWORLD_REPLAY_RESPONSE_INDEX"
+        ):
+            return False
+    return True
+
+
+def _has_direct_module_import(tree: ast.Module, module_name: str) -> bool:
+    return any(
+        isinstance(node, ast.Import)
+        and any(
+            alias.name == module_name and alias.asname in {None, module_name}
+            for alias in node.names
+        )
+        for node in tree.body
+    )
+
+
+def _function_is_transparent_environment_reader(
+    function: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> bool:
+    positional_parameters = [
+        *function.args.posonlyargs,
+        *function.args.args,
+    ]
+    if (
+        len(positional_parameters) != 1
+        or function.args.vararg is not None
+        or function.args.kwarg is not None
+        or function.args.kwonlyargs
+    ):
+        return False
+    parameter_name = positional_parameters[0].arg
+    body = list(function.body)
+    if (
+        body
+        and isinstance(body[0], ast.Expr)
+        and isinstance(body[0].value, ast.Constant)
+        and isinstance(body[0].value.value, str)
+    ):
+        body.pop(0)
+    if len(body) == 1 and isinstance(body[0], ast.Return):
+        return _is_transparent_environment_get(
+            body[0].value,
+            parameter_name=parameter_name,
+        )
+    if not (
+        len(body) == 2
+        and isinstance(body[0], ast.Assign)
+        and len(body[0].targets) == 1
+        and isinstance(body[0].targets[0], ast.Name)
+        and _is_transparent_environment_get(
+            body[0].value,
+            parameter_name=parameter_name,
+        )
+        and isinstance(body[1], ast.Return)
+        and isinstance(body[1].value, ast.Name)
+        and body[1].value.id == body[0].targets[0].id
+    ):
+        return False
+    return True
+
+
+def _is_transparent_environment_get(
+    expression: ast.AST | None,
+    *,
+    parameter_name: str,
+) -> bool:
+    return bool(
+        isinstance(expression, ast.Call)
+        and isinstance(expression.func, ast.Attribute)
+        and expression.func.attr == "get"
+        and isinstance(expression.func.value, ast.Attribute)
+        and isinstance(expression.func.value.value, ast.Name)
+        and expression.func.value.value.id == "os"
+        and expression.func.value.attr == "environ"
+        and len(expression.args) == 2
+        and isinstance(expression.args[0], ast.Name)
+        and expression.args[0].id == parameter_name
+        and isinstance(expression.args[1], ast.Constant)
+        and expression.args[1].value == ""
+        and not expression.keywords
+    )
+
+
+def _function_reads_json_parameter(
+    function: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> bool:
+    parameter_names = {
+        argument.arg
+        for argument in (
+            *function.args.posonlyargs,
+            *function.args.args,
+            *function.args.kwonlyargs,
+        )
+    }
+    opened_parameter = False
+    loads_opened_stream = False
+    for node in ast.walk(function):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "open"
+            and node.args
+            and isinstance(node.args[0], ast.Name)
+            and node.args[0].id in parameter_names
+        ):
+            opened_parameter = True
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "json"
+            and node.func.attr in {"load", "loads"}
+        ):
+            loads_opened_stream = True
+    return opened_parameter and loads_opened_stream
+
+
+def _simple_assignment_name(statement: ast.stmt) -> str | None:
+    if (
+        isinstance(statement, ast.Assign)
+        and len(statement.targets) == 1
+        and isinstance(statement.targets[0], ast.Name)
+    ):
+        return statement.targets[0].id
+    if isinstance(statement, ast.AnnAssign) and isinstance(
+        statement.target, ast.Name
+    ):
+        return statement.target.id
+    return None
 
 
 def _repair_focus_parent_candidate_ids(
@@ -1975,7 +2860,9 @@ def _population_strategy(
         ),
         "target_behavior_composition": (
             "inherit the verified evaluation-support package byte-for-byte and "
-            "add the smallest releasable target behavior improvement"
+            "add the smallest releasable target behavior improvement; preserve "
+            "successful completion, allow at most one materially different bounded "
+            "fallback, then immediately return supported claims or explicit insufficiency"
         ),
         "missing_capability_completion": (
             "publish candidate-owned files that satisfy every applicable capability "
@@ -2138,11 +3025,9 @@ def _materialize_mutator_output(
         request,
         candidate_index=candidate_index,
     ):
-        # Compiler/runtime conformance repair owns only the typed source
-        # branches.  The parent target content is therefore framework state,
-        # not model output: inherit it deterministically even when a provider
-        # emits current_content or an unrelated Markdown patch alongside the
-        # requested file delta.
+        # Pure compiler/runtime conformance repair owns only typed support
+        # branches. A task-rollout contract that names SKILL.md instead owns
+        # target behavior and must preserve the model's semantic content delta.
         content = base_content
         materialization = f"{materialization}+focused_parent_content"
     if not isinstance(rationale, str):
@@ -2230,7 +3115,11 @@ def _focused_source_repair_parent_content_required(
     if not isinstance(package, Mapping):
         return False
     contract = compile_repair_conformance_contract(repair_focus)
-    return bool(contract is not None and contract.required_branch_paths)
+    return bool(
+        contract is not None
+        and contract.required_branch_paths
+        and "SKILL.md" not in contract.required_branch_paths
+    )
 
 
 def _candidate_id(
@@ -2276,8 +3165,9 @@ def _violates_transport_completion_invariant(content: str) -> bool:
         r".{0,100}\bcompletion signal\b",
         r"\brequested output can be produced from the first successful\b",
     )
-    if not any(re.search(pattern, normalized) for pattern in direct_completion_rules):
-        return False
+    direct_violation = any(
+        re.search(pattern, normalized) for pattern in direct_completion_rules
+    )
 
     semantic_guards = (
         "transport completion is necessary but not sufficient",
@@ -2288,7 +3178,27 @@ def _violates_transport_completion_invariant(content: str) -> bool:
         "payload directly supports the user’s requested result",
         "verify task semantic sufficiency",
     )
-    return not any(guard in normalized for guard in semantic_guards)
+    if direct_violation and not any(
+        guard in normalized for guard in semantic_guards
+    ):
+        return True
+
+    evidence_workflow = all(
+        token in normalized for token in ("evidence", "artifact", "claim")
+    ) and any(
+        token in normalized
+        for token in (
+            "continue acquisition",
+            "continue with one",
+            "try one materially different",
+            "retry once",
+        )
+    )
+    hard_stop = (
+        "exactly one materially different bounded" in normalized
+        and "do not issue more tool calls after that single fallback" in normalized
+    )
+    return evidence_workflow and not hard_stop
 
 
 def _append_transport_completion_invariant(content: str) -> str:
@@ -2301,10 +3211,20 @@ def _append_transport_completion_invariant(content: str) -> str:
         "Persist the first usable response immediately, then verify claim by claim that its "
         "payload directly supports the user's requested result. Stop only when that semantic "
         "check passes. If it does not, make exactly one materially different bounded "
-        "artifact-backed attempt. Persist a manifest entry for that attempt regardless of "
-        "whether it supplies the missing content, then immediately return either the "
+        "artifact-backed attempt, then immediately return either the "
         "supported answer or an explicit insufficiency. Do not issue more tool calls after "
-        "that single fallback, and never invent missing content.\n"
+        "that single fallback. Evidence artifacts must contain direct tool or primary-source "
+        "output, never a model-authored draft answer, synthesis, inferred comparison, or "
+        "remembered knowledge written to a file and cited back as support. Add a manifest "
+        "entry only for a real captured source, read that source before answering, and bind "
+        "each cited claim to the exact bounded excerpt or structured fields used. Never "
+        "claim artifact or manifest-entry counts without computing them from the final "
+        "manifest. Before finalizing, remove every factual, configuration, "
+        "bibliographic, quantitative, symbolic, and quoted claim that is not directly "
+        "supported by a bounded non-compacted artifact excerpt or structured field. Do not "
+        "expand evidence with remembered details. When no supporting source artifact exists, "
+        "state the insufficiency instead of supplying examples, citations, parameter values, "
+        "equations, or other missing content.\n"
     )
 
 

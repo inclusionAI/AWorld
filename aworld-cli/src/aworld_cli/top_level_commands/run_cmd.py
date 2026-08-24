@@ -29,6 +29,55 @@ def _bounded_text(value: object, *, max_chars: int) -> str:
     return text[:head] + ("\n…<bounded>…\n" if tail else "") + text[-tail:]
 
 
+def _complete_llm_usage_projection(value: object) -> dict | None:
+    if not isinstance(value, dict):
+        return None
+    call_count = value.get("call_count")
+    usage_call_count = value.get("usage_call_count")
+    total_tokens = value.get("total_tokens")
+    if (
+        value.get("schema_version") != "aworld.llm_usage_summary.v1"
+        or value.get("coverage_complete") is not True
+        or value.get("ledger_consistent") is not True
+        or isinstance(call_count, bool)
+        or not isinstance(call_count, int)
+        or call_count <= 0
+        or usage_call_count != call_count
+        or isinstance(total_tokens, bool)
+        or not isinstance(total_tokens, int)
+        or total_tokens < 0
+    ):
+        return None
+    projected = {
+        "schema_version": "aworld.llm_usage_summary.v1",
+        "call_count": call_count,
+        "usage_call_count": usage_call_count,
+        "total_tokens": total_tokens,
+        "coverage_complete": True,
+        "ledger_consistent": True,
+    }
+    iteration_count = value.get("iteration_count")
+    if (
+        not isinstance(iteration_count, bool)
+        and isinstance(iteration_count, int)
+        and iteration_count > 0
+    ):
+        projected["iteration_count"] = iteration_count
+    input_tokens = value.get("input_tokens")
+    output_tokens = value.get("output_tokens")
+    if (
+        not isinstance(input_tokens, bool)
+        and isinstance(input_tokens, int)
+        and input_tokens >= 0
+        and not isinstance(output_tokens, bool)
+        and isinstance(output_tokens, int)
+        and output_tokens >= 0
+    ):
+        projected["input_tokens"] = input_tokens
+        projected["output_tokens"] = output_tokens
+    return projected
+
+
 def _terminal_trajectory_projection(
     item: dict,
     *,
@@ -114,6 +163,9 @@ def _bounded_task_response_capability_payload(
         ),
         "trajectory_digest": "sha256:" + hashlib.sha256(encoded).hexdigest(),
     }
+    llm_usage = _complete_llm_usage_projection(sidecar.get("llm_usage"))
+    if llm_usage is not None:
+        compact["llm_usage"] = llm_usage
     compact_encoded = json.dumps(
         compact,
         ensure_ascii=False,

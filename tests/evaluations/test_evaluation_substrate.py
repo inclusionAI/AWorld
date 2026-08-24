@@ -1362,6 +1362,69 @@ The candidate should not pass.
 
 
 @pytest.mark.asyncio
+async def test_agent_judge_backend_reclassifies_unattested_framework_projection() -> None:
+    async def fake_executor(prompt: str, system_prompt: str):
+        return {
+            "score": 73.0,
+            "verdict": "Marginal",
+            "evidence_repair_constraints": [
+                {
+                    "subject_kind": "configuration_claim",
+                    "failure_mode": "projection_compacted",
+                    "source_layer": "artifact_projection",
+                    "required_action": "expand_bounded_projection",
+                    "owner": "framework",
+                    "occurrence_count": 1,
+                },
+                {
+                    "subject_kind": "quantitative_claim",
+                    "failure_mode": "support_incomplete",
+                    "source_layer": "candidate_output",
+                    "required_action": "support_or_omit",
+                    "owner": "candidate",
+                    "occurrence_count": 1,
+                },
+            ],
+        }
+
+    backend = AgentJudgeBackend(
+        backend_id="agent-backend",
+        system_prompt="judge",
+        executor=fake_executor,
+        prompt_builder=lambda case_input, target, suite: json.dumps(
+            {
+                "artifact_backed_evidence": {
+                    "read_policy": {"max_rounds": 3},
+                    "artifacts": [],
+                }
+            }
+        ),
+    )
+
+    execution = await backend.execute(
+        case_input={"query": "evaluate"},
+        target={"answer": "done"},
+        suite=EvalSuiteDef(suite_id="trajectory-source-evaluator"),
+    )
+
+    constraints = execution.payload["evidence_repair_constraints"]
+    assert constraints[0] == {
+        "subject_kind": "configuration_claim",
+        "failure_mode": "support_incomplete",
+        "source_layer": "candidate_output",
+        "required_action": "support_or_omit",
+        "owner": "candidate",
+        "occurrence_count": 1,
+    }
+    assert constraints[1]["owner"] == "candidate"
+    assert execution.payload["evidence_projection_attestation"] == {
+        "framework_constraint_count": 1,
+        "runtime_attested_count": 0,
+        "reclassified_count": 1,
+    }
+
+
+@pytest.mark.asyncio
 async def test_agent_judge_backend_prefers_complete_judge_payload_over_nested_score_objects() -> None:
     async def fake_executor(prompt: str, system_prompt: str):
         return """
@@ -1804,7 +1867,20 @@ async def test_agent_judge_backend_requires_final_payload_after_read_round_budge
             "read_round_budget_exhausted"
         )
         assert "do not emit more" in payload["artifact_read_followup_instruction"]
-        return {"score": 70.0, "verdict": "Marginal"}
+        return {
+            "score": 70.0,
+            "verdict": "Marginal",
+            "evidence_repair_constraints": [
+                {
+                    "subject_kind": "artifact",
+                    "failure_mode": "projection_compacted",
+                    "source_layer": "artifact_projection",
+                    "required_action": "expand_bounded_projection",
+                    "owner": "framework",
+                    "occurrence_count": 1,
+                }
+            ],
+        }
 
     prompt = {
         "artifact_backed_evidence": {
@@ -1838,6 +1914,14 @@ async def test_agent_judge_backend_requires_final_payload_after_read_round_budge
     ]
     assert execution.diagnostics[-1]["artifact_read_budget_exhausted"] is True
     assert execution.diagnostics[-1]["artifact_read_projection_incomplete"] is True
+    assert execution.payload["evidence_repair_constraints"][0]["owner"] == (
+        "framework"
+    )
+    assert execution.payload["evidence_projection_attestation"] == {
+        "framework_constraint_count": 1,
+        "runtime_attested_count": 1,
+        "reclassified_count": 0,
+    }
 
 
 @pytest.mark.asyncio

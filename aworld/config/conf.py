@@ -268,7 +268,10 @@ class SelfEvolveConfig(BaseConfig):
     judge_config: SelfEvolveJudgeConfig = Field(default_factory=SelfEvolveJudgeConfig)
     replay_enabled: bool = True
     replay_timeout_seconds: int = 600
-    replay_max_steps: Optional[int] = 1
+    # Match the direct ``aworld-cli run`` multi-step default.  A single model
+    # turn can issue a tool call but cannot observe its result and synthesize a
+    # terminal answer, which deterministically censors browser/tool replays.
+    replay_max_steps: Optional[int] = None
     replay_candidate_limit: int = 2
     candidate_screening_max_cases: int = 3
     max_generated_candidates: int = 6

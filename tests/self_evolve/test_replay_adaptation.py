@@ -1974,7 +1974,12 @@ def _result_with_request_provenance(request, candidate_id: str) -> CandidateRepl
                         "service_endpoint": json.dumps(
                             {"recorded-http": "http://127.0.0.1:41002"},
                             separators=(",", ":"),
-                        )
+                        ),
+                        # The fake backend represents a rollout that reached
+                        # the candidate-owned replay service.  Keep that
+                        # causal observation explicit now that the replay gate
+                        # rejects merely configured-but-unexercised support.
+                        "replay_service_protocol_trace_count": 1,
                     }
                     if capability is not None
                     else {}
