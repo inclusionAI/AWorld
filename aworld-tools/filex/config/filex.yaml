@@ -1,0 +1,26 @@
+# Safe, credential-free defaults bundled in the public image.
+# Override the whole file with FILEX_CONFIG_PATH, or pass per-request settings
+# through `filex parse --env-content-file /root/workspace/filex-env.json`.
+document_parse:
+  liteparse:
+    ocr_enabled: false
+  pdf:
+    parse_provider: liteparse
+    page_batch_size: 10
+    first_batch_page_count: 1
+  pptx:
+    parse_provider: python_pptx
+
+media_parse:
+  audio:
+    backend: local
+    local:
+      model: base
+      device: auto
+      compute_type: default
+  video:
+    backend: local
+    local:
+      model: base
+      device: auto
+      compute_type: default

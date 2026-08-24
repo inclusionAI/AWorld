@@ -1,0 +1,4 @@
+interface:
+  display_name: "FileX"
+  short_description: "Parse documents and media with FileX"
+  default_prompt: "Use $filex to parse this file and work with its content."

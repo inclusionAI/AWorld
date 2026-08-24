@@ -444,6 +444,18 @@ def test_global_parser_help_excludes_serve_specific_flags() -> None:
     assert "--mcp" not in help_text
 
 
+def test_global_parser_registers_emit_trajectory_for_legacy_task_mode() -> None:
+    from aworld_cli.main import build_parser
+
+    default_args = build_parser().parse_args(["--task", "write tests"])
+    enabled_args = build_parser().parse_args(
+        ["--task", "write tests", "--emit-trajectory"]
+    )
+
+    assert default_args.emit_trajectory is False
+    assert enabled_args.emit_trajectory is True
+
+
 def test_main_routes_default_interactive_through_registered_command(
     monkeypatch,
 ) -> None:
@@ -477,6 +489,7 @@ def test_main_routes_task_mode_through_hidden_run_command(
     def fake_run(self, args, context):
         calls["run"] += 1
         assert args.task == "write tests"
+        assert args.emit_trajectory is False
         return 0
 
     monkeypatch.setattr(
