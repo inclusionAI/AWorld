@@ -364,10 +364,11 @@ class RunTopLevelCommand:
                 ),
             )
         )
+        emit_trajectory = getattr(args, "emit_trajectory", False)
         task_response_path = os.environ.get(
             "AWORLD_SELF_EVOLVE_TASK_RESPONSE_PATH"
         )
-        if args.emit_trajectory or task_response_path:
+        if emit_trajectory or task_response_path:
             from aworld_cli.main import _trajectory_payload_from_direct_run_summary
 
             trajectory_payload = _trajectory_payload_from_direct_run_summary(
@@ -380,7 +381,7 @@ class RunTopLevelCommand:
                     trajectory_payload,
                     capability_fd=task_response_capability,
                 )
-        if args.emit_trajectory:
+        if emit_trajectory:
             print(
                 json.dumps(
                     trajectory_payload,
