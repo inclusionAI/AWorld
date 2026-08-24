@@ -6313,7 +6313,12 @@ def _framework_resolved_endpoint_bindings(
     """
 
     if profile is None:
-        return {}
+        return dict(
+            sorted(
+                (str(binding_id), str(endpoint))
+                for binding_id, endpoint in service_endpoints.items()
+            )
+        )
     resolved = {
         binding.binding_id: str(environment[binding.environment_name])
         for binding in profile.endpoint_bindings
@@ -6338,18 +6343,37 @@ def _runtime_resolved_endpoint_bindings(
 ) -> Mapping[str, str]:
     """Resolve only framework-attested bindings for evidence preflight."""
 
-    resolved = {
+    framework_resolved = {
         str(binding_id): str(endpoint)
         for binding_id, endpoint in request.framework_endpoint_bindings.items()
     }
+    resolved: dict[str, str] = {}
     for binding in profile.endpoint_bindings:
-        if (
-            binding.binding_id not in resolved
-            and binding.environment_name in request.environment
-        ):
-            resolved[binding.binding_id] = str(
-                request.environment[binding.environment_name]
+        endpoint = framework_resolved.get(binding.binding_id)
+        runtime_alias = (
+            binding.binding_id.removeprefix("runtime.")
+            if binding.binding_id.startswith("runtime.")
+            else None
+        )
+        if endpoint is None and runtime_alias is not None:
+            endpoint = framework_resolved.get(runtime_alias)
+        if endpoint is None:
+            environment_names = [binding.environment_name]
+            if runtime_alias is not None:
+                environment_names.append(
+                    "AWORLD_REPLAY_ENDPOINT_"
+                    + re.sub(r"[^A-Z0-9]+", "_", runtime_alias.upper()).strip("_")
+                )
+            endpoint = next(
+                (
+                    str(request.environment[name])
+                    for name in environment_names
+                    if name in request.environment
+                ),
+                None,
             )
+        if endpoint is not None:
+            resolved[binding.binding_id] = endpoint
     return dict(sorted(resolved.items()))
 
 
