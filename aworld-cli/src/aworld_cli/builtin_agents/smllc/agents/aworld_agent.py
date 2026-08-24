@@ -11,10 +11,10 @@ or coordinated multi-agent collaboration.
 import os
 import sys
 import traceback
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional, List
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from aworld.core.context.amni import AgentContextConfig
 from aworld.core.context.amni.config import get_default_config, ContextEnvConfig
@@ -50,7 +50,15 @@ from aworld.config import AgentConfig, ModelConfig
 # for skills use
 CAST_ANALYSIS, CAST_CODER
 
-_BEIJING_TZ = ZoneInfo("Asia/Shanghai")
+def _beijing_timezone():
+    """Resolve Beijing time even in minimal benchmark images without tzdata."""
+    try:
+        return ZoneInfo("Asia/Shanghai")
+    except ZoneInfoNotFoundError:
+        return timezone(timedelta(hours=8), name="Asia/Shanghai")
+
+
+_BEIJING_TZ = _beijing_timezone()
 
 
 def resolve_aworld_prompt_budget() -> Optional[PromptBudgetPolicy]:
