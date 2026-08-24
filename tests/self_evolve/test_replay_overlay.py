@@ -302,6 +302,45 @@ def test_framework_endpoint_resolution_uses_supervisor_service_identity() -> Non
     }
 
 
+def test_runtime_endpoint_alias_round_trips_without_measurement_profile() -> None:
+    environment = {
+        "AWORLD_REPLAY_ENDPOINT_SERVICE_1": "http://127.0.0.1:25346"
+    }
+    profile = compile_replay_evidence_policy_profile_v2(
+        endpoint_bindings=(
+            DynamicEndpointBinding(
+                binding_id="runtime.service_1",
+                service_identity="replay.service.1",
+                endpoint="http://127.0.0.1:25346",
+            ),
+        )
+    )
+    framework_bindings = _framework_resolved_endpoint_bindings(
+        None,
+        environment=environment,
+        service_endpoints={"service_1": "http://127.0.0.1:25346"},
+    )
+    request = ReplayExecutionRequest(
+        variant_id="baseline",
+        task_id="case-1",
+        candidate_id="candidate-1",
+        workspace_root="/tmp/workspace",
+        task_input="task",
+        task_text="task",
+        skill_root=None,
+        artifact_dir="/tmp/artifact",
+        environment=environment,
+        framework_endpoint_bindings=framework_bindings,
+    )
+
+    assert framework_bindings == {
+        "service_1": "http://127.0.0.1:25346"
+    }
+    assert _runtime_resolved_endpoint_bindings(request, profile) == {
+        "runtime.service_1": "http://127.0.0.1:25346"
+    }
+
+
 @pytest.mark.asyncio
 async def test_required_measurement_preflight_uses_framework_endpoint_binding(
     monkeypatch: pytest.MonkeyPatch,
@@ -363,6 +402,44 @@ async def test_required_measurement_preflight_uses_framework_endpoint_binding(
             measurement_evidence_policy_profile=profile,
             lane_materialization_fingerprint=fp("lane"),
             evidence_finalization_timeout_seconds=10,
+        )
+    )
+
+    assert called is True
+    assert result.failure is not None
+    assert result.failure.get("code") != "evidence_policy_v2_preflight_failed"
+
+
+@pytest.mark.asyncio
+async def test_required_shadow_preflight_round_trips_runtime_endpoint_alias(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    called = False
+
+    def fake_run(command, **kwargs):
+        nonlocal called
+        called = True
+        return subprocess.CompletedProcess(command, 1, stdout="", stderr="stopped")
+
+    monkeypatch.setattr("aworld.self_evolve.replay._run_replay_cli", fake_run)
+    result = await AWorldCliReplayExecutor()(
+        ReplayExecutionRequest(
+            variant_id="baseline",
+            task_id="case-1",
+            candidate_id="candidate-1",
+            workspace_root=str(tmp_path),
+            task_input="task",
+            task_text="task",
+            skill_root=None,
+            artifact_dir=str(tmp_path / "artifacts-shadow"),
+            environment={
+                "AWORLD_REPLAY_ENDPOINT_SERVICE_1": "http://127.0.0.1:25346"
+            },
+            framework_endpoint_bindings={
+                "service_1": "http://127.0.0.1:25346"
+            },
+            evidence_policy_mode="required",
         )
     )
 
