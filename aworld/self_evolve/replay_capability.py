@@ -162,6 +162,131 @@ class ReplayCapabilityError(RuntimeError):
         self.details = dict(details or {})
 
 
+def python_source_syntax_counterexample(
+    *,
+    source_path: str,
+    error: SyntaxError,
+    code: str = "runtime_python_syntax_invalid",
+) -> dict[str, object]:
+    """Build a stable, payload-free repair contract for invalid Python source."""
+
+    message = str(error.msg or "invalid Python syntax")
+    syntax_kind = (
+        "global_declaration_after_use"
+        if any(
+            marker in message
+            for marker in (
+                "used prior to global declaration",
+                "assigned to before global declaration",
+            )
+        )
+        else "python_compile_invalid"
+    )
+    source_role = "compiler" if code.startswith("compiler_") else "runtime"
+    required_action = (
+        "declare the global once before its first use in the function, or "
+        "remove the duplicate global declaration"
+        if syntax_kind == "global_declaration_after_use"
+        else f"make the candidate-owned Python {source_role} compile successfully"
+    )
+    identity_payload = {
+        "code": code,
+        "source_path": source_path,
+        "syntax_kind": syntax_kind,
+    }
+    identity = hashlib.sha256(
+        json.dumps(
+            identity_payload,
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    ).hexdigest()
+    return {
+        "schema_version": "aworld.self_evolve.python_source_counterexample.v1",
+        "counterexample_id": f"python-source-counterexample-{identity}",
+        "owner": "candidate",
+        **identity_payload,
+        "line": max(1, int(error.lineno or 1)),
+        "offset": max(0, int(error.offset or 0)),
+        "message": message,
+        "required_action": required_action,
+    }
+
+
+def _validate_discovered_python_entrypoint(
+    capability: DiscoveredReplayCapability,
+) -> None:
+    source_path = capability.manifest.entrypoint
+    try:
+        compile(capability.entrypoint.read_bytes(), source_path, "exec")
+    except SyntaxError as exc:
+        counterexample = python_source_syntax_counterexample(
+            source_path=source_path,
+            error=exc,
+            code="compiler_python_syntax_invalid",
+        )
+        raise ReplayCapabilityError(
+            (
+                "candidate replay Python compiler does not compile: "
+                f"{source_path}:{counterexample['line']}: "
+                f"{counterexample['message']}"
+            ),
+            code="compiler_python_syntax_invalid",
+            details={
+                "source_path": source_path,
+                "syntax_kind": counterexample["syntax_kind"],
+                "source_line": counterexample["line"],
+                "source_offset": counterexample["offset"],
+                "counterexample_contracts": [counterexample],
+            },
+        ) from exc
+    except (OSError, UnicodeError) as exc:
+        raise ReplayCapabilityError(
+            f"candidate replay Python compiler is unreadable: {source_path}",
+            code="compiler_python_source_unreadable",
+            details={"source_path": source_path},
+        ) from exc
+
+
+def _validate_frozen_python_runtime(
+    runtime_root: Path,
+    runtime_files: Sequence[FrozenReplayFile],
+) -> None:
+    for item in runtime_files:
+        if Path(item.path).suffix.casefold() != ".py":
+            continue
+        path = _resolve_output_file(runtime_root, item.path)
+        try:
+            compile(path.read_bytes(), item.path, "exec")
+        except SyntaxError as exc:
+            counterexample = python_source_syntax_counterexample(
+                source_path=item.path,
+                error=exc,
+            )
+            raise ReplayCapabilityError(
+                (
+                    "candidate replay Python runtime does not compile: "
+                    f"{item.path}:{counterexample['line']}: "
+                    f"{counterexample['message']}"
+                ),
+                code="runtime_python_syntax_invalid",
+                details={
+                    "source_path": item.path,
+                    "syntax_kind": counterexample["syntax_kind"],
+                    "source_line": counterexample["line"],
+                    "source_offset": counterexample["offset"],
+                    "counterexample_contracts": [counterexample],
+                },
+            ) from exc
+        except (OSError, UnicodeError) as exc:
+            raise ReplayCapabilityError(
+                f"candidate replay Python runtime is unreadable: {item.path}",
+                code="runtime_python_source_unreadable",
+                details={"source_path": item.path},
+            ) from exc
+
+
 def _raise_schema_field_error(
     message: str,
     violations: Sequence[SchemaFieldViolation],
@@ -1080,6 +1205,7 @@ def compile_and_freeze_capability(
     compiler = executor or SubprocessReplayCapabilityExecutor()
     try:
         _verify_discovered_capability_unchanged(capability)
+        _validate_discovered_python_entrypoint(capability)
         first = compiler.execute(capability, request, compile_a)
         _verify_discovered_capability_unchanged(capability)
         second = compiler.execute(capability, request, compile_b)
@@ -1403,6 +1529,109 @@ def _verify_recorded_response_indexes_and_runtime_bindings(
                     "source_behavior_proofs": [source_behavior_proof],
                 },
             )
+
+
+def _require_recorded_response_fixture_for_sidecar_runtime(
+    *,
+    capability: DiscoveredReplayCapability,
+    request: ReplayCapabilityCompileRequest,
+    result: ReplayCapabilityCompileResult,
+    fixture: str,
+    response_index: Mapping[str, Any],
+) -> None:
+    """Reject a compiler selector that strands a proven sidecar consumer.
+
+    The framework may offer several immutable derivations for one evidence
+    reference.  A compact request/tool-call fragment can be the smallest
+    source while containing no recorded response at all.  If a declared skill
+    runtime is statically proven to consume ``AWORLD_REPLAY_RESPONSE_INDEX``,
+    launching it without a generated sidecar can only fail.  Detect that
+    candidate-owned source-selection error before operational conformance.
+    """
+
+    records = response_index.get("records")
+    if isinstance(records, list) and records:
+        return
+    requirements = {
+        item.requirement_id: item for item in request.requirements
+    }
+    affected_services: list[str] = []
+    available_recorded_source_count = 0
+    for service in result.services:
+        if (
+            service.response_fixture != fixture
+            or service.transport != "skill_runtime"
+            or service.runtime_entrypoint is None
+            or not service.protocol_probes
+        ):
+            continue
+        requirement = requirements.get(service.requirement_id)
+        if requirement is None:
+            continue
+        eligible_sources = [
+            source
+            for evidence_ref in requirement.evidence_refs
+            for source in request.evidence_derivations.get(evidence_ref, ())
+            if isinstance(source.get("response_index_path"), str)
+            and bool(str(source["response_index_path"]).strip())
+            and isinstance(source.get("response_record_count"), int)
+            and not isinstance(source.get("response_record_count"), bool)
+            and int(source["response_record_count"]) > 0
+        ]
+        if not eligible_sources:
+            continue
+        runtime_path = _resolve_skill_file(
+            capability.skill_root,
+            service.runtime_entrypoint,
+            label="runtime entrypoint",
+        )
+        try:
+            runtime_source = runtime_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        if recorded_response_index_source_behavior_proof(runtime_source).get(
+            "proven"
+        ) is not True:
+            continue
+        affected_services.append(service.service_id)
+        available_recorded_source_count += len(eligible_sources)
+    if not affected_services:
+        return
+
+    violation = _schema_field_violation(
+        schema_layer="compiler",
+        field_path="evidence_derivations[*].response_index_path",
+        rule="enum",
+        expected=("recorded_response_source",),
+        value="selected_fixture_without_recorded_response",
+        value_domain="source_behavior",
+        required_operations=(
+            "restrict_to_positive_recorded_response_sources",
+            "prefer_maximum_response_record_count",
+        ),
+        forbidden_operations=(
+            "rank_all_sources_by_minimum_byte_length_first",
+        ),
+    )
+    details = schema_field_diagnostic_details((violation,))
+    details.update(
+        {
+            "counterexample_contracts": [
+                _schema_field_counterexample_contract(violation)
+            ],
+            "fixture": fixture,
+            "affected_service_ids": sorted(affected_services),
+            "available_recorded_source_count": (
+                available_recorded_source_count
+            ),
+        }
+    )
+    raise ReplayCapabilityError(
+        "skill runtime consumes AWORLD_REPLAY_RESPONSE_INDEX but the compiler "
+        "selected a fixture without recorded responses",
+        code="recorded_response_fixture_unselected",
+        details=details,
+    )
 
 
 def _runtime_consumes_recorded_response_index(source: str) -> bool:
@@ -4351,6 +4580,13 @@ def _freeze_compile_result(
             )
         except OSError:
             response_index = {"records": []}
+        _require_recorded_response_fixture_for_sidecar_runtime(
+            capability=capability,
+            request=request,
+            result=result,
+            fixture=relative,
+            response_index=response_index,
+        )
         if response_index.get("records"):
             response_index_path = destination.with_suffix(".responses.json")
             _write_json(response_index_path, response_index)
@@ -4363,6 +4599,7 @@ def _freeze_compile_result(
         shutil.copyfile(source, destination, follow_symlinks=False)
         destination.chmod(source.stat().st_mode & 0o777)
         frozen_runtime.append(_frozen_file(destination, relative))
+    _validate_frozen_python_runtime(runtime_root, frozen_runtime)
     payload = {
         "schema_version": REPLAY_CAPABILITY_RESULT_SCHEMA_VERSION,
         "capability_id": result.capability_id,

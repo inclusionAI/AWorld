@@ -2169,6 +2169,7 @@ def _candidate_conformance_failure_signatures(
         failure_fingerprint = details.get("failure_fingerprint")
         shape = {
             "code": details.get("code"),
+            "capability_error_code": details.get("capability_error_code"),
             "stage": details.get("stage"),
             "failure_fingerprint": failure_fingerprint,
             "contract_fingerprint": _repair_contract_fingerprint(
@@ -9898,12 +9899,7 @@ class SelfEvolveRunner:
                     else artifact_dir.name
                 )
                 error_reason = sanitize_text(str(exc), max_chars=512)
-                raw_error_code = getattr(exc, "code", None)
-                error_code = (
-                    raw_error_code
-                    if isinstance(raw_error_code, str) and raw_error_code
-                    else "repair_probe_execution_failed"
-                )
+                error_code = _repair_probe_root_cause_code(exc)
                 raw_error_details = getattr(exc, "details", None)
                 typed_error_details = {
                     key: value
@@ -9934,6 +9930,7 @@ class SelfEvolveRunner:
                     diagnostics={
                         "affected_case_ids": list(group.case_ids)[:100],
                         "error_type": type(exc).__name__,
+                        "root_cause_code": error_code,
                         "reason": error_reason,
                         **typed_error_details,
                     },
@@ -9974,6 +9971,7 @@ class SelfEvolveRunner:
                         "fingerprint": fingerprint,
                         "passed": False,
                         "code": error_code,
+                        "root_cause_code": error_code,
                         "requirement_id": group.requirement_id,
                         "case_ids": list(group.case_ids),
                         "artifact_ref": artifact_ref,
@@ -22981,6 +22979,11 @@ def _failed_probe_typed_feedback(
     for result in failed_groups:
         diagnostic: dict[str, object] = {
             "code": str(result.get("code") or "repair_probe_execution_failed"),
+            "root_cause_code": str(
+                result.get("root_cause_code")
+                or result.get("code")
+                or "repair_probe_execution_failed"
+            ),
             "error_type": str(result.get("error_type") or "Exception"),
             "reason": str(result.get("reason") or "candidate probe failed"),
         }
@@ -23105,6 +23108,19 @@ def _failed_probe_typed_feedback(
             runtime_response_observations[:32]
         )
     return feedback
+
+
+def _repair_probe_root_cause_code(exc: Exception) -> str:
+    declared = getattr(exc, "code", None)
+    if isinstance(declared, str) and declared:
+        return declared
+    if isinstance(exc, ReplayServiceReadinessTimeout):
+        if exc.phase == "protocol_probe":
+            return "replay_service_protocol_probe_timeout"
+        return "replay_service_readiness_failed"
+    if isinstance(exc, ReplayServiceProcessExitedError):
+        return "replay_service_process_exited_before_readiness"
+    return "repair_probe_execution_failed"
 
 
 def _repair_conformance_gate(

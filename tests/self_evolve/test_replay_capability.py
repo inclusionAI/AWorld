@@ -1833,6 +1833,72 @@ def test_compile_request_identity_ignores_cycle_local_paths(
     assert first.request_fingerprint == second.request_fingerprint
 
 
+def test_freeze_rejects_invalid_python_runtime_with_typed_counterexample(
+    tmp_path: Path,
+) -> None:
+    skill = _write_capability_skill(tmp_path)
+    (skill / "replay" / "runtime.py").write_text(
+        "value = 0\n"
+        "def handle():\n"
+        "    global value\n"
+        "    value += 1\n"
+        "    global value\n",
+        encoding="utf-8",
+    )
+    capability = discover_replay_capability(skill)
+    assert capability is not None
+
+    with pytest.raises(ReplayCapabilityError) as error:
+        compile_and_freeze_capability(
+            capability,
+            _request(skill),
+            tmp_path / "compile-invalid-runtime",
+        )
+
+    assert error.value.code == "runtime_python_syntax_invalid"
+    assert error.value.details["source_path"] == "replay/runtime.py"
+    assert error.value.details["syntax_kind"] == (
+        "global_declaration_after_use"
+    )
+    counterexample = error.value.details["counterexample_contracts"][0]
+    assert counterexample["schema_version"] == (
+        "aworld.self_evolve.python_source_counterexample.v1"
+    )
+    assert counterexample["owner"] == "candidate"
+    assert counterexample["required_action"].startswith("declare the global once")
+
+
+def test_compile_rejects_invalid_python_compiler_with_typed_counterexample(
+    tmp_path: Path,
+) -> None:
+    skill = _write_capability_skill(tmp_path)
+    compiler = skill / "replay" / "compiler.py"
+    compiler.write_text(
+        compiler.read_text(encoding="utf-8").replace(
+            "output = Path(args.output)\n",
+            "output = Path(args.output)\\    invalid = True\n",
+        ),
+        encoding="utf-8",
+    )
+    capability = discover_replay_capability(skill)
+    assert capability is not None
+
+    with pytest.raises(ReplayCapabilityError) as error:
+        compile_and_freeze_capability(
+            capability,
+            _request(skill),
+            tmp_path / "compile-invalid-compiler",
+        )
+
+    assert error.value.code == "compiler_python_syntax_invalid"
+    assert error.value.details["source_path"] == "replay/compiler.py"
+    assert error.value.details["syntax_kind"] == "python_compile_invalid"
+    counterexample = error.value.details["counterexample_contracts"][0]
+    assert counterexample["code"] == "compiler_python_syntax_invalid"
+    assert counterexample["owner"] == "candidate"
+    assert "Python compiler" in counterexample["required_action"]
+
+
 def test_recorded_response_index_reconstructs_nested_operation_payloads() -> None:
     fixture = {
         "wrapper": [
@@ -2087,6 +2153,94 @@ def test_freeze_places_operation_index_next_to_nested_fixture(tmp_path: Path) ->
     sidecar_payload = json.loads(sidecar.read_text(encoding="utf-8"))
     assert sidecar_payload["operations"] == ["records.query"]
     assert sidecar_payload["records"][0]["non_empty"] is True
+
+
+@pytest.mark.replay_sandbox
+def test_freeze_rejects_sidecar_runtime_with_unrecorded_selected_fixture(
+    tmp_path: Path,
+) -> None:
+    skill = _write_capability_skill(tmp_path)
+    compiler_path = skill / "replay/compiler.py"
+    compiler_path.write_text(
+        compiler_path.read_text(encoding="utf-8").replace(
+            "'transport': 'http_fixture',",
+            (
+                "'transport': 'skill_runtime',\n"
+                "        'runtime_entrypoint': 'replay/runtime.py',\n"
+                "        'protocol_probes': [{\n"
+                "            'kind': 'http',\n"
+                "            'path': '/data',\n"
+                "            'timeout_seconds': 2.0,\n"
+                "            'response_contains': 'recorded fixture',\n"
+                "        }],"
+            ),
+        ),
+        encoding="utf-8",
+    )
+    base_request = _request(skill)
+    evidence_ref = base_request.requirements[0].evidence_refs[0]
+    rich_fixture = tmp_path / "rich-recorded.json"
+    rich_fixture.write_text(
+        json.dumps(
+            {
+                "action_result": [
+                    {
+                        "action_name": "records.query",
+                        "content": {"value": "authoritative response"},
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    rich_sidecar = tmp_path / "rich-recorded.responses.json"
+    rich_sidecar.write_text('{"records": [{"value": "authoritative response"}]}')
+    request = ReplayCapabilityCompileRequest.create(
+        requirements=base_request.requirements,
+        context_snapshots=base_request.context_snapshots,
+        task_inputs=base_request.task_inputs,
+        capability_root=skill,
+        context_fingerprint=base_request.context_fingerprint,
+        evidence_derivations={
+            evidence_ref: (
+                {
+                    "path": str(rich_fixture),
+                    "byte_length": rich_fixture.stat().st_size,
+                    "response_index_path": str(rich_sidecar),
+                    "response_record_count": 1,
+                },
+            )
+        },
+    )
+    capability = discover_replay_capability(skill)
+    assert capability is not None
+
+    with pytest.raises(ReplayCapabilityError) as error:
+        compile_and_freeze_capability(
+            capability,
+            request,
+            tmp_path / "compile",
+        )
+
+    assert error.value.code == "recorded_response_fixture_unselected"
+    assert error.value.details["affected_service_ids"] == ["fixture-http"]
+    assert error.value.details["available_recorded_source_count"] == 1
+    assert error.value.details["schema_field_constraints"] == [
+        {
+            "schema_layer": "compiler",
+            "field_path": "evidence_derivations[*].response_index_path",
+            "rule": "enum",
+            "expected": ["recorded_response_source"],
+            "value_domain": "source_behavior",
+            "required_operations": [
+                "restrict_to_positive_recorded_response_sources",
+                "prefer_maximum_response_record_count",
+            ],
+            "forbidden_operations": [
+                "rank_all_sources_by_minimum_byte_length_first"
+            ],
+        }
+    ]
 
 
 def test_discovery_returns_none_without_manifest(tmp_path: Path) -> None:

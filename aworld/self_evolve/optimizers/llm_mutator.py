@@ -1844,10 +1844,26 @@ def _canonicalize_fixture_source_selector_output(
         candidate_index=candidate_index
     )
     contract = compile_repair_conformance_contract(repair_focus)
+    recorded_source_constraint = bool(
+        contract is not None
+        and any(
+            constraint.schema_layer == "compiler"
+            and constraint.field_path
+            == "evidence_derivations[*].response_index_path"
+            and "recorded_response_source" in constraint.expected
+            for constraint in contract.schema_field_constraints
+        )
+    )
     if (
         contract is None
-        or "protocol_probe_not_fixture_derived" not in contract.failure_codes
-        or not contract.requires_compiler_fixture_reconstruction
+        or not (
+            contract.fixture_probe_constraints
+            or recorded_source_constraint
+        )
+        or not (
+            contract.requires_compiler_fixture_reconstruction
+            or recorded_source_constraint
+        )
         or contract.compiler_path is None
         or contract.compiler_path not in contract.required_branch_paths
     ):
@@ -1935,8 +1951,16 @@ def _canonicalize_fixture_source_selector(source: str) -> str | None:
         node
         for node in tree.body
         if isinstance(node, ast.FunctionDef)
-        and ast.dump(node, include_attributes=False)
-        == ast.dump(legacy_function, include_attributes=False)
+        and [argument.arg for argument in node.args.args]
+        == [argument.arg for argument in legacy_function.args.args]
+        and ast.dump(
+            ast.Module(body=node.body, type_ignores=[]),
+            include_attributes=False,
+        )
+        == ast.dump(
+            ast.Module(body=legacy_function.body, type_ignores=[]),
+            include_attributes=False,
+        )
     ]
     if len(matches) != 1:
         return None

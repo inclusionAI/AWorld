@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -757,6 +758,119 @@ def test_fixture_source_selector_prefers_authoritative_record_coverage() -> None
 
     assert select_source("evidence", derivations)["path"] == "complete"
     assert select_source("no-response", derivations)["path"] == "small"
+
+    untyped = llm_mutator_module._MINIMUM_BYTE_SOURCE_SELECTOR.replace(
+        "evidence_ref: str, derivations: dict) -> dict | None",
+        "evidence_ref, derivations)",
+    )
+    assert llm_mutator_module._canonicalize_fixture_source_selector(untyped) is not None
+
+
+def test_fixture_source_selector_normalization_uses_typed_probe_contract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = SimpleNamespace(
+        repair_focus_for_candidate=lambda **_kwargs: {"typed": True}
+    )
+    contract = SimpleNamespace(
+        fixture_probe_constraints=(object(),),
+        schema_field_constraints=(),
+        requires_compiler_fixture_reconstruction=True,
+        compiler_path="replay/compiler.py",
+        required_branch_paths=("replay/compiler.py",),
+    )
+    monkeypatch.setattr(
+        llm_mutator_module,
+        "compile_evolution_context",
+        lambda _request: context,
+    )
+    monkeypatch.setattr(
+        llm_mutator_module,
+        "compile_repair_conformance_contract",
+        lambda _focus: contract,
+    )
+    output = {
+        "content": "# Demo\n\nUse the reusable workflow.\n",
+        "rationale": "repair fixture source selection",
+        "addressed_improvement_signal_ids": [],
+        "files": [
+            {
+                "path": "replay/compiler.py",
+                "operation": "upsert",
+                "content": llm_mutator_module._MINIMUM_BYTE_SOURCE_SELECTOR,
+            }
+        ],
+    }
+
+    normalized = (
+        llm_mutator_module._canonicalize_fixture_source_selector_output(
+            output,
+            request=_request(max_candidates=1),
+            candidate_index=0,
+        )
+    )
+
+    compiler = normalized["files"][0]["content"]
+    assert "response_index_path" in compiler
+    assert "response_record_count" in compiler
+    assert "return max(" in compiler
+
+
+def test_fixture_source_selector_normalization_uses_compiler_source_constraint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = SimpleNamespace(
+        repair_focus_for_candidate=lambda **_kwargs: {"typed": True}
+    )
+    contract = SimpleNamespace(
+        fixture_probe_constraints=(),
+        schema_field_constraints=(
+            SimpleNamespace(
+                schema_layer="compiler",
+                field_path="evidence_derivations[*].response_index_path",
+                expected=("recorded_response_source",),
+            ),
+        ),
+        requires_compiler_fixture_reconstruction=False,
+        compiler_path="replay/compiler.py",
+        required_branch_paths=("replay/compiler.py",),
+    )
+    monkeypatch.setattr(
+        llm_mutator_module,
+        "compile_evolution_context",
+        lambda _request: context,
+    )
+    monkeypatch.setattr(
+        llm_mutator_module,
+        "compile_repair_conformance_contract",
+        lambda _focus: contract,
+    )
+    untyped = llm_mutator_module._MINIMUM_BYTE_SOURCE_SELECTOR.replace(
+        "evidence_ref: str, derivations: dict) -> dict | None",
+        "evidence_ref, derivations)",
+    )
+
+    normalized = llm_mutator_module._canonicalize_fixture_source_selector_output(
+        {
+            "content": "# Demo\n",
+            "rationale": "repair recorded-response source selection",
+            "addressed_improvement_signal_ids": [],
+            "files": [
+                {
+                    "path": "replay/compiler.py",
+                    "operation": "upsert",
+                    "content": untyped,
+                }
+            ],
+        },
+        request=_request(max_candidates=1),
+        candidate_index=0,
+    )
+
+    compiler = normalized["files"][0]["content"]
+    assert "response_index_path" in compiler
+    assert "response_record_count" in compiler
+    compile(compiler, "<normalized-compiler>", "exec")
 
 
 @pytest.mark.asyncio

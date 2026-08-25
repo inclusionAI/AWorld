@@ -2768,6 +2768,50 @@ def test_constraint_context_merges_multi_member_schema_and_fixture_rules() -> No
     assert compiled.required_branch_paths == ("replay/compiler.py",)
 
 
+def test_constraint_context_keeps_runtime_artifact_owner_with_compiler_failure() -> None:
+    trace_constraint = RuntimeArtifactConstraint(
+        artifact_kind="protocol_trace",
+        relative_path="protocol_trace.jsonl",
+        producer_layer="runtime",
+        availability_milestone="post_probe_pre_shutdown",
+        write_mode="incremental",
+        maximum_bytes=65_536,
+        require_nonempty=True,
+    )
+    compiler_constraint = SchemaFieldRepairConstraint(
+        schema_layer="compile_result",
+        field_path="services[*].protocol_probes[*].path",
+        rule="enum",
+        expected=("fixture_derived_data_plane_probe",),
+    )
+    inherited = RepairConformanceContract(
+        focus_candidate_id="candidate-parent",
+        failure_codes=("protocol_trace_contract_failed",),
+        interaction_progress=1,
+        base_file_fingerprints={},
+        required_branch_paths=("replay/runtime.py",),
+        base_branch_fingerprints={},
+        manifest_path="replay/capability.json",
+        compiler_path="replay/compiler.py",
+        runtime_paths=("replay/runtime.py",),
+        runtime_artifact_constraints=(trace_constraint,),
+    ).to_public_dict()
+
+    merged = merge_repair_conformance_constraint_context(
+        inherited,
+        {
+            "code": "repair_capability_compile_failed",
+            "schema_field_constraints": [compiler_constraint.to_dict()],
+        },
+    )
+
+    assert merged is not None
+    assert merged["required_branch_paths"] == [
+        "replay/compiler.py",
+        "replay/runtime.py",
+    ]
+
+
 def test_fixture_probe_constraints_validate_every_distinct_fixture_shape() -> None:
     contract = replace(
         compile_repair_conformance_contract(
@@ -3467,3 +3511,58 @@ def test_runtime_artifact_failure_retargets_owner_without_losing_inherited_schem
     assert "required_branch_paths.runtime_artifact_owner" in result.details[
         "missing_contract_fields"
     ]
+
+
+def test_compiler_failure_keeps_inherited_runtime_artifact_owner_authorized() -> None:
+    trace_constraint = RuntimeArtifactConstraint(
+        artifact_kind="protocol_trace",
+        relative_path="protocol_trace.jsonl",
+        producer_layer="runtime",
+        availability_milestone="post_probe_pre_shutdown",
+        write_mode="incremental",
+        maximum_bytes=65_536,
+        require_nonempty=True,
+        required_record_fields=("direction", "sequence", "kind"),
+        required_directions=("in", "out"),
+    )
+    inherited = RepairConformanceContract(
+        focus_candidate_id="candidate-parent",
+        failure_codes=("protocol_trace_contract_failed",),
+        interaction_progress=1,
+        base_file_fingerprints={},
+        required_branch_paths=("replay/runtime.py",),
+        base_branch_fingerprints={},
+        manifest_path="replay/capability.json",
+        compiler_path="replay/compiler.py",
+        runtime_paths=("replay/runtime.py",),
+        runtime_artifact_constraints=(trace_constraint,),
+    )
+
+    contract = compile_repair_conformance_contract(
+        {
+            "repair_candidate_package": _package(),
+            "candidate_validation_diagnostics": [
+                {
+                    "code": "repair_capability_compile_failed",
+                    "capability_error_code": "recorded_response_fixture_unselected",
+                    "reason": "compiler did not select recorded response evidence",
+                    "repair_conformance": inherited.to_public_dict(),
+                }
+            ],
+        }
+    )
+
+    assert contract is not None
+    assert contract.required_branch_paths == (
+        "replay/compiler.py",
+        "replay/runtime.py",
+    )
+    assert contract.runtime_artifact_constraints == (trace_constraint,)
+    result = evaluate_candidate_source_conformance(
+        _candidate(
+            compiler_source="def compile_request():\n    return {'changed': True}\n",
+            runtime_source="def respond():\n    return {'changed': True}\n",
+        ),
+        contract,
+    )
+    assert result.code != "repair_contract_owner_inconsistent"
