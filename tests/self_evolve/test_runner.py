@@ -11687,6 +11687,59 @@ def test_stored_resume_zero_budget_override_does_not_exempt_later_repair() -> No
     assert repair.estimate.backend_proven_zero is False
 
 
+def test_repair_probe_failure_identity_separates_normalized_root_causes() -> None:
+    readiness = runner_module.ReplayServiceReadinessTimeout(
+        "readiness failed",
+        phase="preflight",
+        timeout_seconds=10,
+        service_id="service",
+        transport="skill_runtime",
+        last_error_type="TypeError",
+        last_error_errno=None,
+        process_returncode=None,
+    )
+    exited = runner_module.ReplayServiceProcessExitedError(
+        "service exited",
+        phase="preflight",
+        service_id="service",
+        transport="skill_runtime",
+        process_returncode=1,
+    )
+
+    readiness_code = runner_module._repair_probe_root_cause_code(readiness)
+    exited_code = runner_module._repair_probe_root_cause_code(exited)
+    assert readiness_code == "replay_service_readiness_failed"
+    assert exited_code == "replay_service_process_exited_before_readiness"
+
+    protocol_timeout = runner_module.ReplayServiceReadinessTimeout(
+        "protocol probe failed",
+        phase="protocol_probe",
+        timeout_seconds=10,
+        service_id="service",
+        transport="skill_runtime",
+        last_error_type="TypeError",
+        last_error_errno=None,
+        process_returncode=None,
+    )
+    assert runner_module._repair_probe_root_cause_code(protocol_timeout) == (
+        "replay_service_protocol_probe_timeout"
+    )
+
+    readiness_result = RepairConformanceResult(
+        passed=False,
+        code="repair_probe_execution_failed",
+        reason="probe failed",
+        details={"diagnostics": [{"root_cause_code": readiness_code}]},
+    )
+    exited_result = RepairConformanceResult(
+        passed=False,
+        code="repair_probe_execution_failed",
+        reason="probe failed",
+        details={"diagnostics": [{"root_cause_code": exited_code}]},
+    )
+    assert readiness_result.failure_fingerprint != exited_result.failure_fingerprint
+
+
 def test_local_stage_can_configure_zero_tokens_with_bounded_wall_time() -> None:
     usage = _configured_budget_usage(
         tokens=0,

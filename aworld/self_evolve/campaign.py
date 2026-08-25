@@ -30,6 +30,10 @@ from aworld.self_evolve.measurement_checkpoint import (
 from aworld.self_evolve.schema_diagnostics import (
     websocket_handshake_http_version_constraint,
 )
+from aworld.self_evolve.replay_capability import (
+    python_source_syntax_counterexample,
+    recorded_response_index_source_behavior_proof,
+)
 
 
 CAMPAIGN_SCHEMA_VERSION = "aworld.self_evolve.campaign.v1"
@@ -2048,6 +2052,14 @@ def run_self_improvement_campaign(
             campaign,
         )
         campaign = _migrate_path_sensitive_support_identity_for_resume(
+            controller,
+            campaign,
+        )
+        campaign = _migrate_untyped_runtime_python_syntax_for_resume(
+            controller,
+            campaign,
+        )
+        campaign = _migrate_unselected_recorded_response_fixture_for_resume(
             controller,
             campaign,
         )
@@ -4944,6 +4956,469 @@ def _migrate_path_sensitive_support_identity_for_resume(
     )
     controller.store.write_campaign(migrated)
     return migrated
+
+
+def _migrate_untyped_runtime_python_syntax_for_resume(
+    controller: SelfImprovementCampaignController,
+    campaign: SelfImprovementCampaign,
+) -> SelfImprovementCampaign:
+    """Restore one repair reserve for a legacy untyped runtime SyntaxError."""
+
+    migration_action = "restore_typed_runtime_python_syntax_repair"
+    if (
+        campaign.status is not SelfImprovementCampaignStatus.EXHAUSTED
+        or campaign.latest_disposition is None
+        or campaign.latest_disposition.reason_code
+        != "campaign_cycle_limit_reached"
+        or campaign.latest_disposition.stage != "capability_preflight"
+        or campaign.repair_continuation_used
+        or not campaign.run_ids
+        or campaign.cumulative_authoritative_candidates
+        >= _campaign_authoritative_candidate_limit(campaign)
+    ):
+        return campaign
+    latest_run_id = campaign.run_ids[-1]
+    try:
+        report = controller.store.read_report(latest_run_id)
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return campaign
+    prior_migration = report.get("campaign_causal_migration")
+    if (
+        isinstance(prior_migration, Mapping)
+        and prior_migration.get("action") == migration_action
+    ):
+        return campaign
+    funnel = report.get("verification_funnel")
+    if not (
+        isinstance(funnel, Mapping)
+        and _report_authoritative_candidate_count(report) == 0
+        and funnel.get("authoritative_candidate_attempt_count") == 0
+        and not _report_has_authoritative_measurement_observation(report)
+    ):
+        return campaign
+    focus_candidate_id = report.get("repair_focus_candidate_id")
+    if not isinstance(focus_candidate_id, str) or not focus_candidate_id:
+        return campaign
+    runtime_path = (
+        controller.store.run_path(latest_run_id)
+        / "candidates"
+        / focus_candidate_id
+        / "replay"
+        / "runtime.py"
+    )
+    if runtime_path.is_symlink() or not runtime_path.is_file():
+        return campaign
+    try:
+        compile(runtime_path.read_bytes(), "replay/runtime.py", "exec")
+    except SyntaxError as exc:
+        counterexample = python_source_syntax_counterexample(
+            source_path="replay/runtime.py",
+            error=exc,
+        )
+    except (OSError, UnicodeError):
+        return campaign
+    else:
+        return campaign
+    if counterexample.get("syntax_kind") != "global_declaration_after_use":
+        return campaign
+
+    matching_details: list[dict[str, Any]] = []
+    raw_gates = report.get("gate_results")
+    if isinstance(raw_gates, list):
+        for gate in raw_gates:
+            details = gate.get("details") if isinstance(gate, dict) else None
+            if not (
+                isinstance(gate, dict)
+                and gate.get("gate_name") == "candidate_repair_conformance"
+                and gate.get("passed") is False
+                and isinstance(details, dict)
+                and details.get("code") == "repair_probe_execution_failed"
+                and details.get("failure_class") == "candidate"
+                and details.get("repairable") is True
+            ):
+                continue
+            diagnostics = details.get("diagnostics")
+            if not (
+                isinstance(diagnostics, list)
+                and any(
+                    isinstance(item, Mapping)
+                    and item.get("error_type")
+                    == "ReplayServiceProcessExitedError"
+                    and "SyntaxError:" in str(item.get("reason") or "")
+                    and "global declaration" in str(item.get("reason") or "")
+                    for item in diagnostics
+                )
+            ):
+                continue
+            matching_details.append(details)
+    if not matching_details:
+        return campaign
+
+    for details in matching_details:
+        details["capability_error_code"] = "runtime_python_syntax_invalid"
+        existing = details.get("counterexample_contracts")
+        contracts = {
+            str(item.get("counterexample_id")): dict(item)
+            for item in (
+                existing if isinstance(existing, list) else ()
+            )
+            if isinstance(item, Mapping)
+            and isinstance(item.get("counterexample_id"), str)
+        }
+        contracts[str(counterexample["counterexample_id"])] = counterexample
+        details["counterexample_contracts"] = [
+            contracts[key] for key in sorted(contracts)
+        ]
+        diagnostics = details.get("diagnostics")
+        if isinstance(diagnostics, list):
+            diagnostics.append(
+                {
+                    "code": "runtime_python_syntax_invalid",
+                    "root_cause_code": "runtime_python_syntax_invalid",
+                    "source_path": counterexample["source_path"],
+                    "syntax_kind": counterexample["syntax_kind"],
+                    "source_line": counterexample["line"],
+                    "counterexample_contracts": [counterexample],
+                }
+            )
+
+    corrected = SelfImprovementDisposition(
+        kind=SelfImprovementDispositionKind.CONTINUE_CANDIDATE,
+        reason_code="candidate_runtime_python_syntax_repair_available",
+        owner="candidate",
+        stage="capability_compile",
+        scope="candidate",
+        repairable=True,
+        progress_delta_ids=campaign.latest_disposition.progress_delta_ids,
+    )
+    report["campaign_causal_migration"] = {
+        "schema_version": (
+            "aworld.self_evolve.runtime_python_syntax_migration.v1"
+        ),
+        "action": migration_action,
+        "source_run_id": latest_run_id,
+        "candidate_id": focus_candidate_id,
+        "counterexample_id": counterexample["counterexample_id"],
+        "candidate_reserve_granted": True,
+        "measurement_retry_granted": False,
+    }
+    report["self_improvement_disposition"] = corrected.to_dict()
+    raw_campaign = report.get("campaign")
+    if isinstance(raw_campaign, dict):
+        raw_campaign["repair_continuation_used"] = True
+        raw_campaign["max_cycles"] = (
+            campaign.max_cycles
+            + campaign.measurement_ledger.control_plane_run_count
+            + 1
+        )
+    controller.store.write_report(latest_run_id, report)
+    migrated = replace(
+        campaign,
+        status=SelfImprovementCampaignStatus.ACTIVE,
+        repair_continuation_used=True,
+        latest_progress=self_improvement_progress(report),
+        latest_disposition=corrected,
+        latest_measurement_outcome=None,
+        measurement_pending_run_id=None,
+        measurement_pending_candidate_id=None,
+        goal_handoff_path=None,
+    )
+    controller.store.write_campaign(migrated)
+    return migrated
+
+
+def _migrate_unselected_recorded_response_fixture_for_resume(
+    controller: SelfImprovementCampaignController,
+    campaign: SelfImprovementCampaign,
+) -> SelfImprovementCampaign:
+    """Refund a cycle consumed before fixture-source fail-fast existed."""
+
+    migration_action = "restore_recorded_response_fixture_selection_repair"
+    if (
+        campaign.status is not SelfImprovementCampaignStatus.EXHAUSTED
+        or campaign.latest_disposition is None
+        or campaign.latest_disposition.reason_code
+        != "campaign_cycle_limit_reached"
+        or campaign.latest_disposition.stage != "capability_preflight"
+        or not campaign.run_ids
+        or campaign.cumulative_authoritative_candidates
+        >= _campaign_effective_authoritative_candidate_limit(campaign)
+    ):
+        return campaign
+    latest_run_id = campaign.run_ids[-1]
+    try:
+        report = controller.store.read_report(latest_run_id)
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return campaign
+    prior_migration = report.get("campaign_causal_migration")
+    if (
+        isinstance(prior_migration, Mapping)
+        and prior_migration.get("action") == migration_action
+    ):
+        return campaign
+    focus_candidate_id = report.get("repair_focus_candidate_id")
+    if not isinstance(focus_candidate_id, str) or not focus_candidate_id:
+        return campaign
+    run_root = controller.store.run_path(latest_run_id)
+    candidate_root = run_root / "candidates" / focus_candidate_id / "replay"
+    compiler_path = candidate_root / "compiler.py"
+    runtime_path = candidate_root / "runtime.py"
+    if any(
+        path.is_symlink() or not path.is_file()
+        for path in (compiler_path, runtime_path)
+    ):
+        return campaign
+    try:
+        compiler_source = compiler_path.read_text(encoding="utf-8")
+        runtime_source = runtime_path.read_text(encoding="utf-8")
+        runtime_sha256 = hashlib.sha256(runtime_path.read_bytes()).hexdigest()
+    except (OSError, UnicodeError):
+        return campaign
+    if not (
+        "byte_length" in compiler_source
+        and "sorted(" in compiler_source
+        and "response_record_count" not in compiler_source
+        and recorded_response_index_source_behavior_proof(runtime_source).get(
+            "proven"
+        ) is True
+    ):
+        return campaign
+    if not _run_has_unbound_recorded_response_fixture(
+        run_root,
+        runtime_sha256=runtime_sha256,
+    ):
+        return campaign
+
+    matching_details: list[dict[str, Any]] = []
+    raw_gates = report.get("gate_results")
+    if isinstance(raw_gates, list):
+        for gate in raw_gates:
+            details = gate.get("details") if isinstance(gate, dict) else None
+            if not (
+                isinstance(gate, dict)
+                and gate.get("gate_name") == "candidate_repair_conformance"
+                and gate.get("passed") is False
+                and isinstance(details, dict)
+                and details.get("code") == "repair_probe_execution_failed"
+                and details.get("failure_class") == "candidate"
+                and details.get("repairable") is True
+            ):
+                continue
+            diagnostics = details.get("diagnostics")
+            if not (
+                isinstance(diagnostics, list)
+                and any(
+                    isinstance(item, Mapping)
+                    and item.get("error_type")
+                    == "ReplayServiceReadinessTimeout"
+                    and "TypeError" in str(item.get("reason") or "")
+                    for item in diagnostics
+                )
+            ):
+                continue
+            matching_details.append(details)
+    if not matching_details:
+        return campaign
+
+    constraint = {
+        "schema_layer": "compiler",
+        "field_path": "evidence_derivations[*].response_index_path",
+        "rule": "enum",
+        "expected": ["recorded_response_source"],
+        "value_domain": "source_behavior",
+        "required_operations": [
+            "restrict_to_positive_recorded_response_sources",
+            "prefer_maximum_response_record_count",
+        ],
+        "forbidden_operations": [
+            "rank_all_sources_by_minimum_byte_length_first"
+        ],
+    }
+    counterexample_identity = json.dumps(
+        {
+            "candidate_id": focus_candidate_id,
+            "constraint": constraint,
+        },
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    counterexample = {
+        "schema_version": (
+            "aworld.self_evolve.fixture_source_counterexample.v1"
+        ),
+        "counterexample_id": (
+            "fixture-source-counterexample-"
+            + hashlib.sha256(counterexample_identity).hexdigest()
+        ),
+        "candidate_id": focus_candidate_id,
+        "selected_fixture_has_recorded_response": False,
+        "recorded_response_source_available": True,
+        "required_checks": [
+            "selected_source_has_positive_response_record_count",
+            "frozen_fixture_has_response_index_sidecar",
+            "runtime_response_index_binding_is_nonempty",
+        ],
+    }
+    for details in matching_details:
+        details["capability_error_code"] = (
+            "recorded_response_fixture_unselected"
+        )
+        details["schema_field_constraints"] = [constraint]
+        details["counterexample_contracts"] = [counterexample]
+        diagnostics = details.get("diagnostics")
+        if isinstance(diagnostics, list):
+            diagnostics.append(
+                {
+                    "code": "recorded_response_fixture_unselected",
+                    "root_cause_code": (
+                        "recorded_response_fixture_unselected"
+                    ),
+                    "counterexample_contracts": [counterexample],
+                }
+            )
+
+    corrected = SelfImprovementDisposition(
+        kind=SelfImprovementDispositionKind.CONTINUE_CANDIDATE,
+        reason_code="candidate_fixture_source_selection_repair_available",
+        owner="candidate",
+        stage="capability_compile",
+        scope="candidate",
+        repairable=True,
+        progress_delta_ids=campaign.latest_disposition.progress_delta_ids,
+    )
+    ledger = campaign.measurement_ledger.charge_framework_blocked(latest_run_id)
+    report["campaign_causal_migration"] = {
+        "schema_version": (
+            "aworld.self_evolve.recorded_response_fixture_migration.v1"
+        ),
+        "action": migration_action,
+        "source_run_id": latest_run_id,
+        "candidate_id": focus_candidate_id,
+        "counterexample_id": counterexample["counterexample_id"],
+        "candidate_reserve_granted": False,
+        "framework_cycle_refunded": True,
+    }
+    report["self_improvement_disposition"] = corrected.to_dict()
+    raw_campaign = report.get("campaign")
+    if isinstance(raw_campaign, dict):
+        raw_campaign["framework_blocked_count"] = (
+            ledger.framework_blocked_count
+        )
+        raw_campaign["max_cycles"] = (
+            campaign.max_cycles
+            + ledger.control_plane_run_count
+            + int(campaign.repair_continuation_used)
+        )
+    controller.store.write_report(latest_run_id, report)
+    migrated = replace(
+        campaign,
+        status=SelfImprovementCampaignStatus.ACTIVE,
+        measurement_ledger=ledger,
+        latest_progress=self_improvement_progress(report),
+        latest_disposition=corrected,
+        latest_measurement_outcome=None,
+        measurement_pending_run_id=None,
+        measurement_pending_candidate_id=None,
+        goal_handoff_path=None,
+    )
+    controller.store.write_campaign(migrated)
+    return migrated
+
+
+def _run_has_unbound_recorded_response_fixture(
+    run_root: Path,
+    *,
+    runtime_sha256: str,
+) -> bool:
+    """Prove the legacy frozen bundle omitted a required sidecar binding."""
+
+    adaptation_root = run_root / "replay_adaptation"
+    if not adaptation_root.is_dir():
+        return False
+    for manifest_path in adaptation_root.rglob("frozen_manifest.json"):
+        if manifest_path.is_symlink() or not manifest_path.is_file():
+            continue
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            continue
+        runtime_files = manifest.get("runtime_files")
+        if not (
+            isinstance(runtime_files, list)
+            and any(
+                isinstance(item, Mapping)
+                and str(item.get("sha256") or "").removeprefix("sha256:")
+                == runtime_sha256
+                for item in runtime_files
+            )
+        ):
+            continue
+        services = manifest.get("services")
+        if not isinstance(services, list):
+            continue
+        unbound_requirements: set[str] = set()
+        for service in services:
+            if not (
+                isinstance(service, Mapping)
+                and service.get("transport") == "skill_runtime"
+                and isinstance(service.get("protocol_probes"), list)
+                and service.get("protocol_probes")
+                and isinstance(service.get("response_fixture"), str)
+            ):
+                continue
+            probes = service["protocol_probes"]
+            if any(
+                isinstance(probe, Mapping)
+                and isinstance(probe.get("response_record_id"), str)
+                and bool(probe.get("response_record_id"))
+                for probe in probes
+            ):
+                continue
+            fixture_path = (
+                manifest_path.parent
+                / "fixtures"
+                / str(service["response_fixture"])
+            )
+            if fixture_path.with_suffix(".responses.json").is_file():
+                continue
+            requirement_id = service.get("requirement_id")
+            if isinstance(requirement_id, str):
+                unbound_requirements.add(requirement_id)
+        if not unbound_requirements:
+            continue
+        request_path = manifest_path.parent.parent / "compile-a" / "request.json"
+        try:
+            request = json.loads(request_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            continue
+        requirements = request.get("requirements")
+        derivations = request.get("evidence_derivations")
+        if not isinstance(requirements, list) or not isinstance(derivations, Mapping):
+            continue
+        for requirement in requirements:
+            if not (
+                isinstance(requirement, Mapping)
+                and requirement.get("requirement_id") in unbound_requirements
+                and isinstance(requirement.get("evidence_refs"), list)
+            ):
+                continue
+            if any(
+                isinstance(source, Mapping)
+                and isinstance(source.get("response_index_path"), str)
+                and bool(source.get("response_index_path"))
+                and isinstance(source.get("response_record_count"), int)
+                and not isinstance(source.get("response_record_count"), bool)
+                and int(source["response_record_count"]) > 0
+                for evidence_ref in requirement["evidence_refs"]
+                for source in (
+                    derivations.get(evidence_ref, ())
+                    if isinstance(derivations.get(evidence_ref), list)
+                    else ()
+                )
+            ):
+                return True
+    return False
 
 
 def _migrate_legacy_single_turn_replay_budget_for_resume(

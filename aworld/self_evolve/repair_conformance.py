@@ -1136,6 +1136,7 @@ def repair_conformance_failure_fingerprint(
         "probe_kind",
         "probe_path",
         "reader_kind",
+        "root_cause_code",
         "rule",
         "schema_layer",
         "violation_code",
@@ -1987,6 +1988,16 @@ def compile_repair_conformance_contract(
         runtime_response_constraints=runtime_response_constraints,
         runtime_artifact_constraints=runtime_artifact_constraints,
     )
+    inherited_artifact_owner_paths = _typed_constraint_owner_paths(
+        manifest_path=manifest_path,
+        compiler_path=compiler_path,
+        runtime_paths=runtime_paths,
+        schema_field_constraints=(),
+        runtime_response_constraints=(),
+        runtime_artifact_constraints=(
+            inherited_runtime_artifact_constraints
+        ),
+    )
     inherited_failure_codes = set(
         inherited_contract.failure_codes
         if inherited_contract is not None
@@ -2014,11 +2025,23 @@ def compile_repair_conformance_contract(
         # constraints remain validation invariants but cannot redirect the
         # active mutation away from the current failure producer.
         branch_paths = tuple(
-            dict.fromkeys((*direct_owner_paths, *unresolved_owner_paths))
+            dict.fromkeys(
+                (
+                    *direct_owner_paths,
+                    *unresolved_owner_paths,
+                    *inherited_artifact_owner_paths,
+                )
+            )
         )
     elif direct_failure_paths:
         branch_paths = tuple(
-            dict.fromkeys((*direct_failure_paths, *unresolved_owner_paths))
+            dict.fromkeys(
+                (
+                    *direct_failure_paths,
+                    *unresolved_owner_paths,
+                    *inherited_artifact_owner_paths,
+                )
+            )
         )
     elif unresolved_owner_paths:
         branch_paths = tuple(
@@ -2318,6 +2341,16 @@ def merge_repair_conformance_constraint_context(
         runtime_response_constraints=direct_runtime_response_constraints,
         runtime_artifact_constraints=direct_runtime_artifact_constraints,
     )
+    artifact_owner_paths = _typed_constraint_owner_paths(
+        manifest_path=manifest_path,
+        compiler_path=compiler_path,
+        runtime_paths=runtime_paths,
+        schema_field_constraints=(),
+        runtime_response_constraints=(),
+        runtime_artifact_constraints=runtime_artifact_constraints,
+    )
+    if owner_paths:
+        owner_paths = tuple(dict.fromkeys((*owner_paths, *artifact_owner_paths)))
     if not owner_paths and not _string_tuple(merged.get("required_branch_paths")):
         owner_paths = _typed_constraint_owner_paths(
             manifest_path=manifest_path,

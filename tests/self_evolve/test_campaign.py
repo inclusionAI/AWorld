@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import socket
 from pathlib import Path
@@ -4406,6 +4407,299 @@ def test_resume_reopens_path_sensitive_stored_candidate_repair_frontier(
     rewritten = controller.store.read_report(run_id)
     assert rewritten["campaign_causal_migration"]["action"] == (
         "restore_path_independent_support_repair_frontier"
+    )
+
+
+def test_resume_restores_typed_runtime_python_syntax_repair(
+    tmp_path: Path,
+) -> None:
+    controller = SelfImprovementCampaignController(workspace_root=tmp_path)
+    campaign = controller.create(
+        {
+            "from_trajectory": "trajectory.log",
+            "apply_policy": "verified_only",
+            "infer_target": True,
+        },
+        max_cycles=1,
+    )
+    run_id = f"{campaign.campaign_id}-cycle-001"
+    candidate_id = "candidate-invalid-runtime"
+    runtime_path = (
+        controller.store.run_path(run_id)
+        / "candidates"
+        / candidate_id
+        / "replay"
+        / "runtime.py"
+    )
+    runtime_path.parent.mkdir(parents=True)
+    runtime_path.write_text(
+        "value = 0\n"
+        "def handle():\n"
+        "    global value\n"
+        "    value += 1\n"
+        "    global value\n",
+        encoding="utf-8",
+    )
+    report = {
+        "run_id": run_id,
+        "status": "rejected",
+        "budget": _budget(),
+        "repair_focus_candidate_id": candidate_id,
+        "gate_results": [
+            {
+                "gate_name": "candidate_repair_conformance",
+                "passed": False,
+                "reason": "candidate declared repair probe failed",
+                "details": {
+                    "code": "repair_probe_execution_failed",
+                    "failure_class": "candidate",
+                    "repairable": True,
+                    "diagnostics": [
+                        {
+                            "code": "repair_probe_execution_failed",
+                            "error_type": "ReplayServiceProcessExitedError",
+                            "reason": (
+                                "service exited; SyntaxError: name 'value' is "
+                                "used prior to global declaration"
+                            ),
+                        }
+                    ],
+                },
+            }
+        ],
+        "verification_funnel": {
+            "authoritative_candidate_count": 0,
+            "authoritative_candidate_attempt_count": 0,
+            "authoritative_candidate_ids": [],
+        },
+        "campaign": {},
+    }
+    report_path = controller.store.write_report(run_id, report)
+    exhausted = campaign_module.replace(
+        campaign,
+        status=SelfImprovementCampaignStatus.EXHAUSTED,
+        cycle_index=1,
+        run_ids=(run_id,),
+        latest_progress=self_improvement_progress(report),
+        latest_disposition=SelfImprovementDisposition(
+            kind=SelfImprovementDispositionKind.EXHAUSTED,
+            reason_code="campaign_cycle_limit_reached",
+            owner="candidate",
+            stage="capability_preflight",
+            scope="candidate",
+            repairable=False,
+        ),
+        latest_report_path=str(report_path),
+    )
+    controller.store.write_campaign(exhausted)
+
+    migrated = campaign_module._migrate_untyped_runtime_python_syntax_for_resume(
+        controller,
+        exhausted,
+    )
+
+    assert migrated.status is SelfImprovementCampaignStatus.ACTIVE
+    assert migrated.repair_continuation_used is True
+    assert migrated.latest_disposition is not None
+    assert migrated.latest_disposition.reason_code == (
+        "candidate_runtime_python_syntax_repair_available"
+    )
+    rewritten = controller.store.read_report(run_id)
+    assert rewritten["campaign_causal_migration"]["action"] == (
+        "restore_typed_runtime_python_syntax_repair"
+    )
+    details = rewritten["gate_results"][0]["details"]
+    assert details["capability_error_code"] == "runtime_python_syntax_invalid"
+    assert details["counterexample_contracts"][0]["syntax_kind"] == (
+        "global_declaration_after_use"
+    )
+
+
+def test_resume_refunds_unbound_recorded_response_fixture_cycle(
+    tmp_path: Path,
+) -> None:
+    controller = SelfImprovementCampaignController(workspace_root=tmp_path)
+    campaign = controller.create(
+        {
+            "from_trajectory": "trajectory.log",
+            "apply_policy": "verified_only",
+            "infer_target": True,
+        },
+        max_cycles=1,
+    )
+    prior_run_id = f"{campaign.campaign_id}-cycle-001"
+    run_id = f"{campaign.campaign_id}-cycle-002"
+    candidate_id = "candidate-unbound-sidecar"
+    candidate_replay = (
+        controller.store.run_path(run_id)
+        / "candidates"
+        / candidate_id
+        / "replay"
+    )
+    candidate_replay.mkdir(parents=True)
+    candidate_replay.joinpath("compiler.py").write_text(
+        "def _select_source(evidence_ref, derivations):\n"
+        "    sources = derivations.get(evidence_ref, [])\n"
+        "    ranked = sorted(sources, key=lambda s: s.get('byte_length', 0))\n"
+        "    return ranked[0]\n",
+        encoding="utf-8",
+    )
+    runtime_source = (
+        "import json\n"
+        "import os\n"
+        "def respond():\n"
+        "    path = os.getenv('AWORLD_REPLAY_RESPONSE_INDEX')\n"
+        "    with open(path, encoding='utf-8') as stream:\n"
+        "        index = json.load(stream)\n"
+        "    records = index['records']\n"
+        "    return records[0]['value']\n"
+    )
+    runtime_path = candidate_replay / "runtime.py"
+    runtime_path.write_text(runtime_source, encoding="utf-8")
+    runtime_digest = hashlib.sha256(runtime_source.encode("utf-8")).hexdigest()
+
+    capability_root = (
+        controller.store.run_path(run_id)
+        / "replay_adaptation"
+        / "dataset"
+        / "candidate"
+        / "skill_replay_capability"
+    )
+    frozen_root = capability_root / "frozen"
+    frozen_runtime = frozen_root / "runtime" / "replay" / "runtime.py"
+    frozen_runtime.parent.mkdir(parents=True)
+    frozen_runtime.write_text(runtime_source, encoding="utf-8")
+    frozen_fixture = frozen_root / "fixtures" / "fixtures" / "fixture.bin"
+    frozen_fixture.parent.mkdir(parents=True)
+    frozen_fixture.write_text('{"request": "metadata only"}', encoding="utf-8")
+    frozen_root.joinpath("frozen_manifest.json").write_text(
+        json.dumps(
+            {
+                "runtime_files": [
+                    {
+                        "path": "replay/runtime.py",
+                        "sha256": f"sha256:{runtime_digest}",
+                    }
+                ],
+                "services": [
+                    {
+                        "service_id": "service-1",
+                        "requirement_id": "requirement-1",
+                        "transport": "skill_runtime",
+                        "response_fixture": "fixtures/fixture.bin",
+                        "protocol_probes": [
+                            {
+                                "kind": "http",
+                                "path": "/data",
+                                "response_record_id": None,
+                            }
+                        ],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    compile_root = capability_root / "compile-a"
+    compile_root.mkdir()
+    compile_root.joinpath("request.json").write_text(
+        json.dumps(
+            {
+                "requirements": [
+                    {
+                        "requirement_id": "requirement-1",
+                        "evidence_refs": ["evidence-1"],
+                    }
+                ],
+                "evidence_derivations": {
+                    "evidence-1": [
+                        {
+                            "path": "recorded.bin",
+                            "response_index_path": "recorded.responses.json",
+                            "response_record_count": 3,
+                        }
+                    ]
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    report = {
+        "run_id": run_id,
+        "status": "rejected",
+        "budget": _budget(),
+        "repair_focus_candidate_id": candidate_id,
+        "gate_results": [
+            {
+                "gate_name": "candidate_repair_conformance",
+                "passed": False,
+                "details": {
+                    "code": "repair_probe_execution_failed",
+                    "failure_class": "candidate",
+                    "repairable": True,
+                    "diagnostics": [
+                        {
+                            "code": "replay_service_readiness_failed",
+                            "error_type": "ReplayServiceReadinessTimeout",
+                            "reason": (
+                                "protocol probe timed out; TypeError: expected "
+                                "str, bytes or os.PathLike object, not NoneType"
+                            ),
+                        }
+                    ],
+                },
+            }
+        ],
+        "verification_funnel": {
+            "authoritative_candidate_count": 0,
+            "authoritative_candidate_attempt_count": 0,
+        },
+        "campaign": {},
+    }
+    controller.store.write_report(prior_run_id, {"run_id": prior_run_id})
+    report_path = controller.store.write_report(run_id, report)
+    exhausted = campaign_module.replace(
+        campaign,
+        status=SelfImprovementCampaignStatus.EXHAUSTED,
+        cycle_index=2,
+        run_ids=(prior_run_id, run_id),
+        repair_continuation_used=True,
+        latest_progress=self_improvement_progress(report),
+        latest_disposition=SelfImprovementDisposition(
+            kind=SelfImprovementDispositionKind.EXHAUSTED,
+            reason_code="campaign_cycle_limit_reached",
+            owner="candidate",
+            stage="capability_preflight",
+            scope="candidate",
+            repairable=False,
+        ),
+        latest_report_path=str(report_path),
+    )
+    controller.store.write_campaign(exhausted)
+
+    migrated = (
+        campaign_module._migrate_unselected_recorded_response_fixture_for_resume(
+            controller,
+            exhausted,
+        )
+    )
+
+    assert migrated.status is SelfImprovementCampaignStatus.ACTIVE
+    assert migrated.measurement_ledger.framework_blocked_count == 1
+    assert migrated.latest_disposition is not None
+    assert migrated.latest_disposition.reason_code == (
+        "candidate_fixture_source_selection_repair_available"
+    )
+    rewritten = controller.store.read_report(run_id)
+    assert rewritten["campaign_causal_migration"]["action"] == (
+        "restore_recorded_response_fixture_selection_repair"
+    )
+    details = rewritten["gate_results"][0]["details"]
+    assert details["capability_error_code"] == (
+        "recorded_response_fixture_unselected"
+    )
+    assert details["schema_field_constraints"][0]["schema_layer"] == (
+        "compiler"
     )
 
 
