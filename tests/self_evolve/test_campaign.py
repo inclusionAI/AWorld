@@ -164,6 +164,27 @@ def test_safe_paired_replay_timeout_is_collect_more_evidence() -> None:
     assert disposition.continuable is True
 
 
+def test_persisted_framework_member_timeout_is_measurement_retry() -> None:
+    report = {
+        "status": "rejected",
+        "candidate_ids": ["candidate-paired"],
+        "paired_replay_resume_checkpoint": {"stage": "paired_replay"},
+        "rejection_attribution": {
+            "code": "replay_member_phase_timeout",
+            "failure_class": "framework",
+            "failure_owner": "framework",
+            "failure_scope": "member",
+            "repairable": True,
+        },
+    }
+
+    disposition = derive_self_improvement_disposition(report)
+
+    assert disposition.kind is SelfImprovementDispositionKind.REPAIR_MEASUREMENT
+    assert disposition.reason_code == "replay_member_phase_timeout"
+    assert disposition.scope == "shared_run"
+
+
 def test_resume_migrates_exhausted_safe_paired_replay_timeout(
     tmp_path: Path,
 ) -> None:
@@ -244,6 +265,97 @@ def test_resume_migrates_exhausted_safe_paired_replay_timeout(
     )
     assert migrated_report["campaign_causal_migration"]["action"] == (
         "restore_paired_replay_timeout_checkpoint"
+    )
+
+
+def test_resume_migrates_paired_replay_member_timeout_handoff(
+    tmp_path: Path,
+) -> None:
+    controller = SelfImprovementCampaignController(workspace_root=tmp_path)
+    campaign = controller.create(
+        request={
+            "task": "resume member timeout",
+            "from_trajectory": "trajectory.log",
+            "apply_policy": "verified_only",
+        },
+        max_cycles=1,
+    )
+    run_id = f"{campaign.campaign_id}-cycle-001"
+    candidate = CandidateVariant(
+        candidate_id="candidate-member-timeout",
+        target=SelfEvolveTargetRef("skill", "demo", "/skills/demo/SKILL.md"),
+        content="# Demo\n\nImproved.\n",
+        rationale="resume member timeout",
+    )
+    _write_paired_replay_timeout_artifacts(
+        controller,
+        run_id=run_id,
+        candidate=candidate,
+    )
+    report = {
+        "run_id": run_id,
+        "status": "rejected",
+        "budget": _budget(),
+        "candidate_ids": [candidate.candidate_id],
+        "verification_funnel": {
+            "authoritative_candidate_count": 1,
+            "authoritative_candidate_ids": [candidate.candidate_id],
+        },
+        "rejection_attribution": {
+            "code": "replay_member_phase_timeout",
+            "failure_class": "framework",
+            "failure_owner": "framework",
+            "failure_scope": "member",
+            "failure_stage": "evaluation",
+            "repairable": True,
+        },
+        "campaign": {},
+    }
+    report_path = controller.store.write_report(run_id, report)
+    paused = campaign_module.replace(
+        campaign,
+        status=SelfImprovementCampaignStatus.PAUSED,
+        cycle_index=1,
+        run_ids=(run_id,),
+        cumulative_authoritative_candidates=1,
+        latest_disposition=SelfImprovementDisposition(
+            kind=SelfImprovementDispositionKind.HANDOFF_GOAL,
+            reason_code="typed_framework_or_shared_blocker",
+            owner="framework",
+            stage="evaluation",
+            scope="member",
+            repairable=True,
+        ),
+        latest_report_path=str(report_path),
+    )
+    controller.store.write_campaign(paused)
+
+    migrated = (
+        campaign_module._migrate_paired_replay_member_timeout_for_resume(
+            controller,
+            paused,
+        )
+    )
+
+    assert migrated.status is SelfImprovementCampaignStatus.ACTIVE
+    assert migrated.measurement_pending_run_id == run_id
+    assert migrated.measurement_pending_candidate_id == candidate.candidate_id
+    assert migrated.measurement_retry_count == 1
+    assert migrated.cumulative_authoritative_candidates == 1
+    assert campaign_module._campaign_pending_candidate_was_authoritative(
+        controller.store,
+        campaign=migrated,
+    )
+    assert migrated.latest_disposition is not None
+    assert migrated.latest_disposition.kind is (
+        SelfImprovementDispositionKind.REPAIR_MEASUREMENT
+    )
+    migrated_report = controller.store.read_report(run_id)
+    assert migrated_report["paired_replay_resume_checkpoint"]["stage"] == (
+        "paired_replay"
+    )
+    assert migrated_report["campaign_causal_migration"]["action"] == (
+        "restore_paired_replay_member_timeout_checkpoint"
     )
 
 
@@ -4218,6 +4330,83 @@ def test_resume_replaces_implicit_single_turn_authoritative_replay_budget(
         "candidate_reserve_granted": False,
         "measurement_retry_granted": False,
     }
+
+
+def test_resume_reopens_path_sensitive_stored_candidate_repair_frontier(
+    tmp_path: Path,
+) -> None:
+    controller = SelfImprovementCampaignController(workspace_root=tmp_path)
+    campaign = controller.create(
+        {
+            "from_trajectory": "trajectory.log",
+            "apply_policy": "verified_only",
+            "infer_target": True,
+        },
+        max_cycles=1,
+    )
+    run_id = f"{campaign.campaign_id}-cycle-001"
+    report = {
+        "run_id": run_id,
+        "status": "rejected",
+        "budget": _budget(),
+        "candidate_source_dispositions": {
+            "candidate": {
+                "kind": "stored_evidence_rerun",
+                "source_run_id": "stored-source-run",
+                "requires_fresh_evaluation": True,
+            }
+        },
+        "gate_results": [
+            {
+                "gate_name": "candidate_replay",
+                "passed": False,
+                "details": {
+                    "code": "candidate_replay_support_baseline_incompatible",
+                    "failure_owner": "candidate",
+                    "repairable": True,
+                },
+            }
+        ],
+        "verification_funnel": {"authoritative_candidate_count": 1},
+    }
+    report_path = controller.store.write_report(run_id, report)
+    exhausted = campaign_module.replace(
+        campaign,
+        status=SelfImprovementCampaignStatus.EXHAUSTED,
+        cycle_index=1,
+        run_ids=(run_id,),
+        cumulative_authoritative_candidates=1,
+        latest_progress=self_improvement_progress(report),
+        latest_disposition=SelfImprovementDisposition(
+            kind=SelfImprovementDispositionKind.EXHAUSTED,
+            reason_code="candidate_repair_frontier_stalled",
+            owner="candidate",
+            stage="task_rollout",
+            scope="candidate",
+            repairable=True,
+        ),
+        latest_report_path=str(report_path),
+    )
+    controller.store.write_campaign(exhausted)
+
+    migrated = campaign_module._migrate_path_sensitive_support_identity_for_resume(
+        controller,
+        exhausted,
+    )
+
+    assert migrated.status is SelfImprovementCampaignStatus.ACTIVE
+    assert migrated.repair_continuation_used is True
+    assert migrated.latest_disposition is not None
+    assert migrated.latest_disposition.kind is (
+        SelfImprovementDispositionKind.CONTINUE_CANDIDATE
+    )
+    assert migrated.latest_disposition.reason_code == (
+        "replay_support_identity_repaired"
+    )
+    rewritten = controller.store.read_report(run_id)
+    assert rewritten["campaign_causal_migration"]["action"] == (
+        "restore_path_independent_support_repair_frontier"
+    )
 
 
 def test_resume_repairs_zero_work_after_single_turn_budget_migration(

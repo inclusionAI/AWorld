@@ -828,6 +828,60 @@ def test_replay_checkpoint_rejects_evidence_contract_mode_drift(
 
 
 @pytest.mark.asyncio
+async def test_replay_member_deadline_allows_supervised_teardown_grace(
+    tmp_path: Path,
+) -> None:
+    calls: list[str] = []
+
+    async def finishing_executor(
+        request: ReplayExecutionRequest,
+    ) -> ReplayExecutionResult:
+        calls.append(request.variant_id)
+        await asyncio.sleep(0.02)
+        return ReplayExecutionResult(
+            status="succeeded",
+            trajectory=[{"action": {"content": request.variant_id}}],
+        )
+
+    dataset = SelfEvolveDataset(
+        cases=(EvalCase(case_id="task-a", input="Replay task A"),),
+        recipe=DatasetRecipe(
+            source={"kind": "deadline-grace-test", "case_count": 1},
+            split_seed="seed",
+            splits={"train": ["task-a"]},
+        ),
+    )
+    candidate = _candidate(
+        "---\nname: demo\n---\n# Demo\nCandidate.\n",
+        candidate_id="deadline-grace-candidate",
+    )
+
+    result = await AWorldCliCandidateReplayBackend(
+        executor=finishing_executor
+    ).replay_candidate(
+        CandidateReplayRequest(
+            run_id="run-member-deadline-grace",
+            task_id="task-a",
+            workspace_root=str(tmp_path),
+            target=candidate.target,
+            candidate_id=candidate.candidate_id,
+            overlay_skill_root=str(tmp_path / "overlay"),
+            task_input=dataset.cases[0].input,
+            timeout_seconds=0.01,
+        ),
+        candidate=candidate,
+        dataset=dataset,
+    )
+
+    assert result.succeeded is True
+    assert calls == ["baseline", candidate.candidate_id]
+    assert all(
+        member.baseline.failure is None and member.candidate.failure is None
+        for member in result.member_results
+    )
+
+
+@pytest.mark.asyncio
 async def test_replay_member_deadline_stops_invalid_control_frontier(
     tmp_path: Path,
 ) -> None:

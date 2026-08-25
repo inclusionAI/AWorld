@@ -101,6 +101,7 @@ from aworld.self_evolve.replay_adaptation import (
     ReplayAdapterBinding,
     ReplayCaseAdaptation,
     ReplayDependency,
+    replay_adaptation_semantic_fingerprint,
     validate_replay_binding_concurrency,
     materialize_replay_workspace,
 )
@@ -115,6 +116,7 @@ from aworld.self_evolve.replay_capability import (
     ReplayProtocolProbe,
     ReplayReadinessProbe,
     ReplayServiceSpec,
+    replay_capability_semantic_fingerprint,
     replay_payload_contains_expected_value,
     replay_process_memory_bytes,
     verify_frozen_replay_capability,
@@ -130,6 +132,7 @@ from aworld.self_evolve.types import CandidateVariant, DatasetRecipe, SelfEvolve
 
 _EVIDENCE_RETRY_LIMIT = 1
 _SERVICE_STARTUP_RETRY_LIMIT = 1
+_MEMBER_PHASE_TEARDOWN_GRACE_MAX_SECONDS = 5.0
 _SYNTHETIC_EVIDENCE_EXCERPT_CHARS = 4000
 _MAX_METADATA_EVIDENCE_CHARS = 16_384
 _MAX_EVIDENCE_MANIFEST_BYTES = 1024 * 1024
@@ -2982,6 +2985,21 @@ def _member_phase_timeout_result(
     )
 
 
+def _member_phase_hard_deadline_seconds(
+    attempt_timeout_seconds: float | None,
+) -> float | None:
+    """Leave bounded time for the supervised attempt to persist its outcome."""
+
+    if attempt_timeout_seconds is None:
+        return None
+    timeout = float(attempt_timeout_seconds)
+    grace = min(
+        _MEMBER_PHASE_TEARDOWN_GRACE_MAX_SECONDS,
+        max(0.10, timeout * 0.05),
+    )
+    return timeout + grace
+
+
 def _write_incremental_baseline_manifest(
     members_root: Path,
     *,
@@ -3594,7 +3612,9 @@ class AWorldCliCandidateReplayBackend:
                 case_count=member_count,
                 phase="candidate",
                 repetition_count=member_request.candidate_repetitions,
-                phase_timeout_seconds=member_request.timeout_seconds,
+                phase_timeout_seconds=_member_phase_hard_deadline_seconds(
+                    member_request.timeout_seconds
+                ),
             )
             blocking_event = candidate_frontier_stop_event
             if (
@@ -3672,7 +3692,11 @@ class AWorldCliCandidateReplayBackend:
                 _persist_variant_lifecycle(candidate_dir, candidate_result)
             else:
                 try:
-                    async with asyncio.timeout(member_request.timeout_seconds):
+                    async with asyncio.timeout(
+                        _member_phase_hard_deadline_seconds(
+                            member_request.timeout_seconds
+                        )
+                    ):
                         candidate_result = await self._run_repetitions(
                             member_request,
                             base_variant_id=candidate.candidate_id,
@@ -3692,7 +3716,9 @@ class AWorldCliCandidateReplayBackend:
                     candidate_result = _member_phase_timeout_result(
                         variant_id=candidate.candidate_id,
                         phase="candidate",
-                        timeout_seconds=member_request.timeout_seconds,
+                        timeout_seconds=_member_phase_hard_deadline_seconds(
+                            member_request.timeout_seconds
+                        ),
                     )
                     _persist_variant_lifecycle(
                         candidate_dir,
@@ -3807,7 +3833,9 @@ class AWorldCliCandidateReplayBackend:
                 baseline_cache_offered=(
                     member_request.baseline_replay_dir is not None
                 ),
-                phase_timeout_seconds=member_request.timeout_seconds,
+                phase_timeout_seconds=_member_phase_hard_deadline_seconds(
+                    member_request.timeout_seconds
+                ),
             )
             baseline_blocking_event = (
                 candidate_blocking_event or candidate_frontier_stop_event
@@ -3819,7 +3847,11 @@ class AWorldCliCandidateReplayBackend:
                 _persist_variant_lifecycle(member_dir / "baseline", baseline)
             else:
                 try:
-                    async with asyncio.timeout(member_request.timeout_seconds):
+                    async with asyncio.timeout(
+                        _member_phase_hard_deadline_seconds(
+                            member_request.timeout_seconds
+                        )
+                    ):
                         baseline = await self._load_or_run_baseline(
                             member_request,
                             candidate=candidate,
@@ -3837,7 +3869,9 @@ class AWorldCliCandidateReplayBackend:
                     baseline = _member_phase_timeout_result(
                         variant_id="baseline",
                         phase="baseline",
-                        timeout_seconds=member_request.timeout_seconds,
+                        timeout_seconds=_member_phase_hard_deadline_seconds(
+                            member_request.timeout_seconds
+                        ),
                     )
                     _persist_variant_lifecycle(member_dir / "baseline", baseline)
                 if (
@@ -8453,9 +8487,13 @@ def replay_support_fingerprint(
             else "framework-only"
         ),
         "replay_capability_fingerprint": (
-            capability.fingerprint if capability is not None else "framework-only"
+            replay_capability_semantic_fingerprint(capability)
+            if capability is not None
+            else "framework-only"
         ),
-        "adaptation_fingerprint": replay_adaptation.adaptation_fingerprint,
+        "adaptation_fingerprint": replay_adaptation_semantic_fingerprint(
+            replay_adaptation
+        ),
     }
     encoded = json.dumps(
         payload,
@@ -11192,6 +11230,8 @@ Self-evolve replay runtime contract:
 - Probe prerequisite compatibility with bounded, non-mutating checks. If unavailable, fail the replay with a prerequisite-unavailable reason instead of repairing the host environment.
 - Keep replay-created files inside the workspace or replay artifact directory unless the task names another output location. Replay-created resources may be cleaned up by replay.
 - Stop retrying a path that cannot produce new evidence; switch once to a materially different bounded strategy or fail with the observed reason.
+- Treat a usable artifact-backed sample as the terminal collection condition. After persisting it, make no further tool call and immediately synthesize the final response.
+- Reserve the final execution step for the terminal response. If the remaining step or tool budget would be consumed by more collection, stop collection and answer from the evidence already persisted.
 """.strip()
 
 

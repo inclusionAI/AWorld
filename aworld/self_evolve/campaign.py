@@ -1531,9 +1531,22 @@ class SelfImprovementCampaignController:
                     diagnostic_refs=disposition.diagnostic_refs,
                 )
         status = _status_for_disposition(disposition)
+        report_authoritative_candidate_count = (
+            _report_authoritative_candidate_count(report)
+        )
+        pending_candidate_already_charged = (
+            _campaign_pending_candidate_was_authoritative(
+                self.store,
+                campaign=campaign,
+            )
+        )
         cumulative_authoritative_candidates = (
             campaign.cumulative_authoritative_candidates
-            + _report_authoritative_candidate_count(report)
+            + (
+                0
+                if pending_candidate_already_charged
+                else report_authoritative_candidate_count
+            )
         )
         paired_replay_continuation_requested = (
             _report_requests_paired_replay_continuation(report)
@@ -2018,6 +2031,10 @@ def run_self_improvement_campaign(
             controller,
             campaign,
         )
+        campaign = _migrate_paired_replay_member_timeout_for_resume(
+            controller,
+            campaign,
+        )
         campaign = _migrate_paired_replay_timeout_for_resume(
             controller,
             campaign,
@@ -2027,6 +2044,10 @@ def run_self_improvement_campaign(
             campaign,
         )
         campaign = _migrate_unobserved_support_timeout_for_resume(
+            controller,
+            campaign,
+        )
+        campaign = _migrate_path_sensitive_support_identity_for_resume(
             controller,
             campaign,
         )
@@ -4331,6 +4352,142 @@ def _migrate_regressing_measurement_checkpoint_for_resume(
     return migrated
 
 
+def _migrate_paired_replay_member_timeout_for_resume(
+    controller: SelfImprovementCampaignController,
+    campaign: SelfImprovementCampaign,
+) -> SelfImprovementCampaign:
+    """Reopen a legacy handoff after fixing the member timeout envelope."""
+
+    migration_action = "restore_paired_replay_member_timeout_checkpoint"
+    if (
+        campaign.status is not SelfImprovementCampaignStatus.PAUSED
+        or not campaign.run_ids
+        or campaign.latest_disposition is None
+        or campaign.latest_disposition.kind
+        is not SelfImprovementDispositionKind.HANDOFF_GOAL
+        or campaign.measurement_retry_count >= campaign.max_measurement_retries
+    ):
+        return campaign
+    latest_run_id = campaign.run_ids[-1]
+    try:
+        report = controller.store.read_report(latest_run_id)
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return campaign
+    prior_migration = report.get("campaign_causal_migration")
+    if (
+        isinstance(prior_migration, Mapping)
+        and prior_migration.get("action") == migration_action
+    ):
+        return campaign
+    attribution = report.get("rejection_attribution")
+    if not (
+        isinstance(attribution, Mapping)
+        and attribution.get("code") == "replay_member_phase_timeout"
+        and attribution.get("failure_owner") == "framework"
+        and attribution.get("failure_scope") == "member"
+        and attribution.get("repairable") is True
+    ):
+        return campaign
+    raw_candidate_ids = report.get("candidate_ids")
+    candidate_ids = tuple(
+        dict.fromkeys(
+            item
+            for item in (
+                raw_candidate_ids
+                if isinstance(raw_candidate_ids, (list, tuple))
+                else ()
+            )
+            if isinstance(item, str) and item
+        )
+    )
+    if len(candidate_ids) != 1:
+        return campaign
+    candidate_id = candidate_ids[0]
+    request_path = (
+        controller.store.run_path(latest_run_id)
+        / "replay"
+        / candidate_id
+        / "request.json"
+    )
+    try:
+        request = json.loads(request_path.read_text(encoding="utf-8"))
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return campaign
+    fingerprint = (
+        request.get("verified_candidate_package_fingerprint")
+        if isinstance(request, Mapping)
+        else None
+    )
+    if not isinstance(fingerprint, str) or not fingerprint:
+        return campaign
+    checkpoint = discover_paired_replay_resume_checkpoint(
+        controller.store,
+        run_id=latest_run_id,
+        candidate_id=candidate_id,
+        verified_candidate_package_fingerprint=fingerprint,
+    )
+    if checkpoint is None:
+        return campaign
+
+    corrected_disposition = SelfImprovementDisposition(
+        kind=SelfImprovementDispositionKind.REPAIR_MEASUREMENT,
+        reason_code="replay_member_phase_timeout",
+        owner="evaluation_harness",
+        stage="evaluation",
+        scope="shared_run",
+        repairable=True,
+        progress_delta_ids=campaign.latest_disposition.progress_delta_ids,
+        diagnostic_refs=_string_tuple(attribution.get("diagnostic_refs")),
+    )
+    ledger = campaign.measurement_ledger.charge_invalid_retry(latest_run_id)
+    report["paired_replay_resume_checkpoint"] = checkpoint.to_dict()
+    report["measurement_pending_candidate_id"] = checkpoint.candidate_id
+    report["measurement_pending_candidate_fingerprint"] = (
+        checkpoint.candidate_fingerprint
+    )
+    report["campaign_causal_migration"] = {
+        "schema_version": (
+            "aworld.self_evolve.paired_replay_member_timeout_migration.v1"
+        ),
+        "action": migration_action,
+        "source_run_id": latest_run_id,
+        "candidate_id": checkpoint.candidate_id,
+        "measurement_retry_granted": True,
+    }
+    report["self_improvement_disposition"] = corrected_disposition.to_dict()
+    raw_campaign = report.get("campaign")
+    if isinstance(raw_campaign, dict):
+        raw_campaign.update(
+            {
+                "measurement_retry_count": ledger.invalid_retry_count,
+                "measurement_pending_run_id": checkpoint.source_run_id,
+                "measurement_pending_candidate_id": checkpoint.candidate_id,
+                "max_cycles": (
+                    campaign.max_cycles
+                    + ledger.control_plane_run_count
+                    + int(campaign.repair_continuation_used)
+                ),
+            }
+        )
+    controller.store.write_report(latest_run_id, report)
+    migrated = replace(
+        campaign,
+        status=SelfImprovementCampaignStatus.ACTIVE,
+        measurement_ledger=ledger,
+        latest_progress=self_improvement_progress(report),
+        latest_disposition=corrected_disposition,
+        latest_measurement_outcome=None,
+        latest_report_path=str(
+            controller.store.run_path(latest_run_id) / "report.json"
+        ),
+        measurement_pending_run_id=checkpoint.source_run_id,
+        measurement_pending_candidate_id=checkpoint.candidate_id,
+        goal_handoff_path=None,
+    )
+    controller.store.write_campaign(migrated)
+    return migrated
+
+
 def _migrate_paired_replay_timeout_for_resume(
     controller: SelfImprovementCampaignController,
     campaign: SelfImprovementCampaign,
@@ -4691,6 +4848,93 @@ def _migrate_unobserved_support_timeout_for_resume(
         campaign,
         status=SelfImprovementCampaignStatus.ACTIVE,
         measurement_ledger=ledger,
+        latest_progress=self_improvement_progress(report),
+        latest_disposition=corrected,
+        latest_measurement_outcome=None,
+        measurement_pending_run_id=None,
+        measurement_pending_candidate_id=None,
+        goal_handoff_path=None,
+    )
+    controller.store.write_campaign(migrated)
+    return migrated
+
+
+def _migrate_path_sensitive_support_identity_for_resume(
+    controller: SelfImprovementCampaignController,
+    campaign: SelfImprovementCampaign,
+) -> SelfImprovementCampaign:
+    """Reopen a stored-candidate frontier exhausted by legacy path identity."""
+
+    migration_action = "restore_path_independent_support_repair_frontier"
+    if (
+        campaign.status is not SelfImprovementCampaignStatus.EXHAUSTED
+        or campaign.latest_disposition is None
+        or campaign.latest_disposition.reason_code
+        != "candidate_repair_frontier_stalled"
+        or campaign.repair_continuation_used
+        or not campaign.run_ids
+    ):
+        return campaign
+    latest_run_id = campaign.run_ids[-1]
+    try:
+        report = controller.store.read_report(latest_run_id)
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return campaign
+    prior_migration = report.get("campaign_causal_migration")
+    if (
+        isinstance(prior_migration, Mapping)
+        and prior_migration.get("action") == migration_action
+    ):
+        return campaign
+    has_legacy_support_gate = any(
+        item.get("code") == "candidate_replay_support_baseline_incompatible"
+        for item in _walk_mappings(report.get("gate_results"))
+    )
+    raw_sources = report.get("candidate_source_dispositions")
+    stored_measurement_rerun = bool(
+        isinstance(raw_sources, Mapping)
+        and any(
+            isinstance(value, Mapping)
+            and value.get("kind") == "stored_evidence_rerun"
+            for value in raw_sources.values()
+        )
+    )
+    if not has_legacy_support_gate or not stored_measurement_rerun:
+        return campaign
+
+    corrected = SelfImprovementDisposition(
+        kind=SelfImprovementDispositionKind.CONTINUE_CANDIDATE,
+        reason_code="replay_support_identity_repaired",
+        owner="candidate",
+        stage="task_rollout",
+        scope="candidate",
+        repairable=True,
+        progress_delta_ids=campaign.latest_disposition.progress_delta_ids,
+    )
+    report["campaign_causal_migration"] = {
+        "schema_version": (
+            "aworld.self_evolve.path_independent_support_migration.v1"
+        ),
+        "action": migration_action,
+        "source_run_id": latest_run_id,
+        "previous_reason_code": campaign.latest_disposition.reason_code,
+        "corrected_reason_code": corrected.reason_code,
+        "candidate_reserve_granted": True,
+    }
+    report["self_improvement_disposition"] = corrected.to_dict()
+    raw_campaign = report.get("campaign")
+    if isinstance(raw_campaign, dict):
+        raw_campaign["repair_continuation_used"] = True
+        raw_campaign["max_cycles"] = (
+            campaign.max_cycles
+            + campaign.measurement_ledger.control_plane_run_count
+            + 1
+        )
+    controller.store.write_report(latest_run_id, report)
+    migrated = replace(
+        campaign,
+        status=SelfImprovementCampaignStatus.ACTIVE,
+        repair_continuation_used=True,
         latest_progress=self_improvement_progress(report),
         latest_disposition=corrected,
         latest_measurement_outcome=None,
@@ -5619,6 +5863,27 @@ def _report_requests_paired_replay_continuation(
     )
 
 
+def _report_requests_paired_replay_retry(
+    report: Mapping[str, Any],
+) -> bool:
+    """Recognize bounded retry of a persisted framework member timeout."""
+
+    checkpoint = report.get("paired_replay_resume_checkpoint")
+    if not isinstance(checkpoint, Mapping):
+        return False
+    return any(
+        isinstance(attribution, Mapping)
+        and attribution.get("code") == "replay_member_phase_timeout"
+        and attribution.get("failure_owner") == "framework"
+        and attribution.get("failure_scope") == "member"
+        and attribution.get("repairable") is True
+        for attribution in (
+            report.get("rejection_attribution"),
+            report.get("campaign_failure_attribution"),
+        )
+    )
+
+
 def derive_self_improvement_disposition(
     report: Mapping[str, Any],
     previous_progress: SelfImprovementProgress | None = None,
@@ -5694,6 +5959,21 @@ def derive_self_improvement_disposition(
             progress_delta_ids=delta,
             diagnostic_refs=_string_tuple(
                 typed_attribution.get("diagnostic_refs")
+            ),
+        )
+    if _report_requests_paired_replay_retry(report):
+        return SelfImprovementDisposition(
+            kind=SelfImprovementDispositionKind.REPAIR_MEASUREMENT,
+            reason_code="replay_member_phase_timeout",
+            owner="evaluation_harness",
+            stage="evaluation",
+            scope="shared_run",
+            repairable=True,
+            progress_delta_ids=delta,
+            diagnostic_refs=_string_tuple(
+                attribution.get("diagnostic_refs")
+                if isinstance(attribution, Mapping)
+                else ()
             ),
         )
     shared_measurement = next(
@@ -6453,6 +6733,63 @@ def _report_authoritative_candidate_count(report: Mapping[str, Any]) -> int:
         # authoritative conclusion about its candidate.
         count -= 1
     return count
+
+
+def _campaign_pending_candidate_was_authoritative(
+    store: Any,
+    *,
+    campaign: SelfImprovementCampaign,
+) -> bool:
+    """Return whether the frozen measurement candidate was already charged.
+
+    A resumed paired replay completes the same immutable candidate experiment;
+    it does not create another authoritative candidate.  Prefer the explicit
+    funnel identity ledger and admit the legacy fallback only when the report
+    has exactly one possible candidate identity.
+    """
+
+    pending_candidate_id = campaign.measurement_pending_candidate_id
+    if pending_candidate_id is None:
+        return False
+    for run_id in campaign.run_ids:
+        try:
+            report = store.read_report(run_id)
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            continue
+        if _report_authoritative_candidate_count(report) <= 0:
+            continue
+        funnel = report.get("verification_funnel")
+        raw_authoritative_ids = (
+            funnel.get("authoritative_candidate_ids")
+            if isinstance(funnel, Mapping)
+            else None
+        )
+        authoritative_ids = {
+            item
+            for item in (
+                raw_authoritative_ids
+                if isinstance(raw_authoritative_ids, (list, tuple))
+                else ()
+            )
+            if isinstance(item, str) and item
+        }
+        if pending_candidate_id in authoritative_ids:
+            return True
+        if authoritative_ids:
+            continue
+        raw_candidate_ids = report.get("candidate_ids")
+        candidate_ids = {
+            item
+            for item in (
+                raw_candidate_ids
+                if isinstance(raw_candidate_ids, (list, tuple))
+                else ()
+            )
+            if isinstance(item, str) and item
+        }
+        if candidate_ids == {pending_candidate_id}:
+            return True
+    return False
 
 
 def _report_has_authoritative_measurement_observation(

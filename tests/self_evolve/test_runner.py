@@ -6388,6 +6388,44 @@ async def test_stored_candidate_resume_bypasses_empty_repair_frontier(
 
 
 @pytest.mark.asyncio
+async def test_measurement_resume_optimizer_opens_real_repair_frontier() -> None:
+    stored = CandidateVariant(
+        candidate_id="stored-candidate",
+        target=SelfEvolveTargetRef("skill", "demo"),
+        content="# Demo\n",
+        rationale="resume frozen measurement",
+    )
+    repaired = replace(
+        stored,
+        candidate_id="repaired-candidate",
+        content="# Demo\n\nBounded terminal synthesis.\n",
+    )
+
+    class Delegate:
+        async def propose(self, request):
+            return OptimizerResult(candidates=(repaired,))
+
+    optimizer = runner_module._MeasurementResumeThenRepairOptimizer(
+        candidate=stored,
+        source_run_id="prior-run",
+        delegate=Delegate(),
+    )
+
+    assert optimizer.stored_candidate_admission_reason() == (
+        "stored_candidate_measurement_resume"
+    )
+    first = await optimizer.propose(SimpleNamespace())
+    assert first.candidates == (stored,)
+    assert first.source_disposition.kind.value == "stored_evidence_rerun"
+    assert optimizer.stored_candidate_admission_reason() == (
+        "stored_candidate_measurement_resume"
+    )
+    second = await optimizer.propose(SimpleNamespace())
+    assert second.candidates == (repaired,)
+    assert optimizer.stored_candidate_admission_reason() is None
+
+
+@pytest.mark.asyncio
 async def test_authoritative_replay_uses_screening_control_health_and_patience(
     tmp_path: Path,
 ) -> None:
@@ -11616,6 +11654,39 @@ def test_explicit_zero_proof_is_overridden_by_nonzero_actual_usage() -> None:
     ) is None
 
 
+def test_stored_resume_zero_budget_override_does_not_exempt_later_repair() -> None:
+    context = _RunBudgetContext(
+        ledger=RunBudgetLedger(
+            BudgetCeilings(
+                total_tokens=0,
+                total_cost_usd=None,
+                wall_seconds=None,
+            )
+        ),
+        cold_start_by_stage={
+            BudgetStage.CANDIDATE_GENERATION: BudgetUsage(tokens=5)
+        },
+        backend_proven_zero_by_stage={
+            BudgetStage.CANDIDATE_GENERATION: False
+        },
+    )
+
+    stored = context.reserve(
+        BudgetStage.CANDIDATE_GENERATION,
+        "stored-measurement-resume",
+        backend_proven_zero=True,
+    )
+    repair = context.reserve(
+        BudgetStage.CANDIDATE_GENERATION,
+        "generated-repair",
+    )
+
+    assert stored.allowed is True
+    assert stored.estimate.backend_proven_zero is True
+    assert repair.allowed is False
+    assert repair.estimate.backend_proven_zero is False
+
+
 def test_local_stage_can_configure_zero_tokens_with_bounded_wall_time() -> None:
     usage = _configured_budget_usage(
         tokens=0,
@@ -14118,6 +14189,89 @@ def test_authoritative_failure_case_is_persisted_and_restored_for_screening(
     assert screening_dataset.cases[0].case_id == "case-1"
 
 
+def test_campaign_restore_recovers_authoritative_member_lifecycle_before_report(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "README.md").write_text("fixture\n", encoding="utf-8")
+    dataset = SelfEvolveDataset(
+        cases=(EvalCase(case_id="case-partial", input="task"),),
+        recipe=DatasetRecipe(
+            source={"kind": "test"},
+            split_seed="partial-authoritative",
+            splits={"train": ["case-partial"]},
+        ),
+    )
+    store = FilesystemSelfEvolveStore(workspace)
+    run_id = "campaign-demo-cycle-008"
+    run_dir = store.run_path(run_id)
+    bundle = ReplayAdaptationCompiler().compile(
+        dataset=dataset,
+        workspace_root=workspace,
+        artifact_root=run_dir / "adaptation",
+    )
+    support_fingerprint = replay_module.replay_support_fingerprint(bundle)
+    assert support_fingerprint is not None
+    timeout_fingerprint = replay_module.replay_timeout_envelope_fingerprint(
+        timeout_seconds=900,
+        max_steps=24,
+        max_tool_calls=32,
+    )
+    request = CandidateReplayRequest(
+        run_id=run_id,
+        task_id="case-partial",
+        workspace_root=str(workspace),
+        target=SelfEvolveTargetRef("skill", "demo"),
+        candidate_id="candidate",
+        overlay_skill_root=str(workspace / "overlay"),
+        task_input="task",
+        timeout_seconds=900,
+        max_steps=24,
+        max_tool_calls=32,
+        replay_adaptation=bundle,
+        baseline_skill_fingerprint="sha256:baseline",
+        adaptation_fingerprint=bundle.adaptation_fingerprint,
+        support_fingerprint=support_fingerprint,
+        timeout_envelope_fingerprint=timeout_fingerprint,
+        workspace_seed_fingerprint=bundle.workspace_seed_fingerprint,
+    )
+    member_dir = (
+        run_dir / "replay" / "candidate" / "members" / "case-partial-member"
+    )
+    baseline_dir = member_dir / "baseline"
+    baseline_dir.mkdir(parents=True)
+    (member_dir / "request.json").write_text(
+        json.dumps(to_json_dict(request), sort_keys=True),
+        encoding="utf-8",
+    )
+    (baseline_dir / "lifecycle.json").write_text(
+        json.dumps({"status": "succeeded", "failure": None}),
+        encoding="utf-8",
+    )
+    (baseline_dir / "aggregate_metrics.json").write_text(
+        json.dumps({"latency_ms": 1250}),
+        encoding="utf-8",
+    )
+    store.write_report(run_id, {"run_id": run_id, "status": "rejected"})
+
+    observations: dict[str, dict[str, float | int]] = {}
+    controls: dict[str, dict[str, object]] = {}
+    runner_module._restore_campaign_screening_case_observations(
+        observations,
+        store=store,
+        prior_run_ids=(run_id,),
+        loaded_run_ids=set(),
+        control_observations=controls,
+    )
+
+    assert observations["case-partial"]["baseline_success_count"] == 1
+    assert len(controls) == 1
+    restored = next(iter(controls.values()))
+    assert restored["baseline_attempt_count"] == 1
+    assert restored["baseline_success_count"] == 1
+
+
 def test_authoritative_invalid_control_is_persisted_and_deprioritized(
     tmp_path: Path,
 ) -> None:
@@ -14641,6 +14795,16 @@ async def test_candidate_support_attribution_preserves_raw_timeout_escalation(
         lambda bundle: bundle.support_fingerprint,
     )
     monkeypatch.setattr(
+        runner_module,
+        "replay_capability_semantic_fingerprint",
+        lambda bundle: bundle.fingerprint,
+    )
+    monkeypatch.setattr(
+        runner_module,
+        "replay_adaptation_semantic_fingerprint",
+        lambda bundle: bundle.adaptation_fingerprint,
+    )
+    monkeypatch.setattr(
         runner,
         "_prepare_replay_adaptation",
         lambda **_kwargs: (
@@ -14669,6 +14833,13 @@ async def test_candidate_support_attribution_preserves_raw_timeout_escalation(
     ] = {
         "identity": counterfactual_identity,
         "baseline_success_count": 1,
+    }
+    runner._candidate_screening_control_observations[
+        str(current_identity["control_identity_fingerprint"])
+    ] = {
+        "identity": current_identity,
+        "baseline_attempt_count": 1,
+        "baseline_success_count": 0,
     }
     observed_timeouts: list[int] = []
 
@@ -14763,6 +14934,11 @@ def test_candidate_owned_support_baseline_incompatibility_is_candidate_repair() 
         gate,
         control_identity=current_identity,
         control_observations={
+            "sha256:candidate-control": {
+                "identity": current_identity,
+                "baseline_attempt_count": 1,
+                "baseline_success_count": 0,
+            },
             "sha256:framework-control": {
                 "identity": qualified_framework_identity,
                 "baseline_success_count": 1,
@@ -14778,6 +14954,53 @@ def test_candidate_owned_support_baseline_incompatibility_is_candidate_repair() 
     assert attributed.details["failure_owner"] == "candidate"
     assert attributed.details["next_action"] == "continue_candidate_repair"
     assert runner_module._screening_gate_has_invalid_control(attributed) is False
+
+
+def test_candidate_support_attribution_requires_repeated_current_failure() -> None:
+    gate = GateResult(
+        gate_name="candidate_replay",
+        passed=False,
+        reason="one baseline attempt failed under candidate support",
+        details={
+            "failure_class": "framework",
+            "failure_owner": "framework",
+            "baseline_failure": {
+                "code": "replay_member_phase_timeout",
+                "failure_owner": "framework",
+            },
+        },
+    )
+    current_identity = {
+        "case_id": "case-1",
+        "baseline_skill_fingerprint": "sha256:baseline",
+        "capability_package_fingerprint": "sha256:candidate-package",
+        "replay_capability_fingerprint": "sha256:candidate-capability",
+        "support_fingerprint": "sha256:candidate-support",
+        "timeout_envelope_fingerprint": "sha256:timeout",
+        "timeout_seconds": 120.0,
+        "max_steps": 4,
+        "max_tool_calls": 8,
+    }
+    qualified_identity = {
+        **current_identity,
+        "support_fingerprint": "sha256:qualified-support",
+    }
+
+    attributed = runner_module._candidate_support_baseline_incompatibility_gate(
+        gate,
+        control_identity=current_identity,
+        control_observations={
+            "sha256:qualified": {
+                "identity": qualified_identity,
+                "baseline_attempt_count": 1,
+                "baseline_success_count": 1,
+            }
+        },
+    )
+
+    assert attributed is gate
+    assert attributed.details.get("code") is None
+    assert attributed.details["failure_owner"] == "framework"
 
 
 def test_unobserved_candidate_intervention_preserves_framework_baseline_timeout() -> None:
@@ -15957,7 +16180,7 @@ async def test_runner_screens_population_on_representative_member_before_full_re
     assert replay_backend.calls == [
         ("candidate-1", ("task-a",), 90, 8),
         ("candidate-2", ("task-a",), 90, 8),
-        ("candidate-1", ("task-a", "task-b"), 600, None),
+        ("candidate-1", ("task-a", "task-b"), 600, 32),
     ]
     report = json.loads(
         (tmp_path / ".aworld" / "self_evolve" / "run-population-screening" / "report.json").read_text(
