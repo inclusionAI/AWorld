@@ -381,6 +381,7 @@ from aworld.self_evolve.replay_adaptation import (
     ReplayAdaptationCompiler,
     ReplayCapabilityRequirement,
     compile_replay_adaptation_isolation_decision,
+    replay_adaptation_semantic_fingerprint,
 )
 from aworld.self_evolve.replay_capability import (
     REPLAY_CAPABILITY_PROTOCOL_VERSION,
@@ -396,6 +397,7 @@ from aworld.self_evolve.replay_capability import (
     discover_replay_capability,
     frozen_replay_fixture_shape_fingerprints,
     materialize_replay_evidence_derivations,
+    replay_capability_semantic_fingerprint,
 )
 from aworld.self_evolve.release_checks import (
     build_content_quality_diagnostics,
@@ -463,14 +465,23 @@ class _RunBudgetContext:
     debits: list[dict[str, object]] = field(default_factory=list)
     releases: list[dict[str, object]] = field(default_factory=list)
 
-    def estimate(self, stage: BudgetStage, item_id: str, *, units: int = 1):
+    def estimate(
+        self,
+        stage: BudgetStage,
+        item_id: str,
+        *,
+        units: int = 1,
+        backend_proven_zero: bool | None = None,
+    ):
         return self.ledger.estimate_next(
             stage=stage,
             item_id=item_id,
             units=units,
             cold_start_per_unit=self.cold_start_by_stage.get(stage),
             backend_proven_zero=(
-                self.backend_proven_zero_by_stage.get(stage) is True
+                backend_proven_zero
+                if backend_proven_zero is not None
+                else self.backend_proven_zero_by_stage.get(stage) is True
             ),
         )
 
@@ -525,9 +536,15 @@ class _RunBudgetContext:
         item_id: str,
         *,
         units: int = 1,
+        backend_proven_zero: bool | None = None,
     ) -> BudgetDecision:
         decision = self.ledger.reserve(
-            self.estimate(stage, item_id, units=units)
+            self.estimate(
+                stage,
+                item_id,
+                units=units,
+                backend_proven_zero=backend_proven_zero,
+            )
         )
         self.decisions.append(decision.to_dict())
         return decision
@@ -1421,6 +1438,46 @@ class _FixedCandidateOptimizer:
         )
 
 
+@dataclass
+class _MeasurementResumeThenRepairOptimizer:
+    """Replay one frozen candidate, then open the real mutation frontier."""
+
+    candidate: CandidateVariant
+    source_run_id: str
+    delegate: CandidateOptimizer
+    proposal_count: int = 0
+
+    def proves_zero_budget_usage(self, stage: BudgetStage) -> bool:
+        # The first proposal is free, but subsequent repair proposals are not.
+        # Budget exemptions are configured for the optimizer as a whole, so a
+        # mixed optimizer must conservatively decline a global exemption.
+        return False
+
+    def stored_candidate_admission_reason(self) -> str | None:
+        if self.proposal_count <= 1:
+            return "stored_candidate_measurement_resume"
+        return None
+
+    async def propose(self, request: OptimizerRequest) -> OptimizerResult:
+        if self.proposal_count == 0:
+            self.proposal_count = 1
+            return OptimizerResult(
+                candidates=(self.candidate,),
+                source_disposition=CandidateSourceDisposition(
+                    kind=CandidateSourceKind.STORED_EVIDENCE_RERUN,
+                    source_run_id=self.source_run_id,
+                ),
+                diagnostics={
+                    "source": "stored_self_evolve_run",
+                    "source_run_id": self.source_run_id,
+                    "candidate_id": self.candidate.candidate_id,
+                    "repair_frontier_available_after_replay": True,
+                },
+            )
+        self.proposal_count += 1
+        return await self.delegate.propose(request)
+
+
 def _optimizer_stored_candidate_admission_reason(
     optimizer: CandidateOptimizer,
 ) -> str | None:
@@ -1717,6 +1774,7 @@ _DEFAULT_CANDIDATE_SCREENING_TOOL_CALL_LIMIT = 8
 _SCREENING_STEP_TIMEOUT_SECONDS = 30
 _SCREENING_BUDGET_CENSORED_CODE = "screening_budget_censored"
 _DEFAULT_AUTHORITATIVE_REPLAY_MAX_STEPS = 24
+_DEFAULT_AUTHORITATIVE_REPLAY_TOOL_CALL_LIMIT = 32
 
 
 def _candidate_screening_timeout(
@@ -4015,6 +4073,7 @@ class SelfEvolveRunner:
             control_observations=(
                 self._candidate_screening_control_observations
             ),
+            loaded_run_ids=self._candidate_screening_loaded_run_ids,
         )
         screening_control_preflight = _screening_control_preflight(
             dataset,
@@ -4741,6 +4800,9 @@ class SelfEvolveRunner:
                 BudgetStage.CANDIDATE_GENERATION,
                 f"iteration-{iteration_index + 1}-generation",
                 units=generation_slot_count,
+                backend_proven_zero=(
+                    True if stored_admission_reason is not None else None
+                ),
             )
             if not generation_budget.allowed:
                 for slot in scheduler_decision.slots:
@@ -13123,7 +13185,14 @@ class SelfEvolveRunner:
                 else _DEFAULT_AUTHORITATIVE_REPLAY_MAX_STEPS
             )
         )
-        effective_max_tool_calls = max_tool_calls
+        effective_max_tool_calls = (
+            max_tool_calls
+            if max_tool_calls is not None
+            else min(
+                _DEFAULT_AUTHORITATIVE_REPLAY_TOOL_CALL_LIMIT,
+                max(8, effective_max_steps * 2),
+            )
+        )
         # Baseline reuse is resolved only after the candidate-owned support has
         # compiled.  This prevents a framework-only or sibling support surface
         # from being offered to a request with different runtime bindings.
@@ -16738,22 +16807,23 @@ def optimize_from_cli_request(
             ),
         )
 
+    mutation_optimizer = TraceReflectiveLLMMutator(
+        mutate_text=_cli_default_mutation,
+        population_callable=(
+            _cli_candidate_population
+            if candidate_population_executor is not None
+            else None
+        ),
+        concurrency_policy=effective_concurrency_policy,
+    )
     optimizer: CandidateOptimizer = (
-        _FixedCandidateOptimizer(
+        _MeasurementResumeThenRepairOptimizer(
             candidate=measurement_pending_candidate,
             source_run_id=str(campaign_measurement_pending_run_id),
-            admission_reason_code="stored_candidate_measurement_resume",
+            delegate=mutation_optimizer,
         )
         if measurement_pending_candidate is not None
-        else TraceReflectiveLLMMutator(
-            mutate_text=_cli_default_mutation,
-            population_callable=(
-                _cli_candidate_population
-                if candidate_population_executor is not None
-                else None
-            ),
-            concurrency_policy=effective_concurrency_policy,
-        )
+        else mutation_optimizer
     )
 
     self_evolve_runner = SelfEvolveRunner(
@@ -16767,11 +16837,7 @@ def optimize_from_cli_request(
         challenger_max_cases=challenger_max_cases,
         post_apply_evaluator=post_apply_evaluator,
         min_score_delta=min_score_delta,
-        max_iterations=(
-            1
-            if measurement_pending_candidate is not None
-            else effective_iteration_budget
-        ),
+        max_iterations=effective_iteration_budget,
         min_eval_cases=min_eval_cases,
         judge_repetitions=judge_repetitions,
         max_run_tokens=max_run_tokens,
@@ -16822,11 +16888,7 @@ def optimize_from_cli_request(
         replay_max_steps=replay_max_steps,
         replay_candidate_limit=replay_candidate_limit,
         candidate_screening_max_cases=candidate_screening_max_cases,
-        max_generated_candidates=(
-            1
-            if measurement_pending_candidate is not None
-            else max_generated_candidates
-        ),
+        max_generated_candidates=max_generated_candidates,
         max_full_evaluation_candidates=max_full_evaluation_candidates,
         max_score_tiebreak_candidates=max_score_tiebreak_candidates,
         baseline_replay_repetitions=baseline_replay_repetitions,
@@ -20315,7 +20377,47 @@ def _paired_replay_pending_candidate_checkpoint(
         )
         if checkpoint is not None:
             return checkpoint
-    return None
+    member_timeout = any(
+        isinstance(report.get(key), Mapping)
+        and report[key].get("code") == "replay_member_phase_timeout"
+        and report[key].get("failure_owner") == "framework"
+        and report[key].get("failure_scope") == "member"
+        and report[key].get("repairable") is True
+        for key in ("campaign_failure_attribution", "rejection_attribution")
+    )
+    if not member_timeout:
+        return None
+    raw_candidate_ids = report.get("candidate_ids")
+    candidate_ids = tuple(
+        dict.fromkeys(
+            item
+            for item in (
+                raw_candidate_ids
+                if isinstance(raw_candidate_ids, (list, tuple))
+                else ()
+            )
+            if isinstance(item, str) and item
+        )
+    )
+    if len(candidate_ids) != 1:
+        return None
+    candidate_id = candidate_ids[0]
+    request_path = (
+        store.run_path(run_id) / "replay" / candidate_id / "request.json"
+    )
+    try:
+        request = _load_json_mapping(request_path)
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return None
+    fingerprint = request.get("verified_candidate_package_fingerprint")
+    if not isinstance(fingerprint, str) or not fingerprint:
+        return None
+    return discover_paired_replay_resume_checkpoint(
+        store,
+        run_id=run_id,
+        candidate_id=candidate_id,
+        verified_candidate_package_fingerprint=fingerprint,
+    )
 
 
 def _repair_feedback_from_selected_candidate(
@@ -22246,17 +22348,27 @@ def _candidate_support_baseline_incompatibility_gate(
         "max_tool_calls",
     )
     counterfactuals: list[dict[str, object]] = []
+    prior_current_support_failure_count = 0
     for observation in control_observations.values():
         identity = observation.get("identity")
         if not isinstance(identity, Mapping):
             continue
+        same_control_envelope = not any(
+            identity.get(field_name) != control_identity.get(field_name)
+            for field_name in counterfactual_control_fields
+        )
         if (
-            any(
-                identity.get(field_name)
-                != control_identity.get(field_name)
-                for field_name in counterfactual_control_fields
+            same_control_envelope
+            and identity.get("support_fingerprint") == support_fingerprint
+        ):
+            prior_current_support_failure_count += max(
+                0,
+                _non_negative_int(observation.get("baseline_attempt_count"))
+                - _non_negative_int(observation.get("baseline_success_count")),
             )
-            or identity.get("support_fingerprint") == support_fingerprint
+            continue
+        if (
+            not same_control_envelope
             or _non_negative_int(
                 observation.get("baseline_success_count")
             )
@@ -22280,7 +22392,7 @@ def _candidate_support_baseline_incompatibility_gate(
                 "max_tool_calls": identity.get("max_tool_calls"),
             }
         )
-    if not counterfactuals:
+    if not counterfactuals or prior_current_support_failure_count <= 0:
         return gate
     event = ReplayFailureEvent(
         code="candidate_replay_support_baseline_incompatible",
@@ -22296,6 +22408,9 @@ def _candidate_support_baseline_incompatibility_gate(
         diagnostics={
             "case_id": case_id,
             "candidate_support_fingerprint": support_fingerprint,
+            "current_support_baseline_failure_count": (
+                prior_current_support_failure_count + 1
+            ),
             "qualified_counterfactual_supports": counterfactuals[:8],
         },
     )
@@ -22318,6 +22433,9 @@ def _candidate_support_baseline_incompatibility_gate(
             "repairable": True,
             "next_action": "continue_candidate_repair",
             "candidate_support_fingerprint": support_fingerprint,
+            "current_support_baseline_failure_count": (
+                prior_current_support_failure_count + 1
+            ),
             "control_identity": dict(control_identity),
             "qualified_counterfactual_supports": counterfactuals[:8],
             "failure_event": payload,
@@ -26184,7 +26302,9 @@ def _control_qualification_identity(
         else "framework-only"
     )
     replay_capability_fingerprint = (
-        capability.fingerprint if capability is not None else "framework-only"
+        replay_capability_semantic_fingerprint(capability)
+        if capability is not None
+        else "framework-only"
     )
     support_fingerprint = replay_support_fingerprint(replay_adaptation)
     assert support_fingerprint is not None
@@ -26199,7 +26319,9 @@ def _control_qualification_identity(
         "baseline_skill_fingerprint": baseline_skill_fingerprint,
         "capability_package_fingerprint": capability_package_fingerprint,
         "replay_capability_fingerprint": replay_capability_fingerprint,
-        "adaptation_fingerprint": replay_adaptation.adaptation_fingerprint,
+        "adaptation_fingerprint": replay_adaptation_semantic_fingerprint(
+            replay_adaptation
+        ),
         "support_fingerprint": support_fingerprint,
         "timeout_envelope_fingerprint": timeout_fingerprint,
         "timeout_seconds": float(timeout_seconds),
@@ -26238,13 +26360,46 @@ def _control_qualification_identity_from_request(
         max_steps=request.max_steps,
         max_tool_calls=request.max_tool_calls,
     )
+    compatible_support_fingerprints = {identity["support_fingerprint"]}
+    legacy_support_fingerprint = _legacy_path_sensitive_support_fingerprint(
+        adaptation
+    )
+    if legacy_support_fingerprint is not None:
+        compatible_support_fingerprints.add(legacy_support_fingerprint)
     if (
-        identity["support_fingerprint"] != request.support_fingerprint
+        request.support_fingerprint not in compatible_support_fingerprints
         or identity["timeout_envelope_fingerprint"]
         != request.timeout_envelope_fingerprint
     ):
         return None
     return identity
+
+
+def _legacy_path_sensitive_support_fingerprint(
+    replay_adaptation: ReplayAdaptationBundle,
+) -> str | None:
+    """Recognize persisted v1 requests whose support identity included paths."""
+
+    capability = replay_adaptation.replay_capability
+    payload = {
+        "schema_version": "aworld.self_evolve.replay_support_identity.v1",
+        "capability_package_fingerprint": (
+            capability.capability_package_fingerprint
+            if capability is not None
+            else "framework-only"
+        ),
+        "replay_capability_fingerprint": (
+            capability.fingerprint if capability is not None else "framework-only"
+        ),
+        "adaptation_fingerprint": replay_adaptation.adaptation_fingerprint,
+    }
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return "sha256:" + hashlib.sha256(encoded).hexdigest()
 
 
 def _restore_campaign_screening_case_observations(
@@ -26406,6 +26561,11 @@ def _restore_campaign_screening_case_observations(
                             )
                             + wall_seconds
                         )
+        _restore_authoritative_member_lifecycle_observations(
+            observations,
+            control_observations=control_observations,
+            run_dir=store.run_path(prior_run_id),
+        )
         loaded_run_ids.add(prior_run_id)
 
 
@@ -26417,6 +26577,7 @@ def _restore_historical_screening_lifecycle_observations(
     dataset: SelfEvolveDataset,
     current_run_id: str,
     control_observations: dict[str, dict[str, object]] | None = None,
+    loaded_run_ids: set[str] | None = None,
 ) -> None:
     """Build a candidate-independent control profile from prior lifecycles."""
 
@@ -26430,12 +26591,22 @@ def _restore_historical_screening_lifecycle_observations(
         run_dir = report_path.parent
         if run_dir.name == current_run_id or run_dir.is_symlink():
             continue
+        if loaded_run_ids is not None and run_dir.name in loaded_run_ids:
+            continue
         try:
             report = _load_json_mapping(report_path)
         except (OSError, TypeError, ValueError, json.JSONDecodeError):
             continue
         if not _report_matches_target(report, target):
             continue
+        restored_authoritative = (
+            _restore_authoritative_member_lifecycle_observations(
+                observations,
+                control_observations=control_observations,
+                run_dir=run_dir,
+                eligible_case_ids=eligible_case_ids,
+            )
+        )
         if control_observations is not None:
             health = report.get("support_specific_control_health")
             raw_health_observations = (
@@ -26443,7 +26614,10 @@ def _restore_historical_screening_lifecycle_observations(
                 if isinstance(health, Mapping)
                 else None
             )
-            if isinstance(raw_health_observations, (list, tuple)):
+            if (
+                not restored_authoritative
+                and isinstance(raw_health_observations, (list, tuple))
+            ):
                 for raw_observation in raw_health_observations[:128]:
                     if not isinstance(raw_observation, Mapping):
                         continue
@@ -26527,6 +26701,73 @@ def _restore_historical_screening_lifecycle_observations(
                             )
                 if not current:
                     observations.pop(case_id, None)
+
+
+def _restore_authoritative_member_lifecycle_observations(
+    observations: dict[str, dict[str, float | int]],
+    *,
+    control_observations: dict[str, dict[str, object]] | None,
+    run_dir: Path,
+    eligible_case_ids: set[str] | None = None,
+) -> bool:
+    """Recover completed member controls even when a run timed out pre-report."""
+
+    replay_root = run_dir / "replay"
+    if not replay_root.is_dir() or replay_root.is_symlink():
+        return False
+    restored = False
+    candidate_dirs = sorted(replay_root.iterdir(), key=lambda path: path.name)[:32]
+    for candidate_dir in candidate_dirs:
+        members_root = candidate_dir / "members"
+        if (
+            not candidate_dir.is_dir()
+            or candidate_dir.is_symlink()
+            or not members_root.is_dir()
+            or members_root.is_symlink()
+        ):
+            continue
+        member_dirs = sorted(members_root.iterdir(), key=lambda path: path.name)[:256]
+        for member_dir in member_dirs:
+            if not member_dir.is_dir() or member_dir.is_symlink():
+                continue
+            try:
+                stored_request = _candidate_replay_request_from_mapping(
+                    _load_json_mapping(member_dir / "request.json")
+                )
+            except (
+                FileNotFoundError,
+                OSError,
+                TypeError,
+                ValueError,
+                json.JSONDecodeError,
+            ):
+                continue
+            case_id = stored_request.task_id
+            if eligible_case_ids is not None and case_id not in eligible_case_ids:
+                continue
+            identity = _control_qualification_identity_from_request(stored_request)
+            if identity is None:
+                continue
+            baseline_dir = member_dir / "baseline"
+            lifecycle_path = baseline_dir / "lifecycle.json"
+            if lifecycle_path.is_symlink() or not lifecycle_path.is_file():
+                continue
+            restored = True
+            current = observations.setdefault(case_id, {})
+            _merge_screening_variant_lifecycle_observation(
+                current,
+                variant_dir=baseline_dir,
+                phase="baseline",
+            )
+            if control_observations is not None:
+                _merge_support_specific_lifecycle_observation(
+                    control_observations,
+                    identity=identity,
+                    variant_dir=baseline_dir,
+                )
+            if not current:
+                observations.pop(case_id, None)
+    return restored
 
 
 def _merge_screening_variant_lifecycle_observation(

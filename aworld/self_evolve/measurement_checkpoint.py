@@ -220,10 +220,8 @@ class PairedReplayResumeCheckpointV1:
                 raise ValueError(f"paired replay checkpoint {name} is invalid")
         if set(self.pending_case_ids) & set(self.completed_pair_case_ids):
             raise ValueError("paired replay pending and completed cases overlap")
-        if not set(self.resumed_pair_case_ids).issubset(
-            self.completed_pair_case_ids
-        ):
-            raise ValueError("paired replay resumed cases are not completed")
+        if set(self.pending_case_ids) & set(self.resumed_pair_case_ids):
+            raise ValueError("paired replay pending and resumed cases overlap")
         normalized_paths = tuple(sorted(dict.fromkeys(self.protected_paths)))
         if normalized_paths != self.protected_paths or not normalized_paths:
             raise ValueError("paired replay protected paths are not canonical")
@@ -556,7 +554,6 @@ def discover_paired_replay_resume_checkpoint(
     if (
         not pending
         or not completed
-        or not set(completed) - set(resumed)
         or len(pending) != len(raw_pending)
         or len(completed) != len(raw_completed)
         or len(resumed) != len(raw_resumed)
@@ -573,7 +570,7 @@ def discover_paired_replay_resume_checkpoint(
         and isinstance(item.get("case_id"), str)
         and item.get("case_id")
     }
-    if not set((*pending, *completed)).issubset(request_case_ids):
+    if not set((*pending, *completed, *resumed)).issubset(request_case_ids):
         return None
     candidate_fingerprint = _candidate_package_fingerprint(candidate)
     if _FINGERPRINT.fullmatch(candidate_fingerprint) is None:

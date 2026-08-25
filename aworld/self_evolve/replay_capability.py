@@ -400,6 +400,57 @@ class DiscoveredReplayCapability:
     package_fingerprint: str
 
 
+def _replay_capability_compile_request_identity(
+    payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Project a compile request onto stable, content-addressed identity.
+
+    Snapshot and derivation paths are locations of already fingerprinted
+    inputs.  Including those locations made identical campaign cycles produce
+    different capability identities solely because their artifact directory
+    names changed.
+    """
+
+    raw_derivations = payload.get("evidence_derivations")
+    stable_derivations: dict[str, list[dict[str, Any]]] = {}
+    if isinstance(raw_derivations, Mapping):
+        for evidence_ref, raw_entries in sorted(raw_derivations.items()):
+            entries: list[dict[str, Any]] = []
+            if isinstance(raw_entries, (list, tuple)):
+                for raw_entry in raw_entries:
+                    if not isinstance(raw_entry, Mapping):
+                        continue
+                    entries.append(
+                        {
+                            str(key): value
+                            for key, value in sorted(
+                                raw_entry.items(),
+                                key=lambda item: str(item[0]),
+                            )
+                            if str(key) not in {"path", "response_index_path"}
+                        }
+                    )
+            stable_derivations[str(evidence_ref)] = entries
+    raw_snapshots = payload.get("context_snapshots")
+    snapshot_ids = (
+        sorted(str(case_id) for case_id in raw_snapshots)
+        if isinstance(raw_snapshots, Mapping)
+        else []
+    )
+    return {
+        "schema_version": payload.get("schema_version"),
+        "capability_id": payload.get("capability_id"),
+        "requirements": payload.get("requirements"),
+        "context_snapshot_ids": snapshot_ids,
+        "task_inputs": payload.get("task_inputs"),
+        "evidence_derivations": stable_derivations,
+        "capability_package_fingerprint": payload.get(
+            "capability_package_fingerprint"
+        ),
+        "context_fingerprint": payload.get("context_fingerprint"),
+    }
+
+
 @dataclass(frozen=True)
 class ReplayCapabilityCompileRequest:
     schema_version: str
@@ -473,7 +524,9 @@ class ReplayCapabilityCompileRequest:
             capability_root=str(root),
             capability_package_fingerprint=package_fingerprint,
             context_fingerprint=context_fingerprint,
-            request_fingerprint=_json_fingerprint(payload),
+            request_fingerprint=_json_fingerprint(
+                _replay_capability_compile_request_identity(payload)
+            ),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -561,6 +614,39 @@ class FrozenReplayCapability:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+def replay_capability_semantic_fingerprint(
+    capability: FrozenReplayCapability,
+) -> str:
+    """Identify frozen replay behavior without run-local storage locations.
+
+    ``request_fingerprint`` in legacy artifacts included absolute compile and
+    evidence paths.  It remains part of the signed frozen-manifest fingerprint
+    for artifact verification, but it is not executable support identity.
+    """
+
+    return _json_fingerprint(
+        {
+            "schema_version": "aworld.self_evolve.replay_capability_identity.v1",
+            "capability_id": capability.capability_id,
+            "capability_package_fingerprint": (
+                capability.capability_package_fingerprint
+            ),
+            "handled_requirements": list(capability.handled_requirements),
+            "unhandled_requirements": list(capability.unhandled_requirements),
+            "evidence_refs": capability.evidence_refs,
+            "fixture_evidence_refs": capability.fixture_evidence_refs,
+            "fixtures": [asdict(item) for item in capability.fixtures],
+            "runtime_files": [asdict(item) for item in capability.runtime_files],
+            "endpoint_replacements": capability.endpoint_replacements,
+            "services": [asdict(item) for item in capability.services],
+            "deterministic": capability.deterministic,
+            "concurrency_mode": capability.concurrency_mode,
+            "resource_key": capability.resource_key,
+            "binding_fingerprint": capability.binding_fingerprint,
+        }
+    )
 
 
 def frozen_replay_fixture_shape_fingerprints(

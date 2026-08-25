@@ -1816,6 +1816,23 @@ def test_materializes_bounded_read_only_evidence_derivation_catalog(
     assert enriched.request_fingerprint != request.request_fingerprint
 
 
+def test_compile_request_identity_ignores_cycle_local_paths(
+    tmp_path: Path,
+) -> None:
+    first_skill = _write_capability_skill(tmp_path / "cycle-008")
+    second_skill = _write_capability_skill(tmp_path / "cycle-009")
+
+    first = _request(first_skill)
+    second = _request(second_skill)
+
+    assert first.capability_root != second.capability_root
+    assert first.context_snapshots != second.context_snapshots
+    assert first.capability_package_fingerprint == (
+        second.capability_package_fingerprint
+    )
+    assert first.request_fingerprint == second.request_fingerprint
+
+
 def test_recorded_response_index_reconstructs_nested_operation_payloads() -> None:
     fixture = {
         "wrapper": [

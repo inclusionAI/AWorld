@@ -1590,6 +1590,31 @@ class ReplayAdaptationBundle:
         return asdict(self)
 
 
+def replay_adaptation_semantic_fingerprint(
+    bundle: ReplayAdaptationBundle,
+) -> str:
+    """Identify replay adaptation behavior independent of artifact paths."""
+
+    from aworld.self_evolve.replay_capability import (
+        replay_capability_semantic_fingerprint,
+    )
+
+    capability = bundle.replay_capability
+    return _json_fingerprint(
+        {
+            "schema_version": "aworld.self_evolve.replay_adaptation_identity.v1",
+            "workspace_seed_fingerprint": bundle.workspace_seed_fingerprint,
+            "environment_fingerprint": bundle.environment_fingerprint,
+            "cases": [asdict(case) for case in bundle.cases],
+            "replay_capability_fingerprint": (
+                replay_capability_semantic_fingerprint(capability)
+                if capability is not None
+                else None
+            ),
+        }
+    )
+
+
 class ReplayAdaptationCompiler:
     def __init__(
         self,
@@ -1719,14 +1744,17 @@ class ReplayAdaptationCompiler:
         environment_fingerprint = _environment_identity_fingerprint(
             environment_snapshot
         )
+        from aworld.self_evolve.replay_capability import (
+            replay_capability_semantic_fingerprint,
+        )
+
         adaptation_payload = {
             "schema_version": REPLAY_ADAPTATION_SCHEMA_VERSION,
-            "source_workspace_root": str(workspace),
             "workspace_seed_fingerprint": seed_fingerprint,
             "environment_fingerprint": environment_fingerprint,
             "cases": [asdict(case) for case in cases],
             "replay_capability_fingerprint": (
-                replay_capability.fingerprint
+                replay_capability_semantic_fingerprint(replay_capability)
                 if replay_capability is not None
                 else None
             ),
