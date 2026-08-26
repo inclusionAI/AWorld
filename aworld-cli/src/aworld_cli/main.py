@@ -695,6 +695,7 @@ def build_parser(zh: bool = False) -> argparse.ArgumentParser:
     parser.add_argument("--judge-agent-name", type=str, help="self-evolve judge agent name used with --evolve." if zh else "Self-evolve judge agent name used with --evolve.")
     parser.add_argument("--judge-backend-ref", type=str, help="self-evolve judge backend reference used with --evolve." if zh else "Self-evolve judge backend reference used with --evolve.")
     parser.add_argument("--judge-model-profile", type=str, help="model profile for the self-evolve judge used with --evolve." if zh else "Model profile for the self-evolve judge used with --evolve.")
+    parser.add_argument("--emit-trajectory", action="store_true", help="任务完成后输出 ATIF trajectory JSON。" if zh else "Emit ATIF trajectory JSON after the task completes.")
     parser.add_argument("--config", action="store_true", help="启动交互式全局配置编辑器（模型提供商、API 密钥等）并退出。" if zh else "Launch interactive global configuration editor (model provider, API key, etc.) and exit.")
     return parser
 
