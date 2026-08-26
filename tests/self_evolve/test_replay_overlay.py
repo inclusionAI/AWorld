@@ -20,6 +20,7 @@ from typing import Any
 import pytest
 
 from aworld.core.tool.replay_policy import DynamicEndpointBinding
+from aworld.self_evolve.concurrency import SelfEvolveConcurrencyPolicy
 from aworld.self_evolve.datasets import (
     EvalCase,
     SelfEvolveDataset,
@@ -40,6 +41,7 @@ from aworld.self_evolve.replay import (
     ReplayServiceReadinessTimeout,
     ReplayServiceProtocolError,
     ReplayVariantResult,
+    baseline_control_fingerprint,
     build_paired_replay_dataset,
     build_replay_request,
     compile_authoritative_replay_evidence_policy_profile_v2,
@@ -686,6 +688,81 @@ async def test_replay_backend_reports_member_phase_progress(
         "succeeded",
     ]
     assert completed[0]["baseline_cache_status"] == "not_offered"
+
+
+@pytest.mark.asyncio
+async def test_legacy_replay_overlaps_adjacent_isolated_single_controls(
+    tmp_path: Path,
+) -> None:
+    calls: list[tuple[str, str]] = []
+    second_control_started = asyncio.Event()
+
+    async def fake_executor(
+        request: ReplayExecutionRequest,
+    ) -> ReplayExecutionResult:
+        calls.append((request.task_id, request.variant_id))
+        if request.task_id == "task-a" and request.variant_id == "baseline":
+            await asyncio.wait_for(second_control_started.wait(), timeout=1.0)
+        elif request.task_id == "task-b" and request.variant_id == "baseline":
+            second_control_started.set()
+        return ReplayExecutionResult(
+            status="succeeded",
+            trajectory=[{"action": {"content": request.variant_id}}],
+        )
+
+    dataset = SelfEvolveDataset(
+        cases=(
+            EvalCase(case_id="task-a", input="Replay task A"),
+            EvalCase(case_id="task-b", input="Replay task B"),
+        ),
+        recipe=DatasetRecipe(
+            source={"kind": "isolated-overlap", "case_count": 2},
+            split_seed="seed",
+            splits={
+                "train": ["task-a", "task-b"],
+                "validation": [],
+                "held_out": [],
+            },
+        ),
+    )
+    candidate = _candidate(
+        "---\nname: demo\n---\n# Demo\nCandidate.\n",
+        candidate_id="overlap-candidate",
+    )
+    adaptation = ReplayAdaptationCompiler().compile(
+        dataset=dataset,
+        workspace_root=tmp_path,
+        artifact_root=tmp_path / "adaptation",
+    )
+    request = build_replay_request(
+        run_id="run-isolated-control-overlap",
+        workspace_root=tmp_path,
+        target=candidate.target,
+        candidate=candidate,
+        overlay_skill_root=tmp_path / "overlay",
+        dataset=dataset,
+        replay_adaptation=adaptation,
+        baseline_repetitions=1,
+        candidate_repetitions=1,
+    )
+
+    result = await AWorldCliCandidateReplayBackend(
+        executor=fake_executor,
+        concurrency_policy=SelfEvolveConcurrencyPolicy(
+            max_total_concurrency=2,
+            replay_concurrency=2,
+        ),
+    ).replay_candidate(
+        request,
+        candidate=candidate,
+        dataset=dataset,
+    )
+
+    assert result.succeeded
+    assert calls[:2] == [
+        ("task-a", "baseline"),
+        ("task-b", "baseline"),
+    ]
 
 
 @pytest.mark.asyncio
@@ -2597,6 +2674,12 @@ async def test_v3_repetition_artifact_tamper_is_typed_and_non_authoritative(
         baseline_replay_dir=str(first_baseline),
     )
     assert _stored_baseline_matches_request(direct_reuse_request)
+    assert _stored_baseline_matches_request(
+        replace(
+            direct_reuse_request,
+            adaptation_fingerprint="candidate-package-changed",
+        )
+    )
 
     if tamper == "delete_child":
         shutil.rmtree(first_baseline / "2")
@@ -6367,6 +6450,16 @@ async def test_multi_member_replay_reuses_each_members_baseline(
     )
     incremental_manifest = members_root / "baseline_cache_manifest.json"
     assert incremental_manifest.exists()
+    incremental_payload = json.loads(incremental_manifest.read_text())
+    assert {
+        item["case_id"]: item["control_fingerprint"]
+        for item in incremental_payload["members"]
+    } == {
+        member.case_id: baseline_control_fingerprint(member.request)
+        for member in load_candidate_replay_result(
+            members_root.parent
+        ).member_results
+    }
     (members_root / "manifest.json").unlink()
     second_request = build_replay_request(
         run_id="run-reuse-members",
@@ -7347,34 +7440,18 @@ async def test_aworld_cli_replay_executor_requests_machine_readable_trajectory_a
     assert task_text.startswith("Replay this task")
     assert "Self-evolve replay evidence requirements" in task_text
     assert "artifact-first" in task_text
-    assert "bounded structured summaries" in task_text
-    assert "A line-count limit such as `head -N` is not a byte bound" in task_text
-    assert "explicit byte-bounded excerpt or selected structured fields" in task_text
+    assert "`head -N` is not a byte bound" in task_text
+    assert "explicit byte-bounded excerpts or selected fields" in task_text
     assert "compacted" in task_text
     assert "Self-evolve replay runtime contract" in task_text
-    assert "Task-plane operations required by the original task are allowed" in task_text
-    assert "explicitly authorizes a control-plane operation" in task_text
-    assert "Do not terminate, restart, reconfigure, or replace externally managed prerequisites" in task_text
-    assert "Do not copy or substitute credentials, sessions, profiles, or private state" in task_text
-    assert "Do not override the supplied HOME, TMPDIR, XDG_*" in task_text
-    assert "Only endpoints supplied through AWORLD_REPLAY_ENDPOINT_*" in task_text
-    assert "Do not enumerate or connect to any other loopback port" in task_text
-    assert (
-        "On the first terminal protocol signal from a supplied endpoint" in task_text
-    )
-    assert "Do not retry alternate URL forms or inspect host ports" in task_text
-    assert "fail the replay with a prerequisite-unavailable reason" in task_text
-    assert (
-        "Once the requested output artifact and a valid evidence manifest exist, "
-        "stop evidence collection and return the final answer"
-    ) in task_text
-    assert (
-        "For bounded replay validation, prefer the smallest representative evidence path"
-    ) in task_text
-    assert (
-        "After the first successful structured extraction, immediately persist replay "
-        "artifacts"
-    ) in task_text
+    assert "Required task-plane actions are allowed" in task_text
+    assert "control-plane actions require explicit task authorization" in task_text
+    assert "External prerequisites are attach-only" in task_text
+    assert "Preserve supplied HOME, TMPDIR, XDG_*" in task_text
+    assert "Use only AWORLD_REPLAY_ENDPOINT_* endpoints" in task_text
+    assert "return prerequisite-unavailable" in task_text
+    assert "A valid artifact-backed sample is terminal" in task_text
+    assert len(task_text) < 3_500
     assert captured["kwargs"]["cwd"] == str(tmp_path)
     assert captured["kwargs"]["env"]["AWORLD_SELF_EVOLVE_AUTO_DRAIN"] == "0"
     assert captured["kwargs"]["env"]["AWORLD_SELF_EVOLVE_REPLAY_ARTIFACT_DIR"] == str(

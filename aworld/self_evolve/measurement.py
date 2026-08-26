@@ -2997,6 +2997,69 @@ def observations_with_usage_fallback(
     )
 
 
+def observations_with_evaluation_metric(
+    replay_observations: Sequence[MeasurementObservation],
+    evaluation_observations: Sequence[MeasurementObservation],
+    *,
+    metric: str,
+) -> tuple[MeasurementObservation, ...]:
+    """Overlay one predeclared judge metric onto full replay observations.
+
+    The evaluator may run on a strict comparable subset while replay remains
+    authoritative for execution status, task success, failures, usage, and
+    artifacts across the full frozen panel. Coordinates intentionally exclude
+    case fingerprints because the evaluator dataset contains paired replay
+    metadata while the execution observation retains the original case
+    identity. Ambiguous evaluator coordinates are ignored fail-closed.
+    """
+
+    def coordinate(item: MeasurementObservation) -> tuple[object, ...]:
+        return (
+            item.experiment_id,
+            item.run_id,
+            item.case_id,
+            item.arm,
+            item.panel_id,
+            item.repetition_index,
+            item.seed,
+            item.component_fingerprint,
+            item.frozen_identity_fingerprint,
+        )
+
+    values: dict[tuple[object, ...], float] = {}
+    ambiguous: set[tuple[object, ...]] = set()
+    for item in evaluation_observations:
+        value = item.metrics.get(metric)
+        if (
+            item.comparability is not ComparabilityStatus.COMPARABLE
+            or not isinstance(value, (int, float))
+            or isinstance(value, bool)
+            or not math.isfinite(float(value))
+        ):
+            continue
+        item_coordinate = coordinate(item)
+        if item_coordinate in values:
+            ambiguous.add(item_coordinate)
+            values.pop(item_coordinate, None)
+            continue
+        if item_coordinate not in ambiguous:
+            values[item_coordinate] = float(value)
+    return tuple(
+        replace(
+            item,
+            metrics={
+                **dict(item.metrics),
+                **(
+                    {metric: values[coordinate(item)]}
+                    if coordinate(item) in values
+                    else {}
+                ),
+            },
+        )
+        for item in replay_observations
+    )
+
+
 def stable_measurement_fingerprint(value: object) -> str:
     return "sha256:" + _digest(value)
 

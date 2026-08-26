@@ -44,6 +44,7 @@ from aworld.self_evolve.measurement import (
     measurement_summary_from_report,
     observations_from_evaluation,
     observations_from_replay,
+    observations_with_evaluation_metric,
     observations_with_usage_fallback,
     validate_transfer_panel,
 )
@@ -1250,6 +1251,93 @@ def test_evaluation_observations_use_exact_replay_coordinate_usage_fallback() ->
     assert [item.metrics["score"] for item in merged] == [1.0, 3.0, 2.0, 4.0]
     assert [item.usage.tokens for item in merged] == [100, 101, 102, 103]
     assert all(item.usage.complete for item in merged)
+
+
+def test_evaluation_metric_overlay_preserves_full_replay_failure_panel() -> None:
+    spec = _spec(
+        case_ids=("case-a", "case-b"),
+        repetitions=1,
+        minimum_cases=1,
+        primary_metric="score",
+    )
+    evaluator_dataset = SelfEvolveDataset(
+        cases=(EvalCase(case_id="case-a", input={"task": "a"}),),
+        recipe=DatasetRecipe(
+            source={"kind": "paired-replay-evaluator-subset"},
+            split_seed="seed",
+            splits={"held_out": ["case-a"]},
+        ),
+    )
+    evaluation = observations_from_evaluation(
+        spec,
+        dataset=evaluator_dataset,
+        baseline_summary=SimpleNamespace(metrics={"score_samples": [0.2]}),
+        candidate_summary=SimpleNamespace(metrics={"score_samples": [0.8]}),
+    )
+
+    replay: list[MeasurementObservation] = []
+    for case_id in ("case-a", "case-b"):
+        comparable = case_id == "case-a"
+        for arm, component in (
+            (ArmRole.CONTROL, spec.control),
+            (ArmRole.TREATMENT, spec.treatment),
+        ):
+            replay.append(
+                MeasurementObservation.create(
+                    experiment=spec,
+                    arm=arm,
+                    case_id=case_id,
+                    case_fingerprint=_fp("original-" + case_id),
+                    split="held_out",
+                    repetition_index=1,
+                    seed=1,
+                    component_fingerprint=component.fingerprint,
+                    execution_status=(
+                        ObservationExecutionStatus.SUCCEEDED
+                        if comparable
+                        else ObservationExecutionStatus.TIMEOUT
+                    ),
+                    comparability=(
+                        ComparabilityStatus.COMPARABLE
+                        if comparable
+                        else ComparabilityStatus.INCOMPARABLE
+                    ),
+                    comparability_reason=(
+                        None if comparable else "candidate_task_timeout"
+                    ),
+                    task_success=comparable,
+                    metrics={"latency_ms": 10.0},
+                    usage=MeasurementUsage(tokens=100, wall_seconds=1.0),
+                    failure_owner=(None if comparable else "task"),
+                    failure_stage=(None if comparable else "task_rollout"),
+                    failure_scope=(None if comparable else "member"),
+                    failure_code=(None if comparable else "task_timeout"),
+                )
+            )
+
+    merged = observations_with_evaluation_metric(
+        replay,
+        evaluation,
+        metric="score",
+    )
+
+    assert len(merged) == 4
+    scored = [item for item in merged if "score" in item.metrics]
+    assert [(item.arm.value, item.metrics["score"]) for item in scored] == [
+        ("control", 0.2),
+        ("treatment", 0.8),
+    ]
+    failed = [item for item in merged if item.case_id == "case-b"]
+    assert all(
+        item.execution_status is ObservationExecutionStatus.TIMEOUT
+        for item in failed
+    )
+    assert all(item.failure_code == "task_timeout" for item in failed)
+    assert all("score" not in item.metrics for item in failed)
+    effect = estimate_paired_effect(spec, merged)
+    assert effect is not None
+    assert effect.metric == "score"
+    assert effect.point_estimate == pytest.approx(0.6)
 
 
 def test_usage_fallback_rejects_duplicate_or_different_full_coordinates() -> None:

@@ -1726,9 +1726,11 @@ async def test_each_variant_and_repetition_starts_from_same_clean_seed(
     assert _find_reusable_baseline_replay_dir(
         **{**lookup, "dataset_fingerprint": "sha256:changed-dataset"}
     ) is None
+    # A run-local compilation/artifact identity may change between candidate
+    # packages while the executable control surface remains identical.
     assert _find_reusable_baseline_replay_dir(
         **{**lookup, "adaptation_fingerprint": "sha256:changed-adaptation"}
-    ) is None
+    ) is not None
     assert _find_reusable_baseline_replay_dir(
         **{**lookup, "support_fingerprint": "sha256:changed-support"}
     ) is None

@@ -121,6 +121,7 @@ from aworld.self_evolve.runner import (
     _merge_validation_feedback,
     _parse_candidate_mutation_model_output,
     _population_report,
+    _partial_replay_evaluator_dataset,
     _next_progress_repair_extension_family,
     _rank_candidate_population,
     _rejected_candidate_ids_from_report,
@@ -4342,6 +4343,132 @@ def test_replay_evaluator_admission_allows_missing_or_non_regressed_evidence() -
     assert (
         _replay_evaluator_admission_gate(replay, apply_policy="proposal") is None
     )
+
+
+def test_partial_replay_panel_can_feed_evaluator_without_aggregate_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    case_ids = ("task-a", "task-b", "task-c")
+    dataset = SelfEvolveDataset(
+        cases=tuple(EvalCase(case_id=case_id, input=case_id) for case_id in case_ids),
+        recipe=DatasetRecipe(
+            source={"kind": "partial-evaluator-panel"},
+            split_seed="seed",
+            splits={"train": [], "validation": [], "held_out": list(case_ids)},
+            held_out_case_ids=case_ids,
+        ),
+    )
+    target = SelfEvolveTargetRef(target_type="skill", target_id="demo")
+    request = CandidateReplayRequest(
+        run_id="run-partial-evaluator",
+        task_id="task-a",
+        workspace_root="/tmp/workspace",
+        target=target,
+        candidate_id="candidate-1",
+        overlay_skill_root="/tmp/overlay",
+        task_input="task-a",
+    )
+    baseline = ReplayVariantResult(
+        variant_id="baseline",
+        status="succeeded",
+        trajectory=[{"action": {"content": "baseline"}}],
+    )
+    successful_candidate = ReplayVariantResult(
+        variant_id="candidate-1",
+        status="succeeded",
+        trajectory=[{"action": {"content": "candidate"}}],
+    )
+    failed_candidate = ReplayVariantResult(
+        variant_id="candidate-1",
+        status="failed",
+        trajectory=[],
+        failure=ReplayFailureEvent(
+            code="replay_evidence_finalization_timeout",
+            owner=FailureOwner.TASK,
+            stage=FailureStage.TASK_ROLLOUT,
+            scope=FailureScope.MEMBER,
+            repairable=True,
+        ),
+    )
+    members = tuple(
+        CandidateReplayMemberResult(
+            case_id=case_id,
+            request=replace(request, task_id=case_id, task_input=case_id),
+            baseline=baseline,
+            candidate=(
+                successful_candidate if case_id != "task-c" else failed_candidate
+            ),
+        )
+        for case_id in case_ids
+    )
+    replay = _CandidateReplayResult(
+        request=request,
+        baseline=baseline,
+        candidate=ReplayVariantResult(
+            variant_id="candidate-1",
+            status="failed",
+            trajectory=[],
+            failure=failed_candidate.failure,
+        ),
+        member_results=members,
+    )
+    normalized = replay_module.normalize_replay_members(
+        dataset=dataset,
+        replay_result=replay,
+    )
+    monkeypatch.setattr(
+        runner_module,
+        "candidate_replay_is_comparable",
+        lambda **_kwargs: True,
+    )
+
+    projected, admitted = _partial_replay_evaluator_dataset(
+        dataset=dataset,
+        replay_result=replay,
+        candidate=CandidateVariant(
+            candidate_id="candidate-1",
+            target=target,
+            content="# Demo\n",
+            rationale="diagnostic evaluator panel",
+        ),
+        normalized=normalized,
+        minimum_independent_cases=2,
+    )
+
+    assert admitted == ("task-a", "task-b")
+    assert projected is not None
+    assert {case.case_id for case in projected.cases} == {"task-a", "task-b"}
+    assert projected.recipe.source["evaluator_partial_panel"] == {
+        "role": "diagnostic_only",
+        "case_count": 2,
+        "verified_replay_gate_relaxed": False,
+    }
+    confidence_gate = _replay_confidence_gate(
+        replay,
+        dataset=dataset,
+        apply_policy="verified_only",
+    )
+    assert confidence_gate is not None
+    assert confidence_gate.passed is False
+    assert confidence_gate.reason == (
+        "replay comparison contains incomparable member outcomes"
+    )
+    assert confidence_gate.details["comparable_pair_count"] == 2
+    assert confidence_gate.details["incomparable_pair_count"] == 1
+    unavailable, unavailable_ids = _partial_replay_evaluator_dataset(
+        dataset=dataset,
+        replay_result=replay,
+        candidate=CandidateVariant(
+            candidate_id="candidate-1",
+            target=target,
+            content="# Demo\n",
+            rationale="insufficient panel",
+        ),
+        normalized=normalized,
+        minimum_independent_cases=3,
+    )
+    assert unavailable is None
+    assert unavailable_ids == ()
 
 
 def test_replay_confidence_counts_comparable_baseline_task_failures() -> None:
@@ -14469,8 +14596,9 @@ def test_authoritative_replay_compacts_and_defers_short_context_continuation() -
     compacted = authoritative.cases[-1]
     compacted_content = compacted.input["content"]
     assert len(compacted_content) < len(reconstructed["content"])
-    assert "compacted, retained 2/5 latest turns" in compacted_content
-    assert "turn-0" not in compacted_content
+    assert "structured compact" in compacted_content
+    assert "retained 3 user anchors and 2 recent assistant turns" in compacted_content
+    assert "turn-0" in compacted_content
     assert "turn-4" in compacted_content
     assert authoritative.recipe.source[
         "authoritative_deferred_control_case_ids"
@@ -16233,7 +16361,7 @@ async def test_runner_screens_population_on_representative_member_before_full_re
     assert replay_backend.calls == [
         ("candidate-1", ("task-a",), 90, 8),
         ("candidate-2", ("task-a",), 90, 8),
-        ("candidate-1", ("task-a", "task-b"), 600, 32),
+        ("candidate-1", ("task-a", "task-b"), 600, 16),
     ]
     report = json.loads(
         (tmp_path / ".aworld" / "self_evolve" / "run-population-screening" / "report.json").read_text(
@@ -24640,7 +24768,7 @@ def test_optimize_cli_request_uses_framework_default_replay_backend_when_enabled
 
     assert created["count"] == 1
     assert replay_agents == ["Aworld"]
-    assert replay_max_steps == [24]
+    assert replay_max_steps == [12]
     assert report_summary["best_candidate_id"] is None
     assert report_summary["selected_candidate_id"] is not None
     assert any(
