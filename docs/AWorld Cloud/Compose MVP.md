@@ -43,17 +43,19 @@ docker compose \
 ```
 
 The init and verification scripts first honor an explicit
-`AWORLD_CLOUD_DOCKER_SOCKET`, then inspect the active Docker context, then try
-common Docker Desktop and Linux socket paths. This supports both
-`/var/run/docker.sock` and paths such as `~/.docker/run/docker.sock`. The init
-script persists the resolved absolute path in `deploy/aworld-cloud/.env`.
-Remote TCP and SSH Docker contexts cannot supply a bind-mountable Unix socket
-and are rejected with an instruction to configure a local socket explicitly.
+`AWORLD_CLOUD_DOCKER_SOCKET`, then test daemon-side and active-context
+candidates. A short `docker:27.5.1-cli` container mounts each candidate and
+connects to the Docker API; only a working bind source is selected. This matters
+for Colima and similar VM-backed contexts: the host CLI may connect through
+`~/.colima/.../docker.sock`, while containers must mount the daemon-side
+`/var/run/docker.sock`. The init script persists the resolved path in
+`deploy/aworld-cloud/.env`. If an automatically persisted value stops working,
+running init again replaces it with a newly validated value.
 
 To select it explicitly:
 
 ```bash
-AWORLD_CLOUD_DOCKER_SOCKET="$HOME/.docker/run/docker.sock" \
+AWORLD_CLOUD_DOCKER_SOCKET=/var/run/docker.sock \
   ./scripts/aworld-cloud-init.sh
 ```
 
