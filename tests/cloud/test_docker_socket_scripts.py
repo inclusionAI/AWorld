@@ -4,6 +4,8 @@ import os
 import subprocess
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).parents[2]
 HELPER = ROOT / "scripts" / "aworld-cloud-docker.sh"
 INIT = ROOT / "scripts" / "aworld-cloud-init.sh"
@@ -81,6 +83,7 @@ exit 1
         "TEST_DOCKER_SOCKET": socket_path,
     }
     environment.pop("AWORLD_CLOUD_DOCKER_SOCKET", None)
+    environment.pop("AWORLD_CLOUD_DATA_DIR", None)
     environment.pop("DOCKER_HOST", None)
     result = subprocess.run(
         [
@@ -120,6 +123,7 @@ exit 1
         "TEST_DOCKER_SOCKET": str(socket_path),
     }
     environment.pop("AWORLD_CLOUD_DOCKER_SOCKET", None)
+    environment.pop("AWORLD_CLOUD_DATA_DIR", None)
     environment.pop("DOCKER_HOST", None)
     result = subprocess.run(
         [
@@ -176,6 +180,7 @@ exit 1
         "TEST_STALE_DOCKER_SOCKET": stale_socket,
     }
     environment.pop("AWORLD_CLOUD_DOCKER_SOCKET", None)
+    environment.pop("AWORLD_CLOUD_DATA_DIR", None)
     environment.pop("DOCKER_HOST", None)
     result = subprocess.run(
         ["bash", str(INIT)],
@@ -189,3 +194,117 @@ exit 1
     assert f"AWORLD_CLOUD_DOCKER_SOCKET={socket_path}" in persisted_environment
     assert stale_socket not in persisted_environment
     assert "Ignoring unusable persisted Docker socket" in result.stderr
+
+
+def test_init_migrates_legacy_macos_data_directory_to_repo(tmp_path: Path) -> None:
+    bin_directory = _fake_docker(
+        tmp_path,
+        """#!/bin/sh
+if [ "$1" = "run" ]; then
+  printf '%s' "$*" | grep -q 'source=/var/run/docker.sock,target=' && exit 0
+  exit 1
+fi
+if [ "$1 $2" = "compose --env-file" ]; then
+  exit 0
+fi
+exit 1
+""",
+    )
+    uname = bin_directory / "uname"
+    uname.write_text("#!/bin/sh\nprintf 'Darwin\\n'\n", encoding="utf-8")
+    uname.chmod(0o755)
+    mkdir = bin_directory / "mkdir"
+    mkdir.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    mkdir.chmod(0o755)
+    environment_file = tmp_path / "cloud.env"
+    environment_file.write_text(
+        "AWORLD_CLOUD_DATA_DIR=/var/tmp/aworld-cloud\n",
+        encoding="utf-8",
+    )
+    environment = {
+        **os.environ,
+        "PATH": f"{bin_directory}:{os.environ['PATH']}",
+        "HOME": str(tmp_path / "home"),
+        "AWORLD_CLOUD_ENV_FILE": str(environment_file),
+    }
+    environment.pop("AWORLD_CLOUD_DATA_DIR", None)
+    environment.pop("AWORLD_CLOUD_DOCKER_SOCKET", None)
+    environment.pop("DOCKER_HOST", None)
+
+    result = subprocess.run(
+        ["bash", str(INIT)],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=environment,
+    )
+
+    expected = ROOT / ".aworld-cloud"
+    persisted_environment = environment_file.read_text(encoding="utf-8")
+    assert f"AWORLD_CLOUD_DATA_DIR={expected}" in persisted_environment
+    assert "AWORLD_CLOUD_DATA_DIR=/var/tmp/aworld-cloud" not in persisted_environment
+    assert "Migrated legacy macOS data directory" in result.stdout
+
+
+@pytest.mark.parametrize(
+    ("persisted_data_directory", "explicit_data_directory"),
+    [
+        ("/srv/aworld-cloud", None),
+        ("/var/tmp/aworld-cloud", "/var/tmp/aworld-cloud"),
+    ],
+)
+def test_init_preserves_explicit_data_directory_on_macos(
+    tmp_path: Path,
+    persisted_data_directory: str,
+    explicit_data_directory: str | None,
+) -> None:
+    bin_directory = _fake_docker(
+        tmp_path,
+        """#!/bin/sh
+if [ "$1" = "run" ]; then
+  printf '%s' "$*" | grep -q 'source=/var/run/docker.sock,target=' && exit 0
+  exit 1
+fi
+if [ "$1 $2" = "compose --env-file" ]; then
+  exit 0
+fi
+exit 1
+""",
+    )
+    uname = bin_directory / "uname"
+    uname.write_text("#!/bin/sh\nprintf 'Darwin\\n'\n", encoding="utf-8")
+    uname.chmod(0o755)
+    mkdir = bin_directory / "mkdir"
+    mkdir.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    mkdir.chmod(0o755)
+    environment_file = tmp_path / "cloud.env"
+    environment_file.write_text(
+        f"AWORLD_CLOUD_DATA_DIR={persisted_data_directory}\n",
+        encoding="utf-8",
+    )
+    environment = {
+        **os.environ,
+        "PATH": f"{bin_directory}:{os.environ['PATH']}",
+        "HOME": str(tmp_path / "home"),
+        "AWORLD_CLOUD_ENV_FILE": str(environment_file),
+    }
+    if explicit_data_directory is not None:
+        environment["AWORLD_CLOUD_DATA_DIR"] = explicit_data_directory
+    else:
+        environment.pop("AWORLD_CLOUD_DATA_DIR", None)
+    environment.pop("AWORLD_CLOUD_DOCKER_SOCKET", None)
+    environment.pop("DOCKER_HOST", None)
+
+    result = subprocess.run(
+        ["bash", str(INIT)],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=environment,
+    )
+
+    expected = explicit_data_directory or persisted_data_directory
+    assert f"AWORLD_CLOUD_DATA_DIR={expected}" in environment_file.read_text(
+        encoding="utf-8"
+    )
+    assert "Migrated legacy macOS data directory" not in result.stdout

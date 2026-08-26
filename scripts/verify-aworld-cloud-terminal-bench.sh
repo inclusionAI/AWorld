@@ -15,7 +15,12 @@ if [[ ! -f "${environment_file}" ]]; then
 fi
 aworld_cloud_export_docker_socket "${environment_file}"
 
-data_directory="$(sed -n 's/^AWORLD_CLOUD_DATA_DIR=//p' "${environment_file}" | tail -1)"
+data_directory="${AWORLD_CLOUD_DATA_DIR:-}"
+if [[ -z "${data_directory}" ]]; then
+  data_directory="$(
+    aworld_cloud_env_value AWORLD_CLOUD_DATA_DIR "${environment_file}"
+  )"
+fi
 if [[ -z "${data_directory}" || "${data_directory}" != /* || "${data_directory}" == "/" ]]; then
   echo "AWORLD_CLOUD_DATA_DIR must be a non-root absolute path" >&2
   exit 1
@@ -85,16 +90,21 @@ run_id="$(
 "${compose[@]}" exec -T aworld-cloud-server python -c '
 import json
 import sys
-from pathlib import Path
 
-result = json.loads(Path(sys.argv[1]).read_text())
-trajectory = json.loads(Path(sys.argv[2]).read_text())
+result = json.load(sys.stdin)
 assert result["state"] == "succeeded", result
 assert result["benchmark_outcome"]["reward"] == 1.0, result
 assert result["canonical_trajectory_file_id"], result
+' < "${artifacts}/${run_id}-result.json"
+
+"${compose[@]}" exec -T aworld-cloud-server python -c '
+import json
+import sys
+
+trajectory = json.load(sys.stdin)
 assert trajectory["schema_version"] == "ATIF-v1.7", trajectory
 assert trajectory["final_metrics"]["reward"] == 1.0, trajectory
-' "${artifacts}/${run_id}-result.json" "${artifacts}/${run_id}-trajectory.atif.json"
+' < "${artifacts}/${run_id}-trajectory.atif.json"
 
 trap - ERR
 echo "Terminal-Bench fix-git passed: run_id=${run_id} artifacts=${artifacts}"

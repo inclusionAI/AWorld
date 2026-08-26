@@ -51,6 +51,11 @@ def test_deployment_assets_pin_real_harbor_and_terminal_bench() -> None:
     assert "benchmark_outcome" in verifier
     assert 'reward"] == 1.0' in verifier
     assert "trajectory.atif.json" in verifier
+    assert "result = json.load(sys.stdin)" in verifier
+    assert "trajectory = json.load(sys.stdin)" in verifier
+    assert '< "${artifacts}/${run_id}-result.json"' in verifier
+    assert '< "${artifacts}/${run_id}-trajectory.atif.json"' in verifier
+    assert 'data_directory="${AWORLD_CLOUD_DATA_DIR:-}"' in verifier
 
 
 def test_compose_does_not_mount_host_codex_state() -> None:
