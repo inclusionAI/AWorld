@@ -25,9 +25,9 @@ WORKDIR /opt/filex
 
 RUN python3 -m pip install --break-system-packages --no-cache-dir uv
 
-COPY aworld-tools/filex/pyproject.toml aworld-tools/filex/README.md ./
+COPY aworld-tools/filex/pyproject.toml aworld-tools/filex/README.md aworld-tools/filex/uv.lock ./
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --no-dev --no-install-project
+    uv sync --locked --no-dev --no-install-project
 
 COPY aworld-tools/filex/bin ./bin
 COPY aworld-tools/filex/config ./config

@@ -14,7 +14,10 @@ def test_registry_lists_format_specific_providers() -> None:
         "liteparse",
         "pypdf_vlm",
     ]
-    assert [item.provider_key for item in list_provider_descriptors("jpg")] == ["image_vlm"]
+    assert [item.provider_key for item in list_provider_descriptors("jpg")] == [
+        "paddle_ocr",
+        "image_vlm",
+    ]
     assert default_provider_for_format("pptx") == "python_pptx"
 
 
@@ -35,9 +38,11 @@ def test_registry_rejects_unknown_provider() -> None:
         normalize_provider_env("pdf", {"filex_parse_provider": "paddle_ocrr"})
 
 
-def test_registry_rejects_provider_for_wrong_format() -> None:
-    with pytest.raises(ValueError, match="unsupported_provider_for_format"):
-        normalize_provider_env("jpg", {"filex_parse_provider": "paddle_ocr"})
+def test_registry_allows_paddle_ocr_for_image_documents() -> None:
+    env = normalize_provider_env("jpg", {"filex_parse_provider": "paddle_ocr"})
+
+    assert env["filex_parse_provider"] == "paddle_ocr"
+    assert env["filex_provider_version"] == "paddleocr-vl-1.6"
 
 
 def test_legacy_doc_is_not_declared_as_docx() -> None:

@@ -56,15 +56,15 @@ class LocalMediaTranscriptionBackend:
             ) from exc
 
         model_name = str(
-            options.get("model")
-            or os.getenv("FILEX_LOCAL_MEDIA_MODEL")
+            os.getenv("FILEX_LOCAL_MEDIA_MODEL")
             or os.getenv("FILEX_LOCAL_WHISPER_MODEL")
+            or options.get("model")
             or "base"
         )
-        device = str(options.get("device") or os.getenv("FILEX_LOCAL_MEDIA_DEVICE") or "auto")
+        device = str(os.getenv("FILEX_LOCAL_MEDIA_DEVICE") or options.get("device") or "auto")
         compute_type = str(
-            options.get("compute_type")
-            or os.getenv("FILEX_LOCAL_MEDIA_COMPUTE_TYPE")
+            os.getenv("FILEX_LOCAL_MEDIA_COMPUTE_TYPE")
+            or options.get("compute_type")
             or "default"
         )
         language = options.get("language")

@@ -26,7 +26,7 @@ _PROVIDERS = (
     ProviderDescriptor(
         provider_key="paddle_ocr",
         aliases=frozenset({"paddleocr", "paddle"}),
-        supported_formats=frozenset({"pdf"}),
+        supported_formats=frozenset({"pdf"} | IMAGE_FILE_TYPES),
         capabilities=frozenset({"ocr", "layout", "table", "image_extract", "page_selection", "metrics"}),
         provider_version="paddleocr-vl-1.6",
         timeout_class="long",

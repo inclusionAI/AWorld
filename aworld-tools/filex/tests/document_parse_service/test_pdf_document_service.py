@@ -49,6 +49,7 @@ def _load_pdf_document_service_module():
         markdown_text: str
         assets: list[_DocumentAsset] = field(default_factory=list)
         diagnostics: dict = field(default_factory=dict)
+        document_ir: dict | None = None
 
     class _AnchoredMarkdownAssembler:
         def assemble(self, artifact):
@@ -287,6 +288,33 @@ def test_pdf_document_service_can_use_paddle_ocr_provider() -> None:
 
         assert output_path.exists()
         assert output_path.read_text(encoding="utf-8") == "PaddleOCR provider result demo:task-paddle"
+
+
+def test_pdf_document_service_preserves_v2_ir_when_merging_batches() -> None:
+    module = _load_pdf_document_service_module()
+    artifact = module.MarkdownArtifact(
+        markdown_text="page",
+        document_ir={
+            "schema_version": "filex-document-ir-v2",
+            "pages": [
+                {
+                    "page_index": 0,
+                    "elements": [],
+                    "spans": [{"text": "Heading", "bold": True}],
+                }
+            ],
+        },
+    )
+
+    merged = module.PdfDocumentService._merge_document_ir(
+        [artifact],
+        requested_pages=[3],
+    )
+
+    assert merged is not None
+    assert merged["schema_version"] == "filex-document-ir-v2"
+    assert merged["pages"][0]["page_index"] == 2
+    assert merged["pages"][0]["spans"][0]["bold"] is True
 
 
 def test_pdf_document_service_selects_pages_before_provider_and_records_mapping() -> None:

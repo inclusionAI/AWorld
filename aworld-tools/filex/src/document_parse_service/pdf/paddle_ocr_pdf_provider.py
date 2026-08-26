@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import importlib.metadata
+import json
 import re
 import logging
 import os
+import threading
 import time
 from dataclasses import dataclass, field
 from html import escape
@@ -15,8 +17,15 @@ from typing import Any
 
 from ..document_artifact_models import DocumentAnchor, DocumentAsset, MarkdownArtifact
 from ..paths import DOCUMENT_PARSE_WORKSPACE
+from .text_layer_formatting import (
+    document_ir_spans,
+    extract_text_layer_spans,
+    overlay_text_layer_formatting,
+)
 
 logger = logging.getLogger(__name__)
+_SHARED_PIPELINES: dict[str, Any] = {}
+_SHARED_PIPELINES_LOCK = threading.Lock()
 
 
 @dataclass(slots=True)
@@ -40,6 +49,7 @@ class PaddleOcrPdfResult:
     retry_count: int = 0
     provider_version: str = ""
     first_batch_elapsed_ms: float = 0
+    document_ir: dict[str, Any] | None = None
 
 
 class PaddleOcrPdfProvider:
@@ -86,11 +96,19 @@ class PaddleOcrPdfProvider:
         )
         markdown_parts = [self._extract_markdown_data(result) for result in raw_results]
         markdown_text = self._concatenate_markdown(pipeline, markdown_parts)
+        text_layer_pages = (
+            extract_text_layer_spans(file_path)
+            if self._bool_option("text_layer_formatting", False)
+            else []
+        )
+        if text_layer_pages:
+            markdown_text = overlay_text_layer_formatting(markdown_text, text_layer_pages)
         assets = self._write_markdown_images(
             markdown_parts,
             task_id=task_id,
             source_file_name=source_file_name,
         )
+        document_ir = self._build_document_ir(raw_results, text_layer_pages=text_layer_pages)
 
         return PaddleOcrPdfResult(
             provider="paddle_ocr",
@@ -109,6 +127,7 @@ class PaddleOcrPdfProvider:
             retry_count=retry_count,
             provider_version=self._provider_version(),
             first_batch_elapsed_ms=first_batch_elapsed_ms,
+            document_ir=document_ir,
         )
 
     def to_markdown_artifact(self, result: PaddleOcrPdfResult) -> MarkdownArtifact:
@@ -119,6 +138,7 @@ class PaddleOcrPdfProvider:
         return MarkdownArtifact(
             markdown_text=markdown_text.rstrip() + "\n",
             assets=result.assets,
+            document_ir=result.document_ir,
             diagnostics={
                 "provider": result.provider,
                 "tool": result.tool,
@@ -139,9 +159,102 @@ class PaddleOcrPdfProvider:
                 "peak_concurrency": result.peak_concurrency,
                 "model_retry_count": result.retry_count,
                 "provider_version": result.provider_version,
+                "document_ir_schema_version": (
+                    str((result.document_ir or {}).get("schema_version") or "")
+                ),
                 "text_length": len(result.markdown_text),
             },
         )
+
+    @classmethod
+    def _build_document_ir(
+        cls,
+        raw_results: list[Any],
+        *,
+        text_layer_pages: list[list[Any]] | None = None,
+    ) -> dict[str, Any]:
+        """Normalize PaddleOCR page/block geometry into a stable FileX contract."""
+
+        pages: list[dict[str, Any]] = []
+        for fallback_index, result in enumerate(raw_results):
+            payload = cls._json_payload(result)
+            elements: list[dict[str, Any]] = []
+            blocks = payload.get("parsing_res_list")
+            if not isinstance(blocks, list):
+                blocks = []
+            for fallback_order, block in enumerate(blocks, start=1):
+                if not isinstance(block, dict):
+                    continue
+                bbox = block.get("block_bbox") or block.get("bbox") or []
+                if not isinstance(bbox, (list, tuple)) or len(bbox) != 4:
+                    continue
+                try:
+                    normalized_bbox = [float(value) for value in bbox]
+                except (TypeError, ValueError):
+                    continue
+                order = block.get("block_order")
+                elements.append(
+                    {
+                        "id": str(
+                            block.get("global_block_id")
+                            or block.get("block_id")
+                            or f"p{fallback_index}-b{fallback_order}"
+                        ),
+                        "type": str(
+                            block.get("block_label")
+                            or block.get("label")
+                            or "unknown"
+                        ),
+                        "bbox": normalized_bbox,
+                        "text": str(
+                            block.get("block_content")
+                            or block.get("content")
+                            or ""
+                        ),
+                        "reading_order": (
+                            int(order) if isinstance(order, (int, float)) else None
+                        ),
+                        "group_id": block.get("global_group_id")
+                        or block.get("group_id"),
+                    }
+                )
+            page_index = payload.get("page_index")
+            pages.append(
+                {
+                    "page_index": (
+                        int(page_index)
+                        if isinstance(page_index, (int, float))
+                        else fallback_index
+                    ),
+                    "width": cls._numeric_dimension(payload.get("width")),
+                    "height": cls._numeric_dimension(payload.get("height")),
+                    "elements": elements,
+                    "spans": document_ir_spans(text_layer_pages or [], fallback_index),
+                }
+            )
+        return {
+            "schema_version": "filex-document-ir-v2",
+            "coordinate_system": "pixel_top_left_xyxy",
+            "pages": pages,
+        }
+
+    @staticmethod
+    def _json_payload(result: Any) -> dict[str, Any]:
+        json_value = getattr(result, "json", None)
+        if callable(json_value):
+            json_value = json_value()
+        if isinstance(json_value, dict):
+            nested = json_value.get("res")
+            return nested if isinstance(nested, dict) else json_value
+        if isinstance(result, dict):
+            return result
+        return {}
+
+    @staticmethod
+    def _numeric_dimension(value: Any) -> float | None:
+        if isinstance(value, list) and value:
+            value = value[0]
+        return float(value) if isinstance(value, (int, float)) else None
 
     def _resolve_pipeline(self) -> Any:
         if self._pipeline is not None:
@@ -154,7 +267,13 @@ class PaddleOcrPdfProvider:
                 "Install paddleocr in the filesystem_server runtime or choose another pdf_parse_provider."
             ) from exc
 
-        self._pipeline = PaddleOCRVL(**self._pipeline_kwargs())
+        kwargs = self._pipeline_kwargs()
+        cache_key = json.dumps(kwargs, ensure_ascii=False, sort_keys=True, default=str)
+        with _SHARED_PIPELINES_LOCK:
+            self._pipeline = _SHARED_PIPELINES.get(cache_key)
+            if self._pipeline is None:
+                self._pipeline = PaddleOCRVL(**kwargs)
+                _SHARED_PIPELINES[cache_key] = self._pipeline
         return self._pipeline
 
     @staticmethod
@@ -532,6 +651,14 @@ class PaddleOcrPdfProvider:
         if value in (None, ""):
             return default
         return str(value)
+
+    def _bool_option(self, key: str, default: bool) -> bool:
+        value = self._option(key)
+        if value in (None, ""):
+            return default
+        if isinstance(value, bool):
+            return value
+        return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
     def _gateway_vllm_config(self) -> dict[str, Any]:
         config = self._env_content.get("gateway_vllm")

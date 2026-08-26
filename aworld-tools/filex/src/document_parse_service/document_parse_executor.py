@@ -12,7 +12,6 @@ from typing import Any, Optional
 from .document_service import DocumentService
 from .paths import FS_WORKSPACE_ROOT
 
-
 logger = logging.getLogger(__name__)
 
 
@@ -90,6 +89,8 @@ class DocumentParseExecutor:
             f"parsed_file_path={parsed_file_path} duration={time.time() - start_time:.3f}s"
         )
         evidence_path = parsed_file_path.with_suffix(".evidence.json")
+        document_path = parsed_file_path.with_suffix(".document.json")
+        storyboard_path = parsed_file_path.with_suffix(".storyboard.jpg")
         return {
             "task_id": task_id,
             "source_file_id": source_file_id,
@@ -98,9 +99,17 @@ class DocumentParseExecutor:
             "metrics": metrics,
             "metrics_file_path": self._to_workspace_relative_path(
                 parsed_file_path.with_suffix(".metrics.json")
-            ) if metrics else "",
+            )
+            if metrics
+            else "",
             "evidence_file_path": self._to_workspace_relative_path(evidence_path)
             if evidence_path.exists()
+            else "",
+            "document_file_path": self._to_workspace_relative_path(document_path)
+            if document_path.exists()
+            else "",
+            "storyboard_file_path": self._to_workspace_relative_path(storyboard_path)
+            if storyboard_path.exists()
             else "",
         }
 
@@ -188,7 +197,9 @@ class DocumentParseExecutor:
         return payload if isinstance(payload, dict) else {}
 
     @staticmethod
-    def _apply_runtime_metrics(metrics: dict[str, Any], runtime_metrics: dict[str, int]) -> None:
+    def _apply_runtime_metrics(
+        metrics: dict[str, Any], runtime_metrics: dict[str, int]
+    ) -> None:
         timings = metrics.get("timings_ms")
         if not isinstance(timings, dict):
             return

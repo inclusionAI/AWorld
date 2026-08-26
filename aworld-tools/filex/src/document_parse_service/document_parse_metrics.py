@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from typing import Any
 
-
 METRICS_SCHEMA_VERSION = "1.0"
 
 
@@ -22,15 +21,21 @@ def build_parse_metrics(
     details = _flatten_diagnostics(diagnostics or {})
     normalized_type = str(file_type or "unknown").lower()
     provider = str(details.get("provider") or details.get("parser") or "unknown")
-    model_info = details.get("model_info") if isinstance(details.get("model_info"), dict) else {}
+    model_info = (
+        details.get("model_info") if isinstance(details.get("model_info"), dict) else {}
+    )
     parse_duration_ms = int(
         details.get("parse_elapsed_ms")
         or details.get("total_elapsed_ms")
         or details.get("vlm_total_elapsed_ms")
         or stage_durations_ms.get("content_extract", 0)
     )
-    page_count = _first_int(details, "page_count", "pypdf_page_count", "raw_result_count")
-    failed_count = int(details.get("error_count") or len(details.get("vlm_errors") or []))
+    page_count = _first_int(
+        details, "page_count", "pypdf_page_count", "raw_result_count"
+    )
+    failed_count = int(
+        details.get("error_count") or len(details.get("vlm_errors") or [])
+    )
     succeeded_count = int(
         details.get("page_count_succeeded")
         or details.get("page_count_processed")
@@ -47,7 +52,8 @@ def build_parse_metrics(
         "timings_ms": {
             "queue": 0,
             "initialization": int(
-                details.get("initialization_elapsed_ms") or stage_durations_ms.get("init", 0)
+                details.get("initialization_elapsed_ms")
+                or stage_durations_ms.get("init", 0)
             ),
             "download": 0,
             "upload": 0,
@@ -64,7 +70,9 @@ def build_parse_metrics(
             "processed": processed_count,
             "succeeded": succeeded_count,
             "failed": failed_count,
-            "batch_count": int(details.get("batch_count") or (1 if processed_count else 0)),
+            "batch_count": int(
+                details.get("batch_count") or (1 if processed_count else 0)
+            ),
             "resumed_batch_count": int(details.get("resumed_batch_count") or 0),
             "first_batch_count": _optional_int(details.get("first_batch_page_count")),
         },
@@ -80,10 +88,16 @@ def build_parse_metrics(
                 or model_info.get("model_name")
                 or model_info.get("vl_rec_api_model_name")
             ),
-            "call_count": int(details.get("model_call_count") or details.get("vlm_page_count") or 0),
-            "retry_count": int(details.get("model_retry_count") or details.get("vlm_retry_count") or 0),
+            "call_count": int(
+                details.get("model_call_count") or details.get("vlm_page_count") or 0
+            ),
+            "retry_count": int(
+                details.get("model_retry_count") or details.get("vlm_retry_count") or 0
+            ),
             "peak_concurrency": int(
-                details.get("peak_concurrency") or details.get("vlm_max_concurrency") or 0
+                details.get("peak_concurrency")
+                or details.get("vlm_max_concurrency")
+                or 0
             ),
             "timeout_count": int(details.get("timeout_count") or 0),
         },
@@ -92,7 +106,9 @@ def build_parse_metrics(
             "count": failed_count,
         },
         "type_metrics": {
-            normalized_type: _build_type_metrics(normalized_type, details, page_count, failed_count)
+            normalized_type: _build_type_metrics(
+                normalized_type, details, page_count, failed_count
+            )
         },
     }
 
@@ -104,7 +120,9 @@ def _build_type_metrics(
     failed_count: int,
 ) -> dict[str, Any]:
     if file_type == "pdf":
-        elapsed_ms = float(details.get("total_elapsed_ms") or details.get("vlm_total_elapsed_ms") or 0)
+        elapsed_ms = float(
+            details.get("total_elapsed_ms") or details.get("vlm_total_elapsed_ms") or 0
+        )
         return {
             "document_page_count": page_count,
             "source_page_count": int(details.get("source_page_count") or page_count),
@@ -117,7 +135,9 @@ def _build_type_metrics(
             "failed_page_count": failed_count,
             "text_layer_char_count": int(details.get("pypdf_char_count") or 0),
             "embedded_image_count": int(details.get("asset_count") or 0),
-            "average_page_duration_ms": round(elapsed_ms / page_count, 2) if page_count else None,
+            "average_page_duration_ms": round(elapsed_ms / page_count, 2)
+            if page_count
+            else None,
         }
     if file_type in {"ppt", "pptx"}:
         return {
@@ -146,7 +166,9 @@ def _build_type_metrics(
                     "encoding": _optional_string(details.get("encoding")),
                     "encoding_errors": _optional_string(details.get("encoding_errors")),
                     "delimiter": _optional_string(details.get("delimiter")),
-                    "delimiter_detection": _optional_string(details.get("delimiter_detection")),
+                    "delimiter_detection": _optional_string(
+                        details.get("delimiter_detection")
+                    ),
                     "parser_engine": _optional_string(details.get("parser_engine")),
                     "fallback_reason": _optional_string(details.get("fallback_reason")),
                 }
@@ -173,9 +195,7 @@ def _build_type_metrics(
             "object_count": int(details.get("object_count") or 0),
             "batch_count": int(details.get("batch_count") or 0),
             "scene_type": _optional_string(details.get("image_scene_type")),
-            "scene_confidence": _optional_float(
-                details.get("image_scene_confidence")
-            ),
+            "scene_confidence": _optional_float(details.get("image_scene_confidence")),
             "selected_pipeline": _optional_string(
                 details.get("image_selected_pipeline")
             ),
@@ -185,9 +205,7 @@ def _build_type_metrics(
             "extraction_profile": _optional_string(
                 details.get("image_extraction_profile")
             ),
-            "query_ready_count": int(
-                details.get("image_query_ready_count") or 0
-            ),
+            "query_ready_count": int(details.get("image_query_ready_count") or 0),
             "review_required_count": int(
                 details.get("image_review_required_count") or 0
             ),
@@ -197,7 +215,9 @@ def _build_type_metrics(
             "evidence_file_path": _optional_string(
                 details.get("image_evidence_file_path")
             ),
-            "orientation_corrected": bool(details.get("orientation_corrected") or False),
+            "orientation_corrected": bool(
+                details.get("orientation_corrected") or False
+            ),
         }
     if file_type in {"mp3", "wav", "flac", "ogg", "m4a", "aac", "opus"}:
         return {
@@ -213,6 +233,16 @@ def _build_type_metrics(
             "scene_count": int(details.get("scene_count") or 0),
             "segment_count": int(details.get("segment_count") or 0),
             "transcript_char_count": int(details.get("transcript_char_count") or 0),
+            "width": int(details.get("video_width") or 0),
+            "height": int(details.get("video_height") or 0),
+            "video_codec": _optional_string(details.get("video_codec")),
+            "audio_codec": _optional_string(details.get("audio_codec")),
+            "evidence_file_path": _optional_string(
+                details.get("video_evidence_file_path")
+            ),
+            "storyboard_file_path": _optional_string(
+                details.get("video_storyboard_file_path")
+            ),
         }
     return {}
 
