@@ -8,9 +8,10 @@ AWorld needs a private-cloud execution service where users and CI can submit ord
 - Make the final canonical trajectory an executor-produced, manifest-listed ATIF file; provider-native trajectories may also be retained as raw trajectory files.
 - Keep execution behind a provider-neutral protocol. OpenSandbox is the primary remote provider, `aworld-env` is an optional compatibility/reuse provider, and Local Docker is restricted to development and debugging.
 - Keep benchmark preparation and verification behind an optional adapter protocol. Harbor may be implemented by an optional adapter, but is never a Cloud-core or query-mode dependency.
-- Retain SQLite and the fake executor for development while defining repository, scheduler, and artifact-store seams suitable for PostgreSQL/MySQL, Redis, and OSS/MinIO in private deployments.
+- Retain SQLite and the fake executor for development while defining repository, scheduler, and artifact-store seams for PostgreSQL, Redis, and S3-compatible MinIO in private deployments.
 - Require tenant-scoped authorization, secret references, server-owned network policy, and auditability at every external boundary.
 - Evolve persisted and HTTP contracts additively so older clients default to `query` and existing SQLite databases roll forward without rewriting history.
+- Deliver the private-cloud product through one Docker Compose entrypoint containing the Cloud server, worker, OpenSandbox, PostgreSQL, Redis, MinIO, and an on-demand CLI service. Optional adapters use disabled-by-default Compose profiles.
 
 ## Capabilities
 
@@ -33,3 +34,4 @@ None.
 - Requires no benchmark harness package in Cloud core. A future Harbor adapter is optional and separately packaged.
 - Adds no dependency on external benchmark suites or unrelated deployment stacks.
 - Defines no Kubernetes layer or Kubernetes API contract; any provider-internal implementation remains outside AWorld Cloud.
+- Makes Docker Compose the single supported private-cloud deployment entrypoint for this change.
