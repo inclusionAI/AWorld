@@ -9,6 +9,10 @@ from aworld_gateway import GATEWAY_DISPLAY_NAME
 from aworld_gateway.channels.telegram.webhook import register_telegram_webhook
 from aworld_gateway.http.artifact_router import register_artifact_routes
 from aworld_gateway.http.artifact_service import ArtifactService
+from aworld_gateway.http.cloud_router import (
+    CloudApiDependencies,
+    register_cloud_routes,
+)
 from aworld_gateway.logging import get_gateway_logger
 
 logger = get_gateway_logger("http.server")
@@ -20,6 +24,7 @@ def create_gateway_app(
     artifact_service: ArtifactService | None = None,
     telegram_adapter: object | None = None,
     telegram_webhook_path: str = "/webhooks/telegram",
+    cloud_api: CloudApiDependencies | None = None,
 ) -> FastAPI:
     app = FastAPI(title=GATEWAY_DISPLAY_NAME, version="0.1.0")
 
@@ -30,7 +35,7 @@ def create_gateway_app(
         except Exception as exc:
             logger.exception(
                 "Gateway HTTP request failed "
-                f"method={request.method} path={request.url.path} error={exc}"
+                f"method={request.method} path={request.url.path} error={exc}"  # noqa: TRY401
             )
             raise
         logger.info(
@@ -45,13 +50,16 @@ def create_gateway_app(
 
     @app.get("/channels")
     async def channels() -> dict[str, object]:
-        status_payload = runtime_status() if callable(runtime_status) else runtime_status
+        status_payload = (
+            runtime_status() if callable(runtime_status) else runtime_status
+        )
         channels_payload = status_payload.get("channels")
         if isinstance(channels_payload, dict):
             return channels_payload
         return {}
 
     register_artifact_routes(app, artifact_service=artifact_service)
+    register_cloud_routes(app, cloud_api)
 
     register_telegram_webhook(
         app,
