@@ -19,8 +19,10 @@ The worker mounts the active host Docker Unix socket at the container path
 container, executes the selected agent, and runs the task verifier. There is no
 Kubernetes layer.
 
-The Cloud image installs Harbor from that commit's SHA-256-verified GitHub
-source archive, so building it does not run `apt-get` or require Git or SSH.
+The Cloud image uses the pinned full `python:3.12.11-bookworm` base so Harbor's
+TaskClient has runtime Git for fetching benchmark tasks. Harbor itself is
+installed from that commit's SHA-256-verified GitHub source archive, so the
+image build does not run `apt-get`, `git clone`, or require SSH.
 
 The default smoke agent is Harbor's `oracle`: it runs the benchmark's official
 solution and then the real verifier. This proves the dataset download, Docker

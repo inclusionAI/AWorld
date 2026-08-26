@@ -32,6 +32,8 @@ def test_deployment_assets_pin_real_harbor_and_terminal_bench() -> None:
     compose = (DEPLOYMENT / "docker-compose.yml").read_text()
     verifier = (ROOT / "scripts" / "verify-aworld-cloud-terminal-bench.sh").read_text()
 
+    assert "FROM python:3.12.11-bookworm\n" in dockerfile
+    assert "slim-bookworm" not in dockerfile
     assert "ccf3df5ef50141b004322d4008b84b64797b76b9" in dockerfile
     assert (
         "github.com/harbor-framework/harbor/archive/${HARBOR_COMMIT}.tar.gz"

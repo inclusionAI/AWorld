@@ -1,6 +1,6 @@
 FROM docker:27.5.1-cli AS docker-cli
 
-FROM python:3.12.11-slim-bookworm
+FROM python:3.12.11-bookworm
 
 ARG HARBOR_COMMIT=ccf3df5ef50141b004322d4008b84b64797b76b9
 ARG HARBOR_ARCHIVE_SHA256=4c17f78744952ecafd09951d85e0065bc5fa1660aff591ffad2ee42ffee5e8c8
