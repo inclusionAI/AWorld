@@ -14,12 +14,18 @@ from aworld.cloud.fake_executor import (
     FakeExecutionPlan,
 )
 from aworld.cloud.models import (
+    BenchmarkMetadata,
+    BenchmarkOutcome,
     FileId,
     Run,
     RunFile,
     RunFileKind,
     RunId,
+    RunMode,
     RunState,
+    TrajectoryFormat,
+    TrajectoryManifest,
+    TrajectoryRole,
     WorkspaceId,
     WorkspaceState,
     utc_now,
@@ -256,7 +262,117 @@ async def test_successful_worker_execution_persists_events_result_and_files(
         "executor.progress",
         "run.succeeded",
     ]
-    assert await stack.repository.list_run_files(run.id) == (run_file,)
+    files = await stack.repository.list_run_files(run.id)
+    assert files[0] == run_file
+    assert files[1].kind is RunFileKind.TRAJECTORY
+    assert files[1].trajectory is not None
+    assert files[1].trajectory.schema_version == "ATIF-v1.7"
+    await stack.repository.close()
+
+
+@pytest.mark.asyncio
+async def test_success_without_canonical_trajectory_fails_contract(
+    tmp_path: Path,
+) -> None:
+    stack = await _stack(tmp_path)
+    workspace_id = await _create_workspace(stack)
+    run = await _submit(stack, workspace_id, "missing trajectory")
+    stack.executor.set_plan(
+        run.id,
+        FakeExecutionPlan(emit_canonical_trajectory=False),
+    )
+
+    await stack.worker.run_until_idle()
+
+    terminal = await stack.service.get_run(run.id)
+    assert terminal.state is RunState.FAILED
+    assert terminal.error_code == CloudErrorCode.TRAJECTORY_MISSING.value
+    await stack.repository.close()
+
+
+@pytest.mark.asyncio
+async def test_provider_raw_trajectory_is_preserved_with_canonical_atif(
+    tmp_path: Path,
+) -> None:
+    stack = await _stack(tmp_path)
+    workspace_id = await _create_workspace(stack)
+    run = await _submit(stack, workspace_id, "raw provider trajectory")
+    raw = RunFile(
+        id=FileId("file-provider-raw"),
+        run_id=run.id,
+        kind=RunFileKind.TRAJECTORY,
+        relative_path=PurePosixPath("provider/trajectory.jsonl"),
+        size_bytes=12,
+        sha256="b" * 64,
+        created_at=utc_now(),
+        trajectory=TrajectoryManifest(
+            format=TrajectoryFormat.PROVIDER_NATIVE,
+            schema_version="open-sandbox.events.v1",
+            role=TrajectoryRole.PROVIDER_RAW,
+        ),
+    )
+    stack.executor.set_plan(run.id, FakeExecutionPlan(files=(raw,)))
+
+    await stack.worker.run_until_idle()
+
+    terminal = await stack.service.get_run(run.id)
+    files = await stack.repository.list_run_files(run.id)
+    assert terminal.state is RunState.SUCCEEDED
+    assert {run_file.trajectory.role for run_file in files} == {
+        TrajectoryRole.CANONICAL,
+        TrajectoryRole.PROVIDER_RAW,
+    }
+    assert raw in files
+    await stack.repository.close()
+
+
+@pytest.mark.asyncio
+async def test_benchmark_terminal_outcome_is_persisted(tmp_path: Path) -> None:
+    stack = await _stack(tmp_path)
+    workspace_id = await _create_workspace(stack)
+    run = await stack.service.submit_run(
+        workspace_id,
+        task="benchmark task",
+        model="codex-test",
+        idempotency_key="benchmark-run",
+        mode=RunMode.BENCHMARK,
+        benchmark=BenchmarkMetadata(
+            dataset="swe-bench",
+            task_id="case-1",
+            harness="harness-v1",
+            verifier="verifier-v1",
+        ),
+    )
+    outcome = BenchmarkOutcome(
+        reward=0.75,
+        result={"passed": True, "details": {"checks": 4}},
+    )
+    stack.executor.set_plan(run.id, FakeExecutionPlan(benchmark_outcome=outcome))
+
+    await stack.worker.run_until_idle()
+
+    terminal = await stack.service.get_run(run.id)
+    assert terminal.state is RunState.SUCCEEDED
+    assert terminal.benchmark_outcome == outcome
+    await stack.repository.close()
+
+
+@pytest.mark.asyncio
+async def test_query_rejects_benchmark_only_executor_output(tmp_path: Path) -> None:
+    stack = await _stack(tmp_path)
+    workspace_id = await _create_workspace(stack)
+    run = await _submit(stack, workspace_id, "query with benchmark output")
+    stack.executor.set_plan(
+        run.id,
+        FakeExecutionPlan(benchmark_outcome=BenchmarkOutcome(reward=1.0)),
+    )
+
+    await stack.worker.run_until_idle()
+
+    terminal = await stack.service.get_run(run.id)
+    assert terminal.state is RunState.FAILED
+    assert terminal.error_code == CloudErrorCode.EXECUTOR_FAILED.value
+    assert terminal.benchmark_outcome is None
     await stack.repository.close()
 
 

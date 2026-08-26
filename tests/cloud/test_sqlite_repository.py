@@ -9,13 +9,20 @@ import pytest
 
 from aworld.cloud.errors import CloudError, CloudErrorCode
 from aworld.cloud.models import (
+    ATIF_SCHEMA_VERSION,
+    BenchmarkMetadata,
+    BenchmarkOutcome,
     FileId,
     MountAccessMode,
     Run,
     RunFile,
     RunFileKind,
     RunId,
+    RunMode,
     RunState,
+    TrajectoryFormat,
+    TrajectoryManifest,
+    TrajectoryRole,
     Workspace,
     WorkspaceId,
     WorkspaceMount,
@@ -24,7 +31,11 @@ from aworld.cloud.models import (
     transition_run,
     transition_workspace,
 )
-from aworld.cloud.sqlite_repository import SCHEMA_VERSION, SQLiteCloudRepository
+from aworld.cloud.sqlite_repository import (
+    _SCHEMA_V1,
+    SCHEMA_VERSION,
+    SQLiteCloudRepository,
+)
 
 NOW = datetime(2026, 8, 20, 9, 0, tzinfo=timezone.utc)
 
@@ -124,7 +135,7 @@ async def test_schema_initialization_is_versioned_idempotent_and_configured(
     assert connection.execute("PRAGMA busy_timeout").fetchone()[0] == 275
     assert connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
     assert (
-        connection.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] == 1
+        connection.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] == 2
     )
     table_names = {
         row[0]
@@ -141,6 +152,134 @@ async def test_schema_initialization_is_versioned_idempotent_and_configured(
         "idempotency_keys",
     } <= table_names
     await repository.close()
+
+
+@pytest.mark.asyncio
+async def test_schema_v1_rolls_forward_with_query_defaults(tmp_path: Path) -> None:
+    database_path = tmp_path / "cloud.sqlite3"
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            "CREATE TABLE schema_migrations "
+            "(version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)"
+        )
+        for statement in _SCHEMA_V1:
+            connection.execute(statement)
+        connection.execute(
+            "INSERT INTO schema_migrations(version, applied_at) VALUES (1, ?)",
+            (NOW.isoformat(),),
+        )
+        connection.execute(
+            """
+            INSERT INTO workspaces(
+                id, name, profile_name, state, revision, runtime_image,
+                writable_repo_path, codex_home_path, workdir,
+                created_at, updated_at, released_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "workspace-1",
+                "Legacy workspace",
+                "aworld-development",
+                "ready",
+                1,
+                "registry.example/codex@sha256:abc",
+                "/srv/aworld/workspaces/workspace-1",
+                "/srv/aworld/codex/workspace-1",
+                "/workspace/aworld",
+                NOW.isoformat(),
+                NOW.isoformat(),
+                None,
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO runs(
+                id, workspace_id, state, revision, attempt, retry_of_run_id,
+                task, model, worker_id, lease_expires_at, executor_id,
+                created_at, started_at, finished_at, exit_code,
+                error_code, error_message
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "run-legacy",
+                "workspace-1",
+                "queued",
+                0,
+                1,
+                None,
+                "legacy query",
+                None,
+                None,
+                None,
+                None,
+                NOW.isoformat(),
+                None,
+                None,
+                None,
+                None,
+                None,
+            ),
+        )
+
+    repository = await _repository(database_path)
+    stored = await repository.get_run(RunId("run-legacy"))
+
+    assert stored is not None
+    assert stored.mode is RunMode.QUERY
+    assert stored.benchmark is None
+    assert repository._connection is not None
+    assert repository._connection.execute("PRAGMA user_version").fetchone()[0] == 2
+    await repository.close()
+
+
+@pytest.mark.asyncio
+async def test_benchmark_run_fields_survive_restart(tmp_path: Path) -> None:
+    database_path = tmp_path / "cloud.sqlite3"
+    repository = await _repository(database_path)
+    await _store_workspace(repository, _workspace())
+    benchmark_run = replace(
+        _run(),
+        mode=RunMode.BENCHMARK,
+        benchmark=BenchmarkMetadata(
+            dataset="swe-bench",
+            task_id="case-1",
+            harness="custom",
+            verifier="patch",
+        ),
+    )
+    stored = await _store_run(repository, benchmark_run)
+    starting = transition_run(stored, RunState.STARTING, at=NOW)
+    starting = await repository.update_run(
+        starting,
+        expected_revision=stored.revision,
+        expected_state=RunState.QUEUED,
+    )
+    running = transition_run(starting, RunState.RUNNING, at=NOW)
+    running = await repository.update_run(
+        running,
+        expected_revision=starting.revision,
+        expected_state=RunState.STARTING,
+    )
+    terminal = transition_run(
+        running,
+        RunState.SUCCEEDED,
+        at=NOW,
+        exit_code=0,
+        benchmark_outcome=BenchmarkOutcome(
+            reward=0.75,
+            result={"passed": True, "checks": ["patch", "tests"]},
+        ),
+    )
+    terminal = await repository.update_run(
+        terminal,
+        expected_revision=running.revision,
+        expected_state=RunState.RUNNING,
+    )
+    await repository.close()
+
+    restarted = await _repository(database_path)
+    assert await restarted.get_run(benchmark_run.id) == terminal
+    await restarted.close()
 
 
 @pytest.mark.asyncio
@@ -489,11 +628,27 @@ async def test_event_sequences_and_run_file_manifests_persist(tmp_path: Path) ->
     assert await repository.get_run_file(run_file.id) == run_file
     assert await repository.list_run_files(run.id) == (run_file,)
 
+    trajectory_file = RunFile(
+        id=FileId("file-trajectory"),
+        run_id=run.id,
+        kind=RunFileKind.TRAJECTORY,
+        relative_path=PurePosixPath("trajectory.atif.json"),
+        size_bytes=456,
+        sha256="b" * 64,
+        created_at=NOW,
+        trajectory=TrajectoryManifest(
+            format=TrajectoryFormat.ATIF,
+            schema_version=ATIF_SCHEMA_VERSION,
+            role=TrajectoryRole.CANONICAL,
+        ),
+    )
+    await repository.register_run_file(trajectory_file)
+
     await repository.close()
     restarted = await _repository(database_path)
     restored_events = await restarted.list_events(run.id, limit=10)
     assert [event.sequence for event in restored_events.items] == [1, 2, 3, 4]
-    assert await restarted.list_run_files(run.id) == (run_file,)
+    assert await restarted.list_run_files(run.id) == (run_file, trajectory_file)
     await restarted.close()
 
 

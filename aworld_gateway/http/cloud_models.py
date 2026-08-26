@@ -6,16 +6,31 @@ from collections.abc import Mapping
 from datetime import datetime
 from typing import Annotated, Any
 
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field, PlainSerializer
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    ConfigDict,
+    Field,
+    PlainSerializer,
+    field_validator,
+    model_validator,
+)
 
 from aworld.cloud.errors import CloudErrorCode
 from aworld.cloud.models import (
+    RUN_REQUEST_SCHEMA_VERSION,
+    BenchmarkMetadata,
+    BenchmarkOutcome,
     MountAccessMode,
     Run,
     RunEvent,
     RunFile,
     RunFileKind,
+    RunMode,
     RunState,
+    TrajectoryFormat,
+    TrajectoryManifest,
+    TrajectoryRole,
     WorkspaceState,
     as_utc,
     format_utc_timestamp,
@@ -61,9 +76,62 @@ class WorkspaceReleaseRequest(IdempotencyRequest):
     pass
 
 
+class BenchmarkMetadataModel(CloudApiModel):
+    dataset: str = Field(min_length=1, max_length=512)
+    task_id: str = Field(min_length=1, max_length=512)
+    harness: str | None = Field(default=None, min_length=1, max_length=512)
+    verifier: str | None = Field(default=None, min_length=1, max_length=512)
+
+    @field_validator("dataset", "task_id", "harness", "verifier")
+    @classmethod
+    def validate_identity(cls, value: str | None) -> str | None:
+        if value is not None and not value.strip():
+            raise ValueError("benchmark identity must not be blank")
+        return value
+
+    def to_domain(self) -> BenchmarkMetadata:
+        return BenchmarkMetadata(
+            dataset=self.dataset,
+            task_id=self.task_id,
+            harness=self.harness,
+            verifier=self.verifier,
+        )
+
+
+class BenchmarkOutcomeModel(CloudApiModel):
+    reward: float | None = None
+    result: dict[str, Any] = Field(default_factory=dict)
+
+    @classmethod
+    def from_domain(cls, outcome: BenchmarkOutcome) -> BenchmarkOutcomeModel:
+        return cls(
+            reward=outcome.reward,
+            result=_mutable_json(outcome.result),
+        )
+
+
 class RunSubmitRequest(IdempotencyRequest):
+    request_schema_version: str = Field(
+        default=RUN_REQUEST_SCHEMA_VERSION,
+        min_length=1,
+        max_length=128,
+    )
+    mode: RunMode = RunMode.QUERY
     task: str = Field(min_length=1, max_length=1_000_000)
     model: str | None = Field(default=None, min_length=1, max_length=256)
+    benchmark: BenchmarkMetadataModel | None = None
+
+    @model_validator(mode="after")
+    def validate_mode_metadata(self) -> RunSubmitRequest:
+        if self.request_schema_version != RUN_REQUEST_SCHEMA_VERSION:
+            raise ValueError(
+                f"unsupported run request schema: {self.request_schema_version}"
+            )
+        if self.mode is RunMode.QUERY and self.benchmark is not None:
+            raise ValueError("benchmark metadata is not valid for query runs")
+        if self.mode is RunMode.BENCHMARK and self.benchmark is None:
+            raise ValueError("benchmark metadata is required for benchmark runs")
+        return self
 
 
 class RunCancelRequest(IdempotencyRequest):
@@ -139,6 +207,10 @@ class RunResponse(CloudApiModel):
     attempt: int
     retry_of_run_id: str | None
     task: str
+    request_schema_version: str
+    mode: RunMode
+    benchmark: BenchmarkMetadataModel | None
+    benchmark_outcome: BenchmarkOutcomeModel | None
     model: str | None
     worker_id: str | None
     executor_id: str | None
@@ -151,6 +223,7 @@ class RunResponse(CloudApiModel):
     error_message: str | None
     file_count: int
     artifact_count: int
+    canonical_trajectory_file_id: str | None
 
     @classmethod
     def from_domain(
@@ -163,6 +236,13 @@ class RunResponse(CloudApiModel):
             duration = (
                 run.finished_at - (run.started_at or run.created_at)
             ).total_seconds()
+        canonical_trajectories = tuple(
+            run_file
+            for run_file in files
+            if run_file.kind is RunFileKind.TRAJECTORY
+            and run_file.trajectory is not None
+            and run_file.trajectory.role is TrajectoryRole.CANONICAL
+        )
         return cls(
             id=str(run.id),
             workspace_id=str(run.workspace_id),
@@ -173,6 +253,23 @@ class RunResponse(CloudApiModel):
                 str(run.retry_of_run_id) if run.retry_of_run_id is not None else None
             ),
             task=run.task,
+            request_schema_version=run.request_schema_version,
+            mode=run.mode,
+            benchmark=(
+                BenchmarkMetadataModel(
+                    dataset=run.benchmark.dataset,
+                    task_id=run.benchmark.task_id,
+                    harness=run.benchmark.harness,
+                    verifier=run.benchmark.verifier,
+                )
+                if run.benchmark is not None
+                else None
+            ),
+            benchmark_outcome=(
+                BenchmarkOutcomeModel.from_domain(run.benchmark_outcome)
+                if run.benchmark_outcome is not None
+                else None
+            ),
             model=run.model,
             worker_id=run.worker_id,
             executor_id=str(run.executor_id) if run.executor_id is not None else None,
@@ -186,6 +283,9 @@ class RunResponse(CloudApiModel):
             file_count=len(files),
             artifact_count=sum(
                 run_file.kind is RunFileKind.ARTIFACT for run_file in files
+            ),
+            canonical_trajectory_file_id=(
+                str(canonical_trajectories[0].id) if canonical_trajectories else None
             ),
         )
 
@@ -220,6 +320,20 @@ class RunEventPageResponse(CloudApiModel):
     next_after_sequence: int | None = None
 
 
+class TrajectoryManifestResponse(CloudApiModel):
+    format: TrajectoryFormat
+    schema_version: str
+    role: TrajectoryRole
+
+    @classmethod
+    def from_domain(cls, trajectory: TrajectoryManifest) -> TrajectoryManifestResponse:
+        return cls(
+            format=trajectory.format,
+            schema_version=trajectory.schema_version,
+            role=trajectory.role,
+        )
+
+
 class RunFileResponse(CloudApiModel):
     id: str
     run_id: str
@@ -229,6 +343,7 @@ class RunFileResponse(CloudApiModel):
     sha256: str
     created_at: UtcTimestamp
     download_url: str
+    trajectory: TrajectoryManifestResponse | None
 
     @classmethod
     def from_domain(cls, run_file: RunFile) -> RunFileResponse:
@@ -241,6 +356,11 @@ class RunFileResponse(CloudApiModel):
             sha256=run_file.sha256,
             created_at=run_file.created_at,
             download_url=(f"/api/v1/cloud/runs/{run_file.run_id}/files/{run_file.id}"),
+            trajectory=(
+                TrajectoryManifestResponse.from_domain(run_file.trajectory)
+                if run_file.trajectory is not None
+                else None
+            ),
         )
 
 

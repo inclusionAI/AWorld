@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from pathlib import PurePosixPath
 from types import MappingProxyType
 from typing import Any
 
@@ -20,7 +23,19 @@ from aworld.cloud.executor import (
     ExecutorRequest,
     ExecutorStatus,
 )
-from aworld.cloud.models import ExecutorId, RunFile, RunId, utc_now
+from aworld.cloud.models import (
+    ATIF_SCHEMA_VERSION,
+    BenchmarkOutcome,
+    ExecutorId,
+    FileId,
+    RunFile,
+    RunFileKind,
+    RunId,
+    TrajectoryFormat,
+    TrajectoryManifest,
+    TrajectoryRole,
+    utc_now,
+)
 
 
 @dataclass(frozen=True)
@@ -40,7 +55,9 @@ class FakeExecutionPlan:
     exit_code: int = 0
     error_code: str | None = None
     error_message: str | None = None
-    files: tuple[RunFile, ...] = ()
+    benchmark_outcome: BenchmarkOutcome | None = None
+    files: tuple[RunFile, ...] | None = None
+    emit_canonical_trajectory: bool = True
     events: tuple[FakeEventSpec, ...] = ()
     block_until_released: bool = False
     wait_for_cancellation: bool = False
@@ -153,12 +170,26 @@ class FakeCloudExecutor(CloudExecutor):
                     error_message="execution cancelled",
                 )
             else:
+                files = execution.plan.files or ()
+                if (
+                    execution.plan.emit_canonical_trajectory
+                    and execution.plan.exit_code == 0
+                    and execution.plan.error_code is None
+                    and not any(
+                        run_file.kind is RunFileKind.TRAJECTORY
+                        and run_file.trajectory is not None
+                        and run_file.trajectory.role is TrajectoryRole.CANONICAL
+                        for run_file in files
+                    )
+                ):
+                    files = (*files, self._write_canonical_trajectory(execution))
                 result = ExecutionResult(
                     exit_code=execution.plan.exit_code,
                     finished_at=self._clock(),
                     error_code=execution.plan.error_code,
                     error_message=execution.plan.error_message,
-                    files=execution.plan.files,
+                    benchmark_outcome=execution.plan.benchmark_outcome,
+                    files=files or (),
                 )
             execution.result = result
             if execution.active_counted:
@@ -167,6 +198,48 @@ class FakeCloudExecutor(CloudExecutor):
             return result
         except asyncio.CancelledError:  # noqa: TRY203 - preserve running fake state
             raise
+
+    def _write_canonical_trajectory(self, execution: _FakeExecution) -> RunFile:
+        """Produce the deterministic ATIF fixture owned by the fake provider."""
+
+        relative_path = PurePosixPath("trajectory.atif.json")
+        output_path = execution.request.output_directory / relative_path
+        payload = {
+            "schema_version": ATIF_SCHEMA_VERSION,
+            "session_id": str(execution.request.run.id),
+            "agent": {"name": "aworld-cloud-fake-executor", "version": "1"},
+            "steps": [
+                {
+                    "step_id": 1,
+                    "source": "user",
+                    "message": execution.request.run.task,
+                },
+                {
+                    "step_id": 2,
+                    "source": "agent",
+                    "message": "fake execution completed",
+                    "llm_call_count": 0,
+                },
+            ],
+            "final_metrics": {"total_steps": 2},
+            "extra": {"producer": "aworld-cloud-fake-executor"},
+        }
+        content = (json.dumps(payload, sort_keys=True) + "\n").encode("utf-8")
+        output_path.write_bytes(content)
+        return RunFile(
+            id=FileId(f"file-{execution.request.run.id}-trajectory"),
+            run_id=execution.request.run.id,
+            kind=RunFileKind.TRAJECTORY,
+            relative_path=relative_path,
+            size_bytes=len(content),
+            sha256=hashlib.sha256(content).hexdigest(),
+            created_at=self._clock(),
+            trajectory=TrajectoryManifest(
+                format=TrajectoryFormat.ATIF,
+                schema_version=ATIF_SCHEMA_VERSION,
+                role=TrajectoryRole.CANONICAL,
+            ),
+        )
 
     async def inspect(self, executor_id: ExecutorId) -> ExecutorInspection:
         execution = self._executions.get(executor_id)
