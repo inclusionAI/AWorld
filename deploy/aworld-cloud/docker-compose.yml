@@ -1,0 +1,90 @@
+name: aworld-cloud
+
+x-cloud-environment: &cloud-environment
+  AWORLD_CLOUD_ENABLED: "true"
+  AWORLD_CLOUD_DATA_DIR: ${AWORLD_CLOUD_DATA_DIR:-/var/tmp/aworld-cloud}
+  AWORLD_CLOUD_PROFILE: ${AWORLD_CLOUD_PROFILE:-terminal-bench}
+  AWORLD_CLOUD_RUNTIME_IMAGE: ${AWORLD_CLOUD_IMAGE:-aworld-cloud-mvp:local}
+  AWORLD_CLOUD_RUNTIME_USER: ${AWORLD_CLOUD_RUNTIME_USER:-root}
+  AWORLD_CLOUD_RUN_NETWORK: ${AWORLD_CLOUD_RUN_NETWORK:-bridge}
+  AWORLD_CLOUD_RUN_TIMEOUT_SECONDS: ${AWORLD_CLOUD_RUN_TIMEOUT_SECONDS:-1800}
+  AWORLD_CLOUD_BENCHMARK_DATASET: terminal-bench@2.0
+  AWORLD_CLOUD_BENCHMARK_TASK_ID: fix-git
+  AWORLD_CLOUD_HARBOR_AGENT: oracle
+  HOME: ${AWORLD_CLOUD_DATA_DIR:-/var/tmp/aworld-cloud}/home
+  XDG_CACHE_HOME: ${AWORLD_CLOUD_DATA_DIR:-/var/tmp/aworld-cloud}/cache
+
+x-cloud-service: &cloud-service
+  image: ${AWORLD_CLOUD_IMAGE:-aworld-cloud-mvp:local}
+  build:
+    context: ../..
+    dockerfile: deploy/aworld-cloud/Dockerfile
+  environment: *cloud-environment
+  init: true
+  restart: unless-stopped
+  volumes:
+    - type: bind
+      source: ${AWORLD_CLOUD_DATA_DIR:-/var/tmp/aworld-cloud}
+      target: ${AWORLD_CLOUD_DATA_DIR:-/var/tmp/aworld-cloud}
+
+services:
+  aworld-cloud-server:
+    <<: *cloud-service
+    command:
+      - python
+      - -m
+      - uvicorn
+      - aworld.cloud.server:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+    ports:
+      - "${AWORLD_CLOUD_PORT:-8000}:8000"
+    healthcheck:
+      test: ["CMD", "python", "-m", "aworld.cloud.healthcheck", "server"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
+
+  aworld-cloud-worker:
+    <<: *cloud-service
+    command: ["python", "-m", "aworld.cloud.worker_main"]
+    depends_on:
+      aworld-cloud-server:
+        condition: service_healthy
+    stop_grace_period: 30s
+    volumes:
+      - type: bind
+        source: ${AWORLD_CLOUD_DATA_DIR:-/var/tmp/aworld-cloud}
+        target: ${AWORLD_CLOUD_DATA_DIR:-/var/tmp/aworld-cloud}
+      - type: bind
+        source: /var/run/docker.sock
+        target: /var/run/docker.sock
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -m
+        - aworld.cloud.healthcheck
+        - worker
+        - --path
+        - ${AWORLD_CLOUD_DATA_DIR:-/var/tmp/aworld-cloud}/worker-health.json
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  aworld-cloud-cli:
+    <<: *cloud-service
+    profiles: ["tools"]
+    restart: "no"
+    depends_on:
+      aworld-cloud-server:
+        condition: service_healthy
+    environment:
+      <<: *cloud-environment
+      AWORLD_CLOUD_ENDPOINT: http://aworld-cloud-server:8000
+    entrypoint: ["python", "-m", "aworld_cli.cloud_main"]
+    command: ["cloud", "--help"]

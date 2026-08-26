@@ -43,8 +43,10 @@ Run inspection and control commands are:
 ```bash
 aworld-cli cloud run list --workspace-id workspace-123
 aworld-cli cloud run show run-123
+aworld-cli cloud run wait run-123
 aworld-cli cloud run events run-123
 aworld-cli cloud run files run-123
+aworld-cli cloud run logs run-123 --output-dir ./run-123-logs
 aworld-cli cloud run cancel run-123
 aworld-cli cloud run retry run-123
 ```
@@ -55,4 +57,10 @@ Download the canonical ATIF trajectory selected by the run response:
 aworld-cli cloud run trajectory run-123 --output trajectory.atif.json
 ```
 
-Live SSE watch/reconnection and arbitrary file download commands are not implemented yet. The listed `events` command retrieves a bounded event page.
+`wait` polls until the run succeeds, fails, or is cancelled. `logs` downloads the
+manifest-listed stdout, stderr, and result files. Live SSE watch/reconnection and
+arbitrary file download commands are not implemented yet; `events` retrieves a
+bounded event page.
+
+For the runnable SQLite + Local Docker + Harbor deployment and its real
+Terminal-Bench smoke test, see [Compose MVP](Compose%20MVP.md).
