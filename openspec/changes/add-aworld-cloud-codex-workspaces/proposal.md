@@ -6,12 +6,19 @@ AWorld needs a private-cloud execution service where users and CI can submit ord
 
 - Define one Server API and CLI contract for `query` and `benchmark` runs using the same durable lifecycle, event stream, files, cancellation, and retry semantics. Benchmark identity is immutable request data; reward and verifier result are terminal output.
 - Make the final canonical trajectory an executor-produced, manifest-listed ATIF file; provider-native trajectories may also be retained as raw trajectory files.
-- Keep execution behind a provider-neutral protocol. OpenSandbox is the primary remote provider, `aworld-env` is an optional compatibility/reuse provider, and Local Docker is restricted to development and debugging.
-- Keep benchmark preparation and verification behind an optional adapter protocol. Harbor may be implemented by an optional adapter, but is never a Cloud-core or query-mode dependency.
-- Retain SQLite and the fake executor for development while defining repository, scheduler, and artifact-store seams for PostgreSQL, Redis, and S3-compatible MinIO in private deployments.
+- Keep execution behind a provider-neutral protocol. The MVP selects Local Docker;
+  OpenSandbox remains the future production provider and `aworld-env` remains an
+  optional compatibility path.
+- Run the first real benchmark through Harbor's Docker harness without importing
+  Harbor's Python internals into Cloud core.
+- Use SQLite and a local artifact volume for the MVP while retaining repository,
+  scheduler, and artifact-store seams for later PostgreSQL, Redis, and
+  S3-compatible storage implementations.
 - Require tenant-scoped authorization, secret references, server-owned network policy, and auditability at every external boundary.
 - Evolve persisted and HTTP contracts additively so older clients default to `query` and existing SQLite databases roll forward without rewriting history.
-- Deliver the private-cloud product through one Docker Compose entrypoint containing the Cloud server, worker, OpenSandbox, PostgreSQL, Redis, MinIO, and an on-demand CLI service. Optional adapters use disabled-by-default Compose profiles.
+- Deliver one runnable Docker Compose entrypoint containing the Cloud server,
+  worker, and on-demand CLI, backed by SQLite, a local artifact volume, the host
+  Docker socket, and the Local Docker/Harbor provider.
 
 ## Capabilities
 
@@ -30,8 +37,10 @@ None.
 
 - Rebaselines `aworld.cloud` and `/api/v1/cloud` as the private-cloud control plane rather than a Docker-specific Codex service.
 - Adds additive run-mode, benchmark identity/outcome, and trajectory manifest fields to domain, SQLite, and HTTP contracts.
-- Preserves the existing fake executor and SQLite repository for development and tests.
-- Requires no benchmark harness package in Cloud core. A future Harbor adapter is optional and separately packaged.
+- Preserves the fake executor for deterministic tests while the shipped MVP uses
+  a real Local Docker/Harbor execution path.
+- Requires no Harbor Python import in Cloud core; Harbor is pinned in the runtime
+  image and invoked through its documented CLI.
 - Adds no dependency on external benchmark suites or unrelated deployment stacks.
 - Defines no Kubernetes layer or Kubernetes API contract; any provider-internal implementation remains outside AWorld Cloud.
-- Makes Docker Compose the single supported private-cloud deployment entrypoint for this change.
+- Makes Docker Compose the single MVP deployment entrypoint for this change.
