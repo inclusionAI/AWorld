@@ -127,6 +127,18 @@ class CloudTopLevelCommand:
                 action_parser.add_argument("--after-sequence", type=int, default=0)
                 action_parser.add_argument("--limit", type=int, default=100)
 
+        wait = actions.add_parser("wait", help="Poll until a run is terminal")
+        wait.add_argument("run_id")
+        wait.add_argument("--poll-interval", type=float, default=2.0)
+        wait.add_argument("--wait-timeout", type=float, default=3600.0)
+
+        logs = actions.add_parser(
+            "logs",
+            help="Download stdout, stderr, and result files",
+        )
+        logs.add_argument("run_id")
+        logs.add_argument("--output-dir", required=True)
+
         trajectory = actions.add_parser(
             "trajectory",
             help="Download the run's canonical ATIF trajectory",
@@ -248,6 +260,53 @@ class CloudTopLevelCommand:
             )
         if args.cloud_action == "files":
             return await client.list_files(args.run_id)
+        if args.cloud_action == "wait":
+            if args.poll_interval <= 0 or args.wait_timeout <= 0:
+                raise ValueError("poll interval and wait timeout must be positive")
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + args.wait_timeout
+            while True:
+                run = await client.get_run(args.run_id)
+                if run.get("state") in {
+                    "succeeded",
+                    "failed",
+                    "cancelled",
+                }:
+                    return run
+                if loop.time() >= deadline:
+                    raise ValueError("timed out waiting for run to finish")
+                await asyncio.sleep(args.poll_interval)
+        if args.cloud_action == "logs":
+            listing = await client.list_files(args.run_id)
+            items = listing.get("items")
+            if not isinstance(items, list):
+                raise ValueError("server returned an invalid file listing")
+            output_directory = Path(args.output_dir)
+            output_directory.mkdir(parents=True, exist_ok=True)
+            downloaded: list[dict[str, object]] = []
+            for item in items:
+                if not isinstance(item, dict) or item.get("kind") not in {
+                    "stdout",
+                    "stderr",
+                    "result",
+                }:
+                    continue
+                file_id = item.get("id")
+                relative_path = item.get("relative_path")
+                if not isinstance(file_id, str) or not isinstance(relative_path, str):
+                    continue
+                destination = output_directory / Path(relative_path).name
+                content = await client.download_file(args.run_id, file_id)
+                destination.write_bytes(content)
+                downloaded.append(
+                    {
+                        "file_id": file_id,
+                        "kind": item["kind"],
+                        "output": str(destination),
+                        "size_bytes": len(content),
+                    }
+                )
+            return {"files": downloaded, "run_id": args.run_id}
         run = await client.get_run(args.run_id)
         file_id = run.get("canonical_trajectory_file_id")
         if not isinstance(file_id, str) or not file_id:
