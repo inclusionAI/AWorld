@@ -42,7 +42,8 @@
 - [x] 5.5 Require exactly one executor-produced canonical ATIF file for success and make the fake executor produce its own deterministic fixture.
 - [x] 5.6 Add additive SQLite schema v2 migration and persistence for run mode, request version, benchmark data, and trajectory metadata, including v1 roll-forward coverage.
 - [x] 5.7 Add domain, repository, worker, protocol, and HTTP compatibility tests for omitted-mode defaults, benchmark validation/results, and trajectory retrieval.
-- [x] 5.8 Run scoped tests, practical lint/type checks, strict OpenSpec validation, and review the diff for unrelated changes.
+- [x] 5.8 Run scoped tests, practical lint/type checks, manual OpenSpec review, and diff review; record that the strict validator is unavailable in this environment.
+- [ ] 5.9 Push the reviewable commits normally to the requested remote branch and record the delivery log.
 
 ## 6. Private-Cloud Storage and Scheduling
 
