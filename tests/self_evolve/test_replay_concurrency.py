@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -13,6 +14,7 @@ from aworld.self_evolve.replay import (
     AWorldCliCandidateReplayBackend,
     CandidateReplayRequest,
     ReplayVariantResult,
+    _legacy_member_baseline_concurrency,
 )
 from aworld.self_evolve.replay_adaptation import (
     ReplayAdaptationBundle,
@@ -168,6 +170,68 @@ def test_isolated_binding_rejects_shared_resource_key() -> None:
                 binding_fingerprint="sha256:binding",
             )
         )
+
+
+def test_legacy_member_baseline_overlap_requires_single_isolated_arms(
+    tmp_path: Path,
+) -> None:
+    first = _request(tmp_path, mode="isolated")
+    assert first.replay_adaptation is not None
+    first_case = first.replay_adaptation.cases[0]
+    second_case = replace(
+        first_case,
+        case_id="case-2",
+        task_input_fingerprint="sha256:task-2",
+    )
+    adaptation = replace(
+        first.replay_adaptation,
+        cases=(first_case, second_case),
+    )
+    requests = (
+        replace(first, replay_adaptation=adaptation),
+        replace(
+            first,
+            task_id="case-2",
+            task_input_fingerprint="sha256:task-2",
+            replay_adaptation=adaptation,
+        ),
+    )
+    policy = SelfEvolveConcurrencyPolicy(
+        max_total_concurrency=2,
+        replay_concurrency=2,
+    )
+
+    assert _legacy_member_baseline_concurrency(
+        requests,
+        concurrency_policy=policy,
+    ) == 2
+    assert _legacy_member_baseline_concurrency(
+        (replace(requests[0], baseline_repetitions=2), requests[1]),
+        concurrency_policy=policy,
+    ) == 1
+
+    exclusive_root = tmp_path / "exclusive"
+    exclusive_root.mkdir()
+    exclusive = _request(exclusive_root, mode="exclusive")
+    exclusive_case = exclusive.replay_adaptation.cases[0]
+    exclusive_adaptation = replace(
+        exclusive.replay_adaptation,
+        cases=(
+            exclusive_case,
+            replace(exclusive_case, case_id="case-2"),
+        ),
+    )
+    assert _legacy_member_baseline_concurrency(
+        (
+            replace(exclusive, replay_adaptation=exclusive_adaptation),
+            replace(
+                exclusive,
+                task_id="case-2",
+                replay_adaptation=exclusive_adaptation,
+            ),
+        ),
+        concurrency_policy=policy,
+    ) == 1
 
 
 def test_missing_binding_concurrency_metadata_defaults_to_exclusive() -> None:

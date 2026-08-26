@@ -126,6 +126,7 @@ from aworld.self_evolve.measurement import (
     evaluate_measurement_stopping,
     observations_from_evaluation,
     observations_from_replay,
+    observations_with_evaluation_metric,
     observations_with_usage_fallback,
     stable_measurement_fingerprint,
 )
@@ -319,6 +320,7 @@ from aworld.self_evolve.replay import (
     ReplayServiceProcessExitedError,
     ReplayServiceProtocolError,
     ReplayServiceReadinessTimeout,
+    baseline_control_fingerprint,
     build_paired_replay_dataset,
     build_replay_request,
     candidate_replay_artifact_directory,
@@ -1773,8 +1775,8 @@ _DEFAULT_CANDIDATE_SCREENING_TRACE_HORIZON = 4
 _DEFAULT_CANDIDATE_SCREENING_TOOL_CALL_LIMIT = 8
 _SCREENING_STEP_TIMEOUT_SECONDS = 30
 _SCREENING_BUDGET_CENSORED_CODE = "screening_budget_censored"
-_DEFAULT_AUTHORITATIVE_REPLAY_MAX_STEPS = 24
-_DEFAULT_AUTHORITATIVE_REPLAY_TOOL_CALL_LIMIT = 32
+_DEFAULT_AUTHORITATIVE_REPLAY_MAX_STEPS = 12
+_DEFAULT_AUTHORITATIVE_REPLAY_TOOL_CALL_LIMIT = 16
 
 
 def _candidate_screening_timeout(
@@ -10370,18 +10372,17 @@ class SelfEvolveRunner:
         cached = self._measurement_summaries.get(key)
         if cached is not None:
             return cached
-        evidence_dataset = replay_dataset or dataset
         replay_observations: tuple[MeasurementObservation, ...] = ()
         if replay_result is not None:
             replay_observations = observations_from_replay(
                 experiment,
-                dataset=evidence_dataset,
+                dataset=dataset,
                 replay_result=replay_result,
                 run_root=self.store.run_path(experiment.run_id),
             )
         evaluation_observations = observations_from_evaluation(
             experiment,
-            dataset=evidence_dataset,
+            dataset=replay_dataset or dataset,
             baseline_summary=baseline_summary,
             candidate_summary=candidate_summary,
         )
@@ -10390,12 +10391,23 @@ class SelfEvolveRunner:
                 evaluation_observations,
                 replay_observations,
             )
-        observations = (
-            evaluation_observations
-            if self.measurement_primary_metric != "task_success"
+        if (
+            self.measurement_primary_metric != "task_success"
             and evaluation_observations
-            else replay_observations or evaluation_observations
-        )
+            and replay_observations
+        ):
+            observations = observations_with_evaluation_metric(
+                replay_observations,
+                evaluation_observations,
+                metric=self.measurement_primary_metric,
+            )
+        elif (
+            self.measurement_primary_metric != "task_success"
+            and evaluation_observations
+        ):
+            observations = evaluation_observations
+        else:
+            observations = replay_observations or evaluation_observations
         if observations:
             self.store.append_measurement_observations(
                 experiment.run_id,
@@ -13749,9 +13761,40 @@ class SelfEvolveRunner:
                         self._candidate_screening_control_observations
                     ),
                 )
+            evaluator_dataset: SelfEvolveDataset | None = None
+            evaluator_case_ids: tuple[str, ...] = ()
+            if request.measurement_plan is not None:
+                (
+                    evaluator_dataset,
+                    evaluator_case_ids,
+                ) = _partial_replay_evaluator_dataset(
+                    dataset=replay_validation_dataset,
+                    replay_result=replay_result,
+                    candidate=selected_candidate,
+                    normalized=normalized,
+                    minimum_independent_cases=(
+                        request.measurement_plan.decision_policy.minimum_independent_cases
+                    ),
+                )
+            if evaluator_dataset is not None:
+                replay_gate = replace(
+                    replay_gate,
+                    details={
+                        **dict(replay_gate.details or {}),
+                        "evaluator_partial_panel_available": True,
+                        "evaluator_partial_panel_role": "diagnostic_only",
+                        "evaluator_partial_panel_case_count": len(
+                            evaluator_case_ids
+                        ),
+                        "evaluator_partial_panel_case_ids": list(
+                            evaluator_case_ids
+                        ),
+                        "verified_replay_gate_relaxed": False,
+                    },
+                )
             return (
                 replay_result,
-                None,
+                evaluator_dataset,
                 replay_gate,
             )
         replay_details = _replay_gate_details(
@@ -18803,7 +18846,6 @@ def _find_reusable_baseline_replay_dir(
     expected_provenance = {
         "baseline_skill_fingerprint": baseline_skill_fingerprint,
         "dataset_fingerprint": dataset_fingerprint,
-        "adaptation_fingerprint": adaptation_fingerprint,
         "workspace_seed_fingerprint": workspace_seed_fingerprint,
         "support_fingerprint": support_fingerprint,
         "timeout_envelope_fingerprint": timeout_envelope_fingerprint,
@@ -18934,6 +18976,13 @@ def _incremental_baseline_cache_dir(
         try:
             request = _load_json_mapping(member_root / "request.json")
             stored_request = _candidate_replay_request_from_mapping(request)
+            declared_control_fingerprint = item.get("control_fingerprint")
+            if (
+                declared_control_fingerprint is not None
+                and declared_control_fingerprint
+                != baseline_control_fingerprint(stored_request)
+            ):
+                continue
             raw_target = request.get("target")
             if not isinstance(raw_target, Mapping):
                 continue
@@ -23465,6 +23514,96 @@ def _shared_replay_failure_blocks_population(
     )
 
 
+def _partial_replay_evaluator_dataset(
+    *,
+    dataset: SelfEvolveDataset,
+    replay_result: CandidateReplayResult,
+    candidate: CandidateVariant,
+    normalized: NormalizedReplayMembers,
+    minimum_independent_cases: int,
+) -> tuple[SelfEvolveDataset | None, tuple[str, ...]]:
+    """Project a diagnostic evaluator panel without relaxing replay admission.
+
+    Measurement v2 can retain a statistically usable set of paired members
+    even when other scheduled members time out or fail. The verified replay
+    gate must still reject that incomplete panel, but blocking the evaluator
+    entirely also prevents a configured judge metric such as ``score`` from
+    being materialized. Return only members whose baseline and candidate are
+    already strictly comparable; the original failed gate remains the release
+    authority.
+    """
+
+    comparable_case_ids = tuple(
+        member.case_id
+        for member in normalized.members
+        if _replay_member_pair_is_comparable(
+            member.case,
+            member.baseline,
+            member.candidate,
+        )
+    )
+    if len(comparable_case_ids) < max(1, minimum_independent_cases):
+        return None, ()
+    admitted = set(comparable_case_ids)
+    projected = replace(
+        dataset,
+        cases=tuple(case for case in dataset.cases if case.case_id in admitted),
+        recipe=replace(
+            dataset.recipe,
+            source={
+                **dict(dataset.recipe.source),
+                "evaluator_partial_panel": {
+                    "role": "diagnostic_only",
+                    "case_count": len(comparable_case_ids),
+                    "verified_replay_gate_relaxed": False,
+                },
+            },
+            splits={
+                split: [case_id for case_id in case_ids if case_id in admitted]
+                for split, case_ids in dataset.recipe.splits.items()
+            },
+            trainable_case_ids=tuple(
+                case_id
+                for case_id in dataset.recipe.trainable_case_ids
+                if case_id in admitted
+            ),
+            held_out_case_ids=tuple(
+                case_id
+                for case_id in dataset.recipe.held_out_case_ids
+                if case_id in admitted
+            ),
+        ),
+    )
+    projected_replay_result = replace(
+        replay_result,
+        member_results=tuple(
+            member
+            for member in (replay_result.member_results or ())
+            if member.case_id in admitted
+        ),
+    )
+    projected_normalized = normalize_replay_members(
+        dataset=projected,
+        replay_result=projected_replay_result,
+    )
+    if not candidate_replay_is_comparable(
+        dataset=projected,
+        replay_result=projected_replay_result,
+        require_adapted=True,
+        normalized=projected_normalized,
+    ):
+        return None, ()
+    return (
+        build_paired_replay_dataset(
+            dataset=projected,
+            replay_result=projected_replay_result,
+            candidate=candidate,
+            normalized=projected_normalized,
+        ),
+        comparable_case_ids,
+    )
+
+
 def _replay_confidence_gate(
     replay_result: CandidateReplayResult | None,
     *,
@@ -27403,9 +27542,11 @@ def _screening_case_has_only_invalid_baselines(
     return invalid_controls > 0
 
 
-_AUTHORITATIVE_CONTEXT_COMPACTION_CHARS = 8_000
-_AUTHORITATIVE_CONTEXT_RETAINED_TURNS = 2
-_AUTHORITATIVE_CONTEXT_TURN_CHARS = 2_000
+_AUTHORITATIVE_CONTEXT_COMPACTION_CHARS = 3_500
+_AUTHORITATIVE_CONTEXT_USER_TURN_CHARS = 512
+_AUTHORITATIVE_CONTEXT_USER_TURNS = 4
+_AUTHORITATIVE_CONTEXT_ASSISTANT_TURN_CHARS = 1_000
+_AUTHORITATIVE_CONTEXT_ASSISTANT_TURNS = 2
 _AUTHORITATIVE_SHORT_CONTINUATION_CHARS = 16
 _AUTHORITATIVE_SHORT_CONTINUATION_TURNS = 4
 
@@ -27466,20 +27607,43 @@ def _compact_authoritative_case_context(case: EvalCase) -> EvalCase:
         or len(content) <= _AUTHORITATIVE_CONTEXT_COMPACTION_CHARS
     ):
         return case
-    retained = snapshot.prior_turns[-_AUTHORITATIVE_CONTEXT_RETAINED_TURNS:]
+    indexed_turns = tuple(enumerate(snapshot.prior_turns))
+    all_user_turns = tuple(
+        item for item in indexed_turns if item[1].role == "user"
+    )
+    user_turns = (
+        all_user_turns
+        if len(all_user_turns) <= _AUTHORITATIVE_CONTEXT_USER_TURNS
+        else (
+            *all_user_turns[: _AUTHORITATIVE_CONTEXT_USER_TURNS // 2],
+            *all_user_turns[-(_AUTHORITATIVE_CONTEXT_USER_TURNS // 2) :],
+        )
+    )
+    assistant_turns = tuple(
+        item for item in indexed_turns if item[1].role == "assistant"
+    )[-_AUTHORITATIVE_CONTEXT_ASSISTANT_TURNS:]
+    retained = tuple(
+        turn for _index, turn in sorted((*user_turns, *assistant_turns))
+    )
     transcript = "\n".join(
-        f"{turn.role.title()}: "
+        f"- {turn.role} [{turn.evidence_ref}]: "
         + sanitize_text(
             turn.content,
-            max_chars=_AUTHORITATIVE_CONTEXT_TURN_CHARS,
+            max_chars=(
+                _AUTHORITATIVE_CONTEXT_USER_TURN_CHARS
+                if turn.role == "user"
+                else _AUTHORITATIVE_CONTEXT_ASSISTANT_TURN_CHARS
+            ),
         )
         for turn in retained
     )
     current_task = _task_input_content(snapshot.task_input)
     compacted_content = (
         "Recorded prior task context "
-        f"[{snapshot.link_strategy or 'recorded'}; compacted, retained "
-        f"{len(retained)}/{len(snapshot.prior_turns)} latest turns]:\n"
+        f"[{snapshot.link_strategy or 'recorded'}; structured compact; "
+        f"retained {len(user_turns)} user anchors and "
+        f"{len(assistant_turns)} recent assistant turns from "
+        f"{len(snapshot.prior_turns)} turns]:\n"
         f"{transcript}\n\nCurrent task:\n{current_task}"
     )
     compacted_input: object
@@ -27498,6 +27662,10 @@ def _compact_authoritative_case_context(case: EvalCase) -> EvalCase:
             "authoritative_context_original_chars": len(content),
             "authoritative_context_compacted_chars": len(compacted_content),
             "authoritative_context_retained_turns": len(retained),
+            "authoritative_context_retained_user_turns": len(user_turns),
+            "authoritative_context_retained_assistant_turns": len(
+                assistant_turns
+            ),
         },
     )
 

@@ -2217,6 +2217,66 @@ def _replay_resource_claims(
     )
 
 
+def _legacy_member_baseline_concurrency(
+    requests: Sequence[CandidateReplayRequest],
+    *,
+    concurrency_policy: SelfEvolveConcurrencyPolicy,
+) -> int:
+    """Allow one speculative control only when every runtime is isolated.
+
+    Legacy replay does not have the lane materializer used by measurement v2,
+    but its per-member runtime still creates distinct workspace, HOME, endpoint,
+    and artifact roots.  We therefore overlap adjacent controls only when the
+    compiled adaptation explicitly proves deterministic isolated bindings and,
+    when present, an isolated frozen capability.  Any incomplete or shared
+    declaration falls back to the historical serial schedule.
+    """
+
+    if len(requests) < 2:
+        return 1
+    for request in requests:
+        # Repetition batches already consume the replay concurrency budget.
+        # Pair-level overlap is enabled only when each arm has one work item,
+        # so nested schedulers cannot oversubscribe the global limit.
+        if (
+            request.baseline_repetitions != 1
+            or request.candidate_repetitions != 1
+        ):
+            return 1
+        adaptation = request.replay_adaptation
+        if adaptation is None or not adaptation.ready:
+            return 1
+        capability = adaptation.replay_capability
+        if capability is not None and (
+            not capability.ready
+            or not capability.deterministic
+            or capability.concurrency_mode != "isolated"
+            or capability.resource_key is not None
+        ):
+            return 1
+        try:
+            case = adaptation.case(request.task_id)
+        except KeyError:
+            return 1
+        if case.readiness != "ready":
+            return 1
+        for raw_binding in case.bindings:
+            try:
+                binding = validate_replay_binding_concurrency(raw_binding)
+            except ValueError:
+                return 1
+            if (
+                not binding.deterministic
+                or binding.concurrency_mode != "isolated"
+                or binding.resource_key is not None
+            ):
+                return 1
+    return min(
+        2,
+        concurrency_policy.effective_limit("replay", item_count=len(requests)),
+    )
+
+
 @dataclass
 class _ReplayServiceProcess:
     process: subprocess.Popen[Any]
@@ -3017,8 +3077,11 @@ def _write_incremental_baseline_manifest(
                     "case_id": case.case_id,
                     "path": _member_artifact_name(case.case_id),
                     "baseline_complete": True,
+                    "control_fingerprint": baseline_control_fingerprint(
+                        member_request
+                    ),
                 }
-                for case, _request, _member_dir in prepared_members
+                for case, member_request, _member_dir in prepared_members
                 if case.case_id in completed
             ],
         },
@@ -3591,6 +3654,81 @@ class AWorldCliCandidateReplayBackend:
             resumed_pair_case_ids=resumed_pair_case_ids,
         )
 
+        async def run_baseline_phase(
+            *,
+            member_index: int,
+            case: EvalCase,
+            member_request: CandidateReplayRequest,
+            member_dir: Path,
+            blocking_event: ReplayFailureEvent | None,
+        ) -> ReplayVariantResult:
+            _emit_replay_member_progress(
+                progress_callback,
+                event="member_phase_started",
+                candidate_id=candidate.candidate_id,
+                case_id=case.case_id,
+                case_index=member_index,
+                case_count=member_count,
+                phase="baseline",
+                repetition_count=member_request.baseline_repetitions,
+                baseline_cache_offered=(
+                    member_request.baseline_replay_dir is not None
+                ),
+                phase_timeout_seconds=_member_phase_hard_deadline_seconds(
+                    member_request.timeout_seconds
+                ),
+            )
+            if blocking_event is not None:
+                baseline = _blocked_variant_result(
+                    "baseline", blocked_by=blocking_event
+                )
+                _persist_variant_lifecycle(member_dir / "baseline", baseline)
+            else:
+                try:
+                    async with asyncio.timeout(
+                        _member_phase_hard_deadline_seconds(
+                            member_request.timeout_seconds
+                        )
+                    ):
+                        baseline = await self._load_or_run_baseline(
+                            member_request,
+                            candidate=candidate,
+                            replay_dir=member_dir,
+                            progress_callback=_scoped_replay_attempt_callback(
+                                progress_callback,
+                                candidate_id=candidate.candidate_id,
+                                case_id=case.case_id,
+                                case_index=member_index,
+                                case_count=member_count,
+                                phase="baseline",
+                            ),
+                        )
+                except TimeoutError:
+                    baseline = _member_phase_timeout_result(
+                        variant_id="baseline",
+                        phase="baseline",
+                        timeout_seconds=_member_phase_hard_deadline_seconds(
+                            member_request.timeout_seconds
+                        ),
+                    )
+                    _persist_variant_lifecycle(
+                        member_dir / "baseline", baseline
+                    )
+            _emit_replay_member_progress(
+                progress_callback,
+                event="member_phase_completed",
+                candidate_id=candidate.candidate_id,
+                case_id=case.case_id,
+                case_index=member_index,
+                case_count=member_count,
+                phase="baseline",
+                status=baseline.status.value,
+                baseline_cache_status=str(
+                    baseline.metrics.get("baseline_cache_status") or "unknown"
+                ),
+            )
+            return baseline
+
         async def run_candidate_phase(
             *,
             member_index: int,
@@ -3799,12 +3937,54 @@ class AWorldCliCandidateReplayBackend:
             )
             return candidate_result
 
-        for member_index, (case, member_request, member_dir) in enumerate(
-            prepared_members,
-            start=1,
-        ):
-            if case.case_id in resumed_members:
-                continue
+        pending_members = [
+            (member_index, case, member_request, member_dir)
+            for member_index, (case, member_request, member_dir) in enumerate(
+                prepared_members,
+                start=1,
+            )
+            if case.case_id not in resumed_members
+        ]
+        baseline_concurrency = _legacy_member_baseline_concurrency(
+            [item[2] for item in pending_members],
+            concurrency_policy=self.concurrency_policy,
+        )
+        baseline_tasks: dict[str, asyncio.Task[ReplayVariantResult]] = {}
+
+        async def cancel_pending_baselines() -> None:
+            pending_tasks = tuple(baseline_tasks.values())
+            baseline_tasks.clear()
+            for task in pending_tasks:
+                task.cancel()
+            if pending_tasks:
+                await asyncio.gather(*pending_tasks, return_exceptions=True)
+
+        def schedule_baseline(
+            item: tuple[int, EvalCase, CandidateReplayRequest, Path],
+        ) -> None:
+            member_index, case, member_request, member_dir = item
+            if case.case_id in baseline_tasks:
+                return
+            baseline_tasks[case.case_id] = asyncio.create_task(
+                run_baseline_phase(
+                    member_index=member_index,
+                    case=case,
+                    member_request=member_request,
+                    member_dir=member_dir,
+                    blocking_event=(
+                        candidate_blocking_event
+                        or candidate_frontier_stop_event
+                    ),
+                ),
+                name=f"self-evolve-baseline-{_safe_path(case.case_id)}",
+            )
+
+        for pending_index, (
+            member_index,
+            case,
+            member_request,
+            member_dir,
+        ) in enumerate(pending_members):
             _write_progressive_pair_checkpoint(
                 members_root,
                 case_ids=case_ids,
@@ -3821,69 +4001,32 @@ class AWorldCliCandidateReplayBackend:
                 resumed_from_replay_dir=request.resume_replay_dir,
                 resumed_pair_case_ids=resumed_pair_case_ids,
             )
-            _emit_replay_member_progress(
-                progress_callback,
-                event="member_phase_started",
-                candidate_id=candidate.candidate_id,
-                case_id=case.case_id,
-                case_index=member_index,
-                case_count=member_count,
-                phase="baseline",
-                repetition_count=member_request.baseline_repetitions,
-                baseline_cache_offered=(
-                    member_request.baseline_replay_dir is not None
-                ),
-                phase_timeout_seconds=_member_phase_hard_deadline_seconds(
-                    member_request.timeout_seconds
-                ),
-            )
-            baseline_blocking_event = (
-                candidate_blocking_event or candidate_frontier_stop_event
-            )
-            if baseline_blocking_event is not None:
-                baseline = _blocked_variant_result(
-                    "baseline", blocked_by=baseline_blocking_event
-                )
-                _persist_variant_lifecycle(member_dir / "baseline", baseline)
-            else:
-                try:
-                    async with asyncio.timeout(
-                        _member_phase_hard_deadline_seconds(
-                            member_request.timeout_seconds
-                        )
-                    ):
-                        baseline = await self._load_or_run_baseline(
-                            member_request,
-                            candidate=candidate,
-                            replay_dir=member_dir,
-                            progress_callback=_scoped_replay_attempt_callback(
-                                progress_callback,
-                                candidate_id=candidate.candidate_id,
-                                case_id=case.case_id,
-                                case_index=member_index,
-                                case_count=member_count,
-                                phase="baseline",
-                            ),
-                        )
-                except TimeoutError:
-                    baseline = _member_phase_timeout_result(
-                        variant_id="baseline",
-                        phase="baseline",
-                        timeout_seconds=_member_phase_hard_deadline_seconds(
-                            member_request.timeout_seconds
-                        ),
-                    )
-                    _persist_variant_lifecycle(member_dir / "baseline", baseline)
-                if (
-                    baseline.status is ReplayExecutionStatus.FAILED
-                    and _baseline_failure_blocks_candidate(baseline.failure)
-                ):
-                    assert baseline.failure is not None
-                    if baseline.failure.scope in {
-                        FailureScope.CANDIDATE,
-                        FailureScope.SHARED_RUN,
-                    }:
-                        candidate_blocking_event = baseline.failure
+            schedule_baseline(pending_members[pending_index])
+            if (
+                baseline_concurrency > 1
+                and pending_index + 1 < len(pending_members)
+                and candidate_blocking_event is None
+                and candidate_frontier_stop_event is None
+            ):
+                # At most one adjacent control is speculative.  This overlaps
+                # the dominant control runtime without weakening canonical
+                # early-stop decisions or starting an unbounded wave.
+                schedule_baseline(pending_members[pending_index + 1])
+            try:
+                baseline = await baseline_tasks.pop(case.case_id)
+            except BaseException:
+                await cancel_pending_baselines()
+                raise
+            if (
+                baseline.status is ReplayExecutionStatus.FAILED
+                and _baseline_failure_blocks_candidate(baseline.failure)
+            ):
+                assert baseline.failure is not None
+                if baseline.failure.scope in {
+                    FailureScope.CANDIDATE,
+                    FailureScope.SHARED_RUN,
+                }:
+                    candidate_blocking_event = baseline.failure
             if _baseline_invalid_for_measurement(baseline):
                 invalid_control_streak += 1
             else:
@@ -3986,19 +4129,6 @@ class AWorldCliCandidateReplayBackend:
                     ],
                     resume_safe=replay_measurement_stop["resume_safe"],
                 )
-            _emit_replay_member_progress(
-                progress_callback,
-                event="member_phase_completed",
-                candidate_id=candidate.candidate_id,
-                case_id=case.case_id,
-                case_index=member_index,
-                case_count=member_count,
-                phase="baseline",
-                status=baseline.status.value,
-                baseline_cache_status=str(
-                    baseline.metrics.get("baseline_cache_status") or "unknown"
-                ),
-            )
             if baseline.status is not ReplayExecutionStatus.BLOCKED:
                 baseline_phase_completed_case_ids.append(case.case_id)
             if _baseline_replay_is_reusable(
@@ -4027,13 +4157,17 @@ class AWorldCliCandidateReplayBackend:
                 resumed_from_replay_dir=request.resume_replay_dir,
                 resumed_pair_case_ids=resumed_pair_case_ids,
             )
-            candidate_result = await run_candidate_phase(
-                member_index=member_index,
-                case=case,
-                member_request=member_request,
-                member_dir=member_dir,
-                baseline=baseline,
-            )
+            try:
+                candidate_result = await run_candidate_phase(
+                    member_index=member_index,
+                    case=case,
+                    member_request=member_request,
+                    member_dir=member_dir,
+                    baseline=baseline,
+                )
+            except BaseException:
+                await cancel_pending_baselines()
+                raise
             member_items.append(
                 CandidateReplayMemberResult(
                     case_id=case.case_id,
@@ -5118,6 +5252,9 @@ class AWorldCliCandidateReplayBackend:
             metrics={
                 **dict(baseline.metrics),
                 "baseline_cache_status": baseline_cache_status,
+                "baseline_control_fingerprint": (
+                    baseline_control_fingerprint(request)
+                ),
             },
         )
 
@@ -5689,7 +5826,6 @@ def _stored_baseline_matches_request(request: CandidateReplayRequest) -> bool:
     provenance_keys = (
         "baseline_skill_fingerprint",
         "dataset_fingerprint",
-        "adaptation_fingerprint",
         "support_fingerprint",
         "timeout_envelope_fingerprint",
         "workspace_seed_fingerprint",
@@ -5736,6 +5872,10 @@ def _stored_baseline_matches_request(request: CandidateReplayRequest) -> bool:
         for key in provenance_keys
     ):
         return False
+    if baseline_control_fingerprint(stored) != baseline_control_fingerprint(
+        request
+    ):
+        return False
     if (
         stored.support_fingerprint
         != replay_support_fingerprint(stored.replay_adaptation)
@@ -5767,6 +5907,38 @@ def _stored_baseline_matches_request(request: CandidateReplayRequest) -> bool:
     return _baseline_replay_is_reusable(
         baseline,
         requested_repetitions=request.baseline_repetitions,
+    )
+
+
+def baseline_control_fingerprint(request: CandidateReplayRequest) -> str:
+    """Identify an immutable control independently of the candidate package.
+
+    ``adaptation_fingerprint`` includes compilation/artifact identity and can
+    vary between candidates even when the executable support surface is
+    semantically identical. ``support_fingerprint`` already commits to that
+    semantic surface. The remaining fields freeze the baseline skill, panel,
+    workspace, member input, repetitions, and execution envelope.
+    """
+
+    return stable_control_fingerprint(
+        {
+            "schema_version": "aworld.self_evolve.baseline_control.v1",
+            "target": {
+                "target_type": request.target.target_type,
+                "target_id": request.target.target_id,
+            },
+            "task_id": request.task_id,
+            "task_input_fingerprint": request.task_input_fingerprint,
+            "baseline_skill_fingerprint": request.baseline_skill_fingerprint,
+            "dataset_fingerprint": request.dataset_fingerprint,
+            "workspace_seed_fingerprint": request.workspace_seed_fingerprint,
+            "support_fingerprint": request.support_fingerprint,
+            "timeout_envelope_fingerprint": (
+                request.timeout_envelope_fingerprint
+            ),
+            "baseline_repetitions": request.baseline_repetitions,
+            "repetition_semantics": request.repetition_semantics,
+        }
     )
 
 
@@ -11209,29 +11381,22 @@ def _task_text(task_input: Any) -> str:
 _REPLAY_EVIDENCE_POLICY = """
 
 Self-evolve replay evidence requirements:
-- Preserve the original user task above and use artifact-first evidence. Do not stream large raw tool outputs, full pages, documents, JSON, or logs into the conversation; save large or unknown-size material under {artifact_dir} and use AWORLD_SELF_EVOLVE_REPLAY_ARTIFACT_DIR={artifact_dir}.
-- A line-count limit such as `head -N` is not a byte bound; inspect only an explicit byte-bounded excerpt or selected structured fields from a saved artifact.
-- Append one compact, single-line JSON object per source to {evidence_manifest} and use AWORLD_SELF_EVOLVE_EVIDENCE_MANIFEST={evidence_manifest}. Each object needs source_id, extraction_method, and the bounded excerpt or field list used in the answer.
-- File-backed evidence must include artifact_path. Non-file operation evidence must use evidence_type="metadata" with one structured metadata object, never an artifact_path containing status or multiple values.
-- Emit only bounded structured summaries and keep a concise ledger mapping final claims to non-compacted extracts or artifact references. Treat compacted, truncated, schema-invalid, or unbounded results without valid artifact evidence as unusable and retry once with a narrower extraction.
-- For bounded replay validation, prefer the smallest representative evidence path. Cap slow collection after one valid artifact-backed sample and report actual counts.
-- After the first successful structured extraction, immediately persist replay artifacts and a manifest entry. Once the requested output artifact and a valid evidence manifest exist, stop evidence collection and return the final answer with the requested artifact path, counts, and evidence ledger.
-- Before finalizing, omit every claim not supported by non-compacted trajectory evidence.
+- Preserve the user task and use artifact-first evidence. Save large or unknown-size output under AWORLD_SELF_EVOLVE_REPLAY_ARTIFACT_DIR ({artifact_dir}); never stream full pages, documents, JSON, or logs.
+- Inspect only explicit byte-bounded excerpts or selected fields; `head -N` is not a byte bound.
+- Append one compact JSON line per source to AWORLD_SELF_EVOLVE_EVIDENCE_MANIFEST ({evidence_manifest}). Include source_id, extraction_method, bounded fields/excerpt, and artifact_path for files; use evidence_type="metadata" plus one object for non-file evidence.
+- Reject compacted, truncated, invalid, or unbounded evidence; retry once with a narrower extraction.
+- After the first valid artifact-backed sample, persist it and its manifest entry, then stop collecting and return the answer with artifact path, counts, and a concise claim ledger. Omit unsupported claims.
 """.strip()
 
 
 _REPLAY_RUNTIME_POLICY = """
 Self-evolve replay runtime contract:
-- Preserve the original authorization boundary. Task-plane operations required by the original task are allowed, including requested reads, writes, navigation, submissions, and artifacts. If the original task explicitly authorizes a control-plane operation, it is allowed only within its stated scope.
-- Treat prerequisites not created by replay as externally managed and attach-only. Do not terminate, restart, reconfigure, or replace externally managed prerequisites. Do not copy or substitute credentials, sessions, profiles, or private state from the host to make replay succeed.
-- Do not override the supplied HOME, TMPDIR, XDG_*, or framework runtime roots; keep subprocess state in those roots or the replay artifact directory.
-- Only endpoints supplied through AWORLD_REPLAY_ENDPOINT_* are in scope. Do not enumerate or connect to any other loopback port, original endpoint, host service, or process as a fallback. A protocol mismatch must not be bypassed through endpoint discovery.
-- On the first terminal protocol signal from a supplied endpoint, persist one bounded diagnostic and return a replay capability mismatch. Do not retry alternate URL forms or inspect host ports.
-- Probe prerequisite compatibility with bounded, non-mutating checks. If unavailable, fail the replay with a prerequisite-unavailable reason instead of repairing the host environment.
-- Keep replay-created files inside the workspace or replay artifact directory unless the task names another output location. Replay-created resources may be cleaned up by replay.
-- Stop retrying a path that cannot produce new evidence; switch once to a materially different bounded strategy or fail with the observed reason.
-- Treat a usable artifact-backed sample as the terminal collection condition. After persisting it, make no further tool call and immediately synthesize the final response.
-- Reserve the final execution step for the terminal response. If the remaining step or tool budget would be consumed by more collection, stop collection and answer from the evidence already persisted.
+- Keep the original authorization boundary. Required task-plane actions are allowed; control-plane actions require explicit task authorization.
+- External prerequisites are attach-only: never terminate, restart, reconfigure, replace, or copy host credentials/sessions/private state.
+- Preserve supplied HOME, TMPDIR, XDG_*, and runtime roots. Use only AWORLD_REPLAY_ENDPOINT_* endpoints; never discover alternate host ports.
+- On terminal protocol mismatch, persist one bounded diagnostic and stop. If a bounded non-mutating prerequisite probe fails, return prerequisite-unavailable.
+- Keep created files in the workspace/artifact directory. Switch strategy once when no new evidence is possible, otherwise fail with the observed reason.
+- A valid artifact-backed sample is terminal: make no further tool call and synthesize the final response.
 """.strip()
 
 
@@ -13982,7 +14147,9 @@ def build_paired_replay_dataset(
     )
     if not normalized.valid:
         raise ValueError("candidate replay member result contract is invalid")
-    if not replay_result.candidate.succeeded:
+    if not normalized.members or any(
+        not member.candidate.succeeded for member in normalized.members
+    ):
         raise ValueError("candidate replay did not succeed")
     if not candidate_replay_is_comparable(
         dataset=dataset,
