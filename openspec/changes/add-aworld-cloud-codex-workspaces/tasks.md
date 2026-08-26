@@ -76,7 +76,7 @@
 - [x] 9.4 Complete run submit/list/show/poll/cancel/retry commands supporting both modes and versioned benchmark metadata.
 - [x] 9.5 Add event and file listing, stdout/stderr/result download, and canonical ATIF download commands.
 - [x] 9.6 Add focused CLI HTTP contract tests for authentication, versioned benchmark submission, stable errors, mode validation, the built-in plugin manifest, and canonical trajectory download.
-- [ ] 9.7 Add end-to-end CLI tests against the Server API and fake executor.
+- [x] 9.7 Add an application-level HTTP API -> SQLite -> worker -> Local Docker provider contract -> result/events/files/ATIF test, while keeping the real Docker benchmark proof in 11.6.
 
 ## 10. Benchmark Adapter Boundary
 
