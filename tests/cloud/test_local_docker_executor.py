@@ -69,6 +69,28 @@ def _request(tmp_path: Path, *, task_id: str = "fix-git") -> ExecutorRequest:
     )
 
 
+def _query_request(tmp_path: Path) -> ExecutorRequest:
+    benchmark_request = _request(tmp_path)
+    run = benchmark_request.run
+    return ExecutorRequest(
+        workspace=benchmark_request.workspace,
+        run=Run(
+            id=run.id,
+            workspace_id=run.workspace_id,
+            state=run.state,
+            revision=run.revision,
+            attempt=run.attempt,
+            task="printf query-ok",
+            created_at=run.created_at,
+            mode=RunMode.QUERY,
+        ),
+        output_directory=benchmark_request.output_directory,
+        runtime_user=benchmark_request.runtime_user,
+        resources=benchmark_request.resources,
+        network=benchmark_request.network,
+    )
+
+
 @pytest.mark.asyncio
 async def test_harbor_benchmark_produces_result_logs_and_one_canonical_atif(
     tmp_path: Path,
@@ -156,3 +178,41 @@ async def test_harbor_benchmark_rejects_task_outside_admin_allowlist(
         await provider.start(_request(tmp_path, task_id="not-allowed"))
 
     assert raised.value.code is CloudErrorCode.INVALID_REQUEST
+
+
+@pytest.mark.asyncio
+async def test_local_docker_query_produces_one_canonical_atif(tmp_path: Path) -> None:
+    executable = tmp_path / "controlled_docker.py"
+    executable.write_text(
+        "import sys\nprint('docker query', ' '.join(sys.argv[1:]))\n",
+        encoding="utf-8",
+    )
+    provider = LocalDockerExecutorProvider(
+        LocalDockerExecutorSettings(
+            docker_command=(sys.executable, str(executable)),
+        )
+    )
+    request = _query_request(tmp_path)
+    handle = await provider.start(request)
+
+    async def receive(event: ExecutorEvent) -> None:
+        del event
+
+    result = await provider.wait(handle, on_event=receive)
+
+    assert result.exit_code == 0
+    assert result.benchmark_outcome is None
+    canonical = [
+        run_file
+        for run_file in result.files
+        if run_file.trajectory is not None
+        and run_file.trajectory.role is TrajectoryRole.CANONICAL
+    ]
+    assert len(canonical) == 1
+    trajectory = json.loads(
+        (request.output_directory / canonical[0].relative_path).read_text()
+    )
+    assert trajectory["steps"][0]["message"] == "printf query-ok"
+    assert trajectory["extra"]["producer"] == (
+        "aworld-cloud-local-docker-provider"
+    )
