@@ -1,0 +1,18 @@
+{
+  "id": "aworld-cloud-cli",
+  "name": "aworld-cloud-cli",
+  "version": "1.0.0",
+  "entrypoints": {
+    "cli_commands": [
+      {
+        "id": "cloud",
+        "name": "cloud",
+        "target": "cli_commands/cloud.py",
+        "scope": "workspace",
+        "metadata": {
+          "factory": "build_command"
+        }
+      }
+    ]
+  }
+}
