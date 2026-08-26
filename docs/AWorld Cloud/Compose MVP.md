@@ -13,7 +13,8 @@ The single Compose file at `deploy/aworld-cloud/docker-compose.yml` defines:
 - `aworld-cloud-cli`: an on-demand HTTP-only CLI service.
 
 Server and worker share SQLite and run artifacts through one absolute bind mount.
-The worker mounts `/var/run/docker.sock` and invokes Harbor 0.6.6 at pinned commit
+The worker mounts the active host Docker Unix socket at the container path
+`/var/run/docker.sock` and invokes Harbor 0.6.6 at pinned commit
 `ccf3df5ef50141b004322d4008b84b64797b76b9`. Harbor then creates the real task
 container, executes the selected agent, and runs the task verifier. There is no
 Kubernetes layer.
@@ -38,6 +39,21 @@ docker compose \
 ./scripts/verify-aworld-cloud-terminal-bench.sh
 ```
 
+The init and verification scripts first honor an explicit
+`AWORLD_CLOUD_DOCKER_SOCKET`, then inspect the active Docker context, then try
+common Docker Desktop and Linux socket paths. This supports both
+`/var/run/docker.sock` and paths such as `~/.docker/run/docker.sock`. The init
+script persists the resolved absolute path in `deploy/aworld-cloud/.env`.
+Remote TCP and SSH Docker contexts cannot supply a bind-mountable Unix socket
+and are rejected with an instruction to configure a local socket explicitly.
+
+To select it explicitly:
+
+```bash
+AWORLD_CLOUD_DOCKER_SOCKET="$HOME/.docker/run/docker.sock" \
+  ./scripts/aworld-cloud-init.sh
+```
+
 The verification script creates a workspace, submits exactly
 `terminal-bench@2.0/fix-git`, polls it to a terminal state, and asserts reward
 `1.0`. It stores the API result, events, file manifest, provider stdout/stderr,
@@ -59,6 +75,8 @@ The worker runs as root and has the host Docker socket. This is equivalent to
 host-root access and is acceptable only for this explicitly local MVP. Keep the
 data directory absolute: Harbor passes its paths to the host Docker daemon, so
 the Compose bind source and container target intentionally have the same path.
+The deployment does not read or mount the host's `.codex` directory; workspace
+Codex state, when needed, lives below the managed Cloud data directory.
 
 SQLite, the artifact directory, and Harbor's cache are persistent under
 `AWORLD_CLOUD_DATA_DIR`. Back up that directory only while the services are

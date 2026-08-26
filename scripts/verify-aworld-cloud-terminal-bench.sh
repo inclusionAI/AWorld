@@ -6,14 +6,14 @@ deployment_dir="${repository_root}/deploy/aworld-cloud"
 environment_file="${AWORLD_CLOUD_ENV_FILE:-${deployment_dir}/.env}"
 compose_file="${deployment_dir}/docker-compose.yml"
 
+# shellcheck source=scripts/aworld-cloud-docker.sh
+source "${repository_root}/scripts/aworld-cloud-docker.sh"
+
 if [[ ! -f "${environment_file}" ]]; then
   echo "Run scripts/aworld-cloud-init.sh first" >&2
   exit 1
 fi
-if [[ ! -S /var/run/docker.sock ]]; then
-  echo "A Docker daemon socket is required at /var/run/docker.sock" >&2
-  exit 1
-fi
+aworld_cloud_export_docker_socket "${environment_file}"
 
 data_directory="$(sed -n 's/^AWORLD_CLOUD_DATA_DIR=//p' "${environment_file}" | tail -1)"
 if [[ -z "${data_directory}" || "${data_directory}" != /* || "${data_directory}" == "/" ]]; then

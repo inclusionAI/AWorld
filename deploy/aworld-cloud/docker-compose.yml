@@ -60,7 +60,7 @@ services:
         source: ${AWORLD_CLOUD_DATA_DIR:-/var/tmp/aworld-cloud}
         target: ${AWORLD_CLOUD_DATA_DIR:-/var/tmp/aworld-cloud}
       - type: bind
-        source: /var/run/docker.sock
+        source: ${AWORLD_CLOUD_DOCKER_SOCKET:-/var/run/docker.sock}
         target: /var/run/docker.sock
     healthcheck:
       test:

@@ -21,7 +21,9 @@ def test_compose_has_only_the_runnable_mvp_roles() -> None:
     assert services["aworld-cloud-server"]["healthcheck"]
     assert services["aworld-cloud-worker"]["healthcheck"]
     assert any(
-        mount.get("source") == "/var/run/docker.sock"
+        mount.get("source")
+        == "${AWORLD_CLOUD_DOCKER_SOCKET:-/var/run/docker.sock}"
+        and mount.get("target") == "/var/run/docker.sock"
         for mount in services["aworld-cloud-worker"]["volumes"]
     )
 
@@ -38,3 +40,10 @@ def test_deployment_assets_pin_real_harbor_and_terminal_bench() -> None:
     assert "benchmark_outcome" in verifier
     assert 'reward"] == 1.0' in verifier
     assert "trajectory.atif.json" in verifier
+
+
+def test_compose_does_not_mount_host_codex_state() -> None:
+    compose = (DEPLOYMENT / "docker-compose.yml").read_text()
+
+    assert "~/.codex" not in compose
+    assert "${HOME}/.codex" not in compose
