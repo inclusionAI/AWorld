@@ -54,6 +54,16 @@ for Colima and similar VM-backed contexts: the host CLI may connect through
 `deploy/aworld-cloud/.env`. If an automatically persisted value stops working,
 running init again replaces it with a newly validated value.
 
+On macOS, init also replaces the old generated
+`AWORLD_CLOUD_DATA_DIR=/var/tmp/aworld-cloud` value with the absolute
+repo-local `.aworld-cloud` directory. Paths below `/var/tmp` are inside the
+Colima VM when evaluated by the daemon and are not the host's `/var/tmp`.
+Repo-local storage is shared by both sides, so downloaded results and ATIF files
+are visible to the host verification process. A non-default value is preserved;
+to deliberately keep `/var/tmp/aworld-cloud` on macOS, pass it explicitly when
+running init. Linux/private-cloud deployments retain the `/var/tmp` default and
+may continue to set any non-root absolute `AWORLD_CLOUD_DATA_DIR`.
+
 To select it explicitly:
 
 ```bash
@@ -66,6 +76,8 @@ The verification script creates a workspace, submits exactly
 `1.0`. It stores the API result, events, file manifest, provider stdout/stderr,
 Compose logs, and the one canonical ATIF trajectory below
 `$AWORLD_CLOUD_DATA_DIR/verification`.
+Its final JSON and ATIF assertions consume the files through host-side input
+redirection, ensuring the reported artifacts are actually host-visible.
 
 For individual CLI calls:
 
