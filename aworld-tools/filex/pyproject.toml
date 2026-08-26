@@ -1,7 +1,7 @@
 [project]
 name = "aworld-filex"
 version = "0.1.0"
-description = "Self-contained FileX runtime for AWorld"
+description = "Self-contained document and media parsing runtime"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
@@ -33,10 +33,12 @@ dependencies = [
     "markdown~=3.7",
     "weasyprint~=65.0",
     "faster-whisper~=1.2.1",
+    "yt-dlp>=2026.1.29",
 ]
 
 [project.scripts]
 filex = "document_parse_service.cli:main"
+filex-server = "document_parse_service.http_server:main"
 ocr-server = "document_parse_service.ocr_server:main"
 
 [build-system]

@@ -45,6 +45,7 @@ def _load_provider_module():
         markdown_text: str
         assets: list[_DocumentAsset] = field(default_factory=list)
         diagnostics: dict = field(default_factory=dict)
+        document_ir: dict | None = None
 
     document_artifact_models_stub.DocumentAnchor = _DocumentAnchor
     document_artifact_models_stub.DocumentAsset = _DocumentAsset
@@ -134,6 +135,168 @@ def test_paddle_ocr_vl_provider_uses_official_pipeline_markdown() -> None:
     assert artifact.diagnostics["first_batch_duration_ms"] >= 0
 
 
+def test_paddle_ocr_preserves_page_element_geometry() -> None:
+    module = _load_provider_module()
+
+    class _FakeResult(dict):
+        @property
+        def markdown(self):
+            return {"markdown_texts": "# Heading"}
+
+        @property
+        def json(self):
+            return {
+                "res": {
+                    "page_index": 0,
+                    "width": 1200,
+                    "height": 1600,
+                    "parsing_res_list": [
+                        {
+                            "block_label": "title",
+                            "block_content": "Heading",
+                            "block_bbox": [10, 20, 300, 80],
+                            "block_id": 7,
+                            "block_order": 1,
+                            "group_id": 7,
+                        }
+                    ],
+                }
+            }
+
+    class _FakePipeline:
+        def predict(self, _input_path, **_kwargs):
+            return [_FakeResult()]
+
+        @staticmethod
+        def concatenate_markdown_pages(markdown_list):
+            return "\n\n".join(item["markdown_texts"] for item in markdown_list)
+
+    provider = module.PaddleOcrPdfProvider(
+        env_content={"paddle_ocr_use_chart_recognition": True},
+        pipeline=_FakePipeline(),
+    )
+    result = asyncio.run(
+        provider.understand_pdf(
+            file_path=Path("/tmp/page.png"),
+            task_id="task-ir",
+            source_file_name="page",
+        )
+    )
+
+    assert provider._pipeline_kwargs()["use_chart_recognition"] is True
+    assert result.document_ir == {
+        "schema_version": "filex-document-ir-v2",
+        "coordinate_system": "pixel_top_left_xyxy",
+        "pages": [
+            {
+                "page_index": 0,
+                "width": 1200.0,
+                "height": 1600.0,
+                "elements": [
+                    {
+                        "id": "7",
+                        "type": "title",
+                        "bbox": [10.0, 20.0, 300.0, 80.0],
+                        "text": "Heading",
+                        "reading_order": 1,
+                        "group_id": 7,
+                    }
+                ],
+                "spans": [],
+            }
+        ],
+    }
+
+
+def test_text_layer_formatting_recovers_sparse_bold_title() -> None:
+    module = _load_provider_module()
+    formatting = sys.modules[f"{module.__package__}.pdf.text_layer_formatting"]
+    span = formatting.TextLayerSpan(
+        page_index=0,
+        text="Notes",
+        x=36,
+        y=732,
+        font_size=16,
+        font_name="FuturaStd-Bold",
+        bold=True,
+        italic=False,
+        heading_level=1,
+    )
+
+    updated = formatting.overlay_text_layer_formatting("# source", [[span]])
+
+    assert updated == "# **Notes**"
+
+
+def test_text_layer_formatting_overlays_existing_content_without_duplication() -> None:
+    module = _load_provider_module()
+    formatting = sys.modules[f"{module.__package__}.pdf.text_layer_formatting"]
+    span = formatting.TextLayerSpan(
+        page_index=0,
+        text="Net income",
+        x=36,
+        y=700,
+        font_size=12,
+        font_name="Helvetica-Bold",
+        bold=True,
+        italic=False,
+    )
+
+    updated = formatting.overlay_text_layer_formatting(
+        "Net income was 42 million.",
+        [[span]],
+    )
+
+    assert updated == "**Net income** was 42 million."
+    assert updated.count("Net income") == 1
+
+
+def test_text_layer_formatting_preserves_existing_heading_level() -> None:
+    module = _load_provider_module()
+    formatting = sys.modules[f"{module.__package__}.pdf.text_layer_formatting"]
+    span = formatting.TextLayerSpan(
+        page_index=0,
+        text="Existing heading",
+        x=36,
+        y=700,
+        font_size=16,
+        font_name="Helvetica-Bold",
+        bold=True,
+        italic=False,
+        heading_level=2,
+    )
+
+    updated = formatting.overlay_text_layer_formatting("# Existing heading", [[span]])
+
+    assert updated == "# Existing heading"
+
+
+def test_text_layer_formatting_does_not_match_inside_another_word() -> None:
+    module = _load_provider_module()
+    formatting = sys.modules[f"{module.__package__}.pdf.text_layer_formatting"]
+    span = formatting.TextLayerSpan(
+        page_index=0,
+        text="net",
+        x=36,
+        y=700,
+        font_size=12,
+        font_name="Helvetica-Bold",
+        bold=True,
+        italic=False,
+    )
+
+    updated = formatting.overlay_text_layer_formatting("internet access", [[span]])
+
+    assert updated == "internet access"
+
+
+def test_text_layer_formatting_keeps_scanned_markdown_unchanged() -> None:
+    module = _load_provider_module()
+    formatting = sys.modules[f"{module.__package__}.pdf.text_layer_formatting"]
+
+    assert formatting.overlay_text_layer_formatting("OCR only", [[]]) == "OCR only"
+
+
 def test_paddle_ocr_metrics_count_vlm_blocks() -> None:
     provider = _load_provider_module().PaddleOcrPdfProvider(env_content={})
 
@@ -145,6 +308,24 @@ def test_paddle_ocr_metrics_count_vlm_blocks() -> None:
     )
 
     assert count == 3
+
+
+def test_paddle_ocr_pipeline_is_shared_within_worker_process(monkeypatch) -> None:
+    module = _load_provider_module()
+    created = []
+
+    class _FakePipeline:
+        def __init__(self, **kwargs):
+            created.append(kwargs)
+
+    paddleocr = ModuleType("paddleocr")
+    paddleocr.PaddleOCRVL = _FakePipeline
+    monkeypatch.setitem(sys.modules, "paddleocr", paddleocr)
+
+    first = module.PaddleOcrPdfProvider(env_content={})
+    second = module.PaddleOcrPdfProvider(env_content={})
+    assert first._resolve_pipeline() is second._resolve_pipeline()
+    assert len(created) == 1
 
 
 def test_paddle_ocr_pipeline_maps_concurrency_and_retries_429(monkeypatch) -> None:

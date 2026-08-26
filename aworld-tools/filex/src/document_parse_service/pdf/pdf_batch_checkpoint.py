@@ -39,6 +39,11 @@ class PdfBatchCheckpointStore:
             markdown_text=str(artifact_payload.get("markdown_text") or ""),
             assets=[self._deserialize_asset(item) for item in artifact_payload.get("assets") or []],
             diagnostics=dict(artifact_payload.get("diagnostics") or {}),
+            document_ir=(
+                dict(artifact_payload["document_ir"])
+                if isinstance(artifact_payload.get("document_ir"), dict)
+                else None
+            ),
         )
 
     def save(self, *, batch_index: int, pages: list[int], artifact: MarkdownArtifact) -> None:
@@ -52,6 +57,7 @@ class PdfBatchCheckpointStore:
                 "markdown_text": artifact.markdown_text,
                 "assets": [self._serialize_asset(asset) for asset in artifact.assets],
                 "diagnostics": artifact.diagnostics,
+                "document_ir": getattr(artifact, "document_ir", None),
             },
         }
         temporary_path.write_text(

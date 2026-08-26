@@ -24,6 +24,9 @@ def _load_document_service_factory_module():
     text_service_stub = ModuleType(f"{services_package}.text_document_service")
     word_service_stub = ModuleType(f"{services_package}.word_document_service")
     media_service_stub = ModuleType(f"{services_package}.media_document_service")
+    paddle_image_service_stub = ModuleType(
+        f"{services_package}.paddle_ocr_image_document_service"
+    )
     media_file_types_stub = ModuleType(f"{services_package}.media_file_types")
 
     class _DocumentService:
@@ -70,6 +73,17 @@ def _load_document_service_factory_module():
             self.file_type = file_type
             self.env_content = env_content
 
+    class _PaddleOcrImageDocumentService:
+        def __init__(
+            self,
+            file_type,
+            env_content=None,
+            asset_reference_mode="remote_id",
+        ):
+            self.file_type = file_type
+            self.env_content = env_content
+            self.asset_reference_mode = asset_reference_mode
+
     document_service_stub.DocumentService = _DocumentService
     pdf_service_stub.PdfDocumentService = _PdfDocumentService
     ppt_service_stub.PptDocumentService = _PptDocumentService
@@ -81,6 +95,9 @@ def _load_document_service_factory_module():
     media_service_stub.AudioDocumentService = _AudioDocumentService
     media_service_stub.VideoDocumentService = _VideoDocumentService
     media_service_stub.ImageDocumentService = _ImageDocumentService
+    paddle_image_service_stub.PaddleOcrImageDocumentService = (
+        _PaddleOcrImageDocumentService
+    )
     media_file_types_stub.AUDIO_FILE_TYPES = {"mp3", "wav", "m4a", "aac", "flac", "ogg", "opus"}
     media_file_types_stub.VIDEO_FILE_TYPES = {"mp4", "mov", "mkv", "webm", "avi", "m4v", "mpeg", "mpg"}
     media_file_types_stub.IMAGE_FILE_TYPES = {"png", "jpg", "jpeg", "webp", "gif", "bmp"}
@@ -100,6 +117,9 @@ def _load_document_service_factory_module():
     sys.modules[f"{services_package}.word_document_service"] = word_service_stub
     sys.modules[f"{services_package}.media_document_service"] = media_service_stub
     sys.modules[f"{services_package}.media_file_types"] = media_file_types_stub
+    sys.modules[
+        f"{services_package}.paddle_ocr_image_document_service"
+    ] = paddle_image_service_stub
     root_module.document_parse_service = services_module
     services_module.document_service = document_service_stub
     services_module.pdf_document_service = pdf_service_stub
@@ -109,6 +129,7 @@ def _load_document_service_factory_module():
     services_module.word_document_service = word_service_stub
     services_module.media_document_service = media_service_stub
     services_module.media_file_types = media_file_types_stub
+    services_module.paddle_ocr_image_document_service = paddle_image_service_stub
 
     spec = importlib.util.spec_from_file_location(module_name, module_path)
     module = importlib.util.module_from_spec(spec)
@@ -131,6 +152,19 @@ def test_document_service_factory_routes_by_file_type() -> None:
     assert type(module.DocumentServiceFactory.create(file_type="mp3")).__name__ == "_AudioDocumentService"
     assert type(module.DocumentServiceFactory.create(file_type="mp4")).__name__ == "_VideoDocumentService"
     assert type(module.DocumentServiceFactory.create(file_type="png")).__name__ == "_ImageDocumentService"
+
+
+def test_document_service_factory_routes_paddle_images_to_document_pipeline() -> None:
+    module = _load_document_service_factory_module()
+
+    service = module.DocumentServiceFactory.create(
+        file_type="png",
+        env_content={"filex_parse_provider": "paddle_ocr"},
+        asset_reference_mode="local_path",
+    )
+
+    assert type(service).__name__ == "_PaddleOcrImageDocumentService"
+    assert service.asset_reference_mode == "local_path"
 
 
 def test_document_service_factory_rejects_unknown_file_type() -> None:

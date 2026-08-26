@@ -26,14 +26,22 @@ def _parser() -> argparse.ArgumentParser:
     )
     commands = parser.add_subparsers(dest="command", required=True)
 
-    parse = commands.add_parser("parse", help="Parse a local path or HTTP(S) URL to Markdown")
+    parse = commands.add_parser(
+        "parse", help="Parse a local path or HTTP(S) URL to Markdown"
+    )
     source = parse.add_mutually_exclusive_group(required=True)
     source.add_argument("--input", help="Local file inside the workspace")
     source.add_argument("--url", help="HTTP(S) file URL")
-    parse.add_argument("--output", help="Optional Markdown destination inside the workspace")
-    parse.add_argument("--file-type", help="Explicit source type; otherwise infer from the file")
+    parse.add_argument(
+        "--output", help="Optional Markdown destination inside the workspace"
+    )
+    parse.add_argument(
+        "--file-type", help="Explicit source type; otherwise infer from the file"
+    )
     parse.add_argument("--provider", help="Configured FileX provider")
-    parse.add_argument("--env-file", help="Credential/config JSON file inside the workspace")
+    parse.add_argument(
+        "--env-file", help="Credential/config JSON file inside the workspace"
+    )
     parse.add_argument("--sync-mode", choices=("sync", "async"), default="sync")
     parse.add_argument(
         "--asset-reference-mode",
@@ -42,11 +50,27 @@ def _parser() -> argparse.ArgumentParser:
     )
     parse.add_argument("--task-id", help="Optional FileX task id")
     parse.add_argument("--pages", help="One-based PDF pages, for example 1,3-5")
-    parse.add_argument("--page-batch-size", type=int, help="Sequential PDF page batch size")
-    parse.add_argument("--first-batch-pages", type=int, help="Pages in the first PDF batch")
+    parse.add_argument(
+        "--page-batch-size", type=int, help="Sequential PDF page batch size"
+    )
+    parse.add_argument(
+        "--first-batch-pages", type=int, help="Pages in the first PDF batch"
+    )
     parse.add_argument("--batch-resume-id", help="Stable PDF batch resume id")
     parse.add_argument("--force-refresh", action="store_true")
     parse.add_argument("--no-cache", action="store_true")
+    parse.add_argument("--mode", choices=("auto", "transcript"), default="auto")
+    parse.add_argument("--language", help="Preferred transcript or ASR language")
+    parse.add_argument("--allow-media-download", action="store_true")
+    parse.add_argument(
+        "--rights-basis",
+        choices=("user-owned", "licensed", "service-permitted", "applicable-law"),
+    )
+
+    inspect = commands.add_parser(
+        "inspect", help="Inspect a supported source URL without downloading media"
+    )
+    inspect.add_argument("--url", required=True, help="Supported source URL")
 
     status = commands.add_parser("status", help="Read resumable PDF batch progress")
     status.add_argument("--batch-resume-id", required=True)
@@ -65,12 +89,16 @@ def _fail(message: str, *, error_type: str = "FileXError") -> int:
     return 2
 
 
-def _inside_workspace(raw_path: str, workspace: Path, *, must_exist: bool = False) -> Path:
+def _inside_workspace(
+    raw_path: str, workspace: Path, *, must_exist: bool = False
+) -> Path:
     path = Path(raw_path).expanduser().resolve()
     try:
         path.relative_to(workspace)
     except ValueError as exc:
-        raise ValueError(f"Path must be inside the FileX workspace {workspace}: {path}") from exc
+        raise ValueError(
+            f"Path must be inside the FileX workspace {workspace}: {path}"
+        ) from exc
     if must_exist and not path.is_file():
         raise ValueError(f"File does not exist: {path}")
     return path
@@ -103,7 +131,8 @@ def _run(command: list[str]) -> tuple[int, dict[str, Any]]:
         detail = completed.stderr.strip()
         return 2, {
             "success": False,
-            "message": f"FileX returned invalid JSON: {exc}" + (f". stderr: {detail}" if detail else ""),
+            "message": f"FileX returned invalid JSON: {exc}"
+            + (f". stderr: {detail}" if detail else ""),
             "error_type": "ProtocolError",
         }
     return (0 if completed.returncode == 0 and payload.get("success") else 2), payload
@@ -112,13 +141,17 @@ def _run(command: list[str]) -> tuple[int, dict[str, Any]]:
 def _parse(args: argparse.Namespace, executable: str, workspace: Path) -> int:
     if args.provider and args.env_file:
         return _fail(
-            "Use --provider without --env-file, or put filex_parse_provider in the env file.",
+            "Use --provider without --env-file, or put filex_parse_provider "
+            "in the env file.",
             error_type="InputError",
         )
     for name in ("page_batch_size", "first_batch_pages"):
         value = getattr(args, name)
         if value is not None and value < 1:
-            return _fail(f"{name.replace('_', '-')} must be greater than zero", error_type="InputError")
+            return _fail(
+                f"{name.replace('_', '-')} must be greater than zero",
+                error_type="InputError",
+            )
 
     command = [executable, "parse"]
     source_path: Path | None = None
@@ -161,6 +194,13 @@ def _parse(args: argparse.Namespace, executable: str, workspace: Path) -> int:
         command.append("--force-refresh")
     if args.no_cache:
         command.append("--no-cache")
+    command.extend(["--mode", args.mode])
+    if args.language:
+        command.extend(["--language", args.language])
+    if args.allow_media_download:
+        command.append("--allow-media-download")
+    if args.rights_basis:
+        command.extend(["--rights-basis", args.rights_basis])
 
     return_code, payload = _run(command)
     if return_code or args.sync_mode == "async":
@@ -187,8 +227,16 @@ def _status(args: argparse.Namespace, executable: str) -> int:
     command = [executable, "status", "--batch-resume-id", args.batch_resume_id]
     if args.include_results:
         command.append("--include-results")
-    command.extend(["--after-batch", str(args.after_batch), "--max-batches", str(args.max_batches)])
+    command.extend(
+        ["--after-batch", str(args.after_batch), "--max-batches", str(args.max_batches)]
+    )
     return_code, payload = _run(command)
+    _emit(payload)
+    return return_code
+
+
+def _inspect(args: argparse.Namespace, executable: str) -> int:
+    return_code, payload = _run([executable, "inspect", args.url])
     _emit(payload)
     return return_code
 
@@ -199,11 +247,14 @@ def main(argv: list[str] | None = None) -> int:
     executable = shutil.which(args.filex_bin)
     if executable is None:
         return _fail(
-            f"FileX executable not found: {args.filex_bin}. Use a FileX-enabled sandbox image.",
+            f"FileX executable not found: {args.filex_bin}. "
+            "Use a FileX-enabled sandbox image.",
             error_type="DependencyError",
         )
     if args.command == "parse":
         return _parse(args, executable, workspace)
+    if args.command == "inspect":
+        return _inspect(args, executable)
     return _status(args, executable)
 
 
