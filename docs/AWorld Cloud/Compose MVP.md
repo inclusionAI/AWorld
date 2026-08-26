@@ -19,6 +19,9 @@ The worker mounts the active host Docker Unix socket at the container path
 container, executes the selected agent, and runs the task verifier. There is no
 Kubernetes layer.
 
+The Cloud image installs Harbor from that commit's SHA-256-verified GitHub
+source archive, so building it does not run `apt-get` or require Git or SSH.
+
 The default smoke agent is Harbor's `oracle`: it runs the benchmark's official
 solution and then the real verifier. This proves the dataset download, Docker
 environment, harness, verifier, result parsing, lifecycle, and artifact path

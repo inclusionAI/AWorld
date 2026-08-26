@@ -21,8 +21,7 @@ def test_compose_has_only_the_runnable_mvp_roles() -> None:
     assert services["aworld-cloud-server"]["healthcheck"]
     assert services["aworld-cloud-worker"]["healthcheck"]
     assert any(
-        mount.get("source")
-        == "${AWORLD_CLOUD_DOCKER_SOCKET:-/var/run/docker.sock}"
+        mount.get("source") == "${AWORLD_CLOUD_DOCKER_SOCKET:-/var/run/docker.sock}"
         and mount.get("target") == "/var/run/docker.sock"
         for mount in services["aworld-cloud-worker"]["volumes"]
     )
@@ -34,7 +33,17 @@ def test_deployment_assets_pin_real_harbor_and_terminal_bench() -> None:
     verifier = (ROOT / "scripts" / "verify-aworld-cloud-terminal-bench.sh").read_text()
 
     assert "ccf3df5ef50141b004322d4008b84b64797b76b9" in dockerfile
-    assert "github.com/harbor-framework/harbor.git" in dockerfile
+    assert (
+        "github.com/harbor-framework/harbor/archive/${HARBOR_COMMIT}.tar.gz"
+        in dockerfile
+    )
+    assert "4c17f78744952ecafd09951d85e0065bc5fa1660aff591ffad2ee42ffee5e8c8" in (
+        dockerfile
+    )
+    assert "sha256sum --check --strict" in dockerfile
+    assert "apt-get" not in dockerfile
+    assert "git clone" not in dockerfile
+    assert "openssh-client" not in dockerfile
     assert "terminal-bench@2.0" in compose
     assert "fix-git" in compose
     assert "benchmark_outcome" in verifier
