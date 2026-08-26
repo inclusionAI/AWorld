@@ -9,10 +9,10 @@ from datetime import datetime, timedelta
 
 from aworld.cloud.errors import CloudError, CloudErrorCode
 from aworld.cloud.executor import (
-    CloudExecutor,
     ExecutionResult,
     ExecutorEvent,
     ExecutorHandle,
+    ExecutorProvider,
     ExecutorRequest,
     ExecutorStatus,
 )
@@ -49,7 +49,7 @@ class CloudWorker:
     def __init__(
         self,
         repository: CloudRepository,
-        executor: CloudExecutor,
+        executor: ExecutorProvider,
         settings: CloudSettings,
         *,
         clock: Clock = utc_now,

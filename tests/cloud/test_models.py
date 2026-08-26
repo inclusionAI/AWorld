@@ -169,7 +169,7 @@ def test_benchmark_outcome_is_terminal_json_and_reward_is_finite() -> None:
         BenchmarkOutcome(reward=float("nan"))
     with pytest.raises(ValueError, match="JSON-compatible"):
         BenchmarkOutcome(result={"unsupported": object()})
-    with pytest.raises(ValueError, match="JSON object"):
+    with pytest.raises(TypeError, match="JSON object"):
         BenchmarkOutcome(result=[])  # type: ignore[arg-type]
 
 

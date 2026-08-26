@@ -2,7 +2,7 @@
 
 AWorld already has a durable cloud foundation under `aworld/cloud/`, versioned gateway routes under `/api/v1/cloud`, SQLite persistence, a worker, event and file APIs, and a deterministic fake executor. The original design framed that foundation as a Codex container service for one host. The product direction is broader: AWorld Cloud is a private-cloud execution service with one Server API and CLI for ordinary agent queries and benchmark runs.
 
-The control plane owns lifecycle, durability, authorization, scheduling, and manifests. It does not synthesize an execution trajectory. The selected executor/provider owns execution and trajectory production. OpenSandbox is the primary remote provider; aworld-env and local Docker may be configured as other providers. Benchmark preparation and verification are optional adapter concerns and must not leak into query execution or Cloud core.
+The control plane owns lifecycle, durability, authorization, scheduling, and manifests. It does not synthesize an execution trajectory. The selected executor/provider owns execution and trajectory production. OpenSandbox is the primary remote provider, `aworld-env` is an optional compatibility/reuse provider, and Local Docker is restricted to development and debugging. AWorld Cloud has no Kubernetes layer or API contract; any OpenSandbox implementation detail remains outside this boundary. Benchmark preparation and verification are optional adapter concerns and must not leak into query execution or Cloud core.
 
 ```mermaid
 flowchart LR
@@ -15,7 +15,7 @@ flowchart LR
     WORKER --> EXEC["CloudExecutor protocol"]
     EXEC --> OS["OpenSandbox - primary"]
     EXEC -. optional .-> ENV["aworld-env"]
-    EXEC -. optional .-> DOCKER["local Docker"]
+    EXEC -. dev/debug .-> DOCKER["local Docker"]
     WORKER -. benchmark only .-> ADAPTER["BenchmarkAdapter protocol"]
     ADAPTER -. optional .-> HARBOR["Harbor adapter"]
     OS --> TRAJ["Canonical ATIF + optional raw trajectory"]
@@ -91,7 +91,7 @@ The development fake executor owns and writes a deterministic ATIF fixture so en
 
 ### 4. Keep execution provider-neutral
 
-The worker depends only on `CloudExecutor.start`, `wait`, `inspect`, and `cancel`, using provider-neutral request, handle, inspection, event, and result records. The protocol is the seam for the primary OpenSandbox implementation and optional aworld-env or local Docker implementations.
+The worker depends only on `ExecutorProvider.start`, `wait`, `inspect`, and `cancel`, using provider-neutral request, handle, inspection, event, and result records. `CloudExecutor` remains a compatibility alias. The protocol is the seam for the primary OpenSandbox implementation, optional `aworld-env` compatibility, and Local Docker development/debugging support.
 
 Provider selection is administrator policy, not arbitrary client input. Provider credentials are secret references resolved at the provider boundary. This slice does not add a fake OpenSandbox client or an OpenSandbox SDK dependency.
 
