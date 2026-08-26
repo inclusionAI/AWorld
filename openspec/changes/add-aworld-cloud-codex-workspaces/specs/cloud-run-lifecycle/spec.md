@@ -61,14 +61,20 @@ Both modes SHALL use the same run state machine and SHALL record each accepted t
 - **THEN** the run becomes `FAILED` with a stable error code and redacted diagnostic message
 
 ### Requirement: Provider-neutral execution
-The worker SHALL depend on a provider-neutral executor protocol for start, wait, inspect, and cancel operations. OpenSandbox SHALL be the primary remote provider, `aworld-env` MAY provide compatibility/reuse, and Local Docker MAY be configured only for development or debugging. AWorld Cloud SHALL NOT expose a Kubernetes layer or API contract.
+The worker SHALL depend on a provider-neutral executor protocol for start, wait,
+inspect, and cancel operations. The MVP SHALL configure Local Docker directly;
+OpenSandbox MAY replace it for production and `aworld-env` MAY provide
+compatibility/reuse. AWorld Cloud SHALL NOT expose a Kubernetes layer or API
+contract.
 
 #### Scenario: Provider is replaced
 - **WHEN** an administrator selects another conforming executor provider
 - **THEN** Server API resources, lifecycle states, events, and file contracts remain unchanged
 
 ### Requirement: Optional benchmark adaptation
-Benchmark preparation and verification SHALL use an optional adapter boundary, and query mode SHALL NOT require an adapter. Harbor MAY be supplied as an optional adapter but SHALL NOT be imported by Cloud core.
+Benchmark preparation and verification SHALL remain at the provider/adapter
+boundary, and query mode SHALL NOT require an adapter. The MVP MAY invoke Harbor
+through its CLI but SHALL NOT import Harbor Python modules into Cloud core.
 
 #### Scenario: Query runs without benchmark packages
 - **WHEN** no benchmark adapter is installed and a query run is submitted

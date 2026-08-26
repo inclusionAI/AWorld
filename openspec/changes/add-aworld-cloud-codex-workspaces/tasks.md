@@ -44,7 +44,7 @@
 - [x] 5.7 Add domain, repository, worker, protocol, and HTTP compatibility tests for omitted-mode defaults, benchmark validation/results, and trajectory retrieval.
 - [x] 5.8 Run scoped tests, practical lint/type checks, strict OpenSpec validation, and diff review.
 
-## 6. Private-Cloud Storage and Scheduling
+## 6. Post-MVP Storage and Scheduling
 
 - [ ] 6.1 Add tenant-aware repository fields and protocol operations with additive rolling migrations.
 - [ ] 6.2 Implement and conformance-test a PostgreSQL repository with transactional claims and leases.
@@ -52,7 +52,7 @@
 - [ ] 6.4 Add an artifact-store protocol and OSS/MinIO implementations with immutable checksums, bounded reads, and signed access.
 - [ ] 6.5 Add retention, reconciliation, backup/restore, and mixed-version deployment tests.
 
-## 7. Private-Cloud Identity and Policy
+## 7. Post-MVP Identity and Policy
 
 - [ ] 7.1 Add authenticated principal and tenant context to API, service, repository, event, file, and idempotency boundaries.
 - [ ] 7.2 Enforce tenant ownership and non-disclosure for workspace, run, event, and file operations.
@@ -60,37 +60,38 @@
 - [ ] 7.4 Enforce administrator-owned provider, mount, image, resource, ingress, and egress policies.
 - [ ] 7.5 Add cross-tenant, secret leakage, signed URL, and network-policy security tests.
 
-## 8. OpenSandbox and Optional Executors
+## 8. Executor Providers
 
 - [ ] 8.1 Implement OpenSandbox as the primary remote `ExecutorProvider` without changing lifecycle contracts.
 - [ ] 8.2 Add OpenSandbox start, event, result, cancellation, inspection, reattachment, and ATIF conformance tests.
-- [ ] 8.3 Add optional aworld-env and/or local Docker providers behind the same protocol where deployments require them.
-- [ ] 8.4 Add provider capability discovery, administrator selection, health checks, and fail-closed credential handling.
+- [x] 8.3 Add a Local Docker provider behind the same protocol, with real query execution and a Harbor CLI benchmark path restricted by an administrator allowlist.
+- [ ] 8.4 Add optional aworld-env compatibility after the MVP.
+- [ ] 8.5 Add provider capability discovery, administrator selection, health checks, and fail-closed credential handling for production providers.
 
 ## 9. Server CLI User Path
 
 - [x] 9.1 Add a typed HTTP client with endpoint configuration, authentication, timeouts, stable error decoding, and versioned workspace/run/file request methods.
 - [ ] 9.2 Add reconnectable SSE consumption using `Last-Event-ID` and bounded retry behavior.
 - [x] 9.3 Add workspace create/list/show/release commands with machine-readable output.
-- [ ] 9.4 Complete run submit/list/show/watch/cancel/retry commands supporting both modes and versioned benchmark metadata; submit/list/show/cancel/retry are implemented and watch remains.
-- [ ] 9.5 Complete file/log/artifact/trajectory listing and download commands, preferring canonical ATIF; file listing and canonical trajectory download are implemented.
+- [x] 9.4 Complete run submit/list/show/poll/cancel/retry commands supporting both modes and versioned benchmark metadata.
+- [x] 9.5 Add event and file listing, stdout/stderr/result download, and canonical ATIF download commands.
 - [x] 9.6 Add focused CLI HTTP contract tests for authentication, versioned benchmark submission, stable errors, mode validation, the built-in plugin manifest, and canonical trajectory download.
 - [ ] 9.7 Add end-to-end CLI tests against the Server API and fake executor.
 
-## 10. Optional Benchmark Adapters
+## 10. Benchmark Adapter Boundary
 
 - [ ] 10.1 Define adapter registration, configuration, capability, and failure mapping contracts.
 - [ ] 10.2 Add a generic benchmark adapter conformance suite independent of any harness.
-- [ ] 10.3 If required by a deployment, implement Harbor as a separately packaged optional adapter with no Cloud-core import.
+- [x] 10.3 Implement the MVP Harbor CLI adapter inside the Local Docker provider without importing Harbor modules into Cloud core; pin the real harness version in the runtime image.
 - [ ] 10.4 Verify query mode and Cloud startup operate with no benchmark adapter installed.
 
-## 11. Single-Compose Deployment and E2E Verification
+## 11. Single-Compose MVP and E2E Verification
 
-- [ ] 11.1 Add real, separately runnable `aworld-cloud-server` and `aworld-cloud-worker` process entrypoints with validated environment configuration and readiness checks.
-- [ ] 11.2 Build one pinned AWorld Cloud runtime image used by the server, worker, and on-demand CLI roles.
-- [ ] 11.3 Deliver one Docker Compose entrypoint whose default topology is `aworld-cloud-server`, `aworld-cloud-worker`, OpenSandbox, PostgreSQL, Redis, MinIO/S3-compatible artifact storage, and an on-demand `aworld-cloud-cli` service.
-- [ ] 11.4 Keep Harbor and compatibility providers in disabled-by-default Compose profiles; keep Local Docker development/debug-only; add no Kubernetes manifests, controllers, API objects, or product dependencies.
-- [ ] 11.5 Document Compose configuration, images, health/readiness, identity, secrets, network policy, storage, retention, recovery, and upgrades.
-- [ ] 11.6 Verify query and benchmark runs through CLI, Server API, worker, OpenSandbox, events/files, and canonical ATIF retrieval using the Compose entrypoint.
-- [ ] 11.7 Verify cancellation, retry, restart, provider reattachment, missing-trajectory failure, PostgreSQL/Redis concurrency, tenant isolation, MinIO access, and rolling upgrades.
-- [ ] 11.8 Review final changes for unrelated edits and record environment-specific limitations or blockers without substituting placeholder services.
+- [x] 11.1 Add real, separately runnable `aworld-cloud-server` and `aworld-cloud-worker` process entrypoints with validated environment configuration and readiness checks.
+- [x] 11.2 Add one pinned AWorld Cloud runtime Dockerfile used by the server, worker, and on-demand CLI roles; Harbor source is pinned to an immutable v0.6.6 commit.
+- [x] 11.3 Deliver one Docker Compose entrypoint whose MVP topology is `aworld-cloud-server`, `aworld-cloud-worker`, and an on-demand `aworld-cloud-cli`, using SQLite, a same-path local artifact bind mount, and the host Docker socket.
+- [x] 11.4 Add init and verification scripts for `terminal-bench@2.0/fix-git`, including submission, polling, events, file manifest, stdout/stderr/result downloads, and canonical ATIF download.
+- [x] 11.5 Document health/readiness, persistent paths, the host-socket trust boundary, the oracle smoke-test meaning, and explicitly deferred production components.
+- [ ] 11.6 Build and start the image with Docker Compose, then execute the real `fix-git` oracle smoke and retain passing reward/ATIF evidence. The implementation container has neither a Docker CLI nor `/var/run/docker.sock`, so this remains unverified here.
+- [ ] 11.7 Replace the MVP stores/provider with PostgreSQL, Redis, S3-compatible storage, tenant identity, and OpenSandbox only after their real interfaces are selected and tested.
+- [x] 11.8 Review final changes for unrelated edits and record environment-specific limitations without substituting placeholder services.
