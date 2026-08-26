@@ -1,0 +1,28 @@
+ARG BASE_IMAGE=ghcr.io/inclusionai/aworld-filex@sha256:76582dd668c8d627297ed82bf9cd5a66a77aa1c85fe877ce59e4e3c2c4a33d5c
+FROM ${BASE_IMAGE}
+
+COPY bin /opt/filex/bin
+COPY config /opt/filex/config
+COPY src /opt/filex/src
+
+ARG FILEX_PADDLE_GPU_VERSION=3.3.0
+ARG FILEX_PADDLE_GPU_INDEX=https://www.paddlepaddle.org.cn/packages/stable/cu129/
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv pip uninstall --python /opt/filex/.venv/bin/python paddlepaddle \
+    && uv pip install --python /opt/filex/.venv/bin/python \
+      --index "$FILEX_PADDLE_GPU_INDEX" \
+      "paddlepaddle-gpu==$FILEX_PADDLE_GPU_VERSION"
+
+ARG FILEX_WHISPER_MODEL_DIR=/opt/filex/models/faster-whisper-base
+# The build pipeline downloads and verifies this revision-pinned directory
+# before building. The production container therefore needs no model-registry
+# network access at runtime.
+COPY .ci-models/faster-whisper-base ${FILEX_WHISPER_MODEL_DIR}
+
+ENV FILEX_LOCAL_MEDIA_MODEL=${FILEX_WHISPER_MODEL_DIR} \
+    FILEX_LOCAL_MEDIA_DEVICE=cpu \
+    FILEX_LOCAL_MEDIA_COMPUTE_TYPE=int8
+
+EXPOSE 18080
+
+CMD ["/opt/filex/.venv/bin/python", "-m", "document_parse_service.http_server"]

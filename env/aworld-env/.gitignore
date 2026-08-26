@@ -1,0 +1,5 @@
+.venv
+.vscode
+.cursor
+__pycache__
+.env
