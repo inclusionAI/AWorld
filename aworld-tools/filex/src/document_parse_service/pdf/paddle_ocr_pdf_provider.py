@@ -11,7 +11,7 @@ import os
 import threading
 import time
 from dataclasses import dataclass, field
-from html import escape
+from html import escape, unescape
 from pathlib import Path
 from typing import Any
 
@@ -178,46 +178,14 @@ class PaddleOcrPdfProvider:
         pages: list[dict[str, Any]] = []
         for fallback_index, result in enumerate(raw_results):
             payload = cls._json_payload(result)
-            elements: list[dict[str, Any]] = []
-            blocks = payload.get("parsing_res_list")
-            if not isinstance(blocks, list):
-                blocks = []
-            for fallback_order, block in enumerate(blocks, start=1):
-                if not isinstance(block, dict):
-                    continue
-                bbox = block.get("block_bbox") or block.get("bbox") or []
-                if not isinstance(bbox, (list, tuple)) or len(bbox) != 4:
-                    continue
-                try:
-                    normalized_bbox = [float(value) for value in bbox]
-                except (TypeError, ValueError):
-                    continue
-                order = block.get("block_order")
-                elements.append(
-                    {
-                        "id": str(
-                            block.get("global_block_id")
-                            or block.get("block_id")
-                            or f"p{fallback_index}-b{fallback_order}"
-                        ),
-                        "type": str(
-                            block.get("block_label")
-                            or block.get("label")
-                            or "unknown"
-                        ),
-                        "bbox": normalized_bbox,
-                        "text": str(
-                            block.get("block_content")
-                            or block.get("content")
-                            or ""
-                        ),
-                        "reading_order": (
-                            int(order) if isinstance(order, (int, float)) else None
-                        ),
-                        "group_id": block.get("global_group_id")
-                        or block.get("group_id"),
-                    }
-                )
+            blocks = cls._parsed_blocks(payload)
+            page_height = cls._numeric_dimension(payload.get("height"))
+            elements = cls._layout_elements(
+                payload,
+                blocks,
+                fallback_index,
+                page_height=page_height,
+            )
             page_index = payload.get("page_index")
             pages.append(
                 {
@@ -233,10 +201,211 @@ class PaddleOcrPdfProvider:
                 }
             )
         return {
-            "schema_version": "filex-document-ir-v2",
+            "schema_version": "filex-document-ir-v3",
             "coordinate_system": "pixel_top_left_xyxy",
             "pages": pages,
         }
+
+    @classmethod
+    def _layout_elements(
+        cls,
+        payload: dict[str, Any],
+        parsed_blocks: list[dict[str, Any]],
+        page_index: int,
+        *,
+        page_height: float | None,
+    ) -> list[dict[str, Any]]:
+        """Keep detector geometry and enrich it with parser text/order metadata.
+
+        PaddleOCR-VL may merge adjacent detector regions before VLM parsing.  The
+        merged regions are useful for Markdown, but they erase small layout
+        objects and are therefore unsuitable as the canonical grounding output.
+        """
+
+        raw_layout = payload.get("layout_det_res")
+        raw_boxes = raw_layout.get("boxes") if isinstance(raw_layout, dict) else None
+        if not isinstance(raw_boxes, list) or not raw_boxes:
+            return [
+                cls._parsed_element(block, page_index, order, page_height=page_height)
+                for order, block in enumerate(parsed_blocks, start=1)
+            ]
+
+        elements: list[dict[str, Any]] = []
+        matched_parsed: set[int] = set()
+        for order, raw_box in enumerate(raw_boxes, start=1):
+            if not isinstance(raw_box, dict):
+                continue
+            bbox = cls._bbox(raw_box.get("coordinate") or raw_box.get("bbox"))
+            if bbox is None:
+                continue
+            match_index = cls._best_text_match(bbox, parsed_blocks)
+            parsed = parsed_blocks[match_index] if match_index is not None else {}
+            if match_index is not None:
+                matched_parsed.add(match_index)
+            parsed_order = parsed.get("block_order")
+            confidence = raw_box.get("score")
+            element = {
+                "id": str(
+                    raw_box.get("id")
+                    or f"p{page_index}-d{order}"
+                ),
+                "type": cls._normalize_layout_label(
+                    raw_box.get("label") or parsed.get("block_label"),
+                    bbox=bbox,
+                    page_height=page_height,
+                ),
+                "bbox": bbox,
+                "text": cls._plain_text(
+                    parsed.get("block_content") or parsed.get("content")
+                ),
+                "reading_order": (
+                    int(parsed_order)
+                    if isinstance(parsed_order, (int, float))
+                    else None
+                ),
+                "group_id": parsed.get("global_group_id") or parsed.get("group_id"),
+                "source": "layout_detection",
+            }
+            if isinstance(confidence, (int, float)):
+                element["confidence"] = float(confidence)
+            elements.append(element)
+
+        # Preserve parser-only blocks such as generated tables/formulas when no
+        # detector region represents them.  Do not duplicate blocks already used
+        # to enrich a detector prediction.
+        for index, block in enumerate(parsed_blocks):
+            if index not in matched_parsed:
+                elements.append(
+                    cls._parsed_element(
+                        block,
+                        page_index,
+                        index + 1,
+                        page_height=page_height,
+                    )
+                )
+        return elements
+
+    @classmethod
+    def _parsed_blocks(cls, payload: dict[str, Any]) -> list[dict[str, Any]]:
+        blocks = payload.get("parsing_res_list")
+        if not isinstance(blocks, list):
+            return []
+        return [block for block in blocks if isinstance(block, dict) and cls._bbox(
+            block.get("block_bbox") or block.get("bbox")
+        ) is not None]
+
+    @classmethod
+    def _parsed_element(
+        cls,
+        block: dict[str, Any],
+        page_index: int,
+        fallback_order: int,
+        *,
+        page_height: float | None,
+    ) -> dict[str, Any]:
+        order = block.get("block_order")
+        bbox = cls._bbox(block.get("block_bbox") or block.get("bbox"))
+        return {
+            "id": str(
+                block.get("global_block_id")
+                or block.get("block_id")
+                or f"p{page_index}-b{fallback_order}"
+            ),
+            "type": cls._normalize_layout_label(
+                block.get("block_label") or block.get("label"),
+                bbox=bbox,
+                page_height=page_height,
+            ),
+            "bbox": bbox,
+            "text": cls._plain_text(block.get("block_content") or block.get("content")),
+            "reading_order": int(order) if isinstance(order, (int, float)) else None,
+            "group_id": block.get("global_group_id") or block.get("group_id"),
+            "source": "document_parsing",
+        }
+
+    @staticmethod
+    def _plain_text(value: Any) -> str:
+        """Return semantic block text without Markdown/HTML presentation tokens."""
+
+        text = str(value or "")
+        text = re.sub(r"<[^>]+>", " ", text)
+        text = re.sub(r"!\[([^]]*)\]\([^)]+\)", r" \1 ", text)
+        text = re.sub(r"\[([^]]+)\]\([^)]+\)", r" \1 ", text)
+        text = re.sub(r"(?m)^\s{0,3}#{1,6}\s+", "", text)
+        return re.sub(r"\s+", " ", unescape(text)).strip()
+
+    @staticmethod
+    def _normalize_layout_label(
+        value: Any,
+        *,
+        bbox: list[float] | None,
+        page_height: float | None,
+    ) -> str:
+        label = str(value or "unknown").strip().lower().replace("-", "_").replace(" ", "_")
+        aliases = {
+            "figure": "image",
+            "picture": "image",
+            "footer_image": "image",
+            "header_image": "image",
+            "caption": "figure_title",
+            "title": "paragraph_title",
+            "page_footer": "footer",
+            "footer_text": "footer",
+            "page_header": "header",
+            "header_text": "header",
+        }
+        label = aliases.get(label, label)
+        if label in {"number", "page_number"} and bbox and page_height:
+            if bbox[1] >= page_height * 0.9:
+                return "footer"
+            if bbox[3] <= page_height * 0.1:
+                return "header"
+        return label
+
+    @staticmethod
+    def _bbox(value: Any) -> list[float] | None:
+        if not isinstance(value, (list, tuple)) or len(value) != 4:
+            return None
+        try:
+            bbox = [float(item) for item in value]
+        except (TypeError, ValueError):
+            return None
+        if bbox[2] <= bbox[0] or bbox[3] <= bbox[1]:
+            return None
+        return bbox
+
+    @classmethod
+    def _best_text_match(
+        cls,
+        detector_bbox: list[float],
+        parsed_blocks: list[dict[str, Any]],
+    ) -> int | None:
+        best_index: int | None = None
+        best_iou = 0.0
+        for index, block in enumerate(parsed_blocks):
+            parsed_bbox = cls._bbox(block.get("block_bbox") or block.get("bbox"))
+            if parsed_bbox is None:
+                continue
+            iou = cls._bbox_iou(detector_bbox, parsed_bbox)
+            if iou > best_iou:
+                best_iou = iou
+                best_index = index
+        # A strict IoU avoids copying one merged parser region's text into each
+        # of several small detector boxes contained by that region.
+        return best_index if best_iou >= 0.5 else None
+
+    @staticmethod
+    def _bbox_iou(left: list[float], right: list[float]) -> float:
+        x1 = max(left[0], right[0])
+        y1 = max(left[1], right[1])
+        x2 = min(left[2], right[2])
+        y2 = min(left[3], right[3])
+        intersection = max(0.0, x2 - x1) * max(0.0, y2 - y1)
+        if intersection <= 0:
+            return 0.0
+        left_area = (left[2] - left[0]) * (left[3] - left[1])
+        right_area = (right[2] - right[0]) * (right[3] - right[1])
+        return intersection / (left_area + right_area - intersection)
 
     @staticmethod
     def _json_payload(result: Any) -> dict[str, Any]:
