@@ -224,3 +224,96 @@ def test_cloud_cli_downloads_canonical_trajectory(
     result = json.loads(capsys.readouterr().out)
     assert result["file_id"] == "file-1"
     assert result["format"] == "atif"
+
+
+def test_cloud_cli_waits_for_terminal_result(monkeypatch, capsys) -> None:
+    from aworld_cli.top_level_commands import cloud_cmd
+
+    class FakeClient:
+        calls = 0
+
+        def __init__(self, config):
+            del config
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def get_run(self, run_id):
+            assert run_id == "run-1"
+            self.calls += 1
+            return {
+                "id": run_id,
+                "state": "succeeded" if self.calls == 2 else "running",
+                "benchmark_outcome": {"reward": 1.0, "result": {}},
+            }
+
+    monkeypatch.setattr(cloud_cmd, "CloudHttpClient", FakeClient)
+    args = _parse_cloud_args(
+        [
+            "run",
+            "wait",
+            "run-1",
+            "--poll-interval",
+            "0.001",
+            "--wait-timeout",
+            "1",
+        ]
+    )
+
+    exit_code = CloudTopLevelCommand().run(args, SimpleNamespace())
+
+    assert exit_code == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["state"] == "succeeded"
+    assert result["benchmark_outcome"]["reward"] == 1.0
+
+
+def test_cloud_cli_downloads_run_logs(monkeypatch, tmp_path, capsys) -> None:
+    from aworld_cli.top_level_commands import cloud_cmd
+
+    class FakeClient:
+        def __init__(self, config):
+            del config
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def list_files(self, run_id):
+            assert run_id == "run-1"
+            return {
+                "items": [
+                    {
+                        "id": "file-stdout",
+                        "kind": "stdout",
+                        "relative_path": "stdout.log",
+                    },
+                    {
+                        "id": "file-trajectory",
+                        "kind": "trajectory",
+                        "relative_path": "trajectory.atif.json",
+                    },
+                ]
+            }
+
+        async def download_file(self, run_id, file_id):
+            assert (run_id, file_id) == ("run-1", "file-stdout")
+            return b"harbor output\n"
+
+    monkeypatch.setattr(cloud_cmd, "CloudHttpClient", FakeClient)
+    output_directory = tmp_path / "logs"
+    args = _parse_cloud_args(
+        ["run", "logs", "run-1", "--output-dir", str(output_directory)]
+    )
+
+    exit_code = CloudTopLevelCommand().run(args, SimpleNamespace())
+
+    assert exit_code == 0
+    assert (output_directory / "stdout.log").read_text() == "harbor output\n"
+    result = json.loads(capsys.readouterr().out)
+    assert [item["kind"] for item in result["files"]] == ["stdout"]
