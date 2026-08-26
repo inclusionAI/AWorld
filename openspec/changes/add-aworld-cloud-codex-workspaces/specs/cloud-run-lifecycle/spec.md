@@ -61,7 +61,7 @@ Both modes SHALL use the same run state machine and SHALL record each accepted t
 - **THEN** the run becomes `FAILED` with a stable error code and redacted diagnostic message
 
 ### Requirement: Provider-neutral execution
-The worker SHALL depend on a provider-neutral executor protocol for start, wait, inspect, and cancel operations. OpenSandbox SHALL be the primary remote provider, while aworld-env and local Docker MAY be configured alternatives.
+The worker SHALL depend on a provider-neutral executor protocol for start, wait, inspect, and cancel operations. OpenSandbox SHALL be the primary remote provider, `aworld-env` MAY provide compatibility/reuse, and Local Docker MAY be configured only for development or debugging. AWorld Cloud SHALL NOT expose a Kubernetes layer or API contract.
 
 #### Scenario: Provider is replaced
 - **WHEN** an administrator selects another conforming executor provider

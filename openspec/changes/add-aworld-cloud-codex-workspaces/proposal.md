@@ -6,7 +6,7 @@ AWorld needs a private-cloud execution service where users and CI can submit ord
 
 - Define one Server API and CLI contract for `query` and `benchmark` runs using the same durable lifecycle, event stream, files, cancellation, and retry semantics. Benchmark identity is immutable request data; reward and verifier result are terminal output.
 - Make the final canonical trajectory an executor-produced, manifest-listed ATIF file; provider-native trajectories may also be retained as raw trajectory files.
-- Keep execution behind a provider-neutral protocol. OpenSandbox is the primary remote provider; aworld-env and local Docker are optional provider implementations.
+- Keep execution behind a provider-neutral protocol. OpenSandbox is the primary remote provider, `aworld-env` is an optional compatibility/reuse provider, and Local Docker is restricted to development and debugging.
 - Keep benchmark preparation and verification behind an optional adapter protocol. Harbor may be implemented by an optional adapter, but is never a Cloud-core or query-mode dependency.
 - Retain SQLite and the fake executor for development while defining repository, scheduler, and artifact-store seams suitable for PostgreSQL/MySQL, Redis, and OSS/MinIO in private deployments.
 - Require tenant-scoped authorization, secret references, server-owned network policy, and auditability at every external boundary.
@@ -32,3 +32,4 @@ None.
 - Preserves the existing fake executor and SQLite repository for development and tests.
 - Requires no benchmark harness package in Cloud core. A future Harbor adapter is optional and separately packaged.
 - Adds no dependency on external benchmark suites or unrelated deployment stacks.
+- Defines no Kubernetes layer or Kubernetes API contract; any provider-internal implementation remains outside AWorld Cloud.

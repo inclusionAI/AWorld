@@ -14,12 +14,12 @@ from typing import Any
 
 from aworld.cloud.errors import CloudError, CloudErrorCode
 from aworld.cloud.executor import (
-    CloudExecutor,
     EventCallback,
     ExecutionResult,
     ExecutorEvent,
     ExecutorHandle,
     ExecutorInspection,
+    ExecutorProvider,
     ExecutorRequest,
     ExecutorStatus,
 )
@@ -77,7 +77,7 @@ class _FakeExecution:
     active_counted: bool = True
 
 
-class FakeCloudExecutor(CloudExecutor):
+class FakeCloudExecutor(ExecutorProvider):
     """Controllable executor with no Docker, subprocess, or filesystem dependency."""
 
     def __init__(self, *, clock: Callable[[], datetime] = utc_now) -> None:

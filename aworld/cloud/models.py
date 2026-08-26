@@ -264,7 +264,7 @@ class BenchmarkOutcome:
                 raise ValueError("benchmark reward must be finite")
             object.__setattr__(self, "reward", float(self.reward))
         if not isinstance(self.result, Mapping):
-            raise ValueError("benchmark result must be a JSON object")
+            raise TypeError("benchmark result must be a JSON object")
         try:
             json.dumps(self.result, allow_nan=False)
         except (TypeError, ValueError) as exc:

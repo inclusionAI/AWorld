@@ -79,7 +79,7 @@ EventCallback = Callable[[ExecutorEvent], Awaitable[None]]
 
 @runtime_checkable
 class ExecutorProvider(Protocol):
-    """Provider-neutral contract for OpenSandbox, aworld-env, Docker, and fakes."""
+    """Provider-neutral contract for remote, compatibility, and test executors."""
 
     async def start(self, request: ExecutorRequest) -> ExecutorHandle: ...
 
