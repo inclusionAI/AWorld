@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import FrozenInstanceError
+from dataclasses import FrozenInstanceError, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path, PurePosixPath
 
@@ -13,10 +13,20 @@ from aworld.cloud.errors import (
 )
 from aworld.cloud.models import (
     ACTIVE_RUN_STATES,
+    ATIF_SCHEMA_VERSION,
     TERMINAL_RUN_STATES,
+    BenchmarkMetadata,
+    BenchmarkOutcome,
+    FileId,
     Run,
+    RunFile,
+    RunFileKind,
     RunId,
+    RunMode,
     RunState,
+    TrajectoryFormat,
+    TrajectoryManifest,
+    TrajectoryRole,
     Workspace,
     WorkspaceId,
     WorkspaceState,
@@ -90,6 +100,106 @@ def test_domain_records_are_frozen_and_normalize_timestamps() -> None:
     with pytest.raises(FrozenInstanceError):
         workspace.state = WorkspaceState.BUSY  # type: ignore[misc]
     assert workspace.created_at.tzinfo is timezone.utc
+
+
+def test_run_modes_validate_benchmark_metadata_and_default_to_query() -> None:
+    assert _run().mode is RunMode.QUERY
+
+    benchmark = BenchmarkMetadata(dataset="swe-bench", task_id="case-1")
+    benchmark_run = Run(
+        id=RunId("run-benchmark"),
+        workspace_id=WorkspaceId("workspace-1"),
+        state=RunState.QUEUED,
+        revision=0,
+        attempt=1,
+        task="run benchmark",
+        created_at=NOW,
+        mode=RunMode.BENCHMARK,
+        benchmark=benchmark,
+    )
+    assert benchmark_run.benchmark == benchmark
+    with pytest.raises(ValueError, match="not valid for query"):
+        Run(
+            id=RunId("run-query"),
+            workspace_id=WorkspaceId("workspace-1"),
+            state=RunState.QUEUED,
+            revision=0,
+            attempt=1,
+            task="query",
+            created_at=NOW,
+            benchmark=benchmark,
+        )
+    with pytest.raises(ValueError, match="required for benchmark"):
+        Run(
+            id=RunId("run-benchmark-missing"),
+            workspace_id=WorkspaceId("workspace-1"),
+            state=RunState.QUEUED,
+            revision=0,
+            attempt=1,
+            task="benchmark",
+            created_at=NOW,
+            mode=RunMode.BENCHMARK,
+        )
+
+
+def test_benchmark_outcome_is_terminal_json_and_reward_is_finite() -> None:
+    benchmark = BenchmarkMetadata(dataset="swe-bench", task_id="case-1")
+    outcome = BenchmarkOutcome(reward=1, result={"passed": True, "scores": [1]})
+    terminal = Run(
+        id=RunId("run-benchmark-terminal"),
+        workspace_id=WorkspaceId("workspace-1"),
+        state=RunState.SUCCEEDED,
+        revision=2,
+        attempt=1,
+        task="benchmark",
+        created_at=NOW,
+        started_at=NOW,
+        finished_at=NOW,
+        mode=RunMode.BENCHMARK,
+        benchmark=benchmark,
+        benchmark_outcome=outcome,
+    )
+
+    assert terminal.benchmark_outcome == outcome
+    assert outcome.reward == 1.0
+    assert outcome.result["scores"] == (1,)
+    with pytest.raises(ValueError, match="only valid for terminal"):
+        replace(terminal, state=RunState.RUNNING, finished_at=None)
+    with pytest.raises(ValueError, match="must be finite"):
+        BenchmarkOutcome(reward=float("nan"))
+    with pytest.raises(ValueError, match="JSON-compatible"):
+        BenchmarkOutcome(result={"unsupported": object()})
+    with pytest.raises(ValueError, match="JSON object"):
+        BenchmarkOutcome(result=[])  # type: ignore[arg-type]
+
+
+def test_trajectory_files_require_typed_manifest_semantics() -> None:
+    trajectory = RunFile(
+        id=FileId("file-trajectory"),
+        run_id=RunId("run-1"),
+        kind=RunFileKind.TRAJECTORY,
+        relative_path=PurePosixPath("trajectory.atif.json"),
+        size_bytes=2,
+        sha256="a" * 64,
+        created_at=NOW,
+        trajectory=TrajectoryManifest(
+            format=TrajectoryFormat.ATIF,
+            schema_version=ATIF_SCHEMA_VERSION,
+            role=TrajectoryRole.CANONICAL,
+        ),
+    )
+    assert trajectory.trajectory is not None
+    assert trajectory.trajectory.role is TrajectoryRole.CANONICAL
+    with pytest.raises(ValueError, match="require trajectory"):
+        RunFile(
+            id=FileId("file-invalid"),
+            run_id=RunId("run-1"),
+            kind=RunFileKind.TRAJECTORY,
+            relative_path=PurePosixPath("missing.json"),
+            size_bytes=0,
+            sha256="b" * 64,
+            created_at=NOW,
+        )
 
 
 @pytest.mark.parametrize(
@@ -200,6 +310,41 @@ def test_retry_creates_a_new_queued_attempt_without_mutating_source() -> None:
     assert retry.attempt == 2
     assert retry.retry_of_run_id == failed.id
     assert retry.task == failed.task
+
+
+def test_retry_preserves_benchmark_identity_but_not_terminal_outcome() -> None:
+    source = Run(
+        id=RunId("run-benchmark"),
+        workspace_id=WorkspaceId("workspace-1"),
+        state=RunState.QUEUED,
+        revision=0,
+        attempt=1,
+        task="benchmark",
+        created_at=NOW,
+        mode=RunMode.BENCHMARK,
+        benchmark=BenchmarkMetadata(dataset="swe-bench", task_id="case-1"),
+    )
+    starting = transition_run(source, RunState.STARTING, at=NOW)
+    failed = transition_run(
+        starting,
+        RunState.FAILED,
+        at=NOW + timedelta(seconds=1),
+        error_code="verification_failed",
+        benchmark_outcome=BenchmarkOutcome(
+            reward=0.0,
+            result={"passed": False},
+        ),
+    )
+
+    retry = create_retry_run(
+        failed,
+        run_id=RunId("run-benchmark-retry"),
+        created_at=NOW + timedelta(seconds=2),
+    )
+
+    assert retry.mode is RunMode.BENCHMARK
+    assert retry.benchmark == failed.benchmark
+    assert retry.benchmark_outcome is None
 
 
 def test_retry_rejects_non_failed_source() -> None:

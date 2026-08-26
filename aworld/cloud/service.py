@@ -14,9 +14,12 @@ from typing import Any
 from aworld.cloud.errors import CloudError, CloudErrorCode, WorkspaceBusyError
 from aworld.cloud.models import (
     ACTIVE_RUN_STATES,
+    RUN_REQUEST_SCHEMA_VERSION,
+    BenchmarkMetadata,
     MountAccessMode,
     Run,
     RunId,
+    RunMode,
     RunState,
     Workspace,
     WorkspaceId,
@@ -341,6 +344,9 @@ class CloudService:
         task: str,
         model: str | None,
         idempotency_key: str,
+        request_schema_version: str = RUN_REQUEST_SCHEMA_VERSION,
+        mode: RunMode = RunMode.QUERY,
+        benchmark: BenchmarkMetadata | None = None,
     ) -> Run:
         self._ensure_enabled()
         task = _require_text(task, field_name="task")
@@ -348,6 +354,21 @@ class CloudService:
             idempotency_key,
             field_name="idempotency_key",
         )
+        if request_schema_version != RUN_REQUEST_SCHEMA_VERSION:
+            raise CloudError(
+                CloudErrorCode.INVALID_REQUEST,
+                f"unsupported run request schema: {request_schema_version}",
+            )
+        if mode is RunMode.QUERY and benchmark is not None:
+            raise CloudError(
+                CloudErrorCode.INVALID_REQUEST,
+                "benchmark metadata is not valid for query runs",
+            )
+        if mode is RunMode.BENCHMARK and benchmark is None:
+            raise CloudError(
+                CloudErrorCode.INVALID_REQUEST,
+                "benchmark metadata is required for benchmark runs",
+            )
         await self.inspect_workspace(workspace_id)
         run = Run(
             id=RunId(f"run-{self._id_factory()}"),
@@ -357,6 +378,9 @@ class CloudService:
             attempt=1,
             task=task,
             model=model,
+            request_schema_version=request_schema_version,
+            mode=mode,
+            benchmark=benchmark,
             created_at=self._clock(),
         )
         stored = await self._repository.create_run(
@@ -364,14 +388,30 @@ class CloudService:
             idempotency_key=idempotency_key,
             request_fingerprint=_fingerprint(
                 "run.submit",
-                {"model": model, "task": task, "workspace_id": str(workspace_id)},
+                {
+                    "benchmark": (
+                        {
+                            "dataset": benchmark.dataset,
+                            "task_id": benchmark.task_id,
+                            "harness": benchmark.harness,
+                            "verifier": benchmark.verifier,
+                        }
+                        if benchmark is not None
+                        else None
+                    ),
+                    "mode": mode.value,
+                    "model": model,
+                    "request_schema_version": request_schema_version,
+                    "task": task,
+                    "workspace_id": str(workspace_id),
+                },
             ),
         )
         if stored.id == run.id:
             await self._repository.append_event(
                 stored.id,
                 event_type="run.queued",
-                payload={"state": stored.state.value},
+                payload={"mode": stored.mode.value, "state": stored.state.value},
                 created_at=stored.created_at,
             )
         return stored

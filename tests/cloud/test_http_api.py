@@ -14,7 +14,14 @@ from aworld.cloud.fake_executor import (
     FakeEventSpec,
     FakeExecutionPlan,
 )
-from aworld.cloud.models import FileId, RunFile, RunFileKind, RunId, utc_now
+from aworld.cloud.models import (
+    BenchmarkOutcome,
+    FileId,
+    RunFile,
+    RunFileKind,
+    RunId,
+    utc_now,
+)
 from aworld.cloud.service import CloudService
 from aworld.cloud.settings import CloudSettings, WorkspaceProfile
 from aworld.cloud.sqlite_repository import SQLiteCloudRepository
@@ -206,6 +213,9 @@ def test_cloud_routes_are_opt_in_and_workspace_contracts_are_stable(
             )
             for index in range(3)
         ]
+        assert runs[0]["request_schema_version"] == "aworld.cloud.run-request.v1"
+        assert runs[0]["mode"] == "query"
+        assert runs[0]["benchmark"] is None
         first_run_page = stack.client.get(
             "/api/v1/cloud/runs",
             params={"limit": 2, "workspace_id": first["id"]},
@@ -300,7 +310,8 @@ def test_run_events_sse_and_manifest_file_ranges(tmp_path: Path) -> None:
         assert run_response.status_code == 200
         terminal = run_response.json()
         assert terminal["state"] == "succeeded"
-        assert terminal["file_count"] == 1
+        assert terminal["file_count"] == 2
+        assert terminal["canonical_trajectory_file_id"]
         assert terminal["duration_seconds"] is not None
         assert _OFFSET_PATTERN.search(terminal["started_at"])
         assert _OFFSET_PATTERN.search(terminal["finished_at"])
@@ -346,6 +357,13 @@ def test_run_events_sse_and_manifest_file_ranges(tmp_path: Path) -> None:
         listed_file = files.json()["items"][0]
         assert listed_file["relative_path"] == "result.json"
         assert listed_file["sha256"] == hashlib.sha256(file_bytes).hexdigest()
+        trajectory_file = files.json()["items"][1]
+        assert trajectory_file["kind"] == "trajectory"
+        assert trajectory_file["trajectory"] == {
+            "format": "atif",
+            "schema_version": "ATIF-v1.7",
+            "role": "canonical",
+        }
 
         full = stack.client.get(listed_file["download_url"])
         assert full.status_code == 200
@@ -390,6 +408,95 @@ def test_run_events_sse_and_manifest_file_ranges(tmp_path: Path) -> None:
         )
         assert escaped.status_code == 404
         assert escaped.json()["error"]["code"] == "file_not_found"
+    finally:
+        _close(stack)
+
+
+def test_run_mode_contract_accepts_benchmark_and_rejects_cross_mode_metadata(
+    tmp_path: Path,
+) -> None:
+    stack = _build_stack(tmp_path)
+    try:
+        workspace = _create_workspace(stack.client)
+        workspace_id = str(workspace["id"])
+        benchmark = stack.client.post(
+            f"/api/v1/cloud/workspaces/{workspace_id}/runs",
+            json={
+                "idempotency_key": "benchmark-run",
+                "mode": "benchmark",
+                "task": "execute benchmark case",
+                "benchmark": {
+                    "dataset": "swe-bench",
+                    "task_id": "case-1",
+                    "harness": "custom",
+                    "verifier": "patch",
+                },
+            },
+        )
+        assert benchmark.status_code == 201
+        assert benchmark.json()["mode"] == "benchmark"
+        assert benchmark.json()["benchmark"]["dataset"] == "swe-bench"
+        benchmark_run_id = RunId(benchmark.json()["id"])
+        stack.executor.set_plan(
+            benchmark_run_id,
+            FakeExecutionPlan(
+                benchmark_outcome=BenchmarkOutcome(
+                    reward=0.5,
+                    result={"passed": True, "verdict": "accepted"},
+                )
+            ),
+        )
+        asyncio.run(stack.worker.run_until_idle())
+        terminal = stack.client.get(f"/api/v1/cloud/runs/{benchmark_run_id}").json()
+        assert terminal["benchmark_outcome"] == {
+            "reward": 0.5,
+            "result": {"passed": True, "verdict": "accepted"},
+        }
+        assert terminal["canonical_trajectory_file_id"]
+
+        query_with_benchmark = stack.client.post(
+            f"/api/v1/cloud/workspaces/{workspace_id}/runs",
+            json={
+                "idempotency_key": "invalid-query",
+                "task": "query",
+                "benchmark": {"dataset": "d", "task_id": "t"},
+            },
+        )
+        assert query_with_benchmark.status_code == 422
+        assert query_with_benchmark.json()["error"]["code"] == "invalid_request"
+
+        benchmark_without_metadata = stack.client.post(
+            f"/api/v1/cloud/workspaces/{workspace_id}/runs",
+            json={
+                "idempotency_key": "invalid-benchmark",
+                "mode": "benchmark",
+                "task": "benchmark",
+            },
+        )
+        assert benchmark_without_metadata.status_code == 422
+
+        blank_benchmark_identity = stack.client.post(
+            f"/api/v1/cloud/workspaces/{workspace_id}/runs",
+            json={
+                "idempotency_key": "invalid-blank-benchmark",
+                "mode": "benchmark",
+                "task": "benchmark",
+                "benchmark": {"dataset": "   ", "task_id": "t"},
+            },
+        )
+        assert blank_benchmark_identity.status_code == 422
+
+        client_supplied_outcome = stack.client.post(
+            f"/api/v1/cloud/workspaces/{workspace_id}/runs",
+            json={
+                "idempotency_key": "invalid-client-outcome",
+                "mode": "benchmark",
+                "task": "benchmark",
+                "benchmark": {"dataset": "d", "task_id": "t"},
+                "benchmark_outcome": {"reward": 1.0, "result": {}},
+            },
+        )
+        assert client_supplied_outcome.status_code == 422
     finally:
         _close(stack)
 

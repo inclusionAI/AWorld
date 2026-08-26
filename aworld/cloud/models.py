@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import json
+import math
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path, PurePosixPath
@@ -17,6 +19,9 @@ RunId = NewType("RunId", str)
 EventId = NewType("EventId", str)
 FileId = NewType("FileId", str)
 ExecutorId = NewType("ExecutorId", str)
+
+RUN_REQUEST_SCHEMA_VERSION = "aworld.cloud.run-request.v1"
+ATIF_SCHEMA_VERSION = "ATIF-v1.7"
 
 
 def utc_now() -> datetime:
@@ -88,6 +93,11 @@ class RunState(str, Enum):
     CANCELLED = "cancelled"
 
 
+class RunMode(str, Enum):
+    QUERY = "query"
+    BENCHMARK = "benchmark"
+
+
 class MountAccessMode(str, Enum):
     READ_ONLY = "ro"
     READ_WRITE = "rw"
@@ -99,6 +109,17 @@ class RunFileKind(str, Enum):
     EVENTS = "events"
     RESULT = "result"
     ARTIFACT = "artifact"
+    TRAJECTORY = "trajectory"
+
+
+class TrajectoryFormat(str, Enum):
+    ATIF = "atif"
+    PROVIDER_NATIVE = "provider_native"
+
+
+class TrajectoryRole(str, Enum):
+    CANONICAL = "canonical"
+    PROVIDER_RAW = "provider_raw"
 
 
 ACTIVE_RUN_STATES = frozenset(
@@ -209,6 +230,49 @@ class Workspace:
 
 
 @dataclass(frozen=True)
+class BenchmarkMetadata:
+    """Optional benchmark identity interpreted by a configured adapter."""
+
+    dataset: str
+    task_id: str
+    harness: str | None = None
+    verifier: str | None = None
+
+    def __post_init__(self) -> None:
+        _require_text(self.dataset, "benchmark.dataset")
+        _require_text(self.task_id, "benchmark.task_id")
+        for field_name in ("harness", "verifier"):
+            value = getattr(self, field_name)
+            if value is not None:
+                _require_text(value, f"benchmark.{field_name}")
+
+
+@dataclass(frozen=True)
+class BenchmarkOutcome:
+    """Executor- or adapter-produced terminal benchmark output."""
+
+    reward: float | None = None
+    result: Mapping[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if self.reward is not None:
+            if isinstance(self.reward, bool) or not isinstance(
+                self.reward, (int, float)
+            ):
+                raise ValueError("benchmark reward must be numeric")
+            if not math.isfinite(self.reward):
+                raise ValueError("benchmark reward must be finite")
+            object.__setattr__(self, "reward", float(self.reward))
+        if not isinstance(self.result, Mapping):
+            raise ValueError("benchmark result must be a JSON object")
+        try:
+            json.dumps(self.result, allow_nan=False)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("benchmark result must be JSON-compatible") from exc
+        object.__setattr__(self, "result", _freeze_json(self.result))
+
+
+@dataclass(frozen=True)
 class Run:
     """Durable immutable snapshot of one Codex execution attempt."""
 
@@ -219,6 +283,10 @@ class Run:
     attempt: int
     task: str
     created_at: datetime
+    request_schema_version: str = RUN_REQUEST_SCHEMA_VERSION
+    mode: RunMode = RunMode.QUERY
+    benchmark: BenchmarkMetadata | None = None
+    benchmark_outcome: BenchmarkOutcome | None = None
     model: str | None = None
     retry_of_run_id: RunId | None = None
     worker_id: str | None = None
@@ -234,6 +302,18 @@ class Run:
         _require_text(self.id, "id")
         _require_text(self.workspace_id, "workspace_id")
         _require_text(self.task, "task")
+        if self.request_schema_version != RUN_REQUEST_SCHEMA_VERSION:
+            raise ValueError(
+                f"unsupported run request schema: {self.request_schema_version}"
+            )
+        if self.mode is RunMode.QUERY and self.benchmark is not None:
+            raise ValueError("benchmark metadata is not valid for query runs")
+        if self.mode is RunMode.BENCHMARK and self.benchmark is None:
+            raise ValueError("benchmark metadata is required for benchmark runs")
+        if self.mode is RunMode.QUERY and self.benchmark_outcome is not None:
+            raise ValueError("benchmark outcome is not valid for query runs")
+        if self.benchmark_outcome is not None and self.state not in TERMINAL_RUN_STATES:
+            raise ValueError("benchmark outcome is only valid for terminal runs")
         if self.revision < 0:
             raise ValueError("revision must be non-negative")
         if self.attempt < 1:
@@ -287,6 +367,23 @@ class RunEvent:
 
 
 @dataclass(frozen=True)
+class TrajectoryManifest:
+    """Typed semantics for an executor-produced trajectory file."""
+
+    format: TrajectoryFormat
+    schema_version: str
+    role: TrajectoryRole
+
+    def __post_init__(self) -> None:
+        _require_text(self.schema_version, "trajectory.schema_version")
+        if (
+            self.role is TrajectoryRole.CANONICAL
+            and self.format is not TrajectoryFormat.ATIF
+        ):
+            raise ValueError("the canonical trajectory must use ATIF")
+
+
+@dataclass(frozen=True)
 class RunFile:
     """Manifest metadata for a retrievable run-owned file."""
 
@@ -297,6 +394,7 @@ class RunFile:
     size_bytes: int
     sha256: str
     created_at: datetime
+    trajectory: TrajectoryManifest | None = None
 
     def __post_init__(self) -> None:
         _require_text(self.id, "id")
@@ -307,6 +405,10 @@ class RunFile:
             raise ValueError("relative_path must be a contained relative path")
         if self.size_bytes < 0:
             raise ValueError("size_bytes must be non-negative")
+        if self.kind is RunFileKind.TRAJECTORY and self.trajectory is None:
+            raise ValueError("trajectory files require trajectory manifest metadata")
+        if self.kind is not RunFileKind.TRAJECTORY and self.trajectory is not None:
+            raise ValueError("trajectory metadata is only valid for trajectory files")
         object.__setattr__(
             self, "created_at", as_utc(self.created_at, field_name="created_at")
         )
@@ -356,6 +458,7 @@ def transition_run(
     exit_code: int | None = None,
     error_code: str | None = None,
     error_message: str | None = None,
+    benchmark_outcome: BenchmarkOutcome | None = None,
 ) -> Run:
     """Return the next revision after enforcing the run state machine."""
 
@@ -376,6 +479,11 @@ def transition_run(
         error_message=error_message
         if target in TERMINAL_RUN_STATES
         else run.error_message,
+        benchmark_outcome=(
+            benchmark_outcome
+            if target in TERMINAL_RUN_STATES
+            else run.benchmark_outcome
+        ),
     )
 
 
@@ -399,6 +507,9 @@ def create_retry_run(
         attempt=source.attempt + 1,
         retry_of_run_id=source.id,
         task=source.task,
+        request_schema_version=source.request_schema_version,
+        mode=source.mode,
+        benchmark=source.benchmark,
         model=source.model,
         created_at=as_utc(created_at or utc_now()),
     )

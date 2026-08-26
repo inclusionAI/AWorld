@@ -19,8 +19,12 @@ from aworld.cloud.executor import (
 from aworld.cloud.models import (
     ExecutorId,
     Run,
+    RunFileKind,
     RunId,
+    RunMode,
     RunState,
+    TrajectoryFormat,
+    TrajectoryRole,
     WorkspaceId,
     WorkspaceState,
     transition_run,
@@ -416,6 +420,14 @@ class CloudWorker:
                     "executor returned a file for a different run",
                 )
             await self._repository.register_run_file(run_file)
+        canonical_trajectories = tuple(
+            run_file
+            for run_file in result.files
+            if run_file.kind is RunFileKind.TRAJECTORY
+            and run_file.trajectory is not None
+            and run_file.trajectory.role is TrajectoryRole.CANONICAL
+            and run_file.trajectory.format is TrajectoryFormat.ATIF
+        )
         for _ in range(10):
             current = await self._get_run(run_id)
             if current.state in {
@@ -449,10 +461,24 @@ class CloudWorker:
                 target = RunState.CANCELLED
                 error_code = result.error_code or "cancelled"
                 message = "executor cancellation completed"
-            elif result.exit_code == 0 and result.error_code is None:
+            elif current.mode is RunMode.QUERY and result.benchmark_outcome is not None:
+                target = RunState.FAILED
+                error_code = CloudErrorCode.EXECUTOR_FAILED.value
+                message = "query executor returned benchmark-only output"
+            elif (
+                result.exit_code == 0
+                and result.error_code is None
+                and len(canonical_trajectories) == 1
+            ):
                 target = RunState.SUCCEEDED
                 error_code = None
                 message = None
+            elif result.exit_code == 0 and result.error_code is None:
+                target = RunState.FAILED
+                error_code = CloudErrorCode.TRAJECTORY_MISSING.value
+                message = (
+                    "executor did not return exactly one canonical ATIF trajectory"
+                )
             else:
                 target = RunState.FAILED
                 error_code = result.error_code or CloudErrorCode.EXECUTOR_FAILED.value
@@ -464,6 +490,11 @@ class CloudWorker:
                 exit_code=result.exit_code,
                 error_code=error_code,
                 error_message=message,
+                benchmark_outcome=(
+                    result.benchmark_outcome
+                    if current.mode is RunMode.BENCHMARK
+                    else None
+                ),
             )
             try:
                 stored = await self._repository.update_run(

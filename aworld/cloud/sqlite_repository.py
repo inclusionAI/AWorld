@@ -26,8 +26,11 @@ from aworld.cloud.errors import (
 )
 from aworld.cloud.models import (
     ACTIVE_RUN_STATES,
+    RUN_REQUEST_SCHEMA_VERSION,
     TERMINAL_RUN_STATES,
     TERMINAL_WORKSPACE_STATES,
+    BenchmarkMetadata,
+    BenchmarkOutcome,
     EventId,
     ExecutorId,
     FileId,
@@ -37,7 +40,11 @@ from aworld.cloud.models import (
     RunFile,
     RunFileKind,
     RunId,
+    RunMode,
     RunState,
+    TrajectoryFormat,
+    TrajectoryManifest,
+    TrajectoryRole,
     Workspace,
     WorkspaceId,
     WorkspaceMount,
@@ -50,7 +57,7 @@ from aworld.cloud.models import (
 )
 from aworld.cloud.repository import Page
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 DEFAULT_BUSY_TIMEOUT = timedelta(seconds=5)
 _MAX_PAGE_SIZE = 1000
 _ACTIVE_STATE_VALUES = tuple(state.value for state in ACTIVE_RUN_STATES)
@@ -151,6 +158,20 @@ _SCHEMA_V1 = (
         PRIMARY KEY (scope, idempotency_key)
     )
     """,
+)
+
+_SCHEMA_V2 = (
+    (
+        "ALTER TABLE runs ADD COLUMN request_schema_version TEXT NOT NULL "
+        f"DEFAULT '{RUN_REQUEST_SCHEMA_VERSION}'"
+    ),
+    "ALTER TABLE runs ADD COLUMN mode TEXT NOT NULL DEFAULT 'query'",
+    "ALTER TABLE runs ADD COLUMN benchmark_json TEXT",
+    "ALTER TABLE runs ADD COLUMN benchmark_reward REAL",
+    "ALTER TABLE runs ADD COLUMN benchmark_result_json TEXT",
+    "ALTER TABLE run_files ADD COLUMN trajectory_format TEXT",
+    "ALTER TABLE run_files ADD COLUMN trajectory_schema_version TEXT",
+    "ALTER TABLE run_files ADD COLUMN trajectory_role TEXT",
 )
 
 
@@ -329,6 +350,13 @@ class SQLiteCloudRepository:
                     "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
                     (1, format_utc_timestamp(utc_now())),
                 )
+            if current_version < 2:
+                for statement in _SCHEMA_V2:
+                    connection.execute(statement)
+                connection.execute(
+                    "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+                    (2, format_utc_timestamp(utc_now())),
+                )
             connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
     def _require_connection(self) -> sqlite3.Connection:
@@ -444,6 +472,26 @@ class SQLiteCloudRepository:
 
     @staticmethod
     def _run_values(run: Run) -> tuple[Any, ...]:
+        benchmark_json = None
+        if run.benchmark is not None:
+            benchmark_json = json.dumps(
+                {
+                    "dataset": run.benchmark.dataset,
+                    "task_id": run.benchmark.task_id,
+                    "harness": run.benchmark.harness,
+                    "verifier": run.benchmark.verifier,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+        benchmark_result_json = None
+        if run.benchmark_outcome is not None:
+            benchmark_result_json = json.dumps(
+                _json_compatible(run.benchmark_outcome.result),
+                allow_nan=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
         return (
             str(run.id),
             str(run.workspace_id),
@@ -453,6 +501,15 @@ class SQLiteCloudRepository:
             str(run.retry_of_run_id) if run.retry_of_run_id is not None else None,
             run.task,
             run.model,
+            run.request_schema_version,
+            run.mode.value,
+            benchmark_json,
+            (
+                run.benchmark_outcome.reward
+                if run.benchmark_outcome is not None
+                else None
+            ),
+            benchmark_result_json,
             run.worker_id,
             _optional_timestamp(run.lease_expires_at),
             str(run.executor_id) if run.executor_id is not None else None,
@@ -468,6 +525,16 @@ class SQLiteCloudRepository:
     def _row_to_run(row: sqlite3.Row) -> Run:
         retry_id = row["retry_of_run_id"]
         executor_id = row["executor_id"]
+        benchmark_payload = (
+            json.loads(row["benchmark_json"])
+            if row["benchmark_json"] is not None
+            else None
+        )
+        benchmark_result = (
+            json.loads(row["benchmark_result_json"])
+            if row["benchmark_result_json"] is not None
+            else None
+        )
         return Run(
             id=RunId(row["id"]),
             workspace_id=WorkspaceId(row["workspace_id"]),
@@ -477,6 +544,21 @@ class SQLiteCloudRepository:
             retry_of_run_id=RunId(retry_id) if retry_id is not None else None,
             task=row["task"],
             model=row["model"],
+            request_schema_version=row["request_schema_version"],
+            mode=RunMode(row["mode"]),
+            benchmark=(
+                BenchmarkMetadata(**benchmark_payload)
+                if benchmark_payload is not None
+                else None
+            ),
+            benchmark_outcome=(
+                BenchmarkOutcome(
+                    reward=row["benchmark_reward"],
+                    result=benchmark_result or {},
+                )
+                if row["benchmark_reward"] is not None or benchmark_result is not None
+                else None
+            ),
             worker_id=row["worker_id"],
             lease_expires_at=_parse_optional_timestamp(row["lease_expires_at"]),
             executor_id=ExecutorId(executor_id) if executor_id is not None else None,
@@ -886,10 +968,12 @@ class SQLiteCloudRepository:
             """
             INSERT INTO runs(
                 id, workspace_id, state, revision, attempt, retry_of_run_id,
-                task, model, worker_id, lease_expires_at, executor_id,
+                task, model, request_schema_version, mode, benchmark_json,
+                benchmark_reward, benchmark_result_json,
+                worker_id, lease_expires_at, executor_id,
                 created_at, started_at, finished_at, exit_code,
                 error_code, error_message
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             self._run_values(run),
         )
@@ -1093,10 +1177,12 @@ class SQLiteCloudRepository:
                         """
                         UPDATE runs SET
                             workspace_id = ?, state = ?, revision = ?, attempt = ?,
-                            retry_of_run_id = ?, task = ?, model = ?, worker_id = ?,
-                            lease_expires_at = ?, executor_id = ?, created_at = ?,
-                            started_at = ?, finished_at = ?, exit_code = ?,
-                            error_code = ?, error_message = ?
+                            retry_of_run_id = ?, task = ?, model = ?,
+                            request_schema_version = ?, mode = ?, benchmark_json = ?,
+                            benchmark_reward = ?, benchmark_result_json = ?,
+                            worker_id = ?, lease_expires_at = ?, executor_id = ?,
+                            created_at = ?, started_at = ?, finished_at = ?,
+                            exit_code = ?, error_code = ?, error_message = ?
                         WHERE id = ? AND revision = ? AND state = ?
                         """,
                         (
@@ -1533,8 +1619,9 @@ class SQLiteCloudRepository:
                         """
                         INSERT INTO run_files(
                             id, run_id, kind, relative_path,
-                            size_bytes, sha256, created_at
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                            size_bytes, sha256, created_at, trajectory_format,
+                            trajectory_schema_version, trajectory_role
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
                             str(run_file.id),
@@ -1544,6 +1631,21 @@ class SQLiteCloudRepository:
                             run_file.size_bytes,
                             run_file.sha256,
                             format_utc_timestamp(run_file.created_at),
+                            (
+                                run_file.trajectory.format.value
+                                if run_file.trajectory is not None
+                                else None
+                            ),
+                            (
+                                run_file.trajectory.schema_version
+                                if run_file.trajectory is not None
+                                else None
+                            ),
+                            (
+                                run_file.trajectory.role.value
+                                if run_file.trajectory is not None
+                                else None
+                            ),
                         ),
                     )
                     return run_file
@@ -1554,6 +1656,13 @@ class SQLiteCloudRepository:
 
     @staticmethod
     def _row_to_run_file(row: sqlite3.Row) -> RunFile:
+        trajectory = None
+        if row["trajectory_format"] is not None:
+            trajectory = TrajectoryManifest(
+                format=TrajectoryFormat(row["trajectory_format"]),
+                schema_version=row["trajectory_schema_version"],
+                role=TrajectoryRole(row["trajectory_role"]),
+            )
         return RunFile(
             id=FileId(row["id"]),
             run_id=RunId(row["run_id"]),
@@ -1562,6 +1671,7 @@ class SQLiteCloudRepository:
             size_bytes=row["size_bytes"],
             sha256=row["sha256"],
             created_at=parse_utc_timestamp(row["created_at"]),
+            trajectory=trajectory,
         )
 
     def _get_run_file(

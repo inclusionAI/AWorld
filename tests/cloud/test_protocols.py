@@ -4,7 +4,8 @@ import ast
 from datetime import timedelta
 from pathlib import Path
 
-from aworld.cloud.executor import CloudExecutor
+from aworld.cloud.benchmark import BenchmarkAdapter
+from aworld.cloud.executor import CloudExecutor, ExecutorProvider
 from aworld.cloud.repository import (
     EventRepository,
     RunFileRepository,
@@ -92,12 +93,22 @@ class _Executor:
         return None
 
 
+class _BenchmarkAdapter:
+    async def prepare(self, run, workspace, metadata):
+        return None
+
+    async def verify(self, run, metadata, files):
+        return None
+
+
 def test_protocols_support_structural_implementations() -> None:
     assert isinstance(_WorkspaceStore(), WorkspaceRepository)
     assert isinstance(_RunStore(), RunRepository)
     assert isinstance(_EventStore(), EventRepository)
     assert isinstance(_FileStore(), RunFileRepository)
     assert isinstance(_Executor(), CloudExecutor)
+    assert isinstance(_Executor(), ExecutorProvider)
+    assert isinstance(_BenchmarkAdapter(), BenchmarkAdapter)
 
 
 def test_foundation_has_no_forbidden_runtime_imports() -> None:
@@ -105,6 +116,7 @@ def test_foundation_has_no_forbidden_runtime_imports() -> None:
     forbidden = {"sqlite3", "docker", "fastapi", "aworld_gateway", "asap"}
     foundation_modules = (
         "__init__.py",
+        "benchmark.py",
         "errors.py",
         "executor.py",
         "fake_executor.py",

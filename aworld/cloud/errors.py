@@ -25,6 +25,7 @@ class CloudErrorCode(str, Enum):
     REPOSITORY_UNAVAILABLE = "repository_unavailable"
     EXECUTOR_UNAVAILABLE = "executor_unavailable"
     EXECUTOR_FAILED = "executor_failed"
+    TRAJECTORY_MISSING = "trajectory_missing"
     WORKER_LEASE_EXPIRED = "worker_lease_expired"
     WORKSPACE_PROVISION_FAILED = "workspace_provision_failed"
 

@@ -321,6 +321,11 @@ def create_cloud_router(dependencies: CloudApiDependencies) -> APIRouter:
             task=payload.task,
             model=payload.model,
             idempotency_key=payload.idempotency_key,
+            request_schema_version=payload.request_schema_version,
+            mode=payload.mode,
+            benchmark=(
+                payload.benchmark.to_domain() if payload.benchmark is not None else None
+            ),
         )
         return await _run_response(repository, run)
 
