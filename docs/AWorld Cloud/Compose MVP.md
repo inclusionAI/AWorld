@@ -49,8 +49,11 @@ docker compose \
 Open [http://127.0.0.1:8000/](http://127.0.0.1:8000/) after the server and
 worker are healthy. The dependency-free dashboard shows live server and worker
 health plus the latest query and benchmark runs. It refreshes automatically or
-on demand; selecting a run opens its events and file manifest, with direct
-downloads for every file and a dedicated canonical ATIF link when available.
+on demand; selecting a run opens its events and file manifest. Selecting a file
+previews JSON, ATIF, logs, stdout, stderr, and other text safely in the page,
+with JSON formatting and a bounded 256 KiB preview. The preview identifies empty,
+binary, failed, and truncated content and always provides an explicit Download
+action. Canonical trajectories have a dedicated Preview canonical ATIF entry.
 
 The page is served directly by FastAPI and reads the existing
 `/api/v1/cloud` endpoints. It does not add a frontend build service or change

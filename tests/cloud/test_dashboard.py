@@ -49,7 +49,13 @@ def test_dashboard_root_serves_dependency_free_operations_ui(tmp_path: Path) -> 
         "Run details",
         "Events",
         "Files",
-        "Download canonical ATIF",
+        "Preview canonical ATIF",
+        "Download",
+        "Loading preview",
+        "Could not preview file",
+        "This file is empty",
+        "Binary preview is not available",
+        "Preview limited to the first",
         "Loading runs",
         "No runs yet",
         "Could not load runs",
@@ -59,6 +65,15 @@ def test_dashboard_root_serves_dependency_free_operations_ui(tmp_path: Path) -> 
     assert "fetchJSON(`${API}/runs?limit=100`)" in html
     assert "fetchJSON(`${API}/runs/${encoded}/events?limit=1000`)" in html
     assert "fetchJSON(`${API}/runs/${encoded}/files`)" in html
+    assert "fetch(validDownload(file, run.id)" in html
+    assert "`${API}/runs/${encodeURIComponent(runId)}/files/`" in html
+    assert "const PREVIEW_BYTES = 256 * 1024" in html
+    assert "Range: `bytes=0-${PREVIEW_BYTES - 1}`" in html
+    assert "response.arrayBuffer()" in html
+    assert 'new TextDecoder("utf-8", {fatal: false})' in html
+    assert "JSON.stringify(JSON.parse(text), null, 2)" in html
+    assert "content.textContent = previewState.text" in html
+    assert 'element("button", "file-preview-button", file.relative_path)' in html
     assert 'fetchJSON("/dashboard/health")' in html
     assert "window.setInterval" in html
     assert "--blue: #175cd3" in html
