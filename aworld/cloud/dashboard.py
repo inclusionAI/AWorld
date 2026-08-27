@@ -175,11 +175,11 @@ DASHBOARD_HTML = r"""<!doctype html>
   </header>
   <main class="shell">
     <nav class="view-switch" aria-label="Cloud resources">
-      <button id="runsTab" class="view-tab active" type="button" aria-pressed="true">Runs</button>
-      <button id="batchesTab" class="view-tab" type="button" aria-pressed="false">Batches</button>
+      <button id="batchesTab" class="view-tab active" type="button" aria-pressed="true">Batches</button>
+      <button id="runsTab" class="view-tab" type="button" aria-pressed="false">Runs</button>
     </nav>
     <div class="heading">
-      <div><h1 id="viewTitle">Runs</h1><p id="viewSubtitle" class="subtitle">Live execution and benchmark activity</p></div>
+      <div><h1 id="viewTitle">Batches</h1><p id="viewSubtitle" class="subtitle">Grouped run progress and outcomes</p></div>
       <div class="controls">
         <label class="auto-refresh"><input id="autoRefresh" type="checkbox" checked> Auto refresh</label>
         <button id="refreshButton" class="button" type="button">Refresh</button>
@@ -187,11 +187,11 @@ DASHBOARD_HTML = r"""<!doctype html>
     </div>
     <div id="layout" class="layout">
       <section class="panel" aria-labelledby="listHeading">
-        <div class="panel-header"><h2 id="listHeading">Recent runs</h2><span id="lastUpdated" class="updated">Not updated</span></div>
-        <div id="runsState" class="state" role="status"><div><div class="spinner"></div>Loading runs…</div></div>
+        <div class="panel-header"><h2 id="listHeading">Recent batches</h2><span id="lastUpdated" class="updated">Not updated</span></div>
+        <div id="runsState" class="state" role="status"><div><div class="spinner"></div>Loading batches…</div></div>
         <div id="tableWrap" class="table-wrap" hidden>
           <table>
-            <thead><tr id="tableHead"><th>Run</th><th>Status</th><th>Mode</th><th>Task / benchmark</th><th>Created</th><th>Duration</th><th>Reward</th></tr></thead>
+            <thead><tr id="tableHead"><th>Batch</th><th>Status</th><th>Progress</th><th>Run counts</th><th>Average reward</th><th>Created</th><th>Duration</th></tr></thead>
             <tbody id="runsBody"></tbody>
           </table>
         </div>
@@ -231,7 +231,7 @@ DASHBOARD_HTML = r"""<!doctype html>
     };
     let selectedRunId = null;
     let selectedBatchId = null;
-    let activeView = "runs";
+    let activeView = "batches";
     let refreshPending = false;
     let detailRequest = 0;
     let previewRequest = 0;

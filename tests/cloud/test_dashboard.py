@@ -40,6 +40,14 @@ def test_dashboard_root_serves_dependency_free_operations_ui(tmp_path: Path) -> 
     assert "/dashboard/health" not in schema["paths"]
 
     html = response.text
+    batches_tab = '<button id="batchesTab" class="view-tab active" type="button" aria-pressed="true">Batches</button>'
+    runs_tab = '<button id="runsTab" class="view-tab" type="button" aria-pressed="false">Runs</button>'
+    assert batches_tab in html
+    assert runs_tab in html
+    assert html.index(batches_tab) < html.index(runs_tab)
+    assert '<h1 id="viewTitle">Batches</h1>' in html
+    assert '<h2 id="listHeading">Recent batches</h2>' in html
+    assert 'let activeView = "batches"' in html
     for content in (
         "AWorld Cloud",
         "Server",
@@ -61,7 +69,9 @@ def test_dashboard_root_serves_dependency_free_operations_ui(tmp_path: Path) -> 
         "This file is empty",
         "Binary preview is not available",
         "Preview limited to the first",
-        "Loading runs",
+        "Loading batches",
+        "No batches yet",
+        "Could not load batches",
         "No runs yet",
         "Could not load runs",
     ):
