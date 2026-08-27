@@ -44,6 +44,19 @@ docker compose \
 ./scripts/verify-aworld-cloud-terminal-bench.sh
 ```
 
+## Operations dashboard
+
+Open [http://127.0.0.1:8000/](http://127.0.0.1:8000/) after the server and
+worker are healthy. The dependency-free dashboard shows live server and worker
+health plus the latest query and benchmark runs. It refreshes automatically or
+on demand; selecting a run opens its events and file manifest, with direct
+downloads for every file and a dedicated canonical ATIF link when available.
+
+The page is served directly by FastAPI and reads the existing
+`/api/v1/cloud` endpoints. It does not add a frontend build service or change
+the versioned API contract. The underlying JSON API remains available through
+the same paths, and interactive API documentation remains at `/docs`.
+
 The init and verification scripts first honor an explicit
 `AWORLD_CLOUD_DOCKER_SOCKET`, then test daemon-side and active-context
 candidates. A short `docker:27.5.1-cli` container mounts each candidate and

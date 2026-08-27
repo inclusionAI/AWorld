@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
+from aworld.cloud.dashboard import register_cloud_dashboard
 from aworld.cloud.runtime import cloud_settings_from_env
 from aworld.cloud.service import CloudService
 from aworld.cloud.settings import CloudSettings
@@ -45,6 +46,7 @@ def create_cloud_app(settings: CloudSettings | None = None) -> FastAPI:
             "storage": "sqlite",
         }
 
+    register_cloud_dashboard(app, resolved)
     register_cloud_routes(
         app,
         CloudApiDependencies(
