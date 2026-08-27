@@ -10,6 +10,8 @@ import pytest
 from aworld.cloud.errors import CloudError, CloudErrorCode
 from aworld.cloud.models import (
     ATIF_SCHEMA_VERSION,
+    BatchId,
+    BatchState,
     BenchmarkMetadata,
     BenchmarkOutcome,
     FileId,
@@ -27,6 +29,7 @@ from aworld.cloud.models import (
     WorkspaceId,
     WorkspaceMount,
     WorkspaceState,
+    aggregate_batch,
     create_retry_run,
     transition_run,
     transition_workspace,
@@ -115,6 +118,17 @@ async def _store_run(repository: SQLiteCloudRepository, run: Run) -> Run:
     )
 
 
+def _batch_runs() -> tuple[Run, ...]:
+    batch_id = BatchId("batch-1")
+    return (
+        replace(_run("run-batch-1"), batch_id=batch_id),
+        replace(
+            _run("run-batch-2", created_at=NOW + timedelta(seconds=1)),
+            batch_id=batch_id,
+        ),
+    )
+
+
 @pytest.mark.asyncio
 async def test_schema_initialization_is_versioned_idempotent_and_configured(
     tmp_path: Path,
@@ -135,7 +149,7 @@ async def test_schema_initialization_is_versioned_idempotent_and_configured(
     assert connection.execute("PRAGMA busy_timeout").fetchone()[0] == 275
     assert connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
     assert (
-        connection.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] == 2
+        connection.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] == 3
     )
     table_names = {
         row[0]
@@ -147,6 +161,7 @@ async def test_schema_initialization_is_versioned_idempotent_and_configured(
         "workspaces",
         "workspace_mounts",
         "runs",
+        "batches",
         "run_events",
         "run_files",
         "idempotency_keys",
@@ -227,8 +242,67 @@ async def test_schema_v1_rolls_forward_with_query_defaults(tmp_path: Path) -> No
     assert stored is not None
     assert stored.mode is RunMode.QUERY
     assert stored.benchmark is None
+    assert stored.batch_id is None
     assert repository._connection is not None
-    assert repository._connection.execute("PRAGMA user_version").fetchone()[0] == 2
+    assert repository._connection.execute("PRAGMA user_version").fetchone()[0] == 3
+    await repository.close()
+
+
+@pytest.mark.asyncio
+async def test_batch_create_list_and_cancel_are_atomic_and_run_derived(
+    tmp_path: Path,
+) -> None:
+    repository = await _repository(tmp_path / "cloud.sqlite3")
+    await _store_workspace(repository, _workspace())
+    runs = _batch_runs()
+    candidate = aggregate_batch(
+        batch_id=BatchId("batch-1"),
+        workspace_id=WorkspaceId("workspace-1"),
+        name="nightly",
+        created_at=NOW,
+        runs=runs,
+    )
+
+    created = await repository.create_batch(
+        candidate,
+        runs,
+        idempotency_key="batch-create",
+        request_fingerprint="batch-fingerprint",
+    )
+    repeated = await repository.create_batch(
+        replace(candidate, id=BatchId("batch-unused")),
+        tuple(replace(run, batch_id=BatchId("batch-unused")) for run in runs),
+        idempotency_key="batch-create",
+        request_fingerprint="batch-fingerprint",
+    )
+    page = await repository.list_batch_runs(BatchId("batch-1"), limit=1)
+    second_page = await repository.list_batch_runs(
+        BatchId("batch-1"), limit=1, page_token=page.next_page_token
+    )
+
+    assert created.state is BatchState.QUEUED
+    assert created.counts.total == 2
+    assert repeated.id == created.id
+    assert [run.id for run in page.items + second_page.items] == [
+        RunId("run-batch-1"),
+        RunId("run-batch-2"),
+    ]
+    assert all(run.batch_id == BatchId("batch-1") for run in page.items)
+
+    cancelled = await repository.cancel_batch(
+        BatchId("batch-1"),
+        requested_at=NOW + timedelta(seconds=2),
+        idempotency_key="batch-cancel",
+        request_fingerprint="batch-cancel-fingerprint",
+    )
+    assert cancelled.state is BatchState.CANCELLED
+    assert cancelled.counts.cancelled == 2
+    assert cancelled.progress == 1.0
+    events = await repository.list_events(RunId("run-batch-1"), limit=10)
+    assert [event.event_type for event in events.items] == [
+        "run.queued",
+        "run.cancelled",
+    ]
     await repository.close()
 
 

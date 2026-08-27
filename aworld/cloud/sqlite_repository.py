@@ -29,6 +29,8 @@ from aworld.cloud.models import (
     RUN_REQUEST_SCHEMA_VERSION,
     TERMINAL_RUN_STATES,
     TERMINAL_WORKSPACE_STATES,
+    Batch,
+    BatchId,
     BenchmarkMetadata,
     BenchmarkOutcome,
     EventId,
@@ -49,6 +51,7 @@ from aworld.cloud.models import (
     WorkspaceId,
     WorkspaceMount,
     WorkspaceState,
+    aggregate_batch,
     can_transition_run,
     can_transition_workspace,
     format_utc_timestamp,
@@ -57,7 +60,7 @@ from aworld.cloud.models import (
 )
 from aworld.cloud.repository import Page
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 DEFAULT_BUSY_TIMEOUT = timedelta(seconds=5)
 _MAX_PAGE_SIZE = 1000
 _ACTIVE_STATE_VALUES = tuple(state.value for state in ACTIVE_RUN_STATES)
@@ -172,6 +175,21 @@ _SCHEMA_V2 = (
     "ALTER TABLE run_files ADD COLUMN trajectory_format TEXT",
     "ALTER TABLE run_files ADD COLUMN trajectory_schema_version TEXT",
     "ALTER TABLE run_files ADD COLUMN trajectory_role TEXT",
+)
+
+_SCHEMA_V3 = (
+    """
+    CREATE TABLE batches (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+        name TEXT NOT NULL,
+        created_at TEXT NOT NULL
+    )
+    """,
+    "ALTER TABLE runs ADD COLUMN batch_id TEXT REFERENCES batches(id)",
+    "CREATE INDEX batches_order ON batches(created_at, id)",
+    "CREATE INDEX batches_workspace_order ON batches(workspace_id, created_at, id)",
+    "CREATE INDEX runs_batch_order ON runs(batch_id, created_at, id)",
 )
 
 
@@ -357,6 +375,13 @@ class SQLiteCloudRepository:
                     "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
                     (2, format_utc_timestamp(utc_now())),
                 )
+            if current_version < 3:
+                for statement in _SCHEMA_V3:
+                    connection.execute(statement)
+                connection.execute(
+                    "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+                    (3, format_utc_timestamp(utc_now())),
+                )
             connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
     def _require_connection(self) -> sqlite3.Connection:
@@ -495,6 +520,7 @@ class SQLiteCloudRepository:
         return (
             str(run.id),
             str(run.workspace_id),
+            str(run.batch_id) if run.batch_id is not None else None,
             run.state.value,
             run.revision,
             run.attempt,
@@ -538,6 +564,9 @@ class SQLiteCloudRepository:
         return Run(
             id=RunId(row["id"]),
             workspace_id=WorkspaceId(row["workspace_id"]),
+            batch_id=(
+                BatchId(row["batch_id"]) if row["batch_id"] is not None else None
+            ),
             state=RunState(row["state"]),
             revision=row["revision"],
             attempt=row["attempt"],
@@ -629,6 +658,34 @@ class SQLiteCloudRepository:
             (str(run_id),),
         ).fetchone()
         return None if row is None else self._row_to_run(row)
+
+    def _row_to_batch(
+        self,
+        connection: sqlite3.Connection,
+        row: sqlite3.Row,
+    ) -> Batch:
+        run_rows = connection.execute(
+            "SELECT * FROM runs WHERE batch_id = ? ORDER BY created_at, id",
+            (row["id"],),
+        ).fetchall()
+        return aggregate_batch(
+            batch_id=BatchId(row["id"]),
+            workspace_id=WorkspaceId(row["workspace_id"]),
+            name=row["name"],
+            created_at=parse_utc_timestamp(row["created_at"]),
+            runs=(self._row_to_run(run_row) for run_row in run_rows),
+        )
+
+    def _get_batch(
+        self,
+        connection: sqlite3.Connection,
+        batch_id: BatchId | str,
+    ) -> Batch | None:
+        row = connection.execute(
+            "SELECT * FROM batches WHERE id = ?",
+            (str(batch_id),),
+        ).fetchone()
+        return None if row is None else self._row_to_batch(connection, row)
 
     async def create_workspace(
         self,
@@ -967,16 +1024,282 @@ class SQLiteCloudRepository:
         connection.execute(
             """
             INSERT INTO runs(
-                id, workspace_id, state, revision, attempt, retry_of_run_id,
+                id, workspace_id, batch_id, state, revision, attempt, retry_of_run_id,
                 task, model, request_schema_version, mode, benchmark_json,
                 benchmark_reward, benchmark_result_json,
                 worker_id, lease_expires_at, executor_id,
                 created_at, started_at, finished_at, exit_code,
                 error_code, error_message
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             self._run_values(run),
         )
+
+    @staticmethod
+    def _insert_run_event(
+        connection: sqlite3.Connection,
+        run_id: RunId,
+        *,
+        event_type: str,
+        payload: Mapping[str, Any],
+        created_at: datetime,
+    ) -> None:
+        row = connection.execute(
+            "SELECT COALESCE(MAX(sequence), 0) + 1 AS sequence "
+            "FROM run_events WHERE run_id = ?",
+            (str(run_id),),
+        ).fetchone()
+        connection.execute(
+            """
+            INSERT INTO run_events(
+                id, run_id, sequence, event_type, payload_json, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                f"event-{uuid.uuid4().hex}",
+                str(run_id),
+                int(row["sequence"]),
+                event_type,
+                json.dumps(
+                    _json_compatible(payload),
+                    allow_nan=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+                format_utc_timestamp(created_at),
+            ),
+        )
+
+    async def create_batch(
+        self,
+        batch: Batch,
+        runs: tuple[Run, ...],
+        *,
+        idempotency_key: str,
+        request_fingerprint: str,
+    ) -> Batch:
+        self._validate_idempotency(idempotency_key, request_fingerprint)
+        if not runs or any(
+            run.batch_id != batch.id
+            or run.workspace_id != batch.workspace_id
+            or run.state is not RunState.QUEUED
+            or run.revision != 0
+            or run.attempt != 1
+            for run in runs
+        ):
+            raise CloudError(
+                CloudErrorCode.INVALID_REQUEST,
+                "a batch requires new queued first-attempt runs",
+            )
+        with self._lock:
+            connection = self._require_connection()
+            try:
+                with _transaction(connection):
+                    existing_id = self._lookup_idempotency(
+                        connection,
+                        scope="batch:create",
+                        key=idempotency_key,
+                        fingerprint=request_fingerprint,
+                        resource_type="batch",
+                    )
+                    if existing_id is not None:
+                        existing = self._get_batch(connection, existing_id)
+                        if existing is None:
+                            raise CloudError(
+                                CloudErrorCode.REPOSITORY_UNAVAILABLE,
+                                "idempotent batch record is missing",
+                            )
+                        return existing
+                    self._ensure_workspace_available(connection, batch.workspace_id)
+                    connection.execute(
+                        "INSERT INTO batches(id, workspace_id, name, created_at) "
+                        "VALUES (?, ?, ?, ?)",
+                        (
+                            str(batch.id),
+                            str(batch.workspace_id),
+                            batch.name,
+                            format_utc_timestamp(batch.created_at),
+                        ),
+                    )
+                    for run in runs:
+                        self._insert_run(connection, run)
+                        self._insert_run_event(
+                            connection,
+                            run.id,
+                            event_type="run.queued",
+                            payload={
+                                "batch_id": str(batch.id),
+                                "mode": run.mode.value,
+                                "state": run.state.value,
+                            },
+                            created_at=run.created_at,
+                        )
+                    self._store_idempotency(
+                        connection,
+                        scope="batch:create",
+                        key=idempotency_key,
+                        fingerprint=request_fingerprint,
+                        resource_type="batch",
+                        resource_id=str(batch.id),
+                        created_at=batch.created_at,
+                    )
+                    stored = self._get_batch(connection, batch.id)
+                    assert stored is not None
+                    return stored
+            except sqlite3.IntegrityError as exc:
+                raise self._integrity_error(exc) from exc
+            except sqlite3.Error as exc:
+                raise self._repository_error(exc) from exc
+
+    async def get_batch(self, batch_id: BatchId) -> Batch | None:
+        with self._lock:
+            try:
+                return self._get_batch(self._require_connection(), batch_id)
+            except sqlite3.Error as exc:
+                raise self._repository_error(exc) from exc
+
+    async def list_batches(
+        self,
+        *,
+        limit: int,
+        page_token: str | None = None,
+        workspace_id: WorkspaceId | None = None,
+    ) -> Page[Batch]:
+        _validate_page_size(limit)
+        filters = {
+            "workspace_id": str(workspace_id) if workspace_id is not None else None
+        }
+        cursor = _decode_cursor(page_token, kind="batches", filters=filters)
+        clauses: list[str] = []
+        parameters: list[Any] = []
+        if workspace_id is not None:
+            clauses.append("workspace_id = ?")
+            parameters.append(str(workspace_id))
+        if cursor is not None:
+            clauses.append("(created_at > ? OR (created_at = ? AND id > ?))")
+            parameters.extend((cursor[0], cursor[0], cursor[1]))
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        parameters.append(limit + 1)
+        with self._lock:
+            connection = self._require_connection()
+            try:
+                rows = connection.execute(
+                    f"SELECT * FROM batches {where} ORDER BY created_at, id LIMIT ?",
+                    parameters,
+                ).fetchall()
+                visible = rows[:limit]
+                items = tuple(self._row_to_batch(connection, row) for row in visible)
+                next_token = None
+                if len(rows) > limit:
+                    last = visible[-1]
+                    next_token = _encode_cursor(
+                        "batches", (last["created_at"], last["id"]), filters
+                    )
+                return Page(items=items, next_page_token=next_token)
+            except sqlite3.Error as exc:
+                raise self._repository_error(exc) from exc
+
+    async def list_batch_runs(
+        self,
+        batch_id: BatchId,
+        *,
+        limit: int,
+        page_token: str | None = None,
+    ) -> Page[Run]:
+        if await self.get_batch(batch_id) is None:
+            raise CloudError(CloudErrorCode.BATCH_NOT_FOUND, "batch does not exist")
+        return await self.list_runs(
+            limit=limit,
+            page_token=page_token,
+            batch_id=batch_id,
+        )
+
+    async def cancel_batch(
+        self,
+        batch_id: BatchId,
+        *,
+        requested_at: datetime,
+        idempotency_key: str,
+        request_fingerprint: str,
+    ) -> Batch:
+        self._validate_idempotency(idempotency_key, request_fingerprint)
+        requested = format_utc_timestamp(requested_at)
+        with self._lock:
+            connection = self._require_connection()
+            try:
+                with _transaction(connection):
+                    existing_id = self._lookup_idempotency(
+                        connection,
+                        scope="batch:cancel",
+                        key=idempotency_key,
+                        fingerprint=request_fingerprint,
+                        resource_type="batch",
+                    )
+                    if existing_id is not None:
+                        if existing_id != str(batch_id):
+                            raise CloudError(
+                                CloudErrorCode.IDEMPOTENCY_CONFLICT,
+                                "idempotency key belongs to another batch",
+                            )
+                        existing = self._get_batch(connection, batch_id)
+                        if existing is None:
+                            raise CloudError(
+                                CloudErrorCode.REPOSITORY_UNAVAILABLE,
+                                "idempotent batch record is missing",
+                            )
+                        return existing
+                    if self._get_batch(connection, batch_id) is None:
+                        raise CloudError(
+                            CloudErrorCode.BATCH_NOT_FOUND, "batch does not exist"
+                        )
+                    rows = connection.execute(
+                        "SELECT * FROM runs WHERE batch_id = ? ORDER BY created_at, id",
+                        (str(batch_id),),
+                    ).fetchall()
+                    for row in rows:
+                        run = self._row_to_run(row)
+                        target: RunState | None = None
+                        if run.state is RunState.QUEUED:
+                            target = RunState.CANCELLED
+                            connection.execute(
+                                "UPDATE runs SET state = ?, revision = revision + 1, "
+                                "finished_at = ? WHERE id = ? AND revision = ?",
+                                (target.value, requested, str(run.id), run.revision),
+                            )
+                        elif run.state in {RunState.STARTING, RunState.RUNNING}:
+                            target = RunState.CANCELLING
+                            connection.execute(
+                                "UPDATE runs SET state = ?, revision = revision + 1 "
+                                "WHERE id = ? AND revision = ?",
+                                (target.value, str(run.id), run.revision),
+                            )
+                        if target is not None:
+                            self._insert_run_event(
+                                connection,
+                                run.id,
+                                event_type=f"run.{target.value}",
+                                payload={
+                                    "batch_id": str(batch_id),
+                                    "state": target.value,
+                                },
+                                created_at=requested_at,
+                            )
+                    self._store_idempotency(
+                        connection,
+                        scope="batch:cancel",
+                        key=idempotency_key,
+                        fingerprint=request_fingerprint,
+                        resource_type="batch",
+                        resource_id=str(batch_id),
+                        created_at=requested_at,
+                    )
+                    stored = self._get_batch(connection, batch_id)
+                    assert stored is not None
+                    return stored
+            except sqlite3.IntegrityError as exc:
+                raise self._integrity_error(exc) from exc
+            except sqlite3.Error as exc:
+                raise self._repository_error(exc) from exc
 
     async def create_run(
         self,
@@ -1041,11 +1364,13 @@ class SQLiteCloudRepository:
         page_token: str | None = None,
         workspace_id: WorkspaceId | None = None,
         state: RunState | None = None,
+        batch_id: BatchId | None = None,
     ) -> Page[Run]:
         _validate_page_size(limit)
         filters = {
             "state": state.value if state is not None else None,
             "workspace_id": str(workspace_id) if workspace_id is not None else None,
+            "batch_id": str(batch_id) if batch_id is not None else None,
         }
         cursor = _decode_cursor(
             page_token,
@@ -1060,6 +1385,9 @@ class SQLiteCloudRepository:
         if state is not None:
             clauses.append("state = ?")
             parameters.append(state.value)
+        if batch_id is not None:
+            clauses.append("batch_id = ?")
+            parameters.append(str(batch_id))
         if cursor is not None:
             clauses.append("(created_at > ? OR (created_at = ? AND id > ?))")
             parameters.extend((cursor[0], cursor[0], cursor[1]))
@@ -1176,7 +1504,7 @@ class SQLiteCloudRepository:
                     cursor = connection.execute(
                         """
                         UPDATE runs SET
-                            workspace_id = ?, state = ?, revision = ?, attempt = ?,
+                            workspace_id = ?, batch_id = ?, state = ?, revision = ?, attempt = ?,
                             retry_of_run_id = ?, task = ?, model = ?,
                             request_schema_version = ?, mode = ?, benchmark_json = ?,
                             benchmark_reward = ?, benchmark_result_json = ?,

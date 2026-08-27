@@ -19,6 +19,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from aworld.cloud.errors import CloudError, CloudErrorCode
 from aworld.cloud.models import (
     TERMINAL_RUN_STATES,
+    BatchId,
     FileId,
     Run,
     RunFile,
@@ -28,9 +29,13 @@ from aworld.cloud.models import (
 )
 from aworld.cloud.paths import CloudPaths
 from aworld.cloud.repository import CloudRepository
-from aworld.cloud.service import CloudService
+from aworld.cloud.service import BatchRunSpec, CloudService
 from aworld.cloud.settings import CloudSettings
 from aworld_gateway.http.cloud_models import (
+    BatchCancelRequest,
+    BatchCreateRequest,
+    BatchPageResponse,
+    BatchResponse,
     CloudErrorBody,
     CloudErrorResponse,
     RunCancelRequest,
@@ -66,6 +71,7 @@ class CloudApiDependencies:
 
 _ERROR_STATUSES = {
     CloudErrorCode.WORKSPACE_NOT_FOUND: status.HTTP_404_NOT_FOUND,
+    CloudErrorCode.BATCH_NOT_FOUND: status.HTTP_404_NOT_FOUND,
     CloudErrorCode.RUN_NOT_FOUND: status.HTTP_404_NOT_FOUND,
     CloudErrorCode.FILE_NOT_FOUND: status.HTTP_404_NOT_FOUND,
     CloudErrorCode.WORKSPACE_BUSY: status.HTTP_409_CONFLICT,
@@ -328,6 +334,95 @@ def create_cloud_router(dependencies: CloudApiDependencies) -> APIRouter:
             ),
         )
         return await _run_response(repository, run)
+
+    @router.post(
+        "/workspaces/{workspace_id}/batches",
+        response_model=BatchResponse,
+        status_code=status.HTTP_201_CREATED,
+        responses=_ERROR_RESPONSES,
+    )
+    async def create_batch(
+        workspace_id: str, payload: BatchCreateRequest
+    ) -> BatchResponse:
+        batch = await service.create_batch(
+            WorkspaceId(workspace_id),
+            name=payload.name,
+            runs=tuple(
+                BatchRunSpec(
+                    task=item.task,
+                    model=item.model,
+                    request_schema_version=item.request_schema_version,
+                    mode=item.mode,
+                    benchmark=(
+                        item.benchmark.to_domain()
+                        if item.benchmark is not None
+                        else None
+                    ),
+                )
+                for item in payload.runs
+            ),
+            idempotency_key=payload.idempotency_key,
+        )
+        return BatchResponse.from_domain(batch)
+
+    @router.get(
+        "/batches",
+        response_model=BatchPageResponse,
+        responses=_ERROR_RESPONSES,
+    )
+    async def list_batches(
+        limit: int = Query(default=50, ge=1, le=1000),
+        page_token: str | None = Query(default=None, max_length=4096),
+        workspace_id: str | None = Query(default=None),
+    ) -> BatchPageResponse:
+        page = await service.list_batches(
+            limit=limit,
+            page_token=page_token,
+            workspace_id=(
+                WorkspaceId(workspace_id) if workspace_id is not None else None
+            ),
+        )
+        return BatchPageResponse(
+            items=tuple(BatchResponse.from_domain(item) for item in page.items),
+            next_page_token=page.next_page_token,
+        )
+
+    @router.get(
+        "/batches/{batch_id}",
+        response_model=BatchResponse,
+        responses=_ERROR_RESPONSES,
+    )
+    async def get_batch(batch_id: str) -> BatchResponse:
+        return BatchResponse.from_domain(await service.get_batch(BatchId(batch_id)))
+
+    @router.get(
+        "/batches/{batch_id}/runs",
+        response_model=RunPageResponse,
+        responses=_ERROR_RESPONSES,
+    )
+    async def list_batch_runs(
+        batch_id: str,
+        limit: int = Query(default=50, ge=1, le=1000),
+        page_token: str | None = Query(default=None, max_length=4096),
+    ) -> RunPageResponse:
+        page = await service.list_batch_runs(
+            BatchId(batch_id), limit=limit, page_token=page_token
+        )
+        items = tuple([await _run_response(repository, run) for run in page.items])
+        return RunPageResponse(items=items, next_page_token=page.next_page_token)
+
+    @router.post(
+        "/batches/{batch_id}/cancel",
+        response_model=BatchResponse,
+        responses=_ERROR_RESPONSES,
+    )
+    async def cancel_batch(
+        batch_id: str, payload: BatchCancelRequest
+    ) -> BatchResponse:
+        batch = await service.cancel_batch(
+            BatchId(batch_id), idempotency_key=payload.idempotency_key
+        )
+        return BatchResponse.from_domain(batch)
 
     @router.get(
         "/runs",

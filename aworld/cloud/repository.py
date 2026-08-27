@@ -8,6 +8,8 @@ from datetime import datetime
 from typing import Any, Generic, Protocol, TypeVar, runtime_checkable
 
 from aworld.cloud.models import (
+    Batch,
+    BatchId,
     FileId,
     Run,
     RunEvent,
@@ -86,6 +88,7 @@ class RunRepository(Protocol):
         page_token: str | None = None,
         workspace_id: WorkspaceId | None = None,
         state: RunState | None = None,
+        batch_id: BatchId | None = None,
     ) -> Page[Run]: ...
 
     async def claim_run(
@@ -138,6 +141,45 @@ class RunRepository(Protocol):
 
 
 @runtime_checkable
+class BatchRepository(Protocol):
+    async def create_batch(
+        self,
+        batch: Batch,
+        runs: tuple[Run, ...],
+        *,
+        idempotency_key: str,
+        request_fingerprint: str,
+    ) -> Batch: ...
+
+    async def get_batch(self, batch_id: BatchId) -> Batch | None: ...
+
+    async def list_batches(
+        self,
+        *,
+        limit: int,
+        page_token: str | None = None,
+        workspace_id: WorkspaceId | None = None,
+    ) -> Page[Batch]: ...
+
+    async def list_batch_runs(
+        self,
+        batch_id: BatchId,
+        *,
+        limit: int,
+        page_token: str | None = None,
+    ) -> Page[Run]: ...
+
+    async def cancel_batch(
+        self,
+        batch_id: BatchId,
+        *,
+        requested_at: datetime,
+        idempotency_key: str,
+        request_fingerprint: str,
+    ) -> Batch: ...
+
+
+@runtime_checkable
 class EventRepository(Protocol):
     async def append_event(
         self,
@@ -169,6 +211,7 @@ class RunFileRepository(Protocol):
 @runtime_checkable
 class CloudRepository(
     WorkspaceRepository,
+    BatchRepository,
     RunRepository,
     EventRepository,
     RunFileRepository,

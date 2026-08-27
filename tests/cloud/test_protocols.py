@@ -7,6 +7,7 @@ from pathlib import Path
 from aworld.cloud.benchmark import BenchmarkAdapter
 from aworld.cloud.executor import CloudExecutor, ExecutorProvider
 from aworld.cloud.repository import (
+    BatchRepository,
     EventRepository,
     RunFileRepository,
     RunRepository,
@@ -60,6 +61,23 @@ class _RunStore:
         return ()
 
 
+class _BatchStore:
+    async def create_batch(self, batch, runs, **kwargs):
+        return batch
+
+    async def get_batch(self, batch_id):
+        return None
+
+    async def list_batches(self, **kwargs):
+        return None
+
+    async def list_batch_runs(self, batch_id, **kwargs):
+        return None
+
+    async def cancel_batch(self, batch_id, **kwargs):
+        return None
+
+
 class _EventStore:
     async def append_event(self, run_id, **kwargs):
         return None
@@ -104,6 +122,7 @@ class _BenchmarkAdapter:
 def test_protocols_support_structural_implementations() -> None:
     assert isinstance(_WorkspaceStore(), WorkspaceRepository)
     assert isinstance(_RunStore(), RunRepository)
+    assert isinstance(_BatchStore(), BatchRepository)
     assert isinstance(_EventStore(), EventRepository)
     assert isinstance(_FileStore(), RunFileRepository)
     assert isinstance(_Executor(), CloudExecutor)

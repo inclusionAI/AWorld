@@ -412,6 +412,54 @@ def test_run_events_sse_and_manifest_file_ranges(tmp_path: Path) -> None:
         _close(stack)
 
 
+def test_batch_http_path_converges_from_two_real_worker_runs(tmp_path: Path) -> None:
+    stack = _build_stack(tmp_path)
+    try:
+        workspace = _create_workspace(stack.client)
+        created = stack.client.post(
+            f"/api/v1/cloud/workspaces/{workspace['id']}/batches",
+            json={
+                "name": "mixed smoke",
+                "idempotency_key": "batch-mixed",
+                "runs": [
+                    {"task": "succeed", "model": "codex-api-test"},
+                    {"task": "fail", "model": "codex-api-test"},
+                ],
+            },
+        )
+        assert created.status_code == 201
+        batch = created.json()
+        assert batch["state"] == "queued"
+        assert batch["counts"]["total"] == 2
+
+        run_page = stack.client.get(
+            f"/api/v1/cloud/batches/{batch['id']}/runs"
+        )
+        assert run_page.status_code == 200
+        runs = run_page.json()["items"]
+        assert all(run["batch_id"] == batch["id"] for run in runs)
+        stack.executor.set_plan(RunId(runs[0]["id"]), FakeExecutionPlan())
+        stack.executor.set_plan(
+            RunId(runs[1]["id"]),
+            FakeExecutionPlan(exit_code=7, error_code="test_failure"),
+        )
+
+        asyncio.run(stack.worker.run_until_idle())
+
+        terminal = stack.client.get(
+            f"/api/v1/cloud/batches/{batch['id']}"
+        ).json()
+        assert terminal["state"] == "partially_succeeded"
+        assert terminal["progress"] == 1.0
+        assert terminal["counts"]["succeeded"] == 1
+        assert terminal["counts"]["failed"] == 1
+        assert terminal["finished_at"] is not None
+        listed = stack.client.get("/api/v1/cloud/batches").json()["items"]
+        assert [item["id"] for item in listed] == [batch["id"]]
+    finally:
+        _close(stack)
+
+
 def test_run_mode_contract_accepts_benchmark_and_rejects_cross_mode_metadata(
     tmp_path: Path,
 ) -> None:

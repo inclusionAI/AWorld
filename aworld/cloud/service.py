@@ -15,6 +15,8 @@ from aworld.cloud.errors import CloudError, CloudErrorCode, WorkspaceBusyError
 from aworld.cloud.models import (
     ACTIVE_RUN_STATES,
     RUN_REQUEST_SCHEMA_VERSION,
+    Batch,
+    BatchId,
     BenchmarkMetadata,
     MountAccessMode,
     Run,
@@ -25,6 +27,7 @@ from aworld.cloud.models import (
     WorkspaceId,
     WorkspaceMount,
     WorkspaceState,
+    aggregate_batch,
     create_retry_run,
     transition_workspace,
     utc_now,
@@ -66,6 +69,15 @@ class WorkspaceInspection:
     active_run_id: RunId | None
     codex_config_present: bool
     codex_auth_present: bool
+
+
+@dataclass(frozen=True)
+class BatchRunSpec:
+    task: str
+    model: str | None = None
+    request_schema_version: str = RUN_REQUEST_SCHEMA_VERSION
+    mode: RunMode = RunMode.QUERY
+    benchmark: BenchmarkMetadata | None = None
 
 
 class CloudService:
@@ -370,17 +382,15 @@ class CloudService:
                 "benchmark metadata is required for benchmark runs",
             )
         await self.inspect_workspace(workspace_id)
-        run = Run(
-            id=RunId(f"run-{self._id_factory()}"),
-            workspace_id=workspace_id,
-            state=RunState.QUEUED,
-            revision=0,
-            attempt=1,
-            task=task,
-            model=model,
-            request_schema_version=request_schema_version,
-            mode=mode,
-            benchmark=benchmark,
+        run = self._new_run(
+            workspace_id,
+            BatchRunSpec(
+                task=task,
+                model=model,
+                request_schema_version=request_schema_version,
+                mode=mode,
+                benchmark=benchmark,
+            ),
             created_at=self._clock(),
         )
         stored = await self._repository.create_run(
@@ -389,16 +399,7 @@ class CloudService:
             request_fingerprint=_fingerprint(
                 "run.submit",
                 {
-                    "benchmark": (
-                        {
-                            "dataset": benchmark.dataset,
-                            "task_id": benchmark.task_id,
-                            "harness": benchmark.harness,
-                            "verifier": benchmark.verifier,
-                        }
-                        if benchmark is not None
-                        else None
-                    ),
+                    "benchmark": self._benchmark_payload(benchmark),
                     "mode": mode.value,
                     "model": model,
                     "request_schema_version": request_schema_version,
@@ -415,6 +416,167 @@ class CloudService:
                 created_at=stored.created_at,
             )
         return stored
+
+    @staticmethod
+    def _benchmark_payload(benchmark: BenchmarkMetadata | None) -> dict[str, Any] | None:
+        if benchmark is None:
+            return None
+        return {
+            "dataset": benchmark.dataset,
+            "task_id": benchmark.task_id,
+            "harness": benchmark.harness,
+            "verifier": benchmark.verifier,
+        }
+
+    def _new_run(
+        self,
+        workspace_id: WorkspaceId,
+        spec: BatchRunSpec,
+        *,
+        created_at: datetime,
+        batch_id: BatchId | None = None,
+    ) -> Run:
+        task = _require_text(spec.task, field_name="task")
+        if spec.request_schema_version != RUN_REQUEST_SCHEMA_VERSION:
+            raise CloudError(
+                CloudErrorCode.INVALID_REQUEST,
+                f"unsupported run request schema: {spec.request_schema_version}",
+            )
+        if spec.mode is RunMode.QUERY and spec.benchmark is not None:
+            raise CloudError(
+                CloudErrorCode.INVALID_REQUEST,
+                "benchmark metadata is not valid for query runs",
+            )
+        if spec.mode is RunMode.BENCHMARK and spec.benchmark is None:
+            raise CloudError(
+                CloudErrorCode.INVALID_REQUEST,
+                "benchmark metadata is required for benchmark runs",
+            )
+        return Run(
+            id=RunId(f"run-{self._id_factory()}"),
+            workspace_id=workspace_id,
+            batch_id=batch_id,
+            state=RunState.QUEUED,
+            revision=0,
+            attempt=1,
+            task=task,
+            model=spec.model,
+            request_schema_version=spec.request_schema_version,
+            mode=spec.mode,
+            benchmark=spec.benchmark,
+            created_at=created_at,
+        )
+
+    async def create_batch(
+        self,
+        workspace_id: WorkspaceId,
+        *,
+        name: str,
+        runs: tuple[BatchRunSpec, ...],
+        idempotency_key: str,
+    ) -> Batch:
+        self._ensure_enabled()
+        name = _require_text(name, field_name="name")
+        idempotency_key = _require_text(
+            idempotency_key, field_name="idempotency_key"
+        )
+        if not runs:
+            raise CloudError(
+                CloudErrorCode.INVALID_REQUEST, "a batch requires at least one run"
+            )
+        await self.inspect_workspace(workspace_id)
+        batch_id = BatchId(f"batch-{self._id_factory()}")
+        created_at = self._clock()
+        batch_runs = tuple(
+            self._new_run(
+                workspace_id,
+                spec,
+                created_at=created_at,
+                batch_id=batch_id,
+            )
+            for spec in runs
+        )
+        candidate = aggregate_batch(
+            batch_id=batch_id,
+            workspace_id=workspace_id,
+            name=name,
+            created_at=created_at,
+            runs=batch_runs,
+        )
+        return await self._repository.create_batch(
+            candidate,
+            batch_runs,
+            idempotency_key=idempotency_key,
+            request_fingerprint=_fingerprint(
+                "batch.create",
+                {
+                    "name": name,
+                    "runs": [
+                        {
+                            "benchmark": self._benchmark_payload(spec.benchmark),
+                            "mode": spec.mode.value,
+                            "model": spec.model,
+                            "request_schema_version": spec.request_schema_version,
+                            "task": spec.task.strip(),
+                        }
+                        for spec in runs
+                    ],
+                    "workspace_id": str(workspace_id),
+                },
+            ),
+        )
+
+    async def get_batch(self, batch_id: BatchId) -> Batch:
+        self._ensure_enabled()
+        batch = await self._repository.get_batch(batch_id)
+        if batch is None:
+            raise CloudError(CloudErrorCode.BATCH_NOT_FOUND, "batch does not exist")
+        return batch
+
+    async def list_batches(
+        self,
+        *,
+        limit: int,
+        page_token: str | None = None,
+        workspace_id: WorkspaceId | None = None,
+    ) -> Page[Batch]:
+        self._ensure_enabled()
+        return await self._repository.list_batches(
+            limit=limit,
+            page_token=page_token,
+            workspace_id=workspace_id,
+        )
+
+    async def list_batch_runs(
+        self,
+        batch_id: BatchId,
+        *,
+        limit: int,
+        page_token: str | None = None,
+    ) -> Page[Run]:
+        self._ensure_enabled()
+        return await self._repository.list_batch_runs(
+            batch_id, limit=limit, page_token=page_token
+        )
+
+    async def cancel_batch(
+        self,
+        batch_id: BatchId,
+        *,
+        idempotency_key: str,
+    ) -> Batch:
+        self._ensure_enabled()
+        idempotency_key = _require_text(
+            idempotency_key, field_name="idempotency_key"
+        )
+        return await self._repository.cancel_batch(
+            batch_id,
+            requested_at=self._clock(),
+            idempotency_key=idempotency_key,
+            request_fingerprint=_fingerprint(
+                "batch.cancel", {"batch_id": str(batch_id)}
+            ),
+        )
 
     async def get_run(self, run_id: RunId) -> Run:
         self._ensure_enabled()
