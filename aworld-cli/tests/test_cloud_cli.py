@@ -94,6 +94,56 @@ def test_cloud_client_decodes_stable_api_error() -> None:
     assert error.value.details == {"workspace_id": "workspace-1"}
 
 
+def test_cloud_client_uses_versioned_batch_paths() -> None:
+    captured: list[tuple[str, str, object]] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(
+            (
+                request.method,
+                request.url.path,
+                json.loads(request.content) if request.content else None,
+            )
+        )
+        return httpx.Response(200, json={"id": "batch-1"})
+
+    async def scenario() -> None:
+        async with CloudHttpClient(
+            CloudClientConfig(endpoint="https://cloud.example.test"),
+            transport=httpx.MockTransport(handler),
+        ) as client:
+            await client.create_batch(
+                "workspace-1",
+                name="nightly",
+                runs=[{"task": "one"}],
+                idempotency_key="batch-create",
+            )
+            await client.list_batches(workspace_id="workspace-1")
+            await client.get_batch("batch-1")
+            await client.cancel_batch("batch-1", idempotency_key="batch-cancel")
+
+    asyncio.run(scenario())
+
+    assert captured == [
+        (
+            "POST",
+            "/api/v1/cloud/workspaces/workspace-1/batches",
+            {
+                "idempotency_key": "batch-create",
+                "name": "nightly",
+                "runs": [{"task": "one"}],
+            },
+        ),
+        ("GET", "/api/v1/cloud/batches", None),
+        ("GET", "/api/v1/cloud/batches/batch-1", None),
+        (
+            "POST",
+            "/api/v1/cloud/batches/batch-1/cancel",
+            {"idempotency_key": "batch-cancel"},
+        ),
+    ]
+
+
 def test_cloud_command_is_registered_via_builtin_plugin() -> None:
     plugin_root = (
         Path(__file__).parents[1]
@@ -317,3 +367,51 @@ def test_cloud_cli_downloads_run_logs(monkeypatch, tmp_path, capsys) -> None:
     assert (output_directory / "stdout.log").read_text() == "harbor output\n"
     result = json.loads(capsys.readouterr().out)
     assert [item["kind"] for item in result["files"]] == ["stdout"]
+
+
+def test_cloud_cli_creates_batch_from_json_file(
+    monkeypatch, tmp_path: Path, capsys
+) -> None:
+    from aworld_cli.top_level_commands import cloud_cmd
+
+    runs_file = tmp_path / "runs.json"
+    runs_file.write_text(
+        json.dumps([{"task": "one"}, {"task": "two", "mode": "query"}]),
+        encoding="utf-8",
+    )
+
+    class FakeClient:
+        def __init__(self, config):
+            del config
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def create_batch(self, workspace_id, *, name, runs, idempotency_key):
+            assert workspace_id == "workspace-1"
+            assert name == "nightly"
+            assert runs == [{"task": "one"}, {"task": "two", "mode": "query"}]
+            assert idempotency_key == "batch-key"
+            return {"id": "batch-1", "counts": {"total": 2}}
+
+    monkeypatch.setattr(cloud_cmd, "CloudHttpClient", FakeClient)
+    args = _parse_cloud_args(
+        [
+            "batch",
+            "create",
+            "--workspace-id",
+            "workspace-1",
+            "--name",
+            "nightly",
+            "--runs-file",
+            str(runs_file),
+            "--idempotency-key",
+            "batch-key",
+        ]
+    )
+
+    assert CloudTopLevelCommand().run(args, SimpleNamespace()) == 0
+    assert json.loads(capsys.readouterr().out)["id"] == "batch-1"

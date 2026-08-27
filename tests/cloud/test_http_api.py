@@ -432,9 +432,7 @@ def test_batch_http_path_converges_from_two_real_worker_runs(tmp_path: Path) -> 
         assert batch["state"] == "queued"
         assert batch["counts"]["total"] == 2
 
-        run_page = stack.client.get(
-            f"/api/v1/cloud/batches/{batch['id']}/runs"
-        )
+        run_page = stack.client.get(f"/api/v1/cloud/batches/{batch['id']}/runs")
         assert run_page.status_code == 200
         runs = run_page.json()["items"]
         assert all(run["batch_id"] == batch["id"] for run in runs)
@@ -446,9 +444,7 @@ def test_batch_http_path_converges_from_two_real_worker_runs(tmp_path: Path) -> 
 
         asyncio.run(stack.worker.run_until_idle())
 
-        terminal = stack.client.get(
-            f"/api/v1/cloud/batches/{batch['id']}"
-        ).json()
+        terminal = stack.client.get(f"/api/v1/cloud/batches/{batch['id']}").json()
         assert terminal["state"] == "partially_succeeded"
         assert terminal["progress"] == 1.0
         assert terminal["counts"]["succeeded"] == 1
@@ -456,6 +452,40 @@ def test_batch_http_path_converges_from_two_real_worker_runs(tmp_path: Path) -> 
         assert terminal["finished_at"] is not None
         listed = stack.client.get("/api/v1/cloud/batches").json()["items"]
         assert [item["id"] for item in listed] == [batch["id"]]
+
+        cancellable = stack.client.post(
+            f"/api/v1/cloud/workspaces/{workspace['id']}/batches",
+            json={
+                "name": "cancel smoke",
+                "idempotency_key": "batch-cancel-create",
+                "runs": [{"task": "queued one"}, {"task": "queued two"}],
+            },
+        ).json()
+        cancel_url = f"/api/v1/cloud/batches/{cancellable['id']}/cancel"
+        cancelled = stack.client.post(
+            cancel_url, json={"idempotency_key": "batch-cancel"}
+        )
+        repeated = stack.client.post(
+            cancel_url, json={"idempotency_key": "batch-cancel"}
+        )
+        assert cancelled.status_code == 200
+        assert cancelled.json()["state"] == "cancelled"
+        assert cancelled.json()["counts"]["cancelled"] == 2
+        assert repeated.json() == cancelled.json()
+
+        first_page = stack.client.get(
+            "/api/v1/cloud/batches", params={"limit": 1}
+        ).json()
+        second_page = stack.client.get(
+            "/api/v1/cloud/batches",
+            params={"limit": 1, "page_token": first_page["next_page_token"]},
+        ).json()
+        assert [item["id"] for item in first_page["items"]] == [batch["id"]]
+        assert [item["id"] for item in second_page["items"]] == [cancellable["id"]]
+
+        missing = stack.client.get("/api/v1/cloud/batches/missing")
+        assert missing.status_code == 404
+        assert missing.json()["error"]["code"] == "batch_not_found"
     finally:
         _close(stack)
 

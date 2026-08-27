@@ -45,6 +45,11 @@ def test_dashboard_root_serves_dependency_free_operations_ui(tmp_path: Path) -> 
         "Server",
         "Worker",
         "Recent runs",
+        "Batches",
+        "Recent batches",
+        "Batch details",
+        "Average reward",
+        "Cancel batch",
         "Auto refresh",
         "Run details",
         "Events",
@@ -63,6 +68,11 @@ def test_dashboard_root_serves_dependency_free_operations_ui(tmp_path: Path) -> 
         assert content in html
     assert 'const API = "/api/v1/cloud"' in html
     assert "fetchJSON(`${API}/runs?limit=100`)" in html
+    assert "fetchJSON(`${API}/batches?limit=100`)" in html
+    assert "fetchJSON(`${API}/batches/${encoded}`)" in html
+    assert "fetchJSON(`${API}/batches/${encoded}/runs?limit=1000`)" in html
+    assert "`${API}/batches/${encodeURIComponent(batchId)}/cancel`" in html
+    assert 'window.confirm("Cancel queued and active runs in this batch?")' in html
     assert "fetchJSON(`${API}/runs/${encoded}/events?limit=1000`)" in html
     assert "fetchJSON(`${API}/runs/${encoded}/files`)" in html
     assert "fetch(validDownload(file, run.id)" in html

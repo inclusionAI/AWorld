@@ -17,6 +17,36 @@ aworld-cli cloud workspace release workspace-123
 
 Create and release accept `--idempotency-key`. When omitted, the CLI generates a UUID for that invocation.
 
+## Batches
+
+A batch atomically creates a named group of runs in one workspace. Supply a
+non-empty JSON array whose items use the same request fields as `run submit`
+except `idempotency_key`:
+
+```json
+[
+  {"task": "Inspect package A", "mode": "query", "model": null},
+  {
+    "task": "Run case 42",
+    "mode": "benchmark",
+    "benchmark": {"dataset": "suite-name", "task_id": "case-42"}
+  }
+]
+```
+
+```bash
+aworld-cli cloud batch create \
+  --workspace-id workspace-123 \
+  --name nightly \
+  --runs-file ./runs.json
+aworld-cli cloud batch list --workspace-id workspace-123
+aworld-cli cloud batch get batch-123
+aworld-cli cloud batch cancel batch-123
+```
+
+All commands emit JSON. Create and cancel accept an optional stable
+`--idempotency-key`.
+
 ## Query and benchmark runs
 
 Query is the default mode:

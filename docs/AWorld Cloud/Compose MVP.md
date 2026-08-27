@@ -49,7 +49,11 @@ docker compose \
 Open [http://127.0.0.1:8000/](http://127.0.0.1:8000/) after the server and
 worker are healthy. The dependency-free dashboard shows live server and worker
 health plus the latest query and benchmark runs. It refreshes automatically or
-on demand; selecting a run opens its events and file manifest. Selecting a file
+on demand. The Runs and Batches tabs expose individual executions or durable
+groups created through the same API. A batch row shows progress, terminal run
+counts, and the arithmetic mean over runs that have a non-null reward; selecting
+it opens its runs and an idempotent cancellation action for queued/active work.
+Selecting a run opens its events and file manifest. Selecting a file
 previews JSON, ATIF, logs, stdout, stderr, and other text safely in the page,
 with JSON formatting and a bounded 256 KiB preview. The preview identifies empty,
 binary, failed, and truncated content and always provides an explicit Download

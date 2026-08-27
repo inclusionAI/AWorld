@@ -108,4 +108,4 @@ Rules:
 
 ## Compatibility
 
-Existing v1 callers that submit only `idempotency_key`, `task`, and optional `model` continue to create query runs. Existing SQLite v1 rows migrate with query defaults and null benchmark/trajectory metadata. Existing run-file kinds and endpoints are unchanged; the trajectory kind and manifest fields are additive.
+Existing v1 callers that submit only `idempotency_key`, `task`, and optional `model` continue to create query runs. Existing SQLite v1 rows migrate with query defaults and null benchmark/trajectory metadata. Existing run-file kinds and endpoints are unchanged; the trajectory kind and manifest fields are additive. Batch support adds only nullable `batch_id` to run responses; standalone runs retain null. See [upstream protocol contracts](../dev-guide/upstream_protocol_contracts.md) for the batch transport and aggregation rules.

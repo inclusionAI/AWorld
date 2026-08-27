@@ -61,6 +61,9 @@ DASHBOARD_HTML = r"""<!doctype html>
     .dot.bad { background: var(--danger); }
     .shell { max-width: 1440px; margin: 0 auto; padding: 30px 28px 56px; }
     .heading { display: flex; justify-content: space-between; align-items: flex-end; gap: 24px; margin-bottom: 22px; }
+    .view-switch { display: flex; gap: 4px; margin-bottom: 14px; border-bottom: 1px solid var(--line); }
+    .view-tab { border: 0; border-bottom: 2px solid transparent; padding: 8px 12px; color: var(--muted); background: transparent; cursor: pointer; font-weight: 650; }
+    .view-tab.active { color: var(--blue); border-bottom-color: var(--blue); }
     h1 { font-size: 26px; line-height: 1.2; letter-spacing: -0.035em; margin: 0 0 6px; }
     .subtitle { margin: 0; color: var(--muted); font-size: 14px; }
     .controls { display: flex; align-items: center; gap: 14px; white-space: nowrap; }
@@ -77,6 +80,8 @@ DASHBOARD_HTML = r"""<!doctype html>
       font-size: 13px;
     }
     .button:hover { background: var(--blue); border-color: var(--blue); }
+    .button.danger-button { color: var(--danger); background: var(--white); border-color: #fda29b; }
+    .button.danger-button:hover { color: var(--white); background: var(--danger); border-color: var(--danger); }
     .button:disabled { cursor: wait; opacity: .55; }
     .layout { display: grid; grid-template-columns: minmax(0, 1fr); gap: 24px; }
     .layout.with-detail { grid-template-columns: minmax(0, 1.6fr) minmax(340px, .8fr); }
@@ -96,8 +101,8 @@ DASHBOARD_HTML = r"""<!doctype html>
     .secondary { display: block; margin-top: 3px; color: var(--muted); font-size: 11px; max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .badge { display: inline-flex; align-items: center; border: 1px solid var(--line); border-radius: 999px; padding: 3px 8px; font-size: 11px; font-weight: 650; text-transform: capitalize; background: var(--white); }
     .badge.succeeded { color: var(--success); border-color: #a6f4c5; background: #ecfdf3; }
-    .badge.failed, .badge.cancelled { color: var(--danger); border-color: #fecdca; background: #fef3f2; }
-    .badge.running, .badge.claimed { color: var(--blue); border-color: #b2ccff; background: var(--blue-soft); }
+    .badge.failed, .badge.cancelled, .badge.partially_succeeded { color: var(--danger); border-color: #fecdca; background: #fef3f2; }
+    .badge.running, .badge.claimed, .badge.cancelling { color: var(--blue); border-color: #b2ccff; background: var(--blue-soft); }
     .badge.queued { color: var(--warning); border-color: #fedf89; background: #fffaeb; }
     .state { min-height: 220px; display: grid; place-items: center; padding: 34px; color: var(--muted); text-align: center; }
     .state strong { display: block; color: var(--black); margin-bottom: 5px; }
@@ -169,26 +174,30 @@ DASHBOARD_HTML = r"""<!doctype html>
     </div>
   </header>
   <main class="shell">
+    <nav class="view-switch" aria-label="Cloud resources">
+      <button id="runsTab" class="view-tab active" type="button" aria-pressed="true">Runs</button>
+      <button id="batchesTab" class="view-tab" type="button" aria-pressed="false">Batches</button>
+    </nav>
     <div class="heading">
-      <div><h1>Runs</h1><p class="subtitle">Live execution and benchmark activity</p></div>
+      <div><h1 id="viewTitle">Runs</h1><p id="viewSubtitle" class="subtitle">Live execution and benchmark activity</p></div>
       <div class="controls">
         <label class="auto-refresh"><input id="autoRefresh" type="checkbox" checked> Auto refresh</label>
         <button id="refreshButton" class="button" type="button">Refresh</button>
       </div>
     </div>
     <div id="layout" class="layout">
-      <section class="panel" aria-labelledby="runsHeading">
-        <div class="panel-header"><h2 id="runsHeading">Recent runs</h2><span id="lastUpdated" class="updated">Not updated</span></div>
+      <section class="panel" aria-labelledby="listHeading">
+        <div class="panel-header"><h2 id="listHeading">Recent runs</h2><span id="lastUpdated" class="updated">Not updated</span></div>
         <div id="runsState" class="state" role="status"><div><div class="spinner"></div>Loading runs…</div></div>
         <div id="tableWrap" class="table-wrap" hidden>
           <table>
-            <thead><tr><th>Run</th><th>Status</th><th>Mode</th><th>Task / benchmark</th><th>Created</th><th>Duration</th><th>Reward</th></tr></thead>
+            <thead><tr id="tableHead"><th>Run</th><th>Status</th><th>Mode</th><th>Task / benchmark</th><th>Created</th><th>Duration</th><th>Reward</th></tr></thead>
             <tbody id="runsBody"></tbody>
           </table>
         </div>
       </section>
       <section id="detailPanel" class="panel detail" aria-labelledby="detailHeading" hidden>
-        <div class="panel-header"><h2 id="detailHeading">Run details</h2><button id="closeDetail" class="close" type="button" aria-label="Close run details">×</button></div>
+        <div class="panel-header"><h2 id="detailHeading">Run details</h2><button id="closeDetail" class="close" type="button" aria-label="Close details">×</button></div>
         <div id="detailBody" class="detail-body"></div>
       </section>
     </div>
@@ -203,6 +212,13 @@ DASHBOARD_HTML = r"""<!doctype html>
       runsState: document.querySelector("#runsState"),
       tableWrap: document.querySelector("#tableWrap"),
       runsBody: document.querySelector("#runsBody"),
+      tableHead: document.querySelector("#tableHead"),
+      listHeading: document.querySelector("#listHeading"),
+      detailHeading: document.querySelector("#detailHeading"),
+      viewTitle: document.querySelector("#viewTitle"),
+      viewSubtitle: document.querySelector("#viewSubtitle"),
+      runsTab: document.querySelector("#runsTab"),
+      batchesTab: document.querySelector("#batchesTab"),
       detailPanel: document.querySelector("#detailPanel"),
       detailBody: document.querySelector("#detailBody"),
       refreshButton: document.querySelector("#refreshButton"),
@@ -214,6 +230,8 @@ DASHBOARD_HTML = r"""<!doctype html>
       workerHealth: document.querySelector("#workerHealth"),
     };
     let selectedRunId = null;
+    let selectedBatchId = null;
+    let activeView = "runs";
     let refreshPending = false;
     let detailRequest = 0;
     let previewRequest = 0;
@@ -227,8 +245,11 @@ DASHBOARD_HTML = r"""<!doctype html>
       return item;
     }
 
-    async function fetchJSON(path) {
-      const response = await fetch(path, {headers: {Accept: "application/json"}});
+    async function fetchJSON(path, options = {}) {
+      const response = await fetch(path, {
+        ...options,
+        headers: {Accept: "application/json", ...(options.headers || {})},
+      });
       if (!response.ok) {
         let message = `${response.status} ${response.statusText}`;
         try {
@@ -334,6 +355,49 @@ DASHBOARD_HTML = r"""<!doctype html>
       }
     }
 
+    function batchCounts(batch) {
+      const counts = batch.counts || {};
+      return `${counts.succeeded || 0} succeeded · ${counts.failed || 0} failed · ${counts.cancelled || 0} cancelled`;
+    }
+
+    function renderBatches(batches) {
+      ui.runsBody.replaceChildren();
+      if (!batches.length) {
+        showRunsState("No batches yet", "Created batches and their run progress will appear here.");
+        return;
+      }
+      ui.runsState.hidden = true;
+      ui.tableWrap.hidden = false;
+      for (const batch of batches) {
+        const row = element("tr");
+        row.tabIndex = 0;
+        row.dataset.batchId = batch.id;
+        if (batch.id === selectedBatchId) row.classList.add("selected");
+        const name = element("td");
+        name.append(
+          element("span", "run-id", batch.name),
+          element("span", "secondary", batch.id),
+        );
+        const state = element("td");
+        state.append(element("span", `badge ${batch.state}`, batch.state.replaceAll("_", " ")));
+        row.append(
+          name,
+          state,
+          element("td", "", `${Math.round(Number(batch.progress || 0) * 100)}%`),
+          element("td", "", batchCounts(batch)),
+          element("td", "", batch.average_reward === null ? "—" : String(batch.average_reward)),
+          element("td", "", formatTime(batch.created_at)),
+          element("td", "", formatDuration(batch.duration_seconds)),
+        );
+        const open = () => openBatch(batch.id);
+        row.addEventListener("click", open);
+        row.addEventListener("keydown", event => {
+          if (event.key === "Enter" || event.key === " ") { event.preventDefault(); open(); }
+        });
+        ui.runsBody.append(row);
+      }
+    }
+
     async function loadRuns({quiet = false} = {}) {
       if (refreshPending) return;
       refreshPending = true;
@@ -344,6 +408,7 @@ DASHBOARD_HTML = r"""<!doctype html>
       }
       try {
         const payload = await fetchJSON(`${API}/runs?limit=100`);
+        if (activeView !== "runs") return;
         renderRuns(payload.items || []);
         ui.lastUpdated.textContent = `Updated ${new Date().toLocaleTimeString()}`;
         if (selectedRunId) await loadRunDetail(selectedRunId);
@@ -352,6 +417,31 @@ DASHBOARD_HTML = r"""<!doctype html>
       } finally {
         refreshPending = false;
         ui.refreshButton.disabled = false;
+        if (activeView !== "runs") loadBatches({quiet});
+      }
+    }
+
+    async function loadBatches({quiet = false} = {}) {
+      if (refreshPending) return;
+      refreshPending = true;
+      ui.refreshButton.disabled = true;
+      if (!quiet && !ui.runsBody.children.length) {
+        ui.runsState.hidden = false;
+        ui.tableWrap.hidden = true;
+      }
+      try {
+        const payload = await fetchJSON(`${API}/batches?limit=100`);
+        if (activeView !== "batches") return;
+        renderBatches(payload.items || []);
+        ui.lastUpdated.textContent = `Updated ${new Date().toLocaleTimeString()}`;
+        if (selectedBatchId) await loadBatchDetail(selectedBatchId);
+        else if (selectedRunId) await loadRunDetail(selectedRunId);
+      } catch (error) {
+        showRunsState("Could not load batches", error.message, true);
+      } finally {
+        refreshPending = false;
+        ui.refreshButton.disabled = false;
+        if (activeView !== "batches") loadRuns({quiet});
       }
     }
 
@@ -538,6 +628,7 @@ DASHBOARD_HTML = r"""<!doctype html>
     }
 
     function renderDetail(run, events, files) {
+      ui.detailHeading.textContent = "Run details";
       ui.detailBody.replaceChildren();
       ui.detailBody.append(element("p", "detail-id", run.id));
       const facts = element("dl", "facts");
@@ -600,8 +691,105 @@ DASHBOARD_HTML = r"""<!doctype html>
       }
     }
 
+    function renderBatchRuns(runs) {
+      const section = element("section", "detail-section");
+      section.append(element("h3", "", `Runs (${runs.length})`));
+      if (!runs.length) {
+        section.append(element("div", "minor-state", "No runs found in this batch."));
+        return section;
+      }
+      for (const run of runs) {
+        const item = element("div", "file");
+        const open = element("button", "file-preview-button", run.id);
+        open.type = "button";
+        open.setAttribute("aria-label", `Open run ${run.id}`);
+        open.addEventListener("click", () => openRun(run.id));
+        const label = element("span", "file-name");
+        label.append(open, element("span", "secondary", taskLabels(run)[0]));
+        item.append(label, element("span", `badge ${run.state}`, run.state));
+        section.append(item);
+      }
+      return section;
+    }
+
+    function cancellableBatch(state) {
+      return ["queued", "running", "cancelling"].includes(state);
+    }
+
+    function renderBatchDetail(batch, runs) {
+      ui.detailHeading.textContent = "Batch details";
+      ui.detailBody.replaceChildren();
+      ui.detailBody.append(element("p", "detail-id", batch.id));
+      const facts = element("dl", "facts");
+      facts.append(
+        fact("Name", batch.name),
+        fact("Status", batch.state.replaceAll("_", " ")),
+        fact("Progress", `${Math.round(Number(batch.progress || 0) * 100)}%`),
+        fact("Runs", String(batch.counts.total)),
+        fact("Results", batchCounts(batch)),
+        fact("Average reward", batch.average_reward == null ? "—" : String(batch.average_reward)),
+        fact("Rewarded runs", String(batch.reward_count)),
+        fact("Created", formatTime(batch.created_at)),
+        fact("Duration", formatDuration(batch.duration_seconds)),
+      );
+      ui.detailBody.append(facts);
+      if (cancellableBatch(batch.state)) {
+        const cancel = element("button", "button danger-button", "Cancel batch");
+        cancel.type = "button";
+        cancel.addEventListener("click", () => cancelBatch(batch.id));
+        ui.detailBody.append(cancel);
+      }
+      ui.detailBody.append(renderBatchRuns(runs));
+    }
+
+    async function loadBatchDetail(batchId) {
+      const request = ++detailRequest;
+      ui.detailBody.replaceChildren(element("div", "minor-state", "Loading batch details…"));
+      try {
+        const encoded = encodeURIComponent(batchId);
+        const [batch, runs] = await Promise.all([
+          fetchJSON(`${API}/batches/${encoded}`),
+          fetchJSON(`${API}/batches/${encoded}/runs?limit=1000`),
+        ]);
+        if (request !== detailRequest || selectedBatchId !== batchId) return;
+        renderBatchDetail(batch, runs.items || []);
+      } catch (error) {
+        if (request !== detailRequest) return;
+        ui.detailBody.replaceChildren(element("div", "minor-state", `Could not load details: ${error.message}`));
+      }
+    }
+
+    async function cancelBatch(batchId) {
+      if (!window.confirm("Cancel queued and active runs in this batch?")) return;
+      try {
+        const key = globalThis.crypto?.randomUUID?.() || `dashboard-${Date.now()}`;
+        await fetchJSON(`${API}/batches/${encodeURIComponent(batchId)}/cancel`, {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({idempotency_key: key}),
+        });
+        await refreshAll(false);
+      } catch (error) {
+        ui.detailBody.prepend(element("div", "minor-state", `Could not cancel batch: ${error.message}`));
+      }
+    }
+
+    function openBatch(batchId) {
+      clearFilePreview();
+      selectedRunId = null;
+      selectedBatchId = batchId;
+      ui.detailPanel.hidden = false;
+      ui.layout.classList.add("with-detail");
+      for (const row of ui.runsBody.children) row.classList.toggle("selected", row.dataset.batchId === batchId);
+      loadBatchDetail(batchId);
+      if (window.matchMedia("(max-width: 980px)").matches) {
+        window.requestAnimationFrame(() => ui.detailPanel.scrollIntoView({block: "start"}));
+      }
+    }
+
     function openRun(runId) {
       if (selectedRunId !== runId) clearFilePreview();
+      selectedBatchId = null;
       selectedRunId = runId;
       ui.detailPanel.hidden = false;
       ui.layout.classList.add("with-detail");
@@ -615,17 +803,48 @@ DASHBOARD_HTML = r"""<!doctype html>
     function closeDetail() {
       clearFilePreview();
       selectedRunId = null;
+      selectedBatchId = null;
       detailRequest += 1;
       ui.detailPanel.hidden = true;
       ui.layout.classList.remove("with-detail");
       for (const row of ui.runsBody.children) row.classList.remove("selected");
     }
 
+    function selectView(view) {
+      if (activeView === view) return;
+      activeView = view;
+      closeDetail();
+      ui.runsBody.replaceChildren();
+      ui.tableWrap.hidden = true;
+      ui.runsState.hidden = false;
+      ui.runsTab.classList.toggle("active", view === "runs");
+      ui.batchesTab.classList.toggle("active", view === "batches");
+      ui.runsTab.setAttribute("aria-pressed", String(view === "runs"));
+      ui.batchesTab.setAttribute("aria-pressed", String(view === "batches"));
+      if (view === "runs") {
+        ui.viewTitle.textContent = "Runs";
+        ui.viewSubtitle.textContent = "Live execution and benchmark activity";
+        ui.listHeading.textContent = "Recent runs";
+        ui.tableHead.innerHTML = "<th>Run</th><th>Status</th><th>Mode</th><th>Task / benchmark</th><th>Created</th><th>Duration</th><th>Reward</th>";
+      } else {
+        ui.viewTitle.textContent = "Batches";
+        ui.viewSubtitle.textContent = "Grouped run progress and outcomes";
+        ui.listHeading.textContent = "Recent batches";
+        ui.tableHead.innerHTML = "<th>Batch</th><th>Status</th><th>Progress</th><th>Run counts</th><th>Average reward</th><th>Created</th><th>Duration</th>";
+      }
+      refreshAll(false);
+    }
+
     async function refreshAll(quiet = false) {
-      await Promise.all([loadHealth(), loadRuns({quiet})]);
+      await Promise.all([
+        loadHealth(),
+        activeView === "runs" ? loadRuns({quiet}) : loadBatches({quiet}),
+      ]);
     }
 
     ui.refreshButton.addEventListener("click", () => refreshAll(false));
+    ui.runsTab.addEventListener("click", () => selectView("runs"));
+    ui.batchesTab.addEventListener("click", () => selectView("batches"));
     document.querySelector("#closeDetail").addEventListener("click", closeDetail);
     window.setInterval(() => {
       if (ui.autoRefresh.checked && !document.hidden) refreshAll(true);
