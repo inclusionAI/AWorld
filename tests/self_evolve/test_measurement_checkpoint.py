@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from aworld.core.tool.replay_policy import (
     ArtifactPolicy,
     compile_evidence_policy_profile_v2,
@@ -35,6 +37,15 @@ from aworld.self_evolve.measurement_control import (
 from aworld.self_evolve.replay_adaptation import (
     IsolationDecision,
     IsolationExclusiveFallback,
+)
+from aworld.self_evolve.replay import (
+    CandidateReplayRequest,
+    ReplayExecutionStatus,
+    ReplayVariantResult,
+    _candidate_replay_request_from_mapping,
+    _member_artifact_name,
+    _persist_variant_lifecycle,
+    baseline_control_fingerprint,
 )
 from aworld.self_evolve.store import FilesystemSelfEvolveStore
 from aworld.self_evolve.runner import (
@@ -199,18 +210,48 @@ def _paired_replay_fixture(
     replay_dir = store.run_path(run_id) / "replay" / candidate.candidate_id
     members_dir = replay_dir / "members"
     members_dir.mkdir(parents=True)
+    control_provenance = {
+        "baseline_skill_fingerprint": _fp("paired-baseline-skill"),
+        "dataset_fingerprint": _fp("paired-dataset"),
+        "workspace_seed_fingerprint": _fp("paired-workspace-seed"),
+        "support_fingerprint": _fp("paired-support"),
+        "timeout_envelope_fingerprint": _fp("paired-timeout"),
+        "adaptation_fingerprint": _fp("paired-adaptation"),
+    }
     (replay_dir / "request.json").write_text(
         json.dumps(
             {
                 "run_id": run_id,
                 "candidate_id": candidate.candidate_id,
+                "workspace_root": str(tmp_path),
+                "target": {
+                    "target_type": candidate.target.target_type,
+                    "target_id": candidate.target.target_id,
+                    "path": candidate.target.path,
+                },
+                "overlay_skill_root": str(replay_dir / "overlay"),
                 "verified_candidate_package_fingerprint": verified_fingerprint,
                 "measurement_plan": None,
                 "repetition_semantics": "per_member_v3",
+                "baseline_repetitions": 1,
+                "candidate_repetitions": 1,
+                **control_provenance,
                 "replay_adaptation": {
                     "cases": [
-                        {"case_id": "case-complete"},
-                        {"case_id": "case-pending"},
+                        {
+                            "case_id": "case-complete",
+                            "adapted_task_input": "Replay case-complete",
+                            "task_input_fingerprint": _fp(
+                                "paired-case-complete"
+                            ),
+                        },
+                        {
+                            "case_id": "case-pending",
+                            "adapted_task_input": "Replay case-pending",
+                            "task_input_fingerprint": _fp(
+                                "paired-case-pending"
+                            ),
+                        },
                     ]
                 },
             },
@@ -234,6 +275,106 @@ def _paired_replay_fixture(
         encoding="utf-8",
     )
     return store, candidate
+
+
+def _paired_replay_progress_path(
+    store: FilesystemSelfEvolveStore,
+    candidate: CandidateVariant,
+) -> Path:
+    return (
+        store.run_path("run-paired-replay-checkpoint")
+        / "replay"
+        / candidate.candidate_id
+        / "members"
+        / "paired_replay_checkpoint.json"
+    )
+
+
+def _write_verified_incremental_baseline(
+    members_root: Path,
+    *,
+    candidate: CandidateVariant,
+    case_id: str,
+) -> None:
+    root_request = json.loads(
+        (members_root.parent / "request.json").read_text(encoding="utf-8")
+    )
+    case_contract = next(
+        item
+        for item in root_request["replay_adaptation"]["cases"]
+        if item["case_id"] == case_id
+    )
+    member_root = members_root / _member_artifact_name(case_id)
+    member_root.mkdir(parents=True, exist_ok=True)
+    request = CandidateReplayRequest(
+        run_id="run-paired-replay-checkpoint",
+        task_id=case_id,
+        workspace_root=root_request["workspace_root"],
+        target=candidate.target,
+        candidate_id=candidate.candidate_id,
+        overlay_skill_root=root_request["overlay_skill_root"],
+        task_input=case_contract["adapted_task_input"],
+        baseline_repetitions=1,
+        candidate_repetitions=1,
+        baseline_skill_fingerprint=root_request["baseline_skill_fingerprint"],
+        dataset_fingerprint=root_request["dataset_fingerprint"],
+        workspace_seed_fingerprint=root_request["workspace_seed_fingerprint"],
+        support_fingerprint=root_request["support_fingerprint"],
+        timeout_envelope_fingerprint=root_request[
+            "timeout_envelope_fingerprint"
+        ],
+        adaptation_fingerprint=root_request["adaptation_fingerprint"],
+        task_input_fingerprint=case_contract["task_input_fingerprint"],
+    )
+    (member_root / "request.json").write_text(
+        json.dumps(
+            {
+                **request.__dict__,
+                "target": {
+                    "target_type": request.target.target_type,
+                    "target_id": request.target.target_id,
+                    "path": request.target.path,
+                },
+            },
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    _persist_variant_lifecycle(
+        member_root / "baseline",
+        ReplayVariantResult(
+            variant_id="baseline",
+            status=ReplayExecutionStatus.SUCCEEDED,
+            trajectory=[{"action": {"content": "verified control"}}],
+            metrics={
+                "repetition_count": 1,
+                "successful_repetition_count": 1,
+                "failed_repetition_count": 0,
+                "blocked_repetition_count": 0,
+                "not_run_repetition_count": 0,
+            },
+        ),
+    )
+    (members_root / "baseline_cache_manifest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "aworld.self_evolve.baseline_cache.v1",
+                "repetition_semantics": "per_member_v3",
+                "members": [
+                    {
+                        "case_id": case_id,
+                        "path": _member_artifact_name(case_id),
+                        "baseline_complete": True,
+                        "control_fingerprint": baseline_control_fingerprint(
+                            request
+                        ),
+                    }
+                ],
+            },
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
 
 
 def test_authoritative_checkpoint_round_trips_and_binds_runtime_dependencies(
@@ -306,13 +447,7 @@ def test_paired_replay_checkpoint_round_trips_without_claiming_authority(
         report=report,
     ) is None
 
-    progress_path = (
-        store.run_path(run_id)
-        / "replay"
-        / candidate.candidate_id
-        / "members"
-        / "paired_replay_checkpoint.json"
-    )
+    progress_path = _paired_replay_progress_path(store, candidate)
     progress = json.loads(progress_path.read_text(encoding="utf-8"))
     progress["resumed_pair_case_ids"] = ["case-complete"]
     progress_path.write_text(json.dumps(progress, sort_keys=True), encoding="utf-8")
@@ -320,6 +455,263 @@ def test_paired_replay_checkpoint_round_trips_without_claiming_authority(
         store,
         run_id=run_id,
         report=report,
+    ) is None
+
+
+def test_paired_replay_checkpoint_admits_safe_partial_progress_without_pair(
+    tmp_path: Path,
+) -> None:
+    store, candidate = _paired_replay_fixture(tmp_path)
+    progress_path = _paired_replay_progress_path(store, candidate)
+    progress_path.write_text(
+        json.dumps(
+            {
+                "schema_version": (
+                    "aworld.self_evolve.paired_replay_checkpoint.v1"
+                ),
+                "schedule": "progressive_paired",
+                "resume_safe": True,
+                "active_case_id": "case-pending",
+                "active_phase": "baseline",
+                "baseline_phase_completed_case_ids": ["case-complete"],
+                "candidate_phase_completed_case_ids": [],
+                "comparable_pair_case_ids": [],
+                "reusable_baseline_case_ids": ["case-complete"],
+                "pending_case_ids": ["case-complete", "case-pending"],
+                "baseline_cache_manifest": "baseline_cache_manifest.json",
+                "resumed_pair_case_ids": [],
+            },
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    _write_verified_incremental_baseline(
+        progress_path.parent,
+        candidate=candidate,
+        case_id="case-complete",
+    )
+
+    checkpoint = discover_paired_replay_resume_checkpoint(
+        store,
+        run_id="run-paired-replay-checkpoint",
+        candidate_id=candidate.candidate_id,
+        verified_candidate_package_fingerprint=_fp("verified-paired-package"),
+    )
+
+    assert checkpoint is not None
+    assert checkpoint.completed_pair_case_ids == ()
+    assert checkpoint.pending_case_ids == ("case-complete", "case-pending")
+    report = {"paired_replay_resume_checkpoint": checkpoint.to_dict()}
+    assert load_paired_replay_resume_checkpoint(
+        store,
+        run_id="run-paired-replay-checkpoint",
+        report=report,
+    ) == checkpoint
+    assert load_measurement_resume_checkpoint(
+        store,
+        run_id="run-paired-replay-checkpoint",
+        report=report,
+    ) is None
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("baseline_phase_completed_case_ids", []),
+        ("baseline_phase_completed_case_ids", ["case-complete", "case-complete"]),
+        ("baseline_phase_completed_case_ids", ["case-foreign"]),
+        ("baseline_phase_completed_case_ids", "case-complete"),
+    ],
+)
+def test_paired_replay_checkpoint_rejects_unsafe_pairless_progress(
+    tmp_path: Path,
+    field: str,
+    value: object,
+) -> None:
+    store, candidate = _paired_replay_fixture(tmp_path)
+    progress_path = _paired_replay_progress_path(store, candidate)
+    progress = {
+        "schema_version": "aworld.self_evolve.paired_replay_checkpoint.v1",
+        "schedule": "progressive_paired",
+        "resume_safe": True,
+        "baseline_phase_completed_case_ids": ["case-complete"],
+        "candidate_phase_completed_case_ids": [],
+        "comparable_pair_case_ids": [],
+        "reusable_baseline_case_ids": ["case-complete"],
+        "pending_case_ids": ["case-complete", "case-pending"],
+        "baseline_cache_manifest": "baseline_cache_manifest.json",
+        "resumed_pair_case_ids": [],
+    }
+    progress[field] = value
+    if field == "baseline_phase_completed_case_ids" and value == []:
+        progress["reusable_baseline_case_ids"] = []
+    progress_path.write_text(
+        json.dumps(progress, sort_keys=True), encoding="utf-8"
+    )
+    (progress_path.parent / "baseline_cache_manifest.json").write_text(
+        "{}\n", encoding="utf-8"
+    )
+
+    assert discover_paired_replay_resume_checkpoint(
+        store,
+        run_id="run-paired-replay-checkpoint",
+        candidate_id=candidate.candidate_id,
+        verified_candidate_package_fingerprint=_fp("verified-paired-package"),
+    ) is None
+
+
+def test_pairless_checkpoint_rejects_baseline_manifest_path_substitution(
+    tmp_path: Path,
+) -> None:
+    store, candidate = _paired_replay_fixture(tmp_path)
+    progress_path = _paired_replay_progress_path(store, candidate)
+    progress = json.loads(progress_path.read_text(encoding="utf-8"))
+    progress.update(
+        {
+            "baseline_phase_completed_case_ids": ["case-complete"],
+            "candidate_phase_completed_case_ids": [],
+            "comparable_pair_case_ids": [],
+            "reusable_baseline_case_ids": ["case-complete"],
+            "pending_case_ids": ["case-complete", "case-pending"],
+            "baseline_cache_manifest": "../foreign.json",
+        }
+    )
+    progress_path.write_text(
+        json.dumps(progress, sort_keys=True), encoding="utf-8"
+    )
+
+    assert discover_paired_replay_resume_checkpoint(
+        store,
+        run_id="run-paired-replay-checkpoint",
+        candidate_id=candidate.candidate_id,
+        verified_candidate_package_fingerprint=_fp("verified-paired-package"),
+    ) is None
+
+
+def test_pairless_checkpoint_rejects_unverified_baseline_manifest(
+    tmp_path: Path,
+) -> None:
+    store, candidate = _paired_replay_fixture(tmp_path)
+    progress_path = _paired_replay_progress_path(store, candidate)
+    progress_path.write_text(
+        json.dumps(
+            {
+                "schema_version": (
+                    "aworld.self_evolve.paired_replay_checkpoint.v1"
+                ),
+                "schedule": "progressive_paired",
+                "resume_safe": True,
+                "baseline_phase_completed_case_ids": ["case-complete"],
+                "candidate_phase_completed_case_ids": [],
+                "comparable_pair_case_ids": [],
+                "reusable_baseline_case_ids": ["case-complete"],
+                "pending_case_ids": ["case-complete", "case-pending"],
+                "baseline_cache_manifest": "baseline_cache_manifest.json",
+                "resumed_pair_case_ids": [],
+            },
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    (progress_path.parent / "baseline_cache_manifest.json").write_text(
+        "{}\n", encoding="utf-8"
+    )
+
+    assert discover_paired_replay_resume_checkpoint(
+        store,
+        run_id="run-paired-replay-checkpoint",
+        candidate_id=candidate.candidate_id,
+        verified_candidate_package_fingerprint=_fp("verified-paired-package"),
+    ) is None
+
+
+@pytest.mark.parametrize(
+    "tamper",
+    ("member_symlink", "lifecycle_symlink", "foreign_control"),
+)
+def test_pairless_checkpoint_rejects_foreign_control_provenance(
+    tmp_path: Path,
+    tamper: str,
+) -> None:
+    store, candidate = _paired_replay_fixture(tmp_path)
+    progress_path = _paired_replay_progress_path(store, candidate)
+    progress = json.loads(progress_path.read_text(encoding="utf-8"))
+    progress.update(
+        {
+            "baseline_phase_completed_case_ids": ["case-complete"],
+            "candidate_phase_completed_case_ids": [],
+            "comparable_pair_case_ids": [],
+            "reusable_baseline_case_ids": ["case-complete"],
+            "pending_case_ids": ["case-complete", "case-pending"],
+            "baseline_cache_manifest": "baseline_cache_manifest.json",
+            "resumed_pair_case_ids": [],
+        }
+    )
+    progress_path.write_text(json.dumps(progress), encoding="utf-8")
+    _write_verified_incremental_baseline(
+        progress_path.parent,
+        candidate=candidate,
+        case_id="case-complete",
+    )
+    member_root = progress_path.parent / _member_artifact_name("case-complete")
+    if tamper == "member_symlink":
+        foreign_root = tmp_path / "foreign-member"
+        member_root.rename(foreign_root)
+        member_root.symlink_to(foreign_root, target_is_directory=True)
+    elif tamper == "lifecycle_symlink":
+        lifecycle_path = member_root / "baseline" / "lifecycle.json"
+        foreign_lifecycle = tmp_path / "foreign-lifecycle.json"
+        lifecycle_path.rename(foreign_lifecycle)
+        lifecycle_path.symlink_to(foreign_lifecycle)
+    else:
+        request_path = member_root / "request.json"
+        request = json.loads(request_path.read_text(encoding="utf-8"))
+        request["baseline_skill_fingerprint"] = _fp("foreign-control")
+        request_path.write_text(json.dumps(request), encoding="utf-8")
+        parsed = _candidate_replay_request_from_mapping(request)
+        manifest_path = progress_path.parent / "baseline_cache_manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["members"][0]["control_fingerprint"] = (
+            baseline_control_fingerprint(parsed)
+        )
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    assert discover_paired_replay_resume_checkpoint(
+        store,
+        run_id="run-paired-replay-checkpoint",
+        candidate_id=candidate.candidate_id,
+        verified_candidate_package_fingerprint=_fp("verified-paired-package"),
+    ) is None
+
+
+def test_pairless_checkpoint_rejects_verified_package_fingerprint_mismatch(
+    tmp_path: Path,
+) -> None:
+    store, candidate = _paired_replay_fixture(tmp_path)
+    progress_path = _paired_replay_progress_path(store, candidate)
+    progress = json.loads(progress_path.read_text(encoding="utf-8"))
+    progress.update(
+        {
+            "baseline_phase_completed_case_ids": ["case-complete"],
+            "candidate_phase_completed_case_ids": [],
+            "comparable_pair_case_ids": [],
+            "reusable_baseline_case_ids": ["case-complete"],
+            "pending_case_ids": ["case-complete", "case-pending"],
+            "baseline_cache_manifest": "baseline_cache_manifest.json",
+        }
+    )
+    progress_path.write_text(
+        json.dumps(progress, sort_keys=True), encoding="utf-8"
+    )
+    (progress_path.parent / "baseline_cache_manifest.json").write_text(
+        "{}\n", encoding="utf-8"
+    )
+
+    assert discover_paired_replay_resume_checkpoint(
+        store,
+        run_id="run-paired-replay-checkpoint",
+        candidate_id=candidate.candidate_id,
+        verified_candidate_package_fingerprint=_fp("foreign-package"),
     ) is None
 
 

@@ -4,6 +4,7 @@
 import abc
 import inspect
 import os
+import threading
 import time
 import traceback
 from typing import Dict, Tuple, Any, TypeVar, Generic, List, Union, Callable
@@ -46,6 +47,14 @@ ToolInput = TypeVar("ToolInput")
 
 # Forward declaration of action_executor to fix NameError
 action_executor = None
+
+
+# A task can emit tool messages through copied Context instances.  Keep the
+# opt-in runtime budget outside those transient objects, keyed by the stable
+# session/task identity assigned by TaskRunner.  Access is guarded because sync
+# and async tools may reserve calls concurrently.
+_runtime_tool_call_budget_lock = threading.Lock()
+_runtime_tool_call_counts: Dict[Tuple[str, str], int] = {}
 
 
 async def maybe_await(result: Any) -> Any:
@@ -95,7 +104,7 @@ def _enforce_runtime_tool_call_budget(
     action: List["ActionModel"],
     message: Message,
 ) -> None:
-    """Apply an opt-in process-local tool-call budget to one task context."""
+    """Atomically reserve opt-in tool calls against one stable task budget."""
     raw_limit = os.environ.get("AWORLD_TOOL_CALL_LIMIT")
     if not raw_limit:
         return
@@ -107,15 +116,78 @@ def _enforce_runtime_tool_call_budget(
     if limit <= 0:
         return
 
-    owner = getattr(message, "context", None) or message
-    current = int(getattr(owner, "_aworld_runtime_tool_call_count", 0) or 0)
     requested = len(action or ())
-    if current + requested > limit:
-        raise ToolExecutionDenied(
-            tool_name,
-            f"runtime tool-call budget exhausted ({current}/{limit})",
-        )
-    setattr(owner, "_aworld_runtime_tool_call_count", current + requested)
+    if requested <= 0:
+        return
+
+    owner = getattr(message, "context", None) or message
+    budget_key = _runtime_tool_call_budget_key(owner, message=message)
+    with _runtime_tool_call_budget_lock:
+        if budget_key is None:
+            # Compatibility fallback for callers outside TaskRunner that do not
+            # have a task/session identity.  The lock still makes reservations
+            # on a shared Context atomic.
+            current = int(
+                getattr(owner, "_aworld_runtime_tool_call_count", 0) or 0
+            )
+        else:
+            current = _runtime_tool_call_counts.get(budget_key, 0)
+        if current + requested > limit:
+            raise ToolExecutionDenied(
+                tool_name,
+                f"runtime tool-call budget exhausted ({current}/{limit})",
+            )
+        if budget_key is None:
+            setattr(
+                owner,
+                "_aworld_runtime_tool_call_count",
+                current + requested,
+            )
+        else:
+            _runtime_tool_call_counts[budget_key] = current + requested
+
+
+def _runtime_tool_call_budget_key(
+    context: Any,
+    *,
+    message: Any = None,
+) -> Tuple[str, str] | None:
+    """Return the stable session/task identity used by runtime budget state."""
+
+    task_id = getattr(context, "task_id", None)
+    if not task_id:
+        get_task = getattr(context, "get_task", None)
+        if callable(get_task):
+            task = get_task()
+            task_id = getattr(task, "id", None) if task is not None else None
+
+    session_id = getattr(context, "session_id", None)
+    if not session_id and message is not None:
+        session_id = getattr(message, "session_id", None)
+
+    normalized_task_id = str(task_id or "").strip()
+    normalized_session_id = str(session_id or "").strip()
+    if normalized_task_id:
+        return normalized_session_id, normalized_task_id
+    if normalized_session_id:
+        return normalized_session_id, "<session>"
+    return None
+
+
+def release_runtime_tool_call_budget(
+    context: Any,
+    *,
+    message: Any = None,
+) -> None:
+    """Release task-scoped runtime budget state after task termination."""
+
+    budget_key = _runtime_tool_call_budget_key(context, message=message)
+    with _runtime_tool_call_budget_lock:
+        if budget_key is None:
+            if hasattr(context, "_aworld_runtime_tool_call_count"):
+                delattr(context, "_aworld_runtime_tool_call_count")
+            return
+        _runtime_tool_call_counts.pop(budget_key, None)
 
 
 def _enforce_replay_evidence_runtime_policy(

@@ -898,6 +898,120 @@ async def test_replay_backend_resumes_completed_pairs_from_prior_checkpoint(
     assert resumed_checkpoint["pending_case_ids"] == []
 
 
+@pytest.mark.asyncio
+async def test_replay_backend_reuses_partial_baseline_from_prior_checkpoint(
+    tmp_path: Path,
+) -> None:
+    calls: list[tuple[str, str]] = []
+
+    async def fake_executor(
+        request: ReplayExecutionRequest,
+    ) -> ReplayExecutionResult:
+        calls.append((request.task_id, request.variant_id))
+        return ReplayExecutionResult(
+            status="succeeded",
+            trajectory=[{"action": {"content": request.variant_id}}],
+        )
+
+    dataset = SelfEvolveDataset(
+        cases=(
+            EvalCase(case_id="task-a", input="Replay task A"),
+            EvalCase(case_id="task-b", input="Replay task B"),
+        ),
+        recipe=DatasetRecipe(
+            source={"kind": "partial-baseline-resume-test", "case_count": 2},
+            split_seed="seed",
+            splits={"train": ["task-a", "task-b"]},
+        ),
+    )
+    candidate = _candidate(
+        "---\nname: demo\n---\n# Demo\nCandidate.\n",
+        candidate_id="partial-baseline-resume-candidate",
+    )
+    adaptation = ReplayAdaptationCompiler().compile(
+        dataset=dataset,
+        workspace_root=tmp_path,
+        artifact_root=tmp_path / "partial-resume-adaptation",
+    )
+    backend = AWorldCliCandidateReplayBackend(executor=fake_executor)
+    source_request = build_replay_request(
+        run_id="partial-source-run",
+        workspace_root=tmp_path,
+        target=candidate.target,
+        candidate=candidate,
+        overlay_skill_root=tmp_path / "overlay",
+        dataset=dataset,
+        replay_adaptation=adaptation,
+        baseline_repetitions=1,
+        candidate_repetitions=1,
+        verified_candidate_package_fingerprint="sha256:package",
+    )
+    await backend.replay_candidate(
+        source_request,
+        candidate=candidate,
+        dataset=dataset,
+    )
+    source_replay_dir = (
+        tmp_path
+        / ".aworld"
+        / "self_evolve"
+        / "partial-source-run"
+        / "replay"
+        / candidate.candidate_id
+    )
+    members_root = source_replay_dir / "members"
+    checkpoint_path = members_root / "paired_replay_checkpoint.json"
+    checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    checkpoint.update(
+        {
+            "baseline_phase_completed_case_ids": ["task-a"],
+            "candidate_phase_completed_case_ids": [],
+            "comparable_pair_case_ids": [],
+            "reusable_baseline_case_ids": ["task-a"],
+            "pending_case_ids": ["task-a", "task-b"],
+            "resumed_pair_case_ids": [],
+        }
+    )
+    checkpoint_path.write_text(json.dumps(checkpoint), encoding="utf-8")
+    manifest_path = members_root / "baseline_cache_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["members"] = [
+        member
+        for member in manifest["members"]
+        if member["case_id"] == "task-a"
+    ]
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    calls.clear()
+    resumed_request = build_replay_request(
+        run_id="partial-resumed-run",
+        workspace_root=tmp_path,
+        target=candidate.target,
+        candidate=candidate,
+        overlay_skill_root=tmp_path / "overlay",
+        dataset=dataset,
+        replay_adaptation=adaptation,
+        baseline_repetitions=1,
+        candidate_repetitions=1,
+        verified_candidate_package_fingerprint="sha256:package",
+        resume_replay_dir=source_replay_dir,
+    )
+    resumed = await backend.replay_candidate(
+        resumed_request,
+        candidate=candidate,
+        dataset=dataset,
+    )
+
+    assert ("task-a", "baseline") not in calls
+    assert calls.count(("task-a", candidate.candidate_id)) == 1
+    assert calls.count(("task-b", "baseline")) == 1
+    assert calls.count(("task-b", candidate.candidate_id)) == 1
+    assert [member.case_id for member in resumed.member_results] == [
+        "task-a",
+        "task-b",
+    ]
+
+
 def test_replay_checkpoint_rejects_evidence_contract_mode_drift(
     tmp_path: Path,
 ) -> None:

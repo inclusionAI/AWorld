@@ -444,6 +444,9 @@ class ReplayCapabilityContractProvider:
                     "declare protocol_probes for every externally advertised protocol "
                     "entry point; HTTP JSON discovery probes must enable advertised "
                     "WebSocket validation",
+                    "endpoint replacement publishes / when declared, otherwise the sole "
+                    "declared non-root HTTP protocol probe path; multiple non-root HTTP "
+                    "entries are ambiguous and rejected before task rollout",
                     "include at least one data-plane probe with expected response content; "
                     "a health-only probe is invalid",
                     "for every runtime_required requirement use skill_runtime, not a static "

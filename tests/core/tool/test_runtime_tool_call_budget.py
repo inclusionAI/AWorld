@@ -1,22 +1,36 @@
 from __future__ import annotations
 
 import json
+from concurrent.futures import ThreadPoolExecutor
+import threading
 
 import pytest
 
 from aworld.core.common import ActionModel, ActionResult, Observation
-from aworld.core.tool.base import ToolExecutionDenied, _enforce_runtime_tool_call_budget
+from aworld.core.tool.base import (
+    ToolExecutionDenied,
+    _enforce_runtime_tool_call_budget,
+    release_runtime_tool_call_budget,
+)
 from aworld.core.tool.base import _enforce_replay_evidence_runtime_policy
 from aworld.core.tool.replay_policy import record_replay_runtime_tool_result
 
 
 class _Context:
-    pass
+    def __init__(
+        self,
+        *,
+        task_id: str | None = None,
+        session_id: str | None = None,
+    ) -> None:
+        self.task_id = task_id
+        self.session_id = session_id
 
 
 class _Message:
-    def __init__(self, context: object) -> None:
+    def __init__(self, context: object, *, session_id: str | None = None) -> None:
         self.context = context
+        self.session_id = session_id
 
 
 def _actions(count: int) -> list[ActionModel]:
@@ -57,6 +71,86 @@ def test_runtime_tool_call_budget_ignores_invalid_limit(
     monkeypatch.setenv("AWORLD_TOOL_CALL_LIMIT", "not-an-integer")
 
     _enforce_runtime_tool_call_budget("tool", _actions(2), _Message(_Context()))
+
+
+def test_runtime_tool_call_budget_follows_task_across_transient_contexts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AWORLD_TOOL_CALL_LIMIT", "2")
+    first_context = _Context(task_id="task-1", session_id="session-1")
+    second_context = _Context(task_id="task-1", session_id="session-1")
+
+    try:
+        _enforce_runtime_tool_call_budget(
+            "first-tool", _actions(1), _Message(first_context)
+        )
+        _enforce_runtime_tool_call_budget(
+            "second-tool", _actions(1), _Message(second_context)
+        )
+
+        with pytest.raises(
+            ToolExecutionDenied,
+            match=r"runtime tool-call budget exhausted \(2/2\)",
+        ):
+            _enforce_runtime_tool_call_budget(
+                "third-tool", _actions(1), _Message(_Context(
+                    task_id="task-1", session_id="session-1"
+                ))
+            )
+    finally:
+        release_runtime_tool_call_budget(first_context)
+
+
+def test_runtime_tool_call_budget_isolated_and_atomic_across_concurrent_tasks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AWORLD_TOOL_CALL_LIMIT", "1")
+    contexts = {
+        task_id: _Context(task_id=task_id, session_id="shared-session")
+        for task_id in ("task-a", "task-b")
+    }
+    barrier = threading.Barrier(16)
+
+    def reserve(task_id: str) -> bool:
+        barrier.wait()
+        try:
+            _enforce_runtime_tool_call_budget(
+                "tool", _actions(1), _Message(contexts[task_id])
+            )
+        except ToolExecutionDenied:
+            return False
+        return True
+
+    try:
+        task_ids = ["task-a", "task-b"] * 8
+        with ThreadPoolExecutor(max_workers=len(task_ids)) as executor:
+            accepted = list(executor.map(reserve, task_ids))
+
+        assert sum(
+            result for result, task_id in zip(accepted, task_ids)
+            if task_id == "task-a"
+        ) == 1
+        assert sum(
+            result for result, task_id in zip(accepted, task_ids)
+            if task_id == "task-b"
+        ) == 1
+    finally:
+        for context in contexts.values():
+            release_runtime_tool_call_budget(context)
+
+
+def test_runtime_tool_call_budget_release_allows_reused_task_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AWORLD_TOOL_CALL_LIMIT", "1")
+    first_context = _Context(task_id="task-reused", session_id="session-1")
+    second_context = _Context(task_id="task-reused", session_id="session-1")
+
+    _enforce_runtime_tool_call_budget("tool", _actions(1), _Message(first_context))
+    release_runtime_tool_call_budget(first_context)
+    _enforce_runtime_tool_call_budget("tool", _actions(1), _Message(second_context))
+
+    release_runtime_tool_call_budget(second_context)
 
 
 def _replay_action(

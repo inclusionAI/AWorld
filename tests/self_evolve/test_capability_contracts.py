@@ -145,6 +145,7 @@ def test_replay_authoring_contract_is_derived_from_public_protocol_constants() -
         "implement every interaction required by each handled stateful requirement; a readiness-only or discovery-only response is insufficient",
         "if HTTP readiness JSON advertises ws:// URLs, serve their valid WebSocket upgrade on the same allocated listener",
         "declare protocol_probes for every externally advertised protocol entry point; HTTP JSON discovery probes must enable advertised WebSocket validation",
+        "endpoint replacement publishes / when declared, otherwise the sole declared non-root HTTP protocol probe path; multiple non-root HTTP entries are ambiguous and rejected before task rollout",
         "include at least one data-plane probe with expected response content; a health-only probe is invalid",
         "for every runtime_required requirement use skill_runtime, not a static fixture transport",
         "treat fixture bytes as an arbitrary JSON root (object, array, scalar, or null) or non-JSON bytes; normalize the decoded value before mapping-only operations such as .get instead of assuming an object root",

@@ -1032,6 +1032,141 @@ def test_skill_runtime_types_relative_protocol_probe_path(
 
 
 @pytest.mark.replay_sandbox
+@pytest.mark.parametrize(
+    "path",
+    (
+        "/replay/data/",
+        "/replay/data?view=all",
+        "/foo/../bar",
+        "/foo/%2e%2e/bar",
+        "/foo/%5cbar",
+    ),
+)
+def test_skill_runtime_rejects_noncanonical_http_task_entry_path(
+    tmp_path: Path,
+    path: str,
+) -> None:
+    skill = _write_capability_skill(tmp_path)
+    compiler_path = skill / "replay/compiler.py"
+    compiler_path.write_text(
+        compiler_path.read_text(encoding="utf-8").replace(
+            "'transport': 'http_fixture',",
+            (
+                "'transport': 'skill_runtime',\n"
+                "        'runtime_entrypoint': 'replay/runtime.py',\n"
+                "        'protocol_probes': [{\n"
+                f"            'kind': 'http', 'path': {path!r},\n"
+                "            'response_contains': 'recorded fixture',\n"
+                "        }],"
+            ),
+        ),
+        encoding="utf-8",
+    )
+    capability = discover_replay_capability(skill)
+    assert capability is not None
+
+    with pytest.raises(ReplayCapabilityError) as error:
+        compile_and_freeze_capability(
+            capability,
+            _request(skill),
+            tmp_path / "compile",
+        )
+
+    assert error.value.code == "schema_field_validation_failed"
+    assert error.value.details["code"] == "protocol_probe_path_not_canonical"
+
+
+@pytest.mark.replay_sandbox
+def test_endpoint_replacement_rejects_runtime_with_data_only_off_task_entry(
+    tmp_path: Path,
+) -> None:
+    skill = _write_capability_skill(tmp_path)
+    compiler_path = skill / "replay/compiler.py"
+    compiler_path.write_text(
+        compiler_path.read_text(encoding="utf-8").replace(
+            "'transport': 'http_fixture',",
+            (
+                "'transport': 'skill_runtime',\n"
+                "        'runtime_entrypoint': 'replay/runtime.py',\n"
+                "        'protocol_probes': [{\n"
+                "            'kind': 'websocket', 'path': '/replay/data',\n"
+                "            'request_text': '{\"op\":\"read\"}',\n"
+                "            'response_contains': 'recorded fixture',\n"
+                "            'timeout_seconds': 2.0,\n"
+                "        }],"
+            ),
+        ),
+        encoding="utf-8",
+    )
+    capability = discover_replay_capability(skill)
+    assert capability is not None
+
+    with pytest.raises(ReplayCapabilityError) as error:
+        compile_and_freeze_capability(
+            capability,
+            _request(skill),
+            tmp_path / "compile",
+        )
+
+    assert error.value.code == "schema_field_validation_failed"
+    assert error.value.details["code"] == "endpoint_replacement_entrypoint_missing"
+    assert error.value.details["schema_field_constraints"] == [
+        {
+            "schema_layer": "compile_result",
+            "field_path": "services[*@endpoint_replacement].protocol_probes",
+            "rule": "contains_all",
+            "expected": ["unambiguous_http_task_entry_probe"],
+            "value_domain": "source_behavior",
+            "required_operations": [
+                "declare_one_http_task_entry_probe",
+                "serve_fixture_or_discovery_response_at_task_entry",
+            ],
+            "forbidden_operations": [
+                "serve_fixture_only_on_undiscoverable_subpath",
+                "make_task_entry_readiness_only",
+            ],
+        }
+    ]
+
+
+@pytest.mark.replay_sandbox
+def test_endpoint_replacement_accepts_declared_non_root_runtime_task_entry(
+    tmp_path: Path,
+) -> None:
+    skill = _write_capability_skill(tmp_path)
+    compiler_path = skill / "replay/compiler.py"
+    compiler_path.write_text(
+        compiler_path.read_text(encoding="utf-8").replace(
+            "'transport': 'http_fixture',",
+            (
+                "'transport': 'skill_runtime',\n"
+                "        'runtime_entrypoint': 'replay/runtime.py',\n"
+                "        'protocol_probes': [{\n"
+                "            'kind': 'http', 'path': '/replay/data',\n"
+                "            'response_contains': 'recorded fixture',\n"
+                "            'timeout_seconds': 2.0,\n"
+                "        }],"
+            ),
+        ),
+        encoding="utf-8",
+    )
+    capability = discover_replay_capability(skill)
+    assert capability is not None
+
+    frozen = compile_and_freeze_capability(
+        capability,
+        _request(skill),
+        tmp_path / "compile",
+    )
+
+    assert frozen.endpoint_replacements == {
+        "http://127.0.0.1:9222": "fixture-http"
+    }
+    assert frozen.services[0].protocol_probes[0].path == "/replay/data"
+    assert frozen.services[0].task_entry_path == "/replay/data"
+
+
+@pytest.mark.replay_sandbox
 def test_skill_runtime_accepts_declared_websocket_data_plane_probe(
     tmp_path: Path,
 ) -> None:
@@ -1044,6 +1179,11 @@ def test_skill_runtime_accepts_declared_websocket_data_plane_probe(
                 "'transport': 'skill_runtime',\n"
                 "        'runtime_entrypoint': 'replay/runtime.py',\n"
                 "        'protocol_probes': [{\n"
+                "            'kind': 'http',\n"
+                "            'path': '/',\n"
+                "            'timeout_seconds': 2.0,\n"
+                "            'response_contains': 'recorded fixture',\n"
+                "        }, {\n"
                 "            'kind': 'websocket',\n"
                 "            'path': '/events',\n"
                 "            'timeout_seconds': 2.0,\n"
@@ -1063,7 +1203,7 @@ def test_skill_runtime_accepts_declared_websocket_data_plane_probe(
         tmp_path / "compile",
     )
 
-    probe = frozen.services[0].protocol_probes[0]
+    probe = frozen.services[0].protocol_probes[1]
     assert probe.kind == "websocket"
     assert probe.request_text == '{"op":"read"}'
     assert probe.response_contains == "recorded fixture"
@@ -1088,6 +1228,10 @@ def test_skill_runtime_with_recorded_responses_must_consume_response_index(
                 "'transport': 'skill_runtime',\n"
                 "        'runtime_entrypoint': 'replay/runtime.py',\n"
                 "        'protocol_probes': [{\n"
+                "            'kind': 'http',\n"
+                "            'path': '/',\n"
+                "            'response_contains': 'recorded',\n"
+                "        }, {\n"
                 "            'kind': 'websocket',\n"
                 "            'path': '/events',\n"
                 "            'request_text': '{\\\"op\\\":\\\"records.query\\\"}',\n"
@@ -1428,7 +1572,16 @@ def test_skill_runtime_protocol_probe_limit_is_bounded_but_covers_observed_opera
         "request_text": '{"op":"read"}',
         "response_contains": "recorded fixture",
     }
-    serialized_probes = repr([probe] * probe_count)
+    serialized_probes = repr(
+        [
+            {
+                "kind": "http",
+                "path": "/",
+                "response_contains": "recorded fixture",
+            }
+        ]
+        + [probe] * (probe_count - 1)
+    )
     compiler_path.write_text(
         compiler_path.read_text(encoding="utf-8").replace(
             "'transport': 'http_fixture',",
@@ -1810,6 +1963,10 @@ def test_skill_runtime_accepts_semantically_decoded_fixture_container_expectatio
                 "'transport': 'skill_runtime',\n"
                 "        'runtime_entrypoint': 'replay/runtime.py',\n"
                 "        'protocol_probes': [{\n"
+                "            'kind': 'http',\n"
+                "            'path': '/',\n"
+                "            'response_contains': 'recorded fixture',\n"
+                "        }, {\n"
                 "            'kind': 'websocket',\n"
                 "            'path': '/events',\n"
                 "            'request_text': '{\\\"op\\\":\\\"read\\\"}',\n"
@@ -1828,7 +1985,7 @@ def test_skill_runtime_accepts_semantically_decoded_fixture_container_expectatio
         tmp_path / "compile",
     )
 
-    probe = frozen.services[0].protocol_probes[0]
+    probe = frozen.services[0].protocol_probes[1]
     assert probe.response_contains == "recorded fixture"
     assert probe.response_record_id is not None
     assert probe.response_record_id.startswith("response-record-")
@@ -2219,7 +2376,7 @@ def test_freeze_rejects_sidecar_runtime_with_unrecorded_selected_fixture(
                 "        'runtime_entrypoint': 'replay/runtime.py',\n"
                 "        'protocol_probes': [{\n"
                 "            'kind': 'http',\n"
-                "            'path': '/data',\n"
+                "            'path': '/',\n"
                 "            'timeout_seconds': 2.0,\n"
                 "            'response_contains': 'recorded fixture',\n"
                 "        }],"
@@ -2332,6 +2489,13 @@ def test_compile_and_freeze_capability_is_deterministic(tmp_path: Path) -> None:
     )
     assert Path(frozen.frozen_root, "runtime", "replay/runtime.py").is_file()
     assert frozen.fingerprint.startswith("sha256:")
+    manifest = json.loads(
+        Path(frozen.frozen_root, "frozen_manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert "task_entry_path" not in manifest["services"][0]
+    verify_frozen_replay_capability(frozen)
 
 
 @pytest.mark.replay_sandbox

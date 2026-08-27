@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -536,41 +537,114 @@ def discover_paired_replay_resume_checkpoint(
         or progress.get("resume_safe") is not True
     ):
         return None
-    raw_pending = progress.get("pending_case_ids")
-    raw_completed = progress.get("comparable_pair_case_ids")
-    raw_resumed = progress.get("resumed_pair_case_ids", [])
-    if not all(
-        isinstance(raw, list)
-        and all(isinstance(item, str) and item for item in raw)
-        for raw in (raw_pending, raw_completed, raw_resumed)
+    progress_keys = (
+        "pending_case_ids",
+        "comparable_pair_case_ids",
+        "resumed_pair_case_ids",
+        "baseline_phase_completed_case_ids",
+        "candidate_phase_completed_case_ids",
+        "reusable_baseline_case_ids",
+    )
+    phase_progress_keys = progress_keys[3:]
+    phase_progress_recorded = any(key in progress for key in phase_progress_keys)
+    if phase_progress_recorded and not all(
+        key in progress for key in phase_progress_keys
     ):
         return None
-    assert isinstance(raw_pending, list)
-    assert isinstance(raw_completed, list)
-    assert isinstance(raw_resumed, list)
-    pending = tuple(sorted(dict.fromkeys(raw_pending)))
-    completed = tuple(sorted(dict.fromkeys(raw_completed)))
-    resumed = tuple(sorted(dict.fromkeys(raw_resumed)))
-    if (
-        not pending
-        or not completed
-        or len(pending) != len(raw_pending)
-        or len(completed) != len(raw_completed)
-        or len(resumed) != len(raw_resumed)
-    ):
+    raw_progress: dict[str, list[str]] = {}
+    for key in progress_keys:
+        default: object = [] if key == "resumed_pair_case_ids" else None
+        raw = progress.get(key, default)
+        if key in phase_progress_keys and not phase_progress_recorded:
+            raw = []
+        if not isinstance(raw, list) or not all(
+            isinstance(item, str) and item and _ID.fullmatch(item) is not None
+            for item in raw
+        ):
+            return None
+        if len(raw) != len(set(raw)):
+            return None
+        raw_progress[key] = raw
+    pending = tuple(sorted(raw_progress["pending_case_ids"]))
+    completed = tuple(sorted(raw_progress["comparable_pair_case_ids"]))
+    resumed = tuple(sorted(raw_progress["resumed_pair_case_ids"]))
+    baseline_completed = set(
+        raw_progress["baseline_phase_completed_case_ids"]
+    )
+    candidate_completed = set(
+        raw_progress["candidate_phase_completed_case_ids"]
+    )
+    reusable_baselines = set(raw_progress["reusable_baseline_case_ids"])
+    if not pending:
         return None
     adaptation = request.get("replay_adaptation")
     raw_cases = adaptation.get("cases") if isinstance(adaptation, Mapping) else None
     if not isinstance(raw_cases, list):
         return None
-    request_case_ids = {
-        item.get("case_id")
+    request_case_id_items = [
+        item.get("case_id") if isinstance(item, Mapping) else None
         for item in raw_cases
-        if isinstance(item, Mapping)
-        and isinstance(item.get("case_id"), str)
-        and item.get("case_id")
-    }
-    if not set((*pending, *completed, *resumed)).issubset(request_case_ids):
+    ]
+    if not request_case_id_items or not all(
+        isinstance(item, str) and item and _ID.fullmatch(item) is not None
+        for item in request_case_id_items
+    ):
+        return None
+    request_case_ids = set(request_case_id_items)
+    if len(request_case_ids) != len(request_case_id_items):
+        return None
+    recorded_case_ids = set((*pending, *completed, *resumed))
+    recorded_case_ids.update(baseline_completed)
+    recorded_case_ids.update(candidate_completed)
+    recorded_case_ids.update(reusable_baselines)
+    if not recorded_case_ids.issubset(request_case_ids):
+        return None
+
+    # A pre-authority continuation may have completed useful baseline or
+    # candidate phases before it has one trustworthy comparable pair.  Keep
+    # those execution cursors distinct from completed-pair authority.
+    if phase_progress_recorded:
+        if not (
+            completed
+            or baseline_completed
+            or candidate_completed
+            or reusable_baselines
+        ):
+            return None
+        if (
+            not candidate_completed.issubset(baseline_completed)
+            or not reusable_baselines.issubset(baseline_completed)
+            or not set(completed).issubset(
+                baseline_completed & candidate_completed
+            )
+            or not set(resumed).issubset(
+                baseline_completed & candidate_completed
+            )
+            or set(pending) & candidate_completed
+            or (set(pending) | candidate_completed) != request_case_ids
+        ):
+            return None
+        baseline_manifest = progress.get("baseline_cache_manifest")
+        baseline_manifest_path = (
+            progress_path.parent / "baseline_cache_manifest.json"
+        )
+        if (
+            baseline_manifest != "baseline_cache_manifest.json"
+            or not _regular_file(baseline_manifest_path)
+            or not _pairless_baselines_are_verified(
+                progress_path.parent,
+                reusable_baselines,
+                root_request=request,
+            )
+        ):
+            return None
+    elif not completed:
+        # Legacy v1 checkpoints did not persist phase-specific cursors.  They
+        # remain resumable only when a completed pair proves real progress.
+        return None
+    elif (
+        set(pending) | set(completed) | set(resumed)
+    ) != request_case_ids:
         return None
     candidate_fingerprint = _candidate_package_fingerprint(candidate)
     if _FINGERPRINT.fullmatch(candidate_fingerprint) is None:
@@ -596,6 +670,189 @@ def discover_paired_replay_resume_checkpoint(
         )
     except (TypeError, ValueError):
         return None
+
+
+def _pairless_baselines_are_verified(
+    members_root: Path,
+    reusable_case_ids: set[str],
+    *,
+    root_request: Mapping[str, Any],
+) -> bool:
+    """Require real typed control artifacts before reopening a campaign."""
+
+    if not reusable_case_ids:
+        return False
+    try:
+        from aworld.self_evolve.replay import (
+            _candidate_replay_request_from_mapping,
+            _distributed_member_repetitions,
+            _load_variant_result_from_dir,
+            _member_artifact_name,
+            _validate_v3_member_variant_artifact,
+            baseline_control_fingerprint,
+        )
+
+        resolved_members_root = members_root.resolve(strict=True)
+        if members_root.is_symlink():
+            return False
+        required_root_fingerprints = (
+            "baseline_skill_fingerprint",
+            "dataset_fingerprint",
+            "workspace_seed_fingerprint",
+            "support_fingerprint",
+            "timeout_envelope_fingerprint",
+        )
+        if any(
+            not isinstance(root_request.get(key), str)
+            or _FINGERPRINT.fullmatch(str(root_request.get(key))) is None
+            for key in required_root_fingerprints
+        ):
+            return False
+        root_target = root_request.get("target")
+        adaptation = root_request.get("replay_adaptation")
+        raw_cases = (
+            adaptation.get("cases")
+            if isinstance(adaptation, Mapping)
+            else None
+        )
+        if not isinstance(root_target, Mapping) or not isinstance(raw_cases, list):
+            return False
+        case_contracts = {
+            str(item.get("case_id")): item
+            for item in raw_cases
+            if isinstance(item, Mapping) and isinstance(item.get("case_id"), str)
+        }
+        if len(case_contracts) != len(raw_cases):
+            return False
+        member_repetitions = _distributed_member_repetitions(
+            int(root_request.get("baseline_repetitions") or 1),
+            member_count=len(raw_cases),
+        )
+        manifest = _read_json_mapping(
+            members_root / "baseline_cache_manifest.json"
+        )
+        if (
+            manifest.get("schema_version")
+            != "aworld.self_evolve.baseline_cache.v1"
+            or manifest.get("repetition_semantics") != "per_member_v3"
+        ):
+            return False
+        raw_members = manifest.get("members")
+        if not isinstance(raw_members, list):
+            return False
+        entries: dict[str, Mapping[str, Any]] = {}
+        for raw_member in raw_members:
+            if not isinstance(raw_member, Mapping):
+                return False
+            case_id = raw_member.get("case_id")
+            if (
+                not isinstance(case_id, str)
+                or _ID.fullmatch(case_id) is None
+                or case_id in entries
+            ):
+                return False
+            entries[case_id] = raw_member
+        for case_id in reusable_case_ids:
+            entry = entries.get(case_id)
+            if (
+                entry is None
+                or entry.get("baseline_complete") is not True
+                or entry.get("path") != _member_artifact_name(case_id)
+            ):
+                return False
+            member_root = members_root / _member_artifact_name(case_id)
+            request_path = member_root / "request.json"
+            if (
+                member_root.is_symlink()
+                or member_root.resolve(strict=True).parent != resolved_members_root
+                or not _regular_file(request_path)
+            ):
+                return False
+            raw_member_request = _read_json_mapping(request_path)
+            member_request = _candidate_replay_request_from_mapping(raw_member_request)
+            case_contract = case_contracts.get(case_id)
+            if (
+                case_contract is None
+                or member_request.task_id != case_id
+                or member_request.run_id != root_request.get("run_id")
+                or member_request.candidate_id
+                != root_request.get("candidate_id")
+                or member_request.workspace_root
+                != root_request.get("workspace_root")
+                or raw_member_request.get("target") != root_target
+                or member_request.overlay_skill_root
+                != root_request.get("overlay_skill_root")
+                or member_request.baseline_skill_fingerprint
+                != root_request.get("baseline_skill_fingerprint")
+                or member_request.dataset_fingerprint
+                != root_request.get("dataset_fingerprint")
+                or member_request.workspace_seed_fingerprint
+                != root_request.get("workspace_seed_fingerprint")
+                or member_request.support_fingerprint
+                != root_request.get("support_fingerprint")
+                or member_request.timeout_envelope_fingerprint
+                != root_request.get("timeout_envelope_fingerprint")
+                or member_request.adaptation_fingerprint
+                != root_request.get("adaptation_fingerprint")
+                or member_request.repetition_semantics
+                != root_request.get("repetition_semantics")
+                or member_request.baseline_repetitions != member_repetitions
+                or member_request.task_input_fingerprint
+                != case_contract.get("task_input_fingerprint")
+                or member_request.task_input
+                != case_contract.get("adapted_task_input")
+                or entry.get("control_fingerprint")
+                != baseline_control_fingerprint(member_request)
+            ):
+                return False
+            baseline_path = member_root / "baseline"
+            if (
+                baseline_path.is_symlink()
+                or not baseline_path.is_dir()
+                or baseline_path.resolve(strict=True).parent
+                != member_root.resolve(strict=True)
+                or not _symlink_free_contained_tree(baseline_path)
+            ):
+                return False
+            baseline = _load_variant_result_from_dir(
+                baseline_path,
+                base_variant_id="baseline",
+            )
+            _baseline, failures = _validate_v3_member_variant_artifact(
+                baseline_path,
+                result=baseline,
+                requested_repetitions=member_request.baseline_repetitions,
+                case_id=case_id,
+                variant_role="baseline",
+                expected_variant_id="baseline",
+            )
+            if failures:
+                return False
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return False
+    return True
+
+
+def _symlink_free_contained_tree(root: Path) -> bool:
+    """Reject authority trees whose descendants can escape after admission."""
+
+    try:
+        resolved_root = root.resolve(strict=True)
+        for current, directory_names, file_names in os.walk(
+            root,
+            followlinks=False,
+        ):
+            current_path = Path(current)
+            for name in (*directory_names, *file_names):
+                child = current_path / name
+                if child.is_symlink():
+                    return False
+                resolved_child = child.resolve(strict=True)
+                if not resolved_child.is_relative_to(resolved_root):
+                    return False
+    except OSError:
+        return False
+    return True
 
 
 def load_paired_replay_resume_checkpoint(

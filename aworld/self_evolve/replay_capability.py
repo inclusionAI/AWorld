@@ -16,6 +16,7 @@ import time
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path, PurePosixPath
 from typing import Any, Mapping, NoReturn, Protocol, Sequence
+from urllib.parse import unquote
 
 from aworld.self_evolve.replay_adaptation import (
     ReplayAdapterBinding,
@@ -428,6 +429,29 @@ def _advertised_websocket_probe_violation() -> SchemaFieldViolation:
     )
 
 
+def _endpoint_replacement_entrypoint_violation(
+    value: Any,
+) -> SchemaFieldViolation:
+    """Describe a runtime without an unambiguous executable HTTP task entry."""
+
+    return _schema_field_violation(
+        schema_layer="compile_result",
+        field_path="services[*@endpoint_replacement].protocol_probes",
+        rule="contains_all",
+        expected=("unambiguous_http_task_entry_probe",),
+        value=value,
+        value_domain="source_behavior",
+        required_operations=(
+            "declare_one_http_task_entry_probe",
+            "serve_fixture_or_discovery_response_at_task_entry",
+        ),
+        forbidden_operations=(
+            "serve_fixture_only_on_undiscoverable_subpath",
+            "make_task_entry_readiness_only",
+        ),
+    )
+
+
 def fingerprint_skill_package(skill_root: str | Path) -> str:
     root = Path(skill_root).expanduser().resolve()
     if not root.is_dir():
@@ -690,6 +714,46 @@ class ReplayServiceSpec:
         )
     )
     protocol_probes: tuple[ReplayProtocolProbe, ...] = ()
+    # Derived from typed protocol probes. This exact path is appended to the
+    # allocated loopback authority before endpoint substitution into task input.
+    task_entry_path: str | None = None
+
+
+def _replay_service_fingerprint_payload(
+    service: ReplayServiceSpec,
+) -> dict[str, Any]:
+    """Keep v1 service identity compatible when the new path is absent."""
+
+    payload = asdict(service)
+    if service.task_entry_path is None:
+        payload.pop("task_entry_path", None)
+    return payload
+
+
+def _verified_replay_services_payload(
+    services: Sequence[ReplayServiceSpec],
+    manifest: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    """Mirror whether a v1 manifest historically encoded the optional null."""
+
+    raw_services = manifest.get("services")
+    payloads: list[dict[str, Any]] = []
+    for index, service in enumerate(services):
+        payload = _replay_service_fingerprint_payload(service)
+        raw_service = (
+            raw_services[index]
+            if isinstance(raw_services, list)
+            and index < len(raw_services)
+            and isinstance(raw_services[index], Mapping)
+            else None
+        )
+        if (
+            isinstance(raw_service, Mapping)
+            and "task_entry_path" in raw_service
+        ):
+            payload["task_entry_path"] = service.task_entry_path
+        payloads.append(payload)
+    return payloads
 
 
 @dataclass(frozen=True)
@@ -765,7 +829,10 @@ def replay_capability_semantic_fingerprint(
             "fixtures": [asdict(item) for item in capability.fixtures],
             "runtime_files": [asdict(item) for item in capability.runtime_files],
             "endpoint_replacements": capability.endpoint_replacements,
-            "services": [asdict(item) for item in capability.services],
+            "services": [
+                _replay_service_fingerprint_payload(item)
+                for item in capability.services
+            ],
             "deterministic": capability.deterministic,
             "concurrency_mode": capability.concurrency_mode,
             "resource_key": capability.resource_key,
@@ -1400,7 +1467,10 @@ def verify_frozen_replay_capability(capability: FrozenReplayCapability) -> None:
         "fixtures": [asdict(item) for item in capability.fixtures],
         "runtime_files": [asdict(item) for item in capability.runtime_files],
         "endpoint_replacements": capability.endpoint_replacements,
-        "services": [asdict(item) for item in capability.services],
+        "services": _verified_replay_services_payload(
+            capability.services,
+            manifest,
+        ),
         "deterministic": capability.deterministic,
     }
     if any(
@@ -3090,6 +3160,29 @@ def _parse_compile_result(
             raise ReplayCapabilityError(
                 "endpoint replacement service is bound to a different requirement"
             )
+        if service.transport != "skill_runtime":
+            continue
+        if service.task_entry_path is None:
+            _raise_schema_field_error(
+                "endpoint replacement skill runtime must expose a "
+                "single executable HTTP task entry",
+                (
+                    _endpoint_replacement_entrypoint_violation(
+                        [
+                            {
+                                "kind": probe.kind,
+                                "path": probe.path,
+                                "fixture_derived": bool(probe.response_contains),
+                            }
+                            for probe in service.protocol_probes
+                        ]
+                    ),
+                ),
+                extra_details={
+                    "code": "endpoint_replacement_entrypoint_missing",
+                    "service_id": service_id,
+                },
+            )
     result_mode = str(
         raw.get("concurrency_mode") or capability.manifest.concurrency_mode
     )
@@ -4511,6 +4604,9 @@ def _parse_services(
                 runtime_entrypoint=runtime_entrypoint,
                 readiness=readiness,
                 protocol_probes=protocol_probes,
+                task_entry_path=_select_runtime_task_entry_path(
+                    protocol_probes
+                ),
             )
         )
     if fixture_probe_violations:
@@ -4553,6 +4649,29 @@ def _parse_services(
             },
         )
     return tuple(sorted(services, key=lambda item: item.service_id))
+
+
+def _select_runtime_task_entry_path(
+    probes: Sequence[ReplayProtocolProbe],
+) -> str | None:
+    """Choose the HTTP path published by endpoint adaptation.
+
+    Root remains preferred for base-URL runtimes. A single non-root HTTP probe
+    is also safe: preflight executes that exact branch and adaptation exposes
+    the same URL to the task. Multiple non-root entries are ambiguous.
+    """
+
+    entries = tuple(
+        probe
+        for probe in probes
+        if probe.kind == "http" and bool(probe.response_contains)
+    )
+    if any(probe.path == "/" for probe in entries):
+        return "/"
+    unique_paths = tuple(dict.fromkeys(probe.path for probe in entries))
+    if len(unique_paths) == 1:
+        return unique_paths[0]
+    return None
 
 
 _SERVICE_CONDITIONAL_PRESENCE_RULES = (
@@ -4673,6 +4792,31 @@ def _parse_protocol_probes(
                 ),
                 extra_details={
                     "code": "protocol_probe_path_invalid",
+                    "service_id": service_id,
+                    "probe_kind": kind,
+                },
+            )
+        decoded_path = unquote(path)
+        if kind == "http" and (
+            (path != "/" and path.endswith("/"))
+            or "?" in path
+            or "#" in path
+            or "\\" in decoded_path
+            or any(part == ".." for part in PurePosixPath(decoded_path).parts)
+        ):
+            _raise_schema_field_error(
+                "HTTP protocol probe path must be canonical",
+                (
+                    _schema_field_violation(
+                        schema_layer="compile_result",
+                        field_path="services[*].protocol_probes[*].path",
+                        rule="enum",
+                        expected=("canonical_absolute_path",),
+                        value=path,
+                    ),
+                ),
+                extra_details={
+                    "code": "protocol_probe_path_not_canonical",
                     "service_id": service_id,
                     "probe_kind": kind,
                 },
@@ -4933,7 +5077,10 @@ def _freeze_compile_result(
         "fixtures": [asdict(item) for item in frozen_fixtures],
         "runtime_files": [asdict(item) for item in frozen_runtime],
         "endpoint_replacements": result.endpoint_replacements,
-        "services": [asdict(item) for item in result.services],
+        "services": [
+            _replay_service_fingerprint_payload(item)
+            for item in result.services
+        ],
         "deterministic": result.deterministic,
         "concurrency_mode": result.concurrency_mode,
         "resource_key": result.resource_key,

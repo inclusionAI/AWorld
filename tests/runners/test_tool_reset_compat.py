@@ -9,9 +9,10 @@ import pytest
 from aworld.config import ConfigDict
 from aworld.core.common import ActionModel, Observation, TaskItem
 from aworld.core.context.base import Context
+from aworld.core.context.session import Session
 from aworld.core.event.base import Constants, Message, TopicType
 from aworld.core.task import Task, TaskResponse
-from aworld.core.tool.base import AsyncTool
+from aworld.core.tool.base import AsyncTool, _enforce_runtime_tool_call_budget
 from aworld.runners.handler.tool import DefaultToolHandler
 from aworld.runners.handler.task import DefaultTaskHandler
 from aworld.runners.task_runner import TaskRunner
@@ -52,6 +53,53 @@ class CoroutineOnlyInnerHandler:
     async def handle(self, message):
         self.messages.append(message)
         return None
+
+
+@pytest.mark.asyncio
+async def test_task_runner_post_run_releases_runtime_tool_call_budget(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("AWORLD_TOOL_CALL_LIMIT", "1")
+
+    async def no_hooks(**kwargs):
+        if False:
+            yield kwargs
+
+    monkeypatch.setattr("aworld.runners.task_runner.run_hooks", no_hooks)
+    task = Task(id="task-budget-cleanup", input="test", context=Context())
+    runner = DummyTaskRunner(task, agent_oriented=False)
+    runner.context = Context(
+        task_id=task.id,
+        session=Session(session_id="session-budget"),
+    )
+    first_message = Message(
+        category=Constants.TOOL,
+        payload=[],
+        session_id="session-budget",
+        headers={"context": runner.context},
+    )
+    action = [
+        ActionModel(
+            tool_name="tool",
+            action_name="run",
+            tool_call_id="call-1",
+        )
+    ]
+
+    _enforce_runtime_tool_call_budget("tool", action, first_message)
+    await runner.post_run()
+
+    replacement_context = Context(
+        task_id=task.id,
+        session=Session(session_id="session-budget"),
+    )
+    replacement_message = Message(
+        category=Constants.TOOL,
+        payload=[],
+        session_id="session-budget",
+        headers={"context": replacement_context},
+    )
+    _enforce_runtime_tool_call_budget("tool", action, replacement_message)
 
 
 @pytest.mark.asyncio
