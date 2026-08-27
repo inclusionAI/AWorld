@@ -638,7 +638,23 @@ async def _run_candidate_population(
 def _build_mutation_prompt(request: OptimizerRequest, *, candidate_index: int) -> str:
     context = request.evolution_context or compile_evolution_context(request)
     payload = context.to_prompt_payload(candidate_index=candidate_index)
+    focused_replay_repair = _focused_payload_requires_replay_runtime(
+        payload
+    )
+    requires_replay_runtime = (
+        _requires_candidate_replay_runtime(request) or focused_replay_repair
+    )
+    if not requires_replay_runtime:
+        payload = _scope_non_replay_prompt_payload(payload)
     if isinstance(payload.get("repair_focus"), Mapping):
+        if not requires_replay_runtime:
+            return _focused_non_replay_repair_prompt_instructions(
+                payload
+            ) + json.dumps(
+                payload,
+                ensure_ascii=False,
+                sort_keys=True,
+            )
         return _focused_repair_prompt_instructions(payload) + json.dumps(
             payload,
             ensure_ascii=False,
@@ -655,7 +671,7 @@ def _build_mutation_prompt(request: OptimizerRequest, *, candidate_index: int) -
             "and return exactly one expected_output object.\n"
             + json.dumps(payload, ensure_ascii=False, sort_keys=True)
         )
-    return (
+    prompt = (
         "Generate one candidate package from this bounded EvolutionContext. Follow "
         "population_strategy, required_behaviors, preserved_behaviors, "
         "capability_contracts, acceptance_constraints, and expected_output literally. "
@@ -773,6 +789,155 @@ def _build_mutation_prompt(request: OptimizerRequest, *, candidate_index: int) -
         "files implement the reusable delta.\n"
         + json.dumps(payload, ensure_ascii=False, sort_keys=True)
     )
+    return _scope_general_mutation_prompt(prompt, request=request)
+
+
+def _scope_general_mutation_prompt(
+    prompt: str,
+    *,
+    request: OptimizerRequest,
+) -> str:
+    """Remove replay-runtime authoring rules from ordinary skill mutations."""
+
+    if _requires_candidate_replay_runtime(request):
+        return prompt
+    scoped = prompt
+    replacements = (
+        (
+            "Keep replay schema layers distinct:",
+            "When validation_feedback contains repair_candidate_package",
+            (
+                "No external replay capability is required for this task. "
+                "Do not add replay/capability.json, fixture compilers, runtime "
+                "services, endpoint handlers, or protocol probes. Concentrate "
+                "the candidate on reusable target behavior. "
+            ),
+        ),
+        (
+            "Treat replay manifest capability_id as immutable package identity.",
+            "Keep reusable examples schema-neutral:",
+            "",
+        ),
+        (
+            "Replay files must accompany a reusable target behavior delta,",
+            "Every Markdown fenced block in content or patch_intent",
+            (
+                "Keep SKILL.md and any genuinely required candidate-owned "
+                "product files as one atomic release package. Include every "
+                "added or changed package file in files. "
+            ),
+        ),
+    )
+    for start_marker, end_marker, replacement in replacements:
+        start = scoped.find(start_marker)
+        end = scoped.find(end_marker, start + len(start_marker))
+        if start < 0 or end < 0:
+            raise RuntimeError("general mutation prompt contract markers drifted")
+        scoped = scoped[:start] + replacement + scoped[end:]
+    return scoped
+
+
+def _requires_candidate_replay_runtime(request: OptimizerRequest) -> bool:
+    """Conversation reconstruction is framework context, not runtime authoring."""
+
+    return any(
+        getattr(requirement, "kind", None) != "conversation_context"
+        for requirement in request.replay_requirements
+    )
+
+
+def _focused_payload_requires_replay_runtime(
+    payload: Mapping[str, object],
+) -> bool:
+    focus = payload.get("repair_focus")
+    if not isinstance(focus, Mapping):
+        return False
+    package = focus.get("repair_candidate_package")
+    files = package.get("files") if isinstance(package, Mapping) else None
+    if isinstance(files, list) and any(
+        isinstance(item, Mapping)
+        and isinstance(item.get("path"), str)
+        and (
+            item["path"] == "replay/capability.json"
+            or item["path"].startswith("replay/")
+        )
+        for item in files
+    ):
+        return True
+    conformance = payload.get("repair_conformance")
+    return bool(
+        isinstance(conformance, Mapping)
+        and (
+            conformance.get("requires_compiler_fixture_reconstruction") is True
+            or conformance.get("requires_fixture_derived_probe") is True
+            or conformance.get("required_runtime_transitions")
+            or conformance.get("fixture_probe_constraints")
+            or conformance.get("runtime_response_constraints")
+            or conformance.get("runtime_artifact_constraints")
+        )
+    )
+
+
+def _scope_non_replay_prompt_payload(
+    payload: Mapping[str, object],
+) -> dict[str, object]:
+    """Remove replay implementation schemas while retaining context requirements."""
+
+    scoped = json.loads(json.dumps(payload, ensure_ascii=False, default=str))
+    scoped["capability_contracts"] = []
+    expected = scoped.get("expected_output")
+    if isinstance(expected, dict):
+        expected["files"] = [
+            {
+                "path": (
+                    "optional target-package-relative path for a genuinely "
+                    "required product file"
+                ),
+                "operation": "upsert or delete",
+                "content": "UTF-8 text for upsert",
+                "executable": False,
+            }
+        ]
+    return scoped
+
+
+def _focused_non_replay_repair_prompt_instructions(
+    payload: Mapping[str, object],
+) -> str:
+    """Focused repair contract for ordinary skills without replay services."""
+
+    instructions = (
+        "Repair the focused candidate package using the machine-readable "
+        "diagnostics in this EvolutionContext. Treat current_content and "
+        "repair_focus as the authoritative base, preserve every verified "
+        "behavior, repair the target skill content, and make the smallest "
+        "reusable semantic change that resolves "
+        "the typed failed gate. Omit unchanged files; include complete content "
+        "only for files you add or change, and use delete only intentionally. "
+        "Do not change readiness, protocol, compiler, or runtime behavior from "
+        "an inherited focused package. "
+        "Do not hard-code task ids, case ids, paths, diagnostic previews, or "
+        "evaluation scores. Do not add replay/capability.json, fixture compilers, "
+        "runtime services, endpoint handlers, protocol probes, HTTP handshakes, "
+        "or replay artifacts: no candidate-owned replay runtime is required. "
+        "Keep reusable examples schema-neutral with placeholders such as "
+        "<CLAIM>, <ARTIFACT_PATH>, and <OFFSET>; never copy proper nouns, "
+        "resource identifiers, or diagnostic text into the skill. "
+        "Never write your own draft answer or remembered synthesis into a file "
+        "and cite it as evidence. Every evidence reference must resolve to an "
+        "existing canonical artifact path, and any artifact or entry count must "
+        "be computed from the final manifest. "
+        "Inspect the resulting target behavior before claiming the repair and "
+        "return exactly one expected_output object. "
+    )
+    if isinstance(payload.get("repair_support"), Mapping):
+        instructions += (
+            "Treat repair_focus and repair_support as complementary checkpoints: "
+            "preserve every behavior already verified by either frontier while "
+            "satisfying the union of their typed constraints. Do not recreate "
+            "omitted sibling source or trade a recovered gate for another. "
+        )
+    return instructions.rstrip() + "\n"
 
 
 def _focused_repair_prompt_instructions(
@@ -2705,7 +2870,9 @@ def _overlay_repair_focus_files(
     """Apply a repair response as a delta over its focused candidate package."""
 
     context = request.evolution_context or compile_evolution_context(request)
-    files_authorized_by_requirements = bool(request.replay_requirements)
+    files_authorized_by_requirements = _requires_candidate_replay_runtime(
+        request
+    )
     repair_focus = context.repair_focus_for_candidate(
         candidate_index=candidate_index
     )

@@ -10,6 +10,7 @@ from aworld_cli.core.skill_activation_resolver import (  # type: ignore[attr-def
     SkillActivationResolver,
     SkillResolverRequest,
 )
+from aworld.self_evolve.replay_capability import fingerprint_skill_package
 
 
 def _write_skill(
@@ -161,6 +162,21 @@ def test_resolver_explicit_request_beats_auto_match(tmp_path: Path) -> None:
     assert result.active_skill_names == ("code-review",)
     assert result.skill_configs["code-review"]["active"] is True
     assert result.skill_configs["browser-use"]["active"] is False
+    assert result.activation_evidence == (
+        {
+            "skill_name": "code-review",
+            "canonical_skill_file": str(
+                (plugin_root / "skills" / "code-review" / "SKILL.md").resolve()
+            ),
+            "canonical_skill_root": str(
+                (plugin_root / "skills" / "code-review").resolve()
+            ),
+            "package_fingerprint": fingerprint_skill_package(
+                plugin_root / "skills" / "code-review"
+            ),
+            "source": "aworld_cli_skill_activation_resolver",
+        },
+    )
 
 
 def test_resolver_auto_match_is_deterministic(tmp_path: Path) -> None:

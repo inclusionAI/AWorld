@@ -47,6 +47,7 @@ DISPOSITION_SCHEMA_VERSION = "aworld.self_evolve.disposition.v1"
 PROGRESS_SCHEMA_VERSION = "aworld.self_evolve.progress.v1"
 DEFAULT_MAX_IMPROVEMENT_CYCLES = 3
 DEFAULT_MAX_MEASUREMENT_RETRIES = 2
+DEFAULT_MAX_INFRASTRUCTURE_RETRIES = 2
 LEGACY_SINGLE_TURN_REPLAY_REPLACEMENT_STEPS = 24
 
 _ID_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]{0,159}$")
@@ -270,6 +271,7 @@ class CampaignMeasurementLedgerV2:
     continuation_run_ids: tuple[str, ...] = ()
     invalid_retry_run_ids: tuple[str, ...] = ()
     framework_blocked_run_ids: tuple[str, ...] = ()
+    infrastructure_retry_run_ids: tuple[str, ...] = ()
     schema_version: str = CAMPAIGN_MEASUREMENT_LEDGER_SCHEMA_VERSION
 
     def __post_init__(self) -> None:
@@ -279,6 +281,7 @@ class CampaignMeasurementLedgerV2:
             (self.continuation_run_ids, "measurement continuation run"),
             (self.invalid_retry_run_ids, "measurement invalid retry run"),
             (self.framework_blocked_run_ids, "framework blocked run"),
+            (self.infrastructure_retry_run_ids, "infrastructure retry run"),
         ):
             if len(values) != len(set(values)):
                 raise ValueError(f"{label} ids must be unique")
@@ -288,6 +291,7 @@ class CampaignMeasurementLedgerV2:
             set(self.continuation_run_ids),
             set(self.invalid_retry_run_ids),
             set(self.framework_blocked_run_ids),
+            set(self.infrastructure_retry_run_ids),
         )
         if any(
             left & right
@@ -309,11 +313,16 @@ class CampaignMeasurementLedgerV2:
         return len(self.framework_blocked_run_ids)
 
     @property
+    def infrastructure_retry_count(self) -> int:
+        return len(self.infrastructure_retry_run_ids)
+
+    @property
     def control_plane_run_count(self) -> int:
         return (
             self.continuation_count
             + self.invalid_retry_count
             + self.framework_blocked_count
+            + self.infrastructure_retry_count
         )
 
     def charge_continuation(self, run_id: str) -> "CampaignMeasurementLedgerV2":
@@ -340,15 +349,34 @@ class CampaignMeasurementLedgerV2:
             framework_blocked_run_ids=(*self.framework_blocked_run_ids, run_id),
         )
 
+    def charge_infrastructure_retry(
+        self, run_id: str
+    ) -> "CampaignMeasurementLedgerV2":
+        """Record system execution that produced no candidate conclusion."""
+
+        if run_id in self.infrastructure_retry_run_ids:
+            return self
+        return replace(
+            self,
+            infrastructure_retry_run_ids=(
+                *self.infrastructure_retry_run_ids,
+                run_id,
+            ),
+        )
+
     def to_dict(self) -> dict[str, object]:
         return {
             "schema_version": self.schema_version,
             "continuation_run_ids": list(self.continuation_run_ids),
             "invalid_retry_run_ids": list(self.invalid_retry_run_ids),
             "framework_blocked_run_ids": list(self.framework_blocked_run_ids),
+            "infrastructure_retry_run_ids": list(
+                self.infrastructure_retry_run_ids
+            ),
             "continuation_count": self.continuation_count,
             "invalid_retry_count": self.invalid_retry_count,
             "framework_blocked_count": self.framework_blocked_count,
+            "infrastructure_retry_count": self.infrastructure_retry_count,
         }
 
     @classmethod
@@ -363,12 +391,19 @@ class CampaignMeasurementLedgerV2:
             framework_blocked_run_ids=_string_tuple(
                 value.get("framework_blocked_run_ids")
             ),
+            infrastructure_retry_run_ids=_string_tuple(
+                value.get("infrastructure_retry_run_ids")
+            ),
         )
         continuation_count = value.get("continuation_count")
         invalid_retry_count = value.get("invalid_retry_count")
         framework_blocked_count = value.get(
             "framework_blocked_count",
             loaded.framework_blocked_count,
+        )
+        infrastructure_retry_count = value.get(
+            "infrastructure_retry_count",
+            loaded.infrastructure_retry_count,
         )
         if (
             isinstance(continuation_count, bool)
@@ -388,6 +423,13 @@ class CampaignMeasurementLedgerV2:
             or framework_blocked_count != loaded.framework_blocked_count
         ):
             raise ValueError("framework blocked count is not canonical")
+        if (
+            isinstance(infrastructure_retry_count, bool)
+            or not isinstance(infrastructure_retry_count, int)
+            or infrastructure_retry_count
+            != loaded.infrastructure_retry_count
+        ):
+            raise ValueError("infrastructure retry count is not canonical")
         return loaded
 
 
@@ -950,6 +992,7 @@ class SelfImprovementCampaign:
     cumulative_authoritative_candidates: int = 0
     repair_continuation_used: bool = False
     max_measurement_retries: int = DEFAULT_MAX_MEASUREMENT_RETRIES
+    max_infrastructure_retries: int = DEFAULT_MAX_INFRASTRUCTURE_RETRIES
     measurement_ledger: CampaignMeasurementLedgerV2 = CampaignMeasurementLedgerV2()
     measurement_pending_run_id: str | None = None
     measurement_pending_candidate_id: str | None = None
@@ -978,6 +1021,13 @@ class SelfImprovementCampaign:
             > self.max_measurement_retries
         ):
             raise ValueError("campaign measurement retry count is outside its bound")
+        if (
+            isinstance(self.max_infrastructure_retries, bool)
+            or self.max_infrastructure_retries < 0
+        ):
+            raise ValueError(
+                "campaign infrastructure retry limit must be non-negative"
+            )
         effective_max_cycles = (
             self.max_cycles
             + self.measurement_ledger.control_plane_run_count
@@ -1065,6 +1115,10 @@ class SelfImprovementCampaign:
     def framework_blocked_count(self) -> int:
         return self.measurement_ledger.framework_blocked_count
 
+    @property
+    def infrastructure_retry_count(self) -> int:
+        return self.measurement_ledger.infrastructure_retry_count
+
     def to_dict(self) -> dict[str, object]:
         return {
             "schema_version": CAMPAIGN_SCHEMA_VERSION,
@@ -1086,10 +1140,12 @@ class SelfImprovementCampaign:
             ),
             "repair_continuation_used": self.repair_continuation_used,
             "max_measurement_retries": self.max_measurement_retries,
+            "max_infrastructure_retries": self.max_infrastructure_retries,
             "measurement_ledger": self.measurement_ledger.to_dict(),
             "measurement_retry_count": self.measurement_retry_count,
             "measurement_continuation_count": self.measurement_continuation_count,
             "framework_blocked_count": self.framework_blocked_count,
+            "infrastructure_retry_count": self.infrastructure_retry_count,
             "measurement_pending_run_id": self.measurement_pending_run_id,
             "measurement_pending_candidate_id": (
                 self.measurement_pending_candidate_id
@@ -1204,6 +1260,13 @@ class SelfImprovementCampaign:
                     DEFAULT_MAX_MEASUREMENT_RETRIES,
                 ),
                 "max_measurement_retries",
+            ),
+            max_infrastructure_retries=_non_negative_int(
+                value.get(
+                    "max_infrastructure_retries",
+                    DEFAULT_MAX_INFRASTRUCTURE_RETRIES,
+                ),
+                "max_infrastructure_retries",
             ),
             measurement_ledger=measurement_ledger,
             measurement_pending_run_id=_optional_string(
@@ -1657,6 +1720,17 @@ class SelfImprovementCampaignController:
             and disposition.owner == "framework"
             and disposition.scope == "shared_run"
         )
+        infrastructure_retry_requested = bool(
+            disposition.kind
+            is SelfImprovementDispositionKind.RETRY_INFRASTRUCTURE
+            and disposition.owner == "infrastructure"
+            and disposition.scope == "shared_run"
+        )
+        infrastructure_retry_available = bool(
+            infrastructure_retry_requested
+            and campaign.infrastructure_retry_count
+            < campaign.max_infrastructure_retries
+        )
         if (
             measurement_continuation_requested
             and not measurement_continuation_available
@@ -1691,7 +1765,13 @@ class SelfImprovementCampaignController:
             )
             status = _status_for_disposition(disposition)
         measurement_ledger = campaign.measurement_ledger
-        if framework_control_plane_blocked:
+        if infrastructure_retry_requested:
+            # Infrastructure execution is control-plane work.  It gets its own
+            # bounded retry ledger and never spends the mutation-cycle axis.
+            measurement_ledger = measurement_ledger.charge_infrastructure_retry(
+                actual_run_id
+            )
+        elif framework_control_plane_blocked:
             # A retained checkpoint describes where framework repair should
             # resume; it is not evidence that the measurement itself made
             # causal progress. Keep blocker and continuation ledgers
@@ -1774,7 +1854,28 @@ class SelfImprovementCampaignController:
                 ),
             )
         )
-        if measurement_continuation_available:
+        if infrastructure_retry_available:
+            advanced = replace(
+                advanced,
+                status=SelfImprovementCampaignStatus.ACTIVE,
+            )
+        elif infrastructure_retry_requested:
+            disposition = SelfImprovementDisposition(
+                kind=SelfImprovementDispositionKind.PAUSE_OPERATOR,
+                reason_code="campaign_infrastructure_retry_limit_reached",
+                owner="infrastructure",
+                stage=disposition.stage,
+                scope="shared_run",
+                repairable=False,
+                progress_delta_ids=disposition.progress_delta_ids,
+                diagnostic_refs=disposition.diagnostic_refs,
+            )
+            advanced = replace(
+                advanced,
+                status=SelfImprovementCampaignStatus.PAUSED,
+                latest_disposition=disposition,
+            )
+        elif measurement_continuation_available:
             # A scheduler quantum/deadline boundary is resumable execution,
             # not a failed experiment or a candidate/measurement retry.
             advanced = replace(
@@ -1817,15 +1918,9 @@ class SelfImprovementCampaignController:
             disposition.continuable
             and next_cycle >= _campaign_effective_max_cycles(advanced)
         ):
-            exhaustion_reason = (
-                "campaign_infrastructure_retry_limit_reached"
-                if disposition.kind
-                is SelfImprovementDispositionKind.RETRY_INFRASTRUCTURE
-                else _campaign_exhaustion_reason(advanced)
-            )
             advanced = _exhaust_campaign(
                 advanced,
-                reason_code=exhaustion_reason,
+                reason_code=_campaign_exhaustion_reason(advanced),
             )
             disposition = advanced.latest_disposition
             assert disposition is not None
@@ -1870,6 +1965,12 @@ class SelfImprovementCampaignController:
                 else None
             ),
             "max_measurement_retries": advanced.max_measurement_retries,
+            "max_infrastructure_retries": (
+                advanced.max_infrastructure_retries
+            ),
+            "infrastructure_retry_count": (
+                advanced.infrastructure_retry_count
+            ),
             "measurement_pending_run_id": (
                 advanced.measurement_pending_run_id
             ),
@@ -6547,6 +6648,17 @@ def derive_self_improvement_disposition(
         )
     primary_failure: Mapping[str, Any] | None = None
     if (
+        isinstance(campaign_attribution, Mapping)
+        and campaign_attribution.get("failure_class")
+        in {"infrastructure", "framework", "task"}
+        and campaign_attribution.get("failure_scope") == "shared_run"
+    ):
+        # The runner's aggregate attribution is the authority for a shared-run
+        # blocker.  A derived candidate gate (for example replay confidence on
+        # a different member) must not turn system work into another mutation
+        # cycle.
+        primary_failure = campaign_attribution
+    elif (
         isinstance(terminal, Mapping)
         and terminal.get("failure_class")
         in {"infrastructure", "framework", "task"}
@@ -6600,6 +6712,7 @@ def derive_self_improvement_disposition(
         if primary_owner == "infrastructure":
             retryable = (
                 primary_failure.get("retryable") is True
+                or primary_failure.get("repairable") is True
                 or (
                     primary_event is not None
                     and primary_event.get("repairable") is True
@@ -7425,8 +7538,14 @@ def _campaign_summary(
             "campaign_framework_blocked_count": (
                 campaign.framework_blocked_count
             ),
+            "campaign_infrastructure_retry_count": (
+                campaign.infrastructure_retry_count
+            ),
             "campaign_max_measurement_retries": (
                 campaign.max_measurement_retries
+            ),
+            "campaign_max_infrastructure_retries": (
+                campaign.max_infrastructure_retries
             ),
             "campaign_measurement_pending_run_id": (
                 campaign.measurement_pending_run_id

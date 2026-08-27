@@ -1244,6 +1244,40 @@ def test_terminal_infrastructure_attribution_precedes_historical_candidate_event
     assert disposition.reason_code == "typed_infrastructure_failure"
 
 
+def test_shared_campaign_infrastructure_attribution_precedes_candidate_gate() -> None:
+    report = _report(
+        _event(owner="candidate", constraint="payload.items[*].transport"),
+        _event(
+            code="replay_service_startup_timeout",
+            owner="infrastructure",
+            scope="shared_run",
+            repairable=True,
+        ),
+    )
+    report["rejection_attribution"] = {
+        "code": "replay_confidence_failed",
+        "failure_class": "candidate",
+        "failure_owner": "candidate",
+        "failure_scope": "candidate",
+        "repairable": True,
+    }
+    report["campaign_failure_attribution"] = {
+        "primary_gate": "candidate_replay",
+        "code": "replay_service_startup_timeout",
+        "failure_class": "infrastructure",
+        "failure_owner": "infrastructure",
+        "failure_scope": "shared_run",
+        "repairable": True,
+        "affected_candidate_count": 0,
+    }
+
+    disposition = derive_self_improvement_disposition(report)
+
+    assert disposition.kind is SelfImprovementDispositionKind.RETRY_INFRASTRUCTURE
+    assert disposition.owner == "infrastructure"
+    assert disposition.reason_code == "typed_infrastructure_failure"
+
+
 def test_shared_measurement_attribution_precedes_historical_candidate_event() -> None:
     report = _report(
         _event(owner="candidate", constraint="payload.items[*].transport"),
@@ -5700,8 +5734,11 @@ def test_retryable_infrastructure_keeps_specific_cycle_limit_reason(
         run_once=run_once,
     )
 
-    assert len(calls) == 1
-    assert result["campaign_status"] == "exhausted"
+    assert len(calls) == 3
+    assert result["campaign_status"] == "paused"
+    assert result["campaign_candidate_cycle_count"] == 0
+    assert result["campaign_infrastructure_retry_count"] == 3
+    assert result["campaign_max_infrastructure_retries"] == 2
     assert result["self_improvement_disposition"]["reason_code"] == (
         "campaign_infrastructure_retry_limit_reached"
     )

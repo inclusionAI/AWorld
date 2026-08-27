@@ -134,6 +134,7 @@ def _trajectory_payload_from_direct_run_summary(
     if isinstance(summary, dict):
         task_response_trajectory: list[dict] = []
         llm_calls: list[dict] = []
+        skill_activation_evidence: list[dict] = []
         for result in summary.get("results") or []:
             if not isinstance(result, dict):
                 continue
@@ -145,6 +146,13 @@ def _trajectory_payload_from_direct_run_summary(
             raw_llm_calls = result.get("llm_calls")
             if isinstance(raw_llm_calls, list):
                 llm_calls.extend(item for item in raw_llm_calls if isinstance(item, dict))
+            raw_activation_evidence = result.get("skill_activation_evidence")
+            if isinstance(raw_activation_evidence, list):
+                skill_activation_evidence.extend(
+                    item
+                    for item in raw_activation_evidence
+                    if isinstance(item, dict)
+                )
 
         if task_response_trajectory:
             payload = {
@@ -156,6 +164,10 @@ def _trajectory_payload_from_direct_run_summary(
                 payload["llm_usage"] = llm_usage
             if llm_calls:
                 payload["llm_calls"] = llm_calls
+            if skill_activation_evidence:
+                payload["skill_activation_evidence"] = (
+                    skill_activation_evidence
+                )
             return payload
 
     return {

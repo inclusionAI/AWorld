@@ -686,6 +686,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
         requested = self._extract_requested_skill_names(task_input)
         task_text = str(getattr(task_input, "task_content", "") or "")
         disabled_skill_names = SkillStateManager().disabled_skill_names()
+        activation_evidence: list[dict[str, str]] = []
 
         for agent in self._iter_swarm_agents():
             agent_name = self._agent_name_for_resolution(agent)
@@ -721,6 +722,16 @@ class LocalAgentExecutor(BaseAgentExecutor):
             result = resolver.resolve(request)
             if agent_conf is not None:
                 agent_conf.skill_configs = result.skill_configs
+            activation_evidence.extend(
+                {
+                    **dict(item),
+                    "agent_name": str(agent_name or ""),
+                }
+                for item in result.activation_evidence
+            )
+        # This state is produced by the actual task-time resolver after it has
+        # materialized the configs that ApplicationContext will inject.
+        self.last_skill_activation_evidence = tuple(activation_evidence)
 
     def _consume_restored_messages(self) -> list[dict[str, Any]]:
         restored_messages = getattr(self, "_aworld_cli_restored_messages", None) or []
@@ -830,6 +841,8 @@ class LocalAgentExecutor(BaseAgentExecutor):
 
         # Set workspace_path for hook system (CLI working directory)
         context.execution_scope = "cli_interactive"
+        if not isinstance(getattr(context, "context_info", None), dict):
+            context.context_info = {}
         context.context_info["execution_scope"] = "cli_interactive"
         context.workspace_path = os.getcwd()
         runtime = getattr(self, "_base_runtime", None)
@@ -940,6 +953,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
                 self.console = global_console
             self.last_task_response = None
             self.last_llm_usage = None
+            self.last_skill_activation_evidence = ()
 
             # 2. Parse message - handle both string and tuple format
             if isinstance(message, tuple):

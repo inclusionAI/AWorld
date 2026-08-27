@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import subprocess
 from dataclasses import replace
 from decimal import Decimal
 from pathlib import Path
@@ -73,8 +74,10 @@ from aworld.self_evolve.regression import (
 )
 from aworld.self_evolve.replay_adaptation import (
     ReplayAdapterBinding,
+    ReplayAdaptationBundle,
     ReplayAdaptationCompiler,
     ReplayCapabilityRequirement,
+    ReplayCaseAdaptation,
 )
 from aworld.self_evolve.runner import (
     SelfEvolveRunner,
@@ -106,6 +109,7 @@ from aworld.self_evolve.runner import (
     _candidate_materialization_stall_signature,
     _candidate_materialization_failure_events,
     _candidate_mutation_repair_prompt,
+    _prioritize_candidate_intervention_cases,
     _canonicalize_verified_prerequisite_files,
     _configured_budget_usage,
     _feedback_from_report,
@@ -8895,6 +8899,76 @@ def test_replay_gate_requires_intervention_trace_even_when_both_variants_succeed
     )
 
 
+def test_skill_candidate_requires_matching_runtime_activation_attestation(
+    tmp_path: Path,
+) -> None:
+    candidate_fingerprint = "sha256:" + "a" * 64
+    request = CandidateReplayRequest(
+        run_id="run-skill-activation",
+        task_id="case-skill-activation",
+        workspace_root=str(tmp_path),
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo"),
+        candidate_id="candidate-skill-activation",
+        overlay_skill_root=str(tmp_path / "overlay"),
+        task_input="complete task",
+        verified_candidate_package_fingerprint=candidate_fingerprint,
+    )
+    baseline = ReplayVariantResult(
+        variant_id="baseline",
+        status="succeeded",
+        trajectory=[{"action": {"content": "baseline"}}],
+    )
+    unattested_candidate = ReplayVariantResult(
+        variant_id="candidate-skill-activation",
+        status="succeeded",
+        trajectory=[{"action": {"content": "candidate"}}],
+    )
+    dataset = SelfEvolveDataset(
+        cases=(EvalCase(case_id="case-skill-activation", input="complete task"),),
+        recipe=DatasetRecipe(
+            source={"kind": "trajectory_log"},
+            split_seed="skill-activation",
+            splits={"train": ["case-skill-activation"]},
+            trainable_case_ids=("case-skill-activation",),
+        ),
+    )
+
+    unattested = _replay_gate_details(
+        _CandidateReplayResult(
+            request=request,
+            baseline=baseline,
+            candidate=unattested_candidate,
+        ),
+        dataset=dataset,
+        candidate_requires_intervention_exposure=True,
+        candidate_requires_skill_activation=True,
+    )
+    attested = _replay_gate_details(
+        _CandidateReplayResult(
+            request=request,
+            baseline=baseline,
+            candidate=replace(
+                unattested_candidate,
+                metrics={
+                    "skill_activation_attested": True,
+                    "activated_skill_package_fingerprint": candidate_fingerprint,
+                },
+            ),
+        ),
+        dataset=dataset,
+        candidate_requires_intervention_exposure=True,
+        candidate_requires_skill_activation=True,
+    )
+
+    assert unattested["candidate_intervention_observed"] is False
+    assert unattested["code"] == "candidate_intervention_unobserved"
+    assert attested["candidate_intervention_observed"] is True
+    assert not any(
+        event["code"] == "candidate_intervention_unobserved"
+        for event in attested.get("causal_failure_events", [])
+    )
+
+
 def test_replay_gate_repairs_candidate_only_after_intervention_is_observed(
     tmp_path: Path,
 ) -> None:
@@ -11235,6 +11309,215 @@ async def test_runner_auto_verified_applies_allowlisted_candidate_after_post_app
     assert journal["status"] == "accepted"
     assert journal["target"]["target_id"] == "demo"
     assert journal["backup_path"].endswith(".backup.md")
+
+
+@pytest.mark.asyncio
+async def test_certified_skill_evolution_uses_loaded_behavior_and_applies(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Hermetic causal benchmark across real resolver and apply boundaries."""
+
+    skill_path, dataset = _cycle1_runner_fixture(tmp_path, case_count=2)
+    corrected_marker = "CERTIFIED_BEHAVIOR: corrected"
+    loaded_behaviors: list[tuple[str, bool]] = []
+
+    def fake_run(command, **kwargs):
+        from aworld_cli.core.skill_activation_resolver import (
+            SkillActivationResolver,
+            SkillResolverRequest,
+        )
+
+        skill_root = Path(command[command.index("--skill-path") + 1])
+        skill_name = command[command.index("--skill") + 1]
+        resolved = SkillActivationResolver().resolve(
+            SkillResolverRequest(
+                plugin_roots=(),
+                runtime_scope="session",
+                requested_skill_names=(skill_name,),
+                compatibility_sources=(str(skill_root),),
+                compatibility_skill_patterns=(skill_name,),
+            )
+        )
+        assert resolved.active_skill_names == (skill_name,)
+        assert len(resolved.activation_evidence) == 1
+        active_path = Path(
+            resolved.activation_evidence[0]["canonical_skill_file"]
+        )
+        active_content = active_path.read_text(encoding="utf-8")
+        corrected = corrected_marker in active_content
+        loaded_behaviors.append((str(active_path), corrected))
+        trajectory = [
+            {
+                "state": {"input": "certified local task"},
+                "action": {
+                    "content": (
+                        "objective-result:pass"
+                        if corrected
+                        else "objective-result:fail"
+                    ),
+                    "is_agent_finished": "True",
+                    "tool_calls": [],
+                },
+            }
+        ]
+        response = {
+            "schema_version": "aworld.self_evolve.task_response.v1",
+            "trajectory": trajectory,
+            "trajectory_capture_mode": "task_response",
+            "skill_activation_evidence": list(
+                resolved.activation_evidence
+            ),
+        }
+        attestation_key = kwargs.get("task_response_attestation_key")
+        if isinstance(attestation_key, bytes):
+            response["framework_attestation"] = {
+                "schema_version": (
+                    "aworld.self_evolve.task_response_attestation.v2"
+                ),
+                "signature": replay_module._task_response_signature(
+                    response,
+                    attestation_key,
+                ),
+            }
+            Path(kwargs["task_response_path"]).write_text(
+                json.dumps(response),
+                encoding="utf-8",
+            )
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=json.dumps(
+                {
+                    "trajectory": trajectory,
+                    "trajectory_capture_mode": "task_response",
+                }
+            )
+            + "\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(replay_module, "_run_replay_cli", fake_run)
+
+    async def mutate(prompt: str) -> dict:
+        assert "No external replay capability is required" in prompt
+        return {
+            "content": (
+                "---\nname: demo\n---\n# Demo\n\n"
+                f"{corrected_marker}\n"
+                "For the certified task, return objective-result:pass.\n"
+            ),
+            "rationale": "Correct the observed objective behavior.",
+        }
+
+    class CausalEvaluationBackend:
+        async def evaluate_variant(self, request):
+            scores: list[float] = []
+            for case in request.dataset.cases:
+                variants = case.metadata.get("variant_trajectories")
+                if isinstance(variants, dict):
+                    key = (
+                        request.candidate.candidate_id
+                        if request.candidate is not None
+                        else "baseline"
+                    )
+                    trajectory = variants.get(key, [])
+                    serialized = json.dumps(trajectory, sort_keys=True)
+                    scores.append(
+                        1.0 if "objective-result:pass" in serialized else 0.0
+                    )
+                else:
+                    # The disjoint regression suite checks preservation, not
+                    # the train-task improvement signal.
+                    scores.append(1.0)
+            score = sum(scores) / len(scores) if scores else 0.0
+            return EvaluationSummary(
+                variant_id=request.variant_id,
+                dataset_split=request.dataset_split,
+                metrics={
+                    "score": score,
+                    "score_samples": scores or [score],
+                    "total_tokens": 1,
+                    "wall_seconds": 0.01,
+                    "deterministic_signal": True,
+                    "command_case_count": len(scores),
+                    "command_pass_count": sum(
+                        1 for value in scores if value == 1.0
+                    ),
+                    "global_regression_passed": True,
+                },
+            )
+
+    async def post_apply(candidate):
+        from aworld_cli.core.skill_activation_resolver import (
+            SkillActivationResolver,
+            SkillResolverRequest,
+        )
+
+        published_root = skill_path.parent.parent
+        resolved = SkillActivationResolver().resolve(
+            SkillResolverRequest(
+                plugin_roots=(),
+                runtime_scope="session",
+                requested_skill_names=("demo",),
+                compatibility_sources=(str(published_root),),
+                compatibility_skill_patterns=("demo",),
+            )
+        )
+        published = Path(
+            resolved.activation_evidence[0]["canonical_skill_file"]
+        ).read_text(encoding="utf-8")
+        return EvaluationSummary(
+            variant_id=candidate.candidate_id,
+            dataset_split="post_apply",
+            metrics={
+                "post_apply_passed": corrected_marker in published,
+                "production_resolver_activation_passed": bool(
+                    resolved.activation_evidence
+                ),
+                "score": 1.0 if corrected_marker in published else 0.0,
+            },
+        )
+
+    store = FilesystemSelfEvolveStore(tmp_path)
+    runner = SelfEvolveRunner(
+        store=store,
+        optimizer=TraceReflectiveLLMMutator(mutate_text=mutate),
+        post_apply_evaluator=post_apply,
+        evaluation_backend=CausalEvaluationBackend(),
+        regression_suites=_independent_regression_suites_for_test(dataset),
+        min_eval_cases=0,
+        judge_repetitions=1,
+        replay_enabled=True,
+        candidate_replay_backend=AWorldCliCandidateReplayBackend(),
+        baseline_replay_repetitions=1,
+        candidate_replay_repetitions=1,
+        replay_repetitions_explicit=True,
+        measurement_mode="off",
+    )
+
+    result = await runner.run_explicit_target(
+        run_id="run-certified-skill-evolution",
+        target=SkillTextTarget(skill_path, allow_auto_apply=True),
+        dataset=dataset,
+        trace_packs=(),
+        apply_policy="auto_verified",
+    )
+
+    report = store.read_report(result.run.run_id)
+    assert result.run.status is SelfEvolveRunStatus.SUCCEEDED
+    assert corrected_marker in skill_path.read_text(encoding="utf-8")
+    assert any(not corrected for _, corrected in loaded_behaviors)
+    assert any(corrected for _, corrected in loaded_behaviors)
+    replay_gate = next(
+        gate
+        for gate in report["gate_results"]
+        if gate["gate_name"] == "candidate_replay"
+    )
+    assert replay_gate["details"]["candidate_intervention_observed"] is True
+    assert replay_gate["details"]["candidate_skill_activation_required"] is True
+    assert report["post_apply"]["status"] == "accepted"
+    assert report["post_apply"]["metrics"]["post_apply_passed"] is True
 
 
 @pytest.mark.asyncio
@@ -14525,6 +14808,108 @@ def test_authoritative_invalid_control_is_persisted_and_deprioritized(
     assert ordered.cases[-1].case_id == "case-1"
 
 
+def test_authoritative_replay_prioritizes_direct_candidate_intervention(
+    tmp_path: Path,
+) -> None:
+    case_ids = ("context-only", "url-mentioned", "direct-binding")
+    dataset = SelfEvolveDataset(
+        cases=tuple(
+            EvalCase(case_id=case_id, input={"content": case_id})
+            for case_id in case_ids
+        ),
+        recipe=DatasetRecipe(
+            source={"kind": "trajectory_log"},
+            split_seed="intervention-first",
+            splits={"train": list(case_ids)},
+            trainable_case_ids=case_ids,
+        ),
+    )
+    service = ReplayServiceSpec(
+        service_id="service-1",
+        requirement_id="requirement-1",
+        transport="http_fixture",
+        response_fixture="fixture.json",
+    )
+    capability = FrozenReplayCapability(
+        capability_id="demo-replay",
+        capability_package_fingerprint="sha256:package",
+        request_fingerprint="sha256:request",
+        frozen_root=str(tmp_path / "frozen"),
+        handled_requirements=("requirement-1",),
+        unhandled_requirements=(),
+        evidence_refs={},
+        fixture_evidence_refs={},
+        fixtures=(),
+        runtime_files=(),
+        endpoint_replacements={"https://example.test/data": "service-1"},
+        services=(service,),
+        deterministic=True,
+        fingerprint="sha256:frozen",
+        ready=True,
+    )
+    adaptations = (
+        ReplayCaseAdaptation(
+            case_id="context-only",
+            adapted_task_input={"content": "answer from context"},
+            task_input_fingerprint="sha256:context",
+            dependencies=(),
+            bindings=(),
+            tool_names=(),
+            readiness="ready",
+        ),
+        ReplayCaseAdaptation(
+            case_id="url-mentioned",
+            adapted_task_input={
+                "content": "review https://example.test/data"
+            },
+            task_input_fingerprint="sha256:mentioned",
+            dependencies=(),
+            bindings=(),
+            tool_names=(),
+            readiness="ready",
+        ),
+        ReplayCaseAdaptation(
+            case_id="direct-binding",
+            adapted_task_input={"content": "review the bound source"},
+            task_input_fingerprint="sha256:direct",
+            dependencies=(),
+            bindings=(
+                ReplayAdapterBinding(
+                    adapter_id="demo",
+                    dependency_id="https://example.test/data",
+                    deterministic=True,
+                ),
+            ),
+            tool_names=(),
+            readiness="ready",
+        ),
+    )
+    bundle = ReplayAdaptationBundle(
+        schema_version="aworld.self_evolve.replay_adaptation.v1",
+        source_workspace_root=str(tmp_path),
+        workspace_seed=str(tmp_path / "seed"),
+        workspace_seed_fingerprint="sha256:seed",
+        manifest_path=str(tmp_path / "manifest.json"),
+        environment_snapshot_path=str(tmp_path / "environment.json"),
+        environment_fingerprint="sha256:environment",
+        cases=adaptations,
+        adaptation_fingerprint="sha256:adaptation",
+        ready=True,
+        replay_capability=capability,
+    )
+
+    ordered = _prioritize_candidate_intervention_cases(dataset, bundle)
+
+    assert [case.case_id for case in ordered.cases] == [
+        "direct-binding",
+        "url-mentioned",
+        "context-only",
+    ]
+    assert ordered.recipe.source[
+        "authoritative_direct_intervention_case_ids"
+    ] == ["direct-binding"]
+
+
 def test_authoritative_replay_compacts_and_defers_short_context_continuation() -> None:
     current_task = {"content": "rollout阶段的策略"}
     prior_turns = tuple(
@@ -14705,7 +15090,7 @@ def test_historical_baseline_lifecycles_preflight_control_before_generation(
     assert screening.cases[0].case_id == "case-healthy"
 
 
-def test_control_preflight_fails_closed_only_when_all_baselines_are_known_bad() -> None:
+def test_control_preflight_blocks_generation_when_all_baselines_are_known_bad() -> None:
     dataset = SelfEvolveDataset(
         cases=(EvalCase(case_id="case-timeout", input="slow"),),
         recipe=DatasetRecipe(
@@ -14733,11 +15118,76 @@ def test_control_preflight_fails_closed_only_when_all_baselines_are_known_bad() 
     )
 
     assert infeasible["status"] == "infeasible"
-    assert infeasible["candidate_generation_allowed"] is True
-    assert infeasible["advisory_only"] is True
+    assert infeasible["candidate_generation_allowed"] is False
+    assert infeasible["advisory_only"] is False
+    assert infeasible["failure_owner"] == "framework"
+    assert infeasible["code"] == "baseline_controls_infeasible"
+    assert infeasible["next_action"] == "repair_or_build_shared_replay_harness"
     assert infeasible["support_specific_qualification_required"] is True
     assert unknown["status"] == "unknown"
     assert unknown["candidate_generation_allowed"] is True
+
+
+@pytest.mark.asyncio
+async def test_evolvability_preflight_blocks_before_optimizer_call(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    skill_path, dataset = _cycle1_runner_fixture(tmp_path)
+    optimizer_calls = 0
+
+    class Optimizer:
+        async def propose(self, request):
+            nonlocal optimizer_calls
+            optimizer_calls += 1
+            raise AssertionError("optimizer must not run for a blocked harness")
+
+    original_preflight = runner_module._screening_control_preflight
+
+    def blocked_preflight(dataset, **kwargs):
+        result = original_preflight(
+            dataset,
+            observations={
+                case.case_id: {
+                    "baseline_attempt_count": 2,
+                    "baseline_success_count": 0,
+                    "baseline_timeout_count": 2,
+                    "baseline_timeout_max_seconds": 300.0,
+                }
+                for case in dataset.cases
+            },
+            timeout_ceiling_seconds=300.0,
+        )
+        assert result["status"] == "infeasible"
+        return result
+
+    monkeypatch.setattr(
+        runner_module,
+        "_screening_control_preflight",
+        blocked_preflight,
+    )
+    store = FilesystemSelfEvolveStore(tmp_path)
+    runner = SelfEvolveRunner(store=store, optimizer=Optimizer())
+
+    result = await runner.run_explicit_target(
+        run_id="run-evolvability-blocked",
+        target=SkillTextTarget(skill_path),
+        dataset=dataset,
+        trace_packs=(),
+        apply_policy="auto_verified",
+    )
+
+    report = json.loads(
+        (store.run_path("run-evolvability-blocked") / "report.json").read_text()
+    )
+    assert optimizer_calls == 0
+    assert result.run.status is SelfEvolveRunStatus.REJECTED
+    assert report["candidate_ids"] == []
+    assert report["verification_funnel"]["generated_candidate_slot_count"] == 0
+    assert {gate["gate_name"] for gate in report["gate_results"]} == {
+        "evolvability_preflight"
+    }
+    assert report["campaign_failure_attribution"]["failure_owner"] == "framework"
 
 
 def test_screening_timeout_uses_one_bounded_same_case_escalation() -> None:
@@ -15296,7 +15746,7 @@ def test_candidate_support_counterfactual_requires_identical_execution_envelope(
 
 
 @pytest.mark.asyncio
-async def test_runner_keeps_generation_after_target_only_control_preflight_is_infeasible(
+async def test_runner_blocks_generation_after_control_preflight_is_infeasible(
     tmp_path: Path,
 ) -> None:
     skill_path, dataset = _cycle1_runner_fixture(tmp_path, case_count=1)
@@ -15311,7 +15761,12 @@ async def test_runner_keeps_generation_after_target_only_control_preflight_is_in
                     "target_type": "skill",
                     "target_id": "demo",
                     "path": str(skill_path),
-                }
+                },
+                "screening_control_preflight": {
+                    "harness_fingerprint": (
+                        runner_module._screening_control_harness_fingerprint()
+                    )
+                },
             }
         ),
         encoding="utf-8",
@@ -15363,13 +15818,86 @@ async def test_runner_keeps_generation_after_target_only_control_preflight_is_in
     )
 
     report = store.read_report(result.run.run_id)
-    assert optimizer_calls == 1
+    assert optimizer_calls == 0
     assert result.run.status is SelfEvolveRunStatus.REJECTED
     assert report["screening_control_preflight"]["status"] == "infeasible"
-    assert report["screening_control_preflight"]["advisory_only"] is True
-    assert not any(
-        gate["gate_name"] == "candidate_screening_preflight"
-        for gate in report["gate_results"]
+    assert report["screening_control_preflight"]["advisory_only"] is False
+    assert report["screening_control_preflight"]["next_action"] == (
+        "repair_or_build_shared_replay_harness"
+    )
+    assert {gate["gate_name"] for gate in report["gate_results"]} == {
+        "evolvability_preflight"
+    }
+
+
+@pytest.mark.asyncio
+async def test_repaired_harness_ignores_stale_timeout_and_allows_generation(
+    tmp_path: Path,
+) -> None:
+    skill_path, dataset = _cycle1_runner_fixture(tmp_path, case_count=1)
+    store = FilesystemSelfEvolveStore(tmp_path)
+    case_id = dataset.cases[0].case_id
+    prior_run = store.run_path("stale-harness-cycle")
+    prior_run.mkdir(parents=True)
+    (prior_run / "report.json").write_text(
+        json.dumps(
+            {
+                "target": {
+                    "target_type": "skill",
+                    "target_id": "demo",
+                    "path": str(skill_path),
+                },
+                "screening_control_preflight": {
+                    "harness_fingerprint": "sha256:stale-harness"
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    baseline_dir = (
+        prior_run
+        / "screening"
+        / case_id
+        / "replay"
+        / "candidate"
+        / "baseline"
+    )
+    baseline_dir.mkdir(parents=True)
+    (baseline_dir / "lifecycle.json").write_text(
+        json.dumps(
+            {
+                "status": "failed",
+                "failure": {
+                    "code": "replay_member_phase_timeout",
+                    "diagnostics": {"timeout_seconds": 300},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (baseline_dir / "aggregate_metrics.json").write_text("{}", encoding="utf-8")
+    optimizer_calls = 0
+
+    class Optimizer:
+        async def propose(self, request: OptimizerRequest) -> OptimizerResult:
+            nonlocal optimizer_calls
+            optimizer_calls += 1
+            return OptimizerResult(candidates=())
+
+    runner = SelfEvolveRunner(store=store, optimizer=Optimizer())
+    result = await runner.run_explicit_target(
+        run_id="current-repaired-harness-cycle",
+        target=SkillTextTarget(skill_path),
+        dataset=dataset,
+        trace_packs=(),
+    )
+
+    report = store.read_report(result.run.run_id)
+    assert optimizer_calls == 1
+    assert report["screening_control_preflight"]["status"] == "unknown"
+    assert (
+        report["screening_control_preflight"]["candidate_generation_allowed"]
+        is True
     )
 
 

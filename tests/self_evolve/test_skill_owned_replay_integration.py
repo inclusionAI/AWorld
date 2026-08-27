@@ -172,8 +172,21 @@ HTTPServer(('127.0.0.1', args.port), Handler).serve_forever()
             return OptimizerResult(candidates=(candidate,))
 
     observed_ports: list[int] = []
+    observed_skill_contents: list[str] = []
 
     async def executor(request: ReplayExecutionRequest) -> ReplayExecutionResult:
+        assert request.skill_root is not None
+        skill_files = [
+            path
+            for path in Path(request.skill_root).rglob("SKILL.md")
+            if path.parent.name == "demo"
+        ]
+        assert len(skill_files) == 1
+        active_skill_content = skill_files[0].read_text(encoding="utf-8")
+        observed_skill_contents.append(active_skill_content)
+        corrected_behavior_loaded = (
+            "Use recorded replay evidence." in active_skill_content
+        )
         url = request.task_input["content"].split()[-1]
         port = int(url.rsplit(":", 1)[1])
         observed_ports.append(port)
@@ -191,9 +204,19 @@ HTTPServer(('127.0.0.1', args.port), Handler).serve_forever()
             trajectory=[
                 {
                     "state": {"input": request.task_input},
-                    "action": {"content": request.variant_id},
+                    "action": {
+                        "content": (
+                            "corrected behavior"
+                            if corrected_behavior_loaded
+                            else "original behavior"
+                        )
+                    },
                 }
             ],
+            metrics={
+                "task_success": 1.0 if corrected_behavior_loaded else 0.0,
+                "loaded_skill_behavior_marker": corrected_behavior_loaded,
+            },
         )
 
     store = FilesystemSelfEvolveStore(tmp_path)
@@ -217,6 +240,9 @@ HTTPServer(('127.0.0.1', args.port), Handler).serve_forever()
     assert skill_path.read_text(encoding="utf-8") == original
     assert not (skill_path.parent / "replay").exists()
     assert len(observed_ports) == 2 and len(set(observed_ports)) == 2
+    assert len(observed_skill_contents) == 2
+    assert "Original guidance." in observed_skill_contents[0]
+    assert "Use recorded replay evidence." in observed_skill_contents[1]
     report = json.loads(
         (store.run_path("run-skill-owned-replay") / "report.json").read_text(
             encoding="utf-8"
@@ -226,6 +252,8 @@ HTTPServer(('127.0.0.1', args.port), Handler).serve_forever()
     assert report["replay_capability"]["ready"] is True
     baseline_metrics = report["replay"]["baseline"]["metrics"]
     candidate_metrics = report["replay"]["candidate"]["metrics"]
+    assert baseline_metrics["task_success"] == 0.0
+    assert candidate_metrics["task_success"] == 1.0
     assert baseline_metrics["frozen_capability_fingerprint"] == (
         candidate_metrics["frozen_capability_fingerprint"]
     )
