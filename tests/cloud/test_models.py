@@ -15,6 +15,8 @@ from aworld.cloud.models import (
     ACTIVE_RUN_STATES,
     ATIF_SCHEMA_VERSION,
     TERMINAL_RUN_STATES,
+    BatchId,
+    BatchState,
     BenchmarkMetadata,
     BenchmarkOutcome,
     FileId,
@@ -30,6 +32,7 @@ from aworld.cloud.models import (
     Workspace,
     WorkspaceId,
     WorkspaceState,
+    aggregate_batch,
     allowed_run_transitions,
     allowed_workspace_transitions,
     as_utc,
@@ -380,3 +383,53 @@ def test_ready_workspace_accepts_a_run_when_prior_runs_are_terminal() -> None:
 def test_busy_workspace_rejects_submission_even_without_loaded_run_records() -> None:
     with pytest.raises(WorkspaceBusyError):
         ensure_workspace_accepts_run(_workspace(WorkspaceState.BUSY), [])
+
+
+def test_batch_aggregate_reports_mixed_terminal_results_and_reward_average() -> None:
+    batch_id = BatchId("batch-1")
+    first = Run(
+        **{
+            **_run().__dict__,
+            "batch_id": batch_id,
+            "mode": RunMode.BENCHMARK,
+            "benchmark": BenchmarkMetadata(dataset="suite", task_id="one"),
+        }
+    )
+    second = replace(
+        first,
+        id=RunId("run-2"),
+        benchmark=BenchmarkMetadata(dataset="suite", task_id="two"),
+    )
+    succeeded = transition_run(
+        transition_run(first, RunState.STARTING, at=NOW),
+        RunState.RUNNING,
+        at=NOW,
+    )
+    succeeded = transition_run(
+        succeeded,
+        RunState.SUCCEEDED,
+        at=NOW + timedelta(seconds=2),
+        benchmark_outcome=BenchmarkOutcome(reward=1.0),
+    )
+    failed = transition_run(
+        transition_run(second, RunState.STARTING, at=NOW),
+        RunState.FAILED,
+        at=NOW + timedelta(seconds=3),
+        benchmark_outcome=BenchmarkOutcome(reward=0.0),
+    )
+
+    batch = aggregate_batch(
+        batch_id=batch_id,
+        workspace_id=WorkspaceId("workspace-1"),
+        name="mixed",
+        created_at=NOW,
+        runs=(succeeded, failed),
+    )
+
+    assert batch.state is BatchState.PARTIALLY_SUCCEEDED
+    assert batch.counts.succeeded == 1
+    assert batch.counts.failed == 1
+    assert batch.progress == 1.0
+    assert batch.reward_count == 2
+    assert batch.average_reward == 0.5
+    assert batch.finished_at == NOW + timedelta(seconds=3)

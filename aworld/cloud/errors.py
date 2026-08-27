@@ -13,6 +13,7 @@ class CloudErrorCode(str, Enum):
 
     WORKSPACE_NOT_FOUND = "workspace_not_found"
     WORKSPACE_BUSY = "workspace_busy"
+    BATCH_NOT_FOUND = "batch_not_found"
     RUN_NOT_FOUND = "run_not_found"
     FILE_NOT_FOUND = "file_not_found"
     INVALID_TRANSITION = "invalid_transition"

@@ -15,6 +15,7 @@ from typing import Any, NewType
 from aworld.cloud.errors import InvalidTransitionError, WorkspaceBusyError
 
 WorkspaceId = NewType("WorkspaceId", str)
+BatchId = NewType("BatchId", str)
 RunId = NewType("RunId", str)
 EventId = NewType("EventId", str)
 FileId = NewType("FileId", str)
@@ -90,6 +91,16 @@ class RunState(str, Enum):
     CANCELLING = "cancelling"
     SUCCEEDED = "succeeded"
     FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+class BatchState(str, Enum):
+    QUEUED = "queued"
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    PARTIALLY_SUCCEEDED = "partially_succeeded"
+    CANCELLING = "cancelling"
     CANCELLED = "cancelled"
 
 
@@ -273,6 +284,68 @@ class BenchmarkOutcome:
 
 
 @dataclass(frozen=True)
+class BatchRunCounts:
+    """Run-state counts used by one durable batch aggregate."""
+
+    total: int
+    queued: int
+    running: int
+    succeeded: int
+    failed: int
+    cancelled: int
+
+    def __post_init__(self) -> None:
+        values = (
+            self.total,
+            self.queued,
+            self.running,
+            self.succeeded,
+            self.failed,
+            self.cancelled,
+        )
+        if any(value < 0 for value in values):
+            raise ValueError("batch run counts must be non-negative")
+        if sum(values[1:]) != self.total:
+            raise ValueError("batch run counts must sum to total")
+
+
+@dataclass(frozen=True)
+class Batch:
+    """Durable batch identity plus a run-derived aggregate snapshot."""
+
+    id: BatchId
+    workspace_id: WorkspaceId
+    name: str
+    state: BatchState
+    counts: BatchRunCounts
+    progress: float
+    reward_count: int
+    average_reward: float | None
+    created_at: datetime
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+
+    def __post_init__(self) -> None:
+        for field_name in ("id", "workspace_id", "name"):
+            _require_text(getattr(self, field_name), field_name)
+        if not 0.0 <= self.progress <= 1.0:
+            raise ValueError("batch progress must be between 0 and 1")
+        if self.reward_count < 0 or self.reward_count > self.counts.total:
+            raise ValueError("batch reward_count is invalid")
+        if (self.reward_count == 0) is not (self.average_reward is None):
+            raise ValueError("batch average_reward requires rewarded runs")
+        object.__setattr__(
+            self, "created_at", as_utc(self.created_at, field_name="created_at")
+        )
+        for field_name in ("started_at", "finished_at"):
+            object.__setattr__(
+                self,
+                field_name,
+                _optional_utc(getattr(self, field_name), field_name=field_name),
+            )
+
+
+@dataclass(frozen=True)
 class Run:
     """Durable immutable snapshot of one Codex execution attempt."""
 
@@ -283,6 +356,7 @@ class Run:
     attempt: int
     task: str
     created_at: datetime
+    batch_id: BatchId | None = None
     request_schema_version: str = RUN_REQUEST_SCHEMA_VERSION
     mode: RunMode = RunMode.QUERY
     benchmark: BenchmarkMetadata | None = None
@@ -301,6 +375,8 @@ class Run:
     def __post_init__(self) -> None:
         _require_text(self.id, "id")
         _require_text(self.workspace_id, "workspace_id")
+        if self.batch_id is not None:
+            _require_text(self.batch_id, "batch_id")
         _require_text(self.task, "task")
         if self.request_schema_version != RUN_REQUEST_SCHEMA_VERSION:
             raise ValueError(
@@ -502,6 +578,7 @@ def create_retry_run(
     return Run(
         id=run_id,
         workspace_id=source.workspace_id,
+        batch_id=source.batch_id,
         state=RunState.QUEUED,
         revision=0,
         attempt=source.attempt + 1,
@@ -512,6 +589,78 @@ def create_retry_run(
         benchmark=source.benchmark,
         model=source.model,
         created_at=as_utc(created_at or utc_now()),
+    )
+
+
+def aggregate_batch(
+    *,
+    batch_id: BatchId,
+    workspace_id: WorkspaceId,
+    name: str,
+    created_at: datetime,
+    runs: Iterable[Run],
+) -> Batch:
+    """Build the authoritative batch view from its persisted runs."""
+
+    run_items = tuple(runs)
+    if not run_items:
+        raise ValueError("a batch must contain at least one run")
+    if any(run.batch_id != batch_id for run in run_items):
+        raise ValueError("all runs must belong to the aggregated batch")
+
+    queued = sum(run.state is RunState.QUEUED for run in run_items)
+    running = sum(run.state in ACTIVE_RUN_STATES for run in run_items)
+    succeeded = sum(run.state is RunState.SUCCEEDED for run in run_items)
+    failed = sum(run.state is RunState.FAILED for run in run_items)
+    cancelled = sum(run.state is RunState.CANCELLED for run in run_items)
+    counts = BatchRunCounts(
+        total=len(run_items),
+        queued=queued,
+        running=running,
+        succeeded=succeeded,
+        failed=failed,
+        cancelled=cancelled,
+    )
+    terminal = succeeded + failed + cancelled
+    if any(run.state is RunState.CANCELLING for run in run_items):
+        state = BatchState.CANCELLING
+    elif running or (queued and terminal):
+        state = BatchState.RUNNING
+    elif queued:
+        state = BatchState.QUEUED
+    elif succeeded == counts.total:
+        state = BatchState.SUCCEEDED
+    elif cancelled == counts.total:
+        state = BatchState.CANCELLED
+    elif succeeded:
+        state = BatchState.PARTIALLY_SUCCEEDED
+    else:
+        state = BatchState.FAILED
+
+    rewards = tuple(
+        run.benchmark_outcome.reward
+        for run in run_items
+        if run.benchmark_outcome is not None
+        and run.benchmark_outcome.reward is not None
+    )
+    started_values = tuple(
+        run.started_at for run in run_items if run.started_at is not None
+    )
+    finished_values = tuple(
+        run.finished_at for run in run_items if run.finished_at is not None
+    )
+    return Batch(
+        id=batch_id,
+        workspace_id=workspace_id,
+        name=name,
+        state=state,
+        counts=counts,
+        progress=terminal / counts.total,
+        reward_count=len(rewards),
+        average_reward=sum(rewards) / len(rewards) if rewards else None,
+        created_at=created_at,
+        started_at=min(started_values) if started_values else None,
+        finished_at=max(finished_values) if terminal == counts.total else None,
     )
 
 

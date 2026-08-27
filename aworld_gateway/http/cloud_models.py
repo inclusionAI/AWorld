@@ -19,6 +19,8 @@ from pydantic import (
 from aworld.cloud.errors import CloudErrorCode
 from aworld.cloud.models import (
     RUN_REQUEST_SCHEMA_VERSION,
+    Batch,
+    BatchState,
     BenchmarkMetadata,
     BenchmarkOutcome,
     MountAccessMode,
@@ -110,7 +112,7 @@ class BenchmarkOutcomeModel(CloudApiModel):
         )
 
 
-class RunSubmitRequest(IdempotencyRequest):
+class BatchRunRequest(CloudApiModel):
     request_schema_version: str = Field(
         default=RUN_REQUEST_SCHEMA_VERSION,
         min_length=1,
@@ -122,7 +124,7 @@ class RunSubmitRequest(IdempotencyRequest):
     benchmark: BenchmarkMetadataModel | None = None
 
     @model_validator(mode="after")
-    def validate_mode_metadata(self) -> RunSubmitRequest:
+    def validate_mode_metadata(self) -> BatchRunRequest:
         if self.request_schema_version != RUN_REQUEST_SCHEMA_VERSION:
             raise ValueError(
                 f"unsupported run request schema: {self.request_schema_version}"
@@ -132,6 +134,19 @@ class RunSubmitRequest(IdempotencyRequest):
         if self.mode is RunMode.BENCHMARK and self.benchmark is None:
             raise ValueError("benchmark metadata is required for benchmark runs")
         return self
+
+
+class RunSubmitRequest(BatchRunRequest):
+    idempotency_key: str = Field(min_length=1, max_length=256)
+
+
+class BatchCreateRequest(IdempotencyRequest):
+    name: str = Field(min_length=1, max_length=256)
+    runs: tuple[BatchRunRequest, ...] = Field(min_length=1, max_length=1000)
+
+
+class BatchCancelRequest(IdempotencyRequest):
+    pass
 
 
 class RunCancelRequest(IdempotencyRequest):
@@ -202,6 +217,7 @@ class WorkspacePageResponse(CloudApiModel):
 class RunResponse(CloudApiModel):
     id: str
     workspace_id: str
+    batch_id: str | None
     state: RunState
     revision: int
     attempt: int
@@ -246,6 +262,7 @@ class RunResponse(CloudApiModel):
         return cls(
             id=str(run.id),
             workspace_id=str(run.workspace_id),
+            batch_id=str(run.batch_id) if run.batch_id is not None else None,
             state=run.state,
             revision=run.revision,
             attempt=run.attempt,
@@ -292,6 +309,64 @@ class RunResponse(CloudApiModel):
 
 class RunPageResponse(CloudApiModel):
     items: tuple[RunResponse, ...]
+    next_page_token: str | None = None
+
+
+class BatchRunCountsResponse(CloudApiModel):
+    total: int
+    queued: int
+    running: int
+    succeeded: int
+    failed: int
+    cancelled: int
+
+
+class BatchResponse(CloudApiModel):
+    id: str
+    workspace_id: str
+    name: str
+    state: BatchState
+    counts: BatchRunCountsResponse
+    progress: float
+    reward_count: int
+    average_reward: float | None
+    created_at: UtcTimestamp
+    started_at: UtcTimestamp | None
+    finished_at: UtcTimestamp | None
+    duration_seconds: float | None
+
+    @classmethod
+    def from_domain(cls, batch: Batch) -> BatchResponse:
+        duration = None
+        if batch.finished_at is not None:
+            duration = (
+                batch.finished_at - (batch.started_at or batch.created_at)
+            ).total_seconds()
+        return cls(
+            id=str(batch.id),
+            workspace_id=str(batch.workspace_id),
+            name=batch.name,
+            state=batch.state,
+            counts=BatchRunCountsResponse(
+                total=batch.counts.total,
+                queued=batch.counts.queued,
+                running=batch.counts.running,
+                succeeded=batch.counts.succeeded,
+                failed=batch.counts.failed,
+                cancelled=batch.counts.cancelled,
+            ),
+            progress=batch.progress,
+            reward_count=batch.reward_count,
+            average_reward=batch.average_reward,
+            created_at=batch.created_at,
+            started_at=batch.started_at,
+            finished_at=batch.finished_at,
+            duration_seconds=duration,
+        )
+
+
+class BatchPageResponse(CloudApiModel):
+    items: tuple[BatchResponse, ...]
     next_page_token: str | None = None
 
 

@@ -1,15 +1,17 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 from datetime import timedelta
 from pathlib import Path
 
 import pytest
 
-from aworld.cloud.models import RunState, WorkspaceId
+from aworld.cloud.models import BatchId, RunId, RunState, WorkspaceId, aggregate_batch
 from aworld.cloud.sqlite_repository import SQLiteCloudRepository
 from tests.cloud.test_sqlite_repository import (
     NOW,
+    _batch_runs,
     _run,
     _store_run,
     _store_workspace,
@@ -86,6 +88,73 @@ async def test_two_repositories_resolve_concurrent_idempotent_creation(
     assert results[0] == results[1]
     stored = await first.list_workspaces(limit=10)
     assert stored.items == (results[0],)
+    await first.close()
+    await second.close()
+
+
+@pytest.mark.asyncio
+async def test_two_repositories_create_one_idempotent_batch_transaction(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "cloud.sqlite3"
+    first = SQLiteCloudRepository(database_path)
+    second = SQLiteCloudRepository(database_path)
+    await first.initialize()
+    await second.initialize()
+    await _store_workspace(first, _workspace())
+    first_runs = _batch_runs()
+    second_batch_id = BatchId("batch-2")
+    second_runs = tuple(
+        replace(
+            run,
+            id=RunId(f"{run.id}-other"),
+            batch_id=second_batch_id,
+        )
+        for run in first_runs
+    )
+    batches = (
+        aggregate_batch(
+            batch_id=BatchId("batch-1"),
+            workspace_id=WorkspaceId("workspace-1"),
+            name="same",
+            created_at=NOW,
+            runs=first_runs,
+        ),
+        aggregate_batch(
+            batch_id=second_batch_id,
+            workspace_id=WorkspaceId("workspace-1"),
+            name="same",
+            created_at=NOW,
+            runs=second_runs,
+        ),
+    )
+
+    results = await asyncio.gather(
+        asyncio.to_thread(
+            _run_async,
+            first.create_batch(
+                batches[0],
+                first_runs,
+                idempotency_key="shared-batch-key",
+                request_fingerprint="same-batch-request",
+            ),
+        ),
+        asyncio.to_thread(
+            _run_async,
+            second.create_batch(
+                batches[1],
+                second_runs,
+                idempotency_key="shared-batch-key",
+                request_fingerprint="same-batch-request",
+            ),
+        ),
+    )
+
+    assert results[0] == results[1]
+    stored = await first.list_batches(limit=10)
+    assert stored.items == (results[0],)
+    stored_runs = await first.list_batch_runs(results[0].id, limit=10)
+    assert len(stored_runs.items) == 2
     await first.close()
     await second.close()
 
