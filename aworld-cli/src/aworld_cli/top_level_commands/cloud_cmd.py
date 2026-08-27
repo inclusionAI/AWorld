@@ -62,6 +62,7 @@ class CloudTopLevelCommand:
         )
         resources = parser.add_subparsers(dest="cloud_resource", required=True)
         self._register_workspace_parser(resources)
+        self._register_batch_parser(resources)
         self._register_run_parser(resources)
 
     @staticmethod
@@ -146,6 +147,33 @@ class CloudTopLevelCommand:
         trajectory.add_argument("run_id")
         trajectory.add_argument("--output", required=True)
 
+    @staticmethod
+    def _register_batch_parser(resources) -> None:
+        parser = resources.add_parser("batch", help="Batch operations")
+        actions = parser.add_subparsers(dest="cloud_action", required=True)
+
+        create = actions.add_parser("create", help="Create a batch of runs")
+        create.add_argument("--workspace-id", required=True)
+        create.add_argument("--name", required=True)
+        create.add_argument(
+            "--runs-file",
+            required=True,
+            help="JSON file containing an array of run request objects",
+        )
+        _add_idempotency_argument(create)
+
+        list_parser = actions.add_parser("list", help="List batches")
+        list_parser.add_argument("--workspace-id")
+        list_parser.add_argument("--limit", type=int, default=50)
+        list_parser.add_argument("--page-token")
+
+        get = actions.add_parser("get", help="Get a batch")
+        get.add_argument("batch_id")
+
+        cancel = actions.add_parser("cancel", help="Cancel a batch")
+        cancel.add_argument("batch_id")
+        _add_idempotency_argument(cancel)
+
     def run(self, args, context) -> int:
         del context
         try:
@@ -185,6 +213,8 @@ class CloudTopLevelCommand:
         async with CloudHttpClient(config) as client:
             if args.cloud_resource == "workspace":
                 return await self._execute_workspace(client, args)
+            if args.cloud_resource == "batch":
+                return await self._execute_batch(client, args)
             return await self._execute_run(client, args)
 
     @staticmethod
@@ -322,3 +352,33 @@ class CloudTopLevelCommand:
             "run_id": args.run_id,
             "size_bytes": len(content),
         }
+
+    @staticmethod
+    async def _execute_batch(
+        client: CloudHttpClient,
+        args,
+    ) -> dict[str, object]:
+        if args.cloud_action == "create":
+            payload = json.loads(Path(args.runs_file).read_text(encoding="utf-8"))
+            if not isinstance(payload, list) or not payload:
+                raise ValueError("runs file must contain a non-empty JSON array")
+            if not all(isinstance(item, dict) for item in payload):
+                raise ValueError("each runs file entry must be a JSON object")
+            return await client.create_batch(
+                args.workspace_id,
+                name=args.name,
+                runs=payload,
+                idempotency_key=_idempotency_key(args.idempotency_key),
+            )
+        if args.cloud_action == "list":
+            return await client.list_batches(
+                limit=args.limit,
+                page_token=args.page_token,
+                workspace_id=args.workspace_id,
+            )
+        if args.cloud_action == "get":
+            return await client.get_batch(args.batch_id)
+        return await client.cancel_batch(
+            args.batch_id,
+            idempotency_key=_idempotency_key(args.idempotency_key),
+        )

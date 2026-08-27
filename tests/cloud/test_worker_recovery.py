@@ -7,8 +7,8 @@ import pytest
 
 from aworld.cloud.errors import CloudErrorCode
 from aworld.cloud.fake_executor import FakeCloudExecutor, FakeExecutionPlan
-from aworld.cloud.models import RunState
-from aworld.cloud.service import CloudService
+from aworld.cloud.models import BatchState, RunState
+from aworld.cloud.service import BatchRunSpec, CloudService
 from aworld.cloud.sqlite_repository import SQLiteCloudRepository
 from aworld.cloud.worker import CloudWorker
 from tests.cloud.test_service_worker import (
@@ -55,6 +55,40 @@ async def test_restart_leaves_queued_work_claimable_without_resubmission(
     assert terminal.state is RunState.SUCCEEDED
     assert executor.start_calls == [run.id]
     await restarted_repository.close()
+
+
+@pytest.mark.asyncio
+async def test_batch_aggregate_converges_after_worker_restart(tmp_path: Path) -> None:
+    settings, _ = _settings(tmp_path, worker_id="worker-before-restart")
+    first_repository = SQLiteCloudRepository(_database_path(settings))
+    await first_repository.initialize()
+    service = CloudService(first_repository, settings, id_factory=_SequentialIds())
+    workspace = await service.create_workspace(
+        name="Batch recovery",
+        profile_name="aworld-development",
+        idempotency_key="workspace-key",
+    )
+    batch = await service.create_batch(
+        workspace.workspace.id,
+        name="restart batch",
+        runs=(BatchRunSpec(task="one"), BatchRunSpec(task="two")),
+        idempotency_key="batch-key",
+    )
+    await first_repository.close()
+
+    restarted_settings, _ = _settings(tmp_path, worker_id="worker-after-restart")
+    repository = SQLiteCloudRepository(_database_path(restarted_settings))
+    await repository.initialize()
+    worker = CloudWorker(repository, FakeCloudExecutor(), restarted_settings)
+    await worker.reconcile_startup()
+    await worker.run_until_idle()
+
+    terminal = await repository.get_batch(batch.id)
+    assert terminal is not None
+    assert terminal.state is BatchState.SUCCEEDED
+    assert terminal.counts.succeeded == 2
+    assert terminal.progress == 1.0
+    await repository.close()
 
 
 async def _start_interrupted_run(

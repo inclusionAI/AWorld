@@ -253,6 +253,51 @@ class CloudHttpClient:
             },
         )
 
+    async def create_batch(
+        self,
+        workspace_id: str,
+        *,
+        name: str,
+        runs: list[JsonObject],
+        idempotency_key: str,
+    ) -> JsonObject:
+        return await self._request_json(
+            "POST",
+            f"/workspaces/{self._id(workspace_id)}/batches",
+            json_body={
+                "name": name,
+                "runs": runs,
+                "idempotency_key": idempotency_key,
+            },
+        )
+
+    async def list_batches(
+        self,
+        *,
+        limit: int = 50,
+        page_token: str | None = None,
+        workspace_id: str | None = None,
+    ) -> JsonObject:
+        return await self._request_json(
+            "GET",
+            "/batches",
+            params={
+                "limit": limit,
+                "page_token": page_token,
+                "workspace_id": workspace_id,
+            },
+        )
+
+    async def get_batch(self, batch_id: str) -> JsonObject:
+        return await self._request_json("GET", f"/batches/{self._id(batch_id)}")
+
+    async def cancel_batch(self, batch_id: str, *, idempotency_key: str) -> JsonObject:
+        return await self._request_json(
+            "POST",
+            f"/batches/{self._id(batch_id)}/cancel",
+            json_body={"idempotency_key": idempotency_key},
+        )
+
     async def get_run(self, run_id: str) -> JsonObject:
         return await self._request_json("GET", f"/runs/{self._id(run_id)}")
 
