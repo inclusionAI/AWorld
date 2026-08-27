@@ -18,7 +18,12 @@ from aworld.core.context.amni import AmniConfigFactory
 from aworld.core.context.base import Context
 from aworld.core.context.session import Session
 from aworld.core.task import Task, TaskResponse, Runner
-from aworld.core.tool.base import Tool, AsyncTool, maybe_await
+from aworld.core.tool.base import (
+    Tool,
+    AsyncTool,
+    maybe_await,
+    release_runtime_tool_call_budget,
+)
 from aworld.logs.util import logger
 from aworld.runners.hook.hooks import HookPoint
 from aworld.runners.hook.utils import run_hooks
@@ -226,6 +231,9 @@ class TaskRunner(Runner):
                 pass
         except Exception as e:
             logger.warning(f"POST_TASK_CALL hook execution failed: {e}")
+        finally:
+            if self.context is not None:
+                release_runtime_tool_call_budget(self.context)
 
     @abc.abstractmethod
     async def do_run(self, context: Context = None) -> TaskResponse:

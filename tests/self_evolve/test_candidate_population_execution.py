@@ -118,6 +118,8 @@ def test_replay_generation_prompts_publish_runtime_launch_abi() -> None:
             or "not be used" in prompt
             or "Do not replace" in prompt
         )
+        assert "exact path selected from typed HTTP" in prompt
+        assert "exactly one non-root HTTP task entry" in prompt
 
 
 def test_focused_prompt_keeps_satisfied_source_proof_out_of_latest_failure_focus() -> None:

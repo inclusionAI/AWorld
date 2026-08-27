@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import socket
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import pytest
 
@@ -100,7 +101,7 @@ result = {
         'protocol_probes': [
             {
                 'kind': 'http',
-                'path': '/',
+                'path': '/replay/data',
                 'timeout_seconds': 3,
                 'response_contains': 'recorded response',
             },
@@ -140,6 +141,10 @@ class Handler(BaseHTTPRequestHandler):
         trace('in', 'http_request', ['method', 'path'], {
             'method': 'GET', 'path': self.path,
         })
+        if self.path != '/replay/data':
+            self.send_response(404)
+            self.end_headers()
+            return
         self.send_response(200)
         self.end_headers()
         self.wfile.write(open(args.fixture, 'rb').read())
@@ -188,10 +193,15 @@ HTTPServer(('127.0.0.1', args.port), Handler).serve_forever()
             "Use recorded replay evidence." in active_skill_content
         )
         url = request.task_input["content"].split()[-1]
-        port = int(url.rsplit(":", 1)[1])
+        parsed_url = urlsplit(url)
+        assert parsed_url.path == "/replay/data"
+        assert parsed_url.port is not None
+        port = parsed_url.port
         observed_ports.append(port)
         with socket.create_connection(("127.0.0.1", port), timeout=1) as connection:
-            connection.sendall(b"GET / HTTP/1.0\r\nHost: localhost\r\n\r\n")
+            connection.sendall(
+                b"GET /replay/data HTTP/1.0\r\nHost: localhost\r\n\r\n"
+            )
             response = b""
             while b"recorded response" not in response:
                 chunk = connection.recv(4096)
@@ -268,6 +278,7 @@ HTTPServer(('127.0.0.1', args.port), Handler).serve_forever()
     loaded_service = loaded.request.replay_adaptation.replay_capability.services[0]
     assert loaded_service.runtime_entrypoint == "replay/runtime.py"
     assert loaded_service.protocol_probes[0].kind == "http"
+    assert loaded_service.task_entry_path == "/replay/data"
     assert loaded_service.protocol_probes[0].response_contains == "recorded response"
     assert (
         loaded.request.replay_adaptation.replay_capability.fingerprint

@@ -3445,6 +3445,80 @@ def _load_resumable_member_pairs(
     return resumed
 
 
+def _resumable_baseline_cache_root(
+    request: CandidateReplayRequest,
+) -> str | None:
+    """Expose verified partial controls as a normal per-member baseline cache."""
+
+    if request.resume_replay_dir is None:
+        return None
+    resume_root = Path(request.resume_replay_dir).expanduser()
+    if resume_root.is_symlink():
+        return None
+    members_root = resume_root / "members"
+    checkpoint_path = members_root / "paired_replay_checkpoint.json"
+    try:
+        stored_root_request = _candidate_replay_request_from_mapping(
+            _load_json_object(resume_root / "request.json")
+        )
+        checkpoint = _load_json_object(checkpoint_path)
+    except (FileNotFoundError, ValueError, json.JSONDecodeError, OSError):
+        return None
+    if (
+        checkpoint.get("resume_safe") is not True
+        or not _resume_root_is_compatible(request, stored_root_request)
+        or checkpoint.get("baseline_cache_manifest")
+        != "baseline_cache_manifest.json"
+    ):
+        return None
+    manifest_path = members_root / "baseline_cache_manifest.json"
+    if (
+        manifest_path.is_symlink()
+        or not manifest_path.is_file()
+        or manifest_path.parent.resolve() != members_root.resolve()
+    ):
+        return None
+    return str(members_root)
+
+
+def _member_resumable_baseline_replay_dir(
+    baseline_cache_root: str | None,
+    case_id: str,
+) -> str | None:
+    """Resolve only members committed by the incremental baseline manifest."""
+
+    if baseline_cache_root is None:
+        return None
+    root = Path(baseline_cache_root)
+    try:
+        manifest = _load_json_object(root / "baseline_cache_manifest.json")
+    except (FileNotFoundError, ValueError, json.JSONDecodeError, OSError):
+        return None
+    if (
+        manifest.get("schema_version")
+        != "aworld.self_evolve.baseline_cache.v1"
+        or manifest.get("repetition_semantics")
+        != _PER_MEMBER_REPETITION_SEMANTICS
+    ):
+        return None
+    members = manifest.get("members")
+    if not isinstance(members, list):
+        return None
+    for member in members:
+        if (
+            not isinstance(member, Mapping)
+            or member.get("case_id") != case_id
+            or member.get("baseline_complete") is not True
+            or member.get("path") != _member_artifact_name(case_id)
+        ):
+            continue
+        return _stored_member_baseline_replay_dir(
+            root / _member_artifact_name(case_id),
+            case_id=case_id,
+        )
+    return None
+
+
 def candidate_replay_artifact_directory(
     *,
     workspace_root: str | Path,
@@ -3564,17 +3638,26 @@ class AWorldCliCandidateReplayBackend:
         )
         candidate_blocking_event: ReplayFailureEvent | None = None
         prepared_members: list[tuple[EvalCase, CandidateReplayRequest, Path]] = []
+        resumable_baseline_root = _resumable_baseline_cache_root(request)
         for case in replay_cases:
             adapted_task_input = _adapted_task_input(request, case)
+            member_baseline_replay_dir = _member_baseline_replay_dir(
+                request.baseline_replay_dir,
+                case.case_id,
+            )
+            if member_baseline_replay_dir is None:
+                member_baseline_replay_dir = (
+                    _member_resumable_baseline_replay_dir(
+                        resumable_baseline_root,
+                        case.case_id,
+                    )
+                )
             member_request = replace(
                 request,
                 task_id=case.case_id,
                 task_input=adapted_task_input,
                 task_input_fingerprint=_adapted_task_input_fingerprint(request, case),
-                baseline_replay_dir=_member_baseline_replay_dir(
-                    request.baseline_replay_dir,
-                    case.case_id,
-                ),
+                baseline_replay_dir=member_baseline_replay_dir,
                 baseline_repetitions=member_baseline_repetitions,
                 candidate_repetitions=member_candidate_repetitions,
             )
@@ -6861,7 +6944,14 @@ def _authoritative_replay_endpoint_bindings(
                         f"{capability.capability_id}.{service.service_id}".casefold(),
                     ).strip(".")
                 ),
-                endpoint=f"http://127.0.0.1:{port}",
+                endpoint=(
+                    f"http://127.0.0.1:{port}"
+                    + (
+                        service.task_entry_path
+                        if service.task_entry_path not in {None, "/"}
+                        else ""
+                    )
+                ),
                 path_scope="prefix",
             )
             previous = bindings.get(binding.binding_id)
@@ -9358,16 +9448,18 @@ async def _start_replay_services(
     declared_ports: set[int] = set()
     for service_id, binding in declared_endpoints.items():
         parsed = urlsplit(binding.endpoint)
+        expected_task_path = services_by_id[service_id].task_entry_path or "/"
         if (
             parsed.scheme != "http"
             or parsed.hostname not in {"127.0.0.1", "localhost", "::1"}
             or parsed.port is None
-            or parsed.path not in {"", "/"}
+            or (parsed.path or "/") != expected_task_path
             or parsed.query
             or parsed.fragment
         ):
             raise ValueError(
-                f"measurement endpoint for {service_id} is not an exact loopback authority"
+                f"measurement endpoint for {service_id} does not bind its exact "
+                "loopback task entry"
             )
         if parsed.port in declared_ports:
             raise ValueError("measurement replay service ports must be unique")
@@ -9515,11 +9607,7 @@ async def _start_replay_services(
                     stderr_path=stderr_path,
                 )
             )
-            endpoint = (
-                declared_binding.endpoint.rstrip("/")
-                if declared_binding is not None
-                else f"http://127.0.0.1:{port}"
-            )
+            endpoint = f"http://127.0.0.1:{port}"
             try:
                 await _wait_for_replay_service(
                     process,
@@ -9674,11 +9762,21 @@ async def _start_replay_services(
                     exc,
                     stderr_path=stderr_path,
                 ) from exc
-            endpoints[service.service_id] = endpoint
+            task_entry_path = service.task_entry_path or "/"
+            task_endpoint = (
+                declared_binding.endpoint.rstrip("/")
+                if declared_binding is not None
+                else (
+                    endpoint
+                    if task_entry_path == "/"
+                    else endpoint + task_entry_path
+                )
+            )
+            endpoints[service.service_id] = task_endpoint
             environment[
                 "AWORLD_REPLAY_ENDPOINT_"
                 + re.sub(r"[^A-Za-z0-9]+", "_", service.service_id).strip("_").upper()
-            ] = endpoint
+            ] = task_endpoint
     except Exception:
         await session.stop()
         raise
@@ -14146,6 +14244,11 @@ def _frozen_replay_capability_from_mapping(
                 runtime_entrypoint=(
                     str(raw_service.get("runtime_entrypoint"))
                     if raw_service.get("runtime_entrypoint") is not None
+                    else None
+                ),
+                task_entry_path=(
+                    str(raw_service.get("task_entry_path"))
+                    if raw_service.get("task_entry_path") is not None
                     else None
                 ),
                 readiness=ReplayReadinessProbe(

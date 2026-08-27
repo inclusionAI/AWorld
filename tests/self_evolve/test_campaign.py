@@ -21,6 +21,14 @@ from aworld.self_evolve.campaign import (
     self_improvement_progress,
 )
 from aworld.self_evolve.candidate_package import candidate_package_fingerprint
+from aworld.self_evolve.replay import (
+    CandidateReplayRequest,
+    ReplayExecutionStatus,
+    ReplayVariantResult,
+    _member_artifact_name,
+    _persist_variant_lifecycle,
+    baseline_control_fingerprint,
+)
 from aworld.self_evolve.sanitization import public_diagnostic_projection
 from aworld.self_evolve.types import CandidateVariant, SelfEvolveTargetRef
 
@@ -85,6 +93,7 @@ def _write_paired_replay_timeout_artifacts(
     *,
     run_id: str,
     candidate: CandidateVariant,
+    pairless_partial_progress: bool = False,
 ) -> str:
     fingerprint = candidate_package_fingerprint(candidate)
     controller.store.write_candidate(run_id, candidate)
@@ -98,13 +107,36 @@ def _write_paired_replay_timeout_artifacts(
             {
                 "run_id": run_id,
                 "candidate_id": candidate.candidate_id,
+                "workspace_root": str(controller.workspace_root),
+                "target": {
+                    "target_type": candidate.target.target_type,
+                    "target_id": candidate.target.target_id,
+                    "path": candidate.target.path,
+                },
+                "overlay_skill_root": str(replay_dir / "overlay"),
                 "verified_candidate_package_fingerprint": fingerprint,
                 "measurement_plan": None,
                 "repetition_semantics": "per_member_v3",
+                "baseline_repetitions": 1,
+                "candidate_repetitions": 1,
+                "baseline_skill_fingerprint": fingerprint,
+                "dataset_fingerprint": fingerprint,
+                "workspace_seed_fingerprint": fingerprint,
+                "support_fingerprint": fingerprint,
+                "timeout_envelope_fingerprint": fingerprint,
+                "adaptation_fingerprint": fingerprint,
                 "replay_adaptation": {
                     "cases": [
-                        {"case_id": "case-complete"},
-                        {"case_id": "case-pending"},
+                        {
+                            "case_id": "case-complete",
+                            "adapted_task_input": "Replay case-complete",
+                            "task_input_fingerprint": fingerprint,
+                        },
+                        {
+                            "case_id": "case-pending",
+                            "adapted_task_input": "Replay case-pending",
+                            "task_input_fingerprint": fingerprint,
+                        },
                     ]
                 },
             },
@@ -112,17 +144,99 @@ def _write_paired_replay_timeout_artifacts(
         ),
         encoding="utf-8",
     )
+    progress = {
+        "schema_version": (
+            "aworld.self_evolve.paired_replay_checkpoint.v1"
+        ),
+        "schedule": "progressive_paired",
+        "resume_safe": True,
+        "pending_case_ids": ["case-pending"],
+        "comparable_pair_case_ids": ["case-complete"],
+    }
+    if pairless_partial_progress:
+        progress.update(
+            {
+                "baseline_phase_completed_case_ids": ["case-complete"],
+                "candidate_phase_completed_case_ids": [],
+                "comparable_pair_case_ids": [],
+                "reusable_baseline_case_ids": ["case-complete"],
+                "pending_case_ids": ["case-complete", "case-pending"],
+                "baseline_cache_manifest": "baseline_cache_manifest.json",
+                "resumed_pair_case_ids": [],
+            }
+        )
+        member_root = members_dir / _member_artifact_name("case-complete")
+        member_root.mkdir()
+        member_request = CandidateReplayRequest(
+            run_id=run_id,
+            task_id="case-complete",
+            workspace_root=str(controller.workspace_root),
+            target=candidate.target,
+            candidate_id=candidate.candidate_id,
+            overlay_skill_root=str(replay_dir / "overlay"),
+            task_input="Replay case-complete",
+            baseline_repetitions=1,
+            candidate_repetitions=1,
+            baseline_skill_fingerprint=fingerprint,
+            dataset_fingerprint=fingerprint,
+            workspace_seed_fingerprint=fingerprint,
+            support_fingerprint=fingerprint,
+            timeout_envelope_fingerprint=fingerprint,
+            adaptation_fingerprint=fingerprint,
+            task_input_fingerprint=fingerprint,
+        )
+        (member_root / "request.json").write_text(
+            json.dumps(
+                {
+                    **member_request.__dict__,
+                    "target": {
+                        "target_type": member_request.target.target_type,
+                        "target_id": member_request.target.target_id,
+                        "path": member_request.target.path,
+                    },
+                },
+                sort_keys=True,
+            ),
+            encoding="utf-8",
+        )
+        _persist_variant_lifecycle(
+            member_root / "baseline",
+            ReplayVariantResult(
+                variant_id="baseline",
+                status=ReplayExecutionStatus.SUCCEEDED,
+                trajectory=[{"action": {"content": "verified control"}}],
+                metrics={
+                    "repetition_count": 1,
+                    "successful_repetition_count": 1,
+                    "failed_repetition_count": 0,
+                    "blocked_repetition_count": 0,
+                    "not_run_repetition_count": 0,
+                },
+            ),
+        )
+        (members_dir / "baseline_cache_manifest.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": "aworld.self_evolve.baseline_cache.v1",
+                    "repetition_semantics": "per_member_v3",
+                    "members": [
+                        {
+                            "case_id": "case-complete",
+                            "path": _member_artifact_name("case-complete"),
+                            "baseline_complete": True,
+                            "control_fingerprint": baseline_control_fingerprint(
+                                member_request
+                            ),
+                        }
+                    ],
+                },
+                sort_keys=True,
+            ),
+            encoding="utf-8",
+        )
     (members_dir / "paired_replay_checkpoint.json").write_text(
         json.dumps(
-            {
-                "schema_version": (
-                    "aworld.self_evolve.paired_replay_checkpoint.v1"
-                ),
-                "schedule": "progressive_paired",
-                "resume_safe": True,
-                "pending_case_ids": ["case-pending"],
-                "comparable_pair_case_ids": ["case-complete"],
-            },
+            progress,
             sort_keys=True,
         ),
         encoding="utf-8",
@@ -209,6 +323,7 @@ def test_resume_migrates_exhausted_safe_paired_replay_timeout(
         controller,
         run_id=run_id,
         candidate=candidate,
+        pairless_partial_progress=True,
     )
     report = {
         "run_id": run_id,
