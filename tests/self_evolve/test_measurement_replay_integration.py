@@ -552,14 +552,21 @@ def test_runner_compiles_screening_plan_with_stable_candidate_identity(
     (
         (1.0, None, 1, "stop_confident_positive", "succeeded"),
         (1.0, "baseline-member", 1, "stop_confident_positive", "succeeded"),
+        (
+            1.0,
+            "baseline-producer",
+            1,
+            "stop_inconclusive",
+            "candidate_rejected",
+        ),
         (-1.0, None, 1, "stop_regression", "candidate_rejected"),
         (None, "baseline", 1, "stop_framework_blocked", "framework_blocked"),
         (
-            None,
+            1.0,
             "baseline-policy",
             3,
-            "stop_framework_blocked",
-            "framework_blocked",
+            "stop_inconclusive",
+            "candidate_rejected",
         ),
         (
             None,
@@ -742,6 +749,26 @@ async def test_authoritative_replay_executes_adaptive_plan_not_legacy_batch(
                 },
             )
         if (
+            framework_failure_variant == "baseline-producer"
+            and execution.variant_id == "baseline"
+        ):
+            return ReplayExecutionResult(
+                status="failed",
+                trajectory=[
+                    {"action": {"content": "control omitted bounded evidence"}}
+                ],
+                failure={
+                    "code": "replay_evidence_production_failed",
+                    "outcome": "task_failure",
+                    "failure_class": "baseline_evidence_production",
+                    "failure_owner": "task",
+                    "failure_scope": "member",
+                    "failure_stage": "evidence_finalization",
+                    "repairable": False,
+                    "reason": "framework evidence inventory is empty",
+                },
+            )
+        if (
             transfer_score is None
             and execution.variant_id == framework_failure_variant
         ):
@@ -837,10 +864,29 @@ async def test_authoritative_replay_executes_adaptive_plan_not_legacy_batch(
         returned_ids = {
             member.case_id for member in result.member_results or ()
         }
-        assert transfer in returned_ids
+        if framework_failure_variant not in {
+            "baseline-policy",
+            "baseline-producer",
+        }:
+            assert transfer in returned_ids
         assert len(returned_ids & set(primary)) >= 2
-        assert len(returned_ids & set(primary)) < len(primary)
-        assert len(calls) == len(returned_ids) * 2
+        if framework_failure_variant not in {
+            "baseline-policy",
+            "baseline-producer",
+        }:
+            assert len(returned_ids & set(primary)) < len(primary)
+        assert len(calls) == (
+            len(returned_ids) * 2 * repetitions_per_case
+        )
+        if framework_failure_variant in {
+            "baseline-policy",
+            "baseline-producer",
+        }:
+            assert all(
+                {variant for task_id, variant in calls if task_id == case_id}
+                == {"baseline", candidate.candidate_id}
+                for case_id in returned_ids
+            )
     schedule = json.loads(
         (
             tmp_path
@@ -866,7 +912,11 @@ async def test_authoritative_replay_executes_adaptive_plan_not_legacy_batch(
         )
     else:
         assert schedule["schedule_count"] == 3
-        assert transfer in schedule["admitted_case_ids"]
+        if framework_failure_variant not in {
+            "baseline-policy",
+            "baseline-producer",
+        }:
+            assert transfer in schedule["admitted_case_ids"]
         expansion_decisions = [
             decision
             for decision in schedule["decision_history"]
@@ -907,10 +957,7 @@ async def test_authoritative_replay_executes_adaptive_plan_not_legacy_batch(
     )
     assert projection_paths
     assert all(path.stat().st_size < 32_000 for path in projection_paths)
-    if framework_failure_variant in {
-        "baseline-policy",
-        "baseline-attestation",
-    }:
+    if framework_failure_variant == "baseline-attestation":
         assert schedule["decision"]["reason_code"] == (
             "baseline_evidence_policy_infeasible"
         )

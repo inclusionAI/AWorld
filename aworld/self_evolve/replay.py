@@ -2097,8 +2097,11 @@ class ReplayExecutionRequest:
     isolation_grant_fingerprint: str | None = None
     lane_materialization_fingerprint: str | None = None
     evidence_finalization_timeout_seconds: float | None = None
+    variant_role: str | None = None
 
     def __post_init__(self) -> None:
+        if self.variant_role not in {None, "baseline", "candidate"}:
+            raise ValueError("unsupported replay execution variant role")
         if self.evidence_policy_mode not in _REPLAY_EVIDENCE_POLICY_MODES:
             raise ValueError("unsupported replay evidence_policy_mode")
         measurement_values = (
@@ -4510,6 +4513,17 @@ class AWorldCliCandidateReplayBackend:
                 "replay_evidence_runtime_policy_violation",
             }:
                 return None
+            if not (
+                event.owner in {
+                    FailureOwner.FRAMEWORK,
+                    FailureOwner.INFRASTRUCTURE,
+                }
+                and event.scope is FailureScope.SHARED_RUN
+            ):
+                # The code describes the policy surface, not causal ownership.
+                # A task/member producer failure is a valid negative control
+                # and must be allowed to admit its candidate treatment.
+                return None
             return ReplayFailureEvent(
                 code="baseline_evidence_policy_infeasible",
                 owner=FailureOwner.FRAMEWORK,
@@ -5419,12 +5433,9 @@ class AWorldCliCandidateReplayBackend:
                 "variant_id": attempt_variant_id,
                 "skill_root": skill_root,
                 "artifact_dir": attempt_dir,
+                "measurement_arm": measurement_arm,
+                "repetition_id": repetition_id,
             }
-            if request.measurement_plan is not None:
-                run_kwargs.update(
-                    measurement_arm=measurement_arm,
-                    repetition_id=repetition_id,
-                )
             result = await self._run_variant(request, **run_kwargs)
             attempts.append(result)
             _emit_replay_attempt_progress(
@@ -5611,7 +5622,11 @@ class AWorldCliCandidateReplayBackend:
                 service_failure = service_failure_details
         effective_measurement_arm = measurement_arm or (
             MeasurementArm.CONTROL
-            if variant_id == "baseline" or variant_id.startswith("baseline-")
+            if (
+                variant_id == "baseline"
+                or variant_id.startswith("baseline-")
+                or variant_id.startswith("baseline__evidence_retry_")
+            )
             else MeasurementArm.TREATMENT
         )
         measurement_work_unit = _measurement_work_unit_for_replay(
@@ -5636,6 +5651,11 @@ class AWorldCliCandidateReplayBackend:
             task_text=_task_text(task_input),
             skill_root=skill_root,
             artifact_dir=str(artifact_dir),
+            variant_role=(
+                "baseline"
+                if effective_measurement_arm is MeasurementArm.CONTROL
+                else "candidate"
+            ),
             skill_names=(
                 (request.target.target_id,)
                 if skill_root and request.target.target_id
@@ -5819,6 +5839,7 @@ class AWorldCliCandidateReplayBackend:
         evidence_failure = _evidence_quality_failure(
             metrics,
             variant_id=variant_id,
+            variant_role=execution_request.variant_role,
         )
         if status == "succeeded" and evidence_failure is not None:
             status = "failed"
@@ -7090,6 +7111,27 @@ _FRAMEWORK_CANONICAL_EVIDENCE_MANIFEST = (
 )
 
 
+class ReplayEvidenceProducerError(ValueError):
+    """A completed replay variant did not populate its evidence namespace.
+
+    This error is intentionally distinct from parent-owned attestation and
+    persistence failures. The producer namespace remains untrusted and all
+    containment checks still fail closed; the type only records causal
+    ownership so a broken baseline can remain a negative control.
+    """
+
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        *,
+        diagnostics: Mapping[str, Any] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.code = code
+        self.diagnostics = dict(diagnostics or {})
+
+
 def _profile_artifact_policy(
     profile: EvidencePolicyProfileV2,
     artifact_type: str,
@@ -7210,9 +7252,14 @@ def _framework_canonical_evidence_manifest(
     """
 
     if evidence_dir.is_symlink() or not evidence_dir.is_dir():
-        raise ValueError("candidate evidence root is not a regular directory")
-    if candidate_manifest.is_symlink():
-        raise ValueError("candidate evidence manifest is a symlink")
+        raise ReplayEvidenceProducerError(
+            "canonical_evidence_namespace_invalid",
+            "candidate evidence root is not a regular directory",
+        )
+    candidate_manifest_is_symlink = candidate_manifest.is_symlink()
+    candidate_manifest_present = (
+        candidate_manifest.exists() or candidate_manifest_is_symlink
+    )
     policy = _profile_artifact_policy(profile, _REPLAY_TRUSTED_EVIDENCE_TYPE)
     scratch_file_limit, scratch_byte_limit = _profile_scratch_limits(profile)
     root = evidence_dir.resolve()
@@ -7225,28 +7272,49 @@ def _framework_canonical_evidence_manifest(
         current = Path(current_root)
         for directory in tuple(directories):
             if (current / directory).is_symlink():
-                raise ValueError("candidate evidence contains a symlink directory")
+                raise ReplayEvidenceProducerError(
+                    "candidate_evidence_symlink_directory",
+                    "candidate evidence contains a symlink directory",
+                )
         directories[:] = sorted(directories)
         for filename in sorted(filenames):
             if filename in _REPLAY_POLICY_CONTROL_FILES:
                 continue
             path = current / filename
             if path.is_symlink() or not path.is_file():
-                raise ValueError("candidate evidence contains a non-regular file")
+                raise ReplayEvidenceProducerError(
+                    "candidate_evidence_non_regular_file",
+                    "candidate evidence contains a non-regular file",
+                )
             resolved = path.resolve()
             try:
                 relative = resolved.relative_to(root)
             except ValueError as exc:
-                raise ValueError("candidate evidence escaped its producer root") from exc
+                raise ReplayEvidenceProducerError(
+                    "candidate_evidence_escaped_producer_root",
+                    "candidate evidence escaped its producer root",
+                ) from exc
             size = path.stat().st_size
             if size < 0:
-                raise ValueError("candidate evidence has an invalid size")
+                raise ReplayEvidenceProducerError(
+                    "candidate_evidence_invalid_size",
+                    "candidate evidence has an invalid size",
+                )
             total_bytes += size
             if (
                 len(inventory) >= scratch_file_limit
                 or total_bytes > scratch_byte_limit
             ):
-                raise ValueError("candidate evidence exceeds its scratch budget")
+                raise ReplayEvidenceProducerError(
+                    "candidate_evidence_scratch_budget_exceeded",
+                    "candidate evidence exceeds its scratch budget",
+                    diagnostics={
+                        "framework_evidence_inventory_file_count": len(inventory),
+                        "framework_evidence_inventory_bytes": total_bytes,
+                        "framework_scratch_file_limit": scratch_file_limit,
+                        "framework_scratch_byte_limit": scratch_byte_limit,
+                    },
+                )
             inventory.append((resolved, relative, size))
     task_response_only_evidence = False
     if not inventory and task_response_only_digest is not None:
@@ -7276,13 +7344,26 @@ def _framework_canonical_evidence_manifest(
         total_bytes += receipt_size
         task_response_only_evidence = True
     if not inventory:
-        raise ValueError("framework evidence inventory is empty")
+        raise ReplayEvidenceProducerError(
+            "canonical_evidence_inventory_empty",
+            "framework evidence inventory is empty",
+            diagnostics={
+                "framework_evidence_inventory_file_count": 0,
+                "framework_evidence_inventory_bytes": 0,
+                "framework_scratch_file_limit": scratch_file_limit,
+                "framework_scratch_byte_limit": scratch_byte_limit,
+            },
+        )
 
     inventory_paths = {resolved for resolved, _, _ in inventory}
     annotations: dict[Path, Mapping[str, Any]] = {}
     advisory_invalid_reasons: list[str] = []
     advisory_entry_count = 0
-    if candidate_manifest.exists():
+    if candidate_manifest_is_symlink:
+        advisory_invalid_reasons.append(
+            "manifest is a symlink and was ignored"
+        )
+    elif candidate_manifest.exists():
         try:
             manifest_size = candidate_manifest.stat().st_size
             if manifest_size > _MAX_EVIDENCE_MANIFEST_BYTES:
@@ -7339,7 +7420,16 @@ def _framework_canonical_evidence_manifest(
         selected_inventory.append(item)
         selected_bytes += size
     if not selected_inventory:
-        raise ValueError("no scratch artifact fits the trusted evidence profile")
+        raise ReplayEvidenceProducerError(
+            "candidate_evidence_outside_trusted_profile",
+            "no scratch artifact fits the trusted evidence profile",
+            diagnostics={
+                "framework_evidence_inventory_file_count": len(inventory),
+                "framework_evidence_inventory_bytes": total_bytes,
+                "framework_trusted_evidence_file_count": 0,
+                "framework_trusted_evidence_bytes": 0,
+            },
+        )
 
     entries: list[dict[str, object]] = []
     for index, (resolved, relative, _size) in enumerate(
@@ -7370,7 +7460,7 @@ def _framework_canonical_evidence_manifest(
     temporary.write_text(encoded, encoding="utf-8")
     os.replace(temporary, canonical_manifest)
     diagnostics: dict[str, Any] = {
-        "candidate_evidence_manifest_present": candidate_manifest.exists(),
+        "candidate_evidence_manifest_present": candidate_manifest_present,
         "candidate_evidence_manifest_advisory": True,
         "candidate_evidence_manifest_entry_count": advisory_entry_count,
         "candidate_evidence_manifest_matched_artifact_count": len(annotations),
@@ -7618,6 +7708,25 @@ def _finalize_replay_evidence_trust(
     }
 
 
+def _replay_execution_variant_role(request: ReplayExecutionRequest) -> str:
+    if request.variant_role is not None:
+        return request.variant_role
+    if request.measurement_work_unit is not None:
+        arm = request.measurement_work_unit.arm
+        return (
+            "baseline"
+            if arm is MeasurementArm.CONTROL
+            else "candidate"
+        )
+    if (
+        request.variant_id == "baseline"
+        or request.variant_id.startswith("baseline-")
+        or request.variant_id.startswith("baseline__evidence_retry_")
+    ):
+        return "baseline"
+    return "candidate"
+
+
 class AWorldCliReplayExecutor:
     _DEFAULT_TOOL_CALL_LIMIT = 24
     _DEFAULT_RESERVED_OUTPUT_TOKENS = 4096
@@ -7851,6 +7960,7 @@ class AWorldCliReplayExecutor:
                 evidence_manifest=evidence_manifest,
                 workspace_root=Path(request.workspace_root),
                 variant_id=request.variant_id,
+                variant_role=_replay_execution_variant_role(request),
             )
             termination_diagnostics = _timeout_termination_diagnostics(
                 request,
@@ -7883,6 +7993,7 @@ class AWorldCliReplayExecutor:
             evidence_policy_failure = _evidence_quality_failure(
                 evidence_metrics,
                 variant_id=request.variant_id,
+                variant_role=_replay_execution_variant_role(request),
             )
             if (
                 evidence_policy_failure is not None
@@ -8036,6 +8147,7 @@ class AWorldCliReplayExecutor:
         framework_evidence_metrics: dict[str, Any] = {}
         trusted_usage_metrics: dict[str, int | bool] = {}
         trusted_task_response: Mapping[str, Any] | None = None
+        signed_task_response_validated = False
         try:
             effective_evidence_manifest = evidence_manifest
             if trust_context is not None:
@@ -8048,6 +8160,11 @@ class AWorldCliReplayExecutor:
                     attestation_key=trust_context.signing_key,
                     max_bytes=response_policy.max_bytes,
                 )
+                if trusted_task_response is None:
+                    raise ValueError(
+                        "framework task response attestation is missing or invalid"
+                    )
+                signed_task_response_validated = True
                 trusted_trajectory_value = (
                     trusted_task_response.get("trajectory")
                     if isinstance(trusted_task_response, Mapping)
@@ -8161,6 +8278,7 @@ class AWorldCliReplayExecutor:
                 evidence_manifest=effective_evidence_manifest,
                 workspace_root=Path(request.workspace_root),
                 variant_id=request.variant_id,
+                variant_role=_replay_execution_variant_role(request),
             )
             evidence_metrics.update(framework_evidence_metrics)
             if trust_context is not None:
@@ -8170,6 +8288,59 @@ class AWorldCliReplayExecutor:
                     evidence_dir=evidence_dir,
                     task_response_path=task_response_path,
                 )
+        except ReplayEvidenceProducerError as exc:
+            variant_role = _replay_execution_variant_role(request)
+            producer_metrics = dict(exc.diagnostics)
+            required_action = (
+                "repair_target_evidence_production"
+                if variant_role == "baseline"
+                else "repair_candidate_evidence_production"
+            )
+            return ReplayExecutionResult(
+                status="failed",
+                trajectory=trajectory,
+                stdout=stdout,
+                stderr=stderr,
+                failure={
+                    "code": "replay_evidence_production_failed",
+                    "outcome": (
+                        "task_failure"
+                        if variant_role == "baseline"
+                        else "candidate_failure"
+                    ),
+                    "failure_class": (
+                        "baseline_evidence_production"
+                        if variant_role == "baseline"
+                        else "candidate_evidence_production"
+                    ),
+                    "failure_owner": (
+                        FailureOwner.TASK.value
+                        if variant_role == "baseline"
+                        else FailureOwner.CANDIDATE.value
+                    ),
+                    "failure_scope": FailureScope.MEMBER.value,
+                    "failure_stage": "evidence_finalization",
+                    "repairable": variant_role == "candidate",
+                    "category": "evidence_production",
+                    "reason": str(exc),
+                    "diagnostics": {
+                        "required_action": required_action,
+                        "producer_failure_code": exc.code,
+                        **producer_metrics,
+                    },
+                },
+                metrics={
+                    **evidence_metrics,
+                    **framework_evidence_metrics,
+                    **producer_metrics,
+                    "evidence_policy_v2_required": True,
+                    "evidence_policy_v2_preflight_passed": True,
+                    "evidence_policy_v2_runtime_trust_passed": False,
+                    "signed_task_response_validated": (
+                        signed_task_response_validated
+                    ),
+                },
+            )
         except (EvidencePolicyValidationError, OSError, ValueError) as exc:
             return ReplayExecutionResult(
                 status="failed",
@@ -8198,6 +8369,9 @@ class AWorldCliReplayExecutor:
                     "evidence_policy_v2_required": True,
                     "evidence_policy_v2_preflight_passed": True,
                     "evidence_policy_v2_runtime_trust_passed": False,
+                    "signed_task_response_validated": (
+                        signed_task_response_validated
+                    ),
                 },
             )
         metrics = {
@@ -8268,6 +8442,7 @@ class AWorldCliReplayExecutor:
         evidence_failure = _evidence_quality_failure(
             metrics,
             variant_id=request.variant_id,
+            variant_role=_replay_execution_variant_role(request),
         )
         if evidence_failure is not None:
             return ReplayExecutionResult(
@@ -11677,6 +11852,7 @@ def _replay_evidence_metrics(
     evidence_manifest: Path | None = None,
     workspace_root: Path | None = None,
     variant_id: str | None = None,
+    variant_role: str | None = None,
 ) -> dict[str, Any]:
     signal_text = "\n".join(
         text
@@ -11719,9 +11895,9 @@ def _replay_evidence_metrics(
         artifact_dir,
         owner=(
             "task"
-            if variant_id == "baseline"
+            if variant_role == "baseline" or variant_id == "baseline"
             else "candidate"
-            if variant_id is not None
+            if variant_role == "candidate" or variant_id is not None
             else None
         ),
     )
@@ -12775,6 +12951,7 @@ def _evidence_quality_failure(
     metrics: Mapping[str, Any],
     *,
     variant_id: str | None = None,
+    variant_role: str | None = None,
 ) -> dict[str, Any] | None:
     policy_violation_count = metrics.get(
         "evidence_runtime_policy_violation_count"
@@ -12794,7 +12971,7 @@ def _evidence_quality_failure(
             for item in raw_counterexamples[:16]
             if isinstance(item, Mapping)
         ] if isinstance(raw_counterexamples, list) else []
-        baseline = variant_id == "baseline"
+        baseline = variant_role == "baseline" or variant_id == "baseline"
         return {
             "code": "replay_evidence_runtime_policy_violation",
             "type": "ReplayEvidencePolicyViolation",
@@ -12931,7 +13108,8 @@ def _task_completion_not_established_result(
     trigger: str,
     required_transition: str,
 ) -> ReplayExecutionResult:
-    owner = "task" if request.variant_id == "baseline" else "candidate"
+    variant_role = _replay_execution_variant_role(request)
+    owner = "task" if variant_role == "baseline" else "candidate"
     counterexample = _task_completion_counterexample(
         metrics,
         failure_code="replay_task_completion_not_established",
@@ -12954,16 +13132,16 @@ def _task_completion_not_established_result(
             "code": "replay_task_completion_not_established",
             "outcome": (
                 "task_failure"
-                if request.variant_id == "baseline"
+                if variant_role == "baseline"
                 else "candidate_failure"
             ),
             "failure_class": (
                 "baseline_task_incomplete"
-                if request.variant_id == "baseline"
+                if variant_role == "baseline"
                 else "candidate_task_behavior"
             ),
             "failure_stage": "task_rollout",
-            "repairable": request.variant_id != "baseline",
+            "repairable": variant_role != "baseline",
             "category": "task_completion",
             "reason": (
                 "replay process exited without establishing a terminal "

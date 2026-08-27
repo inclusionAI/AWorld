@@ -6255,9 +6255,22 @@ async def test_stored_evidence_rerun_is_cardinality_safe_and_fails_closed(
     )
     baseline = ReplayVariantResult(
         variant_id="baseline",
-        status="succeeded",
-        trajectory=[{"action": {"content": "old"}}],
-        metrics={"repetition_count": 1, "successful_repetition_count": 1},
+        status="failed",
+        trajectory=[
+            {"action": {"content": "baseline omitted bounded evidence"}}
+        ],
+        metrics={
+            "repetition_count": 1,
+            "successful_repetition_count": 0,
+            "failed_repetition_count": 1,
+        },
+        failure=ReplayFailureEvent(
+            code="replay_evidence_production_failed",
+            owner=FailureOwner.TASK,
+            stage=FailureStage.EVIDENCE_FINALIZATION,
+            scope=FailureScope.MEMBER,
+            repairable=False,
+        ),
     )
     improved = ReplayVariantResult(
         variant_id=candidate.candidate_id,
@@ -6344,6 +6357,10 @@ async def test_stored_evidence_rerun_is_cardinality_safe_and_fails_closed(
     assert successful_report["replay_evidence_reuse"]["replay_case_count"] == 2
     assert successful_report["replay_evidence_reuse"]["normalized_member_count"] == 2
     assert successful_report["population"]["lifecycle"]["max_case_count"] == 2
+    successful_gates = {
+        gate["gate_name"]: gate for gate in successful_report["gate_results"]
+    }
+    assert successful_gates["fresh_evaluator_rerun"]["passed"] is True
     assert (
         successful_report["population"]["lifecycle"]["paired_replay_started_count"]
         == 0
