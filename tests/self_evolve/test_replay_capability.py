@@ -1282,6 +1282,56 @@ def test_response_index_source_behavior_reports_unsupported_state_boundary() -> 
     ]
 
 
+def test_response_index_source_behavior_rejects_stale_loop_record_projection() -> None:
+    source = (
+        "import json, os\n"
+        "def respond():\n"
+        "    path = os.getenv('AWORLD_REPLAY_RESPONSE_INDEX')\n"
+        "    with open(path, encoding='utf-8') as stream:\n"
+        "        index = json.load(stream)\n"
+        "    records = index['records']\n"
+        "    selected = None\n"
+        "    for record in records:\n"
+        "        if record.get('protocol_eligible') is True:\n"
+        "            selected = record\n"
+        "            break\n"
+        "    if selected is None:\n"
+        "        return None\n"
+        "    return record['value']\n"
+    )
+
+    proof = replay_capability_module.recorded_response_index_source_behavior_proof(
+        source
+    )
+
+    assert proof["proven"] is False
+    assert proof["operation_status"]["access_records_array"] is True
+    assert proof["operation_status"]["project_record_value_field_directly"] is False
+    assert proof["projection_proofs"][0]["stale_record_projection_lines"] == [14]
+    assert proof["topology"]["value_projection_proven"] is False
+
+
+def test_response_index_source_behavior_rejects_disconnected_key_mentions() -> None:
+    source = (
+        "import json, os\n"
+        "def load_sidecar():\n"
+        "    path = os.getenv('AWORLD_REPLAY_RESPONSE_INDEX')\n"
+        "    with open(path, encoding='utf-8') as stream:\n"
+        "        return json.load(stream)\n"
+        "def unrelated():\n"
+        "    payload = {'records': [{'value': 'not-sidecar-derived'}]}\n"
+        "    return payload['records'][0]['value']\n"
+    )
+
+    proof = replay_capability_module.recorded_response_index_source_behavior_proof(
+        source
+    )
+
+    assert proof["proven"] is False
+    assert proof["operation_status"]["access_records_array"] is False
+    assert proof["operation_status"]["project_record_value_field_directly"] is False
+
+
 def test_response_index_source_behavior_rejects_reassigned_environment_key() -> None:
     source = (
         "import json, os\n"

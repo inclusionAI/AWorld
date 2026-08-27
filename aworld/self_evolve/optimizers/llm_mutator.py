@@ -709,7 +709,12 @@ def _build_mutation_prompt(request: OptimizerRequest, *, candidate_index: int) -
         "The compiler is a deterministic artifact transform and runs without network or "
         "loopback access: never bind/connect sockets, select a live port, launch the runtime, "
         "or probe readiness during compile. Declare the runtime in result.json; the framework "
-        "starts it later with an allocated port. Each request requirement's evidence_refs is "
+        "starts it later with an allocated port. The framework invokes every Python "
+        "skill_runtime entrypoint as an isolated script with required command-line "
+        "arguments `--port <int> --fixture <path> --scratch <path>`; parse and use those "
+        "arguments directly. Do not replace this launch ABI with invented "
+        "AWORLD_REPLAY_PORT, AWORLD_REPLAY_FIXTURE_PATH, or AWORLD_REPLAY_SCRATCH "
+        "environment variables. Each request requirement's evidence_refs is "
         "an array of string keys; resolve each key through request.evidence_derivations, whose "
         "values are arrays of source objects. Never call mapping methods on an evidence_ref. "
         "For a skill_runtime, AWORLD_REPLAY_RESPONSE_INDEX is a filesystem path supplied "
@@ -1095,6 +1100,11 @@ def _focused_repair_prompt_instructions(
         "expected value exactly into that field at the declared schema_layer. Treat the "
         "manifest capability identity as immutable and never infer it from the target "
         "name. "
+        "The framework launches each Python skill_runtime entrypoint as an isolated "
+        "script with required `--port <int> --fixture <path> --scratch <path>` command-line "
+        "arguments. Parse and use that exact ABI; AWORLD_REPLAY_PORT, "
+        "AWORLD_REPLAY_FIXTURE_PATH, and AWORLD_REPLAY_SCRATCH are not supplied and "
+        "must not be used as substitutes. "
         "Keep reusable examples schema-neutral: use role placeholders such as "
         "<CLAIM>, <ARTIFACT_PATH>, and <OFFSET> instead of copying proper nouns, "
         "resource names, claim text, filenames, URLs, or identifiers from trajectory "
@@ -1107,9 +1117,11 @@ def _focused_repair_prompt_instructions(
             "compile-result capability_id to request['capability_id'], which must equal "
             "exactly that value, and preserve the binding across later repair iterations. "
         )
-    if requires_source_behavior_proof or (
-        "source_behavior_proof_failed" in feedback_text
-    ):
+    source_behavior_is_active = (
+        not validation_feedback
+        or "source_behavior_proof_failed" in feedback_text
+    )
+    if requires_source_behavior_proof and source_behavior_is_active:
         instructions += (
             "For every source_behavior schema constraint, satisfy the typed "
             "operation_status proof in the actual submitted source. Repair each "
@@ -1129,6 +1141,16 @@ def _focused_repair_prompt_instructions(
             "same function. Do not put either operation behind a returning helper, "
             "even when the helper takes explicit parameters, and do not rely on helper "
             "names to express the proof. "
+        )
+    elif requires_source_behavior_proof:
+        instructions += (
+            "The source_behavior schema constraint is a cumulative preservation "
+            "invariant, not the active failure unless the latest typed diagnostic "
+            "is source_behavior_proof_failed. Preserve the existing proven "
+            "environment-path -> JSON reader -> records -> selected record value "
+            "data flow while focusing the repair on the latest startup, protocol, "
+            "or task-behavior root cause. Do not rewrite or foreground an already "
+            "satisfied source proof merely because it remains in repair_conformance. "
         )
     if isinstance(artifact_lifecycle_constraint, Mapping):
         instructions += (
