@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -31,6 +32,7 @@ from aworld.self_evolve.optimizers.base import (
 from aworld.self_evolve.optimizers import llm_mutator as llm_mutator_module
 from aworld.self_evolve.optimizers.llm_mutator import TraceReflectiveLLMMutator
 from aworld.self_evolve.repair_conformance import RepairConformanceResult
+from aworld.self_evolve.replay_adaptation import ReplayCapabilityRequirement
 from aworld.self_evolve.types import EvaluationSummary, SelfEvolveTargetRef
 
 
@@ -84,6 +86,74 @@ def _population_callable(executor: AWorldCandidatePopulationExecutor):
         return await executor.run(prompts, max_concurrency=max_concurrency)
 
     return run
+
+
+def test_replay_generation_prompts_publish_runtime_launch_abi() -> None:
+    replay_request = replace(
+        _request(max_candidates=1),
+        replay_requirements=(
+            ReplayCapabilityRequirement(
+                requirement_id="requirement-http",
+                kind="http_resource",
+                identifier="https://example.invalid/resource",
+                case_ids=("train-1",),
+                evidence_refs=("evidence-1",),
+                status="runtime_required",
+            ),
+        ),
+    )
+    initial_prompt = llm_mutator_module._build_mutation_prompt(
+        replay_request,
+        candidate_index=0,
+    )
+    focused_prompt = llm_mutator_module._focused_repair_prompt_instructions(
+        {"repair_conformance": {}}
+    )
+
+    for prompt in (initial_prompt, focused_prompt):
+        assert "--port <int> --fixture <path> --scratch <path>" in prompt
+        assert "AWORLD_REPLAY_PORT" in prompt
+        assert (
+            "not supplied" in prompt
+            or "not be used" in prompt
+            or "Do not replace" in prompt
+        )
+
+
+def test_focused_prompt_keeps_satisfied_source_proof_out_of_latest_failure_focus() -> None:
+    prompt = llm_mutator_module._focused_repair_prompt_instructions(
+        {
+            "repair_conformance": {
+                "schema_field_constraints": [
+                    {
+                        "schema_layer": "runtime",
+                        "field_path": (
+                            "environment.AWORLD_REPLAY_RESPONSE_INDEX.consumer"
+                        ),
+                        "rule": "enum",
+                        "expected": ["json_sidecar_record_value_projector"],
+                        "value_domain": "source_behavior",
+                    }
+                ]
+            },
+            "validation_feedback": [
+                {
+                    "diagnostics": [
+                        {
+                            "code": (
+                                "replay_service_process_exited_before_readiness"
+                            )
+                        }
+                    ]
+                },
+                {"diagnostics": [{"code": "source_behavior_proof_failed"}]},
+            ],
+        }
+    )
+
+    assert "cumulative preservation invariant" in prompt
+    assert "already satisfied source proof" in prompt
+    assert "Use this supported topology" not in prompt
 
 
 @pytest.mark.asyncio

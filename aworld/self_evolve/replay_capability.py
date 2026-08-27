@@ -1701,7 +1701,6 @@ def recorded_response_index_source_behavior_proof(
 
     _inline_response_index_environment_key_constants(tree)
 
-    accessed_keys = _runtime_accessed_key_locations(tree)
     function_scopes = _runtime_function_scopes(tree)
     reader_parameters = _runtime_file_reader_parameter_summaries(function_scopes)
     named_scopes = _runtime_named_lexical_scopes(tree)
@@ -1709,6 +1708,7 @@ def recorded_response_index_source_behavior_proof(
     file_readers: list[dict[str, object]] = []
     unsupported_boundaries: list[dict[str, object]] = []
     reader_binding_proven = False
+    projection_proofs: list[dict[str, object]] = []
     for scope_name, scope_nodes in named_scopes:
         reader_binding_proven = reader_binding_proven or (
             _scope_reads_response_index_file(
@@ -1726,12 +1726,29 @@ def recorded_response_index_source_behavior_proof(
         unsupported_boundaries.extend(
             _runtime_attribute_storage_boundaries(scope_name, scope_nodes)
         )
+        projection = _scope_response_index_projection_proof(
+            scope_name,
+            scope_nodes,
+            reader_parameters=reader_parameters,
+            function_scopes=function_scopes,
+        )
+        if projection is not None:
+            projection_proofs.append(projection)
+
+    records_access_proven = any(
+        proof.get("records_access_proven") is True
+        for proof in projection_proofs
+    )
+    value_projection_proven = any(
+        proof.get("value_projection_proven") is True
+        for proof in projection_proofs
+    )
 
     operation_status = {
         "read_environment_binding_as_path": bool(environment_sources),
         "bind_environment_path_to_json_file_reader": reader_binding_proven,
-        "access_records_array": bool(accessed_keys.get("records")),
-        "project_record_value_field_directly": bool(accessed_keys.get("value")),
+        "access_records_array": records_access_proven,
+        "project_record_value_field_directly": value_projection_proven,
     }
     missing_operations = [
         operation
@@ -1757,6 +1774,9 @@ def recorded_response_index_source_behavior_proof(
         "source_reader_scope_overlap": bool(
             environment_scope_names & reader_scope_names
         ),
+        "projection_scope_count": len(projection_proofs),
+        "records_access_proven": records_access_proven,
+        "value_projection_proven": value_projection_proven,
     }
     guidance: list[str] = []
     if not operation_status["read_environment_binding_as_path"]:
@@ -1786,11 +1806,8 @@ def recorded_response_index_source_behavior_proof(
         "missing_operations": missing_operations,
         "environment_sources": environment_sources[:16],
         "file_readers": file_readers[:16],
-        "key_accesses": {
-            key: values[:16]
-            for key, values in sorted(accessed_keys.items())
-            if key in {"records", "value"}
-        },
+        "projection_proofs": projection_proofs[:16],
+        "topology": topology,
         "unsupported_boundaries": unsupported_boundaries[:16],
         "repair_guidance": guidance[:8],
     }
@@ -1953,6 +1970,310 @@ def _runtime_accessed_key_locations(
             }
         )
     return locations
+
+
+def _scope_response_index_projection_proof(
+    scope_name: str,
+    nodes: Sequence[ast.AST],
+    *,
+    reader_parameters: Mapping[str, frozenset[int]],
+    function_scopes: Mapping[
+        str,
+        tuple[tuple[str, ...], tuple[ast.AST, ...]],
+    ],
+) -> dict[str, object] | None:
+    """Prove that ``records`` and ``value`` share the env-derived JSON root.
+
+    Token presence is not provenance.  This bounded lattice follows local
+    assignments, ``with open(...) as ...`` readers, transparent JSON-reader
+    helpers, record iteration/indexing, and selected-record aliases.  A loop
+    variable is valid only inside its own loop; reading it after selection has
+    finished is a stale-record bug and must be rejected by the static gate.
+    """
+
+    node_set = set(nodes)
+    parents: dict[ast.AST, ast.AST] = {}
+    for parent in nodes:
+        for child in ast.iter_child_nodes(parent):
+            if child in node_set:
+                parents.setdefault(child, parent)
+
+    path_names: set[str] = set()
+    reader_names: set[str] = set()
+    index_names: set[str] = set()
+    records_names: set[str] = set()
+    record_names: set[str] = set()
+    record_loops: dict[
+        str,
+        list[ast.For | ast.AsyncFor | ast.comprehension],
+    ] = {}
+
+    # Projection helpers are intentionally analyzable independently from the
+    # entrypoint that supplies their parameter.  Seed parameters as bounded
+    # possible path/index roots, then still require a complete
+    # index->records->record->value chain inside the helper.
+    scope_signature = function_scopes.get(scope_name)
+    if scope_signature is not None:
+        path_names.update(scope_signature[0])
+        index_names.update(scope_signature[0])
+
+    def key_access(expression: ast.AST) -> tuple[ast.AST, str] | None:
+        if (
+            isinstance(expression, ast.Subscript)
+            and isinstance(expression.slice, ast.Constant)
+            and isinstance(expression.slice.value, str)
+        ):
+            return expression.value, expression.slice.value
+        if (
+            isinstance(expression, ast.Call)
+            and isinstance(expression.func, ast.Attribute)
+            and expression.func.attr == "get"
+            and expression.args
+            and isinstance(expression.args[0], ast.Constant)
+            and isinstance(expression.args[0].value, str)
+        ):
+            return expression.func.value, expression.args[0].value
+        return None
+
+    def helper_returns_json_from_path(call: ast.Call) -> bool:
+        called_name = _runtime_called_function_name(call.func)
+        if called_name is None or called_name not in reader_parameters:
+            return False
+        parameters, helper_nodes = function_scopes[called_name]
+        has_json_reader = any(
+            isinstance(item, ast.Call)
+            and (
+                (
+                    isinstance(item.func, ast.Attribute)
+                    and isinstance(item.func.value, ast.Name)
+                    and item.func.value.id == "json"
+                    and item.func.attr in {"load", "loads"}
+                )
+                or (
+                    isinstance(item.func, ast.Name)
+                    and item.func.id in {"load", "loads"}
+                )
+            )
+            for item in helper_nodes
+        )
+        if not has_json_reader or not any(
+            isinstance(item, ast.Return) and item.value is not None
+            for item in helper_nodes
+        ):
+            return False
+        return any(
+            (
+                argument := _runtime_call_argument(call, parameter_index, parameters)
+            )
+            is not None
+            and expression_kind(argument) == "path"
+            for parameter_index in reader_parameters[called_name]
+        )
+
+    def helper_returns_environment_path(call: ast.Call) -> bool:
+        called_name = _runtime_called_function_name(call.func)
+        if called_name is None or called_name not in function_scopes:
+            return False
+        _, helper_nodes = function_scopes[called_name]
+        has_return = any(
+            isinstance(item, ast.Return) and item.value is not None
+            for item in helper_nodes
+        )
+        if not has_return:
+            return False
+        for item in helper_nodes:
+            if isinstance(item, ast.Subscript) and _is_os_environ_expression(
+                item.value
+            ):
+                return True
+            if not isinstance(item, ast.Call):
+                continue
+            if isinstance(item.func, ast.Attribute):
+                if (
+                    item.func.attr == "get"
+                    and _is_os_environ_expression(item.func.value)
+                ) or (
+                    item.func.attr == "getenv"
+                    and isinstance(item.func.value, ast.Name)
+                    and item.func.value.id == "os"
+                ):
+                    return True
+            elif isinstance(item.func, ast.Name) and item.func.id == "getenv":
+                return True
+        return False
+
+    def expression_kind(expression: ast.AST) -> str | None:
+        if isinstance(expression, ast.IfExp):
+            branch_kinds = {
+                kind
+                for branch in (expression.body, expression.orelse)
+                if (kind := expression_kind(branch)) is not None
+            }
+            if len(branch_kinds) == 1:
+                return next(iter(branch_kinds))
+        if isinstance(expression, ast.Name):
+            for kind, names in (
+                ("path", path_names),
+                ("reader", reader_names),
+                ("index", index_names),
+                ("records", records_names),
+                ("record", record_names),
+            ):
+                if expression.id in names:
+                    return kind
+        if _expression_depends_on_response_index(
+            expression,
+            set(),
+            include_environment_binding=True,
+        ):
+            return "path"
+        access = key_access(expression)
+        if access is not None:
+            owner, key = access
+            owner_kind = expression_kind(owner)
+            owner_is_index = owner_kind == "index" or (
+                isinstance(owner, ast.Name) and owner.id in index_names
+            )
+            if key == "records" and owner_is_index:
+                return "records"
+            if key == "value" and owner_kind == "record":
+                return "value"
+        if isinstance(expression, ast.Subscript):
+            if expression_kind(expression.value) == "records":
+                return "record"
+        if not isinstance(expression, ast.Call):
+            return None
+        if (
+            isinstance(expression.func, ast.Name)
+            and expression.func.id in {"Path", "PurePath", "PosixPath"}
+            and expression.args
+            and expression_kind(expression.args[0]) == "path"
+        ):
+            return "path"
+        if helper_returns_environment_path(expression):
+            return "path"
+        if isinstance(expression.func, ast.Name) and expression.func.id == "open":
+            if expression.args and expression_kind(expression.args[0]) == "path":
+                return "reader"
+        if (
+            isinstance(expression.func, ast.Attribute)
+            and expression.func.attr in {"open", "read_bytes", "read_text"}
+            and expression_kind(expression.func.value) == "path"
+        ):
+            return "reader"
+        if (
+            isinstance(expression.func, ast.Attribute)
+            and isinstance(expression.func.value, ast.Name)
+            and expression.func.value.id == "json"
+            and expression.func.attr in {"load", "loads"}
+            and expression.args
+            and expression_kind(expression.args[0]) in {"reader", "path"}
+        ):
+            return "index"
+        if helper_returns_json_from_path(expression):
+            return "index"
+        return None
+
+    def bind(target: ast.AST, kind: str) -> bool:
+        destination = {
+            "path": path_names,
+            "reader": reader_names,
+            "index": index_names,
+            "records": records_names,
+            "record": record_names,
+        }.get(kind)
+        if destination is None:
+            return False
+        changed = False
+        for name in _assigned_runtime_names(target):
+            if name not in destination:
+                destination.add(name)
+                changed = True
+        return changed
+
+    # Fixed point is bounded by the number of local names and loop targets.
+    for _ in range(1 + len(nodes)):
+        changed = False
+        for node in nodes:
+            if isinstance(node, (ast.Assign, ast.AnnAssign, ast.NamedExpr)):
+                targets: Sequence[ast.AST] = (
+                    node.targets if isinstance(node, ast.Assign) else (node.target,)
+                )
+                kind = expression_kind(node.value)
+                if kind in {"path", "reader", "index", "records", "record"}:
+                    changed = any(bind(target, kind) for target in targets) or changed
+            elif isinstance(node, (ast.With, ast.AsyncWith)):
+                for item in node.items:
+                    if item.optional_vars is None:
+                        continue
+                    if expression_kind(item.context_expr) == "reader":
+                        changed = bind(item.optional_vars, "reader") or changed
+            elif isinstance(node, (ast.For, ast.AsyncFor, ast.comprehension)):
+                if expression_kind(node.iter) != "records":
+                    continue
+                changed = bind(node.target, "record") or changed
+                for name in _assigned_runtime_names(node.target):
+                    loops = record_loops.setdefault(name, [])
+                    if node not in loops:
+                        loops.append(node)
+        if not changed:
+            break
+
+    def descendant_of(node: ast.AST, ancestor: ast.AST) -> bool:
+        current = node
+        while current in parents:
+            current = parents[current]
+            if current is ancestor:
+                return True
+        return False
+
+    def inside_record_binding(
+        node: ast.AST,
+        binding: ast.For | ast.AsyncFor | ast.comprehension,
+    ) -> bool:
+        if descendant_of(node, binding):
+            return True
+        # A comprehension's element and its generator clauses are siblings in
+        # the AST, but the generator target is in scope for that element.
+        if isinstance(binding, ast.comprehension):
+            container = parents.get(binding)
+            return container is not None and descendant_of(node, container)
+        return False
+
+    records_lines: list[int] = []
+    value_lines: list[int] = []
+    stale_record_lines: list[int] = []
+    for node in nodes:
+        access = key_access(node)
+        if access is None:
+            continue
+        owner, key = access
+        owner_kind = expression_kind(owner)
+        owner_is_index = owner_kind == "index" or (
+            isinstance(owner, ast.Name) and owner.id in index_names
+        )
+        line = max(1, int(getattr(node, "lineno", 1)))
+        if key == "records" and owner_is_index:
+            records_lines.append(line)
+        if key != "value" or owner_kind != "record":
+            continue
+        if isinstance(owner, ast.Name) and owner.id in record_loops and not any(
+            inside_record_binding(node, loop) for loop in record_loops[owner.id]
+        ):
+            stale_record_lines.append(line)
+            continue
+        value_lines.append(line)
+
+    if not records_lines and not value_lines and not stale_record_lines:
+        return None
+    return {
+        "scope": scope_name,
+        "records_access_proven": bool(records_lines),
+        "value_projection_proven": bool(value_lines),
+        "records_access_lines": sorted(set(records_lines))[:16],
+        "value_projection_lines": sorted(set(value_lines))[:16],
+        "stale_record_projection_lines": sorted(set(stale_record_lines))[:16],
+    }
 
 
 def _runtime_named_lexical_scopes(

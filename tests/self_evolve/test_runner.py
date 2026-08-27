@@ -423,6 +423,53 @@ def test_conformance_switch_topology_ignores_names_but_detects_control_flow() ->
     assert next(iter(renamed.values())) != next(iter(switched.values()))
 
 
+def test_conformance_switch_topology_ignores_unowned_file_changes() -> None:
+    target = SelfEvolveTargetRef("skill", "demo", "/skills/demo/SKILL.md")
+
+    def failure(candidate_id: str, compiler_source: str):
+        candidate = CandidateVariant(
+            candidate_id=candidate_id,
+            target=target,
+            content="# Demo\n",
+            rationale="repair runtime proof",
+            files=(
+                CandidateFileDelta(
+                    path="replay/runtime.py",
+                    content="def runtime():\n    return None\n",
+                ),
+                CandidateFileDelta(
+                    path="replay/compiler.py",
+                    content=compiler_source,
+                ),
+            ),
+        )
+        gate = GateResult(
+            gate_name="candidate_repair_conformance",
+            passed=False,
+            reason="runtime proof still fails",
+            details={
+                "code": "source_behavior_proof_failed",
+                "failure_fingerprint": "sha256:" + "a" * 64,
+                "repair_conformance": {
+                    "required_branch_paths": ["replay/runtime.py"],
+                },
+            },
+        )
+        return candidate, gate
+
+    topologies = _candidate_conformance_repair_topologies(
+        (
+            failure("candidate-a", "def compile_a():\n    return {}\n"),
+            failure(
+                "candidate-b",
+                "def compile_b(value):\n    if value:\n        return value\n    return {}\n",
+            ),
+        )
+    )
+
+    assert len(next(iter(topologies.values()))) == 1
+
+
 def test_candidate_screening_depth_observes_bounded_source_trace_horizon() -> None:
     trace_pack = build_trace_pack(
         (
@@ -679,7 +726,12 @@ _REPLAY_PROVENANCE_KEYS = (
 
 
 def test_progress_repair_extension_requires_a_novel_repairable_failure_family() -> None:
-    def feedback(candidate_id: str, diagnostic_code: str) -> EvaluationSummary:
+    def feedback(
+        candidate_id: str,
+        diagnostic_code: str,
+        *,
+        reason: str | None = None,
+    ) -> EvaluationSummary:
         return EvaluationSummary(
             variant_id=candidate_id,
             dataset_split="validation",
@@ -691,7 +743,7 @@ def test_progress_repair_extension_requires_a_novel_repairable_failure_family() 
                     {
                         "code": diagnostic_code,
                         "stage": "replay_capability",
-                        "reason": diagnostic_code,
+                        "reason": reason or diagnostic_code,
                     }
                 ],
                 "repair_candidate_package": {
@@ -727,6 +779,15 @@ def test_progress_repair_extension_requires_a_novel_repairable_failure_family() 
         (target_id_feedback, session_id_feedback),
         consumed_families=consumed,
     ) not in {None, first_family}
+    prose_variant = feedback(
+        "candidate-target-prose",
+        "missing_target_id",
+        reason="the same typed failure with different explanatory prose",
+    )
+    assert (
+        runner_module._validation_feedback_failure_family(prose_variant)
+        == first_family
+    )
 
 
 def test_feedback_from_report_restores_latest_repairable_screening_package(
@@ -13381,6 +13442,7 @@ async def test_verified_runner_bounds_authoritative_candidates_across_iterations
         "repeated_contract_replacement_candidate_count": 0,
         "repeated_contract_replacement_candidate_ids": [],
         "conformance_same_slot_repair_count": 0,
+        "serialized_new_contract_repair_count": 0,
         "generation_stop_reason": "authoritative_candidate_limit_reached",
         "policy_filtered_candidate_count": 0,
         "max_authoritative_candidates": 2,
@@ -13699,8 +13761,9 @@ async def test_verified_runner_does_not_count_unmaterialized_strategy_switch(
     assert funnel["conformance_strategy_switch_request_count"] == 1
     assert funnel["conformance_strategy_switch_count"] == 0
     assert funnel["conformance_strategy_switch_not_materialized"] is True
-    assert funnel["repeated_contract_replacement_candidate_count"] == 2
-    assert funnel["conformance_same_slot_repair_count"] == 4
+    assert funnel["repeated_contract_replacement_candidate_count"] == 1
+    assert funnel["conformance_same_slot_repair_count"] == 3
+    assert funnel["serialized_new_contract_repair_count"] == 1
     assert funnel["generated_candidate_slot_count"] == 0
     assert funnel["conformance_counterexamples_by_stage"] == {
         "capability_parse_schema": {
@@ -18771,6 +18834,43 @@ def test_repair_conformance_gate_never_exposes_private_assertion_values() -> Non
     assert "expected_preview_fingerprint" in encoded
     assert "previous_expected_preview_fingerprint" in encoded
     assert gate.details["repair_conformance"] == contract.to_public_dict()
+
+
+def test_repair_conformance_gate_keys_source_failures_by_typed_contract() -> None:
+    constraint = SchemaFieldRepairConstraint(
+        schema_layer="runtime",
+        field_path="environment.AWORLD_REPLAY_RESPONSE_INDEX.consumer",
+        rule="enum",
+        expected=("json_sidecar_record_value_projector",),
+        value_domain="source_behavior",
+    )
+    contract = RepairConformanceContract(
+        focus_candidate_id="candidate-parent",
+        failure_codes=("source_behavior_proof_failed",),
+        interaction_progress=1,
+        base_file_fingerprints={"replay/runtime.py": "sha256:base"},
+        required_branch_paths=("replay/runtime.py",),
+        base_branch_fingerprints={},
+        runtime_paths=("replay/runtime.py",),
+        schema_field_constraints=(constraint,),
+    )
+
+    gate = _repair_conformance_gate(
+        RepairConformanceResult(
+            passed=False,
+            code="source_behavior_proof_failed",
+            reason="source proof failed",
+            details={"schema_field_constraints": [constraint.to_dict()]},
+        ),
+        contract=contract,
+    )
+
+    event = gate.details["causal_failure_events"][0]
+    assert event["contract_fingerprint"] == (
+        runner_module._schema_field_contract_fingerprint(
+            {"schema_field_constraints": [constraint.to_dict()]}
+        )
+    )
 
 
 def test_public_projection_recursively_seals_misplaced_private_contracts() -> None:

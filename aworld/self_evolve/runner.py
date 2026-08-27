@@ -2292,6 +2292,8 @@ def _candidate_conformance_repair_topologies(
         )
         edited_files: list[dict[str, object]] = []
         for item in sorted(candidate.files, key=lambda value: value.path):
+            if owner_paths and item.path not in owner_paths:
+                continue
             source_shape: object | None = None
             if item.operation == "upsert" and isinstance(item.content, str):
                 source_shape = _source_control_flow_shape(
@@ -2321,15 +2323,21 @@ def _candidate_conformance_repair_topologies(
             and isinstance(item.get("counterexample_id"), str)
             and isinstance(item.get("actual_fingerprint"), str)
         )
+        proof_witnesses = sorted(
+            str(item)
+            for item in tuple(details.get("proof_fingerprints") or ())
+            if isinstance(item, str) and item
+        )
         payload = {
             "owner_paths": owner_paths,
             # A typed counterexample is an executable output witness. Source
             # refactors do not constitute a strategy switch while the selected
             # subject retains the same type and content fingerprint.
             "counterexample_output_witnesses": output_witnesses,
+            "source_behavior_proof_witnesses": proof_witnesses,
             **(
                 {}
-                if output_witnesses
+                if output_witnesses or proof_witnesses
                 else {
                     "edited_files": edited_files,
                     "structural_authorization": (
@@ -4576,6 +4584,7 @@ class SelfEvolveRunner:
         conformance_counterexamples_by_stage: dict[str, set[str]] = {}
         repeated_contract_replacement_candidate_ids: set[str] = set()
         conformance_same_slot_repair_count = 0
+        serialized_new_contract_repair_count = 0
         conformance_strategy_switch_not_materialized = False
         candidate_generation_infrastructure_retries = 0
         raw_generation_attempt_count = 0
@@ -4710,6 +4719,7 @@ class SelfEvolveRunner:
                     candidate_count=2,
                 )
             )
+            scheduler_state_before_decision = scheduler_state
             scheduler_decision = scheduler.schedule(
                 state=scheduler_state,
                 frontiers=repair_frontiers,
@@ -4745,6 +4755,27 @@ class SelfEvolveRunner:
             scheduler_state = scheduler_decision.state
             requested_generation_slot_count = len(scheduler_decision.slots)
             scheduled_slots = scheduler_decision.slots
+            if (
+                len(scheduled_slots) > 1
+                and scheduled_slots[0].role is ScheduledSlotRole.FOCUSED_REPAIR
+                and scheduled_slots[0].semantic_key
+                not in scheduler_state_before_decision.frontier_progress
+                and _feedback_has_candidate_repair_conformance(
+                    cumulative_feedback
+                )
+            ):
+                # A newly discovered typed contract is an unvalidated lease.
+                # First prove one focused repair against it; only a subsequent
+                # schedule may spend diversity budget. Otherwise a deeper
+                # contract discovered by the first sibling makes every other
+                # freshly generated sibling stale before it can run.
+                scheduled_slots = scheduled_slots[:1]
+                serialized_new_contract_repair_count += 1
+                scheduler_decision = replace(
+                    scheduler_decision,
+                    reason_code="focused_repair_serialized_new_contract",
+                    slots=tuple(scheduled_slots),
+                )
             if _is_verified_apply_policy(apply_policy) and scheduled_slots:
                 effective_generation_limit = self.max_generated_candidates
                 if not repair_frontiers:
@@ -6346,7 +6377,6 @@ class SelfEvolveRunner:
                     for signature in materialized_switches
                     if conformance_strategy_attempts.get(signature, 0)
                     >= _MAX_CONFORMANCE_STRATEGY_SWITCH_ATTEMPTS
-                    and bool(pending_conformance_counterexamples)
                 )
                 if exhausted_materialized or unmaterialized_switches:
                     generation_conformance_frontier_exhausted = True
@@ -7440,6 +7470,9 @@ class SelfEvolveRunner:
                 ),
                 "conformance_same_slot_repair_count": (
                     conformance_same_slot_repair_count
+                ),
+                "serialized_new_contract_repair_count": (
+                    serialized_new_contract_repair_count
                 ),
                 **(
                     {"generation_stop_reason": generation_stop_reason}
@@ -23371,6 +23404,14 @@ def _repair_conformance_gate(
                 repairable=result.repairable,
                 category="repair_conformance",
                 summary=result.reason,
+                contract_fingerprint=(
+                    _schema_field_contract_fingerprint(details)
+                    or (
+                        contract.contract_identity
+                        if contract is not None
+                        else None
+                    )
+                ),
                 diagnostics={
                     "focus_candidate_id": (
                         contract.focus_candidate_id if contract is not None else None
@@ -24262,6 +24303,23 @@ def _feedback_requires_counterexample_screening(
     return False
 
 
+def _feedback_has_candidate_repair_conformance(
+    feedback_items: Iterable[EvaluationSummary],
+) -> bool:
+    """Return whether the active typed frontier owns support-package repair."""
+
+    for feedback in feedback_items:
+        failed_gates = feedback.metrics.get("failed_gates")
+        if isinstance(failed_gates, str):
+            failed_gates = (failed_gates,)
+        if isinstance(failed_gates, (list, tuple)) and any(
+            str(gate) == "candidate_repair_conformance"
+            for gate in failed_gates
+        ):
+            return True
+    return False
+
+
 def _merge_validation_feedback(
     existing: Iterable[EvaluationSummary],
     new: Iterable[EvaluationSummary],
@@ -24533,7 +24591,6 @@ def _failure_signature_values(value: Any) -> list[tuple[str, str]]:
         "failure_class",
         "failure_fingerprint",
         "proof_fingerprint",
-        "reason",
         "repairable",
         "stage",
         "type",
