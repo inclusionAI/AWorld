@@ -15,7 +15,7 @@ from aworld.cloud.settings import CloudSettings
 
 _WORKER_HEALTH_MAX_AGE_SECONDS = 20.0
 
-DASHBOARD_HTML = """<!doctype html>
+DASHBOARD_HTML = r"""<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
@@ -113,8 +113,10 @@ DASHBOARD_HTML = """<!doctype html>
     .facts { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 18px; margin: 0 0 18px; }
     .fact dt { color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: .06em; margin-bottom: 3px; }
     .fact dd { margin: 0; font-size: 13px; overflow-wrap: anywhere; }
-    .atif-link { display: flex; align-items: center; justify-content: space-between; gap: 12px; color: var(--blue); background: var(--blue-soft); border: 1px solid #b2ccff; border-radius: 6px; padding: 10px 12px; text-decoration: none; font-weight: 650; font-size: 13px; margin-bottom: 20px; }
-    .atif-link:hover { border-color: var(--blue); }
+    .atif-actions { display: flex; align-items: stretch; gap: 8px; margin-bottom: 20px; }
+    .preview-primary, .download-link { border: 1px solid #b2ccff; border-radius: 6px; padding: 9px 11px; color: var(--blue); background: var(--blue-soft); font-weight: 650; font-size: 12px; text-decoration: none; cursor: pointer; }
+    .preview-primary { flex: 1; text-align: left; }
+    .preview-primary:hover, .download-link:hover { border-color: var(--blue); }
     .detail-section { border-top: 1px solid var(--line); padding-top: 16px; margin-top: 16px; }
     .detail-section h3 { margin: 0 0 10px; font-size: 12px; text-transform: uppercase; letter-spacing: .06em; }
     .event, .file { border-top: 1px solid #eaecf0; padding: 10px 0; }
@@ -123,10 +125,26 @@ DASHBOARD_HTML = """<!doctype html>
     .event-name, .file-name { font-size: 12px; font-weight: 650; overflow-wrap: anywhere; }
     .event-meta, .file-meta { color: var(--muted); font-size: 11px; white-space: nowrap; }
     .event pre { margin: 7px 0 0; padding: 8px; background: var(--soft); border-radius: 4px; color: #344054; font: 11px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
-    .file a { color: var(--blue); text-decoration: none; }
-    .file a:hover { text-decoration: underline; }
+    .file-preview-button { border: 0; padding: 0; color: var(--blue); background: transparent; text-align: left; font: inherit; font-weight: 650; cursor: pointer; }
+    .file-preview-button:hover { text-decoration: underline; }
     .canonical { color: var(--blue); font-size: 10px; text-transform: uppercase; letter-spacing: .04em; margin-left: 6px; }
     .minor-state { color: var(--muted); font-size: 12px; padding: 6px 0; }
+    .preview { border: 1px solid #b2ccff; border-radius: 7px; margin: 0 0 20px; overflow: hidden; background: var(--white); }
+    .preview[hidden] { display: none; }
+    .preview-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 11px 12px; background: var(--blue-soft); border-bottom: 1px solid #b2ccff; }
+    .preview-title { min-width: 0; }
+    .preview-name { display: block; font-size: 12px; font-weight: 700; overflow-wrap: anywhere; }
+    .preview-meta { display: block; color: var(--muted); font-size: 11px; margin-top: 3px; }
+    .preview-actions { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; }
+    .preview-download { color: var(--blue); background: var(--white); border: 1px solid #b2ccff; border-radius: 5px; padding: 6px 9px; text-decoration: none; font-size: 11px; font-weight: 650; }
+    .preview-download:hover { border-color: var(--blue); }
+    .preview-close { border: 0; background: transparent; color: var(--muted); cursor: pointer; font-size: 19px; line-height: 1; padding: 4px; }
+    .preview-close:hover { color: var(--black); }
+    .preview-body { min-height: 86px; max-height: 420px; overflow: auto; }
+    .preview-state { padding: 24px 14px; color: var(--muted); text-align: center; font-size: 12px; }
+    .preview-state.error { color: var(--danger); }
+    .preview-content { margin: 0; padding: 13px; color: #1d2939; background: var(--white); font: 11px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; overflow-wrap: anywhere; tab-size: 2; }
+    .preview-notice { padding: 8px 12px; border-top: 1px solid var(--line); color: var(--warning); background: #fffaeb; font-size: 11px; }
     @media (max-width: 980px) {
       .layout.with-detail { grid-template-columns: 1fr; }
       .detail-body { max-height: none; }
@@ -138,6 +156,7 @@ DASHBOARD_HTML = """<!doctype html>
       .heading { align-items: flex-start; flex-direction: column; }
       .controls { width: 100%; justify-content: space-between; }
       .facts { grid-template-columns: 1fr; }
+      .atif-actions { flex-direction: column; }
     }
   </style>
 </head>
@@ -178,6 +197,7 @@ DASHBOARD_HTML = """<!doctype html>
     "use strict";
     const API = "/api/v1/cloud";
     const REFRESH_MS = 10000;
+    const PREVIEW_BYTES = 256 * 1024;
     const ui = {
       layout: document.querySelector("#layout"),
       runsState: document.querySelector("#runsState"),
@@ -196,6 +216,9 @@ DASHBOARD_HTML = """<!doctype html>
     let selectedRunId = null;
     let refreshPending = false;
     let detailRequest = 0;
+    let previewRequest = 0;
+    let previewController = null;
+    let previewState = null;
 
     function element(tag, className, text) {
       const item = document.createElement(tag);
@@ -364,6 +387,134 @@ DASHBOARD_HTML = """<!doctype html>
         : `${prefix}${encodeURIComponent(file.id)}`;
     }
 
+    function formatBytes(value) {
+      const bytes = Math.max(0, Number(value) || 0);
+      if (bytes < 1024) return `${bytes.toLocaleString()} B`;
+      if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
+      return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
+    }
+
+    function previewType(file) {
+      if (file.trajectory) {
+        return `${file.trajectory.format.toUpperCase()} ${file.trajectory.schema_version}`;
+      }
+      return file.kind;
+    }
+
+    function isJSONPreview(file) {
+      const path = String(file.relative_path || "").toLowerCase();
+      return file.kind === "trajectory" || file.kind === "result" || path.endsWith(".json") || path.endsWith(".atif");
+    }
+
+    function clearFilePreview() {
+      previewRequest += 1;
+      if (previewController) previewController.abort();
+      previewController = null;
+      previewState = null;
+      const host = document.querySelector("#filePreview");
+      if (host) { host.hidden = true; host.replaceChildren(); }
+    }
+
+    function renderFilePreview(file, run) {
+      const host = document.querySelector("#filePreview");
+      if (!host || !previewState || previewState.fileId !== file.id) return;
+      host.hidden = false;
+      host.replaceChildren();
+      const head = element("div", "preview-head");
+      const title = element("div", "preview-title");
+      title.append(
+        element("span", "preview-name", file.relative_path),
+        element("span", "preview-meta", `${previewType(file)} · ${formatBytes(file.size_bytes)}`),
+      );
+      const actions = element("div", "preview-actions");
+      const download = element("a", "preview-download", "Download");
+      download.href = validDownload(file, run.id);
+      download.download = "";
+      const close = element("button", "preview-close", "×");
+      close.type = "button";
+      close.setAttribute("aria-label", "Close file preview");
+      close.addEventListener("click", clearFilePreview);
+      actions.append(download, close);
+      head.append(title, actions);
+      const body = element("div", "preview-body");
+      if (previewState.status === "loading") {
+        const loading = element("div", "preview-state", "Loading preview…");
+        loading.setAttribute("role", "status");
+        body.append(loading);
+      } else if (previewState.status === "error") {
+        const error = element("div", "preview-state error", `Could not preview file: ${previewState.message}`);
+        error.setAttribute("role", "alert");
+        body.append(error);
+      } else if (previewState.status === "empty") {
+        body.append(element("div", "preview-state", "This file is empty."));
+      } else if (previewState.status === "binary") {
+        body.append(element("div", "preview-state", "Binary preview is not available. Use Download to open the complete file."));
+      } else {
+        const content = element("pre", "preview-content");
+        content.textContent = previewState.text;
+        body.append(content);
+      }
+      host.append(head, body);
+      if (previewState.truncated) {
+        host.append(element("div", "preview-notice", `Preview limited to the first ${formatBytes(PREVIEW_BYTES)}. Download the file to view the rest.`));
+      }
+    }
+
+    async function openFilePreview(file, run) {
+      if (previewController) previewController.abort();
+      const request = ++previewRequest;
+      previewState = {runId: run.id, fileId: file.id, sha256: file.sha256, status: "loading", truncated: false};
+      renderFilePreview(file, run);
+      const host = document.querySelector("#filePreview");
+      if (host) host.scrollIntoView({block: "nearest"});
+      if (Number(file.size_bytes) === 0) {
+        previewState = {...previewState, status: "empty"};
+        renderFilePreview(file, run);
+        return;
+      }
+      previewController = new AbortController();
+      try {
+        const response = await fetch(validDownload(file, run.id), {
+          headers: {
+            Accept: "text/plain, application/json;q=0.9, */*;q=0.1",
+            Range: `bytes=0-${PREVIEW_BYTES - 1}`,
+          },
+          signal: previewController.signal,
+        });
+        if (!response.ok) {
+          let message = `${response.status} ${response.statusText}`;
+          try {
+            const payload = await response.json();
+            message = payload.error?.message || message;
+          } catch (_) {}
+          throw new Error(message);
+        }
+        const receivedBytes = new Uint8Array(await response.arrayBuffer());
+        const bytes = receivedBytes.slice(0, PREVIEW_BYTES);
+        if (request !== previewRequest) return;
+        const contentRange = response.headers.get("content-range") || "";
+        const totalMatch = contentRange.match(/\/(\d+)$/);
+        const totalBytes = totalMatch ? Number(totalMatch[1]) : Math.max(Number(file.size_bytes), receivedBytes.byteLength);
+        const truncated = Number.isFinite(totalBytes) && totalBytes > bytes.byteLength;
+        if (bytes.slice(0, 8192).includes(0)) {
+          previewState = {...previewState, status: "binary", truncated};
+        } else {
+          let text = new TextDecoder("utf-8", {fatal: false}).decode(bytes);
+          if (!truncated && isJSONPreview(file)) {
+            try { text = JSON.stringify(JSON.parse(text), null, 2); } catch (_) {}
+          }
+          previewState = {...previewState, status: "ready", text, truncated};
+        }
+        renderFilePreview(file, run);
+      } catch (error) {
+        if (error.name === "AbortError" || request !== previewRequest) return;
+        previewState = {...previewState, status: "error", message: error.message, truncated: false};
+        renderFilePreview(file, run);
+      } finally {
+        if (request === previewRequest) previewController = null;
+      }
+    }
+
     function renderFiles(files, run) {
       const section = element("section", "detail-section");
       section.append(element("h3", "", `Files (${files.length})`));
@@ -374,12 +525,13 @@ DASHBOARD_HTML = """<!doctype html>
       for (const file of files) {
         const item = element("div", "file");
         const name = element("span", "file-name");
-        const link = element("a", "", file.relative_path);
-        link.href = validDownload(file, run.id);
-        link.download = "";
-        name.append(link);
+        const preview = element("button", "file-preview-button", file.relative_path);
+        preview.type = "button";
+        preview.setAttribute("aria-label", `Preview ${file.relative_path}`);
+        preview.addEventListener("click", () => openFilePreview(file, run));
+        name.append(preview);
         if (file.id === run.canonical_trajectory_file_id) name.append(element("span", "canonical", "Canonical ATIF"));
-        item.append(name, element("span", "file-meta", `${file.kind} · ${Number(file.size_bytes).toLocaleString()} B`));
+        item.append(name, element("span", "file-meta", `${file.kind} · ${formatBytes(file.size_bytes)}`));
         section.append(item);
       }
       return section;
@@ -402,11 +554,25 @@ DASHBOARD_HTML = """<!doctype html>
       ui.detailBody.append(facts);
       const canonical = files.find(file => file.id === run.canonical_trajectory_file_id);
       if (canonical) {
-        const atif = element("a", "atif-link", "Download canonical ATIF");
-        atif.href = validDownload(canonical, run.id);
-        atif.download = "";
-        atif.append(element("span", "", "↓"));
-        ui.detailBody.append(atif);
+        const actions = element("div", "atif-actions");
+        const preview = element("button", "preview-primary", "Preview canonical ATIF");
+        preview.type = "button";
+        preview.addEventListener("click", () => openFilePreview(canonical, run));
+        const download = element("a", "download-link", "Download");
+        download.href = validDownload(canonical, run.id);
+        download.download = "";
+        actions.append(preview, download);
+        ui.detailBody.append(actions);
+      }
+      const previewHost = element("section", "preview");
+      previewHost.id = "filePreview";
+      previewHost.hidden = true;
+      previewHost.setAttribute("aria-live", "polite");
+      ui.detailBody.append(previewHost);
+      if (previewState?.runId === run.id) {
+        const selectedFile = files.find(file => file.id === previewState.fileId);
+        if (selectedFile) renderFilePreview(selectedFile, run);
+        else clearFilePreview();
       }
       if (run.error_message) {
         const error = element("section", "detail-section");
@@ -435,6 +601,7 @@ DASHBOARD_HTML = """<!doctype html>
     }
 
     function openRun(runId) {
+      if (selectedRunId !== runId) clearFilePreview();
       selectedRunId = runId;
       ui.detailPanel.hidden = false;
       ui.layout.classList.add("with-detail");
@@ -446,6 +613,7 @@ DASHBOARD_HTML = """<!doctype html>
     }
 
     function closeDetail() {
+      clearFilePreview();
       selectedRunId = null;
       detailRequest += 1;
       ui.detailPanel.hidden = true;
