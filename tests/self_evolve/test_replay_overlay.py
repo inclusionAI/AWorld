@@ -73,6 +73,7 @@ from aworld.self_evolve.replay import (
     _reset_replay_service_protocol_trace,
     _persist_variant_lifecycle,
     _protocol_probe_response_mismatch,
+    _project_replay_capability_for_case,
     _probe_replay_service,
     _replay_capability_recorded_response_values,
     _read_websocket_frame,
@@ -4339,6 +4340,56 @@ def _frozen_skill_runtime_capability(tmp_path: Path) -> FrozenReplayCapability:
     )
 
 
+def test_case_projection_starts_only_reachable_replay_services(
+    tmp_path: Path,
+) -> None:
+    base = _frozen_skill_runtime_capability(tmp_path)
+    capability = replace(
+        base,
+        endpoint_replacements={
+            "https://example.test/a": "service-a",
+            "https://example.test/b": "service-b",
+        },
+        services=(
+            replace(base.services[0], service_id="service-a"),
+            replace(base.services[0], service_id="service-b"),
+        ),
+    )
+
+    projected = _project_replay_capability_for_case(
+        capability,
+        task_input={"content": "open https://example.test/a"},
+        dependency_ids=(),
+    )
+
+    assert [service.service_id for service in projected.services] == [
+        "service-a"
+    ]
+    assert projected.endpoint_replacements == {
+        "https://example.test/a": "service-a"
+    }
+
+
+def test_case_projection_omits_unreferenced_replay_services(
+    tmp_path: Path,
+) -> None:
+    base = _frozen_skill_runtime_capability(tmp_path)
+    capability = replace(
+        base,
+        endpoint_replacements={"https://example.test/a": "service-a"},
+        services=(replace(base.services[0], service_id="service-a"),),
+    )
+
+    projected = _project_replay_capability_for_case(
+        capability,
+        task_input={"content": "answer from retained context"},
+        dependency_ids=(),
+    )
+
+    assert projected.services == ()
+    assert projected.endpoint_replacements == {}
+
+
 def test_replay_service_startup_timeout_is_typed_as_retryable_infrastructure(
     tmp_path: Path,
 ) -> None:
@@ -7530,6 +7581,9 @@ async def test_required_replay_runtime_builds_parent_attested_v2_manifest(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
+    skill_root = tmp_path / "skills"
+    skill_root.mkdir()
+    expected_skill_fingerprint = "sha256:" + "a" * 64
     trajectory = [
         {
             "state": {"input": "task"},
@@ -7629,14 +7683,21 @@ async def test_required_replay_runtime_builds_parent_attested_v2_manifest(
             workspace_root=str(tmp_path),
             task_input="task",
             task_text="task",
-            skill_root=None,
+            skill_root=str(skill_root),
+            skill_names=("demo",),
             artifact_dir=str(tmp_path / "artifacts"),
             evidence_policy_mode="required",
+            expected_skill_package_fingerprint=expected_skill_fingerprint,
         )
     )
 
     assert result.succeeded is True
     assert result.metrics["evidence_policy_v2_runtime_trust_passed"] is True
+    # A mocked process that never ran the CLI resolver must not be able to
+    # promote request-side expected values into activation evidence.
+    assert result.metrics["skill_activation_attested"] is False
+    assert result.metrics["activated_skill_names"] == []
+    assert result.metrics["activated_skill_package_fingerprint"] is None
     assert result.metrics["evidence_runtime_policy_passed"] is False
     assert result.metrics["evidence_runtime_policy_authority"] == "advisory"
     assert result.metrics[

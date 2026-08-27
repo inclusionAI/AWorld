@@ -309,6 +309,7 @@ from aworld.self_evolve.provenance import (
 )
 from aworld.self_evolve.replay import (
     AWorldCliCandidateReplayBackend,
+    AWorldCliReplayExecutor,
     CandidateReplayBackend,
     CandidateReplayEvidenceReuseBackend,
     CandidateReplayRequest,
@@ -1771,6 +1772,13 @@ def _default_iteration_budget(
 
 _DEFAULT_CANDIDATE_SCREENING_TIMEOUT_SECONDS = 90
 _MAX_CANDIDATE_SCREENING_TIMEOUT_SECONDS = 300
+_SCREENING_CONTROL_HARNESS_ID = "aworld.self_evolve.screening_harness.v2"
+
+
+def _screening_control_harness_fingerprint() -> str:
+    return "sha256:" + hashlib.sha256(
+        _SCREENING_CONTROL_HARNESS_ID.encode("utf-8")
+    ).hexdigest()
 _DEFAULT_CANDIDATE_SCREENING_TRACE_HORIZON = 4
 _DEFAULT_CANDIDATE_SCREENING_TOOL_CALL_LIMIT = 8
 _SCREENING_STEP_TIMEOUT_SECONDS = 30
@@ -4066,6 +4074,7 @@ class SelfEvolveRunner:
             control_observations=(
                 self._candidate_screening_control_observations
             ),
+            harness_fingerprint=_screening_control_harness_fingerprint(),
         )
         _restore_historical_screening_lifecycle_observations(
             self._candidate_screening_case_observations,
@@ -4077,6 +4086,7 @@ class SelfEvolveRunner:
                 self._candidate_screening_control_observations
             ),
             loaded_run_ids=self._candidate_screening_loaded_run_ids,
+            harness_fingerprint=_screening_control_harness_fingerprint(),
         )
         screening_control_preflight = _screening_control_preflight(
             dataset,
@@ -4085,6 +4095,7 @@ class SelfEvolveRunner:
                 self.replay_timeout_seconds,
                 _MAX_CANDIDATE_SCREENING_TIMEOUT_SECONDS,
             ),
+            harness_fingerprint=_screening_control_harness_fingerprint(),
         )
         budget_context = _RunBudgetContext(
             ledger=RunBudgetLedger(
@@ -4532,6 +4543,19 @@ class SelfEvolveRunner:
         baseline_preflight_blocked = False
         infrastructure_blocked = False
         shared_validation_gate: GateResult | None = None
+        if screening_control_preflight.get("candidate_generation_allowed") is False:
+            baseline_preflight_blocked = True
+            gate_results.append(
+                GateResult(
+                    gate_name="evolvability_preflight",
+                    passed=False,
+                    reason=(
+                        "known baseline controls cannot execute reliably; repair "
+                        "the shared replay harness before mutating the skill"
+                    ),
+                    details=dict(screening_control_preflight),
+                )
+            )
         progress_repair_families: set[str] = set()
         duplicate_population_stalls = 0
         consecutive_policy_filter_stalls = 0
@@ -6848,8 +6872,24 @@ class SelfEvolveRunner:
                 )
             )
 
-        candidate_prerequisite_blocked = (
-            _gate_results_have_candidate_prerequisite_failure(gate_results)
+        evolvability_preflight_blocked = any(
+            gate.gate_name == "evolvability_preflight" and not gate.passed
+            for gate in gate_results
+        )
+        if evolvability_preflight_blocked:
+            gate_results = [
+                gate
+                for gate in gate_results
+                if gate.gate_name
+                not in {
+                    "candidate_generation",
+                    "candidate_generation_exhausted_by_semantic_dedup",
+                    "no_candidate",
+                }
+            ]
+        candidate_prerequisite_blocked = bool(
+            not evolvability_preflight_blocked
+            and _gate_results_have_candidate_prerequisite_failure(gate_results)
         )
         repair_focus_candidate = (
             selected_candidate if candidate_prerequisite_blocked else None
@@ -12924,13 +12964,23 @@ class SelfEvolveRunner:
     ) -> tuple[CandidateReplayResult | None, SelfEvolveDataset | None, GateResult | None]:
         if not self.replay_enabled or selected_candidate.target.target_type != "skill":
             return None, None, None
-        candidate_requires_intervention_exposure = (
-            _candidate_requires_task_plane_intervention(selected_candidate)
-        )
         effective_replay_backend = (
             replay_backend
             if replay_backend is not None
             else self.candidate_replay_backend
+        )
+        candidate_requires_service_intervention = (
+            _candidate_requires_task_plane_intervention(selected_candidate)
+        )
+        candidate_requires_skill_activation = bool(
+            _candidate_changes_target_behavior(selected_candidate)
+            and _replay_backend_provides_skill_activation_attestation(
+                effective_replay_backend
+            )
+        )
+        candidate_requires_intervention_exposure = bool(
+            candidate_requires_service_intervention
+            or candidate_requires_skill_activation
         )
         if effective_replay_backend is None:
             if not _is_verified_apply_policy(apply_policy):
@@ -13042,6 +13092,12 @@ class SelfEvolveRunner:
                     normalized=normalized,
                     candidate_requires_intervention_exposure=(
                         candidate_requires_intervention_exposure
+                    ),
+                    candidate_requires_service_intervention=(
+                        candidate_requires_service_intervention
+                    ),
+                    candidate_requires_skill_activation=(
+                        candidate_requires_skill_activation
                     ),
                     bounded_screening=(progress_stage == "candidate_screening"),
                 ),
@@ -13172,6 +13228,11 @@ class SelfEvolveRunner:
             )
         if replay_adaptation is None or not adaptation_gate.passed:
             return None, None, adaptation_gate
+        if candidate_requires_intervention_exposure:
+            dataset = _prioritize_candidate_intervention_cases(
+                dataset,
+                replay_adaptation,
+            )
         _emit_progress(
             self.progress_callback,
             progress_stage,
@@ -13742,6 +13803,12 @@ class SelfEvolveRunner:
                     candidate_requires_intervention_exposure=(
                         candidate_requires_intervention_exposure
                     ),
+                    candidate_requires_service_intervention=(
+                        candidate_requires_service_intervention
+                    ),
+                    candidate_requires_skill_activation=(
+                        candidate_requires_skill_activation
+                    ),
                     bounded_screening=(
                         progress_stage == "candidate_screening"
                     ),
@@ -13803,6 +13870,12 @@ class SelfEvolveRunner:
             normalized=normalized,
             candidate_requires_intervention_exposure=(
                 candidate_requires_intervention_exposure
+            ),
+            candidate_requires_service_intervention=(
+                candidate_requires_service_intervention
+            ),
+            candidate_requires_skill_activation=(
+                candidate_requires_skill_activation
             ),
             bounded_screening=(progress_stage == "candidate_screening"),
         )
@@ -20095,6 +20168,21 @@ def _report_matches_target(
     )
 
 
+def _report_matches_screening_harness(
+    report: Mapping[str, Any],
+    expected_fingerprint: str | None,
+) -> bool:
+    """Reject stale control evidence produced by another harness identity."""
+
+    if expected_fingerprint is None:
+        return True
+    preflight = report.get("screening_control_preflight")
+    return bool(
+        isinstance(preflight, Mapping)
+        and preflight.get("harness_fingerprint") == expected_fingerprint
+    )
+
+
 def _campaign_target_matches(
     target: SelfEvolveTargetRef,
     expected: Mapping[str, Any] | None,
@@ -21205,12 +21293,22 @@ def _replay_gate_details(
     dataset: SelfEvolveDataset,
     normalized: NormalizedReplayMembers | None = None,
     candidate_requires_intervention_exposure: bool = False,
+    candidate_requires_service_intervention: bool = False,
+    candidate_requires_skill_activation: bool = False,
     bounded_screening: bool = False,
 ) -> dict[str, object]:
     normalized = normalized or normalize_replay_members(
         dataset=dataset,
         replay_result=replay_result,
     )
+    if (
+        candidate_requires_intervention_exposure
+        and not candidate_requires_service_intervention
+        and not candidate_requires_skill_activation
+    ):
+        # Backward-compatible direct callers used the single boolean for the
+        # original replay-service intervention contract.
+        candidate_requires_service_intervention = True
     def compatibility_failure(variant: ReplayVariantResult) -> object:
         return (
             variant.failure.compatibility_dict()
@@ -21367,7 +21465,16 @@ def _replay_gate_details(
     intervention_observed = (
         (
             not candidate_requires_intervention_exposure
-            or _candidate_task_plane_intervention_observed(normalized)
+            or _candidate_task_plane_intervention_observed(
+                normalized,
+                require_service_intervention=(
+                    candidate_requires_service_intervention
+                ),
+                require_skill_activation=candidate_requires_skill_activation,
+                expected_skill_package_fingerprint=(
+                    replay_result.request.verified_candidate_package_fingerprint
+                ),
+            )
         )
         if candidate_execution_observed
         else None
@@ -21375,6 +21482,12 @@ def _replay_gate_details(
     details["candidate_execution_observed"] = candidate_execution_observed
     details["candidate_intervention_required"] = (
         candidate_requires_intervention_exposure
+    )
+    details["candidate_service_intervention_required"] = (
+        candidate_requires_service_intervention
+    )
+    details["candidate_skill_activation_required"] = (
+        candidate_requires_skill_activation
     )
     details["candidate_intervention_observed"] = intervention_observed
     recovery_trace = replay_recovery_trace(normalized.members)
@@ -22029,6 +22142,29 @@ def _candidate_requires_task_plane_intervention(
     )
 
 
+def _candidate_changes_target_behavior(candidate: CandidateVariant) -> bool:
+    current_content = (
+        Path(candidate.target.path).read_text(encoding="utf-8")
+        if candidate.target.path and Path(candidate.target.path).is_file()
+        else candidate.content
+    )
+    return classify_candidate_mutation(
+        candidate,
+        current_content=current_content,
+    ).target_behavior_changed
+
+
+def _replay_backend_provides_skill_activation_attestation(
+    backend: CandidateReplayBackend | None,
+) -> bool:
+    """Return true only for the production CLI skill execution boundary."""
+
+    return bool(
+        isinstance(backend, AWorldCliCandidateReplayBackend)
+        and isinstance(getattr(backend, "executor", None), AWorldCliReplayExecutor)
+    )
+
+
 def _candidate_task_plane_intervention_case_ids(
     capability_requirements: tuple[ReplayCapabilityRequirement, ...],
 ) -> tuple[str, ...]:
@@ -22046,7 +22182,13 @@ def _candidate_task_plane_intervention_case_ids(
 
 def _candidate_task_plane_intervention_observed(
     normalized: NormalizedReplayMembers,
+    *,
+    require_service_intervention: bool = True,
+    require_skill_activation: bool = False,
+    expected_skill_package_fingerprint: str | None = None,
 ) -> bool:
+    service_observed = not require_service_intervention
+    activation_observed = not require_skill_activation
     for member in normalized.members:
         variant = member.candidate
         results = variant.repetition_results or (variant,)
@@ -22054,7 +22196,14 @@ def _candidate_task_plane_intervention_observed(
             count = result.metrics.get("replay_service_protocol_trace_count")
             if isinstance(count, (int, float)) and not isinstance(count, bool):
                 if count > 0:
-                    return True
+                    service_observed = True
+            if (
+                result.metrics.get("skill_activation_attested") is True
+                and isinstance(expected_skill_package_fingerprint, str)
+                and result.metrics.get("activated_skill_package_fingerprint")
+                == expected_skill_package_fingerprint
+            ):
+                activation_observed = True
             failure = result.failure
             diagnostics = (
                 failure.diagnostics
@@ -22069,8 +22218,8 @@ def _candidate_task_plane_intervention_observed(
                 else None
             )
             if isinstance(traces, list) and traces:
-                return True
-    return False
+                service_observed = True
+    return service_observed and activation_observed
 
 
 def _candidate_replay_has_repairable_capability_failure(
@@ -26428,6 +26577,7 @@ def _screening_observation_scope_fingerprint(
         "target_id": target.identity.target_id,
         "target_path": target.identity.path,
         "baseline_skill_fingerprint": target.fingerprint_current_content(),
+        "harness_fingerprint": _screening_control_harness_fingerprint(),
     }
     return "sha256:" + hashlib.sha256(
         json.dumps(
@@ -26564,6 +26714,7 @@ def _restore_campaign_screening_case_observations(
     prior_run_ids: tuple[str, ...],
     loaded_run_ids: set[str],
     control_observations: dict[str, dict[str, object]] | None = None,
+    harness_fingerprint: str | None = None,
 ) -> None:
     """Restore payload-free control health across Campaign cycles/restarts."""
 
@@ -26573,6 +26724,11 @@ def _restore_campaign_screening_case_observations(
         try:
             report = store.read_report(prior_run_id)
         except (FileNotFoundError, OSError, TypeError, ValueError):
+            continue
+        if not _report_matches_screening_harness(
+            report,
+            harness_fingerprint,
+        ):
             continue
         verification_funnel = report.get("verification_funnel")
         authoritative_observations = (
@@ -26733,6 +26889,7 @@ def _restore_historical_screening_lifecycle_observations(
     current_run_id: str,
     control_observations: dict[str, dict[str, object]] | None = None,
     loaded_run_ids: set[str] | None = None,
+    harness_fingerprint: str | None = None,
 ) -> None:
     """Build a candidate-independent control profile from prior lifecycles."""
 
@@ -26753,6 +26910,11 @@ def _restore_historical_screening_lifecycle_observations(
         except (OSError, TypeError, ValueError, json.JSONDecodeError):
             continue
         if not _report_matches_target(report, target):
+            continue
+        if not _report_matches_screening_harness(
+            report,
+            harness_fingerprint,
+        ):
             continue
         restored_authoritative = (
             _restore_authoritative_member_lifecycle_observations(
@@ -27134,6 +27296,7 @@ def _screening_control_preflight(
     *,
     observations: Mapping[str, Mapping[str, float | int]],
     timeout_ceiling_seconds: float = _MAX_CANDIDATE_SCREENING_TIMEOUT_SECONDS,
+    harness_fingerprint: str | None = None,
 ) -> dict[str, object]:
     """Classify baseline feasibility before any candidate generation call."""
 
@@ -27168,6 +27331,7 @@ def _screening_control_preflight(
         if case_ids and not unknown and len(infeasible) == len(case_ids)
         else "unknown"
     )
+    generation_allowed = status != "infeasible"
     return {
         "schema_version": "aworld.self_evolve.screening_control_preflight.v1",
         "status": status,
@@ -27175,11 +27339,26 @@ def _screening_control_preflight(
         "feasible_case_ids": feasible,
         "infeasible_case_ids": infeasible,
         "unknown_case_ids": unknown,
-        "candidate_generation_allowed": True,
-        "advisory_only": True,
-        "advisory_role": "candidate_control_ordering",
+        "candidate_generation_allowed": generation_allowed,
+        "advisory_only": generation_allowed,
+        "advisory_role": (
+            "candidate_control_ordering" if generation_allowed else None
+        ),
+        "failure_class": None if generation_allowed else "framework",
+        "failure_owner": None if generation_allowed else "framework",
+        "failure_scope": None if generation_allowed else "shared_run",
+        "repairable": not generation_allowed,
+        "code": None if generation_allowed else "baseline_controls_infeasible",
+        "next_action": (
+            None
+            if generation_allowed
+            else "repair_or_build_shared_replay_harness"
+        ),
         "support_specific_qualification_required": True,
-        "source": "historical_baseline_lifecycle",
+        "source": "same_harness_historical_baseline_lifecycle",
+        "harness_fingerprint": (
+            harness_fingerprint or _screening_control_harness_fingerprint()
+        ),
         "timeout_ceiling_seconds": timeout_ceiling_seconds,
         "case_observations": {
             case_id: dict(observations.get(case_id, {}))
@@ -27745,6 +27924,82 @@ def _authoritative_replay_dataset(
                 ),
                 "authoritative_compacted_context_case_ids": list(
                     compacted_case_ids
+                ),
+            },
+        ),
+    )
+
+
+def _prioritize_candidate_intervention_cases(
+    dataset: SelfEvolveDataset,
+    replay_adaptation: ReplayAdaptationBundle,
+) -> SelfEvolveDataset:
+    """Run controls capable of exercising candidate replay support first.
+
+    A dataset-wide capability may cover only a minority of cases. Running
+    context-only follow-ups first can spend the campaign deadline without any
+    candidate-owned protocol traffic, leaving the effect unidentifiable. Direct
+    dependency bindings are strongest, task-input references are second, and
+    unrelated controls remain available at the tail for regression evidence.
+    """
+
+    capability = replay_adaptation.replay_capability
+    if capability is None or not capability.endpoint_replacements:
+        return dataset
+    service_sources = tuple(capability.endpoint_replacements)
+    priority_by_case_id: dict[str, int] = {}
+    for case_adaptation in replay_adaptation.cases:
+        dependency_ids = {
+            binding.dependency_id for binding in case_adaptation.bindings
+        }
+        if dependency_ids.intersection(service_sources):
+            priority_by_case_id[case_adaptation.case_id] = 0
+            continue
+        serialized_input = json.dumps(
+            case_adaptation.adapted_task_input,
+            ensure_ascii=False,
+            sort_keys=True,
+            default=str,
+        )
+        priority_by_case_id[case_adaptation.case_id] = (
+            1
+            if any(source in serialized_input for source in service_sources)
+            else 2
+        )
+    indexed_cases = tuple(enumerate(dataset.cases))
+    ordered = tuple(
+        case
+        for _index, case in sorted(
+            indexed_cases,
+            key=lambda item: (
+                priority_by_case_id.get(item[1].case_id, 2),
+                item[0],
+            ),
+        )
+    )
+    if ordered == dataset.cases:
+        return dataset
+    direct_case_ids = [
+        case.case_id
+        for case in ordered
+        if priority_by_case_id.get(case.case_id) == 0
+    ]
+    referenced_case_ids = [
+        case.case_id
+        for case in ordered
+        if priority_by_case_id.get(case.case_id) == 1
+    ]
+    return replace(
+        dataset,
+        cases=ordered,
+        recipe=replace(
+            dataset.recipe,
+            source={
+                **dict(dataset.recipe.source),
+                "authoritative_intervention_first": True,
+                "authoritative_direct_intervention_case_ids": direct_case_ids,
+                "authoritative_referenced_intervention_case_ids": (
+                    referenced_case_ids
                 ),
             },
         ),

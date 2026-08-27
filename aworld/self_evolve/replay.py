@@ -116,6 +116,7 @@ from aworld.self_evolve.replay_capability import (
     ReplayProtocolProbe,
     ReplayReadinessProbe,
     ReplayServiceSpec,
+    fingerprint_skill_package,
     replay_capability_semantic_fingerprint,
     replay_payload_contains_expected_value,
     replay_process_memory_bytes,
@@ -132,6 +133,7 @@ from aworld.self_evolve.types import CandidateVariant, DatasetRecipe, SelfEvolve
 
 _EVIDENCE_RETRY_LIMIT = 1
 _SERVICE_STARTUP_RETRY_LIMIT = 1
+_MIN_REPLAY_SERVICE_STARTUP_TIMEOUT_SECONDS = 15.0
 _MEMBER_PHASE_TEARDOWN_GRACE_MAX_SECONDS = 5.0
 _SYNTHETIC_EVIDENCE_EXCERPT_CHARS = 4000
 _MAX_METADATA_EVIDENCE_CHARS = 16_384
@@ -190,6 +192,9 @@ _REPLAY_PROVENANCE_METRIC_KEYS = (
     "service_startup_status",
     "service_cleanup_status",
     "evidence_manifest_fingerprint",
+    "activated_skill_root",
+    "activated_skill_package_fingerprint",
+    "skill_activation_attestation_source",
 )
 _EVIDENCE_COVERAGE_BOOL_METRIC_KEYS = (
     "evidence_strategy_passed",
@@ -203,6 +208,7 @@ _EVIDENCE_COVERAGE_BOOL_METRIC_KEYS = (
     "evidence_runtime_policy_authoritative_passed",
     "task_completion_established",
     "timeout_evidence_recovered",
+    "skill_activation_attested",
 )
 _EVIDENCE_COVERAGE_NUMERIC_METRIC_KEYS = (
     "evidence_manifest_entry_count",
@@ -2073,6 +2079,7 @@ class ReplayExecutionRequest:
     task_input_fingerprint: str | None = None
     dataset_fingerprint: str | None = None
     baseline_skill_fingerprint: str | None = None
+    expected_skill_package_fingerprint: str | None = None
     adapter_determinism: str | None = None
     isolated_workspace_path: str | None = None
     replay_capability_id: str | None = None
@@ -5491,6 +5498,7 @@ class AWorldCliCandidateReplayBackend:
         task_input_fingerprint: str | None = None
         adapter_determinism: str | None = None
         isolated_workspace_path: str | None = None
+        case_adaptation = None
         if request.replay_adaptation is not None:
             case_adaptation = request.replay_adaptation.case(request.task_id)
             isolated_workspace = materialize_replay_workspace(
@@ -5541,30 +5549,56 @@ class AWorldCliCandidateReplayBackend:
             if request.replay_adaptation is not None
             else None
         )
-        if replay_capability is not None:
+        execution_replay_capability = replay_capability
+        if (
+            replay_capability is not None
+            and case_adaptation is not None
+            and request.measurement_evidence_policy_profile is None
+        ):
+            execution_replay_capability = _project_replay_capability_for_case(
+                replay_capability,
+                task_input=task_input,
+                dependency_ids=tuple(
+                    binding.dependency_id
+                    for binding in case_adaptation.bindings
+                ),
+            )
+        replay_services_required = bool(
+            execution_replay_capability is not None
+            and execution_replay_capability.services
+        )
+        if replay_services_required:
+            assert execution_replay_capability is not None
             try:
                 service_session = await _start_replay_services(
-                    replay_capability,
+                    execution_replay_capability,
                     artifact_dir=artifact_dir,
                     endpoint_bindings=(
                         request.measurement_evidence_policy_profile.endpoint_bindings
                         if request.measurement_evidence_policy_profile is not None
                         else ()
                     ),
+                    integrity_capability=(
+                        replay_capability
+                        if execution_replay_capability is not replay_capability
+                        else None
+                    ),
                 )
                 endpoint_urls = {
                     source: service_session.endpoints[service_id]
-                    for source, service_id in replay_capability.endpoint_replacements.items()
+                    for source, service_id in (
+                        execution_replay_capability.endpoint_replacements.items()
+                    )
                 }
                 task_input = _replace_replay_endpoints(task_input, endpoint_urls)
                 environment.update(service_session.environment)
             except Exception as exc:
                 service_failure_details = _replay_service_start_failure_details(
                     exc,
-                    replay_capability=replay_capability,
+                    replay_capability=execution_replay_capability,
                 )
                 fixture_summaries = _replay_capability_fixture_summaries(
-                    replay_capability
+                    execution_replay_capability
                 )
                 if fixture_summaries:
                     diagnostics = dict(
@@ -5585,6 +5619,14 @@ class AWorldCliCandidateReplayBackend:
             arm=effective_measurement_arm,
             repetition_id=repetition_id,
         )
+        if service_session is not None:
+            service_startup_status = "ready"
+        elif replay_services_required:
+            service_startup_status = "failed"
+        elif replay_capability is not None:
+            service_startup_status = "not_required"
+        else:
+            service_startup_status = None
         execution_request = ReplayExecutionRequest(
             variant_id=variant_id,
             task_id=request.task_id,
@@ -5615,6 +5657,11 @@ class AWorldCliCandidateReplayBackend:
             task_input_fingerprint=task_input_fingerprint,
             dataset_fingerprint=request.dataset_fingerprint,
             baseline_skill_fingerprint=request.baseline_skill_fingerprint,
+            expected_skill_package_fingerprint=(
+                request.verified_candidate_package_fingerprint
+                if effective_measurement_arm is MeasurementArm.TREATMENT
+                else request.baseline_skill_fingerprint
+            ),
             adapter_determinism=adapter_determinism,
             isolated_workspace_path=isolated_workspace_path,
             replay_capability_id=(
@@ -5653,13 +5700,7 @@ class AWorldCliCandidateReplayBackend:
                 if service_session is not None
                 else None
             ),
-            service_startup_status=(
-                "ready"
-                if service_session is not None
-                else "failed"
-                if replay_capability is not None
-                else None
-            ),
+            service_startup_status=service_startup_status,
             framework_endpoint_bindings=(
                 _framework_resolved_endpoint_bindings(
                     request.measurement_evidence_policy_profile,
@@ -7994,6 +8035,7 @@ class AWorldCliReplayExecutor:
         trust_metrics: dict[str, Any] = {}
         framework_evidence_metrics: dict[str, Any] = {}
         trusted_usage_metrics: dict[str, int | bool] = {}
+        trusted_task_response: Mapping[str, Any] | None = None
         try:
             effective_evidence_manifest = evidence_manifest
             if trust_context is not None:
@@ -8258,6 +8300,87 @@ class AWorldCliReplayExecutor:
                     else "continue_rollout_until_terminal_action"
                 ),
             )
+        # Consume resolver-originated evidence from the signed child TaskResponse.
+        # Never derive observed activation from request-side expected values.
+        raw_activation_evidence = (
+            trusted_task_response.get("skill_activation_evidence")
+            if isinstance(trusted_task_response, Mapping)
+            else None
+        )
+        activation_evidence = [
+            dict(item)
+            for item in raw_activation_evidence
+            if isinstance(item, Mapping)
+        ] if isinstance(raw_activation_evidence, list) else []
+        expected_root = (
+            str(Path(request.skill_root).expanduser().resolve())
+            if request.skill_root
+            else None
+        )
+        def activation_matches(item: Mapping[str, Any]) -> bool:
+            canonical_root = item.get("canonical_skill_root")
+            if not isinstance(canonical_root, str) or expected_root is None:
+                return False
+            try:
+                Path(canonical_root).resolve().relative_to(
+                    Path(expected_root).resolve()
+                )
+            except (OSError, ValueError):
+                return False
+            try:
+                observed_fingerprint = fingerprint_skill_package(
+                    canonical_root
+                )
+            except (OSError, RuntimeError, ValueError):
+                return False
+            return bool(
+                item.get("skill_name") in request.skill_names
+                and item.get("package_fingerprint") == observed_fingerprint
+                and item.get("package_fingerprint")
+                == request.expected_skill_package_fingerprint
+                and item.get("source")
+                == "aworld_cli_skill_activation_resolver"
+            )
+
+        observed_activation = next(
+            (
+                item
+                for item in activation_evidence
+                if activation_matches(item)
+            ),
+            None,
+        )
+        skill_activation_attested = observed_activation is not None
+        metrics.update(
+            {
+                "skill_activation_attested": skill_activation_attested,
+                "activated_skill_names": sorted(
+                    {
+                        str(item.get("skill_name"))
+                        for item in activation_evidence
+                        if isinstance(item.get("skill_name"), str)
+                    }
+                ),
+                "activated_skill_root": (
+                    observed_activation.get("canonical_skill_root")
+                    if observed_activation is not None
+                    else None
+                ),
+                "activated_skill_package_fingerprint": (
+                    observed_activation.get("package_fingerprint")
+                    if observed_activation is not None
+                    else None
+                ),
+                "skill_activation_attestation_source": (
+                    "aworld_cli_skill_activation_resolver"
+                    if skill_activation_attested
+                    else None
+                ),
+                "skill_activation_evidence_count": len(
+                    activation_evidence
+                ),
+            }
+        )
         return ReplayExecutionResult(
             status="succeeded",
             trajectory=trajectory,
@@ -8988,6 +9111,16 @@ async def _start_replay_services(
             != Path(integrity_capability.frozen_root).expanduser().resolve()
             or not capability.services
             or any(
+                integrity_capability.endpoint_replacements.get(source)
+                != service_id
+                for source, service_id in capability.endpoint_replacements.items()
+            )
+            or any(
+                service_id
+                not in {service.service_id for service in capability.services}
+                for service_id in capability.endpoint_replacements.values()
+            )
+            or any(
                 not any(
                     replace(
                         service,
@@ -9219,7 +9352,10 @@ async def _start_replay_services(
                     port=port,
                     kind=service.readiness.kind,
                     path=service.readiness.path,
-                    timeout_seconds=service.readiness.timeout_seconds,
+                    timeout_seconds=max(
+                        service.readiness.timeout_seconds,
+                        _MIN_REPLAY_SERVICE_STARTUP_TIMEOUT_SECONDS,
+                    ),
                     phase="startup",
                     service_id=service.service_id,
                     transport=service.transport,
@@ -11117,6 +11253,58 @@ def _replace_replay_endpoints(value: Any, replacements: Mapping[str, str]) -> An
     if isinstance(value, tuple):
         return tuple(_replace_replay_endpoints(item, replacements) for item in value)
     return value
+
+
+def _project_replay_capability_for_case(
+    capability: FrozenReplayCapability,
+    *,
+    task_input: Any,
+    dependency_ids: Sequence[str],
+) -> FrozenReplayCapability:
+    """Limit task rollout to replay services reachable from one case.
+
+    Capability compilation is dataset-wide, but a member normally references
+    only a small subset of the captured dependencies. Starting every service
+    for every baseline/candidate member multiplies sandbox startup cost and can
+    exhaust the campaign deadline before the candidate is exercised. Keep the
+    full frozen capability as the integrity authority while projecting the
+    execution surface to dependencies bound by this case or still present in
+    its adapted task input.
+    """
+
+    serialized_task_input = json.dumps(
+        task_input,
+        ensure_ascii=False,
+        sort_keys=True,
+        default=str,
+    )
+    bound_dependencies = {str(value) for value in dependency_ids if value}
+    required_sources = {
+        source
+        for source in capability.endpoint_replacements
+        if source in bound_dependencies or source in serialized_task_input
+    }
+    required_service_ids = {
+        capability.endpoint_replacements[source]
+        for source in required_sources
+    }
+    if required_service_ids == {
+        service.service_id for service in capability.services
+    }:
+        return capability
+    return replace(
+        capability,
+        endpoint_replacements={
+            source: service_id
+            for source, service_id in capability.endpoint_replacements.items()
+            if source in required_sources
+        },
+        services=tuple(
+            service
+            for service in capability.services
+            if service.service_id in required_service_ids
+        ),
+    )
 
 
 def _adapter_environment(bindings: Sequence[Any]) -> dict[str, str]:

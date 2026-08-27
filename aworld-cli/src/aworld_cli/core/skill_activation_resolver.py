@@ -35,6 +35,7 @@ class ResolvedSkillSet:
     skill_configs: dict[str, dict[str, Any]]
     active_skill_names: tuple[str, ...]
     available_skill_names: tuple[str, ...]
+    activation_evidence: tuple[dict[str, str], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -216,10 +217,37 @@ class SkillActivationResolver:
             candidate.skill_name: self._candidate_to_skill_config(candidate, active_names)
             for candidate in ordered_candidates
         }
+        activation_evidence: list[dict[str, str]] = []
+        for candidate in ordered_candidates:
+            if candidate.skill_name not in active_names:
+                continue
+            skill_file = Path(candidate.skill_path).expanduser().resolve()
+            try:
+                from aworld.self_evolve.replay_capability import (
+                    fingerprint_skill_package,
+                )
+
+                package_fingerprint = fingerprint_skill_package(
+                    skill_file.parent
+                )
+            except (OSError, RuntimeError, ValueError):
+                # Missing/unreadable packages deliberately produce no activation
+                # evidence.  A caller that requires an attestation must fail closed.
+                continue
+            activation_evidence.append(
+                {
+                    "skill_name": candidate.skill_name,
+                    "canonical_skill_file": str(skill_file),
+                    "canonical_skill_root": str(skill_file.parent),
+                    "package_fingerprint": package_fingerprint,
+                    "source": "aworld_cli_skill_activation_resolver",
+                }
+            )
         return ResolvedSkillSet(
             skill_configs=skill_configs,
             active_skill_names=active_skill_names,
             available_skill_names=tuple(skill_configs),
+            activation_evidence=tuple(activation_evidence),
         )
 
     def _candidate_to_skill_config(

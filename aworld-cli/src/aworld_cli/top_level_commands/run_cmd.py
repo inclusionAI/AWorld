@@ -163,6 +163,11 @@ def _bounded_task_response_capability_payload(
         ),
         "trajectory_digest": "sha256:" + hashlib.sha256(encoded).hexdigest(),
     }
+    activation_evidence = sidecar.get("skill_activation_evidence")
+    if isinstance(activation_evidence, list):
+        compact["skill_activation_evidence"] = [
+            item for item in activation_evidence if isinstance(item, dict)
+        ][:32]
     llm_usage = _complete_llm_usage_projection(sidecar.get("llm_usage"))
     if llm_usage is not None:
         compact["llm_usage"] = llm_usage

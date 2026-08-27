@@ -1164,6 +1164,49 @@ async def test_llm_mutator_preserves_authoritative_content_for_file_delta() -> N
 
 
 @pytest.mark.asyncio
+async def test_focused_non_replay_repair_omits_runtime_protocol_contract() -> None:
+    prompts: list[str] = []
+
+    async def mutate(prompt: str) -> dict:
+        prompts.append(prompt)
+        return {
+            "content": "# Demo\n\nUse a bounded semantic fallback.\n",
+            "rationale": "Repair ordinary target behavior.",
+        }
+
+    request = OptimizerRequest(
+        target=_target(),
+        current_content="# Demo\n\nOld guidance.\n",
+        target_fingerprint="sha256:old",
+        trace_packs=(_trace_pack(),),
+        validation_feedback=(
+            EvaluationSummary(
+                variant_id="candidate-behavior",
+                dataset_split="validation",
+                metrics={
+                    "failed_gates": ["score_improvement"],
+                    "failure_class": "candidate",
+                    "repairable": True,
+                    "repair_candidate_package": {
+                        "candidate_id": "candidate-behavior",
+                        "content": "# Demo\n\nTry a generic fallback.\n",
+                        "files": [],
+                    },
+                },
+            ),
+        ),
+        trainable_cases=(EvalCase(case_id="train-1", input="summarize"),),
+        max_candidates=1,
+    )
+
+    await TraceReflectiveLLMMutator(mutate_text=mutate).propose(request)
+
+    assert "no candidate-owned replay runtime is required" in prompts[0]
+    assert "AWORLD_REPLAY_RESPONSE_INDEX" not in prompts[0]
+    assert "service transport skill_runtime" not in prompts[0]
+
+
+@pytest.mark.asyncio
 async def test_llm_mutator_carries_candidate_specific_repair_conformance() -> None:
     prompts: list[str] = []
 
@@ -1903,6 +1946,74 @@ async def test_trace_reflective_llm_mutator_prompt_contains_replay_requirements(
 
 
 @pytest.mark.asyncio
+async def test_general_skill_prompt_omits_unrequested_replay_runtime_contract() -> None:
+    prompts: list[str] = []
+
+    async def mutate(prompt: str) -> dict:
+        prompts.append(prompt)
+        return {
+            "content": "# Demo\n\nApply the reusable corrected behavior.\n",
+            "rationale": "Repair the observed task behavior.",
+        }
+
+    request = OptimizerRequest(
+        target=_target(),
+        current_content="# Demo\n\nOld guidance.\n",
+        target_fingerprint="sha256:old",
+        trace_packs=(_trace_pack(),),
+        trainable_cases=(EvalCase(case_id="train-1", input="summarize text"),),
+        target_package_inventory=("SKILL.md",),
+        max_candidates=1,
+    )
+
+    await TraceReflectiveLLMMutator(mutate_text=mutate).propose(request)
+
+    assert len(prompts) == 1
+    assert "No external replay capability is required" in prompts[0]
+    assert "AWORLD_REPLAY_RESPONSE_INDEX" not in prompts[0]
+    assert "service transport skill_runtime" not in prompts[0]
+    assert "protocol is exactly aworld.replay.subprocess.v1" not in prompts[0]
+    assert "replay/capability.json" in prompts[0]  # explicit prohibition only
+
+
+@pytest.mark.asyncio
+async def test_context_only_requirement_does_not_enable_replay_runtime_authoring() -> None:
+    prompts: list[str] = []
+
+    async def mutate(prompt: str) -> dict:
+        prompts.append(prompt)
+        return {
+            "content": "# Demo\n\nUse the supplied conversation context.\n",
+            "rationale": "Repair context handling.",
+        }
+
+    context_requirement = ReplayCapabilityRequirement(
+        requirement_id="req-context",
+        kind="conversation_context",
+        identifier="prior-turns",
+        case_ids=("train-1",),
+        evidence_refs=("context:train-1",),
+        status="runtime_required",
+    )
+    request = OptimizerRequest(
+        target=_target(),
+        current_content="# Demo\n\nOld guidance.\n",
+        target_fingerprint="sha256:old",
+        trace_packs=(_trace_pack(),),
+        trainable_cases=(EvalCase(case_id="train-1", input="continue"),),
+        replay_requirements=(context_requirement,),
+        target_package_inventory=("SKILL.md",),
+        max_candidates=1,
+    )
+
+    await TraceReflectiveLLMMutator(mutate_text=mutate).propose(request)
+
+    assert "No external replay capability is required" in prompts[0]
+    assert "AWORLD_REPLAY_RESPONSE_INDEX" not in prompts[0]
+    assert "service transport skill_runtime" not in prompts[0]
+
+
+@pytest.mark.asyncio
 async def test_llm_mutator_repairs_first_transport_response_completion_policy() -> None:
     async def mutate(prompt: str) -> dict:
         return {
@@ -2445,13 +2556,13 @@ async def test_llm_mutator_prompt_uses_canonical_compiled_context_contract() -> 
     assert "candidate_output_contract" not in payload
     assert "If feedback mentions" not in instruction
     assert "return the value of expected_output" in instruction.lower()
-    assert "same selected leaf may be reused by multiple probes" in instruction
+    assert "No external replay capability is required" in instruction
     assert "head -N is not a byte bound" in instruction
     assert "explicit byte-bounded excerpts" in instruction
-    assert "protocol_eligible" in instruction
-    assert "transport_ready" in instruction
-    assert "must create parents such as output/fixtures" in instruction
-    assert "diagnostic evidence rather than a value to hard-code" in instruction
+    assert "protocol_eligible" not in instruction
+    assert "transport_ready" not in instruction
+    assert "must create parents such as output/fixtures" not in instruction
+    assert "diagnostic evidence rather than a value to hard-code" not in instruction
 
 
 @pytest.mark.asyncio

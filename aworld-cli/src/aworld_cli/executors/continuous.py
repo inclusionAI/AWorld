@@ -409,6 +409,15 @@ class ContinuousExecutor:
                 llm_calls = getattr(task_response, "llm_calls", None)
                 if isinstance(llm_calls, list) and llm_calls:
                     result["llm_calls"] = to_serializable(llm_calls)
+            activation_evidence = getattr(
+                self.agent_executor,
+                "last_skill_activation_evidence",
+                (),
+            )
+            if activation_evidence:
+                result["skill_activation_evidence"] = to_serializable(
+                    activation_evidence
+                )
             llm_usage = getattr(self.agent_executor, "last_llm_usage", None)
             if (
                 isinstance(llm_usage, dict)
