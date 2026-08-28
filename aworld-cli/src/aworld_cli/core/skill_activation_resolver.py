@@ -6,6 +6,10 @@ from typing import Any
 
 from aworld.plugins.discovery import discover_plugins
 from aworld.skills.compat_provider import build_compat_provider
+from aworld.skills.package_fingerprint import (
+    SkillPackageFingerprintError,
+    fingerprint_skill_package,
+)
 from aworld.skills.plugin_provider import PluginSkillProvider
 from aworld.skills.release import is_self_evolve_release_visible
 from aworld.skills.registry import SkillRegistry as FrameworkSkillRegistry
@@ -223,14 +227,10 @@ class SkillActivationResolver:
                 continue
             skill_file = Path(candidate.skill_path).expanduser().resolve()
             try:
-                from aworld.self_evolve.replay_capability import (
-                    fingerprint_skill_package,
-                )
-
                 package_fingerprint = fingerprint_skill_package(
                     skill_file.parent
                 )
-            except (OSError, RuntimeError, ValueError):
+            except (OSError, SkillPackageFingerprintError, ValueError):
                 # Missing/unreadable packages deliberately produce no activation
                 # evidence.  A caller that requires an attestation must fail closed.
                 continue

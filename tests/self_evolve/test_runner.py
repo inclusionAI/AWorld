@@ -25858,9 +25858,20 @@ async def test_paired_replay_timeout_persists_progressive_resume_checkpoint(
     async def executor(request):
         if request.task_id == "case-b":
             await asyncio.sleep(1)
+        activation_metrics = (
+            {
+                "skill_activation_attested": True,
+                "activated_skill_package_fingerprint": (
+                    request.expected_skill_package_fingerprint
+                ),
+            }
+            if request.variant_role == "candidate"
+            else {}
+        )
         return replay_module.ReplayExecutionResult(
             status="succeeded",
             trajectory=[{"action": {"content": request.variant_id}}],
+            metrics=activation_metrics,
         )
 
     runner = SelfEvolveRunner(

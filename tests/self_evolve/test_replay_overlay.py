@@ -87,6 +87,7 @@ from aworld.self_evolve.replay import (
     _replay_service_start_failure_details,
     _stored_baseline_matches_request,
     _task_response_signature,
+    _trusted_skill_activation_metrics,
     _trusted_task_response_usage_metrics,
     _replay_failure_outcome,
     _runtime_resolved_endpoint_bindings,
@@ -128,6 +129,7 @@ from aworld.self_evolve.replay_adaptation import (
     ReplayAdaptationCompiler,
     compile_replay_adaptation_isolation_decision,
 )
+from aworld.self_evolve.replay_capability import fingerprint_skill_package
 
 
 def test_candidate_replay_artifact_directory_is_shared_with_measurement_lanes(
@@ -861,6 +863,7 @@ async def test_replay_backend_resumes_completed_pairs_from_prior_checkpoint(
     resumed = await backend.replay_candidate(
         CandidateReplayRequest(
             run_id="resumed-run",
+            baseline_replay_dir=str(source_replay_dir / "members"),
             resume_replay_dir=str(source_replay_dir),
             **common,
         ),
@@ -874,6 +877,15 @@ async def test_replay_backend_resumes_completed_pairs_from_prior_checkpoint(
         ("task-b", candidate.candidate_id),
     ]
     assert [member.case_id for member in resumed.member_results] == [
+        "task-a",
+        "task-b",
+    ]
+    normalized = normalize_replay_members(
+        dataset=dataset,
+        replay_result=resumed,
+    )
+    assert normalized.valid is True
+    assert [member.case_id for member in normalized.members] == [
         "task-a",
         "task-b",
     ]
@@ -896,6 +908,95 @@ async def test_replay_backend_resumes_completed_pairs_from_prior_checkpoint(
     )
     assert resumed_checkpoint["resumed_pair_case_ids"] == ["task-a"]
     assert resumed_checkpoint["pending_case_ids"] == []
+
+
+@pytest.mark.asyncio
+async def test_required_resume_reruns_candidate_without_activation_attestation(
+    tmp_path: Path,
+) -> None:
+    calls: list[str] = []
+
+    async def fake_executor(
+        request: ReplayExecutionRequest,
+    ) -> ReplayExecutionResult:
+        calls.append(request.variant_id)
+        return ReplayExecutionResult(
+            status="succeeded",
+            trajectory=[{"action": {"content": request.variant_id}}],
+            metrics={"skill_activation_attested": False},
+        )
+
+    dataset = SelfEvolveDataset(
+        cases=(EvalCase(case_id="task-a", input="Replay task A"),),
+        recipe=DatasetRecipe(
+            source={"kind": "required-resume-test", "case_count": 1},
+            split_seed="seed",
+            splits={"train": ["task-a"]},
+        ),
+    )
+    candidate = _candidate(
+        "---\nname: demo\n---\n# Demo\nCandidate.\n",
+        candidate_id="required-resume-candidate",
+    )
+    common = {
+        "task_id": "task-a",
+        "workspace_root": str(tmp_path),
+        "target": candidate.target,
+        "candidate_id": candidate.candidate_id,
+        "overlay_skill_root": str(tmp_path / "overlay"),
+        "task_input": dataset.cases[0].input,
+        "dataset_fingerprint": replay_dataset_fingerprint(dataset),
+        "baseline_skill_fingerprint": candidate.target_fingerprint,
+        "verified_candidate_package_fingerprint": "sha256:package",
+        "baseline_repetitions": 1,
+        "candidate_repetitions": 1,
+        "evidence_policy_mode": "required",
+    }
+    backend = AWorldCliCandidateReplayBackend(executor=fake_executor)
+    await backend.replay_candidate(
+        CandidateReplayRequest(run_id="required-source", **common),
+        candidate=candidate,
+        dataset=dataset,
+    )
+    source_replay_dir = (
+        tmp_path
+        / ".aworld"
+        / "self_evolve"
+        / "required-source"
+        / "replay"
+        / candidate.candidate_id
+    )
+
+    calls.clear()
+    resumed = await backend.replay_candidate(
+        CandidateReplayRequest(
+            run_id="required-resumed",
+            baseline_replay_dir=str(source_replay_dir / "members"),
+            resume_replay_dir=str(source_replay_dir),
+            **common,
+        ),
+        candidate=candidate,
+        dataset=dataset,
+    )
+
+    assert calls == ["baseline", candidate.candidate_id]
+    assert resumed.member_results is not None
+    assert resumed.member_results[0].candidate.metrics[
+        "skill_activation_attested"
+    ] is False
+    checkpoint = json.loads(
+        (
+            tmp_path
+            / ".aworld"
+            / "self_evolve"
+            / "required-resumed"
+            / "replay"
+            / candidate.candidate_id
+            / "members"
+            / "paired_replay_checkpoint.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert checkpoint["resumed_pair_case_ids"] == []
 
 
 @pytest.mark.asyncio
@@ -11374,6 +11475,60 @@ def test_trusted_task_response_usage_rejects_partial_coverage() -> None:
             }
         }
     ) == {}
+
+
+def test_trusted_skill_activation_requires_signed_exact_package(
+    tmp_path: Path,
+) -> None:
+    skill_root = tmp_path / "skills" / "demo"
+    skill_root.mkdir(parents=True)
+    (skill_root / "SKILL.md").write_text(
+        "---\nname: demo\n---\n# Demo\n",
+        encoding="utf-8",
+    )
+    package_fingerprint = fingerprint_skill_package(skill_root)
+    request = ReplayExecutionRequest(
+        variant_id="candidate",
+        task_id="task-1",
+        candidate_id="candidate-1",
+        workspace_root=str(tmp_path),
+        task_input="task",
+        task_text="task",
+        skill_root=str(tmp_path / "skills"),
+        skill_names=("demo",),
+        artifact_dir=str(tmp_path / "artifacts"),
+        evidence_policy_mode="required",
+        expected_skill_package_fingerprint=package_fingerprint,
+    )
+    evidence = {
+        "skill_name": "demo",
+        "canonical_skill_file": str(skill_root / "SKILL.md"),
+        "canonical_skill_root": str(skill_root),
+        "package_fingerprint": package_fingerprint,
+        "source": "aworld_cli_skill_activation_resolver",
+    }
+
+    metrics = _trusted_skill_activation_metrics(
+        request,
+        {"skill_activation_evidence": [evidence]},
+    )
+
+    assert metrics["skill_activation_attested"] is True
+    assert metrics["activated_skill_names"] == ["demo"]
+    assert metrics["activated_skill_root"] == str(skill_root)
+    assert metrics["activated_skill_package_fingerprint"] == package_fingerprint
+    assert metrics["skill_activation_evidence_count"] == 1
+
+    tampered = {
+        **evidence,
+        "package_fingerprint": "sha256:" + "0" * 64,
+    }
+    rejected = _trusted_skill_activation_metrics(
+        request,
+        {"skill_activation_evidence": [tampered]},
+    )
+    assert rejected["skill_activation_attested"] is False
+    assert rejected["activated_skill_package_fingerprint"] is None
 
 
 def test_replay_cli_supervisor_bounds_evidence_finalization_without_output(
