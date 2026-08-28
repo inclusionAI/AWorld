@@ -1,3 +1,4 @@
+import builtins
 import json
 import sys
 from pathlib import Path
@@ -176,6 +177,40 @@ def test_resolver_explicit_request_beats_auto_match(tmp_path: Path) -> None:
             ),
             "source": "aworld_cli_skill_activation_resolver",
         },
+    )
+
+
+def test_resolver_activation_attestation_does_not_import_self_evolve(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugin_root = _write_manifest_skill_plugin(
+        tmp_path,
+        plugin_id="task-time-tools",
+        skill_id="browser-use",
+    )
+    original_import = builtins.__import__
+
+    def guarded_import(name: str, *args, **kwargs):
+        if name == "aworld.self_evolve.replay_capability":
+            raise AssertionError("task-time resolver imported self-evolve")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", guarded_import)
+    result = SkillActivationResolver().resolve(
+        SkillResolverRequest(
+            plugin_roots=(plugin_root,),
+            runtime_scope="workspace",
+            agent_name="developer",
+            task_text="use browser-use",
+            requested_skill_names=("browser-use",),
+        )
+    )
+
+    assert result.active_skill_names == ("browser-use",)
+    assert len(result.activation_evidence) == 1
+    assert result.activation_evidence[0]["package_fingerprint"] == (
+        fingerprint_skill_package(plugin_root / "skills" / "browser-use")
     )
 
 

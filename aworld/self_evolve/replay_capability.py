@@ -32,6 +32,10 @@ from aworld.self_evolve.schema_diagnostics import (
     schema_field_diagnostic_details,
 )
 from aworld.self_evolve.sanitization import sanitize_text
+from aworld.skills.package_fingerprint import (
+    SkillPackageFingerprintError,
+    fingerprint_skill_package as _fingerprint_skill_package,
+)
 
 
 REPLAY_CAPABILITY_SCHEMA_VERSION = "aworld.skill.replay_capability.v1"
@@ -453,18 +457,10 @@ def _endpoint_replacement_entrypoint_violation(
 
 
 def fingerprint_skill_package(skill_root: str | Path) -> str:
-    root = Path(skill_root).expanduser().resolve()
-    if not root.is_dir():
-        raise ReplayCapabilityError(f"skill root is not a directory: {root}")
-    package_entries: list[dict[str, Any]] = []
-    for path in sorted(root.rglob("*")):
-        if path.is_symlink():
-            raise ReplayCapabilityError("skill package cannot contain symlinks")
-        if path.is_file():
-            package_entries.append(
-                _file_manifest_entry(path, path.relative_to(root).as_posix())
-            )
-    return _json_fingerprint({"files": package_entries})
+    try:
+        return _fingerprint_skill_package(skill_root)
+    except SkillPackageFingerprintError as exc:
+        raise ReplayCapabilityError(str(exc)) from exc
 
 
 def fingerprint_replay_capability_package(

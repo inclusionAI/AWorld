@@ -579,6 +579,18 @@ def _member_request_mismatch_fields(
         field_name = request_field.name
         expected = derived_values.get(field_name, getattr(root_request, field_name))
         if (
+            field_name == "baseline_replay_dir"
+            and root_request.resume_replay_dir is not None
+            and member_request.resume_replay_dir
+            == root_request.resume_replay_dir
+            and member_request.baseline_replay_dir is None
+        ):
+            # Completed pairs are cloned into the new run and their local
+            # request deliberately drops the source cache pointer.  Treat that
+            # materialized form as equivalent only inside the exact frozen
+            # resume request; every semantic member field is still checked.
+            expected = None
+        if (
             root_request.resume_replay_dir is not None
             and member_request.resume_replay_dir
             == root_request.resume_replay_dir
@@ -2143,6 +2155,86 @@ class ReplayExecutionRequest:
             )
 
 
+def _trusted_skill_activation_metrics(
+    request: ReplayExecutionRequest,
+    task_response: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Project activation only from a signed child TaskResponse.
+
+    Request-side skill selection is intent, not proof. The attestation is
+    accepted only when the resolver-reported package is contained by the
+    mounted skill root and its bytes still match the frozen candidate digest.
+    """
+
+    raw_evidence = (
+        task_response.get("skill_activation_evidence")
+        if isinstance(task_response, Mapping)
+        else None
+    )
+    activation_evidence = (
+        [dict(item) for item in raw_evidence if isinstance(item, Mapping)]
+        if isinstance(raw_evidence, list)
+        else []
+    )
+    expected_root: Path | None = None
+    if request.skill_root:
+        try:
+            expected_root = Path(request.skill_root).expanduser().resolve()
+        except (OSError, RuntimeError):
+            expected_root = None
+
+    def activation_matches(item: Mapping[str, Any]) -> bool:
+        canonical_root = item.get("canonical_skill_root")
+        if not isinstance(canonical_root, str) or expected_root is None:
+            return False
+        try:
+            observed_root = Path(canonical_root).expanduser().resolve()
+            observed_root.relative_to(expected_root)
+            observed_fingerprint = fingerprint_skill_package(observed_root)
+        except (OSError, RuntimeError, ValueError):
+            return False
+        return bool(
+            item.get("skill_name") in request.skill_names
+            and item.get("package_fingerprint") == observed_fingerprint
+            and item.get("package_fingerprint")
+            == request.expected_skill_package_fingerprint
+            and item.get("source")
+            == "aworld_cli_skill_activation_resolver"
+        )
+
+    observed_activation = next(
+        (item for item in activation_evidence if activation_matches(item)),
+        None,
+    )
+    skill_activation_attested = observed_activation is not None
+    return {
+        "skill_activation_attested": skill_activation_attested,
+        "activated_skill_names": sorted(
+            {
+                str(item.get("skill_name"))
+                for item in activation_evidence
+                if isinstance(item.get("skill_name"), str)
+            }
+        ),
+        "activated_skill_root": (
+            observed_activation.get("canonical_skill_root")
+            if observed_activation is not None
+            else None
+        ),
+        "activated_skill_package_fingerprint": (
+            observed_activation.get("package_fingerprint")
+            if observed_activation is not None
+            else None
+        ),
+        "skill_activation_attestation_source": (
+            "aworld_cli_skill_activation_resolver"
+            if skill_activation_attested
+            else None
+        ),
+        "skill_activation_evidence_count": len(activation_evidence),
+    }
+
+
 @dataclass(frozen=True)
 class _ReplayEvidenceTrustContext:
     profile: EvidencePolicyProfileV2
@@ -3391,6 +3483,24 @@ def _load_resumable_member_pairs(
         if baseline_failures or candidate_failures:
             continue
         if (
+            member_request.evidence_policy_mode == "required"
+            and isinstance(
+                member_request.verified_candidate_package_fingerprint,
+                str,
+            )
+            and not _variant_has_attested_skill_activation(
+                candidate_result,
+                expected_package_fingerprint=(
+                    member_request.verified_candidate_package_fingerprint
+                ),
+            )
+        ):
+            # A pre-fix checkpoint can contain successful task output whose
+            # CLI never transported resolver evidence. Re-run only the
+            # treatment arm instead of making an unprovable intervention
+            # immortal through checkpoint reuse.
+            continue
+        if (
             baseline.status is ReplayExecutionStatus.BLOCKED
             or candidate_result.status is ReplayExecutionStatus.BLOCKED
         ):
@@ -3443,6 +3553,20 @@ def _load_resumable_member_pairs(
         f"checkpoint_pairs={len(completed)}"
     )
     return resumed
+
+
+def _variant_has_attested_skill_activation(
+    result: ReplayVariantResult,
+    *,
+    expected_package_fingerprint: str,
+) -> bool:
+    observations = result.repetition_results or (result,)
+    return bool(observations) and all(
+        observation.metrics.get("skill_activation_attested") is True
+        and observation.metrics.get("activated_skill_package_fingerprint")
+        == expected_package_fingerprint
+        for observation in observations
+    )
 
 
 def _resumable_baseline_cache_root(
@@ -8237,6 +8361,7 @@ class AWorldCliReplayExecutor:
         framework_evidence_metrics: dict[str, Any] = {}
         trusted_usage_metrics: dict[str, int | bool] = {}
         trusted_task_response: Mapping[str, Any] | None = None
+        activation_metrics = _trusted_skill_activation_metrics(request, None)
         signed_task_response_validated = False
         try:
             effective_evidence_manifest = evidence_manifest
@@ -8255,6 +8380,10 @@ class AWorldCliReplayExecutor:
                         "framework task response attestation is missing or invalid"
                     )
                 signed_task_response_validated = True
+                activation_metrics = _trusted_skill_activation_metrics(
+                    request,
+                    trusted_task_response,
+                )
                 trusted_trajectory_value = (
                     trusted_task_response.get("trajectory")
                     if isinstance(trusted_task_response, Mapping)
@@ -8305,6 +8434,7 @@ class AWorldCliReplayExecutor:
                         "evidence_policy_v2_preflight_passed": True,
                         "evidence_policy_v2_runtime_trust_passed": False,
                         "signed_task_response_validated": True,
+                        **activation_metrics,
                     }
                     boundary_failure = _replay_dependency_boundary_failure(
                         trusted_trajectory,
@@ -8423,6 +8553,7 @@ class AWorldCliReplayExecutor:
                     **evidence_metrics,
                     **framework_evidence_metrics,
                     **producer_metrics,
+                    **activation_metrics,
                     "evidence_policy_v2_required": True,
                     "evidence_policy_v2_preflight_passed": True,
                     "evidence_policy_v2_runtime_trust_passed": False,
@@ -8456,6 +8587,7 @@ class AWorldCliReplayExecutor:
                 metrics={
                     **evidence_metrics,
                     **framework_evidence_metrics,
+                    **activation_metrics,
                     "evidence_policy_v2_required": True,
                     "evidence_policy_v2_preflight_passed": True,
                     "evidence_policy_v2_runtime_trust_passed": False,
@@ -8481,6 +8613,7 @@ class AWorldCliReplayExecutor:
             **trusted_usage_metrics,
             **evidence_metrics,
             **trust_metrics,
+            **activation_metrics,
         }
         compacted_argument_failure = _compacted_argument_replay_failure(metrics)
         if compacted_argument_failure is not None:
@@ -8565,87 +8698,6 @@ class AWorldCliReplayExecutor:
                     else "continue_rollout_until_terminal_action"
                 ),
             )
-        # Consume resolver-originated evidence from the signed child TaskResponse.
-        # Never derive observed activation from request-side expected values.
-        raw_activation_evidence = (
-            trusted_task_response.get("skill_activation_evidence")
-            if isinstance(trusted_task_response, Mapping)
-            else None
-        )
-        activation_evidence = [
-            dict(item)
-            for item in raw_activation_evidence
-            if isinstance(item, Mapping)
-        ] if isinstance(raw_activation_evidence, list) else []
-        expected_root = (
-            str(Path(request.skill_root).expanduser().resolve())
-            if request.skill_root
-            else None
-        )
-        def activation_matches(item: Mapping[str, Any]) -> bool:
-            canonical_root = item.get("canonical_skill_root")
-            if not isinstance(canonical_root, str) or expected_root is None:
-                return False
-            try:
-                Path(canonical_root).resolve().relative_to(
-                    Path(expected_root).resolve()
-                )
-            except (OSError, ValueError):
-                return False
-            try:
-                observed_fingerprint = fingerprint_skill_package(
-                    canonical_root
-                )
-            except (OSError, RuntimeError, ValueError):
-                return False
-            return bool(
-                item.get("skill_name") in request.skill_names
-                and item.get("package_fingerprint") == observed_fingerprint
-                and item.get("package_fingerprint")
-                == request.expected_skill_package_fingerprint
-                and item.get("source")
-                == "aworld_cli_skill_activation_resolver"
-            )
-
-        observed_activation = next(
-            (
-                item
-                for item in activation_evidence
-                if activation_matches(item)
-            ),
-            None,
-        )
-        skill_activation_attested = observed_activation is not None
-        metrics.update(
-            {
-                "skill_activation_attested": skill_activation_attested,
-                "activated_skill_names": sorted(
-                    {
-                        str(item.get("skill_name"))
-                        for item in activation_evidence
-                        if isinstance(item.get("skill_name"), str)
-                    }
-                ),
-                "activated_skill_root": (
-                    observed_activation.get("canonical_skill_root")
-                    if observed_activation is not None
-                    else None
-                ),
-                "activated_skill_package_fingerprint": (
-                    observed_activation.get("package_fingerprint")
-                    if observed_activation is not None
-                    else None
-                ),
-                "skill_activation_attestation_source": (
-                    "aworld_cli_skill_activation_resolver"
-                    if skill_activation_attested
-                    else None
-                ),
-                "skill_activation_evidence_count": len(
-                    activation_evidence
-                ),
-            }
-        )
         return ReplayExecutionResult(
             status="succeeded",
             trajectory=trajectory,
