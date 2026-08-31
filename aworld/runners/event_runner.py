@@ -124,25 +124,10 @@ class TaskEventRunner(TaskRunner):
             primary_error = exc
             self._exception = exc
             if not self._execution_started:
-                try:
-                    await self._finalize_execution_not_started_for_delivery()
-                except asyncio.CancelledError as finalize_cancel:
-                    # A second cancellation may interrupt this cleanup await,
-                    # but not its cached, shielded export attempt. Join that
-                    # same attempt and publish its typed terminal response
-                    # before restoring the primary failure below.
-                    try:
-                        await self._finalize_execution_not_started_for_delivery()
-                    except BaseException as finalize_exc:
-                        logger.warning(
-                            "Failed to join cancelled execution-not-started finalization: {}",
-                            finalize_exc,
-                        )
-                    logger.debug(
-                        "Deferred cancellation during execution-not-started finalization: {}",
-                        finalize_cancel,
-                    )
-                except BaseException as finalize_exc:
+                _, _, finalize_exc = await self._join_terminal_finalization(
+                    self._finalize_execution_not_started_for_delivery
+                )
+                if finalize_exc is not None:
                     logger.warning(
                         "Failed to finalize execution-not-started trajectory: {}", finalize_exc
                     )
@@ -386,27 +371,19 @@ class TaskEventRunner(TaskRunner):
             finally:
                 # Finalization is idempotent and also runs for exception/cancel paths.
                 # It must complete before TaskResponse delivery and dataset release.
-                finalize_task = asyncio.create_task(self._finalize_for_delivery())
-                deferred_cancel: asyncio.CancelledError | None = None
+                _, deferred_cancel, finalize_exc = (
+                    await self._join_terminal_finalization(
+                        self._finalize_for_delivery
+                    )
+                )
                 cleanup_error: BaseException | None = None
-                try:
-                    await asyncio.shield(finalize_task)
-                except asyncio.CancelledError as exc:
-                    deferred_cancel = exc
-                    try:
-                        await finalize_task
-                    except BaseException as finalize_exc:
-                        if isinstance(finalize_exc, asyncio.CancelledError):
-                            deferred_cancel = deferred_cancel or finalize_exc
-                        else:
-                            cleanup_error = cleanup_error or finalize_exc
-                        logger.warning(
-                            "Trajectory finalize failed while preserving cancellation: {}",
-                            finalize_exc,
-                        )
-                except BaseException as finalize_exc:
-                    cleanup_error = finalize_exc
-                    logger.warning("Trajectory finalize failed during terminal cleanup: {}", finalize_exc)
+                if finalize_exc is not None:
+                    if not isinstance(finalize_exc, asyncio.CancelledError):
+                        cleanup_error = finalize_exc
+                    logger.warning(
+                        "Trajectory finalize failed during terminal cleanup: {}",
+                        finalize_exc,
+                    )
 
                 try:
                     await self._publish_task_response_once()
@@ -992,6 +969,32 @@ class TaskEventRunner(TaskRunner):
             attempt = asyncio.create_task(finalize())
             self._trajectory_finalize_delivery_task = attempt
         return await asyncio.shield(attempt)
+
+    async def _join_terminal_finalization(self, finalize):
+        """Defer arbitrary caller cancellation until terminal state is ready.
+
+        Cleanup cancellation is level-triggered by callers and may arrive more
+        than once. Each interruption rejoins the same shielded task-scoped
+        build/export attempt. Publication is at-most-once and installs a local
+        fallback before propagating cancellation, so the next state-machine
+        iteration can finish without repeating an external side effect.
+        """
+        deferred_cancel: asyncio.CancelledError | None = None
+        while True:
+            try:
+                result = await finalize()
+                return result, deferred_cancel, None
+            except asyncio.CancelledError as exc:
+                deferred_cancel = deferred_cancel or exc
+                attempt = getattr(self, "_trajectory_finalize_delivery_task", None)
+                if attempt is not None and attempt.done() and attempt.cancelled():
+                    # This is cancellation of the cached producer itself, not
+                    # another interruption of its caller; retrying it can never
+                    # make progress and would spin forever.
+                    return None, deferred_cancel, exc
+                continue
+            except BaseException as exc:
+                return None, deferred_cancel, exc
 
     async def _finalize_for_delivery(self) -> TrajectoryBuildResult:
         """Await the one task-scoped finalize/delivery attempt.
