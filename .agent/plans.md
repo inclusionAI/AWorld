@@ -54,7 +54,7 @@ Tool output policy, cache identity, lifecycle, delegation, and evaluation consum
   ruthless architectural review and fix cycle.
 - **Tests:** TC-TRAJECTORY-FINALIZE-021, TC-TRAJECTORY-EMPTY-022, TC-TRAJECTORY-IO-023.
 - **Acceptance criteria:** milestone review approves; relevant suites pass.
-- **Status:** in_progress
+- **Status:** complete
 
 ### Milestone 2: Context Models, Adapters, and Observe Mode
 **Goal:** Introduce typed Context inputs and decision traces without changing provider requests.
