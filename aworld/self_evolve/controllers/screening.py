@@ -15,6 +15,9 @@ from aworld.self_evolve.budget import (
 from aworld.self_evolve.concurrency import (
     SelfEvolveExecutionTelemetry,
 )
+from aworld.self_evolve.controllers.screening_helpers import (
+    SCREENING_BUDGET_CENSORED_CODE,
+)
 from aworld.self_evolve.datasets import SelfEvolveDataset
 from aworld.self_evolve.failure_events import (
     FailureOwner,
@@ -36,9 +39,6 @@ from aworld.self_evolve.replay_adaptation import (
 from aworld.self_evolve.store import FilesystemSelfEvolveStore
 from aworld.self_evolve.targets import SelfEvolveTarget
 from aworld.self_evolve.types import CandidateVariant, GateResult
-
-
-SCREENING_BUDGET_CENSORED_CODE = "screening_budget_censored"
 
 
 class CandidateAttemptTrackerProtocol(Protocol):
@@ -162,6 +162,9 @@ class ScreeningPopulationRuntime:
     ]
     baseline_reuse_provenance: Callable[..., dict[str, str | None]]
     policy: CandidateScreeningController
+    control_qualification_identity: Callable[
+        ..., dict[str, object]
+    ] | None = None
 
 
 ScreeningPopulationExecutor = Callable[
