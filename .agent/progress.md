@@ -100,6 +100,8 @@
 - Runtime/ATIF projection receipts live outside this repository and must not be claimed complete in Milestone 1.
 
 ### Milestone 2 Readiness
+- Task 2.1 dependency-light frozen models/trace is in progress at `/tmp/aworld-context-compiler-models`; it has no runtime
+  integration and therefore cannot bypass the unfinished Milestone 1 finalize/writer gate.
 - Existing PromptAssemblyProvider sees Amni neuron sections only after they were folded into one system message; provenance
   sidecars must be emitted before folding rather than inferred later.
 - Memory adapters must follow the exact cleaned replay list, including Tool pair repair and duplicate occurrences.
