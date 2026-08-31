@@ -185,5 +185,9 @@ is in progress.
   declares only `model_boundary` fidelity, stores redacted trace/hash evidence, and leaves raw extra kwargs/secrets out.
 - Provider failure, caller cancellation, sync/async stream failure, and early stream close retain one terminal snapshot;
   same-agent concurrent requests do not cross-correlate. Main-tree model-boundary/capture/Agent/hook regression: 31 passed.
+- Adversarial review reproduced a fail-open violation outside the pure observer: if `llm_calls` storage raised during begin,
+  the provider was never called; if it raised during finish, it replaced provider success or the primary provider error.
+  Begin/finish storage are now guarded by redacted type-only warnings, and focused regressions prove provider success/error
+  semantics survive capture-storage failure (two passed).
 - Authority, trust, lifetime, stability, source URI, task epoch, and exact token counts remain UNKNOWN unless their owner can
   prove them; role/content heuristics are not acceptable.

@@ -363,3 +363,68 @@ def test_observe_failure_is_typed_redacted_and_fail_open(monkeypatch) -> None:
         "error": {"code": "context_observe_failed"},
     }
     assert "observe-secret" not in json.dumps(record)
+
+
+def test_llm_call_storage_begin_failure_does_not_skip_provider_call(monkeypatch) -> None:
+    provider = BoundaryProvider()
+    model = LLMModel(custom_provider=provider)
+    context = Context(task_id="task-capture-begin-fail-open")
+
+    def fail_storage():
+        raise RuntimeError("storage-secret-before-provider")
+
+    monkeypatch.setattr(context, "get_llm_calls", fail_storage)
+
+    response = model.completion(
+        [{"role": "user", "content": "still-reaches-provider"}],
+        context=context,
+    )
+
+    assert response.content == "answer-still-reaches-provider"
+    assert len(provider.seen) == 1
+
+
+def test_llm_call_storage_finish_failure_preserves_success_and_provider_error(
+    monkeypatch,
+) -> None:
+    success_provider = BoundaryProvider()
+    success_model = LLMModel(custom_provider=success_provider)
+    success_context = Context(task_id="task-capture-finish-success")
+    success_get = success_context.get_llm_calls
+    success_calls = 0
+
+    def fail_success_finish():
+        nonlocal success_calls
+        success_calls += 1
+        if success_calls >= 3:
+            raise RuntimeError("storage-secret-after-success")
+        return success_get()
+
+    monkeypatch.setattr(success_context, "get_llm_calls", fail_success_finish)
+    response = success_model.completion(
+        [{"role": "user", "content": "success"}],
+        context=success_context,
+    )
+    assert response.content == "answer-success"
+    assert len(success_provider.seen) == 1
+
+    failure_provider = FailureProvider()
+    failure_model = LLMModel(custom_provider=failure_provider)
+    failure_context = Context(task_id="task-capture-finish-failure")
+    failure_get = failure_context.get_llm_calls
+    failure_calls = 0
+
+    def fail_error_finish():
+        nonlocal failure_calls
+        failure_calls += 1
+        if failure_calls >= 3:
+            raise RuntimeError("storage-secret-after-provider-error")
+        return failure_get()
+
+    monkeypatch.setattr(failure_context, "get_llm_calls", fail_error_finish)
+    with pytest.raises(ValueError, match="provider-secret-sync"):
+        failure_model.completion(
+            [{"role": "user", "content": "failure"}],
+            context=failure_context,
+        )
+    assert len(failure_provider.seen) == 1
