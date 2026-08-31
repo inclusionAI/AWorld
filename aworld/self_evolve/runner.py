@@ -113,18 +113,12 @@ from aworld.self_evolve.lifecycle import cleanup_self_evolve_artifacts
 from aworld.self_evolve.measurement import (
     AttributionReport,
     BudgetLedger,
-    ComponentIdentity,
     ControlledExperimentSpec,
-    ExperimentBudget,
-    FrozenIdentities,
     MeasurementEarlyStopPolicy,
     MeasurementPolicyMode,
     MeasurementSummary,
     MeasurementUsage,
-    OutcomePlan,
-    SamplingPlan,
     SearchCandidateResult,
-    SwapAxis,
     build_search_performance,
     evaluate_measurement_stopping,
     stable_measurement_fingerprint,
@@ -253,6 +247,13 @@ from aworld.self_evolve.controllers.generation import (
 )
 from aworld.self_evolve.controllers.measurement import (
     CandidateMeasurementController,
+    MeasurementPlanningConfig,
+    MeasurementPlanningController,
+    MeasurementPlanningIdentities,
+    MeasurementPlanningRequest,
+    MeasurementPlanningRuntime,
+    _rebase_measurement_experiment_for_materialization,
+    measurement_component_identity as _measurement_component_identity,
     measurement_promotion_gate as _measurement_promotion_gate,
 )
 from aworld.self_evolve.controllers.screening import (
@@ -3629,6 +3630,93 @@ class SelfEvolveRunner:
             store=self.store,
             primary_metric=self.measurement_primary_metric,
             summaries=self._measurement_summaries,
+        )
+        self._measurement_planning_controller = MeasurementPlanningController(
+            store=self.store,
+            config=MeasurementPlanningConfig(
+                mode=self.measurement_mode,
+                identities=MeasurementPlanningIdentities(
+                    task_model=stable_measurement_fingerprint(
+                        {
+                            "replay_agent": replay_agent,
+                            "execution_backend": (
+                                _measurement_component_identity(
+                                    self.candidate_replay_backend
+                                )
+                            ),
+                        }
+                    ),
+                    generator=stable_measurement_fingerprint(
+                        _measurement_component_identity(self.optimizer)
+                    ),
+                    scheduler=stable_measurement_fingerprint(
+                        {
+                            "kind": "StageAwareCandidateScheduler",
+                            "max_generated_candidates": (
+                                self.max_generated_candidates
+                            ),
+                            "max_authoritative_candidates": (
+                                self.max_full_evaluation_candidates
+                            ),
+                            "replay_candidate_limit": (
+                                self.replay_candidate_limit
+                            ),
+                        }
+                    ),
+                    evaluator=stable_measurement_fingerprint(
+                        {
+                            "evaluation": _measurement_component_identity(
+                                self.evaluation_backend
+                            ),
+                            "regression": _measurement_component_identity(
+                                self.regression_backend
+                            ),
+                            "judge_repetitions": self.judge_repetitions,
+                        }
+                    ),
+                    runtime=stable_measurement_fingerprint(
+                        {
+                            "python": list(sys.version_info[:3]),
+                            "platform": sys.platform,
+                            "runner": type(self).__name__,
+                        }
+                    ),
+                ),
+                resume_run_id=self.measurement_resume_run_id,
+                replay_resume_dir=self.replay_resume_dir,
+                replay_enabled=self.replay_enabled,
+                replay_backend_available=(
+                    self.candidate_replay_backend is not None
+                ),
+                baseline_replay_repetitions=(
+                    self.baseline_replay_repetitions
+                ),
+                candidate_replay_repetitions=(
+                    self.candidate_replay_repetitions
+                ),
+                replay_repetitions_explicit=(
+                    self.replay_repetitions_explicit
+                ),
+                judge_repetitions=self.judge_repetitions,
+                evaluation_backend_available=(
+                    self.evaluation_backend is not None
+                ),
+                minimum_independent_cases=(
+                    self.measurement_min_independent_cases
+                ),
+                primary_metric=self.measurement_primary_metric,
+                minimum_effect=self.measurement_minimum_effect,
+                confidence_level=self.measurement_confidence_level,
+                bootstrap_samples=self.measurement_bootstrap_samples,
+                early_stop_policy=self.measurement_early_stop_policy,
+                total_run_token_budget=self.total_run_token_budget,
+                per_attempt_replay_token_limit=(
+                    self.per_attempt_replay_token_limit
+                ),
+                max_run_cost_usd=self.max_run_cost_usd,
+                max_run_wall_seconds=self.max_run_wall_seconds,
+                replay_timeout_seconds=self.replay_timeout_seconds,
+            ),
         )
         self.replay_agent = replay_agent
         self.runtime_registry_refresher = runtime_registry_refresher
@@ -8344,46 +8432,10 @@ class SelfEvolveRunner:
         candidate: CandidateVariant,
         dataset: SelfEvolveDataset,
     ) -> CandidateReplayRequest | None:
-        """Load the original frozen measurement authority for continuation."""
-
-        if self.measurement_resume_run_id is None:
-            return None
-        if self.replay_resume_dir is None:
-            raise ValueError("measurement resume replay directory is missing")
-        request_path = Path(self.replay_resume_dir) / "request.json"
-        request = _candidate_replay_request_from_mapping(
-            _load_json_mapping(request_path)
+        return self._measurement_planning_controller.load_resume_request(
+            candidate=candidate,
+            dataset=dataset,
         )
-        if request.run_id != self.measurement_resume_run_id:
-            raise ValueError("measurement resume request belongs to another run")
-        if request.candidate_id != candidate.candidate_id:
-            raise ValueError("measurement resume request candidate changed")
-        if request.target != candidate.target:
-            raise ValueError("measurement resume request target changed")
-        if (
-            request.measurement_plan is None
-            or request.measurement_isolation_decision is None
-            or request.measurement_evidence_policy_profile is None
-        ):
-            raise ValueError("measurement resume request has no frozen v2 authority")
-        if (
-            request.dataset_fingerprint
-            != request.measurement_plan.dataset_fingerprint
-        ):
-            raise ValueError("measurement resume request dataset authority drifted")
-        available_case_ids = {case.case_id for case in dataset.cases}
-        missing_case_ids = set(request.measurement_plan.case_ids) - available_case_ids
-        if missing_case_ids:
-            raise ValueError(
-                "measurement resume view no longer covers frozen plan cases: "
-                + ",".join(sorted(missing_case_ids))
-            )
-        if (
-            request.measurement_plan.candidate_fingerprint
-            != candidate_package_fingerprint(candidate)
-        ):
-            raise ValueError("measurement resume candidate package changed")
-        return request
 
     def _plan_candidate_measurement(
         self,
@@ -8399,238 +8451,35 @@ class SelfEvolveRunner:
         repetitions: int | None = None,
         minimum_independent_cases: int | None = None,
     ) -> ControlledExperimentSpec | None:
-        if self.measurement_mode is MeasurementPolicyMode.OFF:
-            return None
         registry = (
             self._measurement_experiments
             if experiment_registry is None
             else experiment_registry
         )
-        key = (
-            (run_id, candidate.candidate_id)
-            if experiment_key is None
-            else experiment_key
-        )
-        existing = registry.get(key)
-        if existing is not None:
-            return existing
-        if experiment_registry is None and self.measurement_resume_run_id is not None:
-            source_request = self._load_measurement_resume_request(
-                candidate=candidate,
+        result = self._measurement_planning_controller.plan(
+            MeasurementPlanningRequest(
+                run_id=run_id,
+                target=target,
                 dataset=dataset,
-            )
-            assert source_request is not None
-            assert source_request.measurement_plan is not None
-            experiment = self.store.read_measurement_experiment(
-                self.measurement_resume_run_id,
-                source_request.measurement_plan.experiment_id,
-            )
-            if experiment.run_id != self.measurement_resume_run_id:
-                raise ValueError("measurement resume experiment authority changed")
-            if experiment.treatment.fingerprint != candidate_package_fingerprint(
-                candidate
-            ):
-                raise ValueError("measurement resume treatment identity changed")
-            registry[key] = experiment
-            registry[(experiment.run_id, candidate.candidate_id)] = experiment
-            return experiment
-        replay_planned = bool(
-            self.replay_enabled
-            and candidate.target.target_type == "skill"
-            and self.candidate_replay_backend is not None
-        )
-        measurement_case_ids = tuple(
-            case.case_id
-            for case in dataset.cases
-            if not replay_planned or _is_replayable_user_task_case(case)
-        )
-        if not measurement_case_ids:
-            if self.measurement_mode is MeasurementPolicyMode.REQUIRED:
-                raise ValueError(
-                    "required measurement has no executable user-task cases"
-                )
-            return None
-        configured_repetitions = (
-            repetitions
-            if repetitions is not None
-            else (
-                max(
-                    self.baseline_replay_repetitions,
-                    self.candidate_replay_repetitions,
-                )
-                if replay_planned
-                else self.judge_repetitions
-                if self.evaluation_backend is not None
-                else 1
-            )
-        )
-        effective_repetitions = (
-            1
-            if (
-                repetitions is None
-                and replay_planned
-                and not self.replay_repetitions_explicit
-                and len(measurement_case_ids)
-                >= max(2, self.measurement_min_independent_cases)
-            )
-            else configured_repetitions
-        )
-        dataset_fingerprint = replay_dataset_fingerprint(dataset)
-        budget_identity = {
-            "total_run_token_budget": self.total_run_token_budget,
-            "per_attempt_replay_token_limit": (
-                self.per_attempt_replay_token_limit
-            ),
-            "max_run_cost_usd": (
-                str(self.max_run_cost_usd)
-                if self.max_run_cost_usd is not None
-                else None
-            ),
-            "max_run_wall_seconds": (
-                str(self.max_run_wall_seconds)
-                if self.max_run_wall_seconds is not None
-                else None
-            ),
-            "candidate_opportunities": candidate_count,
-        }
-        experiment = ControlledExperimentSpec.create(
-            run_id=run_id,
-            mode=self.measurement_mode,
-            swap_axis=SwapAxis.ARTIFACT,
-            control=ComponentIdentity(
-                component_id="artifact-control",
-                fingerprint=target.fingerprint_current_content(),
-            ),
-            treatment=ComponentIdentity(
-                component_id="artifact-treatment",
-                fingerprint=candidate_package_fingerprint(candidate),
-            ),
-            frozen_identities=FrozenIdentities(
-                task_model=stable_measurement_fingerprint(
-                    {
-                        "replay_agent": self.replay_agent,
-                        "execution_backend": _measurement_component_identity(
-                            self.candidate_replay_backend
-                        ),
-                    }
-                ),
-                generator=stable_measurement_fingerprint(
-                    _measurement_component_identity(self.optimizer)
-                ),
-                scheduler=stable_measurement_fingerprint(
-                    {
-                        "kind": "StageAwareCandidateScheduler",
-                        "max_generated_candidates": self.max_generated_candidates,
-                        "max_authoritative_candidates": (
-                            self.max_full_evaluation_candidates
-                        ),
-                        "replay_candidate_limit": self.replay_candidate_limit,
-                    }
-                ),
-                evaluator=stable_measurement_fingerprint(
-                    {
-                        "evaluation": _measurement_component_identity(
-                            self.evaluation_backend
-                        ),
-                        "regression": _measurement_component_identity(
-                            self.regression_backend
-                        ),
-                        "judge_repetitions": self.judge_repetitions,
-                    }
-                ),
-                dataset=dataset_fingerprint,
-                environment=(
+                candidate=candidate,
+                candidate_count=candidate_count,
+                experiment_key=experiment_key,
+                selection_protocol=selection_protocol,
+                repetitions=repetitions,
+                minimum_independent_cases=minimum_independent_cases,
+                environment_fingerprint=(
                     self._run_environment_fingerprints.get(run_id)
-                    or stable_measurement_fingerprint(
-                        {
-                            "workspace_contract": "aworld-local-workspace",
-                            "replay_enabled": self.replay_enabled,
-                        }
-                    )
                 ),
-                runtime=stable_measurement_fingerprint(
-                    {
-                        "python": list(sys.version_info[:3]),
-                        "platform": sys.platform,
-                        "runner": type(self).__name__,
-                    }
+                target_intent=(
+                    self._active_target_intent.value
+                    if self._active_target_intent is not None
+                    else None
                 ),
-                prompt_context=stable_measurement_fingerprint(
-                    {
-                        "target_type": target.identity.target_type,
-                        "target_id": target.identity.target_id,
-                        "target_intent": (
-                            self._active_target_intent.value
-                            if self._active_target_intent is not None
-                            else None
-                        ),
-                        "dataset": dataset_fingerprint,
-                    }
-                ),
-                budget=stable_measurement_fingerprint(budget_identity),
+                allow_resume=experiment_registry is None,
             ),
-            sampling=SamplingPlan(
-                independent_case_ids=measurement_case_ids,
-                repetitions_per_case=effective_repetitions,
-                seeds=tuple(range(1, effective_repetitions + 1)),
-            ),
-            outcomes=OutcomePlan(
-                primary_metric=self.measurement_primary_metric,
-                secondary_metrics=tuple(
-                    metric
-                    for metric in (
-                        "task_success",
-                        "score",
-                        "latency_ms",
-                        "total_tokens",
-                    )
-                    if metric != self.measurement_primary_metric
-                ),
-                minimum_effect=self.measurement_minimum_effect,
-                non_regression_threshold=0.0,
-                confidence_level=self.measurement_confidence_level,
-                minimum_independent_cases=(
-                    self.measurement_min_independent_cases
-                    if minimum_independent_cases is None
-                    else minimum_independent_cases
-                ),
-                bootstrap_samples=self.measurement_bootstrap_samples,
-            ),
-            budgets=ExperimentBudget(
-                search=MeasurementUsage(
-                    tokens=self.total_run_token_budget,
-                    cost_usd=(
-                        float(self.max_run_cost_usd)
-                        if self.max_run_cost_usd is not None
-                        else None
-                    ),
-                    wall_seconds=(
-                        float(self.max_run_wall_seconds)
-                        if self.max_run_wall_seconds is not None
-                        else None
-                    ),
-                    candidate_opportunities=candidate_count,
-                ),
-                measurement=MeasurementUsage(
-                    tokens=self.per_attempt_replay_token_limit,
-                    wall_seconds=(
-                        float(self.replay_timeout_seconds)
-                        if replay_planned
-                        else None
-                    ),
-                ),
-            ),
-            search_visible_case_ids=tuple(
-                case_id
-                for case_id in dataset.recipe.trainable_case_ids
-                if case_id in measurement_case_ids
-            ),
-            selection_protocol=selection_protocol,
-            stopping_policy=self.measurement_early_stop_policy,
+            MeasurementPlanningRuntime(experiments=registry),
         )
-        self.store.write_measurement_experiment(experiment)
-        registry[key] = experiment
-        return experiment
+        return result.experiment
 
     def _materialize_candidate_measurement(
         self,
@@ -22668,27 +22517,6 @@ def _iteration_state(
         "regression_evidence": regression_evidence,
         "challenge_report": challenge_report,
     }
-
-
-def _measurement_component_identity(component: object | None) -> dict[str, object]:
-    if component is None:
-        return {"kind": "disabled"}
-    identity: dict[str, object] = {
-        "module": type(component).__module__,
-        "class": type(component).__qualname__,
-    }
-    for name in (
-        "optimizer_name",
-        "optimizer_version",
-        "model_profile",
-        "backend_ref",
-        "version",
-    ):
-        value = getattr(component, name, None)
-        if value is None or isinstance(value, (str, int, float, bool)):
-            if value is not None:
-                identity[name] = value
-    return identity
 
 
 def _finite_measurement_metric(value: object) -> float | None:
