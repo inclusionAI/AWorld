@@ -27,7 +27,7 @@ Tool output policy, cache identity, lifecycle, delegation, and evaluation consum
   watermark, checksum, and optional artifact ref. Add compatible TaskResponse fields without changing inline trajectory.
 - **Tests:** serialization, empty/partial/complete/build-failed states, checksum determinism, TaskResponse compatibility.
 - **Acceptance criteria:** every build outcome is representable without synthetic assistant content.
-- **Status:** pending
+- **Status:** complete
 
 ##### Task 1.2: Tracked update registry and finalize barrier
 - **Parallel:** yes, after contract shapes are agreed
@@ -36,7 +36,7 @@ Tool output policy, cache identity, lifecycle, delegation, and evaluation consum
   timeout before storage read/release; collect scheduled/completed/failed/pending counts.
 - **Tests:** delayed final update, builder exception, timeout, cancellation, no updates, storage consistency.
 - **Acceptance criteria:** pending count is zero for complete results; timeout/failure is typed and cannot masquerade as complete.
-- **Status:** pending
+- **Status:** in_progress
 
 ##### Task 1.3: JSONL v2 sink and legacy dual-read/write
 - **Parallel:** yes
@@ -45,7 +45,7 @@ Tool output policy, cache identity, lifecycle, delegation, and evaluation consum
   read logger headers, Python repr, nested JSON strings, rotations, and v2 records.
 - **Tests:** real formatted log files, dual write/read, duplicate revision selection, malformed records, checksum mismatch.
 - **Acceptance criteria:** v2 round-trips and legacy consumers remain functional.
-- **Status:** pending
+- **Status:** in_progress
 
 ##### Task 1.4: Milestone integration and architecture review
 - **Parallel:** no
@@ -99,4 +99,3 @@ Tool output policy, cache identity, lifecycle, delegation, and evaluation consum
 - Fixed cross-workload corpus, paired repeats, confidence intervals, cost model, hard gates.
 - Terminal Bench plus at least one research/delegation/tool-heavy non-Terminal workload.
 - Release shadow/canary, rollback bundle, entry-point parity, compatibility cleanup plan.
-
