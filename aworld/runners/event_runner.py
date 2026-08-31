@@ -73,6 +73,32 @@ class TaskEventRunner(TaskRunner):
         self._deferred_task_response = None
         self._task_response_publish_lock = asyncio.Lock()
         self._task_response_published = False
+        self._task_response_publish_attempted = False
+        self._bootstrap_complete = asyncio.Event()
+        self._stream_terminal_fallback_ready = asyncio.Event()
+        self._stream_terminal_fallback = None
+
+    def _ensure_terminal_delivery_state(self) -> None:
+        if not hasattr(self, "_task_response_publish_lock"):
+            self._task_response_publish_lock = asyncio.Lock()
+        if not hasattr(self, "_task_response_publish_attempted"):
+            self._task_response_publish_attempted = False
+        if not hasattr(self, "_task_response_published"):
+            self._task_response_published = False
+        if not hasattr(self, "_deferred_task_response"):
+            self._deferred_task_response = None
+        if not hasattr(self, "_bootstrap_complete"):
+            self._bootstrap_complete = asyncio.Event()
+        if not hasattr(self, "_stream_terminal_fallback_ready"):
+            self._stream_terminal_fallback_ready = asyncio.Event()
+        if not hasattr(self, "_stream_terminal_fallback"):
+            self._stream_terminal_fallback = None
+
+    def _install_stream_terminal_fallback(self, event: Message) -> None:
+        self._ensure_terminal_delivery_state()
+        if self._stream_terminal_fallback is None:
+            self._stream_terminal_fallback = event
+            self._stream_terminal_fallback_ready.set()
 
     def _trajectory_task_epoch(self) -> int | None:
         epoch = getattr(self.task, "trajectory_task_epoch", None)
@@ -86,9 +112,11 @@ class TaskEventRunner(TaskRunner):
 
     async def run(self) -> Any:
         """Preserve the primary failure while typing pre-execution outcomes."""
+        self._ensure_terminal_delivery_state()
         primary_error: BaseException | None = None
         try:
             await self.pre_run()
+            self._bootstrap_complete.set()
             await self._daemon_run()
             return await self.do_run()
         except BaseException as exc:
@@ -104,6 +132,7 @@ class TaskEventRunner(TaskRunner):
                     )
             raise
         finally:
+            self._bootstrap_complete.set()
             try:
                 await self.post_run()
             except BaseException as post_exc:
@@ -486,6 +515,8 @@ class TaskEventRunner(TaskRunner):
 
         self.task_flag = "sub" if self.task.is_sub_task else "main"
         self.inited = True
+        self._ensure_terminal_delivery_state()
+        self._bootstrap_complete.set()
         logger.debug(f"{self.task_flag} task: {self.task.id} pre run finish, will start to run...")
 
         # Hooks V2: 触发 session_started hook
@@ -685,15 +716,9 @@ class TaskEventRunner(TaskRunner):
         return False
 
     async def _publish_task_response_once(self) -> bool:
-        if not hasattr(self, "_task_response_publish_lock"):
-            self._task_response_publish_lock = asyncio.Lock()
-            self._task_response_published = False
-            self._deferred_task_response = None
+        self._ensure_terminal_delivery_state()
         async with self._task_response_publish_lock:
-            if self._task_response_published:
-                return False
-            event_manager = getattr(self, "event_mng", None)
-            if event_manager is None:
+            if self._task_response_publish_attempted:
                 return False
             response = self._task_response
             if response is None or response.trajectory_build_result is None:
@@ -710,7 +735,19 @@ class TaskEventRunner(TaskRunner):
                 )
             else:
                 event.payload = response
-            await event_manager.emit_message(event)
+            # Fence the attempt before calling an emitter that may publish to one
+            # destination and then raise while publishing to another.
+            self._task_response_publish_attempted = True
+            event_manager = getattr(self, "event_mng", None)
+            if event_manager is None:
+                self._install_stream_terminal_fallback(event)
+                return False
+            try:
+                await event_manager.emit_message(event)
+            except Exception as exc:
+                logger.warning("Terminal TaskResponse emit failed: {}", exc)
+                self._install_stream_terminal_fallback(event)
+                return False
             self._task_response_published = True
             return True
 
@@ -1274,11 +1311,35 @@ class TaskEventRunner(TaskRunner):
             logger.warning(f"Task {self.task.id} is not in streaming mode")
             return
 
-        while not self.inited:
-            await asyncio.sleep(0)
+        self._ensure_terminal_delivery_state()
+        if not getattr(self, "inited", False):
+            bootstrap_wait = asyncio.create_task(self._bootstrap_complete.wait())
+            fallback_wait = asyncio.create_task(
+                self._stream_terminal_fallback_ready.wait()
+            )
+            try:
+                await asyncio.wait(
+                    {bootstrap_wait, fallback_wait},
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+            finally:
+                for task in (bootstrap_wait, fallback_wait):
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(
+                    bootstrap_wait, fallback_wait, return_exceptions=True
+                )
 
-        streaming_eventbus = self.event_mng.streaming_eventbus
+        event_manager = getattr(self, "event_mng", None)
+        streaming_eventbus = (
+            getattr(event_manager, "streaming_eventbus", None)
+            if event_manager is not None
+            else None
+        )
         if not streaming_eventbus:
+            if self._stream_terminal_fallback is not None:
+                yield self._stream_terminal_fallback
+                return
             logger.warning(f"Task {self.task.id} has no streaming_eventbus configured")
             return
 
@@ -1287,7 +1348,36 @@ class TaskEventRunner(TaskRunner):
 
         try:
             while True:
-                msg = await streaming_eventbus.get(self.task.id)
+                bus_get = asyncio.create_task(streaming_eventbus.get(self.task.id))
+                fallback_wait = asyncio.create_task(
+                    self._stream_terminal_fallback_ready.wait()
+                )
+                try:
+                    done, _ = await asyncio.wait(
+                        {bus_get, fallback_wait},
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                    if fallback_wait in done and bus_get not in done:
+                        # A partially successful emitter can enqueue the bus
+                        # terminal immediately before installing the fallback.
+                        # Give that already-ready bus delivery one scheduling turn.
+                        await asyncio.sleep(0)
+                    if bus_get.done():
+                        try:
+                            msg = bus_get.result()
+                        except Exception:
+                            if self._stream_terminal_fallback is None:
+                                raise
+                            msg = self._stream_terminal_fallback
+                    else:
+                        msg = self._stream_terminal_fallback
+                finally:
+                    for task in (bus_get, fallback_wait):
+                        if not task.done():
+                            task.cancel()
+                    await asyncio.gather(bus_get, fallback_wait, return_exceptions=True)
+                if msg is None:
+                    continue
                 yield msg
                 # End the loop when receiving end signal
                 if is_task_end_msg(msg):
