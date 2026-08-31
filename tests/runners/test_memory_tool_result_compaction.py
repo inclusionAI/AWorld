@@ -1,11 +1,14 @@
+import copy
 from types import SimpleNamespace
 
 import pytest
 
+from aworld.agents.history_context_adapter import adapt_cleaned_history_replay
 from aworld.agents.llm_agent import LLMAgent
 from aworld.config import AgentConfig, AgentMemoryConfig
 from aworld.core.common import ActionResult, Observation
 from aworld.core.context.base import Context
+from aworld.core.context.compiler import thaw_json
 from aworld.core.event.base import Message
 from aworld.core.task import Task
 from aworld.memory.models import MemoryAIMessage, MemoryToolMessage, MessageMetadata
@@ -392,6 +395,13 @@ async def test_llm_message_replay_skips_orphan_tool_result(monkeypatch):
     )
 
     assert not any(message.get("role") == "tool" for message in messages)
+    owner_final = copy.deepcopy(messages)
+    observed = adapt_cleaned_history_replay(
+        messages,
+        source_identity="llm-agent://agent-1/final-history-replay",
+    )
+    assert [thaw_json(item.payload) for item in observed.items] == owner_final
+    assert messages == owner_final
 
 
 @pytest.mark.asyncio
