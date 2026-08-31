@@ -124,7 +124,6 @@ from aworld.self_evolve.measurement import (
     stable_measurement_fingerprint,
 )
 from aworld.self_evolve.measurement_control import (
-    DeadlinePolicy,
     MeasurementPlanV2,
     estimate_measurement_feasibility,
 )
@@ -137,10 +136,7 @@ from aworld.self_evolve.measurement_checkpoint import (
     load_paired_replay_resume_checkpoint,
 )
 from aworld.self_evolve.measurement_planner import (
-    compile_measurement_plan_v2,
-    compile_screening_measurement_plan_v2,
     measurement_preflight_projection,
-    persist_compiled_measurement_plan,
 )
 from aworld.self_evolve.ingestion import (
     DEFAULT_INGESTION_REGISTRY,
@@ -256,6 +252,14 @@ from aworld.self_evolve.controllers.measurement import (
     measurement_component_identity as _measurement_component_identity,
     measurement_promotion_gate as _measurement_promotion_gate,
 )
+from aworld.self_evolve.controllers.measurement_authority import (
+    AuthoritativeMeasurementConfig,
+    AuthoritativeMeasurementController,
+    AuthoritativeMeasurementRequest,
+    AuthoritativeMeasurementRuntime,
+    _authoritative_evidence_finalization_timeout_seconds,
+    _legacy_retryable_measurement_task_failed_work_unit_ids,
+)
 from aworld.self_evolve.controllers.screening import (
     SCREENING_BUDGET_CENSORED_CODE as _SCREENING_BUDGET_CENSORED_CODE,
     CandidateScreeningController,
@@ -307,7 +311,6 @@ from aworld.self_evolve.controllers.screening_helpers import (
     _screening_termination_axis_counts,
     _non_negative_screening_float,
     _candidate_screening_qualification_case_limit,
-    _dataset_case_strata,
     _candidate_screening_case_distance,
     _DEFAULT_CANDIDATE_SCREENING_TIMEOUT_SECONDS,
     _DEFAULT_CANDIDATE_SCREENING_TOOL_CALL_LIMIT,
@@ -430,7 +433,6 @@ from aworld.self_evolve.replay import (
     build_paired_replay_dataset,
     build_replay_request,
     candidate_replay_artifact_directory,
-    compile_authoritative_replay_evidence_policy_profile_v2,
     candidate_replay_is_comparable,
     candidate_replay_pair_coverage,
     normalize_replay_members,
@@ -490,7 +492,6 @@ from aworld.self_evolve.replay_adaptation import (
     ReplayAdaptationCompiler,
     ReplayCapabilityRequirement,
     ReplayPreflightReport,
-    compile_replay_adaptation_isolation_decision,
     replay_adaptation_semantic_fingerprint,
 )
 from aworld.self_evolve.replay_capability import (
@@ -1827,21 +1828,6 @@ def _nonnegative_numeric_count(value: object) -> int | None:
     return None
 
 
-def _authoritative_evidence_finalization_timeout_seconds(
-    member_timeout_seconds: float,
-) -> float:
-    """Reserve a bounded, latency-aware terminal synthesis window.
-
-    Authoritative browser replays regularly need one additional model turn
-    after the evidence manifest is persisted.  A fixed 120-second ceiling is
-    below the observed end-to-end turn latency under provider retry/backoff and
-    censors otherwise recoverable controls.  Keep the window proportional to
-    the immutable member deadline and cap it at five minutes so finalization
-    remains bounded and cannot consume an entire long-running member budget.
-    """
-
-    timeout = float(member_timeout_seconds)
-    return min(timeout, min(max(timeout * 0.25, 45.0), 300.0))
 
 
 def _positive_metric_count(value: object) -> int:
@@ -3717,6 +3703,20 @@ class SelfEvolveRunner:
                 max_run_wall_seconds=self.max_run_wall_seconds,
                 replay_timeout_seconds=self.replay_timeout_seconds,
             ),
+        )
+        self._authoritative_measurement_controller = (
+            AuthoritativeMeasurementController(
+                store=self.store,
+                config=AuthoritativeMeasurementConfig(
+                    mode=self.measurement_mode,
+                    resume_run_id=self.measurement_resume_run_id,
+                    campaign_wall_deadline_seconds=(
+                        float(self.replay_total_timeout_seconds)
+                        if self.replay_total_timeout_seconds is not None
+                        else None
+                    ),
+                ),
+            )
         )
         self.replay_agent = replay_agent
         self.runtime_registry_refresher = runtime_registry_refresher
@@ -10718,244 +10718,32 @@ class SelfEvolveRunner:
         IsolationDecision,
         EvidencePolicyProfileV2,
     ] | None:
-        """Freeze and persist the replay work graph before any rollout starts.
-
-        Advisory/required are the atomic execution switch.  OFF retains the
-        legacy executor; SHADOW persists the counterfactual plan but must not
-        alter scheduling or gates.
-        """
-
-        if self.measurement_mode is MeasurementPolicyMode.OFF:
-            return None
-        if measurement_stage not in {"authoritative", "screening"}:
-            raise ValueError("unsupported measurement execution stage")
-        experiment = experiment or self._measurement_experiments.get(
-            (run_id, candidate.candidate_id)
-        )
-        if experiment is None:
-            raise ValueError(
-                "measurement experiment was not frozen before replay admission"
-            )
-        if (
-            measurement_stage == "authoritative"
-            and self.measurement_resume_run_id is not None
-            and experiment.run_id == self.measurement_resume_run_id
-        ):
-            source_request = self._load_measurement_resume_request(
-                candidate=candidate,
+        result = self._authoritative_measurement_controller.compile(
+            AuthoritativeMeasurementRequest(
+                run_id=run_id,
                 dataset=dataset,
-            )
-            assert source_request is not None
-            assert source_request.measurement_plan is not None
-            assert source_request.measurement_isolation_decision is not None
-            assert source_request.measurement_evidence_policy_profile is not None
-            plan = source_request.measurement_plan
-            if plan.experiment_id != experiment.experiment_id:
-                raise ValueError("measurement resume plan experiment changed")
-            from aworld.self_evolve.measurement_execution import (
-                MeasurementExecutionJournal,
-            )
-
-            journal = MeasurementExecutionJournal(
-                store=self.store,
-                run_id=self.measurement_resume_run_id,
-                plan=plan,
-            )
-            resume_now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-            journal.recover_expired(now=resume_now)
-            legacy_retryable_ids = (
-                _legacy_retryable_measurement_task_failed_work_unit_ids(
-                    source_request
-                )
-            )
-            retried = journal.schedule_infrastructure_retries(
-                now=resume_now,
-                maximum_attempts=2,
-                retryable_task_failed_work_unit_ids=legacy_retryable_ids,
-            )
-            entries = journal.index_entries()
-            pending = sum(not entry.state.terminal for entry in entries)
-            completed = len(entries) - pending
-            _emit_progress(
-                self.progress_callback,
-                "measurement_preflight",
-                (
-                    "Resumed authoritative measurement authority: "
-                    f"{pending}/{len(entries)} work units pending; "
-                    f"{completed} trusted terminal units reused; "
-                    f"{len(retried)} infrastructure unit(s) scheduled for retry"
+                candidate=candidate,
+                replay_adaptation=replay_adaptation,
+                replay_backend_identity=(
+                    _measurement_component_identity(replay_backend)
                 ),
-            )
-            return (
-                plan,
-                source_request.measurement_isolation_decision,
-                source_request.measurement_evidence_policy_profile,
-            )
-        replay_dir = candidate_replay_artifact_directory(
-            workspace_root=self.store.workspace_root,
-            run_id=run_id,
-            candidate_id=candidate.candidate_id,
-            artifact_namespace=artifact_namespace,
-        )
-        isolation_decision = compile_replay_adaptation_isolation_decision(
-            replay_adaptation,
-            materialization_root=replay_dir / "measurement-lanes",
-            requested_lane_count=2,
-        )
-        evidence_profile = compile_authoritative_replay_evidence_policy_profile_v2(
-            experiment=experiment,
-            target=candidate.target,
-            replay_adaptation=replay_adaptation,
-            member_timeout_seconds=member_timeout_seconds,
-            target_adapter_identity=(
-                _measurement_component_identity(target_adapter)
-                if target_adapter is not None
-                else None
-            ),
-        )
-        campaign_deadline = (
-            float(self.replay_total_timeout_seconds)
-            if self.replay_total_timeout_seconds is not None
-            else None
-        )
-        raw_deferred_control_case_ids = dataset.recipe.source.get(
-            "authoritative_deferred_control_case_ids",
-            (),
-        )
-        deferred_control_case_ids = tuple(
-            case_id
-            for case_id in (
-                raw_deferred_control_case_ids
-                if isinstance(raw_deferred_control_case_ids, (list, tuple))
-                else ()
-            )
-            if isinstance(case_id, str)
-        )
-        try:
-            compile_plan = (
-                compile_screening_measurement_plan_v2
-                if measurement_stage == "screening"
-                else compile_measurement_plan_v2
-            )
-            compiled = compile_plan(
+                member_timeout_seconds=member_timeout_seconds,
+                artifact_namespace=artifact_namespace,
+                target_adapter_identity=(
+                    _measurement_component_identity(target_adapter)
+                    if target_adapter is not None
+                    else None
+                ),
                 experiment=experiment,
-                dataset_fingerprint=replay_dataset_fingerprint(dataset),
-                execution_contract_fingerprint=stable_measurement_fingerprint(
-                    {
-                        "schema_version": (
-                            "aworld.self_evolve.replay_execution_contract.v2"
-                        ),
-                        "backend": _measurement_component_identity(
-                            replay_backend
-                        ),
-                        "adaptation_fingerprint": (
-                            replay_adaptation.adaptation_fingerprint
-                        ),
-                        "workspace_seed_fingerprint": (
-                            replay_adaptation.workspace_seed_fingerprint
-                        ),
-                        "candidate_package_fingerprint": (
-                            candidate_package_fingerprint(candidate)
-                        ),
-                    }
-                ),
-                isolation_decision=isolation_decision,
-                evidence_policy_profile=evidence_profile,
-                deadlines=DeadlinePolicy(
-                    attempt_timeout_seconds=float(member_timeout_seconds),
-                    member_hard_deadline_seconds=float(member_timeout_seconds),
-                    checkpoint_quantum_seconds=max(
-                        float(member_timeout_seconds) * 2.0,
-                        60.0,
-                    ),
-                    evidence_finalization_timeout_seconds=(
-                        _authoritative_evidence_finalization_timeout_seconds(
-                            float(member_timeout_seconds)
-                        )
-                    ),
-                    campaign_wall_deadline_seconds=campaign_deadline,
-                    resumable_chunked=True,
-                ),
-                **(
-                    {
-                        "case_strata": {
-                            case.case_id: "|".join(
-                                sorted(_dataset_case_strata(case))
-                            )
-                            for case in dataset.cases
-                            if case.case_id
-                            in experiment.sampling.independent_case_ids
-                        },
-                        "repair_screening_case_ids": (
-                            experiment.search_visible_case_ids
-                        ),
-                        "deferred_control_case_ids": deferred_control_case_ids,
-                        "sentinel_case_count": (
-                            experiment.outcomes.minimum_independent_cases
-                        ),
-                    }
-                    if measurement_stage == "authoritative"
-                    else {}
-                ),
-            )
-        except ValueError:
-            if self.measurement_mode is MeasurementPolicyMode.SHADOW:
-                logger.warning(
-                    "self_evolve.measurement.shadow_plan_unavailable",
-                    exc_info=True,
-                )
-                return None
-            raise
-        persist_compiled_measurement_plan(
-            self.store,
-            run_id=run_id,
-            compiled=compiled,
-            isolation_decision=isolation_decision,
-            evidence_policy_profile=evidence_profile,
-        )
-        preflight = measurement_preflight_projection(
-            plan=compiled.plan,
-            feasibility=compiled.feasibility,
-            isolation_decision=isolation_decision,
-        )
-        measurement_plan_label = (
-            "Screening measurement plan: "
-            if measurement_stage == "screening"
-            else "Authoritative measurement plan: "
-        )
-        _emit_progress(
-            self.progress_callback,
-            "measurement_preflight",
-            (
-                f"{measurement_plan_label}"
-                f"work {preflight['pending_work_units']}/"
-                f"{preflight['planned_work_units']} pending; "
-                f"decision units {preflight['decision_required_work_units']}; "
-                f"safe lanes {preflight['safe_lane_count']}; "
-                f"P50/P90 decision ETA "
-                f"{int(float(preflight['p50_time_to_decision_seconds']))}s/"
-                f"{int(float(preflight['p90_time_to_decision_seconds']))}s"
-                + (
-                    "; deferred unstable controls "
-                    + str(len(compiled.deferred_unstable_case_ids))
-                    if compiled.deferred_unstable_case_ids
-                    else ""
-                )
-                + (
-                    "; isolation fallback "
-                    + str(preflight["isolation_fallback"]["code"])
-                    + ":"
-                    + str(
-                        preflight["isolation_fallback"]["limiting_resource"]
-                    )
-                    if isinstance(preflight["isolation_fallback"], Mapping)
-                    else ""
-                )
+                measurement_stage=measurement_stage,
+            ),
+            AuthoritativeMeasurementRuntime(
+                experiments=self._measurement_experiments,
+                load_resume_request=self._load_measurement_resume_request,
+                progress_callback=self.progress_callback,
             ),
         )
-        if self.measurement_mode is MeasurementPolicyMode.SHADOW:
-            return None
-        return compiled.plan, isolation_decision, evidence_profile
+        return result.execution_bundle
 
     async def _replay_selected_candidate(
         self,
@@ -16552,54 +16340,6 @@ def _replay_capability_report(
 
 
 
-def _legacy_retryable_measurement_task_failed_work_unit_ids(
-    request: CandidateReplayRequest,
-) -> tuple[str, ...]:
-    """Recover pre-fix framework failures persisted as task failures."""
-
-    plan = request.measurement_plan
-    if plan is None:
-        return ()
-    members_root = _replay_request_artifact_path(request) / "members"
-    retryable: list[str] = []
-    for unit in plan.work_units:
-        variant_id = (
-            "baseline"
-            if unit.arm.value == "control"
-            else request.candidate_id
-        )
-        artifact_dir = (
-            members_root
-            / _member_artifact_name(unit.case_id)
-            / variant_id
-            / str(unit.repetition_id)
-        )
-        if not (artifact_dir / "lifecycle.json").is_file():
-            continue
-        try:
-            result = _load_variant_result_from_dir(
-                artifact_dir,
-                base_variant_id=variant_id,
-            )
-        except (OSError, TypeError, ValueError):
-            continue
-        events = tuple(
-            event
-            for event in (result.failure, *result.blocked_by)
-            if isinstance(event, ReplayFailureEvent)
-        )
-        if any(
-            event.repairable
-            and event.owner
-            in {FailureOwner.FRAMEWORK, FailureOwner.INFRASTRUCTURE}
-            and (
-                event.stage is FailureStage.EVIDENCE_FINALIZATION
-                or event.scope is FailureScope.SHARED_RUN
-            )
-            for event in events
-        ):
-            retryable.append(unit.work_unit_id)
-    return tuple(retryable)
 
 
 def _replay_timeout_checkpoint_details(

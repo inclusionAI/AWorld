@@ -1312,7 +1312,7 @@ def _candidate_screening_dataset(
                         else None
                     ),
                 ),
-                len(_dataset_case_strata(case) - covered_strata),
+                len(dataset_case_strata(case) - covered_strata),
                 _candidate_screening_case_distance(
                     case_index[case.case_id],
                     selected_indices=tuple(
@@ -1327,7 +1327,7 @@ def _candidate_screening_dataset(
         covered_requirements.update(
             requirement_ids_by_case.get(representative.case_id, set())
         )
-        covered_strata.update(_dataset_case_strata(representative))
+        covered_strata.update(dataset_case_strata(representative))
     representative_ids = tuple(case.case_id for case in selected)
     return SelfEvolveDataset(
         cases=tuple(selected),
@@ -1702,7 +1702,7 @@ def _candidate_screening_qualification_case_limit(
     return min(configured_max_cases, adaptive_limit)
 
 
-def _dataset_case_strata(case: EvalCase) -> set[str]:
+def dataset_case_strata(case: EvalCase) -> set[str]:
     """Return candidate-independent strata shared by screening and measurement."""
 
     strata: set[str] = set()
