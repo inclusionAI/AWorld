@@ -60,8 +60,9 @@ Tool output policy, cache identity, lifecycle, delegation, and evaluation consum
 **Goal:** Introduce typed Context inputs and decision traces without changing provider requests.
 **Depends on:** Milestone 1.
 
-- ContextItem/Source/Scope/Authority/Trust/Stability models and token accounting.
-- Adapters for existing messages, system sections, PromptSection/neurons, Skills, Tool catalog, and Steering.
+- ContextItem/Source/Scope/Authority/Trust/Stability models and token accounting. **Status: complete**
+- Generic occurrence adapters, PromptSection owner adapter, and cleaned-history owner adapter. **Status: complete**
+- Remaining adapters for neurons, Skills, Tool catalog owners, and Steering. **Status: pending**
 - Deterministic ordering and redacted decision trace.
 - Observe-mode compiler reconstructs and compares current provider-bound requests.
 - Acceptance: current requests remain unchanged and request-trace match is measurable for all supported paths.
