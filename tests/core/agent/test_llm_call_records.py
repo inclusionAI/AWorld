@@ -9,6 +9,10 @@ from aworld.core.common import TaskStatusValue
 from aworld.core.context.amni.config import AgentContextConfig, ContextCacheConfig
 from aworld.core.context.amni.prompt.assembly import PromptAssemblyPlan
 from aworld.core.context.base import Context
+from aworld.core.context.compiler import (
+    ContextObservationSidecar,
+    adapt_final_messages,
+)
 from aworld.core.context.context_state import ContextState
 from aworld.core.event.base import Constants, Message
 from aworld.core.task import Task
@@ -122,6 +126,35 @@ def test_prompt_assembly_observability_metadata_is_attached_to_call_record():
     assert observability["cache_aware_assembly"] is False
     assert observability["provider_native_cache"] is True
     assert observability["stable_prefix_hash"]
+
+
+def test_prompt_assembly_observability_includes_only_redacted_owner_sidecars():
+    agent = _build_agent()
+    context = _build_context("task-owner-sidecar")
+    result = adapt_final_messages(
+        [{"role": "system", "content": "private-neuron-output"}],
+        source_identity="owner://private/neuron/path",
+    )
+    context.publish_context_observation(
+        ContextObservationSidecar.from_adapter_result(
+            owner="amni.neuron_outputs",
+            namespace=agent.id(),
+            source_identity="owner://private/neuron/path",
+            result=result,
+        )
+    )
+
+    observability = agent._build_prompt_assembly_observability(
+        context=context,
+        messages=[{"role": "user", "content": "hello"}],
+    )
+
+    sidecars = observability["context_observations"]
+    assert len(sidecars) == 1
+    assert sidecars[0]["owner"] == "amni.neuron_outputs"
+    rendered = str(sidecars)
+    assert "private-neuron-output" not in rendered
+    assert "owner://private/neuron/path" not in rendered
 
 
 def test_llm_call_response_upgrades_native_cache_flag_when_cache_tokens_exist():

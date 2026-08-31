@@ -212,5 +212,10 @@ model-boundary fidelity is explicit, correlation is task-local, and full Agent/m
 - Independent final review approved Milestone 2 with no P0/P1. Accepted P2s: a failed best-effort finish may retain an
   `in_progress` record; ContextVar correlation does not cross a caller-created non-context-propagating thread; synchronous
   capture wrappers deliberately do not swallow process-control `BaseException`. None changes provider/task semantics.
+- Milestone 3 first owner integration now publishes exact Amni neuron outputs before the legacy dict sort/fold into an
+  immutable `ContextObservationSidecar`. Sidecars live outside serialized `ContextState`, survive Context copies, expose
+  only redacted refs/diagnostics to `llm_calls` assembly observability, and are never passed into prompt assembly. Capture
+  errors are fail-open, while the existing prompt messages/order/content remain unchanged. Sidecar/Amni/Agent regression:
+  29 passed; compiler files and affected modules also pass `py_compile` and diff checks.
 - Authority, trust, lifetime, stability, source URI, task epoch, and exact token counts remain UNKNOWN unless their owner can
   prove them; role/content heuristics are not acceptable.

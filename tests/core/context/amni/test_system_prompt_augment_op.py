@@ -9,7 +9,9 @@ from aworld.core.context.amni.prompt.assembly import (
     PromptAssemblyPlan,
 )
 from aworld.core.context.amni.config import AgentContextConfig
+from aworld.core.context.amni.prompt.neurons import Neuron
 from aworld.core.context.amni.processor.op.system_prompt_augment_op import SystemPromptAugmentOp
+from aworld.core.context.compiler import thaw_json
 
 
 @pytest.mark.asyncio
@@ -55,6 +57,97 @@ async def test_system_prompt_augment_op_enables_relevant_memory_neuron_with_awor
     assert result == {}
     assert AWORLD_FILE_NEURON_NAME in captured["names"]
     assert RELEVANT_MEMORY_NEURON_NAME in captured["names"]
+
+
+@pytest.mark.asyncio
+async def test_system_prompt_augment_emits_exact_pre_fold_neuron_sidecar(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    published = []
+
+    class FirstNeuron(Neuron):
+        name = "first"
+
+        async def desc(self, context, namespace=None, **kwargs):
+            return "first-desc"
+
+    class SecondNeuron(Neuron):
+        name = "second"
+
+        async def desc(self, context, namespace=None, **kwargs):
+            return "second-desc"
+
+    first = FirstNeuron()
+    second = SecondNeuron()
+
+    class FakeContext:
+        session_id = "session-1"
+        task_id = "task-1"
+        task_input = "query"
+
+        def get_agent_context_config(self, namespace):
+            return AgentContextConfig(
+                enable_system_prompt_augment=True,
+                neuron_names=["first", "second"],
+            )
+
+        def publish_context_observation(self, sidecar):
+            published.append(sidecar)
+
+    monkeypatch.setattr(
+        "aworld.core.context.amni.processor.op.system_prompt_augment_op.AgentFactory.agent_instance",
+        lambda agent_id: SimpleNamespace(ptc_tools=None, skill_configs=None),
+    )
+    monkeypatch.setattr(
+        "aworld.core.context.amni.processor.op.system_prompt_augment_op.neuron_factory.get_neurons_by_names",
+        lambda names: [first, second],
+    )
+    monkeypatch.setattr(
+        "aworld.core.context.amni.processor.op.system_prompt_augment_op.neuron_factory._prio",
+        {"first": 20, "second": 10},
+    )
+
+    async def fake_rerank(*, neuron, context, namespace):
+        return "same-output"
+
+    op = SystemPromptAugmentOp()
+    monkeypatch.setattr(op, "rerank_items", fake_rerank)
+
+    result = await op._process_neurons(
+        FakeContext(),
+        SimpleNamespace(agent_id="agent-1", namespace="agent-1"),
+    )
+
+    assert result == {
+        "second": "second-desc\n\nsame-output",
+        "first": "first-desc\n\nsame-output",
+    }
+    assert len(published) == 1
+    sidecar = published[0]
+    assert sidecar.owner == "amni.neuron_outputs"
+    assert sidecar.namespace == "agent-1"
+    assert [item.occurrence for item in sidecar.result.items] == [0, 1]
+    assert [item.payload["neuron"]["name"] for item in sidecar.result.items] == [
+        "first",
+        "second",
+    ]
+    assert [thaw_json(item.payload)["output"] for item in sidecar.result.items] == [
+        "first-desc\n\nsame-output",
+        "second-desc\n\nsame-output",
+    ]
+
+    def fail_observation(*args, **kwargs):
+        raise RuntimeError("observation-secret")
+
+    monkeypatch.setattr(
+        "aworld.core.context.amni.processor.op.system_prompt_augment_op.adapt_neuron_outputs",
+        fail_observation,
+    )
+    assert await op._process_neurons(
+        FakeContext(),
+        SimpleNamespace(agent_id="agent-1", namespace="agent-1"),
+    ) == result
+    assert len(published) == 1
 
 
 def test_application_context_resolves_default_and_agent_prompt_assembly_provider() -> None:

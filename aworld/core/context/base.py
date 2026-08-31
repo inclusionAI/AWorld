@@ -12,6 +12,7 @@ from typing import Dict, Any, TYPE_CHECKING, List, Literal, Optional
 from aworld.checkpoint.inmemory import InMemoryCheckpointRepository
 from aworld.config import ConfigDict, AgentMemoryConfig
 from aworld.core.context.context_state import ContextState
+from aworld.core.context.compiler.sidecar import ContextObservationSidecar
 from aworld.core.context.session import Session
 from aworld.logs.util import logger
 from aworld.core.trajectory_update_registry import TrajectoryUpdateOutcome, TrajectoryUpdateRegistry
@@ -184,6 +185,9 @@ class Context:
         self._task_graph: Dict[str, Dict[str, Any]] = {}
         self.trajectory_dataset = None
         self._trajectory_update_registry = TrajectoryUpdateRegistry()
+        self._context_observations: Dict[
+            tuple[str, str], ContextObservationSidecar
+        ] = {}
 
     @property
     def start_time(self) -> float:
@@ -334,6 +338,32 @@ class Context:
     def append_llm_call(self, llm_call: Dict[str, Any]) -> None:
         self.get_llm_calls().append(llm_call)
 
+    def publish_context_observation(
+        self, sidecar: ContextObservationSidecar
+    ) -> None:
+        """Publish the latest immutable owner sidecar outside ContextState."""
+        if not isinstance(sidecar, ContextObservationSidecar):
+            raise TypeError("sidecar must be a ContextObservationSidecar")
+        observations = getattr(self, "_context_observations", None)
+        if not isinstance(observations, dict):
+            observations = {}
+            self._context_observations = observations
+        observations[(sidecar.owner, sidecar.namespace)] = sidecar
+
+    def get_context_observations(
+        self,
+        *,
+        owner: str | None = None,
+        namespace: str | None = None,
+    ) -> tuple[ContextObservationSidecar, ...]:
+        """Read immutable sidecars in deterministic publication order."""
+        return tuple(
+            sidecar
+            for sidecar in getattr(self, "_context_observations", {}).values()
+            if (owner is None or sidecar.owner == owner)
+            and (namespace is None or sidecar.namespace == namespace)
+        )
+
     async def build_sub_context(self, sub_task_content: Any, sub_task_id: str = None, **kwargs):
         # Create a new Context instance without calling __init__ to avoid singleton issues
         new_context = object.__new__(Context)
@@ -377,6 +407,9 @@ class Context:
         new_context._task_graph = self._task_graph
         new_context.trajectory_dataset = self.trajectory_dataset
         new_context._trajectory_update_registry = self._trajectory_update_registry
+        new_context._context_observations = dict(
+            getattr(self, "_context_observations", {})
+        )
 
         # Deep copy complex state objects
         try:
