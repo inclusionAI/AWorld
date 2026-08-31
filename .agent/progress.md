@@ -129,6 +129,9 @@ Milestone 1 re-review remains.
 - Task 2.2a generic occurrence-preserving legacy adapters and the Amni PromptSection owner adapter are implemented and
   merged, tested, and exposed through owner/core public APIs. Their dedicated seven tests pass; a broader context run had
   84 passes and nine unrelated AWORLD-file tests that selected the user's real `~/.aworld/AWORLD.md` instead of fixtures.
+- Task 2.2b adds an Agent-owner adapter for the exact replay occurrences after `LLMAgent.async_messages_transform` cleanup.
+  It delegates to the generic occurrence adapter, performs no second cleanup/inference/runtime integration, and preserves
+  repaired Tool ordering and duplicates; adapter plus owner cleanup regression is 16 passed.
 - Existing PromptAssemblyProvider sees Amni neuron sections only after they were folded into one system message; provenance
   sidecars must be emitted before folding rather than inferred later.
 - Memory adapters must follow the exact cleaned replay list, including Tool pair repair and duplicate occurrences.
