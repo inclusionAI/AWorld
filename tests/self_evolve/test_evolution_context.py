@@ -80,6 +80,35 @@ def _request() -> OptimizerRequest:
     )
 
 
+def test_skill_evolution_contract_enters_generation_context() -> None:
+    request = replace(
+        _request(),
+        skill_evolution_contract={
+            "schema_version": "aworld.self_evolve.skill_evolution_contract.v1",
+            "contract_fingerprint": "sha256:contract",
+            "target_skill_id": "demo",
+            "objective": "Handle large output",
+            "capabilities": [
+                {
+                    "capability_id": "large_output",
+                    "description": "Read large output safely",
+                    "case_ids": ["train-1"],
+                    "required": True,
+                }
+            ],
+            "preserved_invariants": ["Preserve existing navigation"],
+        },
+    )
+
+    payload = compile_evolution_context(request).to_prompt_payload(
+        candidate_index=0
+    )
+
+    assert payload["skill_evolution_contract"]["target_skill_id"] == "demo"
+    assert "Read large output safely" in payload["required_behaviors"]
+    assert "Preserve existing navigation" in payload["preserved_behaviors"]
+
+
 def test_lesson_context_ranks_unique_repairable_cause_without_occurrence_bias() -> None:
     low_value = tuple(
         LessonRecord(

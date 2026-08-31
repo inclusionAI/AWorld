@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import uuid
 from typing import Any, AsyncIterator
+from urllib.parse import urlparse
 
 from aworld.agents.prompt_budgeted_agent import PromptBudgetedAgent
 from aworld.config.conf import AgentConfig, ModelConfig
@@ -19,6 +20,21 @@ from aworld.utils.common import nest_dict_counter
 
 DEFAULT_CANDIDATE_OUTPUT_TOKEN_LIMIT = 32_768
 DEFAULT_CANDIDATE_TASK_TIMEOUT_SECONDS = 300
+CANDIDATE_GENERATION_SYSTEM_PROMPT = (
+    "You generate one self-evolve candidate package. Return only a JSON "
+    "object matching the candidate_output_contract in the task. Do not wrap "
+    "the JSON in prose. Preserve existing target behavior: use patch_intent "
+    "for a bounded change to a large target instead of reconstructing its "
+    "full content. Keep domain-specific replay behavior inside candidate-owned "
+    "files and do not invent unavailable recordings. Infer reusable protocol "
+    "behavior from bounded trace steps; do not embed dataset-specific task IDs, "
+    "case IDs, original endpoints, or environment paths. Candidate-owned replay "
+    "files may be the reusable skill-package behavior improvement even when the "
+    "primary Markdown content is inherited unchanged; fixture-only placeholders "
+    "are not behavior improvements. A replay runtime must reconstruct "
+    "fixture-derived task data for observed interactions; a control-plane handshake, "
+    "placeholder token, or empty schema alone is not a valid data-plane replay."
+)
 
 
 class CandidateGenerationInfrastructureError(RuntimeError):
@@ -172,27 +188,15 @@ class CandidateGenerationAgent(PromptBudgetedAgent):
         if isinstance(task_timeout_seconds, bool) or task_timeout_seconds <= 0:
             raise ValueError("task_timeout_seconds must be positive")
         self.task_timeout_seconds = task_timeout_seconds
-        framework_output_limit = (
-            int(output_token_limit)
-            if output_token_limit is not None
-            else _model_aware_candidate_output_limit(model_config)
+        self.output_token_limit = _effective_candidate_output_token_limit(
+            model_config,
+            output_token_limit=output_token_limit,
         )
         configured_max_tokens = _positive_token_limit(
             (model_config.params or {}).get("max_tokens")
         )
         configured_max_completion_tokens = _positive_token_limit(
             (model_config.params or {}).get("max_completion_tokens")
-        )
-        configured_limits = [
-            item
-            for item in (
-                configured_max_tokens,
-                configured_max_completion_tokens,
-            )
-            if item is not None
-        ]
-        self.output_token_limit = min(
-            [framework_output_limit, *configured_limits]
         )
         self.output_token_parameter = (
             "max_completion_tokens"
@@ -201,6 +205,9 @@ class CandidateGenerationAgent(PromptBudgetedAgent):
         )
         runtime_model_config = model_config.model_copy(deep=True)
         _configure_structured_generation_reasoning(runtime_model_config)
+        self.structured_output_mode = _configure_native_json_output(
+            runtime_model_config
+        )
         super().__init__(
             name="self-evolve-candidate-generator",
             conf=AgentConfig(
@@ -222,21 +229,7 @@ class CandidateGenerationAgent(PromptBudgetedAgent):
                     "compressible": False,
                 },
             ],
-            system_prompt=(
-                "You generate one self-evolve candidate package. Return only a JSON "
-                "object matching the candidate_output_contract in the task. Do not wrap "
-                "the JSON in prose. Preserve existing target behavior: use patch_intent "
-                "for a bounded change to a large target instead of reconstructing its "
-                "full content. Keep domain-specific replay behavior inside candidate-owned "
-                "files and do not invent unavailable recordings. Infer reusable protocol "
-                "behavior from bounded trace steps; do not embed dataset-specific task IDs, "
-                "case IDs, original endpoints, or environment paths. Candidate-owned replay "
-                "files may be the reusable skill-package behavior improvement even when the "
-                "primary Markdown content is inherited unchanged; fixture-only placeholders "
-                "are not behavior improvements. A replay runtime must reconstruct "
-                "fixture-derived task data for observed interactions; a control-plane handshake, "
-                "placeholder token, or empty schema alone is not a valid data-plane replay."
-            ),
+            system_prompt=CANDIDATE_GENERATION_SYSTEM_PROMPT,
             tool_names=[],
             llm_max_attempts=1,
         )
@@ -451,6 +444,29 @@ def _model_aware_candidate_output_limit(model_config: ModelConfig) -> int:
     )
 
 
+def _effective_candidate_output_token_limit(
+    model_config: ModelConfig,
+    *,
+    output_token_limit: int | None = None,
+) -> int:
+    framework_output_limit = (
+        int(output_token_limit)
+        if output_token_limit is not None
+        else _model_aware_candidate_output_limit(model_config)
+    )
+    configured_limits = [
+        item
+        for item in (
+            _positive_token_limit((model_config.params or {}).get("max_tokens")),
+            _positive_token_limit(
+                (model_config.params or {}).get("max_completion_tokens")
+            ),
+        )
+        if item is not None
+    ]
+    return min([framework_output_limit, *configured_limits])
+
+
 def _configure_structured_generation_reasoning(model_config: ModelConfig) -> None:
     """Use direct generation for model families whose default is forced thinking.
 
@@ -481,3 +497,50 @@ def _configure_structured_generation_reasoning(model_config: ModelConfig) -> Non
         "thinking": {"type": "disabled"},
     }
     model_config.params = params
+
+
+def _configure_native_json_output(model_config: ModelConfig) -> str:
+    """Enable provider-native JSON only when support is explicit or authoritative.
+
+    ``llm_provider=openai`` is also used for OpenAI-compatible endpoints. Those
+    endpoints do not consistently implement ``response_format``, so provider
+    identity alone is not a capability proof. Custom endpoints must opt in via
+    ``ext_config.supports_json_object_response_format``.
+    """
+
+    params = dict(model_config.params or {})
+    if "response_format" in params:
+        return "explicit_response_format"
+
+    ext_config = model_config.ext_config or {}
+    explicit_capability = ext_config.get(
+        "supports_json_object_response_format"
+    )
+    if explicit_capability is False:
+        return "prompt_contract_with_parser_repair"
+
+    provider = (model_config.llm_provider or "openai").lower()
+    model_name = (model_config.llm_model_name or "").lower()
+    base_url = (model_config.llm_base_url or "").strip()
+    authoritative_model_family = model_name.startswith(
+        ("gpt-", "chatgpt-", "o1", "o3", "o4")
+    )
+    official_openai_endpoint = bool(
+        provider == "openai"
+        and authoritative_model_family
+        and (
+            not base_url
+            or (urlparse(base_url).hostname or "").lower()
+            in {"api.openai.com"}
+        )
+    )
+    if explicit_capability is not True and not official_openai_endpoint:
+        return "prompt_contract_with_parser_repair"
+
+    params["response_format"] = {"type": "json_object"}
+    model_config.params = params
+    return (
+        "provider_native_json_explicit_capability"
+        if explicit_capability is True
+        else "provider_native_json_authoritative_endpoint"
+    )

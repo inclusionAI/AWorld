@@ -58,6 +58,7 @@ _ACTIVE_RUN_LEASE = ".active.json"
 _CLEANUP_QUARANTINE_DIR = ".artifact-retention-trash"
 _RETENTION_TRANSACTION_DIR = "artifact_retention_transactions"
 _RETENTION_TRANSACTION_SCHEMA = "aworld.self_evolve.artifact_retention_transaction.v1"
+_RETENTION_REPORT_SCHEMA = "aworld.self_evolve.artifact_retention.v2"
 _SAFE_RUN_ID = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9._-]{0,159}")
 _FD_CLEANUP_SUPPORTED = (
     all(hasattr(os, name) for name in ("O_DIRECTORY", "O_NOFOLLOW"))
@@ -285,7 +286,7 @@ def _perform_bound_artifact_cleanup(
     if current_run_id:
         recent_run_ids.add(current_run_id)
 
-    removed_run_ids: set[str] = set()
+    compacted_run_ids: set[str] = set()
     archived_run_ids: set[str] = set()
     skipped_runs: list[dict[str, str]] = []
 
@@ -336,7 +337,7 @@ def _perform_bound_artifact_cleanup(
                 removed_paths.append(str(path))
                 run_removed = True
         if run_removed:
-            removed_run_ids.add(run_dir.name)
+            compacted_run_ids.add(run_dir.name)
 
     protected_ingestion_ids = _referenced_ingestion_ids(root, run_dirs=run_dirs)
     removed_ingestion_ids: list[str] = []
@@ -365,9 +366,15 @@ def _perform_bound_artifact_cleanup(
         else []
     )
     return {
+        "schema_version": _RETENTION_REPORT_SCHEMA,
         "policy": asdict(retention),
-        "removed_run_count": len(removed_run_ids),
-        "removed_run_ids": sorted(removed_run_ids),
+        # Run directories and their durable lineage records are retained. Only
+        # raw subtrees are compacted, so reporting these runs as removed was
+        # materially misleading to operators and recovery tooling.
+        "removed_run_count": 0,
+        "removed_run_ids": [],
+        "compacted_run_count": len(compacted_run_ids),
+        "compacted_run_ids": sorted(compacted_run_ids),
         "archived_run_ids": sorted(archived_run_ids),
         "removed_path_count": len(removed_paths),
         "removed_paths": removed_paths,
@@ -561,9 +568,12 @@ def _validated_retention_transaction(
 
 def _empty_cleanup(policy: SelfEvolveArtifactRetentionPolicy) -> dict[str, Any]:
     return {
+        "schema_version": _RETENTION_REPORT_SCHEMA,
         "policy": asdict(policy),
         "removed_run_count": 0,
         "removed_run_ids": [],
+        "compacted_run_count": 0,
+        "compacted_run_ids": [],
         "archived_run_ids": [],
         "removed_path_count": 0,
         "removed_paths": [],

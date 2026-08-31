@@ -28,6 +28,14 @@ from aworld.self_evolve.campaign import (
     derive_self_improvement_disposition,
     run_self_improvement_campaign,
 )
+from aworld.self_evolve.skill_evolution_contract import (
+    SKILL_EVOLUTION_CONTRACT_SCHEMA_VERSION,
+    SKILL_EVOLUTION_PROGRESS_SCHEMA_VERSION,
+    SkillCapabilityObjective,
+    SkillEvolutionContract,
+    evaluate_skill_evolution_replay,
+    load_skill_evolution_contract,
+)
 from aworld.self_evolve.measurement import (
     ATTRIBUTION_REPORT_SCHEMA_VERSION,
     CONTROLLED_EXPERIMENT_SCHEMA_VERSION,

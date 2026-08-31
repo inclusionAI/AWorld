@@ -282,6 +282,80 @@ def test_resolver_filters_unreleased_self_evolve_skill_candidates(
     assert "legacy_skill" in result.skill_configs
 
 
+def test_resolver_isolated_candidate_overrides_ambient_same_name(
+    tmp_path: Path,
+) -> None:
+    ambient_root = _write_manifest_skill_plugin(
+        tmp_path,
+        plugin_id="ambient-tools",
+        skill_id="agent-browser",
+    )
+    candidate_root = tmp_path / "candidate-overlay"
+    _write_skill(
+        candidate_root,
+        "agent-browser",
+        description="candidate browser instructions",
+        release_state="candidate",
+    )
+
+    result = SkillActivationResolver().resolve(
+        SkillResolverRequest(
+            plugin_roots=(ambient_root,),
+            runtime_scope="session",
+            agent_name="developer",
+            requested_skill_names=("agent-browser",),
+            compatibility_sources=(
+                str(candidate_root / "skills" / "agent-browser"),
+            ),
+            isolated_candidate_sources=(
+                str(candidate_root / "skills" / "agent-browser"),
+            ),
+        )
+    )
+
+    candidate_skill_root = candidate_root / "skills" / "agent-browser"
+    assert result.active_skill_names == ("agent-browser",)
+    assert result.skill_configs["agent-browser"]["description"] == (
+        "candidate browser instructions"
+    )
+    assert result.activation_evidence == (
+        {
+            "skill_name": "agent-browser",
+            "canonical_skill_file": str(
+                (candidate_skill_root / "SKILL.md").resolve()
+            ),
+            "canonical_skill_root": str(candidate_skill_root.resolve()),
+            "package_fingerprint": fingerprint_skill_package(
+                candidate_skill_root
+            ),
+            "source": "aworld_cli_skill_activation_resolver",
+        },
+    )
+
+
+def test_resolver_isolated_candidate_still_requires_explicit_request(
+    tmp_path: Path,
+) -> None:
+    candidate_root = tmp_path / "candidate-overlay"
+    _write_skill(
+        candidate_root,
+        "agent-browser",
+        release_state="candidate",
+    )
+
+    result = SkillActivationResolver().resolve(
+        SkillResolverRequest(
+            plugin_roots=tuple(),
+            runtime_scope="session",
+            agent_name="developer",
+            task_text="agent-browser",
+            isolated_candidate_sources=(str(candidate_root / "skills"),),
+        )
+    )
+
+    assert "agent-browser" not in result.skill_configs
+
+
 def test_resolver_preserves_plugin_execution_entrypoint_metadata(tmp_path: Path) -> None:
     plugin_root = _write_manifest_skill_plugin(
         tmp_path,

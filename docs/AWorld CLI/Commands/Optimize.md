@@ -52,6 +52,55 @@ aworld-cli optimize \
 
 `--judge-model-profile` is the name of a configured CLI model profile. It does not directly set a provider model id. Add `--target skill:<name>` when you want to bypass target inference.
 
+### Targeted Skill evolution contract
+
+Use `--skill-evolution-contract <json>` when the Campaign must converge on a
+specific Skill capability contract instead of treating any verified score
+improvement as completion. The contract binds capability IDs to frozen dataset
+case IDs, supplies required behaviors and preserved invariants to candidate
+generation, and can require multiple consecutive verified cycles.
+
+```json
+{
+  "schema_version": "aworld.self_evolve.skill_evolution_contract.v1",
+  "target_skill_id": "agent-browser",
+  "objective": "Handle large browser output without losing evidence",
+  "capabilities": [
+    {
+      "capability_id": "bounded_large_output",
+      "description": "Read large output with byte-bounded evidence extraction",
+      "case_ids": ["task_large_body", "task_large_tail"],
+      "required": true
+    }
+  ],
+  "preserved_invariants": ["Preserve ordinary navigation behavior"],
+  "minimum_required_coverage": 1.0,
+  "required_stable_cycles": 2
+}
+```
+
+```bash
+aworld-cli optimize \
+  --target skill:agent-browser \
+  --dataset eval.jsonl \
+  --skill-evolution-contract agent-browser.contract.json \
+  --apply verified_only \
+  --max-improvement-cycles 4
+```
+
+A case covers its capability only when candidate execution succeeds and the
+runtime attests both the exact candidate Skill package and an observed
+candidate intervention. Unpublished candidate packages are visible only in
+the isolated self-evolve replay child; normal runtime discovery continues to
+hide `candidate`, `draft`, and `rejected` release states.
+
+For each replay Task, the framework copies the selected package into a
+Task-owned immutable mount and verifies its fingerprint before starting the
+child CLI. The task-time resolver binds its activation evidence to that Task.
+If an explicitly isolated candidate cannot produce this evidence, execution
+fails closed before spending the rollout budget; it cannot silently fall back
+to an ambient same-name Skill.
+
 ### Bounded self-improvement campaigns
 
 `--apply auto_verified` starts a bounded self-improvement Campaign. A Campaign

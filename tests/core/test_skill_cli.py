@@ -922,10 +922,22 @@ def test_run_top_level_command_prefers_task_response_trajectory(
 
 
 def test_direct_run_payload_omits_usage_if_any_iteration_is_incomplete() -> None:
+    activation_evidence = {
+        "skill_name": "agent-browser",
+        "canonical_skill_root": "/tmp/candidate/agent-browser",
+        "package_fingerprint": "sha256:candidate",
+        "source": "aworld_cli_skill_activation_resolver",
+    }
     summary = {
+        # The executor-owned snapshot protects this evidence when a continuous
+        # result wrapper does not preserve its per-iteration copy.
+        "skill_activation_evidence": [activation_evidence],
         "results": [
             {
                 "trajectory": [{"action": {"content": "working"}}],
+                # Both copies may be present in the normal path and must not
+                # inflate the attestation count.
+                "skill_activation_evidence": [activation_evidence],
                 "llm_usage": {
                     "schema_version": "aworld.llm_usage_summary.v1",
                     "call_count": 1,
@@ -949,6 +961,7 @@ def test_direct_run_payload_omits_usage_if_any_iteration_is_incomplete() -> None
 
     assert payload["trajectory_capture_mode"] == "task_response"
     assert "llm_usage" not in payload
+    assert payload["skill_activation_evidence"] == [activation_evidence]
 
 
 def test_run_top_level_command_publishes_atomic_self_evolve_task_response(

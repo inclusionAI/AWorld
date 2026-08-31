@@ -32,6 +32,13 @@ class SkillResolverRequest:
     disabled_skill_names: tuple[str, ...] = ()
     compatibility_sources: tuple[str, ...] = ()
     compatibility_skill_patterns: tuple[str, ...] = ()
+    # Self-evolve replay evaluates an unpublished candidate in an isolated
+    # child process.  These sources are intentionally distinct from ordinary
+    # compatibility sources: they take precedence over ambient installations
+    # and may expose an unreleased skill only when that skill was explicitly
+    # requested.  The replay parent still verifies the exact package
+    # fingerprint from activation evidence before accepting the result.
+    isolated_candidate_sources: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -61,35 +68,79 @@ class SkillActivationResolver:
 
     def _build_registry(
         self, request: SkillResolverRequest
-    ) -> tuple[FrameworkSkillRegistry, set[str]]:
+    ) -> tuple[FrameworkSkillRegistry, set[str], set[str]]:
         providers = []
         compatibility_provider_ids: set[str] = set()
+        isolated_candidate_provider_ids: set[str] = set()
+        seen_provider_ids: set[str] = set()
+
+        # Candidate sources must be registered first so an installed skill
+        # with the same name cannot silently win the registry's first-match
+        # deduplication.
+        for source in request.isolated_candidate_sources:
+            provider = build_compat_provider(source)
+            provider_id = provider.provider_id()
+            if provider_id in seen_provider_ids:
+                continue
+            providers.append(provider)
+            seen_provider_ids.add(provider_id)
+            compatibility_provider_ids.add(provider_id)
+            isolated_candidate_provider_ids.add(provider_id)
 
         for plugin in discover_plugins(request.plugin_roots):
-            providers.append(PluginSkillProvider(plugin))
+            provider = PluginSkillProvider(plugin)
+            provider_id = provider.provider_id()
+            if provider_id in seen_provider_ids:
+                continue
+            providers.append(provider)
+            seen_provider_ids.add(provider_id)
 
         for source in request.compatibility_sources:
             provider = build_compat_provider(source)
+            provider_id = provider.provider_id()
+            if provider_id in seen_provider_ids:
+                continue
             providers.append(provider)
-            compatibility_provider_ids.add(provider.provider_id())
+            seen_provider_ids.add(provider_id)
+            compatibility_provider_ids.add(provider_id)
 
-        return FrameworkSkillRegistry(providers), compatibility_provider_ids
+        return (
+            FrameworkSkillRegistry(providers),
+            compatibility_provider_ids,
+            isolated_candidate_provider_ids,
+        )
 
     def _load_candidates(
         self, request: SkillResolverRequest
     ) -> list[ResolvedSkillCandidate]:
         candidates: list[ResolvedSkillCandidate] = []
         seen: set[str] = set()
-        registry, compatibility_provider_ids = self._build_registry(request)
+        (
+            registry,
+            compatibility_provider_ids,
+            isolated_candidate_provider_ids,
+        ) = self._build_registry(request)
         compatibility_patterns = tuple(request.compatibility_skill_patterns)
+        explicitly_requested = set(request.requested_skill_names)
 
         for descriptor in registry.list_descriptors():
-            if not is_self_evolve_release_visible(descriptor.metadata):
+            is_isolated_candidate = (
+                descriptor.provider_id in isolated_candidate_provider_ids
+                and descriptor.skill_name in explicitly_requested
+            )
+            if (
+                not is_self_evolve_release_visible(descriptor.metadata)
+                and not is_isolated_candidate
+            ):
                 continue
             if (
                 descriptor.provider_id in compatibility_provider_ids
+                and not is_isolated_candidate
                 and compatibility_patterns
-                and not self._matches_patterns(descriptor.skill_name, compatibility_patterns)
+                and not self._matches_patterns(
+                    descriptor.skill_name,
+                    compatibility_patterns,
+                )
             ):
                 continue
 

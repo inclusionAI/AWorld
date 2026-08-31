@@ -635,6 +635,16 @@ async def _run_candidate_population(
     return await population_callable(prompts, max_concurrency)
 
 
+def build_mutation_prompt(
+    request: OptimizerRequest,
+    *,
+    candidate_index: int,
+) -> str:
+    """Build the stable model request used for mutation planning/execution."""
+
+    return _build_mutation_prompt(request, candidate_index=candidate_index)
+
+
 def _build_mutation_prompt(request: OptimizerRequest, *, candidate_index: int) -> str:
     context = request.evolution_context or compile_evolution_context(request)
     payload = context.to_prompt_payload(candidate_index=candidate_index)

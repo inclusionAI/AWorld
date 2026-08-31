@@ -62,6 +62,7 @@ class ZeroBudgetUsageProofProvider(Protocol):
 class BudgetEstimateSource(str, Enum):
     UNKNOWN = "unknown"
     CONFIGURED_COLD_START = "configured_cold_start"
+    REQUEST_DERIVED = "request_derived"
     OBSERVED_ROBUST = "observed_robust"
     OBSERVED_LOWER_BOUND = "observed_lower_bound"
     BACKEND_PROVEN_ZERO = "backend_proven_zero"

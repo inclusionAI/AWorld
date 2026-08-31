@@ -107,6 +107,18 @@ The loop makes three boundaries visible: target selection is limited by register
 
 This keeps the self-evolve loop outside the task response path. Post-run scheduling is best effort: a failed enqueue is logged and does not change the completed `TaskResponse`.
 
+For a named Skill, an optional `SkillEvolutionContract` makes the target
+capabilities part of the Campaign identity. Its capability descriptions and
+preserved invariants enter `EvolutionContext`; each capability is bound to
+frozen dataset case IDs. Coverage is credited only from authoritative replay
+members that succeeded with exact candidate activation attestation and an
+observed candidate intervention. A Campaign cannot complete until required
+coverage and the configured number of consecutive stable cycles are both met.
+The isolated candidate source takes precedence over an ambient same-name
+installation, but this exception applies only to the explicitly requested
+self-evolve candidate; ordinary runtime discovery still filters unpublished
+release states.
+
 ### Cross-run Campaign loop
 
 An `auto_verified` CLI or online background optimize starts a Campaign with a
@@ -229,6 +241,10 @@ If the candidate executes without exchanging that traffic, the typed cause is
 and the framework must repair context or targeting instead of repeatedly mutating
 the candidate. A blocked or not-run candidate has no behavioral observation and
 therefore cannot emit this cause; its control/deadline event remains authoritative.
+The gate also reports `candidate_service_intervention_observed` and
+`candidate_skill_activation_observed` separately, so a missing task-plane
+service call is distinguishable from a missing exact-package activation
+attestation.
 
 ### Candidate Generation and Focused Repair
 

@@ -98,6 +98,7 @@ def _apply_self_evolve_config_to_swarm(swarm, self_evolve_config) -> None:
 def _apply_runtime_skill_paths_to_swarm(
     swarm,
     skill_paths: tuple[str, ...],
+    isolated_candidate_skill_paths: tuple[str, ...] = (),
 ) -> None:
     """Expose explicit CLI skill sources to task-time skill resolution."""
 
@@ -118,6 +119,16 @@ def _apply_runtime_skill_paths_to_swarm(
             if skill_path not in sources:
                 sources.append(skill_path)
         resolver_inputs["compatibility_sources"] = sources
+        isolated_sources = [
+            str(item)
+            for item in resolver_inputs.get("isolated_candidate_sources", [])
+            if str(item).strip()
+        ]
+        for skill_path in isolated_candidate_skill_paths:
+            if skill_path not in isolated_sources:
+                isolated_sources.append(skill_path)
+        if isolated_sources:
+            resolver_inputs["isolated_candidate_sources"] = isolated_sources
         ext["skill_resolver_inputs"] = resolver_inputs
         conf.ext = ext
 
@@ -201,6 +212,22 @@ class CliRuntime(BaseCliRuntime):
                 for item in skill_paths or ()
                 if str(item).strip()
             )
+        )
+        isolated_candidate_roots = os.getenv(
+            "AWORLD_SELF_EVOLVE_ISOLATED_SKILL_ROOTS", ""
+        )
+        requested_isolated_paths = {
+            str(Path(item).expanduser().resolve())
+            for item in isolated_candidate_roots.split(os.pathsep)
+            if item.strip()
+        }
+        # Only explicit --skill-path roots can be promoted to the isolated
+        # candidate lane.  An ambient environment variable cannot expose an
+        # arbitrary unpublished package by itself.
+        self.isolated_candidate_skill_paths = tuple(
+            item
+            for item in self.runtime_skill_paths
+            if item in requested_isolated_paths
         )
     
     def _parse_config(
@@ -452,6 +479,7 @@ class CliRuntime(BaseCliRuntime):
             _apply_runtime_skill_paths_to_swarm(
                 swarm,
                 self.runtime_skill_paths,
+                self.isolated_candidate_skill_paths,
             )
             
             executor = LocalAgentExecutor(
@@ -459,7 +487,11 @@ class CliRuntime(BaseCliRuntime):
                 context_config=context_config, 
                 console=self.cli.console,
                 session_id=self._session_id,
-                hooks=hooks
+                hooks=hooks,
+                runtime_skill_paths=list(self.runtime_skill_paths),
+                isolated_candidate_skill_paths=list(
+                    self.isolated_candidate_skill_paths
+                ),
             )
             self._annotate_executor_source(executor, source_info)
             return executor

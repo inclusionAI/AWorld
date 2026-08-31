@@ -134,7 +134,18 @@ def _trajectory_payload_from_direct_run_summary(
     if isinstance(summary, dict):
         task_response_trajectory: list[dict] = []
         llm_calls: list[dict] = []
-        skill_activation_evidence: list[dict] = []
+        raw_summary_activation_evidence = summary.get(
+            "skill_activation_evidence"
+        )
+        skill_activation_evidence: list[dict] = (
+            [
+                item
+                for item in raw_summary_activation_evidence
+                if isinstance(item, dict)
+            ]
+            if isinstance(raw_summary_activation_evidence, list)
+            else []
+        )
         for result in summary.get("results") or []:
             if not isinstance(result, dict):
                 continue
@@ -165,9 +176,11 @@ def _trajectory_payload_from_direct_run_summary(
             if llm_calls:
                 payload["llm_calls"] = llm_calls
             if skill_activation_evidence:
-                payload["skill_activation_evidence"] = (
-                    skill_activation_evidence
-                )
+                unique_activation_evidence: list[dict] = []
+                for item in skill_activation_evidence:
+                    if item not in unique_activation_evidence:
+                        unique_activation_evidence.append(item)
+                payload["skill_activation_evidence"] = unique_activation_evidence
             return payload
 
     return {
@@ -1322,6 +1335,20 @@ async def _run_direct_mode(
         show_iteration_header=show_iteration_header,
         echo_prompt_as_turn=echo_prompt_as_turn,
     )
+    activation_evidence = getattr(
+        agent_executor,
+        "last_skill_activation_evidence",
+        (),
+    )
+    if activation_evidence:
+        # Preserve a task-bound copy at the direct-run boundary.  The sidecar
+        # builder also reads per-iteration evidence, but a runtime wrapper must
+        # not be able to drop an otherwise valid resolver attestation.
+        summary["skill_activation_evidence"] = [
+            dict(item)
+            for item in activation_evidence
+            if isinstance(item, dict)
+        ]
     drain_pending_self_evolve_jobs = getattr(
         runtime,
         "_drain_pending_self_evolve_jobs",

@@ -78,6 +78,7 @@ class EvolutionContext:
         default_factory=dict
     )
     handbook: Mapping[str, object] = field(default_factory=dict)
+    skill_evolution_contract: Mapping[str, object] = field(default_factory=dict)
 
     def repair_focus_for_candidate(
         self,
@@ -190,6 +191,10 @@ class EvolutionContext:
             "acceptance_constraints": list(self.acceptance_constraints),
             "expected_output": dict(self.expected_output),
         }
+        if self.skill_evolution_contract:
+            payload["skill_evolution_contract"] = dict(
+                self.skill_evolution_contract
+            )
         if self.handbook:
             payload["handbook"] = dict(self.handbook)
         if prompt_repair_focus is not None:
@@ -1019,8 +1024,46 @@ def compile_evolution_context(request: OptimizerRequest) -> EvolutionContext:
         request.replay_requirements
     )
     observed_failures = _feedback_string_values(feedback, "failed_gates")
-    required_behaviors = _feedback_string_values(feedback, "required_behaviors")
-    preserved_behaviors = _preserved_behaviors(request.lesson_records)
+    contract_payload = dict(request.skill_evolution_contract or {})
+    contract_capabilities = contract_payload.get("capabilities")
+    contract_required_behaviors = tuple(
+        str(item.get("description"))
+        for item in (
+            contract_capabilities
+            if isinstance(contract_capabilities, (list, tuple))
+            else ()
+        )
+        if isinstance(item, Mapping)
+        and item.get("required", True) is True
+        and isinstance(item.get("description"), str)
+        and item.get("description")
+    )
+    required_behaviors = tuple(
+        dict.fromkeys(
+            (
+                *_feedback_string_values(feedback, "required_behaviors"),
+                *contract_required_behaviors,
+            )
+        )
+    )
+    contract_invariants = contract_payload.get("preserved_invariants")
+    normalized_contract_invariants = (
+        tuple(
+            str(item)
+            for item in contract_invariants
+            if isinstance(item, str) and item
+        )
+        if isinstance(contract_invariants, (list, tuple))
+        else ()
+    )
+    preserved_behaviors = tuple(
+        dict.fromkeys(
+            (
+                *_preserved_behaviors(request.lesson_records),
+                *normalized_contract_invariants,
+            )
+        )
+    )
     return EvolutionContext(
         schema_version=EVOLUTION_CONTEXT_SCHEMA_VERSION,
         target={
@@ -1099,6 +1142,7 @@ def compile_evolution_context(request: OptimizerRequest) -> EvolutionContext:
             exposed_improvement_signal_ids(request)
         ),
         handbook=handbook,
+        skill_evolution_contract=contract_payload,
     )
 
 

@@ -241,7 +241,10 @@ def test_cleanup_removes_only_expired_raw_artifacts_and_preserves_durable_run_fi
         now=10_000.0,
     )
 
-    assert cleanup["removed_run_count"] == 2
+    assert cleanup["removed_run_count"] == 0
+    assert cleanup["removed_run_ids"] == []
+    assert cleanup["compacted_run_count"] == 2
+    assert cleanup["compacted_run_ids"] == ["run-old", "run-recent"]
     assert (old_run / "replay" / "cand-1" / "result.json").exists()
     assert not (old_run / "replay" / "cand-1" / "workspace").exists()
     assert not (
@@ -368,7 +371,9 @@ def test_cleanup_skips_running_and_interrupted_apply_but_prunes_referenced_termi
         now=10_000.0,
     )
 
-    assert cleanup["removed_run_count"] == 1
+    assert cleanup["removed_run_count"] == 0
+    assert cleanup["compacted_run_count"] == 1
+    assert cleanup["compacted_run_ids"] == ["run-source"]
     assert (artifact_root / "run-running" / "replay").exists()
     assert (artifact_root / "run-apply" / "replay").exists()
     assert (artifact_root / "run-source" / "replay" / "cand-1" / "result.json").exists()

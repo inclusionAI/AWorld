@@ -773,6 +773,7 @@ class SelfImprovementProgress:
     passed_gate_ids: tuple[str, ...] = ()
     candidate_quality: CandidateQualityProgress | None = None
     measurement: "TrustedMeasurementProgress | None" = None
+    covered_capability_ids: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if isinstance(self.deepest_stage_rank, bool) or self.deepest_stage_rank < 0:
@@ -781,6 +782,7 @@ class SelfImprovementProgress:
             "semantic_frontier_ids",
             "constraint_ids",
             "passed_gate_ids",
+            "covered_capability_ids",
         ):
             values = tuple(sorted({str(item) for item in getattr(self, field_name) if str(item)}))
             object.__setattr__(self, field_name, values)
@@ -793,6 +795,10 @@ class SelfImprovementProgress:
                         *self.semantic_frontier_ids,
                         *self.constraint_ids,
                         *(f"passed-gate:{item}" for item in self.passed_gate_ids),
+                        *(
+                            f"covered-capability:{item}"
+                            for item in self.covered_capability_ids
+                        ),
                     )
                 )
             )
@@ -825,6 +831,10 @@ class SelfImprovementProgress:
             return ()
         if not set(previous.passed_gate_ids).issubset(self.passed_gate_ids):
             return ()
+        if not set(previous.covered_capability_ids).issubset(
+            self.covered_capability_ids
+        ):
+            return ()
         quality_delta: tuple[str, ...] = ()
         if self.candidate_quality is not None:
             quality_delta_result = self.candidate_quality.delta_from(
@@ -855,6 +865,11 @@ class SelfImprovementProgress:
             f"passed-gate:{item}"
             for item in set(self.passed_gate_ids) - set(previous.passed_gate_ids)
         )
+        delta.update(
+            f"covered-capability:{item}"
+            for item in set(self.covered_capability_ids)
+            - set(previous.covered_capability_ids)
+        )
         if self.deepest_stage_rank > previous.deepest_stage_rank:
             delta.add(f"stage-rank:{self.deepest_stage_rank}")
         return tuple(sorted(delta))
@@ -876,6 +891,7 @@ class SelfImprovementProgress:
                 if self.measurement is not None
                 else None
             ),
+            "covered_capability_ids": list(self.covered_capability_ids),
         }
 
     @classmethod
@@ -900,6 +916,9 @@ class SelfImprovementProgress:
                 TrustedMeasurementProgress.from_dict(raw_measurement)
                 if isinstance(raw_measurement, Mapping)
                 else None
+            ),
+            covered_capability_ids=_string_tuple(
+                value.get("covered_capability_ids", ())
             ),
         )
 
@@ -1001,6 +1020,7 @@ class SelfImprovementCampaign:
     latest_measurement_outcome: CampaignMeasurementOutcomeV2 | None = None
     latest_report_path: str | None = None
     goal_handoff_path: str | None = None
+    contract_stable_cycle_count: int = 0
 
     def __post_init__(self) -> None:
         _validate_id(self.campaign_id, "campaign_id")
@@ -1060,6 +1080,14 @@ class SelfImprovementCampaign:
             raise ValueError(
                 "campaign cumulative authoritative candidate count must be non-negative"
             )
+        if (
+            isinstance(self.contract_stable_cycle_count, bool)
+            or not isinstance(self.contract_stable_cycle_count, int)
+            or not 0 <= self.contract_stable_cycle_count <= self.cycle_index
+        ):
+            raise ValueError(
+                "contract stable cycle count must be within campaign lineage"
+            )
         for fingerprint in (
             self.request_fingerprint,
             self.source_fingerprint,
@@ -1093,6 +1121,19 @@ class SelfImprovementCampaign:
             or self.latest_disposition.kind is not SelfImprovementDispositionKind.COMPLETE
         ):
             raise ValueError("complete campaign requires a complete disposition")
+        raw_contract = request.get("skill_evolution_contract")
+        if (
+            self.status is SelfImprovementCampaignStatus.COMPLETE
+            and isinstance(raw_contract, Mapping)
+        ):
+            required_stable_cycles = _positive_int(
+                raw_contract.get("required_stable_cycles", 1),
+                "required_stable_cycles",
+            )
+            if self.contract_stable_cycle_count < required_stable_cycles:
+                raise ValueError(
+                    "complete campaign requires stable Skill contract cycles"
+                )
         if (
             self.status is SelfImprovementCampaignStatus.COMPLETE
             and self.latest_measurement_outcome is not None
@@ -1165,6 +1206,7 @@ class SelfImprovementCampaign:
             ),
             "latest_report_path": self.latest_report_path,
             "goal_handoff_path": self.goal_handoff_path,
+            "contract_stable_cycle_count": self.contract_stable_cycle_count,
         }
 
     @classmethod
@@ -1292,6 +1334,10 @@ class SelfImprovementCampaign:
             ),
             latest_report_path=_optional_string(value.get("latest_report_path")),
             goal_handoff_path=_optional_string(value.get("goal_handoff_path")),
+            contract_stable_cycle_count=_non_negative_int(
+                value.get("contract_stable_cycle_count", 0),
+                "contract_stable_cycle_count",
+            ),
         )
 
 
@@ -1338,6 +1384,30 @@ class SelfImprovementCampaignController:
             )
         if not _request_has_source(persistent):
             raise ValueError("a self-improvement campaign requires an eval source")
+        raw_skill_evolution_contract = persistent.get(
+            "skill_evolution_contract"
+        )
+        if isinstance(raw_skill_evolution_contract, Mapping):
+            from aworld.self_evolve.skill_evolution_contract import (
+                SkillEvolutionContract,
+            )
+
+            contract = SkillEvolutionContract.from_dict(
+                raw_skill_evolution_contract
+            )
+            if contract.required_stable_cycles > max_cycles:
+                raise ValueError(
+                    "max_improvement_cycles must cover required_stable_cycles"
+                )
+            authoritative_limit = _positive_int(
+                persistent.get("max_full_evaluation_candidates") or 3,
+                "max_full_evaluation_candidates",
+            )
+            if contract.required_stable_cycles > authoritative_limit:
+                raise ValueError(
+                    "max_full_evaluation_candidates must cover "
+                    "required_stable_cycles"
+                )
         request_fingerprint = _fingerprint(persistent)
         source_snapshot = _source_snapshot(
             persistent,
@@ -1462,13 +1532,33 @@ class SelfImprovementCampaignController:
             )
             self.store.write_campaign(exhausted)
             return exhausted, _campaign_summary(exhausted, {})
+        stable_cycle_reserve = 0
+        raw_contract = campaign.request.get("skill_evolution_contract")
+        if isinstance(raw_contract, Mapping):
+            raw_required_stable_cycles = raw_contract.get(
+                "required_stable_cycles", 1
+            )
+            required_stable_cycles = _positive_int(
+                raw_required_stable_cycles,
+                "required_stable_cycles",
+            )
+            stable_cycle_reserve = max(
+                0,
+                required_stable_cycles
+                - campaign.contract_stable_cycle_count
+                - 1,
+            )
+        available_authoritative_candidates = max(
+            1,
+            remaining_authoritative_candidates - stable_cycle_reserve,
+        )
         request["max_full_evaluation_candidates"] = min(
             _positive_int(
                 request.get("max_full_evaluation_candidates")
                 or authoritative_limit,
                 "max_full_evaluation_candidates",
             ),
-            remaining_authoritative_candidates,
+            available_authoritative_candidates,
         )
         request.pop("_campaign_total_run_token_budget", None)
         next_cycle = campaign.cycle_index + 1
@@ -1567,6 +1657,55 @@ class SelfImprovementCampaignController:
             report,
             previous_progress=campaign.latest_progress,
         )
+        contract_stable_cycle_count = campaign.contract_stable_cycle_count
+        skill_evolution = report.get("skill_evolution")
+        if isinstance(skill_evolution, Mapping):
+            required_stable_cycles = _positive_int(
+                skill_evolution.get("required_stable_cycles", 1),
+                "required_stable_cycles",
+            )
+            if (
+                disposition.kind is SelfImprovementDispositionKind.COMPLETE
+                and skill_evolution.get("coverage_satisfied") is True
+            ):
+                contract_stable_cycle_count = (
+                    campaign.contract_stable_cycle_count + 1
+                )
+                if contract_stable_cycle_count < required_stable_cycles:
+                    disposition = SelfImprovementDisposition(
+                        kind=SelfImprovementDispositionKind.CONTINUE_CAMPAIGN,
+                        reason_code="skill_contract_stability_pending",
+                        owner="campaign",
+                        stage="held_out_verification",
+                        scope="candidate",
+                        repairable=True,
+                        progress_delta_ids=disposition.progress_delta_ids,
+                    )
+            elif skill_evolution.get("coverage_satisfied") is not True:
+                contract_stable_cycle_count = 0
+            skill_evolution = dict(skill_evolution)
+            skill_evolution.update(
+                {
+                    "stable_cycle_count": contract_stable_cycle_count,
+                    "converged": bool(
+                        skill_evolution.get("coverage_satisfied") is True
+                        and contract_stable_cycle_count
+                        >= required_stable_cycles
+                    ),
+                }
+            )
+            report["skill_evolution"] = skill_evolution
+        elif (
+            isinstance(
+                campaign.request.get("skill_evolution_contract"), Mapping
+            )
+            and disposition.owner == "candidate"
+        ):
+            # Candidate-owned failure before authoritative replay breaks a
+            # consecutive verification streak. Framework/measurement retries
+            # preserve the last verified streak because they did not evaluate
+            # a new candidate outcome.
+            contract_stable_cycle_count = 0
         try:
             usage = campaign.cumulative_usage + campaign_usage_from_report(report)
         except ValueError:
@@ -1812,6 +1951,7 @@ class SelfImprovementCampaignController:
             latest_measurement_outcome=measurement_outcome,
             latest_report_path=str(report_path),
             goal_handoff_path=None,
+            contract_stable_cycle_count=contract_stable_cycle_count,
             measurement_ledger=measurement_ledger,
             measurement_pending_run_id=(
                 getattr(measurement_checkpoint, "source_run_id", actual_run_id)
@@ -1988,6 +2128,9 @@ class SelfImprovementCampaignController:
             ),
             "exhaustion_axes": list(_campaign_exhaustion_axes(advanced)),
             "checkpoint_migration": checkpoint_migration,
+            "contract_stable_cycle_count": (
+                advanced.contract_stable_cycle_count
+            ),
         }
         report["self_improvement_disposition"] = disposition.to_dict()
         if measurement_outcome is not None:
@@ -6194,6 +6337,12 @@ def self_improvement_progress(report: Mapping[str, Any]) -> SelfImprovementProgr
                 deepest = max(deepest, _STAGE_RANK.get(gate, 0))
     for event in events:
         deepest = max(deepest, _STAGE_RANK.get(str(event.get("stage") or ""), 0))
+    raw_skill_evolution = report.get("skill_evolution")
+    covered_capability_ids = (
+        _string_tuple(raw_skill_evolution.get("covered_capability_ids", ()))
+        if isinstance(raw_skill_evolution, Mapping)
+        else ()
+    )
     return SelfImprovementProgress(
         deepest_stage_rank=deepest,
         semantic_frontier_ids=semantic_ids,
@@ -6201,6 +6350,7 @@ def self_improvement_progress(report: Mapping[str, Any]) -> SelfImprovementProgr
         passed_gate_ids=tuple(passed_gates),
         candidate_quality=_candidate_quality_progress(report),
         measurement=_trusted_measurement_progress(report),
+        covered_capability_ids=covered_capability_ids,
     )
 
 
@@ -6471,6 +6621,20 @@ def derive_self_improvement_disposition(
         _report_has_repairable_candidate_prerequisite_failure(report)
         and not _report_has_authoritative_measurement_observation(report)
     )
+    skill_evolution = report.get("skill_evolution")
+    if (
+        isinstance(skill_evolution, Mapping)
+        and skill_evolution.get("coverage_satisfied") is not True
+    ):
+        return SelfImprovementDisposition(
+            kind=SelfImprovementDispositionKind.CONTINUE_CANDIDATE,
+            reason_code="skill_contract_coverage_incomplete",
+            owner="candidate",
+            stage="held_out_verification",
+            scope="candidate",
+            repairable=True,
+            progress_delta_ids=delta,
+        )
     measurement_outcome = campaign_measurement_outcome_from_report(report)
     if measurement_outcome is not None and not candidate_prerequisite_blocked:
         return _measurement_outcome_disposition(
@@ -7572,6 +7736,9 @@ def _campaign_summary(
             ),
             "campaign_exhaustion_axes": list(
                 _campaign_exhaustion_axes(campaign)
+            ),
+            "campaign_contract_stable_cycle_count": (
+                campaign.contract_stable_cycle_count
             ),
         }
     )
