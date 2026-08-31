@@ -544,7 +544,7 @@ class LLMModel:
             },
         }
 
-    def _begin_llm_call_record(
+    def _unsafe_begin_llm_call_record(
         self,
         *,
         context: Context | None,
@@ -646,7 +646,17 @@ class LLMModel:
             llm_call["correlation"] = {"status": "compiler_call_not_found"}
         context.append_llm_call(llm_call)
 
-    def _finish_llm_call_record(
+    def _begin_llm_call_record(self, **kwargs) -> None:
+        """Observe request start without changing provider-call semantics."""
+        try:
+            self._unsafe_begin_llm_call_record(**kwargs)
+        except Exception as exc:
+            logger.warning(
+                "LLM request capture failed before provider call; error_type={}",
+                type(exc).__name__,
+            )
+
+    def _unsafe_finish_llm_call_record(
         self,
         *,
         context: Context | None,
@@ -687,6 +697,16 @@ class LLMModel:
                 )
             llm_calls[index] = updated
             return
+
+    def _finish_llm_call_record(self, **kwargs) -> None:
+        """Observe request completion without replacing success or primary failure."""
+        try:
+            self._unsafe_finish_llm_call_record(**kwargs)
+        except Exception as exc:
+            logger.warning(
+                "LLM request capture failed at completion; error_type={}",
+                type(exc).__name__,
+            )
 
     def _apply_updated_output(self, response: ModelResponse, updated_output: Any, *, sync_mode: bool = False) -> ModelResponse:
         if updated_output is None:
