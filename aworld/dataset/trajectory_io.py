@@ -93,6 +93,56 @@ def _is_sequence(value: Any) -> bool:
     return isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray))
 
 
+def _validate_projection_consistency(
+    build_result: TrajectoryBuildResult,
+    trajectory: Sequence[Any] | None,
+    *,
+    label: str = "",
+    require_nonempty_checksum: bool,
+) -> None:
+    """Reject contradictions between one build result and its delivered projection."""
+
+    prefix = f"{label} " if label else ""
+    has_inline = trajectory is not None
+    inline_count = len(trajectory) if has_inline else 0
+    has_ref = build_result.trajectory_ref is not None
+    if has_inline and has_ref:
+        raise TrajectoryIOError(
+            f"{prefix}inline trajectory and trajectory_ref are mutually exclusive"
+        )
+    if build_result.status is TrajectoryBuildStatus.COMPLETE and not (has_inline or has_ref):
+        raise TrajectoryIOError(
+            f"complete {prefix}trajectory requires inline data or trajectory_ref"
+        )
+    if build_result.status in {
+        TrajectoryBuildStatus.EMPTY,
+        TrajectoryBuildStatus.FAILED,
+    } and (inline_count or has_ref):
+        raise TrajectoryIOError(
+            f"{build_result.status.value} {prefix}trajectory cannot contain "
+            "inline data or trajectory_ref"
+        )
+    if has_inline and build_result.persisted_items != inline_count:
+        raise TrajectoryIOError(
+            f"{prefix}inline trajectory length does not match build_result.persisted_items"
+        )
+    if not has_inline and not has_ref and build_result.persisted_items != 0:
+        raise TrajectoryIOError(
+            f"{prefix}trajectory without inline data or trajectory_ref cannot claim persisted items"
+        )
+    if inline_count and require_nonempty_checksum and build_result.trajectory_checksum is None:
+        raise TrajectoryIOError(
+            f"non-empty {prefix}inline trajectory requires trajectory_checksum"
+        )
+    if has_inline and build_result.trajectory_checksum is not None:
+        actual = compute_trajectory_checksum(trajectory)
+        if actual != build_result.trajectory_checksum:
+            raise TrajectoryChecksumMismatchError(
+                f"{prefix}inline trajectory does not match "
+                "build_result.trajectory_checksum"
+            )
+
+
 @dataclass(frozen=True, slots=True)
 class TrajectoryEnvelope:
     """One immutable ``aworld.trajectory.v2`` JSONL record."""
@@ -114,17 +164,11 @@ class TrajectoryEnvelope:
         if any(not isinstance(call, Mapping) for call in self.llm_calls):
             raise TypeError("llm_calls entries must be mappings")
 
-        has_inline = self.trajectory is not None
-        has_ref = self.build_result.trajectory_ref is not None
-        if self.build_result.status is TrajectoryBuildStatus.COMPLETE and not (has_inline or has_ref):
-            raise ValueError("complete trajectory requires inline data or trajectory_ref")
-
-        if has_inline and self.build_result.trajectory_checksum is not None:
-            actual = compute_trajectory_checksum(self.trajectory or [])
-            if actual != self.build_result.trajectory_checksum:
-                raise TrajectoryChecksumMismatchError(
-                    "inline trajectory does not match build_result.trajectory_checksum"
-                )
+        _validate_projection_consistency(
+            self.build_result,
+            self.trajectory,
+            require_nonempty_checksum=True,
+        )
 
     def _payload_without_record_checksum(self) -> dict[str, Any]:
         build = self.build_result.to_dict()
@@ -381,20 +425,62 @@ def _legacy_snapshot(
     task_id = payload.get("task_id")
     if task_id is None:
         raise TrajectoryIOError("legacy trajectory record is missing task_id")
+    embedded_build_payload = _decode_nested_json(payload.get("trajectory_build_result"))
+    if embedded_build_payload is not None and not isinstance(embedded_build_payload, Mapping):
+        raise TrajectoryIOError("legacy trajectory_build_result must decode to an object")
+
+    embedded_build_result = None
+    if embedded_build_payload is not None:
+        try:
+            embedded_build_result = TrajectoryBuildResult.from_dict(embedded_build_payload)
+        except (TypeError, ValueError, KeyError) as exc:
+            raise TrajectoryIOError(f"invalid legacy trajectory_build_result: {exc}") from exc
+        if str(task_id) != embedded_build_result.task_id:
+            raise TrajectoryIOError(
+                "legacy task_id does not match trajectory_build_result.task_id"
+            )
+
     trajectory = _decode_nested_json(payload.get("trajectory"))
-    if not isinstance(trajectory, list):
+    if trajectory is None and embedded_build_result is not None:
+        if (
+            embedded_build_result.persisted_items == 0
+            and embedded_build_result.status is not TrajectoryBuildStatus.COMPLETE
+        ):
+            trajectory = []
+    if trajectory is not None and not isinstance(trajectory, list):
+        raise TrajectoryIOError("legacy trajectory must decode to a list or null")
+    if trajectory is None and embedded_build_result is None:
         raise TrajectoryIOError("legacy trajectory must decode to a list")
     llm_calls = _decode_nested_json(payload.get("llm_calls", []))
     if not isinstance(llm_calls, list):
         raise TrajectoryIOError("legacy llm_calls must decode to a list")
     token_ids = _decode_nested_json(payload.get("token_id_trajectory"))
-    build_result = {
-        "status": "complete" if trajectory else "empty",
-        "fidelity": TrajectoryFidelity.LEGACY.value,
-        "source_kind": "legacy_log",
-        "persisted_items": len(trajectory),
-        "trajectory_checksum": None,
-    }
+    if embedded_build_result is None:
+        build_result = {
+            "status": "complete" if trajectory else "empty",
+            "fidelity": TrajectoryFidelity.LEGACY.value,
+            "source_kind": "legacy_log",
+            "persisted_items": len(trajectory or []),
+            "trajectory_checksum": None,
+        }
+        trajectory_ref = None
+        trajectory_checksum = None
+    else:
+        trajectory_ref = embedded_build_result.trajectory_ref
+        _validate_projection_consistency(
+            embedded_build_result,
+            trajectory,
+            label="legacy",
+            # Old logger transport did not promise a trajectory checksum. Preserve
+            # checksum-less partial records, but verify every checksum it does carry.
+            require_nonempty_checksum=False,
+        )
+        trajectory_checksum = embedded_build_result.trajectory_checksum
+        build_result = embedded_build_result.to_dict()
+        build_result["source_build_fidelity"] = build_result["fidelity"]
+        build_result["source_build_kind"] = build_result["source_kind"]
+        build_result["fidelity"] = TrajectoryFidelity.LEGACY.value
+        build_result["source_kind"] = "legacy_log"
     return TrajectorySnapshot(
         schema_version="legacy",
         task_id=str(task_id),
@@ -405,8 +491,8 @@ def _legacy_snapshot(
         is_sub_task=bool(payload.get("is_sub_task", False)),
         fidelity=TrajectoryFidelity.LEGACY.value,
         build_result=build_result,
-        trajectory_ref=None,
-        trajectory_checksum=None,
+        trajectory_ref=trajectory_ref,
+        trajectory_checksum=trajectory_checksum,
         record_checksum=None,
         source=source,
         line_number=line_number,

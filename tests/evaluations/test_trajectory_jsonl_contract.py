@@ -6,6 +6,7 @@ import os
 import stat
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -24,6 +25,7 @@ from aworld.dataset.trajectory_io import (
     TrajectoryChecksumMismatchError,
     TrajectoryEnvelope,
     TrajectoryFormat,
+    TrajectoryIOError,
     TrajectoryJsonlSink,
     TrajectoryRevisionConflictError,
     TrajectorySinkConfig,
@@ -147,6 +149,75 @@ def test_v2_checksum_mutation_is_a_hard_failure(tmp_path: Path) -> None:
         read_trajectory_records(path)
 
 
+def test_v2_rejects_control_plane_and_inline_data_contradictions() -> None:
+    step = _step()
+    empty = _build_result(
+        [],
+        status=TrajectoryBuildStatus.EMPTY,
+        fidelity=TrajectoryFidelity.UNAVAILABLE,
+        reason_code=TrajectoryReasonCode.EXECUTION_NOT_STARTED,
+    )
+    with pytest.raises(TrajectoryIOError, match="empty trajectory cannot contain"):
+        TrajectoryEnvelope(build_result=empty, revision=1, trajectory=[step])
+
+    failed_with_ref = _build_result(
+        [step],
+        status=TrajectoryBuildStatus.FAILED,
+        fidelity=TrajectoryFidelity.BUILD_FAILED,
+        reason_code=TrajectoryReasonCode.TRAJECTORY_BUILD_FAILED,
+        trajectory_ref="artifact://trajectory/failed",
+    )
+    with pytest.raises(TrajectoryIOError, match="failed trajectory cannot contain"):
+        TrajectoryEnvelope(build_result=failed_with_ref, revision=1, trajectory=None)
+
+    complete_with_ref = _build_result(
+        [step], trajectory_ref="artifact://trajectory/task-1"
+    )
+    with pytest.raises(TrajectoryIOError, match="mutually exclusive"):
+        TrajectoryEnvelope(build_result=complete_with_ref, revision=1, trajectory=[step])
+
+    mismatched_count = replace(_build_result([step]), persisted_items=2)
+    with pytest.raises(TrajectoryIOError, match="persisted_items"):
+        TrajectoryEnvelope(build_result=mismatched_count, revision=1, trajectory=[step])
+
+    partial_without_checksum = replace(
+        _build_result(
+            [step],
+            status=TrajectoryBuildStatus.PARTIAL,
+            fidelity=TrajectoryFidelity.PARTIAL,
+            reason_code=TrajectoryReasonCode.SOURCE_NOT_FINALIZED,
+        ),
+        trajectory_checksum=None,
+    )
+    with pytest.raises(TrajectoryIOError, match="requires trajectory_checksum"):
+        TrajectoryEnvelope(
+            build_result=partial_without_checksum,
+            revision=1,
+            trajectory=[step],
+        )
+
+
+def test_v2_deserialization_reapplies_envelope_semantic_validation() -> None:
+    result = _build_result(
+        [],
+        status=TrajectoryBuildStatus.EMPTY,
+        fidelity=TrajectoryFidelity.UNAVAILABLE,
+        reason_code=TrajectoryReasonCode.EXECUTION_NOT_STARTED,
+    )
+    payload = TrajectoryEnvelope(
+        build_result=result, revision=1, trajectory=[]
+    ).to_dict()
+    payload["trajectory"] = [_step("contradiction")]
+    integrity = dict(payload["integrity"])
+    integrity.pop("record_checksum")
+    payload["integrity"]["record_checksum"] = compute_record_checksum(
+        {**payload, "integrity": integrity}
+    )
+
+    with pytest.raises(TrajectoryIOError, match="empty trajectory cannot contain"):
+        TrajectoryEnvelope.from_dict(payload)
+
+
 def test_v2_complete_record_can_reference_a_checksummed_artifact_without_inline_steps(
     tmp_path: Path,
 ) -> None:
@@ -227,7 +298,141 @@ def test_reader_handles_real_loguru_header_python_repr_and_nested_json(tmp_path:
     assert result.records[0].revision == 0
     assert result.records[0].llm_calls == [{"request_id": "legacy-request"}]
     assert result.records[0].token_id_trajectory == {"agent": [1, 2]}
+    assert result.records[0].build_result["status"] == "complete"
     assert any(item.code == "ignored_header" for item in result.diagnostics)
+
+
+def test_legacy_reader_preserves_embedded_partial_build_metadata(tmp_path: Path) -> None:
+    path = tmp_path / "trajectory.log"
+    trajectory = [_step("partial")]
+    result = _build_result(
+        trajectory,
+        task_id="legacy-partial",
+        status=TrajectoryBuildStatus.PARTIAL,
+        fidelity=TrajectoryFidelity.PARTIAL,
+        reason_code=TrajectoryReasonCode.SOURCE_NOT_FINALIZED,
+    )
+    path.write_text(
+        repr(
+            {
+                "task_id": "legacy-partial",
+                "is_sub_task": True,
+                "trajectory": json.dumps(trajectory),
+                "llm_calls": json.dumps([]),
+                "trajectory_build_result": result.to_dict(),
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    record = read_trajectory_records(path).records[0]
+    assert record.schema_version == "legacy"
+    assert record.fidelity == TrajectoryFidelity.LEGACY.value
+    assert record.build_result["status"] == TrajectoryBuildStatus.PARTIAL.value
+    assert record.build_result["fidelity"] == TrajectoryFidelity.LEGACY.value
+    assert record.build_result["source_kind"] == "legacy_log"
+    assert record.build_result["source_build_fidelity"] == TrajectoryFidelity.PARTIAL.value
+    assert record.build_result["source_build_kind"] == TrajectorySourceKind.EVENT_STATE.value
+    assert record.build_result["reason_code"] == TrajectoryReasonCode.SOURCE_NOT_FINALIZED.value
+    assert record.build_result["persisted_items"] == 1
+    assert record.trajectory_checksum == result.trajectory_checksum
+    assert record.is_sub_task is True
+
+
+@pytest.mark.parametrize(
+    ("status", "fidelity", "reason"),
+    [
+        (
+            TrajectoryBuildStatus.EMPTY,
+            TrajectoryFidelity.UNAVAILABLE,
+            TrajectoryReasonCode.EXECUTION_NOT_STARTED,
+        ),
+        (
+            TrajectoryBuildStatus.FAILED,
+            TrajectoryFidelity.BUILD_FAILED,
+            TrajectoryReasonCode.TRAJECTORY_BUILD_FAILED,
+        ),
+    ],
+)
+def test_legacy_reader_normalizes_embedded_empty_and_failed_without_synthetic_steps(
+    tmp_path: Path,
+    status: TrajectoryBuildStatus,
+    fidelity: TrajectoryFidelity,
+    reason: TrajectoryReasonCode,
+) -> None:
+    path = tmp_path / f"legacy-{status.value}.log"
+    result = _build_result(
+        [],
+        task_id=f"legacy-{status.value}",
+        status=status,
+        fidelity=fidelity,
+        reason_code=reason,
+    )
+    path.write_text(
+        repr(
+            {
+                "task_id": result.task_id,
+                "trajectory": json.dumps([]),
+                "llm_calls": json.dumps([]),
+                "trajectory_build_result": result.to_dict(),
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    record = read_trajectory_records(path).records[0]
+    assert record.fidelity == TrajectoryFidelity.LEGACY.value
+    assert record.trajectory == []
+    assert record.build_result["status"] == status.value
+    assert record.build_result["reason_code"] == reason.value
+    assert record.build_result["fidelity"] == TrajectoryFidelity.LEGACY.value
+    assert record.build_result["source_kind"] == "legacy_log"
+    assert record.build_result["source_build_fidelity"] == fidelity.value
+    assert record.build_result["source_build_kind"] == TrajectorySourceKind.EVENT_STATE.value
+    normalized = list(iter_aworld_trajectory_records(path))[0][1]
+    assert normalized["steps"] == []
+    assert normalized["final_answer"] is None
+
+
+def test_legacy_embedded_checksum_mutation_is_a_hard_failure(tmp_path: Path) -> None:
+    path = tmp_path / "trajectory.log"
+    result = _build_result([_step("original")], task_id="legacy-checksum")
+    path.write_text(
+        repr(
+            {
+                "task_id": result.task_id,
+                "trajectory": json.dumps([_step("mutated")]),
+                "llm_calls": json.dumps([]),
+                "trajectory_build_result": result.to_dict(),
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(TrajectoryChecksumMismatchError, match="legacy inline trajectory"):
+        read_trajectory_records(path)
+
+
+def test_old_legacy_empty_record_remains_compatible(tmp_path: Path) -> None:
+    path = tmp_path / "trajectory.log"
+    path.write_text(
+        repr({"task_id": "old-empty", "trajectory": json.dumps([])}) + "\n",
+        encoding="utf-8",
+    )
+
+    record = read_trajectory_records(path).records[0]
+    assert record.trajectory == []
+    assert record.fidelity == TrajectoryFidelity.LEGACY.value
+    assert record.build_result == {
+        "status": "empty",
+        "fidelity": "legacy",
+        "source_kind": "legacy_log",
+        "persisted_items": 0,
+        "trajectory_checksum": None,
+    }
 
 
 def test_mixed_reader_prefers_highest_v2_revision_and_latest_legacy(tmp_path: Path) -> None:
