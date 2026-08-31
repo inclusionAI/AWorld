@@ -267,6 +267,24 @@ class TrajectorySinkConfig:
             path=os.environ.get("AWORLD_TRAJECTORY_V2_PATH") or None,
         )
 
+    @classmethod
+    def from_sources(cls, config: Mapping[str, Any] | None = None) -> "TrajectorySinkConfig":
+        """Resolve task-local settings over process defaults.
+
+        Keeping this resolution next to the sink prevents the runner from
+        developing a second interpretation of trajectory output modes.
+        """
+
+        env = cls.from_env()
+        values = config or {}
+        return cls(
+            format=values.get("trajectory_format") or env.format,
+            path=values.get("trajectory_v2_path") or env.path,
+            max_record_bytes=(
+                values.get("trajectory_max_record_bytes") or env.max_record_bytes
+            ),
+        )
+
 
 def _path_lock(path: Path) -> threading.Lock:
     key = str(path.resolve())

@@ -28,6 +28,11 @@ from aworld.core.trajectory import (
     compute_trajectory_checksum,
 )
 from aworld.dataset.trajectory_dataset import TrajectoryDataset
+from aworld.dataset.trajectory_io import (
+    TrajectoryEnvelope,
+    TrajectoryJsonlSink,
+    TrajectorySinkConfig,
+)
 from aworld.core.trajectory_update_registry import (
     TrajectoryDrainResult,
     TrajectoryRegistrySealedError,
@@ -897,7 +902,8 @@ class TaskEventRunner(TaskRunner):
 
             logger.debug(f"{self.task.id}|{self.task.is_sub_task}#trajectory from context: {trajectory}")
             logger.debug(f"{self.task.id}|{self.task.is_sub_task}#task_graph from context: {self.context._task_graph}")
-            if inline_trajectory:
+            sink_config = TrajectorySinkConfig.from_sources(runner_conf)
+            if inline_trajectory and sink_config.writes_legacy:
                 token_id_traj = None
                 if self.context.token_id_traj:
                     token_id_traj = json.dumps(to_serializable(self.context.token_id_traj))
@@ -913,6 +919,30 @@ class TaskEventRunner(TaskRunner):
                     trajectory_logger.info(f"{res}")
                 except Exception as exc:
                     logger.warning("Failed to emit finalized trajectory log: {}", exc)
+
+            if sink_config.writes_v2:
+                token_id_trajectory = (
+                    to_serializable(self.context.token_id_traj)
+                    if self.context.token_id_traj
+                    else None
+                )
+                envelope = TrajectoryEnvelope(
+                    build_result=build_result,
+                    # A task produces one immutable finalized snapshot. Reusing a
+                    # task id for a distinct run is an identity conflict rather
+                    # than an update-sequence-derived artifact revision.
+                    revision=1,
+                    trajectory=inline_trajectory,
+                    llm_calls=copy.deepcopy(llm_calls) if isinstance(llm_calls, list) else [],
+                    token_id_trajectory=token_id_trajectory,
+                    is_sub_task=self.task.is_sub_task,
+                )
+                try:
+                    await asyncio.to_thread(TrajectoryJsonlSink(sink_config).append, envelope)
+                except Exception as exc:
+                    # Export is an observability boundary: it must not rewrite
+                    # execution success or the already-bound SAR build result.
+                    logger.warning("Failed to emit trajectory JSONL v2 snapshot: {}", exc)
 
             self._trajectory_finalize_result = build_result
             registry.release(self.task.id)

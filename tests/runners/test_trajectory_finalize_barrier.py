@@ -13,6 +13,7 @@ from aworld.core.trajectory import (
     TrajectoryReasonCode,
 )
 from aworld.core.trajectory_update_registry import TrajectoryUpdateOutcome
+from aworld.dataset.trajectory_io import read_trajectory_records
 from aworld.runners.event_runner import TaskEventRunner
 
 
@@ -252,3 +253,80 @@ async def test_runner_cancellation_finalizes_before_reraising(monkeypatch):
         await asyncio.wait_for(run_task, timeout=2)
     assert runner._task_response.trajectory_build_result is not None
     assert runner._task_response.trajectory_build_result.status is TrajectoryBuildStatus.EMPTY
+
+
+@pytest.mark.asyncio
+async def test_dual_mode_writes_v2_only_after_finalized_snapshot(tmp_path, monkeypatch):
+    runner, context = _runner()
+    registry = context.trajectory_update_registry
+    registry.open("task-1")
+    jsonl_path = tmp_path / "trajectory.jsonl"
+    runner.conf.trajectory_format = "dual"
+    runner.conf.trajectory_v2_path = str(jsonl_path)
+    legacy_records = []
+    release = asyncio.Event()
+    trajectory = []
+
+    async def delayed_update():
+        await release.wait()
+        trajectory.append(_Step())
+        return TrajectoryUpdateOutcome(True, True, persisted=True)
+
+    registry.schedule(
+        task_id="task-1",
+        logical_step_id="message-1",
+        revision=2,
+        update_factory=delayed_update,
+    )
+    monkeypatch.setattr(
+        context,
+        "get_task_trajectory",
+        lambda task_id, **kwargs: _async_result(list(trajectory)),
+    )
+    monkeypatch.setattr(
+        "aworld.runners.event_runner.trajectory_logger.info",
+        legacy_records.append,
+    )
+
+    finalize = asyncio.create_task(runner._save_trajectories())
+    await asyncio.sleep(0)
+    assert not jsonl_path.exists()
+    release.set()
+    result = await finalize
+
+    assert len(legacy_records) == 1
+    snapshots = read_trajectory_records(jsonl_path, include_rotations=False).records
+    assert len(snapshots) == 1
+    snapshot = snapshots[0]
+    assert snapshot.task_id == "task-1"
+    assert snapshot.trajectory == runner._task_response.trajectory
+    assert snapshot.trajectory_checksum == result.trajectory_checksum
+    assert snapshot.build_result == result.to_dict()
+
+
+@pytest.mark.asyncio
+async def test_v2_mode_persists_typed_empty_without_legacy_record(tmp_path, monkeypatch):
+    runner, context = _runner()
+    context.trajectory_update_registry.open("task-1")
+    jsonl_path = tmp_path / "trajectory.jsonl"
+    runner.conf.trajectory_format = "jsonl_v2"
+    runner.conf.trajectory_v2_path = str(jsonl_path)
+    legacy_records = []
+    monkeypatch.setattr(
+        context,
+        "get_task_trajectory",
+        lambda task_id, **kwargs: _async_result([]),
+    )
+    monkeypatch.setattr(
+        "aworld.runners.event_runner.trajectory_logger.info",
+        legacy_records.append,
+    )
+
+    result = await runner._save_trajectories()
+
+    assert result.status is TrajectoryBuildStatus.EMPTY
+    assert legacy_records == []
+    snapshots = read_trajectory_records(jsonl_path, include_rotations=False).records
+    assert len(snapshots) == 1
+    assert snapshots[0].trajectory == []
+    assert snapshots[0].build_result["reason_code"] == "trajectory_storage_empty"
