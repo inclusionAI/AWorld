@@ -36,7 +36,7 @@ Tool output policy, cache identity, lifecycle, delegation, and evaluation consum
   timeout before storage read/release; collect scheduled/completed/failed/pending counts.
 - **Tests:** delayed final update, builder exception, timeout, cancellation, no updates, storage consistency.
 - **Acceptance criteria:** pending count is zero for complete results; timeout/failure is typed and cannot masquerade as complete.
-- **Status:** in_progress
+- **Status:** complete
 
 ##### Task 1.3: JSONL v2 sink and legacy dual-read/write
 - **Parallel:** yes
@@ -45,7 +45,7 @@ Tool output policy, cache identity, lifecycle, delegation, and evaluation consum
   read logger headers, Python repr, nested JSON strings, rotations, and v2 records.
 - **Tests:** real formatted log files, dual write/read, duplicate revision selection, malformed records, checksum mismatch.
 - **Acceptance criteria:** v2 round-trips and legacy consumers remain functional.
-- **Status:** in_progress
+- **Status:** complete
 
 ##### Task 1.4: Milestone integration and architecture review
 - **Parallel:** no
@@ -54,7 +54,7 @@ Tool output policy, cache identity, lifecycle, delegation, and evaluation consum
   ruthless architectural review and fix cycle.
 - **Tests:** TC-TRAJECTORY-FINALIZE-021, TC-TRAJECTORY-EMPTY-022, TC-TRAJECTORY-IO-023.
 - **Acceptance criteria:** milestone review approves; relevant suites pass.
-- **Status:** pending
+- **Status:** in_progress
 
 ### Milestone 2: Context Models, Adapters, and Observe Mode
 **Goal:** Introduce typed Context inputs and decision traces without changing provider requests.
