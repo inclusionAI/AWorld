@@ -5,7 +5,8 @@
 **Phase:** Milestone 1
 **Current milestone:** Trajectory Control Plane Foundation
 **Current task:** Task 1.4 integration and architecture review
-**Last action:** Merged finalize barrier and connected JSONL v2 only after finalized snapshot; combined trajectory suite is 70/70.
+**Last action:** Architecture review found finalize-before-delivery and I/O invariants gaps; compatibility and remote-child
+tracking fixes are merged while two focused P1 repair branches run.
 
 ## Completed Foundations
 
@@ -98,6 +99,13 @@
 - Update/storage exceptions are swallowed, so coroutine completion does not prove persistence acknowledgement.
 - Existing evaluation reader fails on real Loguru headers when iterating all records and selects the first repeated task.
 - Runtime/ATIF projection receipts live outside this repository and must not be claimed complete in Milestone 1.
+- Milestone review found `TASK_RESPONSE` could reach streaming consumers before finalization; terminal delivery must be
+  deferred until the final registry revision is drained and bound.
+- Fixed a dataset lazy-import regression that left TaskConfig subclasses with unresolved Pydantic forward refs; the wider
+  runner/evaluation/dataset suite now passes 219 tests.
+- Fixed separate/remote child imports so they open, drain, acknowledge, fence, and retain diagnostics in the root registry.
+- Envelope invariants, legacy partial fidelity, execution-not-started classification, retry epoch, and delivery receipts are
+  undergoing the required review-fix cycle before Milestone 1 can pass.
 
 ### Milestone 2 Readiness
 - Task 2.1 dependency-light frozen models/trace is in progress at `/tmp/aworld-context-compiler-models`; it has no runtime
