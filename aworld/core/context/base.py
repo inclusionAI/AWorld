@@ -318,6 +318,13 @@ class Context:
         self.context_info[key] = value
 
     def get_llm_calls(self) -> List[Dict[str, Any]]:
+        if isinstance(self.context_info, ContextState):
+            local = self.context_info.local_dict()
+            if "llm_calls" not in local:
+                inherited = self.context_info.get("llm_calls")
+                llm_calls = copy.deepcopy(inherited) if isinstance(inherited, list) else []
+                self.context_info["llm_calls"] = llm_calls
+                return llm_calls
         llm_calls = self.context_info.get("llm_calls")
         if not isinstance(llm_calls, list):
             llm_calls = []
