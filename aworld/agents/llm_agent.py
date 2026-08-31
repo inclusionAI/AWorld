@@ -34,11 +34,11 @@ from aworld.memory.main import MemoryFactory
 from aworld.memory.tool_call_compaction import collect_replay_message_metrics
 from aworld.memory.models import MemoryItem, MemoryAIMessage, MemoryMessage, MemoryToolMessage
 from aworld.models.llm import (
-    AWORLD_CONTEXT_CALL_ID_KWARG,
     ModelResponseParser,
     acall_llm_model,
     acall_llm_model_stream,
     apply_chat_template,
+    bind_llm_context_call_id,
     get_llm_model,
 )
 from aworld.models.model_response import ModelResponse
@@ -356,10 +356,11 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         started_at: str | None = None,
         tools: List[Dict[str, Any]] | None = None,
         request_params: Dict[str, Any] | None = None,
+        reserved_call_id: str | None = None,
     ) -> str:
         """Persist one request snapshot without overwriting prior LLM call state."""
         started_at = started_at or datetime.now().isoformat()
-        call_id = uuid.uuid4().hex
+        call_id = reserved_call_id or uuid.uuid4().hex
         serializable_messages = to_serializable(messages)
         context_info = message.context.context_info
         llm_calls = list(context_info.get("llm_calls") or [])
@@ -383,6 +384,19 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         context_info["llm_input"] = serializable_messages
         context_info["llm_call_start_time"] = started_at
         return call_id
+
+    def _safe_record_llm_call_request(self, *args, **kwargs) -> str:
+        """Reserve correlation even when optional Agent-side capture fails."""
+        call_id = uuid.uuid4().hex
+        try:
+            return self._record_llm_call_request(
+                *args, reserved_call_id=call_id, **kwargs
+            )
+        except Exception as exc:
+            logger.warning(
+                f"Agent LLM request capture failed; error_type={type(exc).__name__}"
+            )
+            return call_id
 
     def _record_llm_call_response(
         self,
@@ -422,6 +436,15 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
 
         context_info["llm_output"] = llm_response
 
+    def _safe_record_llm_call_response(self, *args, **kwargs) -> None:
+        """Keep response capture from replacing provider success or failure."""
+        try:
+            self._record_llm_call_response(*args, **kwargs)
+        except Exception as exc:
+            logger.warning(
+                f"Agent LLM response capture failed; error_type={type(exc).__name__}"
+            )
+
     def _update_llm_call_observability(
         self,
         message: Message,
@@ -441,6 +464,15 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 llm_calls[index] = updated_record
                 context_info["llm_calls"] = llm_calls
                 break
+
+    def _safe_update_llm_call_observability(self, *args, **kwargs) -> None:
+        """Keep assembly metadata capture observational and fail open."""
+        try:
+            self._update_llm_call_observability(*args, **kwargs)
+        except Exception as exc:
+            logger.warning(
+                f"Agent LLM assembly capture failed; error_type={type(exc).__name__}"
+            )
 
     def _current_provider_name(self) -> str:
         provider_name = getattr(getattr(self, "_llm", None), "provider_name", None)
@@ -1197,6 +1229,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
 
         serializable_messages = to_serializable(messages)
         llm_response = None
+        invoke_completed = False
         agent_result = None
         validation_feedback = None
         if source_span:
@@ -1204,7 +1237,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         mark_post_tool_progress_llm_started(message.context, agent_id=self.id())
         # Record LLM call start time (used to set MemoryMessage's start_time)
         llm_call_start_time = datetime.now().isoformat()
-        llm_call_id = self._record_llm_call_request(
+        llm_call_id = self._safe_record_llm_call_request(
             message,
             serializable_messages,
             started_at=llm_call_start_time,
@@ -1215,7 +1248,9 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 "stop": kwargs.get("stop"),
             },
         )
-        self._update_llm_call_observability(message, llm_call_id, prompt_assembly_observability)
+        self._safe_update_llm_call_observability(
+            message, llm_call_id, prompt_assembly_observability
+        )
 
         try:
             events = []
@@ -1238,8 +1273,11 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 kwargs["provider_native_prompt_cache"] = bool(
                     prompt_assembly_observability.get("provider_native_cache")
                 )
-            kwargs[AWORLD_CONTEXT_CALL_ID_KWARG] = llm_call_id
-            llm_response = await self.invoke_model(messages, message=message, **kwargs)
+            with bind_llm_context_call_id(llm_call_id):
+                llm_response = await self.invoke_model(
+                    messages, message=message, **kwargs
+                )
+            invoke_completed = True
         except asyncio.CancelledError:
             logger.info(f"{self.id()} LLM flow interrupted during invoke_model")
             raise
@@ -1250,9 +1288,13 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 source_exception=e,
             )
             logger.warn(f"{self.id()} result error: {e}")
-            raise AWorldRuntimeException(str(e))
+            raise AWorldRuntimeException(str(e)) from e
         finally:
-            self._record_llm_call_response(message, llm_call_id, llm_response)
+            self._safe_record_llm_call_response(
+                message, llm_call_id, llm_response
+            )
+            if not invoke_completed:
+                raise
             if llm_response:
                 if llm_response.error:
                     logger.info(f"llm result error: {llm_response.error}")

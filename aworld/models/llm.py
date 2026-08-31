@@ -4,6 +4,8 @@ import time
 import uuid
 import traceback
 import copy
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import (
     List,
     Dict,
@@ -40,6 +42,25 @@ from aworld.utils.common import sync_exec
 
 
 AWORLD_CONTEXT_CALL_ID_KWARG = "_aworld_context_call_id"
+_AWORLD_CONTEXT_CALL_ID: ContextVar[str | None] = ContextVar(
+    "aworld_context_call_id", default=None
+)
+
+
+@contextmanager
+def bind_llm_context_call_id(call_id: str):
+    """Correlate an Agent call without exposing an internal provider kwarg."""
+    token = _AWORLD_CONTEXT_CALL_ID.set(call_id)
+    try:
+        yield
+    finally:
+        _AWORLD_CONTEXT_CALL_ID.reset(token)
+
+
+def _resolve_context_call_id(kwargs: dict[str, Any]) -> str | None:
+    # Continue accepting the historical private kwarg for direct callers while
+    # ensuring it is removed before any provider invocation.
+    return kwargs.pop(AWORLD_CONTEXT_CALL_ID_KWARG, None) or _AWORLD_CONTEXT_CALL_ID.get()
 
 # Predefined model names for common providers
 MODEL_NAMES = {
@@ -538,8 +559,7 @@ class LLMModel:
             return base_response
         except Exception as exc:
             logger.warning(
-                "LLM stream capture merge failed; error_type={}",
-                type(exc).__name__,
+                f"LLM stream capture merge failed; error_type={type(exc).__name__}"
             )
             return base_response
 
@@ -715,8 +735,7 @@ class LLMModel:
             self._unsafe_begin_llm_call_record(**kwargs)
         except Exception as exc:
             logger.warning(
-                "LLM request capture failed before provider call; error_type={}",
-                type(exc).__name__,
+                f"LLM request capture failed before provider call; error_type={type(exc).__name__}"
             )
 
     def _unsafe_finish_llm_call_record(
@@ -767,8 +786,7 @@ class LLMModel:
             self._unsafe_finish_llm_call_record(**kwargs)
         except Exception as exc:
             logger.warning(
-                "LLM request capture failed at completion; error_type={}",
-                type(exc).__name__,
+                f"LLM request capture failed at completion; error_type={type(exc).__name__}"
             )
 
     def _apply_updated_output(self, response: ModelResponse, updated_output: Any, *, sync_mode: bool = False) -> ModelResponse:
@@ -824,7 +842,7 @@ class LLMModel:
             ModelResponse: Unified model response object.
         """
         # Call provider's acompletion method directly
-        agent_call_id = kwargs.pop(AWORLD_CONTEXT_CALL_ID_KWARG, None)
+        agent_call_id = _resolve_context_call_id(kwargs)
         start_ms = time.time()
         request_id = LLMModel._generate_llm_request_id()
         # `context` is optional in some call sites (e.g. background summary). We should
@@ -1038,7 +1056,7 @@ class LLMModel:
             ModelResponse: Unified model response object.
         """
         # Call provider's completion method directly
-        agent_call_id = kwargs.pop(AWORLD_CONTEXT_CALL_ID_KWARG, None)
+        agent_call_id = _resolve_context_call_id(kwargs)
         start_ms = time.time()
         request_id = LLMModel._generate_llm_request_id()
         context_task_id = context.task_id if context else None
@@ -1209,7 +1227,7 @@ class LLMModel:
         Returns:
             Generator yielding ModelResponse chunks.
         """
-        agent_call_id = kwargs.pop(AWORLD_CONTEXT_CALL_ID_KWARG, None)
+        agent_call_id = _resolve_context_call_id(kwargs)
         start_ms = time.time()
         request_id = LLMModel._generate_llm_request_id()
         context_task_id = context.task_id if context else None
@@ -1312,7 +1330,7 @@ class LLMModel:
             AsyncGenerator yielding ModelResponse chunks.
         """
         # Call provider's astream_completion method directly
-        agent_call_id = kwargs.pop(AWORLD_CONTEXT_CALL_ID_KWARG, None)
+        agent_call_id = _resolve_context_call_id(kwargs)
         start_ms = time.time()
         request_id = LLMModel._generate_llm_request_id()
         context_task_id = context.task_id if context else None
