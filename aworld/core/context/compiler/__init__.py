@@ -44,6 +44,16 @@ from .models import (
     TokenEstimate,
     Trust,
 )
+from .observe import (
+    HashEvidence,
+    HashEvidenceProvenance,
+    OBSERVE_COMPILER_VERSION,
+    ObserveCompilerResult,
+    ObserveHashEvidence,
+    RequestTraceMatch,
+    observe_legacy_provider_request,
+    request_trace_match,
+)
 from .trace import ContextDecisionTrace
 
 __all__ = [
@@ -61,14 +71,20 @@ __all__ = [
     "ContextSource",
     "FrozenJSON",
     "FrozenMap",
+    "HashEvidence",
+    "HashEvidenceProvenance",
     "InferenceProfile",
     "LegacyFinalMessageAdapter",
     "LegacyToolSchemaAdapter",
     "Lifetime",
+    "OBSERVE_COMPILER_VERSION",
+    "ObserveCompilerResult",
+    "ObserveHashEvidence",
     "ProviderRequestFidelity",
     "ProviderRequestSnapshot",
     "OccurrenceContextAdapter",
     "RequestCaptureStage",
+    "RequestTraceMatch",
     "ResolutionAction",
     "ResolutionDecision",
     "ResolutionReason",
@@ -84,6 +100,8 @@ __all__ = [
     "canonical_json_bytes",
     "canonical_json_hash",
     "freeze_json",
+    "observe_legacy_provider_request",
     "redacted_shape_preview",
+    "request_trace_match",
     "thaw_json",
 ]

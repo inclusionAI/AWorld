@@ -102,9 +102,9 @@ class ContextDecisionTrace:
     items: tuple[ContextItemRef, ...]
     decisions: tuple[ResolutionDecision, ...]
     token_accounting: TokenAccounting
-    stable_prefix_hash: str
-    serialized_prefix_hash: str
-    dynamic_context_hash: str
+    stable_prefix_hash: str | None
+    serialized_prefix_hash: str | None
+    dynamic_context_hash: str | None
     request_content_hash: str
     request_provider_name: str | None
     request_capture_stage: RequestCaptureStage
@@ -123,14 +123,16 @@ class ContextDecisionTrace:
             or self.task_epoch < 0
         ):
             raise ValueError("task_epoch must be a non-negative integer or None")
+        for name in ("compiler_version", "request_content_hash"):
+            _non_empty(name, getattr(self, name))
         for name in (
-            "compiler_version",
             "stable_prefix_hash",
             "serialized_prefix_hash",
             "dynamic_context_hash",
-            "request_content_hash",
         ):
-            _non_empty(name, getattr(self, name))
+            value = getattr(self, name)
+            if value is not None:
+                _non_empty(name, value)
         if self.request_provider_name is not None:
             _non_empty("request_provider_name", self.request_provider_name)
         object.__setattr__(
@@ -190,20 +192,41 @@ class ContextDecisionTrace:
         items: Iterable[ContextItem],
         decisions: Iterable[ResolutionDecision],
         token_accounting: TokenAccounting,
-        stable_prefix_hash: str,
-        serialized_prefix_hash: str,
-        dynamic_context_hash: str,
+        stable_prefix_hash: str | None,
+        serialized_prefix_hash: str | None,
+        dynamic_context_hash: str | None,
         request_snapshot: ProviderRequestSnapshot,
         created_at: datetime,
+        redact_item_ids: bool = False,
     ) -> "ContextDecisionTrace":
+        item_values = tuple(items)
+        decision_values = tuple(decisions)
+        item_refs = tuple(item.to_ref() for item in item_values)
+        if redact_item_ids:
+            redacted_ids = {
+                item.id: f"item:{canonical_json_hash({'item_id': item.id})}"
+                for item in item_values
+            }
+            item_refs = tuple(
+                ContextItemRef.from_dict(
+                    {**item.to_dict(), "item_id": redacted_ids[item.item_id]}
+                )
+                for item in item_refs
+            )
+            decision_values = tuple(
+                ResolutionDecision.from_dict(
+                    {**decision.to_dict(), "item_id": redacted_ids[decision.item_id]}
+                )
+                for decision in decision_values
+            )
         return cls(
             trace_id=trace_id,
             task_id=task_id,
             session_id=session_id,
             task_epoch=task_epoch,
             compiler_version=compiler_version,
-            items=tuple(item.to_ref() for item in items),
-            decisions=tuple(decisions),
+            items=item_refs,
+            decisions=decision_values,
             token_accounting=token_accounting,
             stable_prefix_hash=stable_prefix_hash,
             serialized_prefix_hash=serialized_prefix_hash,
