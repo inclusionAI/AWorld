@@ -7,14 +7,10 @@ import uuid
 from collections import OrderedDict
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Callable, Union, Iterable, Type, TYPE_CHECKING
+from typing import Any, Dict, List, Optional, Callable, Union, Iterable, Type
 
 import yaml
 from pydantic import BaseModel, Field
-
-if TYPE_CHECKING:
-    from aworld.dataset.trajectory_strategy import TrajectoryStrategy
-    from aworld.dataset.trajectory_storage import TrajectoryStorage
 
 def load_config(file_name: str, dir_name: str = None) -> Dict[str, Any]:
     from aworld.logs.util import logger
@@ -333,8 +329,13 @@ class TaskRunMode(Enum):
 class TaskConfig(BaseConfig):
     model_config = {"arbitrary_types_allowed": True}
     max_steps: int = 100
-    trajectory_strategy: Optional[Type['TrajectoryStrategy']] = None
-    trajectory_storage: Optional[Type['TrajectoryStorage']] = None
+    # Runtime trajectory implementations live in ``aworld.dataset`` and are
+    # intentionally not imported while core configuration classes are being
+    # defined. Dataset construction validates the concrete strategy/storage;
+    # keeping these as class-valued extension points removes a fragile
+    # package-import-order dependency for TaskConfig subclasses.
+    trajectory_strategy: Optional[Type[Any]] = None
+    trajectory_storage: Optional[Type[Any]] = None
     stream: bool = False
     resp_carry_context: bool = True
     resp_carry_raw_llm_resp: bool = False

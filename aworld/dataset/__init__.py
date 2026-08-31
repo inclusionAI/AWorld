@@ -32,31 +32,12 @@ _PUBLIC_MODULES = {
     "generate_trajectory": "aworld.dataset.trajectory_dataset",
     "generate_trajectory_from_strategy": "aworld.dataset.trajectory_dataset",
 }
-_TASK_CONFIG_REBUILT = False
-
-
 def __getattr__(name: str) -> Any:
-    global _TASK_CONFIG_REBUILT
     module_name = _PUBLIC_MODULES.get(name)
     if module_name is None:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
     value = getattr(import_module(module_name), name)
     globals()[name] = value
-
-    # Preserve the old package contract: once a trajectory runtime type is
-    # requested, resolve TaskConfig's forward references.
-    if not _TASK_CONFIG_REBUILT:
-        from aworld.config.conf import TaskConfig
-        from aworld.dataset.trajectory_storage import TrajectoryStorage
-        from aworld.dataset.trajectory_strategy import TrajectoryStrategy
-
-        TaskConfig.model_rebuild(
-            _types_namespace={
-                "TrajectoryStrategy": TrajectoryStrategy,
-                "TrajectoryStorage": TrajectoryStorage,
-            }
-        )
-        _TASK_CONFIG_REBUILT = True
     return value
 
 __all__ = [
