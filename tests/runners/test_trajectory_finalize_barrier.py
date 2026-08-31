@@ -726,3 +726,147 @@ async def test_streaming_waiter_terminates_on_finalized_response_without_deadloc
 def test_task_rejects_negative_trajectory_epoch():
     with pytest.raises(ValueError, match="non-negative"):
         Task(id="task-1", trajectory_task_epoch=-1)
+
+
+@pytest.mark.asyncio
+async def test_concurrent_streaming_bootstrap_failure_yields_typed_terminal(monkeypatch):
+    runner, _ = _runner(sub_task=True)
+    runner.task.streaming_mode = StreamingMode.ALL
+    runner.task.context = None
+    runner._task_response = None
+    del runner.context
+
+    async def broken_pre_run():
+        await asyncio.sleep(0)
+        raise RuntimeError("bootstrap failed")
+
+    async def post_run():
+        return None
+
+    monkeypatch.setattr(runner, "pre_run", broken_pre_run)
+    monkeypatch.setattr(runner, "post_run", post_run)
+
+    stream_task = asyncio.create_task(anext(runner.streaming()))
+    run_task = asyncio.create_task(runner.run())
+
+    with pytest.raises(RuntimeError, match="bootstrap failed"):
+        await run_task
+    terminal = await asyncio.wait_for(stream_task, timeout=1)
+    assert terminal.topic == TopicType.TASK_RESPONSE
+    assert terminal.payload.trajectory_build_result.reason_code is TrajectoryReasonCode.EXECUTION_NOT_STARTED
+
+
+@pytest.mark.asyncio
+async def test_emit_failure_before_publish_uses_fallback_and_is_attempted_once(monkeypatch):
+    runner, context = _runner(sub_task=True)
+    runner.task.streaming_mode = StreamingMode.ALL
+    runner.inited = True
+    context.trajectory_update_registry.open("task-1")
+    monkeypatch.setattr(context, "get_task_trajectory", lambda task_id, **kwargs: _async_result([]))
+    await runner._save_trajectories()
+    bus_queue = asyncio.Queue()
+    attempts = 0
+
+    class _Bus:
+        async def get(self, task_id):
+            return await bus_queue.get()
+
+    class _Events:
+        streaming_eventbus = _Bus()
+
+        async def emit_message(self, event):
+            nonlocal attempts
+            attempts += 1
+            raise RuntimeError("emit failed before publish")
+
+    runner.event_mng = _Events()
+    waiter = asyncio.create_task(anext(runner.streaming()))
+
+    assert await runner._publish_task_response_once() is False
+    assert await runner._publish_task_response_once() is False
+    terminal = await asyncio.wait_for(waiter, timeout=1)
+    assert attempts == 1
+    assert terminal.payload is runner._task_response
+    assert terminal.payload.trajectory_build_result is not None
+
+
+@pytest.mark.asyncio
+async def test_partial_publish_failure_prefers_bus_terminal_over_fallback(monkeypatch):
+    runner, context = _runner(sub_task=True)
+    runner.task.streaming_mode = StreamingMode.ALL
+    runner.inited = True
+    context.trajectory_update_registry.open("task-1")
+    monkeypatch.setattr(context, "get_task_trajectory", lambda task_id, **kwargs: _async_result([]))
+    await runner._save_trajectories()
+    bus_queue = asyncio.Queue()
+    attempts = 0
+
+    class _Bus:
+        async def get(self, task_id):
+            return await bus_queue.get()
+
+    class _Events:
+        streaming_eventbus = _Bus()
+
+        async def emit_message(self, event):
+            nonlocal attempts
+            attempts += 1
+            bus_event = Message(
+                payload=event.payload,
+                category=event.category,
+                topic=event.topic,
+                headers={"context": context, "delivery_source": "bus"},
+            )
+            await bus_queue.put(bus_event)
+            raise RuntimeError("emit failed after partial publish")
+
+    runner.event_mng = _Events()
+    waiter = asyncio.create_task(anext(runner.streaming()))
+
+    assert await runner._publish_task_response_once() is False
+    assert await runner._publish_task_response_once() is False
+    terminal = await asyncio.wait_for(waiter, timeout=1)
+    assert attempts == 1
+    assert terminal.headers["delivery_source"] == "bus"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("business_error", [None, ValueError("business failed")])
+async def test_emit_failure_never_overwrites_business_result_or_exception(
+    business_error, monkeypatch
+):
+    runner, context = _runner(sub_task=True)
+    context.trajectory_update_registry.open("task-1")
+    runner.init_messages = [Message(payload="start", headers={"context": context})]
+    monkeypatch.setattr(context, "get_task_trajectory", lambda task_id, **kwargs: _async_result([]))
+    response_attempts = 0
+
+    class _Events:
+        async def emit_message(self, event):
+            nonlocal response_attempts
+            if event.topic == TopicType.TASK_RESPONSE:
+                response_attempts += 1
+                raise RuntimeError("terminal emit failed")
+            return True
+
+    runner.event_mng = _Events()
+
+    async def business_run():
+        if business_error is not None:
+            raise business_error
+        runner._task_response.answer = "business answer"
+
+    @asynccontextmanager
+    async def no_trace_span(*args, **kwargs):
+        yield
+
+    monkeypatch.setattr(runner, "_do_run", business_run)
+    monkeypatch.setattr("aworld.runners.event_runner.trace.task_span", no_trace_span)
+
+    if business_error is None:
+        result = await runner.do_run()
+        assert result.answer == "business answer"
+    else:
+        with pytest.raises(ValueError, match="business failed"):
+            await runner.do_run()
+    assert response_attempts == 1
