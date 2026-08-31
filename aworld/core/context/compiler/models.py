@@ -123,6 +123,7 @@ class ResolutionReason(str, Enum):
     BUDGET_EXCLUDED = "budget_excluded"
     ATOMIC_GROUP_REQUIRED = "atomic_group_required"
     ITEM_TOKEN_LIMIT_EXCEEDED = "item_token_limit_exceeded"
+    ATOMIC_GROUP_ITEM_LIMIT_EXCEEDED = "atomic_group_item_limit_exceeded"
     TOKEN_ESTIMATE_UNKNOWN = "token_estimate_unknown"
     REQUIRED_CONTEXT_BUDGET_EXCEEDED = "required_context_budget_exceeded"
     TOOL_NOT_ALLOWED = "tool_not_allowed"
@@ -457,6 +458,9 @@ class TokenAccounting:
     reserved_output: TokenEstimate
     context_limit: TokenEstimate
     by_kind: tuple[tuple[ContextKind, TokenEstimate], ...] = ()
+    provider_protocol_reserve: TokenEstimate | None = None
+    safety_margin: TokenEstimate | None = None
+    available_input: TokenEstimate | None = None
 
     def __post_init__(self) -> None:
         for name in ("total_before", "total_after", "reserved_output", "context_limit"):
@@ -465,6 +469,16 @@ class TokenAccounting:
                 object.__setattr__(self, name, TokenEstimate.from_dict(value))
             elif not isinstance(value, TokenEstimate):
                 raise TypeError(f"{name} must be a TokenEstimate")
+        for name in (
+            "provider_protocol_reserve",
+            "safety_margin",
+            "available_input",
+        ):
+            value = getattr(self, name)
+            if isinstance(value, dict):
+                object.__setattr__(self, name, TokenEstimate.from_dict(value))
+            elif value is not None and not isinstance(value, TokenEstimate):
+                raise TypeError(f"{name} must be a TokenEstimate or None")
         normalized: list[tuple[ContextKind, TokenEstimate]] = []
         for entry in self.by_kind:
             if isinstance(entry, dict):
@@ -481,6 +495,37 @@ class TokenAccounting:
         if len({kind for kind, _ in normalized}) != len(normalized):
             raise ValueError("by_kind must not contain duplicate kinds")
         object.__setattr__(self, "by_kind", tuple(normalized))
+        reserve_evidence = (
+            self.provider_protocol_reserve,
+            self.safety_margin,
+            self.available_input,
+        )
+        if any(value is not None for value in reserve_evidence) and not all(
+            value is not None for value in reserve_evidence
+        ):
+            raise ValueError("input budget reserve evidence must be complete or absent")
+        estimates = (
+            self.context_limit,
+            self.reserved_output,
+            *reserve_evidence,
+        )
+        if all(value is not None and value.value is not None for value in estimates):
+            assert self.provider_protocol_reserve is not None
+            assert self.safety_margin is not None
+            assert self.available_input is not None
+            expected = (
+                self.reserved_output.value
+                + self.provider_protocol_reserve.value
+                + self.safety_margin.value
+                + self.available_input.value
+            )
+            if expected != self.context_limit.value:
+                raise ValueError("input budget reserves must sum to context_limit")
+            if (
+                self.total_after.value is not None
+                and self.total_after.value > self.available_input.value
+            ):
+                raise ValueError("total_after must not exceed available_input")
 
     @classmethod
     def unknown(cls) -> "TokenAccounting":
@@ -488,7 +533,7 @@ class TokenAccounting:
         return cls(unknown, unknown, unknown, unknown)
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload = {
             "total_before": self.total_before.to_dict(),
             "total_after": self.total_after.to_dict(),
             "reserved_output": self.reserved_output.to_dict(),
@@ -498,6 +543,13 @@ class TokenAccounting:
                 for kind, estimate in self.by_kind
             ],
         }
+        if self.provider_protocol_reserve is not None:
+            payload["provider_protocol_reserve"] = (
+                self.provider_protocol_reserve.to_dict()
+            )
+            payload["safety_margin"] = self.safety_margin.to_dict()
+            payload["available_input"] = self.available_input.to_dict()
+        return payload
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "TokenAccounting":

@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from collections import OrderedDict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+import re
 from typing import Iterable
 
 from .models import (
@@ -63,10 +64,48 @@ class ContextInputBudget:
 
 
 @dataclass(frozen=True, slots=True)
+class AtomicGroupRef:
+    """Owner-namespaced identity for an indivisible candidate group."""
+
+    owner: str
+    namespace: str
+    group_id: str
+    selection_priority: int = field(default=0, compare=False, hash=False)
+
+    def __post_init__(self) -> None:
+        for name in ("owner", "namespace", "group_id"):
+            value = getattr(self, name)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"{name} must be a non-empty string")
+        if isinstance(self.selection_priority, bool) or not isinstance(
+            self.selection_priority, int
+        ):
+            raise ValueError("selection_priority must be an integer")
+
+
+@dataclass(frozen=True, slots=True)
+class BudgetAllocationTier:
+    """Explicit globally comparable tier; lower ranks are retained first.
+
+    ``ContextItem.priority`` is deliberately not global.  It is consulted only
+    within an authority/scope priority domain inside one allocation tier.
+    """
+
+    rank: int
+    name: str
+
+    def __post_init__(self) -> None:
+        _non_negative_integer("rank", self.rank)
+        if not isinstance(self.name, str) or not self.name.strip():
+            raise ValueError("name must be a non-empty string")
+
+
+@dataclass(frozen=True, slots=True)
 class BudgetCandidate:
     item: ContextItem
     tokens: TokenEstimate
-    atomic_group: str | None = None
+    allocation_tier: BudgetAllocationTier
+    atomic_group: AtomicGroupRef | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.item, ContextItem):
@@ -77,10 +116,12 @@ class BudgetCandidate:
             )
         if not isinstance(self.tokens, TokenEstimate):
             raise TypeError("tokens must be a TokenEstimate")
-        if self.atomic_group is not None and (
-            not isinstance(self.atomic_group, str) or not self.atomic_group.strip()
+        if not isinstance(self.allocation_tier, BudgetAllocationTier):
+            raise TypeError("allocation_tier must be a BudgetAllocationTier")
+        if self.atomic_group is not None and not isinstance(
+            self.atomic_group, AtomicGroupRef
         ):
-            raise ValueError("atomic_group must be a non-empty string or None")
+            raise TypeError("atomic_group must be an AtomicGroupRef or None")
 
 
 class ContextBudgetError(ValueError):
@@ -120,6 +161,16 @@ class ItemTokenLimitExceeded(ContextBudgetError):
         )
 
 
+class UnversionedTokenEstimator(ContextBudgetError):
+    code = "token_estimator_unversioned"
+
+    def __init__(self, item_ids: Iterable[str]):
+        self.item_ids = tuple(item_ids)
+        super().__init__(
+            f"{self.code}: {len(self.item_ids)} candidate estimators are not versioned"
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class ContextBudgetPlan:
     selected_items: tuple[ContextItem, ...]
@@ -146,10 +197,12 @@ class ContextBudgetPlan:
 
 @dataclass(frozen=True, slots=True)
 class _CandidateGroup:
-    key: str
+    key: tuple[str, AtomicGroupRef | int]
     candidate_indexes: tuple[int, ...]
     required: bool
     priority: int
+    priority_domain: tuple[object, ...]
+    allocation_tier: BudgetAllocationTier
     token_count: int
     first_index: int
     item_limit_exceeded: bool
@@ -181,18 +234,58 @@ def _candidate_limit(candidate: BudgetCandidate, budget: ContextInputBudget) -> 
     return min(candidate.item.token_limit, budget.max_item_tokens)
 
 
+def _estimator_is_versioned(estimator: str | None) -> bool:
+    return bool(
+        estimator
+        and re.search(r"(?:^|[-_.:/])v[0-9]+(?:$|[-_.:/\[])", estimator)
+    )
+
+
 def _build_groups(
     candidates: tuple[BudgetCandidate, ...],
     budget: ContextInputBudget,
 ) -> tuple[_CandidateGroup, ...]:
-    indexes_by_key: OrderedDict[str, list[int]] = OrderedDict()
+    indexes_by_key: OrderedDict[
+        tuple[str, AtomicGroupRef | int], list[int]
+    ] = OrderedDict()
     for index, candidate in enumerate(candidates):
-        key = candidate.atomic_group or f"__single__:{index}"
+        key = (
+            ("group", candidate.atomic_group)
+            if candidate.atomic_group is not None
+            else ("single", index)
+        )
         indexes_by_key.setdefault(key, []).append(index)
 
     groups: list[_CandidateGroup] = []
     for key, indexes in indexes_by_key.items():
         group_candidates = tuple(candidates[index] for index in indexes)
+        allocation_tiers = {
+            candidate.allocation_tier for candidate in group_candidates
+        }
+        if len(allocation_tiers) != 1:
+            raise ValueError(
+                "atomic group candidates must share one allocation tier"
+            )
+        group_ref = group_candidates[0].atomic_group
+        if group_ref is None:
+            priority = group_candidates[0].item.priority
+            priority_domain: tuple[object, ...] = (
+                "item",
+                group_candidates[0].item.authority,
+                group_candidates[0].item.scope,
+            )
+        else:
+            selection_priorities = {
+                candidate.atomic_group.selection_priority
+                for candidate in group_candidates
+                if candidate.atomic_group is not None
+            }
+            if len(selection_priorities) != 1:
+                raise ValueError(
+                    "one atomic group identity cannot declare multiple selection priorities"
+                )
+            priority = next(iter(selection_priorities))
+            priority_domain = ("atomic", group_ref.owner, group_ref.namespace)
         exceeded = any(
             (candidate.tokens.value or 0) > _candidate_limit(candidate, budget)
             for candidate in group_candidates
@@ -202,7 +295,9 @@ def _build_groups(
                 key=key,
                 candidate_indexes=tuple(indexes),
                 required=any(candidate.item.required for candidate in group_candidates),
-                priority=max(candidate.item.priority for candidate in group_candidates),
+                priority=priority,
+                priority_domain=priority_domain,
+                allocation_tier=next(iter(allocation_tiers)),
                 token_count=sum(candidate.tokens.value or 0 for candidate in group_candidates),
                 first_index=indexes[0],
                 item_limit_exceeded=exceeded,
@@ -259,6 +354,29 @@ def plan_context_budget(
     )
     if unknown_ids:
         raise UnknownTokenEstimate(unknown_ids)
+    unversioned_ids = tuple(
+        candidate.item.id
+        for candidate in values
+        if not _estimator_is_versioned(candidate.tokens.estimator)
+    )
+    if unversioned_ids:
+        raise UnversionedTokenEstimator(unversioned_ids)
+    tier_names_by_rank: dict[int, str] = {}
+    tier_ranks_by_name: dict[str, int] = {}
+    for candidate in values:
+        tier = candidate.allocation_tier
+        if (
+            tier.rank in tier_names_by_rank
+            and tier_names_by_rank[tier.rank] != tier.name
+        ):
+            raise ValueError("one allocation tier rank cannot map to multiple names")
+        if (
+            tier.name in tier_ranks_by_name
+            and tier_ranks_by_name[tier.name] != tier.rank
+        ):
+            raise ValueError("one allocation tier name cannot map to multiple ranks")
+        tier_names_by_rank[tier.rank] = tier.name
+        tier_ranks_by_name[tier.name] = tier.rank
 
     groups = _build_groups(values, budget)
     for group in groups:
@@ -290,13 +408,25 @@ def plan_context_budget(
 
     selected_group_keys = {group.key for group in required_groups}
     remaining = budget.available_input_tokens - required_tokens
+    domain_first_index: dict[
+        tuple[BudgetAllocationTier, tuple[object, ...]], int
+    ] = {}
+    for group in groups:
+        domain_key = (group.allocation_tier, group.priority_domain)
+        domain_first_index.setdefault(domain_key, group.first_index)
     optional_groups = sorted(
         (
             group
             for group in groups
             if not group.required and not group.item_limit_exceeded
         ),
-        key=lambda group: (-group.priority, group.first_index, group.key),
+        key=lambda group: (
+            group.allocation_tier.rank,
+            group.allocation_tier.name,
+            domain_first_index[(group.allocation_tier, group.priority_domain)],
+            -group.priority,
+            group.first_index,
+        ),
     )
     for group in optional_groups:
         if group.token_count <= remaining:
@@ -314,7 +444,10 @@ def plan_context_budget(
         group = group_by_candidate_index[index]
         if group.item_limit_exceeded:
             action = ResolutionAction.EXCLUDED
-            reason = ResolutionReason.ITEM_TOKEN_LIMIT_EXCEEDED
+            if (candidate.tokens.value or 0) > _candidate_limit(candidate, budget):
+                reason = ResolutionReason.ITEM_TOKEN_LIMIT_EXCEEDED
+            else:
+                reason = ResolutionReason.ATOMIC_GROUP_ITEM_LIMIT_EXCEEDED
         elif group.key in selected_group_keys:
             action = ResolutionAction.INCLUDED
             if candidate.item.required:
@@ -353,6 +486,21 @@ def plan_context_budget(
             estimator=_CONFIG_ESTIMATOR,
             exact=True,
         ),
+        provider_protocol_reserve=TokenEstimate(
+            value=budget.provider_protocol_reserve,
+            estimator=_CONFIG_ESTIMATOR,
+            exact=True,
+        ),
+        safety_margin=TokenEstimate(
+            value=budget.safety_margin_tokens,
+            estimator=_CONFIG_ESTIMATOR,
+            exact=True,
+        ),
+        available_input=TokenEstimate(
+            value=budget.available_input_tokens,
+            estimator=_CONFIG_ESTIMATOR,
+            exact=True,
+        ),
         by_kind=tuple(
             (kind, _sum_estimates(estimates))
             for kind, estimates in by_kind_values.items()
@@ -367,12 +515,15 @@ def plan_context_budget(
 
 
 __all__ = [
+    "AtomicGroupRef",
     "BudgetCandidate",
+    "BudgetAllocationTier",
     "ContextBudgetError",
     "ContextBudgetPlan",
     "ContextInputBudget",
     "ItemTokenLimitExceeded",
     "RequiredContextBudgetExceeded",
     "UnknownTokenEstimate",
+    "UnversionedTokenEstimator",
     "plan_context_budget",
 ]
