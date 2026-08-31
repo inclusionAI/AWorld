@@ -1,6 +1,72 @@
+from types import SimpleNamespace
+
 import pytest
 
-from aworld.self_evolve.controllers.screening import CandidateScreeningController
+from aworld.self_evolve.controllers.screening import (
+    CandidateScreeningController,
+    ScreeningPopulationRequest,
+)
+from aworld.self_evolve.types import CandidateVariant, SelfEvolveTargetRef
+
+
+def _candidate(candidate_id: str) -> CandidateVariant:
+    return CandidateVariant(
+        candidate_id=candidate_id,
+        target=SelfEvolveTargetRef("skill", "demo"),
+        content="# Demo\n",
+        rationale="screening contract fixture",
+    )
+
+
+@pytest.mark.asyncio
+async def test_screening_population_contract_returns_typed_result() -> None:
+    candidate = _candidate("candidate-1")
+    request = ScreeningPopulationRequest(
+        run_id="run-1",
+        target=SimpleNamespace(),
+        dataset=SimpleNamespace(),
+        candidates=(candidate,),
+        apply_policy="auto_verified",
+    )
+    controller = CandidateScreeningController()
+    runtime = SimpleNamespace(marker="runtime")
+
+    async def execute(received, received_runtime):
+        assert received is request
+        assert received_runtime is runtime
+        return received.candidates, {"screening_outcome": "completed"}
+
+    result = await controller.screen_population(
+        request,
+        execute=execute,
+        runtime=runtime,
+    )
+
+    assert result.candidates == (candidate,)
+    assert result.report == {"screening_outcome": "completed"}
+
+
+@pytest.mark.asyncio
+async def test_screening_population_contract_rejects_foreign_candidate() -> None:
+    request = ScreeningPopulationRequest(
+        run_id="run-1",
+        target=SimpleNamespace(),
+        dataset=SimpleNamespace(),
+        candidates=(_candidate("candidate-1"),),
+        apply_policy="auto_verified",
+    )
+    controller = CandidateScreeningController()
+    runtime = SimpleNamespace(marker="runtime")
+
+    async def execute(_request, _runtime):
+        return (_candidate("candidate-foreign"),), None
+
+    with pytest.raises(ValueError, match="outside the requested population"):
+        await controller.screen_population(
+            request,
+            execute=execute,
+            runtime=runtime,
+        )
 
 
 def test_screening_controller_opens_only_the_exact_unhealthy_control() -> None:

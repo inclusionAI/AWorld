@@ -2,10 +2,20 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from dataclasses import dataclass
+from collections.abc import Awaitable, Callable, Mapping
+from dataclasses import dataclass, field
+from typing import Protocol
 
-from aworld.self_evolve.budget import BudgetDecision
+from aworld.self_evolve.budget import (
+    BudgetDecision,
+    BudgetStage,
+    CandidateAttemptKey,
+    CandidateAttemptStage,
+)
+from aworld.self_evolve.concurrency import (
+    SelfEvolveExecutionTelemetry,
+)
+from aworld.self_evolve.datasets import SelfEvolveDataset
 from aworld.self_evolve.failure_events import (
     FailureOwner,
     FailureScope,
@@ -13,10 +23,153 @@ from aworld.self_evolve.failure_events import (
     ReplayExecutionStatus,
     ReplayFailureEvent,
 )
-from aworld.self_evolve.types import GateResult
+from aworld.self_evolve.measurement import ControlledExperimentSpec
+from aworld.self_evolve.repair_conformance import RepairConformanceContract
+from aworld.self_evolve.replay import (
+    CandidateReplayBackend,
+    CandidateReplayResult,
+)
+from aworld.self_evolve.replay_adaptation import (
+    ReplayAdaptationBundle,
+    ReplayCapabilityRequirement,
+)
+from aworld.self_evolve.store import FilesystemSelfEvolveStore
+from aworld.self_evolve.targets import SelfEvolveTarget
+from aworld.self_evolve.types import CandidateVariant, GateResult
 
 
 SCREENING_BUDGET_CENSORED_CODE = "screening_budget_censored"
+
+
+class CandidateAttemptTrackerProtocol(Protocol):
+    """Attempt-lifecycle surface consumed by population screening."""
+
+    def emit(
+        self,
+        key: CandidateAttemptKey,
+        stage: CandidateAttemptStage,
+        *,
+        reason_code: str | None = None,
+        case_count: int | None = None,
+        usage: object | None = None,
+    ) -> None: ...
+
+    def last_stage(self, key: CandidateAttemptKey) -> CandidateAttemptStage: ...
+
+    def terminal(self, key: CandidateAttemptKey) -> bool: ...
+
+
+class ScreeningBudgetContextProtocol(Protocol):
+    """Budget ledger surface consumed by population screening."""
+
+    def reserve(
+        self,
+        stage: BudgetStage,
+        item_id: str,
+        *,
+        units: int = 1,
+        **kwargs: object,
+    ) -> BudgetDecision: ...
+
+    def debit(
+        self,
+        decision: BudgetDecision,
+        **kwargs: object,
+    ) -> object: ...
+
+
+@dataclass(frozen=True)
+class ScreeningPopulationRequest:
+    """Frozen run inputs for comparative candidate screening."""
+
+    run_id: str
+    target: SelfEvolveTarget
+    dataset: SelfEvolveDataset
+    candidates: tuple[CandidateVariant, ...]
+    apply_policy: str
+    capability_requirements: tuple[ReplayCapabilityRequirement, ...] = ()
+    repair_conformance_contracts: Mapping[
+        str, RepairConformanceContract
+    ] = field(default_factory=dict)
+    attempt_tracker: CandidateAttemptTrackerProtocol | None = None
+    attempt_keys: Mapping[str, CandidateAttemptKey] | None = None
+    budget_context: ScreeningBudgetContextProtocol | None = None
+    require_single_candidate_screening: bool = False
+    stored_measurement_resume: bool = False
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.run_id, str) or not self.run_id.strip():
+            raise ValueError("screening population run_id must be non-empty")
+        if self.apply_policy not in {
+            "proposal",
+            "auto_verified",
+            "verified_only",
+        }:
+            raise ValueError(
+                f"unsupported screening apply policy: {self.apply_policy}"
+            )
+        object.__setattr__(self, "run_id", self.run_id.strip())
+        object.__setattr__(self, "candidates", tuple(self.candidates))
+        object.__setattr__(
+            self,
+            "capability_requirements",
+            tuple(self.capability_requirements),
+        )
+
+
+@dataclass(frozen=True)
+class ScreeningPopulationResult:
+    """Validated candidate frontier and its persisted screening report."""
+
+    candidates: tuple[CandidateVariant, ...]
+    report: dict[str, object] | None
+
+
+@dataclass
+class ScreeningPopulationRuntime:
+    """Explicit services, configuration, and mutable campaign state."""
+
+    store: FilesystemSelfEvolveStore
+    execution_telemetry: SelfEvolveExecutionTelemetry
+    replay_enabled: bool
+    replay_backend: CandidateReplayBackend | None
+    candidate_screening_max_cases: int
+    replay_max_steps: int | None
+    replay_timeout_seconds: int
+    baseline_replay_repetitions: int
+    candidate_replay_repetitions: int
+    progress_callback: Callable[[str, str], object] | None
+    case_observations: dict[str, dict[str, float | int]]
+    control_observations: dict[str, dict[str, object]]
+    invalid_control_case_ids_by_run: dict[str, set[str]]
+    measurement_experiments: dict[object, ControlledExperimentSpec]
+    validate_conformance_population: Callable[
+        ..., Awaitable[tuple[tuple[CandidateVariant, ...], dict[str, object] | None]]
+    ]
+    plan_measurement: Callable[..., ControlledExperimentSpec | None]
+    prepare_adaptation: Callable[
+        ..., tuple[ReplayAdaptationBundle | None, GateResult]
+    ]
+    replay_candidate: Callable[
+        ...,
+        Awaitable[
+            tuple[
+                CandidateReplayResult | None,
+                SelfEvolveDataset | None,
+                GateResult | None,
+            ]
+        ],
+    ]
+    baseline_reuse_provenance: Callable[..., dict[str, str | None]]
+    policy: CandidateScreeningController
+
+
+ScreeningPopulationExecutor = Callable[
+    [ScreeningPopulationRequest, ScreeningPopulationRuntime],
+    Awaitable[
+        tuple[tuple[CandidateVariant, ...], dict[str, object] | None]
+    ],
+]
 
 
 @dataclass(frozen=True)
@@ -31,6 +184,29 @@ class CandidateScreeningController:
             or self.support_control_failure_patience <= 0
         ):
             raise ValueError("support_control_failure_patience must be positive")
+
+    async def screen_population(
+        self,
+        request: ScreeningPopulationRequest,
+        *,
+        execute: ScreeningPopulationExecutor,
+        runtime: ScreeningPopulationRuntime,
+    ) -> ScreeningPopulationResult:
+        """Execute screening behind a validated typed phase boundary."""
+
+        selected, report = await execute(request, runtime)
+        selected = tuple(selected)
+        requested_candidates = set(request.candidates)
+        if any(candidate not in requested_candidates for candidate in selected):
+            raise ValueError(
+                "screening selected a candidate outside the requested population"
+            )
+        if len({candidate.candidate_id for candidate in selected}) != len(selected):
+            raise ValueError("screening selected duplicate candidate ids")
+        return ScreeningPopulationResult(
+            candidates=selected,
+            report=dict(report) if report is not None else None,
+        )
 
     def hard_limit_seconds(self, decision: BudgetDecision) -> float | None:
         """Return the reserved wall envelope as an executable stage deadline."""
