@@ -87,6 +87,42 @@ sandbox = (Sandbox()
 sandbox = Sandbox(mcp_config={...})
 ```
 
+### Attaching to a local Docker container
+
+`DockerSandbox` is an attach-only implementation of the same Sandbox abstraction. The caller starts the container; AWorld starts a host-side stdio bridge and exposes terminal/filesystem tools whose operations execute inside that fixed container.
+
+```python
+from aworld.sandbox import DockerSandbox
+
+sandbox = DockerSandbox(
+    container="terminal-bench-task",
+    workdir="/workspace",                 # optional; image WORKDIR is auto-detected
+    allowed_directories=["/workspace"],  # filesystem namespace boundary
+)
+
+try:
+    result = await sandbox.terminal.run_code("pwd && make test")
+    source = await sandbox.file.read_file("/workspace/main.py")
+finally:
+    await sandbox.cleanup()
+```
+
+The container must already be running and reachable through the local Docker CLI. `cleanup()` closes only AWorld's MCP connections; it never stops or removes the container. Container build/run, benchmark test mounts, verifier execution, reward calculation, and final container removal remain the responsibility of the caller or benchmark harness.
+
+The same implementation is available through the factory:
+
+```python
+from aworld.sandbox import SandboxEnvType, create_sandbox
+
+sandbox = create_sandbox(
+    env_type=SandboxEnvType.DOCKER,
+    container="terminal-bench-task",
+    allowed_directories=["/workspace"],
+)
+```
+
+For a single-task Terminal Bench run that saves `task_response.json`, `raw_trajectory.json`, and AWorld logs, see `examples/sandbox/docker_terminal_bench.py`.
+
 ### Listing Tools
 ```python
 # Get all available tools
@@ -390,4 +426,3 @@ result = await Runners.run(
     agent=agent
 )
 ```
-
