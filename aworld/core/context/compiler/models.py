@@ -145,13 +145,18 @@ class ProviderRequestFidelity(str, Enum):
 
 class CacheBreakReason(str, Enum):
     UNKNOWN = "unknown"
+    PROVIDER_CHANGE = "provider_change"
     MODEL_CHANGE = "model_change"
     EFFORT_CHANGE = "effort_change"
     EXECUTION_MODE_CHANGE = "execution_mode_change"
+    RESPONSE_FORMAT_CHANGE = "response_format_change"
+    CONTEXT_LIMIT_CHANGE = "context_limit_change"
     TOOL_CATALOG_CHANGE = "tool_catalog_change"
     SKILL_SET_CHANGE = "skill_set_change"
     POLICY_VERSION_CHANGE = "policy_version_change"
     SERIALIZATION_CHANGE = "serialization_change"
+    SERIALIZED_PREFIX_CHANGE = "serialized_prefix_change"
+    PROVIDER_CACHE_NAMESPACE_CHANGE = "provider_cache_namespace_change"
     HISTORY_COMPACTION = "history_compaction"
     TASK_RESET = "task_reset"
     RESUME_CACHE_EXPIRED = "resume_cache_expired"
@@ -617,6 +622,7 @@ class InferenceProfile:
     reasoning_effort: str | None
     execution_mode: str
     context_limit: int | None
+    response_format_hash: str | None = None
 
     def __post_init__(self) -> None:
         _non_empty("provider", self.provider)
@@ -630,6 +636,8 @@ class InferenceProfile:
             or self.context_limit <= 0
         ):
             raise ValueError("context_limit must be a positive integer or None")
+        if self.response_format_hash is not None:
+            _non_empty("response_format_hash", self.response_format_hash)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -638,6 +646,7 @@ class InferenceProfile:
             "reasoning_effort": self.reasoning_effort,
             "execution_mode": self.execution_mode,
             "context_limit": self.context_limit,
+            "response_format_hash": self.response_format_hash,
         }
 
     @classmethod
