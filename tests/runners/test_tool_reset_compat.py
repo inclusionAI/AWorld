@@ -9,6 +9,10 @@ import pytest
 from aworld.config import ConfigDict
 from aworld.core.common import ActionModel, Observation, TaskItem
 from aworld.core.context.base import Context
+from aworld.core.context.compiler import (
+    ContextObservationSidecar,
+    adapt_final_messages,
+)
 from aworld.core.event.base import Constants, Message, TopicType
 from aworld.core.task import Task, TaskResponse
 from aworld.core.tool.base import AsyncTool
@@ -218,3 +222,38 @@ async def test_task_runner_accepts_sync_reset_for_async_tool():
     assert tool.reset_calls == 1
     assert tool.context is runner.context
     assert runner.observation.content == "tool-ready"
+
+
+@pytest.mark.asyncio
+async def test_root_task_context_reuse_fences_prior_request_observations():
+    context = Context(task_id="old-root-task")
+    context.publish_context_observation(
+        ContextObservationSidecar.from_adapter_result(
+            owner="test.owner",
+            namespace="agent-1",
+            source_identity="owner://old-root-task",
+            result=adapt_final_messages(
+                [{"role": "system", "content": "old private output"}],
+                source_identity="owner://old-root-task",
+            ),
+        )
+    )
+    swarm = MagicMock()
+    swarm.agents = {}
+    swarm.reset = MagicMock()
+    task = Task(
+        id="new-root-task",
+        input="hello",
+        swarm=swarm,
+        tools=[],
+        tool_names=[],
+        context=context.deep_copy(),
+        conf=ConfigDict(),
+    )
+
+    runner = DummyTaskRunner(task)
+    await runner.pre_run()
+
+    assert runner.context.task_id == "new-root-task"
+    assert runner.context.get_context_observations() == ()
+    assert context.get_context_observations()

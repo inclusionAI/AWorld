@@ -1033,6 +1033,15 @@ class ApplicationContext(AmniContext):
     @task_id.setter
     def task_id(self, task_id):
         if task_id is not None:
+            current_task_id = getattr(
+                getattr(getattr(self, "task_state", None), "task_input", None),
+                "task_id",
+                getattr(self, "_task_id", None),
+            )
+            self._fence_context_observations_for_task_transition(
+                current_task_id=current_task_id,
+                next_task_id=task_id,
+            )
             self._task_id = task_id
             self.task_state.task_input.task_id = task_id
 
