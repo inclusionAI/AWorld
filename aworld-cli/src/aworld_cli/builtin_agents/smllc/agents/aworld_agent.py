@@ -11,14 +11,14 @@ or coordinated multi-agent collaboration.
 import os
 import sys
 import traceback
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
+from importlib import import_module
 from pathlib import Path
-from typing import Optional, List
-from zoneinfo import ZoneInfo
+from typing import Callable, Optional, List
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from aworld.core.context.amni import AgentContextConfig
 from aworld.core.context.amni.config import get_default_config, ContextEnvConfig
-from aworld.experimental.cast.tools import CAST_ANALYSIS, CAST_CODER
 from aworld.logs.util import logger
 from aworld_cli.core.context_tool import CONTEXT_TOOL
 from aworld_cli.core.skill_registry import build_skill_resolver_inputs
@@ -45,10 +45,44 @@ from aworld_cli.core import agent
 
 from aworld.config import AgentConfig, ModelConfig
 
-# for skills use
-CAST_ANALYSIS, CAST_CODER
+CAST_ANALYSIS = "CAST_ANALYSIS"
+CAST_CODER = "CAST_CODER"
+CAST_SEARCH = "CAST_SEARCH"
 
-_BEIJING_TZ = ZoneInfo("Asia/Shanghai")
+
+def _register_optional_cast_tools(
+    module_loader: Callable[[str], object] = import_module,
+) -> tuple[bool, Optional[str]]:
+    """Register CAST tools when their optional native dependencies are usable.
+
+    CAST is an enhancement for the built-in AWorld agent, not a prerequisite for
+    terminal execution. In particular, a tree-sitter wheel built for a newer
+    GLIBC must not prevent the agent itself from loading in an older task image.
+    """
+    try:
+        module_loader("aworld.experimental.cast.tools")
+    except (ImportError, OSError) as exc:
+        reason = f"{type(exc).__name__}: {exc}"
+        logger.warning(
+            f"CAST tools are unavailable; continuing without AST tools: {reason}"
+        )
+        return False, reason
+    return True, None
+
+
+def _resolve_beijing_timezone():
+    """Return Asia/Shanghai when available, with a portable UTC+8 fallback."""
+    try:
+        return ZoneInfo("Asia/Shanghai")
+    except ZoneInfoNotFoundError:
+        logger.warning(
+            "Asia/Shanghai timezone data is unavailable; using fixed UTC+08:00"
+        )
+        return timezone(timedelta(hours=8), name="UTC+08:00")
+
+
+_CAST_TOOLS_AVAILABLE, _CAST_TOOLS_UNAVAILABLE_REASON = _register_optional_cast_tools()
+_BEIJING_TZ = _resolve_beijing_timezone()
 
 
 def render_aworld_system_prompt(now: Optional[datetime] = None) -> str:
@@ -261,7 +295,7 @@ def build_aworld_agent(include_skills: Optional[str] = None):
         sandbox=sandbox,  # Shared sandbox (tools filtered by agent's mcp_servers config)
         tool_names=[
             CONTEXT_TOOL,      # Core: Context management
-            'CAST_SEARCH',     # Core: Lightweight code search
+            *([CAST_SEARCH] if _CAST_TOOLS_AVAILABLE else []),
             'async_spawn_subagent',  # Core: Dynamic subagent delegation (AsyncTool, needs async_ prefix)
             'cron',            # Core: Scheduled task management
         ],
@@ -271,15 +305,25 @@ def build_aworld_agent(include_skills: Optional[str] = None):
     # Directly instantiate developer, evaluator, and diffusion as sub-agents
     # Pass shared sandbox to enable resource sharing while maintaining tool access control
     try:
-        developer_swarm = build_developer_swarm(sandbox=sandbox)  # ✅ Share sandbox
-        evaluator_swarm = build_evaluator_swarm()  # TODO: Add sandbox parameter
+        cast_sub_agents = []
+        if _CAST_TOOLS_AVAILABLE:
+            developer_swarm = build_developer_swarm(sandbox=sandbox)  # ✅ Share sandbox
+            evaluator_swarm = build_evaluator_swarm()  # TODO: Add sandbox parameter
+            cast_sub_agents = (
+                extract_agents_from_swarm(developer_swarm)
+                + extract_agents_from_swarm(evaluator_swarm)
+            )
+        else:
+            logger.warning(
+                "Developer and evaluator sub-agents are disabled because CAST "
+                f"dependencies are unavailable: {_CAST_TOOLS_UNAVAILABLE_REASON}"
+            )
         diffusion_swarm = build_diffusion_swarm()  # TODO: Add sandbox parameter
         avatar_swarm = build_avatar_swarm()
         audio_swarm = build_audio_swarm()  # TODO: Add sandbox parameter
         image_swarm = build_image_swarm()
         sub_agents = (
-            extract_agents_from_swarm(developer_swarm)
-            + extract_agents_from_swarm(evaluator_swarm)
+            cast_sub_agents
             + extract_agents_from_swarm(diffusion_swarm)
             + extract_agents_from_swarm(avatar_swarm)
             + extract_agents_from_swarm(audio_swarm)

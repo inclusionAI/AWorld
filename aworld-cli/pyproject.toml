@@ -26,6 +26,7 @@ dependencies = [
     "rich>=14.0.0",
     "prompt-toolkit",
     "python-dotenv>=1.0.1",
+    "tzdata>=2024.1",
     "httpx",
     "click",
 ]

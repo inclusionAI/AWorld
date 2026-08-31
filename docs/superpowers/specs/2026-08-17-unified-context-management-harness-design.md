@@ -118,6 +118,59 @@ AWorld 已经具备较丰富的上下文原语，但它们分布在多个独立�
     持久化来源幂等重建。
 22. Agent 的自然语言完成声明与 deliverable 是否存在、是否通过最新验证没有分离；长 rollout 可能在
     未形成目标 artifact 时提前结束，或在重复试错后仍用乐观文本声明完成。
+23. built-in `Aworld` agent 在模块导入阶段依赖 `ZoneInfo("Asia/Shanghai")` 和 CAST/tree-sitter native
+    扩展。时区数据库缺失或 task image 的 GLIBC 版本过旧时，可选能力会阻止核心 Agent 注册，故障发生在
+    首次 provider call 之前。
+24. plugin loader 会记录警告后跳过加载失败的 Agent，而 direct mode 在找不到 Agent 或无法创建 executor
+    时只打印文本并正常返回；上层因此无法可靠区分“任务执行完成”和“执行从未开始”。
+25. pre-provider failure 当前没有稳定的机器可读 stage/error code。Runtime 只能从空 summary 推断结果，
+    容易生成 `AWorld completed without a captured response` 并把 harness failure 错标为正常 completion。
+26. 外部适配器若通过 `aworld-cli ... | tee ...` 启动任务但没有启用 `pipefail` 或读取每段 pipeline status，
+    即使 AWorld 正确返回非零也可能再次被改写为成功。AWorld 与 harness 之间缺少退出状态保真契约和
+    executor-ready preflight。
+
+### Validated Pre-LLM Failure Incident: Batch `b-771cbacf3eb9420e8a4e`
+
+该 batch 的 54 条占位 Raw trajectory 已完成根因定位，不应再归因于 Scheduler 下载损坏或泛化为
+TaskResponse finalize 竞态：
+
+- 54 条恰好来自 27 个 task × 两个模型，同一 task 总是成对失败；Raw trajectory 中
+  `trajectory_capture_mode=summary_synthetic`、`llm_call_count=0`，证明故障发生在模型调用之前。
+- 25 个 Ubuntu 24.04 minimal task（50 个 run）缺少系统 timezone database，导入 built-in Agent 时
+  `ZoneInfo("Asia/Shanghai")` 抛出 `ZoneInfoNotFoundError`。
+- 2 个 Debian bullseye-slim task（4 个 run）的 GLIBC 2.31 无法加载要求 GLIBC 2.33 的
+  `tree_sitter_language_pack/_native.abi3.so`；fallback `tree_sitter_languages` 同样不可用。
+- 在相同 task image 和相同 AWorld wheel 中，不调用模型即可稳定复现：`adaptive-rejection-sampler`
+  失败于 timezone、`qemu-startup` 失败于 native GLIBC、对照 `path-tracing` 能注册 `Aworld` 并创建
+  `LocalAgentExecutor`。
+- 已下载的 92 条 Dashboard Raw trajectory 与服务端 `harbor.trajectory` 逐条一致，因此 Scheduler、
+  Dashboard 下载和本地 JSON 保存不是这 54 条占位内容的生成原因。
+
+故障链为：可移植性依赖导致 built-in Agent 导入失败 → loader 跳过 Agent → direct mode 返回空结果但退出
+成功 → Runtime 用 synthetic summary 补位 → Harbor 继续 verifier 并得到 reward 0。责任边界如下：
+
+| 层 | 必须承担的修复 |
+|---|---|
+| AWorld Agent package | 声明 `tzdata`，同时提供 UTC+8 fallback；CAST/native 能力 lazy optional，失效时只降级相关 Tools/Subagents，不能阻止核心 Agent 加载 |
+| AWorld CLI/runtime | Agent load、executor create、provider start 分阶段；前两者失败输出结构化 `RunFailureRecord` 并返回非零，禁止正常 completion 文案 |
+| Context/trajectory control plane | `execution_not_started` 必须形成失败 build result；`llm_call_count=0` 与 placeholder 不得进入完整 trajectory 数据集 |
+| 外部 harness contract | 在目标 task container 中执行 load-agent + create-executor preflight；保留 CLI 非零退出状态；不得由 `tee`、synthetic summary 或 ATIF 文件存在覆盖失败 |
+
+当前 AWorld 代码库内可以直接完成前三层的 AWorld 侧行为；不要求修改 mcpgateway 或
+lingguang-bench-runtime-dsh。外部 harness 行为作为兼容契约和 release canary 验收，使用本地
+`DockerSandbox` attach-only fixture 即可先验证 AWorld 侧修复。
+
+该事件证据采用“可复验 manifest + 原始来源”的 provenance contract，而不是依赖某台机器上的临时目录：
+
+- Dashboard batch：`b-771cbacf3eb9420e8a4e`；下载源固定为每个 run detail 的 Raw trajectory/
+  `harbor.trajectory` 字段；
+- 选择策略为全部双 0、全部 0/1 split，以及由 batch id 作 seed 的 3 个双 1 task；共请求 120 个 run，
+  92 个有 Raw trajectory、28 个 unavailable；
+- 92 个已下载对象逐条执行服务端 checksum/内容相等校验；54 个 synthetic placeholder 只用于 capture
+  reliability 与 pre-provider failure 分析，不能进入 Context 策略质量归因；
+- 稳定 checksum、来源 URL、选择计数和局限性记录在
+  `docs/superpowers/evidence/b-771cbacf3eb9420e8a4e-provenance.json`。Raw 数据可能包含敏感执行内容，
+  不要求随源码仓库分发；需要复验时按 manifest 中 run id 从权限受控的原始来源重新下载。
 
 ## Design Principles
 
@@ -172,6 +225,40 @@ task-level cost、latency 和成功率为准，不把厂商特定的价格比例
 `trajectory.log` 与 ATIF 都是可版本化重建的派生投影。派生文件存在不能自动证明完整，派生文件缺失也
 不能自动证明 Agent 没有运行。
 
+### Benchmarks Validate a Framework Hypothesis, Not a Score-Tuning Target
+
+本 spec 的可证伪假设是：在 model、prompt、Tool、环境和 verifier 不变时，统一且有界的 Context 编译、
+provider-bound 真值捕获、可逆 Tool output offload 与稳定 cache identity，会系统性提高 AWorld 在长历史、
+Tool-heavy、research、delegation 等 workload 上的质量、稳定性或单位成功成本。Terminal Bench 只是首个
+具备真实容器、文件修改、长 Tool 输出和独立 verifier 的 workload adapter，不是产品目标本身。
+
+因此任何 variant 只能改变 Context/ToolOutputPolicy；不得包含 task name、题目专用 prompt、预期答案、
+solution、测试断言或 verifier 分支。单题 reward 上升只能作为诊断信号，不能作为框架收益结论。发布结论
+必须来自预注册 corpus 的 paired aggregate，并至少在一个非 Terminal Bench workload 上复验同方向收益；
+若改动只提升特定题目或特定 benchmark，归类为 benchmark tuning，不纳入 Context Management 默认策略。
+
+### Context Management Benefit Loop
+
+本设计不能停留在“采到更多 trajectory”或“能在本地跑 benchmark”。完整收益闭环必须逐层成立：
+
+1. **Framework mechanism**：Context Compiler、预算/作用域、Tool 输出压缩、artifact offload、稳定前缀、
+   cache identity、delegation pack 或 trajectory control plane 发生版本化变更；
+2. **Request-level effect**：provider-bound messages/tools/params、Context item residency、inline/offloaded bytes、
+   prefix hash 或 cache usage 出现符合设计预期且可解释的变化；
+3. **Agent capability effect**：required context recall、Tool 使用正确性、长任务稳定性、恢复/委派能力或
+   cost/latency 改善，且没有安全、权限、fidelity 或质量回退；
+4. **Independent outcome**：由 benchmark adapter 之外的 verifier/scorer 计算 reward 与质量指标，不采信
+   TaskResponse success 或 final answer 自报；
+5. **Generalization decision**：在预注册 paired corpus 聚合并由另一类 workload 复验后，才决定 shadow、
+   enforce、回退或继续改造。
+
+其中 Tool 输出压缩与 artifact offload 不是 Terminal Bench 专用技巧，而是 Context Management 的输入治理
+能力：完整 Tool 原文进入可校验 artifact，模型只接收有界、可恢复的 inline view；其收益要同时通过
+`raw/inline/offloaded bytes`、artifact retrieval success、provider input/cost 和 task quality 验证。Raw
+trajectory 与本地 Docker 环境是闭环的证据和实验基础设施，不是闭环终点。任何实现若只改变 reward、却
+无法在 request/trace 层解释对应 Context 变化，不能归因于 Context Management；任何实现若只缩短 Context、
+却没有下游能力/成本收益或导致 verifier 回退，也不能判定成功。
+
 ## Core Invariants
 
 1. Provider 收到的 messages、tools 和相关参数必须与 `CompiledContext.request_snapshot` 深度相等。
@@ -200,6 +287,14 @@ task-level cost、latency 和成功率为准，不把厂商特定的价格比例
     不一致必须产生明确错误，不能继续标记为 complete。
 18. `agent_finished`、`artifact_present`、`self_check_passed` 和 `external_verifier_passed` 是不同状态；
     自然语言完成声明不能单独满足 `CompletionContract`。
+19. timezone database、CAST/tree-sitter、视觉、音频等 optional capability 缺失只能降低 capability manifest，
+    不能阻止不依赖该能力的核心 Agent 加载；native import 必须 lazy、可捕获并可观测。
+20. direct/non-interactive run 只有在目标 Agent 已加载且 executor 已创建后才进入 `running`；此前任一失败
+    必须返回非零并输出稳定的 `RunFailureRecord`，不得返回 `None` 后由调用方解释为成功。
+21. `llm_call_count == 0` 且 run 未越过 provider-start barrier 时，trajectory fidelity 只能是
+    `unavailable/build_failed`，不能是 `complete`，也不能使用 completed placeholder 作为 agent message。
+22. 通过 shell pipeline 调用 AWorld 的 adapter 必须保留 AWorld 进程的真实退出状态；日志复制、`tee`、
+    summary/ATIF 生成和 verifier 均不得把非零状态覆盖为成功。
 
 ## Architecture
 
@@ -348,10 +443,39 @@ class TrajectoryBuildResult:
     created_at: datetime
 ```
 
-稳定 `reason_code` 至少包括 `execution_not_started`、`execution_log_missing`、
+稳定 `reason_code` 至少包括 `execution_not_started`、`agent_not_found`、`agent_load_failed`、
+`executor_creation_failed`、`environment_incompatible`、`timezone_data_missing`、
+`native_dependency_incompatible`、`execution_log_missing`、
 `source_not_finalized`、`trajectory_update_timeout`、`trajectory_build_failed`、
 `trajectory_storage_empty`、`taskresponse_binding_missing`、`runtime_artifact_upload_failed`、
-`scheduler_artifact_missing` 和 `checksum_mismatch`。
+`scheduler_artifact_missing`、`exit_status_lost` 和 `checksum_mismatch`。
+
+pre-provider failure 使用独立且可直接投影到 `TrajectoryBuildResult` 的稳定记录：
+
+```python
+@dataclass(frozen=True)
+class RunFailureRecord:
+    schema_version: Literal["aworld.run.failure.v1"]
+    status: Literal["failed"]
+    stage: Literal[
+        "runtime_bootstrap",
+        "agent_load",
+        "executor_create",
+        "provider_start",
+        "task_execute",
+        "trajectory_finalize",
+    ]
+    error_code: str
+    agent_name: str
+    trajectory_fidelity: Literal["unavailable", "partial", "build_failed"]
+    llm_call_count: int
+    details: Mapping[str, JSONValue] | None
+```
+
+CLI 至少将该 object 以 `AWORLD_RUN_FAILURE=<json>` 写入 stderr 并返回非零；进程内调用方应直接消费
+typed object。`agent_load` details 可以包含可用 Agent 和 redacted source load failures；不得依赖 emoji、
+traceback 文本或最终 summary 做机器分类。Runtime/ATIF adapter 若暂未支持 typed object，也必须把原始
+failure record 作为 error artifact 保存，不能生成 completed agent message。
 
 finalize barrier 必须跟踪所有 trajectory update，而不是依赖裸 `asyncio.create_task`。相同 message 若存在
 before/after 两次派生，必须用同一 logical step id 和显式 revision 保证 after-handler 结果确定性覆盖，
@@ -738,6 +862,19 @@ final snapshot 之后仅允许 observe hook。任何 hook 修改都产生新的 
 `llm_calls[*].request` 是真实请求的 truth source。日志和 evaluation 从该快照读取，不重新从 memory
 推测当时模型看到了什么。
 
+首次 LLM 调用之前还必须记录 execution-start control plane：
+
+- environment fingerprint：OS/image、architecture、GLIBC、Python、timezone source 和 AWorld/CLI wheel；
+- capability manifest：core Agent、optional Tools/Subagents、缺失能力及降级原因；
+- `runtime_bootstrap -> agent_load -> executor_create -> provider_start` 各 barrier 的开始、完成和失败状态；
+- Agent source load failure 的 source/type/redacted exception，以及最终选择的 Agent/executor type；
+- CLI process exit status、adapter-observed status 和二者是否一致。
+
+preflight 必须在目标 task container/namespace 中真正执行 `load target agent + create executor`，仅在宿主机
+检查 Python 版本、CLI `--version` 或 wheel 是否存在不足以发现 timezone/native ABI 问题。preflight 不调用
+模型、不改变题目 workspace；若失败，直接生成 `RunFailureRecord` 和 `execution_not_started` build result，
+不进入 verifier 所依赖的正常 completion 路径。
+
 ### Trajectory Truth, Finalize and Receipts
 
 轨迹语义必须区分四层证据：
@@ -746,6 +883,11 @@ final snapshot 之后仅允许 observe hook。任何 hook 修改都产生新的 
 2. `TrajectoryDataset`：从上游证据生成的 SAR working projection，允许在 finalize 前更新。
 3. `trajectory.log`/artifact 与 `TaskResponse.trajectory/ref`：finalize 后的版本化派生快照。
 4. Runtime ATIF 与 Scheduler Raw trajectory：跨进程交付投影。
+
+另有第 0 层 execution-start control record，专门描述尚未产生 LLM/event trajectory 的 bootstrap、Agent 和
+executor 失败。它不是模型 trajectory，却是解释 `llm_call_count=0` 的必需证据。不能为了满足 ATIF 至少
+一条 message 的格式要求，把 framework error 改写成 assistant completed message；应使用 harness error/status
+字段或独立 error artifact。
 
 每层使用同一 task/session/trace/task-epoch identity。`TrajectoryBuildResult` 记录 source high watermark、
 scheduled/completed/failed/pending update、message/LLM/Tool/persisted-item 数和 checksum；Runtime 与 Scheduler
@@ -849,6 +991,12 @@ context_compiler:
 
 ### Phase 0: Baseline and Observability
 
+- 先修复 built-in Agent portability：`aworld-cli` 声明 `tzdata`，Asia/Shanghai 缺失时使用固定 UTC+8；
+  CAST/tree-sitter 采用 lazy optional import，并将不可用能力从 Tool/Subagent manifest 移除。
+- direct run 在 agent-load/executor-create 失败时输出 `aworld.run.failure.v1`、返回非零；外部 adapter canary
+  验证 pipeline status 不被 `tee` 覆盖，synthetic summary 不再产生正常 completion。
+- 在目标 task container 增加无模型 preflight，至少覆盖 Ubuntu 24.04 minimal、Debian bullseye-slim 和
+  一个兼容对照镜像；记录 GLIBC/timezone/capability fingerprint。
 - 为当前所有入口捕获真实 request snapshot、input/output/reasoning token、cache、latency、Tool calls、
   task-level cost 和任务结果。
 - 建立 cache identity/break、context token-turn residency、Tool 原始/inline 输出的 baseline。
@@ -919,6 +1067,11 @@ context_compiler:
 - 确定性测试使用 capture provider；真实模型质量测试每个 variant 至少运行 5 次。
 - 保存 seed、request snapshot、trace、Tool trajectory、最终 artifact 和 scorer 结果。
 - 报告绝对值、相对变化和 paired bootstrap 95% confidence interval，不能只报告平均分。
+- 实验 manifest 在执行前冻结 dataset/task archive checksum、variant、随机交错顺序、重复次数和 invariant
+  contract；variant schema 只接受 Context 与 Tool output policy 字段，拒绝 prompt/answer/verifier 配置。
+- reward 由容器内独立 verifier 产生；TaskResponse success、final answer 和 Agent 自报测试结果不得覆盖它。
+- Terminal Bench 的结论必须与 coding 之外至少一个 Tool-heavy/research/delegation corpus 交叉验证，防止
+  把 benchmark 特征误学为通用 Context 策略。
 
 ### Metrics
 
@@ -964,6 +1117,11 @@ context_compiler:
 - `runtime_artifact_persist_rate` 和 `scheduler_projection_rate`
 - `trajectory_checksum_mismatch_count`
 - `completion_contract_failure_count_by_reason`
+- `agent_load_success_rate` 和 `executor_create_success_rate`
+- `pre_llm_failure_classification_rate`
+- `successful_exit_without_executor_count`
+- `cli_adapter_exit_status_match_rate`
+- `optional_capability_degradation_count_by_reason`
 
 ### Test Matrix
 
@@ -994,6 +1152,10 @@ context_compiler:
 | TC-TRAJECTORY-IO-023 | 使用真实 logger formatter 写 legacy log，同时生成 JSONL v2；同一 task 再写一次 retry record | v2 每行可独立 JSON 解析；legacy dual-read 可用；reader 按 schema/revision 选择最新有效记录；checksum 一致 |
 | TC-TRAJECTORY-RECEIPT-024 | AWorld 构建成功，但分别模拟 TaskResponse 未绑定、Runtime 上传失败、Scheduler 未投影和 checksum 被修改 | 每个边界产生不同稳定 reason code；已执行任务不被回滚；训练/eval 拒绝非 complete 数据 |
 | TC-COMPLETION-025 | Agent 声称完成但目标文件缺失；另一 case 文件存在但验证证据过期 | FINISHED 不等于 deliverable verified；缺失/过期进入 repair 或结构化失败；外部 verifier 状态独立回填 |
+| TC-PORTABILITY-TZ-026 | 在没有 `/usr/share/zoneinfo/Asia/Shanghai` 且未预装系统 tzdata 的 Ubuntu minimal 容器加载 `Aworld` | wheel 声明 Python `tzdata`；若仍不可用则固定 UTC+8 fallback；Agent/executor 可创建；prompt 日期时间正确 |
+| TC-PORTABILITY-NATIVE-027 | 在 GLIBC 2.31 容器注入要求 GLIBC 2.33 的 tree-sitter native wheel | CAST capability 标记 unavailable 并记录原因；CAST Tools 与依赖它的 Subagents 被禁用；核心 `Aworld` Agent 仍可加载和执行 terminal task |
+| TC-DIRECT-FAILURE-028 | 分别模拟 target Agent 未注册、source import exception、executor 返回 None | stderr 输出合法 `aworld.run.failure.v1`；stage/error code 可区分；CLI exit 非零；`llm_call_count=0`；不输出 completed summary |
+| TC-HARNESS-STATUS-029 | 用 `aworld-cli ... 2>&1 | tee run.log` 包装 TC-DIRECT-FAILURE-028，并执行 ATIF/export/verifier | adapter 保留 AWorld 非零状态或每段 pipeline status；run 分类为 harness error；error artifact 可读；不生成 placeholder complete trajectory |
 
 ### Test Tiers
 
@@ -1006,6 +1168,7 @@ context_compiler:
 - task lifecycle、CacheIdentity/BreakReason、task-sticky Catalog 和 ToolOutputPolicy。
 - capture provider 验证 final snapshot、hook ordering 和 request trace exactness。
 - trajectory update drain、fidelity/reason、JSONL real-file parsing、TaskResponse/Runtime receipt 和 checksum。
+- built-in Agent timezone fallback、optional native dependency degradation 和 direct-run 非零失败语义。
 - 四个主要入口的 parity contract。
 
 建议测试文件：
@@ -1022,6 +1185,8 @@ tests/runners/test_trajectory_finalize_barrier.py
 tests/dataset/test_trajectory_build_result.py
 tests/evaluations/test_trajectory_jsonl_contract.py
 tests/integration/test_trajectory_runtime_receipts.py
+tests/core/test_aworld_agent_portability.py
+tests/core/test_direct_run_failures.py
 ```
 
 #### Nightly Evaluation
@@ -1038,19 +1203,21 @@ tests/integration/test_trajectory_runtime_receipts.py
 
 #### Local Docker Terminal Bench Fixture
 
-Context Management 的最小可复现环境使用 AWorld 自身的 `DockerSandbox`，只连接一个已经由调用方启动的
-本地 Docker 容器。AWorld 在宿主机启动 stdio MCP bridge，将 terminal/filesystem 操作通过参数化
-`docker exec` 路由到固定容器；AWorld cleanup 只关闭 bridge，不停止、删除或构建容器。题目镜像、测试
-挂载、verifier、reward 和容器生命周期继续由外部 harness 或调用脚本负责。该边界不要求修改
-mcpgateway、lingguang-bench-runtime-dsh 或题目镜像，也不在容器内安装 AWorld。
+Context Management 的最小可复现环境使用 AWorld 自身的 `DockerSandbox`，其抽象仍只连接一个已经由
+调用方启动的本地 Docker 容器。AWorld 在宿主机启动 stdio MCP bridge，将 terminal/filesystem 操作通过
+参数化 `docker exec` 路由到固定容器；`DockerSandbox.cleanup()` 只关闭 bridge，不停止、删除或构建容器。
+在该 attach-only 抽象外，仓库提供通用实验 driver，负责从 dataset package 安全解包任意 task、按打包
+Dockerfile 构建镜像、挂载原始 tests、启动容器、调用 AWorld、执行独立 verifier、保存 reward/manifest
+并删除该 driver 自己创建的容器。这样形成 end-to-end 可复现实验，同时不扩大 `DockerSandbox` 的所有权，
+也不要求修改 mcpgateway、lingguang-bench-runtime-dsh 或题目镜像，不在题目容器内安装 AWorld。
 
 首轮 fixture 只运行 Terminal Bench 2.1 的两个题目，证明其既能提供正例，也能捕获“框架成功、外部
 验证失败”的反例：
 
 | Task | TaskResponse | 外部 verifier reward | Raw trajectory | 关键结论 |
 |---|---:|---:|---:|---|
-| `prove-plus-comm` | success | 1 | 9 steps / 94,171 bytes | Agent 在容器内三次编译、修正 proof 后通过 `coqc`，适合作为双 1 正例 |
-| `cancel-async-tasks` | success | 0 | 13 steps / 337,214 bytes | 普通并发和两种 SIGINT case 通过，但 `n=3/max=2` 时未保证两个已启动任务均 cleanup，适合作为 reward 0 反例 |
+| `prove-plus-comm` | success | 1 | 9 steps / 94,171 bytes | 单模型、单次 reward-1 smoke；只证明本地执行与 verifier 链路可通，不称为“双 1”paired 正例 |
+| `cancel-async-tasks` | success | 0 | 13 steps / 337,214 bytes | TaskResponse success 与外部 reward 可分离的 smoke；题目级失败原因不进入框架策略 |
 
 每个 run 保存三类独立证据：
 
@@ -1059,12 +1226,45 @@ mcpgateway、lingguang-bench-runtime-dsh 或题目镜像，也不在容器内安
   Python repr payload”的两行格式；
 - `verifier.json`：独立于 TaskResponse success 的断言级 reward 与失败明细。
 
-本地 artifact 位于 `artifacts/context-management/local-terminal-bench/runs/<task>/`，通用执行入口为
-`examples/sandbox/docker_terminal_bench.py`。这个 fixture 的首要用途是验证 TC-TRAJECTORY-FINALIZE-021、
+本地 artifact 位于 `artifacts/context-management/local-terminal-bench/runs/<task>/`。attach-only 单次入口为
+`examples/sandbox/docker_terminal_bench.py`；端到端入口为
+`examples/sandbox/terminal_bench_context_eval.py`，其 `--task`、variant 和重复次数均来自参数/manifest，
+不得在代码中内置题目名单。variant 只允许 `agent_memory_config` 中的结构化 Context 字段和
+`docker_output_policy`，system prompt、model/provider/temperature、Tool surface、题目镜像与 verifier
+全部作为 invariant 记录。driver 随机交错 baseline/candidate，并保存 dataset/task/image checksum、
+provider calls、context trace、Raw trajectory、Tool artifacts、独立 reward 和退出状态。
+
+新 run 必须至少产生以下可核对证据：
+
+- `provider_calls.json`：hook 和 adapter 完成后真正 provider-bound 的 messages/tools/params 与 usage；
+- `context_trace.json`：compiler-side observability 及其与 provider request 的 match 状态；
+- `raw_trajectory.json` 与 `logs/trajectory.log`：动作数据面及 legacy 投影；
+- `tool-output-artifacts/`：超限 Tool 原文，inline 只保留有界 head/tail、artifact ref 和 checksum；
+- `verifier/reward.txt`、`result.json`、`run_manifest.json`：独立评分、环境身份和全部 artifact checksum。
+- `results.json`、`summary.json`：将 reward 与 provider request bytes、input/output/cache usage、trace match、
+  trajectory items 和 offloaded artifact bytes 按 task/repetition 配对；该汇总只作描述，仍须满足样本量、
+  confidence interval、Hard Gates 与跨 workload 复验后才能宣称框架收益。
+
+早期本地两个 smoke artifact 的 `TaskResponse.llm_calls` 为空，表示它们生成于 provider-bound capture 接入
+之前，不能用来计算 `request_trace_match`、cache 或 Context token 指标；它们只保留为 Docker/verifier 与
+TaskResponse/reward 分离证据。所有新的 Context 因果实验把 `provider_call_count > 0` 作为 hard gate。
+
+这个 fixture 的首要用途是验证 TC-TRAJECTORY-FINALIZE-021、
 TC-TRAJECTORY-IO-023 和 TC-COMPLETION-025：若未来出现 `AWorld completed without a captured response`，
 必须分别检查 runtime event/SAR 是否产生、finalize 是否 drain、TaskResponse 是否绑定、logger/artifact
 是否持久化和 verifier 是否独立完成，不能把“Agent 未生成 trajectory”和“runtime 存储失败”合并为同一
 原因。
+
+对 batch `b-771cbacf3eb9420e8a4e`，上述诊断树已经定位到第一项：Agent/executor 从未成功启动，而非后续
+logger、TaskResponse 或 artifact 存储失败。portability 验证与 attach-only sandbox fixture 保持正交：
+TC-PORTABILITY-TZ-026、TC-PORTABILITY-NATIVE-027 和 TC-DIRECT-FAILURE-028 由 packaging CI 的目标
+容器或 deterministic import-fault tests 执行；Terminal Bench rollout 仍由宿主 AWorld 通过 DockerSandbox
+操作题目容器，不在题目容器内安装 AWorld。本地 Docker 实现仍只负责 attach/exec，不接管镜像构建和
+容器生命周期，也不要求修改 mcpgateway、lingguang-bench-runtime-dsh 或 Harbor。
+
+真实 Docker capability gate 由 `tests/sandbox/test_docker_sandbox_integration.py` 自动执行 15 项 terminal/
+filesystem Tool matrix；默认跳过，CI/nightly 通过 `AWORLD_RUN_DOCKER_INTEGRATION=1` 开启，并记录 image
+digest 与 Tool matrix。mock 单测只验证配置/错误路径，不能替代该 gate。
 
 #### Release Canary
 
@@ -1087,7 +1287,12 @@ TC-TRAJECTORY-IO-023 和 TC-COMPLETION-025：若未来出现 `AWorld completed w
 - `trajectory_update_pending_count_at_finalize == 0`
 - `placeholder_trajectory_count == 0`
 - `trajectory_checksum_mismatch_count == 0`
+- `successful_exit_without_executor_count == 0`
+- `pre_llm_failure_classification_rate == 100%`
+- `cli_adapter_exit_status_match_rate == 100%`
 - benchmark 新生成 run 的 `raw_trajectory_available_rate == 100%`
+- Context 因果实验中 `provider_bound_call_capture_rate == 100%`；历史无 provider 真值的 run 只能作诊断证据
+- 超限 Tool output 的 `raw_bytes == inline_bytes + offloaded_bytes` 且 artifact checksum 校验率 100%
 - `tool_pair_reconstruction_rate == 100%` 和 `taskresponse_trajectory_binding_rate == 100%`
 - benchmark 中 `required_context_recall == 100%`
 - 编译结果确定性测试 100% 通过
@@ -1130,6 +1335,12 @@ TC-TRAJECTORY-IO-023 和 TC-COMPLETION-025：若未来出现 `AWorld completed w
 - 旧入口无法表达 task epoch 时先映射为单一 legacy epoch；在未提供显式 reset 前不得猜测并删除 history。
 - provider 不暴露 effort、TTL、reasoning token 或 billing usage 时相应字段为 unknown，并使用带版本号的
   代理指标；不得伪造零值或声称精确命中。
+- built-in Agent 必须能在缺少系统 timezone database 时运行；Python `tzdata` 是声明依赖，固定 UTC+8 是
+  最后降级路径。降级不得改变 prompt 的北京时间语义，但必须记录 timezone source。
+- CAST/tree-sitter 保持可选增强能力。兼容环境继续注册原有 Tools/Subagents；native import 失败的旧 GLIBC
+  环境只禁用相关 capability，并保留 terminal/filesystem/context 等核心能力。
+- 外部 adapter 尚未消费 `RunFailureRecord` 时仍可保留原始 stderr artifact，但必须传播 CLI exit status；
+  不允许为兼容旧 ATIF schema 而合成 completed assistant message。
 
 ## Risks and Mitigations
 
@@ -1189,6 +1400,18 @@ shadow 不调用第二次模型，复用 tokenization/cache，并允许按比例
 默认保存结构化 metadata、hash 和 redacted preview；完整 snapshot 使用现有安全存储和 retention policy，
 secrets 永不因 debug level 自动解除脱敏。
 
+### Optional Capability Degradation Hides Required Features
+
+lazy import 不能把用户真正需要的 CAST/vision 等能力静默删掉。capability manifest 必须记录 unavailable
+原因；任务或 Skill 将该能力标为 required 时，在首次 provider call 前结构化失败并允许路由到兼容环境，
+只有不依赖该能力的任务才允许继续。这样既避免 native 扩展拖垮核心 Agent，也不把降级伪装成能力完整。
+
+### Nonzero Exit Is Lost by an External Pipeline
+
+AWorld 侧通过 `RunFailureRecord` 和非零退出建立明确语义，但 shell adapter 仍可能被 `tee` 覆盖。release
+canary 必须执行 TC-HARNESS-STATUS-029，并同时记录 child exit、pipeline exit 和 adapter classification；
+三者不一致时停止生成正常 ATIF/summary。该契约可先验证，不要求本 spec 扩大到修改外部仓库。
+
 ### Cross-Pipeline Migration Produces Inconsistent Sessions
 
 使用 session-sticky feature flag，按普通 Agent -> CLI -> Amni -> ACP 顺序 enforce，并由
@@ -1222,6 +1445,8 @@ TC-PARITY-013 阻止入口语义分叉。
 - 附带对应 baseline/candidate 指标或 deterministic invariant 证据。
 - 不以“代码已接入”替代 Acceptance Gate。
 - 不在未完成 parity、trace exactness 和回退能力前删除旧链路。
+- 本阶段只在 AWorld/AWorld CLI 内实现 portability、失败记录和非零退出；mcpgateway、
+  lingguang-bench-runtime-dsh、Harbor 的 `pipefail`/preflight 要求先作为外部契约验证，不在同一变更中修改。
 
 完成标准不是 Context Compiler 类存在，而是所有入口通过同一不变量，且 paired evaluation 证明质量不
 回退、cache-adjusted cost per successful task 与 Tool inline output 明显下降、缓存与长任务稳定性提升、

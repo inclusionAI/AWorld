@@ -267,6 +267,7 @@ class PluginManager:
         """
         self.plugin_dir = plugin_dir or get_default_plugin_dir()
         self.manifest_file = self.plugin_dir / ".manifest.json"
+        self.agent_load_failures: List[Dict[str, str]] = []
         
         # Ensure plugin directory exists
         self.plugin_dir.mkdir(parents=True, exist_ok=True)
@@ -1083,6 +1084,17 @@ class PluginManager:
         
         all_agents: List[AgentInfo] = []
         agent_sources_map: Dict[str, Dict] = {}  # Track sources for executor creation
+        self.agent_load_failures.clear()
+
+        def _record_load_failure(*, source_type: str, location: object, exc: Exception) -> None:
+            self.agent_load_failures.append(
+                {
+                    "source_type": source_type,
+                    "location": str(location),
+                    "error_type": type(exc).__name__,
+                    "message": str(exc)[:1000],
+                }
+            )
 
         async def _load_discovered_sources(source_dirs: List[Path], source_type: str) -> None:
             discovered = discover_plugins(source_dirs)
@@ -1110,6 +1122,11 @@ class PluginManager:
                                 level="warning",
                             )
                 except Exception as e:
+                    _record_load_failure(
+                        source_type=source_type,
+                        location=plugin_dir,
+                        exc=e,
+                    )
                     if console:
                         console.print(f"[yellow]⚠️ Failed to load {source_type} source {plugin_dir}: {e}[/yellow]")
 
@@ -1180,6 +1197,11 @@ class PluginManager:
                             )
                         
             except Exception as e:
+                _record_load_failure(
+                    source_type="local",
+                    location=local_dir,
+                    exc=e,
+                )
                 if console:
                     console.print(f"[yellow]⚠️ Failed to load from {local_dir}: {e}[/yellow]")
         
@@ -1229,6 +1251,11 @@ class PluginManager:
                         )
                         
             except Exception as e:
+                _record_load_failure(
+                    source_type="remote",
+                    location=backend_url,
+                    exc=e,
+                )
                 if console:
                     console.print(f"[yellow]⚠️ Failed to load from {backend_url}: {e}[/yellow]")
         

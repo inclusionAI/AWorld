@@ -68,9 +68,9 @@ class RunTopLevelCommand:
         local_dirs = _resolve_agent_dirs(args.agent_dir)
         agent_name = self._resolve_agent_name(args)
         if agent_name is None:
-            return 0
+            return 1
 
-        asyncio.run(
+        succeeded = asyncio.run(
             _run_direct_mode(
                 prompt=args.task,
                 agent_name=agent_name,
@@ -87,7 +87,7 @@ class RunTopLevelCommand:
                 agent_files=args.agent_file,
             )
         )
-        return 0
+        return 0 if succeeded else 1
 
     def _resolve_agent_name(self, args) -> str | None:
         agent_name = args.agent

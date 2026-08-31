@@ -537,6 +537,7 @@ class LLMModel:
         agent_id = getattr(context.agent_info, "current_agent_id", None) if context.agent_info else None
 
         llm_call = {
+            "capture_stage": "provider_bound",
             "request_id": request_id,
             "provider_request_id": getattr(response, "provider_request_id", None),
             "task_id": context.task_id,
@@ -563,6 +564,29 @@ class LLMModel:
             "usage_normalized": usage_normalized,
             "usage_raw": usage_raw,
         }
+        # Agent prompt assembly records a compiler-side snapshot before hooks and
+        # provider adapters run.  Merge the provider-bound truth into that same
+        # logical call instead of appending a second, ambiguous record.  Keeping
+        # both views makes request/trace fidelity measurable without making
+        # TaskResponse the source of truth.
+        llm_calls = context.get_llm_calls()
+        for index in range(len(llm_calls) - 1, -1, -1):
+            compiled = llm_calls[index]
+            if not isinstance(compiled, dict):
+                continue
+            if compiled.get("request_id") or not compiled.get("call_id"):
+                continue
+            if compiled.get("agent_id") != agent_id:
+                continue
+
+            compiler_request = self._safe_copy(compiled.get("request") or {})
+            merged = dict(compiled)
+            merged.update(llm_call)
+            merged["compiler_request"] = compiler_request
+            merged["request_trace_match"] = compiler_request == llm_call["request"]
+            llm_calls[index] = merged
+            return
+
         context.append_llm_call(llm_call)
 
     def _apply_updated_output(self, response: ModelResponse, updated_output: Any, *, sync_mode: bool = False) -> ModelResponse:

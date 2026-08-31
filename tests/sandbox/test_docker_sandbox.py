@@ -25,8 +25,17 @@ def docker_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_docker_sandbox_attaches_without_owning_container(docker_runtime: None) -> None:
-    sandbox = DockerSandbox(container="terminal-bench-task", reuse=False)
+async def test_docker_sandbox_attaches_without_owning_container(
+    docker_runtime: None,
+    tmp_path,
+) -> None:
+    sandbox = DockerSandbox(
+        container="terminal-bench-task",
+        max_inline_output_bytes=4096,
+        output_head_bytes=1024,
+        artifact_directory=str(tmp_path / "tool-output"),
+        reuse=False,
+    )
 
     assert sandbox.env_type is SandboxEnvType.DOCKER
     assert sandbox.mode == "remote"
@@ -37,6 +46,12 @@ async def test_docker_sandbox_attaches_without_owning_container(docker_runtime: 
     assert docker_config["type"] == "stdio"
     assert docker_config["headers"]["MCP_SERVERS"] == "terminal,filesystem"
     assert docker_config["env"]["AWORLD_DOCKER_CONTAINER"] == "terminal-bench-task"
+    assert docker_config["env"]["AWORLD_DOCKER_MAX_OUTPUT_BYTES"] == "4096"
+    assert docker_config["env"]["AWORLD_DOCKER_OUTPUT_HEAD_BYTES"] == "1024"
+    assert docker_config["env"]["AWORLD_DOCKER_ARTIFACT_DIRECTORY"] == str(
+        (tmp_path / "tool-output").resolve()
+    )
+    assert sandbox.metadata["tool_output_policy"]["strategy"] == "head_tail_artifact"
 
     await sandbox.cleanup()
 
@@ -84,5 +99,18 @@ def test_docker_sandbox_rejects_reserved_user_server(docker_runtime: None) -> No
         DockerSandbox(
             container="abc123",
             mcp_config={"mcpServers": {"docker": {"url": "http://example.invalid"}}},
+            reuse=False,
+        )
+
+
+def test_docker_sandbox_rejects_invalid_output_policy(docker_runtime: None) -> None:
+    with pytest.raises(ValueError, match="max_inline_output_bytes"):
+        DockerSandbox(container="abc123", max_inline_output_bytes=0, reuse=False)
+
+    with pytest.raises(ValueError, match="output_head_bytes"):
+        DockerSandbox(
+            container="abc123",
+            max_inline_output_bytes=100,
+            output_head_bytes=101,
             reuse=False,
         )

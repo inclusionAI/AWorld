@@ -1,0 +1,33 @@
+{
+  "schema_version": "aworld.context-evidence-provenance/v1",
+  "batch_id": "b-771cbacf3eb9420e8a4e",
+  "batch_url": "https://mcpgateway-pre.alipay.com/scheduler/dashboard/batches/b-771cbacf3eb9420e8a4e?env=pre&source=main",
+  "raw_trajectory_source": "run-detail API harbor.trajectory, corresponding to the Dashboard Raw trajectory region",
+  "selection_policy": {
+    "both_zero": "all 44 tasks, both model runs",
+    "split_reward": "all 13 tasks, both model runs",
+    "both_one": "3 tasks sampled deterministically with seed=batch_id, both model runs"
+  },
+  "requested_run_count": 120,
+  "available_raw_trajectory_count": 92,
+  "unavailable_raw_trajectory_count": 28,
+  "synthetic_placeholder_count": 54,
+  "source_object_equality_verified_count": 92,
+  "local_evidence_checksums": {
+    "selection.json": "sha256:ce9092e139d4d72fd20d275e332434a3a0b92ce99eba49b979a98743257b5a38",
+    "raw-trajectory-manifest.json": "sha256:f7aeb56b87bb6e8ee284f9ac9d30113aee551a0b2c84393d864406dfae70e022",
+    "trajectory-metrics.json": "sha256:efcaa687c6cace1ba481c73ed402222cc997abdb7b0a11da109a6bd9961170f0",
+    "analysis-report.md": "sha256:05c93c4001c7f24690f650b010b775b05492090fefb4d3d7d68d9d321bc60c6a",
+    "task-report.json": "sha256:c0d564917c5a93f34b36c6689f2c4c2a085ed05c5953f42e56eb42d19f6e8d9d"
+  },
+  "fitness_for_use": {
+    "complete_raw_trajectories": "failure taxonomy, paired behavioral comparison, Tool/context pattern discovery",
+    "synthetic_placeholders": "capture reliability and pre-provider failure analysis only",
+    "not_available": "excluded from trajectory quality attribution"
+  },
+  "known_limitations": [
+    "The historical Raw trajectory schema does not expose provider-bound prompt/output/reasoning/cache token truth.",
+    "Historical character counts are proxies and must not be reported as provider token or billing metrics.",
+    "Raw execution content is retained in the access-controlled source and is not required in the source repository."
+  ]
+}
