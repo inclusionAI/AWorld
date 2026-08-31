@@ -43,6 +43,8 @@ from aworld.evaluations.sources import (
 from aworld.evaluations.trajectory_judge import TrajectoryJudgeSchema
 from aworld.runner import Runners
 from pydantic import BaseModel
+
+from aworld.dataset.trajectory_io import looks_like_trajectory_log
 from aworld_cli.core.plugin_manager import PluginManager, get_builtin_plugin_roots
 from aworld_cli.evaluator_rendering import render_evaluator_summary as _render_evaluator_summary
 from aworld_cli.evaluator_workspace import (
@@ -193,16 +195,7 @@ class _SourceJudgeOutput(BaseModel):
 
 
 def _looks_like_aworld_trajectory_log(path: Path) -> bool:
-    try:
-        with path.open(encoding="utf-8", errors="replace") as handle:
-            for line in handle:
-                stripped = line.strip()
-                if not stripped:
-                    continue
-                return stripped.startswith("{") and "'trajectory'" in stripped and "'task_id'" in stripped
-    except OSError:
-        return False
-    return False
+    return looks_like_trajectory_log(path)
 
 
 def _source_report_path(
