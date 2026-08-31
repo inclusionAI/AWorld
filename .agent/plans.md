@@ -62,7 +62,8 @@ Tool output policy, cache identity, lifecycle, delegation, and evaluation consum
 
 - ContextItem/Source/Scope/Authority/Trust/Stability models and token accounting. **Status: complete**
 - Generic occurrence adapters, PromptSection owner adapter, and cleaned-history owner adapter. **Status: complete**
-- Remaining adapters for neurons, Skills, Tool catalog owners, and Steering. **Status: pending**
+- Skill descriptor/content owner adapters. **Status: complete**
+- Remaining adapters for neurons, Tool catalog owners, and Steering. **Status: in_progress**
 - Deterministic occurrence ordering and redacted decision trace. **Status: complete**
 - Pure observe compiler freezes and compares finalized legacy requests. **Status: complete**
 - Model-boundary observe integration and request-id correlation without request mutation. **Status: pending**

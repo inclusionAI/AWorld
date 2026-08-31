@@ -16,7 +16,7 @@ non-blocking P2 remains: thread-backed file export has no bounded I/O acknowledg
 - DockerSandbox attach implementation, bounded/reversible Tool output artifacts, real Docker capability gate.
 - Generic paired benchmark driver, evidence provenance, and Context-benefit evaluation contract.
 
-## Current Milestone: Trajectory Control Plane Foundation
+## Current Milestone: Context Models, Adapters, and Observe Mode
 
 ### Task Status
 
@@ -158,6 +158,9 @@ non-blocking P2 remains: thread-backed file export has no bounded I/O acknowledg
 - Task 2.3 adds a pure legacy-request observer: exact immutable request snapshot, one legacy-included decision per
   occurrence, unknown token/hash evidence when unproved, redacted trace IDs, and raw-value-free mismatch paths. It performs
   no resolver/provider/runtime action; compiler plus owner adapter regression is 46 passed.
+- Added owner-side Skill descriptor and loaded-content adapters. They preserve caller order, duplicates, and the complete
+  owner payload while leaving activation, authority, scope, lifetime, trust, stability, budget, and token semantics unknown.
+  They do not load/activate Skills or alter prompt behavior; Skill adapter/provider regression is 18 passed.
 - Existing PromptAssemblyProvider sees Amni neuron sections only after they were folded into one system message; provenance
   sidecars must be emitted before folding rather than inferred later.
 - Memory adapters must follow the exact cleaned replay list, including Tool pair repair and duplicate occurrences.
