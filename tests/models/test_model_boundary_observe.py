@@ -105,6 +105,16 @@ class BlockingProvider(BoundaryProvider):
         await asyncio.Event().wait()
 
 
+class ProcessControlProvider(BoundaryProvider):
+    def __init__(self, exception_type: type[BaseException]) -> None:
+        super().__init__()
+        self.exception_type = exception_type
+
+    async def acompletion(self, messages, **kwargs):
+        self.seen.append(("async", messages, dict(kwargs)))
+        raise self.exception_type("provider-process-control-secret")
+
+
 def _compiled_record(call_id: str, content: str) -> dict:
     return {
         "capture_stage": "compiled",
@@ -263,6 +273,36 @@ async def test_provider_failure_and_cancellation_keep_one_terminal_snapshot() ->
     assert cancelled[0]["status"] == "cancelled"
     assert cancelled[0]["error"] == {"code": "provider_call_cancelled"}
     assert cancelled[0]["request"]["messages"][0]["content"] == "cancel-input"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("exception_type", "expected_status", "expected_code"),
+    [
+        (KeyboardInterrupt, "cancelled", "provider_call_cancelled"),
+        (SystemExit, "failed", "provider_call_failed"),
+    ],
+)
+async def test_async_process_control_exception_keeps_terminal_snapshot(
+    exception_type,
+    expected_status,
+    expected_code,
+) -> None:
+    provider = ProcessControlProvider(exception_type)
+    model = LLMModel(custom_provider=provider)
+    context = Context(task_id=f"task-{exception_type.__name__}")
+
+    with pytest.raises(exception_type, match="provider-process-control-secret"):
+        await model.acompletion(
+            [{"role": "user", "content": "process-control-input"}],
+            context=context,
+        )
+
+    calls = context.get_llm_calls()
+    assert len(calls) == 1
+    assert calls[0]["status"] == expected_status
+    assert calls[0]["error"] == {"code": expected_code}
+    assert "provider-process-control-secret" not in json.dumps(calls[0])
 
 
 def test_sync_stream_close_and_exception_finalize_once() -> None:

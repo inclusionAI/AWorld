@@ -303,7 +303,7 @@ def test_completion_records_effective_request_model_when_overridden():
     assert llm_call["model"] == "request-override"
 
 
-def test_provider_bound_capture_merges_agent_compiler_snapshot():
+def test_model_boundary_capture_merges_agent_compiler_snapshot():
     provider = RecordingLLMProvider()
     llm_model = LLMModel(custom_provider=provider)
     context = Context(task_id="task-merged-capture")
@@ -328,10 +328,17 @@ def test_provider_bound_capture_merges_agent_compiler_snapshot():
     llm_calls = context.context_info["llm_calls"]
     assert len(llm_calls) == 1
     assert llm_calls[0]["call_id"] == "compiler-call"
-    assert llm_calls[0]["capture_stage"] == "provider_bound"
+    assert llm_calls[0]["capture_stage"] == "model_boundary"
+    assert llm_calls[0]["capture_fidelity"] == "model_boundary"
+    assert llm_calls[0]["request_projection"] == "aworld.standard.model_boundary.v1"
+    assert llm_calls[0]["provider_prepared_request_match"] is None
     assert llm_calls[0]["compiler_request"] == {"messages": compiled_messages}
     assert llm_calls[0]["request"]["messages"] == provider_messages
     assert llm_calls[0]["request_trace_match"] is False
+    assert (
+        llm_calls[0]["request_trace_match_scope"]
+        == "aworld.standard.model_boundary.v1"
+    )
     assert llm_calls[0]["assembly_observability"]["stable_prefix_hash"] == "prefix-1"
 
 

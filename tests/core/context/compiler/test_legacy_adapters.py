@@ -6,6 +6,8 @@ import inspect
 
 import aworld.core.context.compiler.adapters as adapters_module
 from aworld.core.context.compiler import (
+    AdapterDiagnostic,
+    AdapterDiagnosticSeverity,
     Authority,
     ContextKind,
     Lifetime,
@@ -23,6 +25,21 @@ from aworld.core.context.compiler.adapters import (
     adapt_final_messages,
     adapt_tool_schemas,
 )
+
+
+def test_adapter_diagnostic_freezes_unknown_fields_from_mutable_input() -> None:
+    unknown_fields = ["authority"]
+    diagnostic = AdapterDiagnostic(
+        code="legacy_unknown",
+        message="owner evidence is unavailable",
+        severity=AdapterDiagnosticSeverity.INFO,
+        source_identity="test-owner",
+        unknown_fields=unknown_fields,
+    )
+
+    unknown_fields.append("trust")
+
+    assert diagnostic.unknown_fields == ("authority",)
 
 
 def test_final_message_adapter_preserves_order_duplicates_pairs_and_input() -> None:
