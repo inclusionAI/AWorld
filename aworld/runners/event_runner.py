@@ -963,7 +963,10 @@ class TaskEventRunner(TaskRunner):
                 }
                 trajectory_logger.info(f"{payload}")
                 legacy = TrajectoryDeliveryTargetReceipt(
-                    status=TrajectoryDeliveryState.PERSISTED
+                    # Loguru accepted the record, but its configured sinks do
+                    # not expose a durable append acknowledgement here.
+                    status=TrajectoryDeliveryState.EMITTED,
+                    reason_code="legacy_sink_unacknowledged",
                 )
             except Exception as exc:
                 logger.warning("Failed to emit finalized legacy trajectory: {}", exc)

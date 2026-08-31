@@ -60,6 +60,7 @@ class TrajectoryReasonCode(str, Enum):
 
 class TrajectoryDeliveryState(str, Enum):
     PERSISTED = "persisted"
+    EMITTED = "emitted"
     FAILED = "failed"
     NOT_REQUESTED = "not_requested"
 
@@ -247,7 +248,11 @@ class TrajectoryBuildResult:
             raise ValueError("task_id must be a non-empty string")
         if not isinstance(self.builder_version, str) or not self.builder_version:
             raise ValueError("builder_version must be a non-empty string")
-        if self.task_epoch is not None and (isinstance(self.task_epoch, bool) or self.task_epoch < 0):
+        if self.task_epoch is not None and (
+            isinstance(self.task_epoch, bool)
+            or not isinstance(self.task_epoch, int)
+            or self.task_epoch < 0
+        ):
             raise ValueError("task_epoch must be a non-negative integer when provided")
         if isinstance(self.source_high_watermark, bool) or not isinstance(
             self.source_high_watermark, (str, int, type(None))

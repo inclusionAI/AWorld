@@ -477,10 +477,6 @@ def _legacy_snapshot(
         )
         trajectory_checksum = embedded_build_result.trajectory_checksum
         build_result = embedded_build_result.to_dict()
-        build_result["source_build_fidelity"] = build_result["fidelity"]
-        build_result["source_build_kind"] = build_result["source_kind"]
-        build_result["fidelity"] = TrajectoryFidelity.LEGACY.value
-        build_result["source_kind"] = "legacy_log"
     return TrajectorySnapshot(
         schema_version="legacy",
         task_id=str(task_id),

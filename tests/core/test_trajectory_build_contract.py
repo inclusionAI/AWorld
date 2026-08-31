@@ -202,6 +202,12 @@ def test_trajectory_build_result_rejects_inconsistent_states(overrides, message:
         _build_result(**overrides)
 
 
+@pytest.mark.parametrize("task_epoch", [1.0, 0.0, True, -1])
+def test_trajectory_build_result_rejects_non_integer_task_epoch(task_epoch) -> None:
+    with pytest.raises(ValueError, match="task_epoch must be a non-negative integer"):
+        _build_result(task_epoch=task_epoch)
+
+
 def test_task_response_additively_binds_one_canonical_build_result() -> None:
     inline_trajectory = [{"id": "existing-step", "state": {}, "action": {}, "reward": {}}]
     result = _build_result()

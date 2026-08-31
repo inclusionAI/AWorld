@@ -366,7 +366,8 @@ async def test_default_legacy_mode_persists_typed_empty_record(monkeypatch):
     assert payload["trajectory"] == "[]"
     assert payload["trajectory_build_result"]["reason_code"] == "trajectory_storage_empty"
     receipt = runner._task_response.trajectory_delivery_receipt
-    assert receipt.legacy.status is TrajectoryDeliveryState.PERSISTED
+    assert receipt.legacy.status is TrajectoryDeliveryState.EMITTED
+    assert receipt.legacy.reason_code == "legacy_sink_unacknowledged"
 
 
 @pytest.mark.asyncio

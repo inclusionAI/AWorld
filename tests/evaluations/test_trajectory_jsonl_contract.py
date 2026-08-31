@@ -329,13 +329,7 @@ def test_legacy_reader_preserves_embedded_partial_build_metadata(tmp_path: Path)
     record = read_trajectory_records(path).records[0]
     assert record.schema_version == "legacy"
     assert record.fidelity == TrajectoryFidelity.LEGACY.value
-    assert record.build_result["status"] == TrajectoryBuildStatus.PARTIAL.value
-    assert record.build_result["fidelity"] == TrajectoryFidelity.LEGACY.value
-    assert record.build_result["source_kind"] == "legacy_log"
-    assert record.build_result["source_build_fidelity"] == TrajectoryFidelity.PARTIAL.value
-    assert record.build_result["source_build_kind"] == TrajectorySourceKind.EVENT_STATE.value
-    assert record.build_result["reason_code"] == TrajectoryReasonCode.SOURCE_NOT_FINALIZED.value
-    assert record.build_result["persisted_items"] == 1
+    assert record.build_result == result.to_dict()
     assert record.trajectory_checksum == result.trajectory_checksum
     assert record.is_sub_task is True
 
@@ -385,12 +379,7 @@ def test_legacy_reader_normalizes_embedded_empty_and_failed_without_synthetic_st
     record = read_trajectory_records(path).records[0]
     assert record.fidelity == TrajectoryFidelity.LEGACY.value
     assert record.trajectory == []
-    assert record.build_result["status"] == status.value
-    assert record.build_result["reason_code"] == reason.value
-    assert record.build_result["fidelity"] == TrajectoryFidelity.LEGACY.value
-    assert record.build_result["source_kind"] == "legacy_log"
-    assert record.build_result["source_build_fidelity"] == fidelity.value
-    assert record.build_result["source_build_kind"] == TrajectorySourceKind.EVENT_STATE.value
+    assert record.build_result == result.to_dict()
     normalized = list(iter_aworld_trajectory_records(path))[0][1]
     assert normalized["steps"] == []
     assert normalized["final_answer"] is None
