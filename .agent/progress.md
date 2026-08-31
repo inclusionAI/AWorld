@@ -5,7 +5,7 @@
 **Phase:** Milestone 1
 **Current milestone:** Trajectory Control Plane Foundation
 **Current task:** Tasks 1.2 and 1.3 implementation in isolated worktrees
-**Last action:** Merged and re-verified Task 1.1; Tasks 1.2/1.3 are in test, and the Milestone 2 call-chain audit is complete.
+**Last action:** Merged Task 1.3 codec/reader after 146-test evaluation regression; final writer integration awaits Task 1.2.
 
 ## Completed Foundations
 
@@ -22,7 +22,7 @@
 |---|---|---|
 | 1.1 Typed trajectory build contracts | complete | Immutable control result, canonical checksum, invariants, TaskResponse projections |
 | 1.2 Tracked update/finalize barrier | in_progress | `/tmp/aworld-context-trajectory-finalize` |
-| 1.3 JSONL v2 dual-read/write | in_progress | `/tmp/aworld-context-trajectory-io`; writer integration deferred until 1.2 |
+| 1.3 JSONL v2 dual-read/write | in_progress | Codec/reader merged; finalize-time writer integration remains |
 | 1.4 Integration and architecture review | pending | Depends on 1.1-1.3 |
 
 ## Decisions Log
