@@ -161,6 +161,9 @@ non-blocking P2 remains: thread-backed file export has no bounded I/O acknowledg
 - Added owner-side Skill descriptor and loaded-content adapters. They preserve caller order, duplicates, and the complete
   owner payload while leaving activation, authority, scope, lifetime, trust, stability, budget, and token semantics unknown.
   They do not load/activate Skills or alter prompt behavior; Skill adapter/provider regression is 18 passed.
+- Added a CLI steering owner adapter for already-drained `SteeringInput` occurrences. It preserves coordinator sequence,
+  duplicates, text, and timestamp; maps only explicitly supplied session/task scope; and leaves policy semantics unknown.
+  It neither drains nor applies steering and does not alter the existing hook; steering regression is 67 passed.
 - Existing PromptAssemblyProvider sees Amni neuron sections only after they were folded into one system message; provenance
   sidecars must be emitted before folding rather than inferred later.
 - Memory adapters must follow the exact cleaned replay list, including Tool pair repair and duplicate occurrences.
