@@ -1,5 +1,15 @@
 """Public dependency-light Context Compiler contracts."""
 
+from .adapters import (
+    AdapterDiagnostic,
+    AdapterDiagnosticSeverity,
+    AdapterResult,
+    LegacyFinalMessageAdapter,
+    LegacyToolSchemaAdapter,
+    OccurrenceContextAdapter,
+    adapt_final_messages,
+    adapt_tool_schemas,
+)
 from .frozen_json import (
     FrozenJSON,
     FrozenMap,
@@ -37,6 +47,9 @@ from .models import (
 from .trace import ContextDecisionTrace
 
 __all__ = [
+    "AdapterDiagnostic",
+    "AdapterDiagnosticSeverity",
+    "AdapterResult",
     "Authority",
     "CacheBreakReason",
     "CacheIdentity",
@@ -49,9 +62,12 @@ __all__ = [
     "FrozenJSON",
     "FrozenMap",
     "InferenceProfile",
+    "LegacyFinalMessageAdapter",
+    "LegacyToolSchemaAdapter",
     "Lifetime",
     "ProviderRequestFidelity",
     "ProviderRequestSnapshot",
+    "OccurrenceContextAdapter",
     "RequestCaptureStage",
     "ResolutionAction",
     "ResolutionDecision",
@@ -63,6 +79,8 @@ __all__ = [
     "TokenAccounting",
     "TokenEstimate",
     "Trust",
+    "adapt_final_messages",
+    "adapt_tool_schemas",
     "canonical_json_bytes",
     "canonical_json_hash",
     "freeze_json",

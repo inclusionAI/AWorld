@@ -247,6 +247,7 @@ class TaskEventRunner(TaskRunner):
                                    task=self.task,
                                    attributes={semconv.TRACE_ID: self.context.trace_id}):
             resp = None
+            primary_error: BaseException | None = None
             try:
                 for msg in self.init_messages:
                     await self.event_mng.emit_message(msg)
@@ -327,6 +328,7 @@ class TaskEventRunner(TaskRunner):
 
                 return resp
             except Exception as e:
+                primary_error = e
                 # Hooks V2: 触发 session_failed hook（仅主任务）
                 if not self.task.is_sub_task:
                     try:
@@ -362,21 +364,54 @@ class TaskEventRunner(TaskRunner):
 
                 # 重新抛出原始异常
                 raise
+            except asyncio.CancelledError as exc:
+                primary_error = exc
+                raise
             finally:
                 # Finalization is idempotent and also runs for exception/cancel paths.
                 # It must complete before TaskResponse delivery and dataset release.
                 finalize_task = asyncio.create_task(self._finalize_for_delivery())
-                deferred_cancel = None
+                deferred_cancel: asyncio.CancelledError | None = None
+                cleanup_error: BaseException | None = None
                 try:
                     await asyncio.shield(finalize_task)
                 except asyncio.CancelledError as exc:
-                    await finalize_task
                     deferred_cancel = exc
-                await self._publish_task_response_once()
+                    try:
+                        await finalize_task
+                    except BaseException as finalize_exc:
+                        if isinstance(finalize_exc, asyncio.CancelledError):
+                            deferred_cancel = deferred_cancel or finalize_exc
+                        else:
+                            cleanup_error = cleanup_error or finalize_exc
+                        logger.warning(
+                            "Trajectory finalize failed while preserving cancellation: {}",
+                            finalize_exc,
+                        )
+                except BaseException as finalize_exc:
+                    cleanup_error = finalize_exc
+                    logger.warning("Trajectory finalize failed during terminal cleanup: {}", finalize_exc)
+
+                try:
+                    await self._publish_task_response_once()
+                except asyncio.CancelledError as exc:
+                    deferred_cancel = deferred_cancel or exc
+                except BaseException as publish_exc:
+                    cleanup_error = cleanup_error or publish_exc
+                    logger.warning("TaskResponse publication failed during terminal cleanup: {}", publish_exc)
+
                 # the last step mark output finished
                 if not self.task.is_sub_task:
                     logger.info(f'main task {self.task.id} will mark outputs finished')
-                    await self.task.outputs.mark_completed(resp if resp is not None else self._response())
+                    try:
+                        await self.task.outputs.mark_completed(
+                            resp if resp is not None else self._response()
+                        )
+                    except asyncio.CancelledError as exc:
+                        deferred_cancel = deferred_cancel or exc
+                    except BaseException as outputs_exc:
+                        cleanup_error = cleanup_error or outputs_exc
+                        logger.warning("Output completion failed during terminal cleanup: {}", outputs_exc)
                     # Snapshot to avoid iteration issues if AgentFactory registry changes during awaits.
                     agents_snapshot = list(AgentFactory._agent_instance.values())
                     for agent in agents_snapshot:
@@ -400,17 +435,29 @@ class TaskEventRunner(TaskRunner):
                                 if len(task_list) == 0:
                                     await sandbox.cleanup()
                                 
+                            except asyncio.CancelledError as exc:
+                                deferred_cancel = deferred_cancel or exc
                             except Exception as e:
                                 logger.warning(
                                     f"Failed to manage sandbox cleanup for agent {agent.id() if hasattr(agent, 'id') else ''}: {e}"
                                 )
                                 # Keep the original semantics to avoid leaked resources.
-                                await sandbox.cleanup()
+                                try:
+                                    await sandbox.cleanup()
+                                except asyncio.CancelledError as exc:
+                                    deferred_cancel = deferred_cancel or exc
+                                except BaseException as cleanup_exc:
+                                    cleanup_error = cleanup_error or cleanup_exc
+                                    logger.warning(
+                                        "Sandbox fallback cleanup failed: {}", cleanup_exc
+                                    )
                     # Release trajectory storage to free memory; trajectories have already
                     # been persisted by _save_trajectories() before reaching this point.
                     self.context.trajectory_dataset = None
                 if deferred_cancel is not None:
                     raise deferred_cancel
+                if cleanup_error is not None and primary_error is None:
+                    raise cleanup_error
 
 
 

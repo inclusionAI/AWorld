@@ -274,6 +274,57 @@ async def test_runner_cancellation_finalizes_before_reraising(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_cancellation_during_terminal_cleanup_is_never_replaced(monkeypatch):
+    runner, context = _runner(sub_task=False)
+    runner.init_messages = [Message(payload="start", headers={"context": context})]
+    runner.start_time = 0
+    finalize_entered = asyncio.Event()
+    release_finalize = asyncio.Event()
+
+    class _FailingOutputs:
+        async def mark_completed(self, response):
+            raise RuntimeError("output cleanup failed")
+
+    runner.task.outputs = _FailingOutputs()
+
+    class _Events:
+        async def emit_message(self, message):
+            return True
+
+    runner.event_mng = _Events()
+
+    async def business_run():
+        runner._task_response.answer = "business answer"
+
+    async def failing_finalize():
+        finalize_entered.set()
+        await release_finalize.wait()
+        raise RuntimeError("finalize failed")
+
+    async def failing_publish():
+        raise RuntimeError("publish failed")
+
+    @asynccontextmanager
+    async def no_trace_span(*args, **kwargs):
+        yield
+
+    monkeypatch.setattr(runner, "_do_run", business_run)
+    monkeypatch.setattr(runner, "_finalize_for_delivery", failing_finalize)
+    monkeypatch.setattr(runner, "_publish_task_response_once", failing_publish)
+    monkeypatch.setattr("aworld.runners.event_runner.trace.task_span", no_trace_span)
+
+    run_task = asyncio.create_task(runner.do_run())
+    await finalize_entered.wait()
+    run_task.cancel()
+    release_finalize.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(run_task, timeout=2)
+    assert runner._task_response.answer == "business answer"
+    assert context.trajectory_dataset is None
+
+
+@pytest.mark.asyncio
 async def test_dual_mode_writes_v2_only_after_finalized_snapshot(tmp_path, monkeypatch):
     runner, context = _runner()
     registry = context.trajectory_update_registry
