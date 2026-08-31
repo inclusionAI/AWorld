@@ -55,6 +55,7 @@ from .observe import (
     request_trace_match,
 )
 from .trace import ContextDecisionTrace
+from .sidecar import ContextObservationSidecar
 
 __all__ = [
     "AdapterDiagnostic",
@@ -66,6 +67,7 @@ __all__ = [
     "ContextDecisionTrace",
     "ContextItem",
     "ContextItemRef",
+    "ContextObservationSidecar",
     "ContextKind",
     "ContextScope",
     "ContextSource",

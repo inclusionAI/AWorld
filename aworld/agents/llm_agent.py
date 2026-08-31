@@ -594,7 +594,27 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         observability.setdefault("assembly_provider", provider.__class__.__name__)
         if stable_hash:
             observability.setdefault("stable_prefix_hash", stable_hash)
+        context_observations = self._redacted_context_observations(context)
+        if context_observations:
+            observability["context_observations"] = context_observations
         return plan, to_serializable(assembled_messages), observability
+
+    def _redacted_context_observations(
+        self, context: Any = None
+    ) -> List[Dict[str, Any]]:
+        """Read owner sidecars after assembly without feeding them into assembly."""
+        getter = getattr(context, "get_context_observations", None)
+        if not callable(getter):
+            return []
+        try:
+            sidecars = getter(namespace=self.id())
+            return [sidecar.to_redacted_dict() for sidecar in sidecars]
+        except Exception as exc:
+            logger.warning(
+                "Agent Context sidecar observation failed; "
+                f"error_type={type(exc).__name__}"
+            )
+            return []
 
     def _get_prompt_assembly_provider(self, context: Any = None):
         provider = None

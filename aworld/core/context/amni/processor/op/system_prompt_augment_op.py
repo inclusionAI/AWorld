@@ -14,7 +14,13 @@ from ...payload import SystemPromptMessagePayload
 from aworld.logs.util import logger
 from .base import BaseOp, MemoryCommand
 from .op_factory import memory_op
-from ...prompt.neurons import neuron_factory, Neuron
+from ...prompt.neurons import (
+    neuron_factory,
+    Neuron,
+    NeuronOutputOccurrence,
+    adapt_neuron_outputs,
+)
+from aworld.core.context.compiler import ContextObservationSidecar
 from ...prompt.prompt_ext import ContextPromptTemplate
 from ...retrieval.reranker import RerankResult
 from ...retrieval.reranker.factory import RerankerFactory
@@ -79,6 +85,7 @@ class SystemPromptAugmentOp(BaseOp):
 
 
         augment_prompts = {}
+        neuron_output_occurrences: List[NeuronOutputOccurrence] = []
 
         # Record timing for each component
         component_timings = []
@@ -137,7 +144,9 @@ class SystemPromptAugmentOp(BaseOp):
 
             # Context
 
-            async def process_neuron(neuron: Neuron) -> tuple[str, str, float]:
+            async def process_neuron(
+                neuron: Neuron,
+            ) -> tuple[str, str, float, Neuron, Any]:
                 """
                 Process a single neuron and return (component_name, timing_info, duration)
                 
@@ -156,20 +165,33 @@ class SystemPromptAugmentOp(BaseOp):
                     rerank_result = await self.rerank_items(neuron=neuron, context=context, namespace=namespace)
                     # Read current value first, then update atomically
                     current_prompt = augment_prompts[neuron.name]
-                    augment_prompts[neuron.name] = current_prompt + '\n\n' + rerank_result
+                    neuron_output = current_prompt + '\n\n' + rerank_result
+                    augment_prompts[neuron.name] = neuron_output
                     t1 = time.time() - st
                     logger.debug(
                         f"🧠 _process_prompt_components rerank strategy: {component_name} rerank time: start_time={st}s format_time={t1:.3f}s")
 
                     component_end_time = time.time()
                     component_duration = component_end_time - component_start_time
-                    return (component_name, f"{component_name}:{component_duration:.3f}s", component_duration)
+                    return (
+                        component_name,
+                        f"{component_name}:{component_duration:.3f}s",
+                        component_duration,
+                        neuron,
+                        neuron_output,
+                    )
 
                 except Exception as e:
                     component_end_time = time.time()
                     component_duration = component_end_time - component_start_time
                     logger.error(f"Error processing rerank component {component_name}: {e} {traceback.format_exc()}")
-                    return (component_name, f"{component_name}:{component_duration:.3f}s(error)", component_duration)
+                    return (
+                        component_name,
+                        f"{component_name}:{component_duration:.3f}s(error)",
+                        component_duration,
+                        neuron,
+                        augment_prompts.get(neuron.name),
+                    )
 
             # Execute all neurons in parallel
             tasks = [process_neuron(neuron) for neuron in neurons]
@@ -180,8 +202,15 @@ class SystemPromptAugmentOp(BaseOp):
                 if isinstance(result, Exception):
                     logger.error(f"Unexpected error in parallel processing: {result} {traceback.format_exc()}")
                     continue
-                component_name, timing_info, _ = result
+                component_name, timing_info, _, neuron, neuron_output = result
                 component_timings.append(timing_info)
+                if neuron_output is not None:
+                    neuron_output_occurrences.append(
+                        NeuronOutputOccurrence(
+                            neuron=neuron,
+                            output=neuron_output,
+                        )
+                    )
 
         total_end_time = time.time()
         total_duration = total_end_time - total_start_time
@@ -206,7 +235,45 @@ class SystemPromptAugmentOp(BaseOp):
             # Rebuild dictionary in sorted order
             augment_prompts = {name: value for _, name, value in sorted_items}
 
+        self._publish_neuron_context_observation(
+            context=context,
+            event=event,
+            occurrences=neuron_output_occurrences,
+        )
+
         return augment_prompts
+
+    @staticmethod
+    def _publish_neuron_context_observation(
+        *,
+        context: ApplicationContext,
+        event: SystemPromptMessagePayload,
+        occurrences: List[NeuronOutputOccurrence],
+    ) -> None:
+        """Publish a pre-fold sidecar without changing legacy prompt assembly."""
+        publisher = getattr(context, "publish_context_observation", None)
+        if not callable(publisher):
+            return
+        namespace = getattr(event, "agent_id", None) or "unknown-agent"
+        source_identity = "amni://neuron-outputs"
+        try:
+            result = adapt_neuron_outputs(
+                occurrences,
+                source_identity=source_identity,
+            )
+            publisher(
+                ContextObservationSidecar.from_adapter_result(
+                    owner="amni.neuron_outputs",
+                    namespace=namespace,
+                    source_identity=source_identity,
+                    result=result,
+                )
+            )
+        except Exception as exc:
+            logger.warning(
+                "Amni neuron Context observation failed; "
+                f"error_type={type(exc).__name__}"
+            )
 
     async def rerank_items(self, neuron: Neuron, context: ApplicationContext,
                            namespace: str) -> str:
