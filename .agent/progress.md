@@ -79,6 +79,21 @@ model-boundary fidelity is explicit, correlation is task-local, and full Agent/m
 - Trade-offs accepted: SDK providers report `provider_prepared` structural fidelity; only controlled HTTP paths may claim
   serialized-byte fidelity.
 
+### Decision: First enforce-mode budget hard gate
+- Options considered: shrink reserved output automatically; use heuristic zero/defaults for unknown estimates; fail with a
+  typed budget result before request enforcement.
+- Chose: keep output/protocol/safety reserves immutable and reject required overflow or unknown estimates before enforce.
+- Rationale: silently changing output capacity or treating unknown as zero makes benchmark gains non-causal and can drop
+  required Context. Reducers must run explicitly before the planner and supply a new versioned estimate.
+- Trade-offs accepted: shadow can diagnose requests that are not yet enforceable; early enforce coverage is narrower.
+
+### Decision: Atomic budget groups
+- Options considered: independently rank every occurrence; reconstruct Tool pairs after pruning; require owner-supplied
+  atomic groups and select them as one unit.
+- Chose: owner-supplied atomic groups, with any required member making the complete group required.
+- Rationale: the budget layer must never create an orphaned Tool call/result or split another owner-defined invariant.
+- Trade-offs accepted: owners must emit group evidence before enforce; the planner does not infer pairs from text.
+
 ## Architecture State
 
 ### Components
@@ -217,5 +232,10 @@ model-boundary fidelity is explicit, correlation is task-local, and full Agent/m
   only redacted refs/diagnostics to `llm_calls` assembly observability, and are never passed into prompt assembly. Capture
   errors are fail-open, while the existing prompt messages/order/content remain unchanged. Sidecar/Amni/Agent regression:
   29 passed; compiler files and affected modules also pass `py_compile` and diff checks.
+- Added the first deterministic input budget planner. It computes the spec reserve formula, requires versioned token
+  estimates, keeps required/atomic groups intact, selects optional groups by explicit priority, and returns selections in
+  original request order with one decision per occurrence. Required overflow, unknown estimates, and required item-cap
+  violations are typed failures; no reducer, offload, reserve mutation, or payload rewrite occurs implicitly. Dedicated
+  budget tests are 6/6 and the combined compiler/PromptSection/neuron adapter suite is 48/48.
 - Authority, trust, lifetime, stability, source URI, task epoch, and exact token counts remain UNKNOWN unless their owner can
   prove them; role/content heuristics are not acceptable.

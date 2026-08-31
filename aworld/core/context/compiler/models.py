@@ -119,6 +119,12 @@ class ResolutionReason(str, Enum):
     LOWER_AUTHORITY_CONFLICT = "lower_authority_conflict"
     NOT_ACTIVATED = "not_activated"
     BUDGET_COMPACTED = "budget_compacted"
+    BUDGET_INCLUDED = "budget_included"
+    BUDGET_EXCLUDED = "budget_excluded"
+    ATOMIC_GROUP_REQUIRED = "atomic_group_required"
+    ITEM_TOKEN_LIMIT_EXCEEDED = "item_token_limit_exceeded"
+    TOKEN_ESTIMATE_UNKNOWN = "token_estimate_unknown"
+    REQUIRED_CONTEXT_BUDGET_EXCEEDED = "required_context_budget_exceeded"
     TOOL_NOT_ALLOWED = "tool_not_allowed"
 
 
