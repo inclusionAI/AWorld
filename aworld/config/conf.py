@@ -7,7 +7,7 @@ import uuid
 from collections import OrderedDict
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Callable, Union, Iterable, Type
+from typing import Any, Dict, List, Optional, Callable, Union, Iterable, Literal, Type
 
 import yaml
 from pydantic import BaseModel, Field
@@ -117,6 +117,11 @@ class ContextCacheConfig(BaseConfig):
     allow_provider_native_cache: bool = True
 
 
+class ContextCompilerRuntimeConfig(BaseConfig):
+    mode: Literal["off", "observe", "shadow", "enforce"] = "off"
+    compiler_version: str = "v1"
+
+
 class ModelConfig(BaseConfig):
     model_config = ConfigDict(extra='allow')
     llm_provider: Optional[str] = None  # Set to None to allow automatic provider detection
@@ -135,6 +140,9 @@ class ModelConfig(BaseConfig):
     ext_config: Optional[Dict[str, Any]] = {}
     llm_response_parser: Optional[Any] = None
     context_cache: ContextCacheConfig = Field(default_factory=ContextCacheConfig)
+    context_compiler: ContextCompilerRuntimeConfig = Field(
+        default_factory=ContextCompilerRuntimeConfig
+    )
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)

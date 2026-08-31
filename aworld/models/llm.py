@@ -32,10 +32,21 @@ from aworld.models.volcano_seedance_provider import VolcanoSeedanceProvider
 from aworld.models.model_response import ModelResponse
 from aworld.core.context.base import Context
 from aworld.core.context.compiler import (
+    CandidateCompileInput,
+    CandidateCompilePolicy,
+    CandidateCompilation,
+    CandidateRequestNotEnforceable,
+    ContextCompilerMode,
+    FRAMEWORK_COMPILER_IDENTITY,
+    ProviderRequestSnapshot,
     ProviderRequestFidelity,
     RequestCaptureStage,
+    RolloutContractError,
+    canonical_json_hash,
+    compile_context_candidate,
     observe_legacy_provider_request,
     request_trace_match,
+    select_rollout_request,
 )
 from aworld.core.model_output_parser import ModelOutputParser, BaseContentParser
 from aworld.utils.common import sync_exec
@@ -245,6 +256,30 @@ class LLMModel:
                 - model_name: Model name.
                 - temperature: Temperature parameter.
         """
+        candidate_policy = kwargs.pop("context_candidate_policy", None)
+        runtime_config = kwargs.pop("context_compiler", None)
+        if runtime_config is None and conf_contains_key(conf, "context_compiler"):
+            runtime_config = conf.context_compiler
+        runtime_mode = (
+            runtime_config.get("mode", "off")
+            if isinstance(runtime_config, dict)
+            else getattr(runtime_config, "mode", "off")
+        )
+        compiler_version = (
+            runtime_config.get("compiler_version", "v1")
+            if isinstance(runtime_config, dict)
+            else getattr(runtime_config, "compiler_version", "v1")
+        )
+        resolved_compiler_mode = ContextCompilerMode(runtime_mode)
+        if candidate_policy is None:
+            candidate_policy = CandidateCompilePolicy(
+                compiler_version=compiler_version
+            )
+        self.configure_context_compiler(
+            mode=resolved_compiler_mode,
+            candidate_policy=candidate_policy,
+        )
+
         self.llm_response_parser: ModelResponseParser = conf.llm_response_parser \
             if conf and hasattr(conf, 'llm_response_parser') else None
 
@@ -307,7 +342,7 @@ class LLMModel:
             conf_dict = conf
 
         ignored_keys = ["llm_provider", "llm_base_url", "llm_model_name", "llm_api_key", "llm_sync_enabled",
-                        "llm_async_enabled", "llm_client_type", "llm_response_parser"]
+                        "llm_async_enabled", "llm_client_type", "llm_response_parser", "context_compiler"]
         args = {}
         # Filter out used parameters and add remaining parameters to args
         for key, value in conf_dict.items():
@@ -317,6 +352,33 @@ class LLMModel:
                 args[key] = value
 
         return args
+
+    def configure_context_compiler(
+        self,
+        *,
+        mode: ContextCompilerMode | str,
+        candidate_policy: CandidateCompilePolicy | None = None,
+    ) -> None:
+        """Configure request rollout without changing provider construction."""
+        resolved_mode = ContextCompilerMode(mode)
+        if candidate_policy is None:
+            candidate_policy = CandidateCompilePolicy()
+        if type(candidate_policy) is not CandidateCompilePolicy:
+            raise TypeError(
+                "candidate_policy must be the sealed CandidateCompilePolicy type"
+            )
+        self._context_compiler_mode = resolved_mode
+        self._context_candidate_policy = candidate_policy
+
+    @property
+    def context_compiler_mode(self) -> ContextCompilerMode:
+        """Expose the validated rollout mode without allowing direct replacement."""
+        return self._context_compiler_mode
+
+    @property
+    def context_candidate_policy(self) -> CandidateCompilePolicy:
+        """Expose the frozen policy without allowing ambient replacement."""
+        return self._context_candidate_policy
 
     def _identify_provider(self, provider: str = None, base_url: str = None, model_name: str = None) -> str:
         """Identify the provider for the given configuration.
@@ -585,6 +647,210 @@ class LLMModel:
             },
         }
 
+    def _prepare_context_rollout(
+        self,
+        *,
+        context: Context | None,
+        request_id: str,
+        agent_call_id: str | None,
+        started_at: float,
+        messages: List[Dict[str, str]],
+        temperature: float,
+        max_tokens: int,
+        stop: List[str],
+        tools: Any,
+        model_name: str | None,
+    ) -> dict[str, Any] | None:
+        """Prepare redacted rollout metadata without invoking external actions.
+
+        The current model boundary is structurally faithful but not a
+        provider-serialized execution boundary. Therefore shadow is supported,
+        while runtime enforce remains fail-closed until provider lowering owns
+        both the immutable candidate and its execution.
+        """
+        mode = self.context_compiler_mode
+        if mode is ContextCompilerMode.OFF:
+            # Keep the default path byte-for-byte compatible at the model
+            # boundary: no candidate snapshot, comparison, or record field.
+            return None
+        if mode is ContextCompilerMode.OBSERVE:
+            # Existing context_observe capture below remains authoritative.
+            # Observe never asks the candidate compiler to do work.
+            return {
+                "mode": mode.value,
+                "candidate_status": "not_requested",
+                "candidate_applied": False,
+                "external_actions_authorized": False,
+                "external_action_count_observed": None,
+                "comparison": None,
+            }
+
+        compile_started = time.perf_counter()
+        policy = getattr(self, "_context_candidate_policy", None)
+        policy_valid = type(policy) is CandidateCompilePolicy
+        base_evidence = {
+            "mode": mode.value,
+            "compiler_identity": FRAMEWORK_COMPILER_IDENTITY,
+            "compiler_version": policy.compiler_version if policy_valid else None,
+            "comparison_projection": "aworld.standard.model_boundary.v1",
+            "comparison_direction": "candidate_against_legacy",
+            "external_actions_authorized": False,
+            "external_action_count_observed": None,
+            "provider_lowering_ready": False,
+        }
+
+        def elapsed_ms() -> float:
+            return round((time.perf_counter() - compile_started) * 1000, 3)
+
+        def fail_metadata(*, status: str, error_code: str) -> dict[str, Any]:
+            return {
+                **base_evidence,
+                "candidate_status": status,
+                "candidate_applied": False,
+                "compiler_elapsed_ms": elapsed_ms(),
+                "comparison": None,
+                "error": {"code": error_code},
+            }
+
+        def block(error: RolloutContractError, metadata: dict[str, Any]):
+            self._begin_llm_call_record(
+                context=context,
+                request_id=request_id,
+                agent_call_id=agent_call_id,
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                stop=stop,
+                started_at=started_at,
+                tools=tools,
+                model_name=model_name,
+                context_rollout=metadata,
+                provider_invoked=False,
+            )
+            self._finish_llm_call_record(
+                context=context,
+                request_id=request_id,
+                status="blocked_before_provider",
+                finished_at=time.time(),
+                error_code=error.code,
+            )
+            raise error from None
+
+        if not policy_valid:
+            if mode is ContextCompilerMode.ENFORCE:
+                block(
+                    CandidateRequestNotEnforceable("invalid_compiler_policy"),
+                    fail_metadata(
+                        status="blocked", error_code="invalid_compiler_policy"
+                    ),
+                )
+            return fail_metadata(
+                status="failed", error_code="invalid_compiler_policy"
+            )
+
+        try:
+            legacy_request = ProviderRequestSnapshot(
+                request_id=request_id,
+                provider_name=self.provider_name,
+                payload=self._model_boundary_request(
+                    messages=messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    stop=stop,
+                    tools=tools,
+                ),
+                capture_stage=RequestCaptureStage.MODEL_BOUNDARY,
+                fidelity=ProviderRequestFidelity.MODEL_BOUNDARY,
+            )
+            observations = (
+                context.get_context_observations() if context is not None else ()
+            )
+            compiler_input = CandidateCompileInput(
+                legacy_request=legacy_request,
+                observations=observations,
+            )
+        except Exception:
+            if mode is ContextCompilerMode.ENFORCE:
+                block(
+                    CandidateRequestNotEnforceable("candidate_input_failed"),
+                    fail_metadata(
+                        status="blocked", error_code="candidate_input_failed"
+                    ),
+                )
+            return fail_metadata(
+                status="failed", error_code="candidate_input_failed"
+            )
+
+        try:
+            candidate = compile_context_candidate(
+                compiler_input=compiler_input,
+                policy=policy,
+            )
+            if not isinstance(candidate, CandidateCompilation):
+                raise TypeError("framework compiler returned an invalid result")
+            snapshot = candidate.request_snapshot
+            if (
+                snapshot.request_id != request_id
+                or snapshot.provider_name != self.provider_name
+                or snapshot.capture_stage is not RequestCaptureStage.MODEL_BOUNDARY
+                or snapshot.fidelity is not ProviderRequestFidelity.MODEL_BOUNDARY
+            ):
+                raise ValueError("candidate boundary mismatch")
+            selection = select_rollout_request(
+                mode=ContextCompilerMode.SHADOW,
+                legacy_request=legacy_request,
+                candidate_request=snapshot,
+            )
+            metadata = {
+                **base_evidence,
+                "compiler_identity": candidate.compiler_identity,
+                "compiler_version": candidate.compiler_version,
+                "candidate_status": (
+                    "compiled" if candidate.enforce_ready else "shadow_only"
+                ),
+                "candidate_applied": False,
+                "compiler_elapsed_ms": elapsed_ms(),
+                "legacy_snapshot": {
+                    "content_hash": legacy_request.content_hash,
+                    "capture_stage": legacy_request.capture_stage.value,
+                    "fidelity": legacy_request.fidelity.value,
+                },
+                "candidate_snapshot": {
+                    "content_hash": snapshot.content_hash,
+                    "capture_stage": snapshot.capture_stage.value,
+                    "fidelity": snapshot.fidelity.value,
+                },
+                "comparison": (
+                    selection.comparison.to_dict()
+                    if selection.comparison else None
+                ),
+                "diagnostic_code_hashes": [
+                    canonical_json_hash({"code": code})
+                    for code in candidate.diagnostic_codes
+                ],
+            }
+        except Exception:
+            if mode is ContextCompilerMode.ENFORCE:
+                block(
+                    CandidateRequestNotEnforceable("compiler_failed"),
+                    fail_metadata(
+                        status="blocked", error_code="candidate_compilation_failed"
+                    ),
+                )
+            return fail_metadata(
+                status="failed", error_code="candidate_compilation_failed"
+            )
+
+        if mode is ContextCompilerMode.ENFORCE:
+            blocked = dict(metadata)
+            blocked["candidate_status"] = "blocked"
+            blocked["error"] = {"code": "provider_lowering_required"}
+            block(
+                CandidateRequestNotEnforceable("provider_lowering_required"),
+                blocked,
+            )
+        return metadata
+
     def _unsafe_begin_llm_call_record(
         self,
         *,
@@ -598,6 +864,8 @@ class LLMModel:
         started_at: float,
         tools: Any,
         model_name: str | None,
+        context_rollout: dict[str, Any] | None = None,
+        provider_invoked: bool = True,
     ) -> None:
         if context is None:
             return
@@ -654,6 +922,10 @@ class LLMModel:
             "context_observe": observe_payload,
             "attempt": 1,
         }
+        if context_rollout is not None:
+            llm_call["context_rollout"] = self._safe_copy(context_rollout)
+        if not provider_invoked:
+            llm_call["provider_invoked"] = False
         llm_calls = context.get_llm_calls()
         if agent_call_id:
             matched = [
@@ -899,6 +1171,18 @@ class LLMModel:
             except Exception as e:
                 logger.warning(f"BEFORE_LLM_CALL hook execution failed: {e}")
 
+        context_rollout = self._prepare_context_rollout(
+            context=context,
+            request_id=request_id,
+            agent_call_id=agent_call_id,
+            started_at=start_ms,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            stop=stop,
+            tools=kwargs.get("tools"),
+            model_name=kwargs.get("model_name") or kwargs.get("model"),
+        )
         self._begin_llm_call_record(
             context=context,
             request_id=request_id,
@@ -910,6 +1194,7 @@ class LLMModel:
             started_at=start_ms,
             tools=kwargs.get("tools"),
             model_name=kwargs.get("model_name") or kwargs.get("model"),
+            context_rollout=context_rollout,
         )
         try:
             resp = await self.provider.acompletion(
@@ -1115,6 +1400,18 @@ class LLMModel:
             except Exception as e:
                 logger.warning(f"BEFORE_LLM_CALL hook execution failed: {e}")
 
+        context_rollout = self._prepare_context_rollout(
+            context=context,
+            request_id=request_id,
+            agent_call_id=agent_call_id,
+            started_at=start_ms,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            stop=stop,
+            tools=kwargs.get("tools"),
+            model_name=kwargs.get("model_name") or kwargs.get("model"),
+        )
         self._begin_llm_call_record(
             context=context,
             request_id=request_id,
@@ -1126,6 +1423,7 @@ class LLMModel:
             started_at=start_ms,
             tools=kwargs.get("tools"),
             model_name=kwargs.get("model_name") or kwargs.get("model"),
+            context_rollout=context_rollout,
         )
         try:
             resp = self.provider.completion(
@@ -1244,6 +1542,18 @@ class LLMModel:
         record_chunk = None
         terminal_status = "success"
         terminal_error = None
+        context_rollout = self._prepare_context_rollout(
+            context=context,
+            request_id=request_id,
+            agent_call_id=agent_call_id,
+            started_at=stream_started_at,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            stop=stop,
+            tools=kwargs.get("tools"),
+            model_name=kwargs.get("model_name") or kwargs.get("model"),
+        )
         self._begin_llm_call_record(
             context=context,
             request_id=request_id,
@@ -1255,6 +1565,7 @@ class LLMModel:
             started_at=stream_started_at,
             tools=kwargs.get("tools"),
             model_name=kwargs.get("model_name") or kwargs.get("model"),
+            context_rollout=context_rollout,
         )
         try:
             for chunk in self.provider.stream_completion(
@@ -1346,6 +1657,18 @@ class LLMModel:
         record_chunk = None
         terminal_status = "success"
         terminal_error = None
+        context_rollout = self._prepare_context_rollout(
+            context=context,
+            request_id=request_id,
+            agent_call_id=agent_call_id,
+            started_at=stream_started_at,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            stop=stop,
+            tools=kwargs.get("tools"),
+            model_name=kwargs.get("model_name") or kwargs.get("model"),
+        )
         self._begin_llm_call_record(
             context=context,
             request_id=request_id,
@@ -1357,6 +1680,7 @@ class LLMModel:
             started_at=stream_started_at,
             tools=kwargs.get("tools"),
             model_name=kwargs.get("model_name") or kwargs.get("model"),
+            context_rollout=context_rollout,
         )
         try:
             async for chunk in self.provider.astream_completion(
