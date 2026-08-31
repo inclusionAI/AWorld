@@ -65,7 +65,7 @@ Tool output policy, cache identity, lifecycle, delegation, and evaluation consum
 - Skill descriptor/content owner adapters. **Status: complete**
 - CLI steering owner adapter. **Status: complete**
 - Final Tool Catalog owner adapter. **Status: complete**
-- Remaining adapter for Amni neurons. **Status: in_progress**
+- Amni neuron pre-fold output owner adapter. **Status: complete**
 - Deterministic occurrence ordering and redacted decision trace. **Status: complete**
 - Pure observe compiler freezes and compares finalized legacy requests. **Status: complete**
 - Model-boundary observe integration and request-id correlation without request mutation. **Status: pending**
