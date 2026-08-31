@@ -1018,6 +1018,14 @@ class Context:
             return TrajectoryUpdateOutcome(False, False, error="trajectory dataset is unavailable")
 
         registry = self.trajectory_update_registry
+        finalized_import = bool(kwargs.get("finalized_import", False))
+        if registry.state(task_id) is None and finalized_import:
+            # A remote/separate child finalized outside this root dataset. Open
+            # an explicit import scope so persistence acknowledgement and
+            # fencing are still observable rather than falling through to the
+            # exception-swallowing legacy save path.
+            registry.open(task_id)
+
         if registry.state(task_id) is not None:
             step_ids = [
                 str(step.get("id", index)) if isinstance(step, dict) else str(getattr(step, "id", index))
@@ -1034,7 +1042,18 @@ class Context:
                     task_id, task_trajectory, revision=revision
                 ),
             )
-            return await entry.task
+            outcome = await entry.task
+            if finalized_import:
+                registry.seal(task_id)
+                await registry.drain(
+                    task_id,
+                    timeout=float(kwargs.get("finalize_timeout", 10) or 10),
+                )
+                fence = getattr(self.trajectory_dataset, "fence_task_updates", None)
+                if callable(fence):
+                    fence(task_id)
+                registry.release(task_id)
+            return outcome
 
         # Compatibility for contexts that are not runner-managed.
         await self.trajectory_dataset.save_task_trajectory(task_id, task_trajectory)

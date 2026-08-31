@@ -489,7 +489,17 @@ class DefaultGroupHandler(GroupHandler):
                         and registry.state(res.id) is TrajectoryRegistryState.DRAINED
                     )
                     if not finalized_in_shared_root:
-                        await input_message.context.add_task_trajectory(res.id, res.trajectory)
+                        outcome = await input_message.context.add_task_trajectory(
+                            res.id,
+                            res.trajectory,
+                            finalized_import=True,
+                        )
+                        if not outcome.succeeded:
+                            logger.warning(
+                                "Finalized child trajectory import was not acknowledged: child_task_id={} error={}",
+                                res.id,
+                                outcome.error,
+                            )
             await state_manager.finish_sub_group(group_id, node_id, finish_group_messages)
 
         for agent_id in root_agent_set:

@@ -221,3 +221,58 @@ async def test_context_batch_add_uses_shared_registry_and_is_rejected_after_seal
 
     with pytest.raises(TrajectoryRegistrySealedError):
         await child.add_task_trajectory("task-1", [{"id": "late"}], revision=3)
+
+
+@pytest.mark.asyncio
+async def test_finalized_remote_child_import_opens_drains_and_fences_tracked_scope():
+    context = Context(task_id="parent-task")
+    calls = []
+
+    class _Dataset:
+        def __init__(self):
+            self.fenced = []
+
+        async def save_task_trajectory_batch_tracked(self, task_id, trajectory, *, revision):
+            calls.append((task_id, trajectory, revision))
+            return _success()
+
+        def fence_task_updates(self, task_id):
+            self.fenced.append(task_id)
+
+    context.trajectory_dataset = _Dataset()
+    outcome = await context.add_task_trajectory(
+        "remote-child",
+        [{"id": "step-1"}],
+        finalized_import=True,
+    )
+
+    assert outcome.succeeded is True
+    assert calls == [("remote-child", [{"id": "step-1"}], 2)]
+    assert context.trajectory_dataset.fenced == ["remote-child"]
+    assert context.trajectory_update_registry.state("remote-child") is TrajectoryRegistryState.DRAINED
+    drain = await context.trajectory_update_registry.drain("remote-child", timeout=1)
+    assert (drain.scheduled, drain.completed, drain.failed, drain.pending) == (1, 1, 0, 0)
+
+
+@pytest.mark.asyncio
+async def test_finalized_remote_child_import_preserves_storage_failure_diagnostic():
+    context = Context(task_id="parent-task")
+
+    class _Dataset:
+        async def save_task_trajectory_batch_tracked(self, task_id, trajectory, *, revision):
+            return TrajectoryUpdateOutcome(True, False, error="remote storage rejected write")
+
+        def fence_task_updates(self, task_id):
+            pass
+
+    context.trajectory_dataset = _Dataset()
+    outcome = await context.add_task_trajectory(
+        "remote-child",
+        [{"id": "step-1"}],
+        finalized_import=True,
+    )
+
+    assert outcome.succeeded is False
+    assert outcome.error == "remote storage rejected write"
+    drain = await context.trajectory_update_registry.drain("remote-child", timeout=1)
+    assert (drain.scheduled, drain.completed, drain.failed, drain.pending) == (1, 0, 1, 0)
