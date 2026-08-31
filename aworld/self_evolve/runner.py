@@ -258,6 +258,8 @@ from aworld.self_evolve.controllers.measurement import (
 from aworld.self_evolve.controllers.screening import (
     SCREENING_BUDGET_CENSORED_CODE as _SCREENING_BUDGET_CENSORED_CODE,
     CandidateScreeningController,
+    ScreeningPopulationRequest,
+    ScreeningPopulationRuntime,
     budget_decision_wall_limit_seconds as _budget_decision_wall_limit_seconds,
     screening_attempt_is_budget_censored as _screening_attempt_is_budget_censored,
     screening_gate_is_budget_censored as _screening_gate_is_budget_censored,
@@ -8062,16 +8064,99 @@ class SelfEvolveRunner:
         require_single_candidate_screening: bool = False,
         stored_measurement_resume: bool = False,
     ) -> tuple[tuple[CandidateVariant, ...], dict[str, object] | None]:
-        repair_conformance_contracts = repair_conformance_contracts or {}
+        request = ScreeningPopulationRequest(
+            run_id=run_id,
+            target=target,
+            dataset=dataset,
+            candidates=candidates,
+            apply_policy=apply_policy,
+            capability_requirements=capability_requirements,
+            repair_conformance_contracts=(
+                repair_conformance_contracts or {}
+            ),
+            attempt_tracker=attempt_tracker,
+            attempt_keys=attempt_keys,
+            budget_context=budget_context,
+            require_single_candidate_screening=(
+                require_single_candidate_screening
+            ),
+            stored_measurement_resume=stored_measurement_resume,
+        )
+        result = await self._screening_controller.screen_population(
+            request,
+            execute=self._execute_screen_candidate_population,
+            runtime=ScreeningPopulationRuntime(
+                store=self.store,
+                execution_telemetry=self.execution_telemetry,
+                replay_enabled=self.replay_enabled,
+                replay_backend=self.candidate_replay_backend,
+                candidate_screening_max_cases=(
+                    self.candidate_screening_max_cases
+                ),
+                replay_max_steps=self.replay_max_steps,
+                replay_timeout_seconds=self.replay_timeout_seconds,
+                baseline_replay_repetitions=(
+                    self.baseline_replay_repetitions
+                ),
+                candidate_replay_repetitions=(
+                    self.candidate_replay_repetitions
+                ),
+                progress_callback=self.progress_callback,
+                case_observations=(
+                    self._candidate_screening_case_observations
+                ),
+                control_observations=(
+                    self._candidate_screening_control_observations
+                ),
+                invalid_control_case_ids_by_run=(
+                    self._candidate_screening_run_invalid_control_case_ids
+                ),
+                measurement_experiments=(
+                    self._screening_measurement_experiments
+                ),
+                validate_conformance_population=(
+                    self._validate_candidate_repair_conformance_population
+                ),
+                plan_measurement=self._plan_candidate_measurement,
+                prepare_adaptation=self._prepare_replay_adaptation,
+                replay_candidate=self._replay_selected_candidate,
+                baseline_reuse_provenance=(
+                    self._baseline_reuse_provenance
+                ),
+                policy=self._screening_controller,
+            ),
+        )
+        return result.candidates, result.report
+
+    @staticmethod
+    async def _execute_screen_candidate_population(
+        request: ScreeningPopulationRequest,
+        runtime: ScreeningPopulationRuntime,
+    ) -> tuple[tuple[CandidateVariant, ...], dict[str, object] | None]:
+        policy = runtime.policy
+        run_id = request.run_id
+        target = request.target
+        dataset = request.dataset
+        candidates = request.candidates
+        apply_policy = request.apply_policy
+        capability_requirements = request.capability_requirements
+        repair_conformance_contracts = request.repair_conformance_contracts
+        attempt_tracker = request.attempt_tracker
+        attempt_keys = request.attempt_keys
+        budget_context = request.budget_context
+        require_single_candidate_screening = (
+            request.require_single_candidate_screening
+        )
+        stored_measurement_resume = request.stored_measurement_resume
         if (
             not candidates
-            or not self.replay_enabled
-            or self.candidate_replay_backend is None
+            or not runtime.replay_enabled
+            or runtime.replay_backend is None
         ):
             return candidates, None
 
         conformance_candidates, conformance_report = (
-            await self._validate_candidate_repair_conformance_population(
+            await runtime.validate_conformance_population(
                 run_id=run_id,
                 target=target,
                 dataset=dataset,
@@ -8294,18 +8379,16 @@ class SelfEvolveRunner:
         configured_screening_panel = _candidate_screening_dataset(
             dataset,
             capability_requirements=capability_requirements,
-            max_cases=self.candidate_screening_max_cases,
+            max_cases=runtime.candidate_screening_max_cases,
             required_case_ids=intervention_case_ids,
             allow_held_out_control_rescue=(
                 len(conformance_candidates) == 1
             ),
-            empirical_observations=(
-                self._candidate_screening_case_observations
-            ),
+            empirical_observations=runtime.case_observations,
         )
         qualification_case_limit = _candidate_screening_qualification_case_limit(
             candidate_count=len(conformance_candidates),
-            configured_max_cases=self.candidate_screening_max_cases,
+            configured_max_cases=runtime.candidate_screening_max_cases,
         )
         screening_dataset = _candidate_screening_dataset(
             dataset,
@@ -8315,9 +8398,7 @@ class SelfEvolveRunner:
             allow_held_out_control_rescue=(
                 len(conformance_candidates) == 1
             ),
-            empirical_observations=(
-                self._candidate_screening_case_observations
-            ),
+            empirical_observations=runtime.case_observations,
         )
         if (
             not _is_verified_apply_policy(apply_policy)
@@ -8339,10 +8420,10 @@ class SelfEvolveRunner:
         )
         screening_max_steps = _candidate_screening_max_steps(
             screening_dataset,
-            configured_max_steps=self.replay_max_steps,
+            configured_max_steps=runtime.replay_max_steps,
         )
         _emit_progress(
-            self.progress_callback,
+            runtime.progress_callback,
             "candidate_screening",
             (
                 "Screening candidate population on representative case panel "
@@ -8358,12 +8439,12 @@ class SelfEvolveRunner:
             tuple[CandidateVariant, tuple[int, ...]]
         ] = []
         screening_baseline_replay_dir = _find_reusable_baseline_replay_dir(
-            store=self.store,
+            store=runtime.store,
             run_id=run_id,
             target=target.identity,
             dataset=screening_dataset,
             baseline_repetitions=1,
-            **self._baseline_reuse_provenance(
+            **runtime.baseline_reuse_provenance(
                 run_id=run_id,
                 target=target,
                 dataset=screening_dataset,
@@ -8389,7 +8470,7 @@ class SelfEvolveRunner:
         # because earlier controls were unhealthy.
         control_fallback_limit = len(configured_representative_case_ids)
         run_invalid_control_case_ids = (
-            self._candidate_screening_run_invalid_control_case_ids.setdefault(
+            runtime.invalid_control_case_ids_by_run.setdefault(
                 run_id,
                 set(),
             )
@@ -8420,7 +8501,7 @@ class SelfEvolveRunner:
             screening_execution_id = f"{candidate.candidate_id}--screening"
             baseline_cache_offered = screening_baseline_replay_dir is not None
             _emit_progress(
-                self.progress_callback,
+                runtime.progress_callback,
                 "candidate_screening",
                 (
                     f"Screening candidate {candidate_index}/"
@@ -8506,12 +8587,12 @@ class SelfEvolveRunner:
                             ),
                         )
             screening_telemetry_before = _stage_telemetry_usage_snapshot(
-                self.execution_telemetry,
+                runtime.execution_telemetry,
                 "replay",
             )
             screening_started_at = time.monotonic()
             screening_hard_limit_seconds = (
-                self._screening_controller.hard_limit_seconds(screening_budget)
+                policy.hard_limit_seconds(screening_budget)
                 if screening_budget is not None
                 else None
             )
@@ -8578,7 +8659,7 @@ class SelfEvolveRunner:
                     )
                     if control_panel_index > 1:
                         _emit_progress(
-                            self.progress_callback,
+                            runtime.progress_callback,
                             "candidate_screening",
                             (
                                 "Retrying representative screening after an "
@@ -8589,13 +8670,13 @@ class SelfEvolveRunner:
                         )
                     active_screening_max_steps = _candidate_screening_max_steps(
                         active_screening_dataset,
-                        configured_max_steps=self.replay_max_steps,
+                        configured_max_steps=runtime.replay_max_steps,
                     )
                     active_case_id = active_screening_dataset.cases[0].case_id
                     support_adaptation: ReplayAdaptationBundle | None = None
                     if target.identity.path is not None:
                         support_overlay = create_candidate_skill_overlay(
-                            workspace_root=self.store.workspace_root,
+                            workspace_root=runtime.store.workspace_root,
                             run_id=run_id,
                             candidate=candidate,
                             target_skill_path=target.identity.path,
@@ -8604,7 +8685,7 @@ class SelfEvolveRunner:
                             ),
                         )
                         support_adaptation, _support_gate = (
-                            self._prepare_replay_adaptation(
+                            runtime.prepare_adaptation(
                                 run_id=run_id,
                                 dataset=active_screening_dataset,
                                 capability_skill_root=(
@@ -8617,23 +8698,19 @@ class SelfEvolveRunner:
                             )
                         )
                     active_screening_timeout = _candidate_screening_timeout(
-                        self.replay_timeout_seconds,
+                        runtime.replay_timeout_seconds,
                         max_steps=active_screening_max_steps,
                         empirical_observation=(
-                            self._candidate_screening_case_observations.get(
-                                active_case_id
-                            )
+                            runtime.case_observations.get(active_case_id)
                         ),
                     )
-                    screening_experiment = self._plan_candidate_measurement(
+                    screening_experiment = runtime.plan_measurement(
                         run_id=run_id,
                         target=target,
                         dataset=active_screening_dataset,
                         candidate=candidate,
                         candidate_count=len(conformance_candidates),
-                        experiment_registry=(
-                            self._screening_measurement_experiments
-                        ),
+                        experiment_registry=runtime.measurement_experiments,
                         experiment_key=(
                             run_id,
                             candidate.candidate_id,
@@ -8678,11 +8755,11 @@ class SelfEvolveRunner:
                             for identity in control_identities
                             if (
                                 gate := (
-                                    self._screening_controller
+                                    policy
                                     .support_specific_control_circuit_breaker_gate(
                                         control_identity=identity,
                                         control_observations=(
-                                            self._candidate_screening_control_observations
+                                            runtime.control_observations
                                         ),
                                     )
                                 )
@@ -8706,8 +8783,7 @@ class SelfEvolveRunner:
                             replay_result = None
                             replay_dataset = None
                             replay_gate = (
-                                self._screening_controller
-                                .stage_budget_censor_gate(
+                                policy.stage_budget_censor_gate(
                                     hard_limit_seconds=(
                                         screening_hard_limit_seconds or 0.0
                                     ),
@@ -8722,7 +8798,7 @@ class SelfEvolveRunner:
                             )
                             screening_stage_deadline_exceeded = True
                         else:
-                            replay_operation = self._replay_selected_candidate(
+                            replay_operation = runtime.replay_candidate(
                                 run_id=run_id,
                                 target=target,
                                 dataset=active_screening_dataset,
@@ -8774,8 +8850,7 @@ class SelfEvolveRunner:
                                 replay_result = None
                                 replay_dataset = None
                                 replay_gate = (
-                                    self._screening_controller
-                                    .stage_budget_censor_gate(
+                                    policy.stage_budget_censor_gate(
                                         hard_limit_seconds=(
                                             screening_hard_limit_seconds or 0.0
                                         ),
@@ -8822,9 +8897,7 @@ class SelfEvolveRunner:
                                 _candidate_support_baseline_incompatibility_gate(
                                     replay_gate,
                                     control_identity=control_identity,
-                                    control_observations=(
-                                        self._candidate_screening_control_observations
-                                    ),
+                                    control_observations=runtime.control_observations,
                                 )
                             )
                         invalid_control_case_ids = (
@@ -8916,7 +8989,7 @@ class SelfEvolveRunner:
                         }
                         if not support_control_circuit_open:
                             _record_candidate_screening_observation(
-                                self._candidate_screening_case_observations,
+                                runtime.case_observations,
                                 case_ids=(
                                     invalid_control_case_ids
                                     if invalid_control_case_ids
@@ -8926,7 +8999,7 @@ class SelfEvolveRunner:
                             )
                             for control_identity in control_identities:
                                 _record_support_specific_control_observation(
-                                    self._candidate_screening_control_observations,
+                                    runtime.control_observations,
                                     identity=control_identity,
                                     attempt={
                                         **observation_attempt,
@@ -8940,7 +9013,7 @@ class SelfEvolveRunner:
                             _candidate_screening_escalated_timeout(
                                 active_screening_timeout,
                                 authoritative_timeout_seconds=(
-                                    self.replay_timeout_seconds
+                                    runtime.replay_timeout_seconds
                                 ),
                             )
                             if not escalated
@@ -8953,7 +9026,7 @@ class SelfEvolveRunner:
                         active_screening_timeout = escalated_timeout
                         active_baseline_replay_dir = None
                         _emit_progress(
-                            self.progress_callback,
+                            runtime.progress_callback,
                             "candidate_screening",
                             (
                                 "Retrying the same control with a bounded "
@@ -9083,7 +9156,7 @@ class SelfEvolveRunner:
             )
             if screening_budget is not None:
                 screening_telemetry_after = _stage_telemetry_usage_snapshot(
-                    self.execution_telemetry,
+                    runtime.execution_telemetry,
                     "replay",
                 )
                 screening_usage = _stage_telemetry_usage_delta(
@@ -9137,9 +9210,7 @@ class SelfEvolveRunner:
                     or replay_dataset is None
                 )
                 and not defer_invalid_control_to_authoritative
-                and not self._screening_controller.gate_is_budget_censored(
-                    replay_gate
-                )
+                and not policy.gate_is_budget_censored(replay_gate)
                 and not attempt_tracker.terminal(attempt_key)
             ):
                 terminal_stage = (
@@ -9248,12 +9319,12 @@ class SelfEvolveRunner:
                     )
                 refreshed_screening_baseline_dir = (
                     _find_reusable_baseline_replay_dir(
-                        store=self.store,
+                        store=runtime.store,
                         run_id=run_id,
                         target=target.identity,
                         dataset=active_screening_dataset,
                         baseline_repetitions=1,
-                        **self._baseline_reuse_provenance(
+                        **runtime.baseline_reuse_provenance(
                             run_id=run_id,
                             target=target,
                             dataset=active_screening_dataset,
@@ -9363,7 +9434,7 @@ class SelfEvolveRunner:
             )
             if passed:
                 passing_candidates.append((candidate, screening_rank))
-            if self._screening_controller.attempt_is_budget_censored(
+            if policy.attempt_is_budget_censored(
                 attempts[-1]
             ):
                 # A bounded qualification replay is a ranking experiment.  When
@@ -9662,13 +9733,13 @@ class SelfEvolveRunner:
                 "invalid_control_case_ids": sorted(
                     case_id
                     for case_id, observation in (
-                        self._candidate_screening_case_observations.items()
+                        runtime.case_observations.items()
                     )
                     if _non_negative_int(
                         observation.get("invalid_control_count")
                     )
                     > 0
-                )[: self.candidate_screening_max_cases * 8],
+                )[: runtime.candidate_screening_max_cases * 8],
                 "control_case_retry_suppressed_count": _non_negative_int(
                     configured_screening_panel.recipe.source.get(
                         "control_case_retry_suppressed_count"
@@ -9732,7 +9803,7 @@ class SelfEvolveRunner:
                 ),
                 "empirical_case_observations": {
                     case_id: dict(
-                        self._candidate_screening_case_observations.get(
+                        runtime.case_observations.get(
                             case_id,
                             {},
                         )
@@ -9773,10 +9844,10 @@ class SelfEvolveRunner:
                     len(conformance_candidates) == 1
                 ),
                 "authoritative_baseline_repetitions": (
-                    self.baseline_replay_repetitions
+                    runtime.baseline_replay_repetitions
                 ),
                 "authoritative_candidate_repetitions": (
-                    self.candidate_replay_repetitions
+                    runtime.candidate_replay_repetitions
                 ),
                 "attempts": attempts,
                 "stopped_by_shared_infrastructure": (
