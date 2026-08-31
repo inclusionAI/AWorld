@@ -6,6 +6,7 @@ import inspect
 import json
 import time
 import traceback
+from datetime import datetime, timezone
 from functools import partial
 from typing import List, Callable, Any, AsyncGenerator
 
@@ -18,7 +19,19 @@ from aworld.dataset.trajectory_storage import get_storage_instance
 from aworld.core.event.base import Message, Constants, TopicType, ToolMessage, AgentMessage
 from aworld.core.exceptions import AWorldRuntimeException
 from aworld.core.task import Task, TaskResponse, TaskStatusValue
+from aworld.core.trajectory import (
+    TrajectoryBuildResult,
+    TrajectoryBuildStatus,
+    TrajectoryFidelity,
+    TrajectoryReasonCode,
+    TrajectorySourceKind,
+    compute_trajectory_checksum,
+)
 from aworld.dataset.trajectory_dataset import TrajectoryDataset
+from aworld.core.trajectory_update_registry import (
+    TrajectoryDrainResult,
+    TrajectoryRegistrySealedError,
+)
 from aworld.events.manager import EventManager
 from aworld.logs.util import logger, trajectory_logger
 from aworld.runners import HandlerFactory
@@ -45,6 +58,8 @@ class TaskEventRunner(TaskRunner):
         self.background_tasks = set()
         self.state_manager = EventRuntimeStateManager.instance()
         self.inited = False
+        self._trajectory_finalize_lock = asyncio.Lock()
+        self._trajectory_finalize_result = None
 
     @staticmethod
     def _normalize_token_usage(token_usage: dict | None) -> dict:
@@ -268,6 +283,14 @@ class TaskEventRunner(TaskRunner):
                 # 重新抛出原始异常
                 raise
             finally:
+                # Finalization is idempotent and also runs for exception/cancel paths.
+                # It must complete before TaskResponse delivery and dataset release.
+                finalize_task = asyncio.create_task(self._save_trajectories())
+                try:
+                    await asyncio.shield(finalize_task)
+                except asyncio.CancelledError:
+                    await finalize_task
+                    raise
                 # the last step mark output finished
                 if not self.task.is_sub_task:
                     logger.info(f'main task {self.task.id} will mark outputs finished')
@@ -352,6 +375,10 @@ class TaskEventRunner(TaskRunner):
                 strategy=self.conf.get('trajectory_strategy', None)
             )
             self.context.trajectory_dataset = traj_dataset
+        registry = self.context.root.trajectory_update_registry if isinstance(
+            self.context, ApplicationContext
+        ) else self.context.trajectory_update_registry
+        registry.open(self.task.id)
         if not self.context.task_graph and not self.task.is_sub_task:
             self.context.task_graph = {self.task.id: {'parent_task': None}}
 
@@ -486,7 +513,7 @@ class TaskEventRunner(TaskRunner):
         async with trace.message_span(message=message, attributes={semconv.TRACE_ID: self.context.trace_id}):
             logger.debug(f"start_message_node message id: {message.id} of task {self.task.id}")
             self.state_manager.start_message_node(message)
-            asyncio.create_task(self._update_trajectory(message))
+            self._schedule_trajectory_update(message, revision=0)
             if handlers:
                 handler_list = handlers.get(message.topic) or handlers.get(message.receiver)
                 if not handler_list:
@@ -528,14 +555,19 @@ class TaskEventRunner(TaskRunner):
         # To prevent keeping references to finished tasks forever, make each task remove its own reference
         # from the set after completion, see https://docs.python.org/3/library/asyncio-task.html#id4
         self.background_tasks.discard(task)
+        if not task.cancelled():
+            try:
+                task.exception()
+            except Exception:
+                pass
         if not group:
             self.state_manager.end_message_node(message)
-            asyncio.create_task(self._update_trajectory(message))
+            self._schedule_trajectory_update(message, revision=2)
         else:
             group[task] = True
             if all([v for _, v in group.items()]):
                 self.state_manager.end_message_node(message)
-                asyncio.create_task(self._update_trajectory(message))
+                self._schedule_trajectory_update(message, revision=2)
 
     async def _handle_task(self, message: Message, handler: Callable[..., Any]):
         con = message
@@ -603,27 +635,41 @@ class TaskEventRunner(TaskRunner):
                 if event:
                     yield event
 
-    async def _update_trajectory(self, message: Message):
+    def _is_trajectory_source_message(self, message: Message) -> bool:
+        context = getattr(message, "context", None)
+        if context is None or context.task_id != self.task.id or message.category != Constants.AGENT:
+            return False
+        if not message.sender or not message.receiver or not is_agent_by_name(message.receiver):
+            return False
+        return not message.headers.get("agent_as_tool", False)
+
+    def _trajectory_registry(self):
+        if isinstance(self.context, ApplicationContext):
+            return self.context.root.trajectory_update_registry
+        return self.context.trajectory_update_registry
+
+    def _schedule_trajectory_update(self, message: Message, *, revision: int):
+        if not self._is_trajectory_source_message(message):
+            return None
         try:
-            # valid_agent_messages = await TrajectoryDataset._filter_replay_messages([message], self.task.id)
+            return self._trajectory_registry().schedule(
+                task_id=self.task.id,
+                logical_step_id=str(message.id),
+                revision=revision,
+                update_factory=lambda: self._update_trajectory(message, revision=revision),
+            )
+        except TrajectoryRegistrySealedError as exc:
+            logger.warning("Rejected late trajectory update for message {}: {}", message.id, exc)
+            return None
 
-            if message.context.task_id != self.task.id or message.category != Constants.AGENT:
-                return
-            sender = message.sender
-            receiver = message.receiver
-            if not sender or not receiver or not is_agent_by_name(receiver):
-                return
-            agent_as_tool = message.headers.get("agent_as_tool", False)
-            if agent_as_tool:
-                return
-            await self.context.update_task_trajectory(message, self.task.id)
-
-            # Legacy note:
-            # Trajectory is now standardized as `TrajectoryItem (SAR)` and stored via
-            # `context.update_task_trajectory(...)` / `TrajectoryDataset.save_task_trajectory(...)`.
-
-        except Exception as e:
-            logger.warning(f"Failed to update trajectory for message {message.id}: {e}")
+    async def _update_trajectory(self, message: Message, *, revision: int = 1):
+        return await self.context.update_task_trajectory(
+            message,
+            self.task.id,
+            logical_step_id=str(message.id),
+            revision=revision,
+            _registry_managed=True,
+        )
 
     async def _do_run(self):
         """Task execution process in real."""
@@ -713,13 +759,14 @@ class TaskEventRunner(TaskRunner):
                 task.cancel()
         # Wait for cancelled tasks to complete, but don't wait too long
         try:
-            await asyncio.wait(self.background_tasks, timeout=5.0)
-        except asyncio.TimeoutError:
-            logger.warning(f"Some background tasks for task {self.task.id} didn't cancel within timeout")
+            _, pending = await asyncio.wait(set(self.background_tasks), timeout=5.0)
+            if pending:
+                logger.warning(f"Some background tasks for task {self.task.id} didn't cancel within timeout")
+                self._trajectory_registry().mark_source_not_finalized(self.task.id)
+            self.background_tasks.intersection_update(pending)
         except Exception as e:
+            self._trajectory_registry().mark_source_not_finalized(self.task.id)
             logger.warning(f"Error waiting for background tasks cancellation: {e}")
-        # Clear the set as all tasks should be done now
-        self.background_tasks.clear()
 
     async def stop(self):
         self._stopped.set()
@@ -731,39 +778,145 @@ class TaskEventRunner(TaskRunner):
         return self._task_response
 
     def _response(self):
-        if self.context.get_task().conf and self.context.get_task().conf.resp_carry_context == False:
-            self._task_response.context = None
         if self._task_response is None:
             self._task_response = TaskResponse(id=self.context.task_id if self.context else "",
                                                success=False,
                                                msg="Task return None.",
                                                status=TaskStatusValue.FAILED)
-        if self.context.get_task().conf and self.context.get_task().conf.resp_carry_raw_llm_resp == True:
+        task_conf = self.context.get_task().conf if self.context and self.context.get_task() else None
+        if task_conf and task_conf.get("resp_carry_context", True) is False:
+            self._task_response.context = None
+        if task_conf and task_conf.get("resp_carry_raw_llm_resp", False) is True:
             self._task_response.raw_llm_resp = self.context.context_info.get('llm_output')
         self._task_response.llm_calls = copy.deepcopy(self.context.context_info.get("llm_calls", []))
         self._task_response.trace_id = get_trace_id()
         return self._task_response
 
     async def _save_trajectories(self):
-        try:
-            traj = await self.context.get_task_trajectory(self.task.id)
-            logger.debug(f"{self.task.id}|{self.task.is_sub_task}#trajectory from context: {traj}")
-            logger.debug(f"{self.task.id}|{self.task.is_sub_task}#task_graph from context: {self.context._task_graph}")
-            if traj:
-                self._task_response.trajectory = [step.to_dict() for step in traj]
+        if not hasattr(self, "_trajectory_finalize_lock"):
+            self._trajectory_finalize_lock = asyncio.Lock()
+            self._trajectory_finalize_result = None
+        async with self._trajectory_finalize_lock:
+            if self._trajectory_finalize_result is not None:
+                return self._trajectory_finalize_result
 
+            registry = self._trajectory_registry()
+            if registry.state(self.task.id) is None:
+                registry.open(self.task.id)
+            registry.seal(self.task.id)
+            runner_conf = getattr(self, "conf", None) or self.task.conf
+            timeout = float(runner_conf.get("trajectory_finalize_timeout_seconds", 10) or 10)
+            drain = await registry.drain(self.task.id, timeout=timeout)
+
+            dataset_owner = self.context.root if isinstance(self.context, ApplicationContext) else self.context
+            if dataset_owner.trajectory_dataset is not None:
+                dataset_owner.trajectory_dataset.fence_task_updates(self.task.id)
+
+            trajectory = []
+            snapshot_error = None
+            try:
+                trajectory = await self.context.get_task_trajectory(self.task.id, strict=True) or []
+            except Exception as exc:
+                snapshot_error = exc
+
+            inline_trajectory = [
+                step.to_dict() if hasattr(step, "to_dict") else to_serializable(step)
+                for step in trajectory
+            ]
+            trajectory_checksum = (
+                compute_trajectory_checksum(inline_trajectory) if inline_trajectory else None
+            )
+            late_registrations, source_not_finalized = registry.diagnostics(self.task.id)
+            all_scheduled_updates_acknowledged = (
+                drain.scheduled > 0 and drain.completed == drain.scheduled
+            )
+
+            reason_code = None
+            if snapshot_error is not None or drain.failed:
+                reason_code = TrajectoryReasonCode.TRAJECTORY_BUILD_FAILED
+            elif drain.timed_out:
+                reason_code = TrajectoryReasonCode.TRAJECTORY_UPDATE_TIMEOUT
+            elif source_not_finalized or late_registrations:
+                reason_code = TrajectoryReasonCode.SOURCE_NOT_FINALIZED
+            elif inline_trajectory and not all_scheduled_updates_acknowledged:
+                reason_code = TrajectoryReasonCode.SOURCE_NOT_FINALIZED
+            elif not inline_trajectory:
+                reason_code = TrajectoryReasonCode.TRAJECTORY_STORAGE_EMPTY
+
+            if inline_trajectory and reason_code is None:
+                status = TrajectoryBuildStatus.COMPLETE
+                fidelity = TrajectoryFidelity.COMPLETE
+            elif inline_trajectory:
+                status = TrajectoryBuildStatus.PARTIAL
+                fidelity = TrajectoryFidelity.PARTIAL
+            elif drain.timed_out or source_not_finalized or late_registrations:
+                status = TrajectoryBuildStatus.PARTIAL
+                fidelity = TrajectoryFidelity.PARTIAL
+            elif drain.failed or snapshot_error is not None:
+                status = TrajectoryBuildStatus.FAILED
+                fidelity = TrajectoryFidelity.BUILD_FAILED
+            else:
+                status = TrajectoryBuildStatus.EMPTY
+                fidelity = TrajectoryFidelity.UNAVAILABLE
+
+            llm_calls = self.context.context_info.get("llm_calls", [])
+            tool_call_count = 0
+            for step in inline_trajectory:
+                action = step.get("action", {}) if isinstance(step, dict) else {}
+                calls = action.get("tool_calls", []) if isinstance(action, dict) else []
+                tool_call_count += len(calls) if isinstance(calls, list) else 0
+
+            build_result = TrajectoryBuildResult(
+                task_id=self.task.id,
+                session_id=self.context.session_id,
+                trace_id=self.context.trace_id,
+                task_epoch=None,
+                status=status,
+                fidelity=fidelity,
+                reason_code=reason_code,
+                source_kind=TrajectorySourceKind.EVENT_STATE,
+                source_high_watermark=drain.high_watermark,
+                scheduled_updates=drain.scheduled,
+                completed_updates=drain.completed,
+                failed_updates=drain.failed,
+                pending_updates=drain.pending,
+                source_agent_messages=len(drain.logical_step_ids),
+                llm_call_count=len(llm_calls) if isinstance(llm_calls, list) else 0,
+                tool_call_count=tool_call_count,
+                persisted_items=len(inline_trajectory),
+                trajectory_ref=None,
+                source_checksum=None,
+                trajectory_checksum=trajectory_checksum,
+                builder_version="sar-finalize-v1",
+                created_at=datetime.now(timezone.utc),
+            )
+
+            response = self._response()
+            response.trajectory = inline_trajectory
+            response.trajectory_build_result = build_result
+
+            logger.debug(f"{self.task.id}|{self.task.is_sub_task}#trajectory from context: {trajectory}")
+            logger.debug(f"{self.task.id}|{self.task.is_sub_task}#task_graph from context: {self.context._task_graph}")
+            if inline_trajectory:
                 token_id_traj = None
                 if self.context.token_id_traj:
                     token_id_traj = json.dumps(to_serializable(self.context.token_id_traj))
+                res = {
+                    "task_id": self.task.id,
+                    "is_sub_task": self.task.is_sub_task,
+                    "trajectory": json.dumps(to_serializable(inline_trajectory), ensure_ascii=False),
+                    "token_id_trajectory": token_id_traj,
+                    "llm_calls": json.dumps(copy.deepcopy(llm_calls), ensure_ascii=False),
+                    "trajectory_build_result": build_result.to_dict(),
+                }
+                try:
+                    trajectory_logger.info(f"{res}")
+                except Exception as exc:
+                    logger.warning("Failed to emit finalized trajectory log: {}", exc)
 
-                res = {"task_id": self.task.id,
-                       "is_sub_task": self.task.is_sub_task,
-                       "trajectory": json.dumps(to_serializable(self._task_response.trajectory), ensure_ascii=False),
-                       "token_id_trajectory": token_id_traj,
-                       "llm_calls": json.dumps(copy.deepcopy(self.context.context_info.get("llm_calls", [])), ensure_ascii=False)}
-                trajectory_logger.info(f"{res}")
-        except Exception as e:
-            logger.error(f"Failed to get trajectories: {str(e)}.{traceback.format_exc()}")
+            self._trajectory_finalize_result = build_result
+            registry.release(self.task.id)
+            return build_result
 
     async def should_stop_task(self, message: Message):
         task_flag = self.task_flag

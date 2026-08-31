@@ -1,6 +1,7 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 import copy
+import hashlib
 import time
 import uuid
 from collections import OrderedDict
@@ -13,6 +14,7 @@ from aworld.config import ConfigDict, AgentMemoryConfig
 from aworld.core.context.context_state import ContextState
 from aworld.core.context.session import Session
 from aworld.logs.util import logger
+from aworld.core.trajectory_update_registry import TrajectoryUpdateOutcome, TrajectoryUpdateRegistry
 from aworld.utils.common import nest_dict_counter, nest_dict_diff
 
 if TYPE_CHECKING:
@@ -181,6 +183,7 @@ class Context:
 
         self._task_graph: Dict[str, Dict[str, Any]] = {}
         self.trajectory_dataset = None
+        self._trajectory_update_registry = TrajectoryUpdateRegistry()
 
     @property
     def start_time(self) -> float:
@@ -366,6 +369,7 @@ class Context:
 
         new_context._task_graph = self._task_graph
         new_context.trajectory_dataset = self.trajectory_dataset
+        new_context._trajectory_update_registry = self._trajectory_update_registry
 
         # Deep copy complex state objects
         try:
@@ -1003,16 +1007,43 @@ class Context:
         Sub Task Trajectory Support
     """
 
-    async def add_task_trajectory(self, task_id: str, task_trajectory: List[Dict[str, Any]]):
+    async def add_task_trajectory(self, task_id: str, task_trajectory: List[Dict[str, Any]], **kwargs):
         """Add trajectory data for a task.
 
         Args:
             task_id: The task id.
             task_trajectory: The list of trajectory steps.
         """
-        if self.trajectory_dataset is not None:
-            await self.trajectory_dataset.save_task_trajectory(task_id, task_trajectory)
+        if self.trajectory_dataset is None:
+            return TrajectoryUpdateOutcome(False, False, error="trajectory dataset is unavailable")
 
+        registry = self.trajectory_update_registry
+        if registry.state(task_id) is not None:
+            step_ids = [
+                str(step.get("id", index)) if isinstance(step, dict) else str(getattr(step, "id", index))
+                for index, step in enumerate(task_trajectory)
+            ]
+            batch_digest = hashlib.sha256("\0".join(step_ids).encode("utf-8")).hexdigest()
+            logical_batch_id = f"batch:{batch_digest}"
+            revision = int(kwargs.get("revision", 2))
+            entry = registry.schedule(
+                task_id=task_id,
+                logical_step_id=logical_batch_id,
+                revision=revision,
+                update_factory=lambda: self.trajectory_dataset.save_task_trajectory_batch_tracked(
+                    task_id, task_trajectory, revision=revision
+                ),
+            )
+            return await entry.task
+
+        # Compatibility for contexts that are not runner-managed.
+        await self.trajectory_dataset.save_task_trajectory(task_id, task_trajectory)
+        return TrajectoryUpdateOutcome(True, True, persisted=bool(task_trajectory))
+
+
+    @property
+    def trajectory_update_registry(self) -> TrajectoryUpdateRegistry:
+        return self._trajectory_update_registry
 
     async def update_task_trajectory(self, message: Any, task_id: str = None, **kwargs):
         """
@@ -1026,10 +1057,52 @@ class Context:
             logger.error("update_task_trajectory#task_id is required")
             raise Exception("update_task_trajectory#task_id is required")
 
-        if self.trajectory_dataset is not None:
-            item = await self.trajectory_dataset.append_trajectory(message, task_id=task_id)
+        if self.trajectory_dataset is None:
+            return TrajectoryUpdateOutcome(
+                build_succeeded=False,
+                storage_acknowledged=False,
+                error="trajectory dataset is unavailable",
+            )
 
-    async def get_task_trajectory(self, task_id: str) -> List['TrajectoryItem']:
+        logical_step_id = str(kwargs.get("logical_step_id") or getattr(message, "id", ""))
+        revision = int(kwargs.get("revision", 1))
+        registry_managed = bool(kwargs.get("_registry_managed", False))
+        registry = self.trajectory_update_registry
+
+        if not registry_managed and registry.state(task_id) is not None:
+            entry = registry.schedule(
+                task_id=task_id,
+                logical_step_id=logical_step_id,
+                revision=revision,
+                update_factory=lambda: self.update_task_trajectory(
+                    message,
+                    task_id,
+                    logical_step_id=logical_step_id,
+                    revision=revision,
+                    _registry_managed=True,
+                ),
+            )
+            return await entry.task
+
+        if registry_managed:
+            return await self.trajectory_dataset.append_trajectory_tracked(
+                message,
+                task_id=task_id,
+                logical_step_id=logical_step_id,
+                revision=revision,
+            )
+
+        # Compatibility for callers outside a runner-managed lifecycle.
+        item = await self.trajectory_dataset.append_trajectory(message, task_id=task_id)
+        return TrajectoryUpdateOutcome(
+            build_succeeded=item is not None,
+            storage_acknowledged=item is not None,
+            persisted=item is not None,
+            item=item,
+            error=None if item is not None else "trajectory update produced no item",
+        )
+
+    async def get_task_trajectory(self, task_id: str, **kwargs) -> List['TrajectoryItem']:
         """Get trajectory data for a task.
 
         Args:
@@ -1040,8 +1113,9 @@ class Context:
         """
         # Try to get from storage first
         if self.trajectory_dataset is not None:
-            trajectory = await self.trajectory_dataset.get_task_trajectory(task_id)
+            trajectory = await self.trajectory_dataset.get_task_trajectory(task_id, **kwargs)
             return trajectory
+        return []
 
     def add_task_node(self, child_task_id: str, parent_task_id: str, caller_agent_info: dict = None, **kwargs):
         """Add a task node and its relationship to the task graph.
