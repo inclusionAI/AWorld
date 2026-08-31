@@ -15,6 +15,7 @@ from aworld.core.context.base import Context
 from aworld.core.tool.base import Tool, AsyncTool
 from aworld.output.outputs import Outputs, DefaultOutputs
 from aworld.core.context.amni.config import AmniContextConfig
+from aworld.core.trajectory import TrajectoryBuildResult
 
 if TYPE_CHECKING:
     from aworld.agents.llm_agent import Agent
@@ -116,6 +117,29 @@ class TaskResponse:
     user_visible: bool = field(default=True)
     # task final status, e.g. success/failed/cancelled
     status: TaskStatus | None = field(default=TaskStatusValue.SUCCESS)
+    # Canonical trajectory control-plane result. Inline trajectory remains the
+    # compatibility data plane and is not reconstructed from this metadata.
+    trajectory_build_result: TrajectoryBuildResult | None = field(default=None)
+
+    @property
+    def trajectory_status(self) -> str | None:
+        result = self.trajectory_build_result
+        return result.status.value if result is not None else None
+
+    @property
+    def trajectory_fidelity(self) -> str | None:
+        result = self.trajectory_build_result
+        return result.fidelity.value if result is not None else None
+
+    @property
+    def trajectory_ref(self) -> str | None:
+        result = self.trajectory_build_result
+        return result.trajectory_ref if result is not None else None
+
+    @property
+    def trajectory_checksum(self) -> str | None:
+        result = self.trajectory_build_result
+        return result.trajectory_checksum if result is not None else None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -129,7 +153,16 @@ class TaskResponse:
             "msg": self.msg,
             "trajectory": self.trajectory,
             "user_visible": self.user_visible,
-            "status": self.status
+            "status": self.status,
+            "trajectory_build_result": (
+                self.trajectory_build_result.to_dict()
+                if self.trajectory_build_result is not None
+                else None
+            ),
+            "trajectory_status": self.trajectory_status,
+            "trajectory_fidelity": self.trajectory_fidelity,
+            "trajectory_ref": self.trajectory_ref,
+            "trajectory_checksum": self.trajectory_checksum,
         }
 
 
