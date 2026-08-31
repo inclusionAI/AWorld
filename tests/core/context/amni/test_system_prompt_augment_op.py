@@ -11,7 +11,11 @@ from aworld.core.context.amni.prompt.assembly import (
 from aworld.core.context.amni.config import AgentContextConfig
 from aworld.core.context.amni.prompt.neurons import Neuron
 from aworld.core.context.amni.processor.op.system_prompt_augment_op import SystemPromptAugmentOp
-from aworld.core.context.compiler import thaw_json
+from aworld.core.context.compiler import (
+    ContextObservationSidecar,
+    adapt_final_messages,
+    thaw_json,
+)
 
 
 @pytest.mark.asyncio
@@ -187,6 +191,31 @@ def test_application_context_deep_copy_preserves_prompt_assembly_provider_runtim
     assert copied.get_prompt_assembly_provider(
         agent=SimpleNamespace(prompt_assembly_provider=None, _is_context_cache_enabled=lambda _context: True)
     ) is provider
+
+
+def test_application_context_task_transition_fences_request_observations() -> None:
+    context = ApplicationContext.create(
+        session_id="session-1",
+        task_id="task-1",
+        task_content="hello",
+    )
+    context.publish_context_observation(
+        ContextObservationSidecar.from_adapter_result(
+            owner="test.owner",
+            namespace="agent-1",
+            source_identity="owner://task-1",
+            result=adapt_final_messages(
+                [{"role": "system", "content": "private output"}],
+                source_identity="owner://task-1",
+            ),
+        )
+    )
+
+    context.task_id = "task-1"
+    assert context.get_context_observations()
+
+    context.task_id = "task-2"
+    assert context.get_context_observations() == ()
 
 
 @pytest.mark.asyncio

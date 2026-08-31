@@ -21,11 +21,12 @@ class ContextObservationSidecar:
     """One latest immutable owner observation for a runtime namespace.
 
     Raw owner payloads remain available in memory through ``result``. Default
-    serialization exposes only hashes, redacted item refs, and diagnostic
-    codes so attaching a sidecar to request observability cannot leak content.
+    serialization exposes the public code-level owner identifier plus hashes,
+    redacted item refs, and diagnostic metadata. It never exposes owner
+    payloads, diagnostic messages/sources/codes, or unknown field names.
     """
 
-    SCHEMA_VERSION: ClassVar[str] = "aworld.context.sidecar.v1"
+    SCHEMA_VERSION: ClassVar[str] = "aworld.context.sidecar.v2"
 
     owner: str
     namespace: str
@@ -73,10 +74,12 @@ class ContextObservationSidecar:
             ],
             "diagnostics": [
                 {
-                    "code": diagnostic.code,
+                    "code_hash": canonical_json_hash(
+                        {"code": diagnostic.code}
+                    ),
                     "severity": diagnostic.severity.value,
                     "occurrence": diagnostic.occurrence,
-                    "unknown_fields": list(diagnostic.unknown_fields),
+                    "unknown_field_count": len(diagnostic.unknown_fields),
                 }
                 for diagnostic in self.result.diagnostics
             ],

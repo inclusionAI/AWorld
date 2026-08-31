@@ -237,7 +237,21 @@ class Context:
     @task_id.setter
     def task_id(self, task_id):
         if task_id is not None:
+            self._fence_context_observations_for_task_transition(
+                current_task_id=getattr(self, "_task_id", None),
+                next_task_id=task_id,
+            )
             self._task_id = task_id
+
+    def _fence_context_observations_for_task_transition(
+        self,
+        *,
+        current_task_id: str | None,
+        next_task_id: str,
+    ) -> None:
+        """Discard request observations when a Context changes task identity."""
+        if current_task_id is not None and current_task_id != next_task_id:
+            self._context_observations = {}
 
     @property
     def session_id(self):
@@ -368,6 +382,10 @@ class Context:
         # Create a new Context instance without calling __init__ to avoid singleton issues
         new_context = object.__new__(Context)
         self._deep_copy(new_context)
+        # Owner observations describe an already-built request in this task.
+        # They may be copied for same-task isolation, but must never inherit
+        # across a task boundary without explicit epoch/provenance evidence.
+        new_context._context_observations = {}
         new_context.task_id = sub_task_id
         new_context.task_input = sub_task_content
         new_context._merge_llm_calls_baseline = len(new_context.get_llm_calls())
