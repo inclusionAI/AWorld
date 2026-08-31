@@ -248,5 +248,16 @@ model-boundary fidelity is explicit, correlation is task-local, and full Agent/m
   Independent budget re-review approved P0/P1=0 at 33 tests. The broader compiler/Amni/TaskRunner regression is green at
   67 tests, including cross-authority Tool pairs and real root Context reuse. Independent sidecar/lifecycle re-review also
   approved P0/P1=0; both Base Context and ApplicationContext task-transition behavior now have persistent regressions.
+- Added the first pure cache layer: contiguous stable-prefix partitioning without reordering, logical stable/dynamic hashes,
+  complete `InferenceProfile`/`CacheBreakReason` comparison, and exact byte checksums. A serialized prefix can create a
+  provider-verified identity only through typed HTTP-serialized evidence bound to provider, adapter/version, request id,
+  request checksum, capture stage, and fidelity; logical canonical JSON bytes are rejected. The durable `CacheIdentity`
+  alone deliberately does not regain runtime verification when deserialized.
+- Added side-effect-free `off/observe/shadow/enforce` request selection. Off/observe preserve the exact legacy snapshot,
+  shadow compares an immutable candidate without applying it, and enforce alone selects the candidate for the existing
+  provider call. Comparison paths hash all non-allowlisted mapping keys so params/Tool/message keys cannot leak raw owner
+  strings. Runtime integration and counted fake provider/Tool/offload tests remain required before shadow/enforce rollout.
+  The complete dependency-light compiler suite is green at 58 tests. Independent cache and rollout/privacy re-reviews both
+  approved P0/P1=0; the cache evidence review additionally verified that repr/asdict retain only hashes and lengths.
 - Authority, trust, lifetime, stability, source URI, task epoch, and exact token counts remain UNKNOWN unless their owner can
   prove them; role/content heuristics are not acceptable.

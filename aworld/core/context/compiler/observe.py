@@ -19,7 +19,7 @@ from .adapters import (
     LegacyFinalMessageAdapter,
     LegacyToolSchemaAdapter,
 )
-from .frozen_json import FrozenMap, freeze_json
+from .frozen_json import FrozenMap, canonical_json_hash, freeze_json
 from .models import (
     ContextItem,
     ProviderRequestFidelity,
@@ -327,6 +327,31 @@ def observe_legacy_provider_request(
     )
 
 
+_SAFE_MISMATCH_PATH_KEYS = frozenset(
+    {
+        "messages",
+        "tools",
+        "params",
+        "role",
+        "content",
+        "type",
+        "function",
+        "name",
+        "description",
+        "parameters",
+        "temperature",
+        "max_tokens",
+        "stop",
+    }
+)
+
+
+def _redacted_mapping_key(key: str) -> str:
+    if key in _SAFE_MISMATCH_PATH_KEYS:
+        return key
+    return f"key:{canonical_json_hash({'key': key})}"
+
+
 def _json_pointer(parent: str, token: str | int) -> str:
     escaped = str(token).replace("~", "~0").replace("/", "~1")
     return f"{parent}/{escaped}"
@@ -336,7 +361,7 @@ def _mismatch_paths(expected: Any, actual: Any, path: str = "") -> list[str]:
     if isinstance(expected, Mapping) and isinstance(actual, Mapping):
         mismatches: list[str] = []
         for key in sorted(set(expected) | set(actual)):
-            child = _json_pointer(path, key)
+            child = _json_pointer(path, _redacted_mapping_key(key))
             if key not in expected or key not in actual:
                 mismatches.append(child)
             else:

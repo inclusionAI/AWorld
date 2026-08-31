@@ -142,15 +142,19 @@ def test_request_trace_match_reports_exact_and_structured_mismatch_paths() -> No
 
     assert mismatch.exact is False
     assert mismatch.mismatch_count == 4
-    assert mismatch.mismatch_paths == (
-        "/messages/4/content/stdout",
-        "/params/new_secret",
+    assert mismatch.mismatch_paths[0].startswith(
+        "/messages/4/content/key:sha256:"
+    )
+    assert mismatch.mismatch_paths[1].startswith("/params/key:sha256:")
+    assert mismatch.mismatch_paths[2:] == (
         "/params/temperature",
         "/tools/1",
     )
     rendered = json.dumps(mismatch.to_dict())
     assert "changed-secret" not in rendered
     assert "never-report-this-value" not in rendered
+    assert "stdout" not in rendered
+    assert "new_secret" not in rendered
 
 
 def test_serialized_evidence_is_unknown_unless_caller_supplies_it() -> None:
