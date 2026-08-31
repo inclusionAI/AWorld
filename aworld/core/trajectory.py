@@ -58,6 +58,58 @@ class TrajectoryReasonCode(str, Enum):
     CHECKSUM_MISMATCH = "checksum_mismatch"
 
 
+class TrajectoryDeliveryState(str, Enum):
+    PERSISTED = "persisted"
+    FAILED = "failed"
+    NOT_REQUESTED = "not_requested"
+
+
+@dataclass(frozen=True, slots=True)
+class TrajectoryDeliveryTargetReceipt:
+    """Sanitized outcome for one trajectory delivery sink."""
+
+    status: TrajectoryDeliveryState
+    record_checksum: str | None = None
+    reason_code: str | None = None
+    error_code: str | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "status", TrajectoryDeliveryState(self.status))
+        _validate_checksum("record_checksum", self.record_checksum)
+        if self.status is TrajectoryDeliveryState.FAILED and not self.error_code:
+            raise ValueError("failed delivery receipt requires error_code")
+        if self.status is not TrajectoryDeliveryState.FAILED and self.error_code is not None:
+            raise ValueError("error_code is only valid for failed delivery receipts")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "status": self.status.value,
+            "record_checksum": self.record_checksum,
+            "reason_code": self.reason_code,
+            "error_code": self.error_code,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class TrajectoryDeliveryReceipt:
+    """Immutable control-plane receipt without artifact paths or record bodies."""
+
+    requested_format: str
+    legacy: TrajectoryDeliveryTargetReceipt
+    v2: TrajectoryDeliveryTargetReceipt
+
+    def __post_init__(self) -> None:
+        if self.requested_format not in {"legacy", "dual", "jsonl_v2", "invalid"}:
+            raise ValueError("requested_format must be a supported format or invalid")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "requested_format": self.requested_format,
+            "legacy": self.legacy.to_dict(),
+            "v2": self.v2.to_dict(),
+        }
+
+
 def _canonical_json_value(value: Any) -> Any:
     if isinstance(value, Enum):
         return value.value

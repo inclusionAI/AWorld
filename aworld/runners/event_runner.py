@@ -22,6 +22,9 @@ from aworld.core.task import Task, TaskResponse, TaskStatusValue
 from aworld.core.trajectory import (
     TrajectoryBuildResult,
     TrajectoryBuildStatus,
+    TrajectoryDeliveryReceipt,
+    TrajectoryDeliveryState,
+    TrajectoryDeliveryTargetReceipt,
     TrajectoryFidelity,
     TrajectoryReasonCode,
     TrajectorySourceKind,
@@ -36,6 +39,7 @@ from aworld.dataset.trajectory_io import (
 from aworld.core.trajectory_update_registry import (
     TrajectoryDrainResult,
     TrajectoryRegistrySealedError,
+    TrajectoryRegistryState,
 )
 from aworld.events.manager import EventManager
 from aworld.logs.util import logger, trajectory_logger
@@ -65,6 +69,47 @@ class TaskEventRunner(TaskRunner):
         self.inited = False
         self._trajectory_finalize_lock = asyncio.Lock()
         self._trajectory_finalize_result = None
+        self._execution_started = False
+        self._deferred_task_response = None
+        self._task_response_publish_lock = asyncio.Lock()
+        self._task_response_published = False
+
+    def _trajectory_task_epoch(self) -> int | None:
+        epoch = getattr(self.task, "trajectory_task_epoch", None)
+        if epoch is None:
+            epoch = self.task.conf.get("trajectory_task_epoch") if self.task.conf else None
+        if epoch is not None and (
+            isinstance(epoch, bool) or not isinstance(epoch, int) or epoch < 0
+        ):
+            raise ValueError("trajectory_task_epoch must be a non-negative integer")
+        return epoch
+
+    async def run(self) -> Any:
+        """Preserve the primary failure while typing pre-execution outcomes."""
+        primary_error: BaseException | None = None
+        try:
+            await self.pre_run()
+            await self._daemon_run()
+            return await self.do_run()
+        except BaseException as exc:
+            primary_error = exc
+            self._exception = exc
+            if not self._execution_started:
+                try:
+                    await self._finalize_execution_not_started()
+                    await self._publish_task_response_once()
+                except BaseException as finalize_exc:
+                    logger.warning(
+                        "Failed to finalize execution-not-started trajectory: {}", finalize_exc
+                    )
+            raise
+        finally:
+            try:
+                await self.post_run()
+            except BaseException as post_exc:
+                if primary_error is None:
+                    raise
+                logger.warning("post_run failed after primary task failure: {}", post_exc)
 
     @staticmethod
     def _normalize_token_usage(token_usage: dict | None) -> dict:
@@ -176,8 +221,9 @@ class TaskEventRunner(TaskRunner):
             try:
                 for msg in self.init_messages:
                     await self.event_mng.emit_message(msg)
+                self._execution_started = True
                 await self._do_run()
-                await self._save_trajectories()
+                await self._finalize_for_delivery()
                 resp = self._response()
                 time_cost = time.time() - self.start_time
                 token_usage = self._current_token_usage()
@@ -290,12 +336,14 @@ class TaskEventRunner(TaskRunner):
             finally:
                 # Finalization is idempotent and also runs for exception/cancel paths.
                 # It must complete before TaskResponse delivery and dataset release.
-                finalize_task = asyncio.create_task(self._save_trajectories())
+                finalize_task = asyncio.create_task(self._finalize_for_delivery())
+                deferred_cancel = None
                 try:
                     await asyncio.shield(finalize_task)
-                except asyncio.CancelledError:
+                except asyncio.CancelledError as exc:
                     await finalize_task
-                    raise
+                    deferred_cancel = exc
+                await self._publish_task_response_once()
                 # the last step mark output finished
                 if not self.task.is_sub_task:
                     logger.info(f'main task {self.task.id} will mark outputs finished')
@@ -332,11 +380,14 @@ class TaskEventRunner(TaskRunner):
                     # Release trajectory storage to free memory; trajectories have already
                     # been persisted by _save_trajectories() before reaching this point.
                     self.context.trajectory_dataset = None
+                if deferred_cancel is not None:
+                    raise deferred_cancel
 
 
 
     async def pre_run(self):
         logger.debug(f"task {self.task.id} pre run start...")
+        self._trajectory_task_epoch()
         await super().pre_run()
 
         # Hooks V2: 触发 TASK_CREATED hook（所有任务，包括子任务）
@@ -596,7 +647,7 @@ class TaskEventRunner(TaskRunner):
                             results=[con],
                             handlers=self.handlers
                     ):
-                        await self.event_mng.emit_message(event)
+                        await self._emit_or_defer_task_response(event)
                 else:
                     self.state_manager.save_message_handle_result(name=handler.__name__,
                                                                   message=message)
@@ -621,7 +672,47 @@ class TaskEventRunner(TaskRunner):
                 results=messages,
                 handlers=self.handlers
         ):
-            await self.event_mng.emit_message(event)
+            await self._emit_or_defer_task_response(event)
+
+    async def _emit_or_defer_task_response(self, event: Message):
+        """Keep terminal responses private until the finalized snapshot is bound."""
+        if event.topic != TopicType.TASK_RESPONSE:
+            return await self.event_mng.emit_message(event)
+        payload = event.payload
+        if isinstance(payload, TaskResponse):
+            self._task_response = payload
+        self._deferred_task_response = event
+        return False
+
+    async def _publish_task_response_once(self) -> bool:
+        if not hasattr(self, "_task_response_publish_lock"):
+            self._task_response_publish_lock = asyncio.Lock()
+            self._task_response_published = False
+            self._deferred_task_response = None
+        async with self._task_response_publish_lock:
+            if self._task_response_published:
+                return False
+            event_manager = getattr(self, "event_mng", None)
+            if event_manager is None:
+                return False
+            response = self._task_response
+            if response is None or response.trajectory_build_result is None:
+                raise RuntimeError("cannot publish TaskResponse before trajectory finalization")
+            event = self._deferred_task_response
+            if event is None:
+                event = Message(
+                    payload=response,
+                    category=Constants.TASK,
+                    topic=TopicType.TASK_RESPONSE,
+                    sender=self.__class__.__name__,
+                    session_id=getattr(self.context, "session_id", "") or "",
+                    headers={"context": self.context},
+                )
+            else:
+                event.payload = response
+            await event_manager.emit_message(event)
+            self._task_response_published = True
+            return True
 
     async def _inner_handler_process(self, results: List[Message], handlers: List[DefaultHandler]):
         # can use runtime backend to parallel
@@ -773,6 +864,21 @@ class TaskEventRunner(TaskRunner):
             self._trajectory_registry().mark_source_not_finalized(self.task.id)
             logger.warning(f"Error waiting for background tasks cancellation: {e}")
 
+    async def _quiesce_trajectory_producers(self) -> None:
+        """Flush handler completion callbacks before freezing the registry HWM."""
+        await asyncio.sleep(0)
+        background_tasks = getattr(self, "background_tasks", set())
+        if any(not task.done() for task in background_tasks):
+            await self.clean_background_tasks()
+        # asyncio task done callbacks schedule the final message revision.
+        await asyncio.sleep(0)
+
+    async def _finalize_for_delivery(self) -> TrajectoryBuildResult:
+        await self._quiesce_trajectory_producers()
+        result = await self._save_trajectories()
+        await self._publish_task_response_once()
+        return result
+
     async def stop(self):
         self._stopped.set()
 
@@ -796,6 +902,205 @@ class TaskEventRunner(TaskRunner):
         self._task_response.llm_calls = copy.deepcopy(self.context.context_info.get("llm_calls", []))
         self._task_response.trace_id = get_trace_id()
         return self._task_response
+
+    @staticmethod
+    def _delivery_not_requested() -> TrajectoryDeliveryTargetReceipt:
+        return TrajectoryDeliveryTargetReceipt(
+            status=TrajectoryDeliveryState.NOT_REQUESTED,
+            reason_code="format_not_requested",
+        )
+
+    @staticmethod
+    def _delivery_failed(
+        error_code: str, *, record_checksum: str | None = None
+    ) -> TrajectoryDeliveryTargetReceipt:
+        return TrajectoryDeliveryTargetReceipt(
+            status=TrajectoryDeliveryState.FAILED,
+            record_checksum=record_checksum,
+            error_code=error_code,
+        )
+
+    async def _deliver_trajectory(
+        self,
+        *,
+        build_result: TrajectoryBuildResult,
+        inline_trajectory: list[dict[str, Any]],
+        llm_calls: list[dict[str, Any]],
+        runner_conf: Any,
+    ) -> TrajectoryDeliveryReceipt:
+        """Deliver compatibility projections behind a fail-open observability boundary."""
+        try:
+            sink_config = TrajectorySinkConfig.from_sources(runner_conf)
+        except Exception as exc:
+            logger.warning("Failed to resolve trajectory sink config: {}", exc)
+            failed = self._delivery_failed("sink_config_invalid")
+            return TrajectoryDeliveryReceipt(
+                requested_format="invalid", legacy=failed, v2=failed
+            )
+
+        requested_format = sink_config.format.value
+        legacy = self._delivery_not_requested()
+        v2 = self._delivery_not_requested()
+
+        if sink_config.writes_legacy:
+            try:
+                context = getattr(self, "context", None)
+                token_ids = getattr(context, "token_id_traj", None)
+                token_id_traj = (
+                    json.dumps(to_serializable(token_ids)) if token_ids else None
+                )
+                payload = {
+                    "task_id": self.task.id,
+                    "is_sub_task": self.task.is_sub_task,
+                    "trajectory": json.dumps(
+                        to_serializable(inline_trajectory), ensure_ascii=False
+                    ),
+                    "token_id_trajectory": token_id_traj,
+                    "llm_calls": json.dumps(
+                        copy.deepcopy(llm_calls), ensure_ascii=False
+                    ),
+                    "trajectory_build_result": build_result.to_dict(),
+                }
+                trajectory_logger.info(f"{payload}")
+                legacy = TrajectoryDeliveryTargetReceipt(
+                    status=TrajectoryDeliveryState.PERSISTED
+                )
+            except Exception as exc:
+                logger.warning("Failed to emit finalized legacy trajectory: {}", exc)
+                legacy = self._delivery_failed("legacy_emit_failed")
+
+        if sink_config.writes_v2:
+            record_checksum = None
+            try:
+                context = getattr(self, "context", None)
+                token_ids = getattr(context, "token_id_traj", None)
+                token_id_trajectory = (
+                    to_serializable(token_ids) if token_ids else None
+                )
+                epoch = self._trajectory_task_epoch()
+                envelope = TrajectoryEnvelope(
+                    build_result=build_result,
+                    revision=(epoch + 1) if epoch is not None else 1,
+                    trajectory=(
+                        None if build_result.trajectory_ref is not None else inline_trajectory
+                    ),
+                    llm_calls=copy.deepcopy(llm_calls),
+                    token_id_trajectory=token_id_trajectory,
+                    is_sub_task=self.task.is_sub_task,
+                )
+                record_checksum = envelope.to_dict()["integrity"]["record_checksum"]
+            except Exception as exc:
+                logger.warning("Failed to construct trajectory JSONL v2 envelope: {}", exc)
+                v2 = self._delivery_failed("v2_envelope_failed")
+            else:
+                try:
+                    acknowledgement = await asyncio.to_thread(
+                        TrajectoryJsonlSink(sink_config).append, envelope
+                    )
+                    if acknowledgement is None:
+                        v2 = self._delivery_failed("v2_append_not_acknowledged")
+                    else:
+                        v2 = TrajectoryDeliveryTargetReceipt(
+                            status=TrajectoryDeliveryState.PERSISTED,
+                            record_checksum=record_checksum,
+                        )
+                except Exception as exc:
+                    logger.warning("Failed to emit trajectory JSONL v2 snapshot: {}", exc)
+                    v2 = self._delivery_failed(
+                        "v2_append_failed", record_checksum=record_checksum
+                    )
+
+        return TrajectoryDeliveryReceipt(
+            requested_format=requested_format,
+            legacy=legacy,
+            v2=v2,
+        )
+
+    async def _safe_deliver_trajectory(self, **kwargs) -> TrajectoryDeliveryReceipt:
+        """Ultimate exporter guard: observability must never change task outcome."""
+        try:
+            return await self._deliver_trajectory(**kwargs)
+        except Exception as exc:
+            logger.warning("Unexpected trajectory delivery failure: {}", exc)
+            failed = self._delivery_failed("delivery_unexpected_failure")
+            return TrajectoryDeliveryReceipt(
+                requested_format="invalid", legacy=failed, v2=failed
+            )
+
+    async def _finalize_execution_not_started(self) -> TrajectoryBuildResult:
+        if not hasattr(self, "_trajectory_finalize_lock"):
+            self._trajectory_finalize_lock = asyncio.Lock()
+            self._trajectory_finalize_result = None
+        async with self._trajectory_finalize_lock:
+            if self._trajectory_finalize_result is not None:
+                return self._trajectory_finalize_result
+            try:
+                task_epoch = self._trajectory_task_epoch()
+            except ValueError:
+                task_epoch = None
+            context = getattr(self, "context", None) or getattr(self.task, "context", None)
+            registry = None
+            try:
+                registry = self._trajectory_registry()
+                state = registry.state(self.task.id)
+                if state in {TrajectoryRegistryState.OPEN, TrajectoryRegistryState.SEALED}:
+                    registry.seal(self.task.id)
+                    await registry.drain(self.task.id, timeout=0)
+                if registry.state(self.task.id) is TrajectoryRegistryState.DRAINED:
+                    dataset_owner = (
+                        context.root if isinstance(context, ApplicationContext) else context
+                    )
+                    dataset = getattr(dataset_owner, "trajectory_dataset", None)
+                    if dataset is not None:
+                        dataset.fence_task_updates(self.task.id)
+                    registry.release(self.task.id)
+            except Exception as exc:
+                logger.warning("Failed to close pre-execution trajectory registry: {}", exc)
+            build_result = TrajectoryBuildResult(
+                task_id=self.task.id,
+                session_id=getattr(context, "session_id", None),
+                trace_id=getattr(context, "trace_id", None),
+                task_epoch=task_epoch,
+                status=TrajectoryBuildStatus.EMPTY,
+                fidelity=TrajectoryFidelity.UNAVAILABLE,
+                reason_code=TrajectoryReasonCode.EXECUTION_NOT_STARTED,
+                source_kind=TrajectorySourceKind.EVENT_STATE,
+                source_high_watermark=None,
+                scheduled_updates=0,
+                completed_updates=0,
+                failed_updates=0,
+                pending_updates=0,
+                source_agent_messages=0,
+                llm_call_count=0,
+                tool_call_count=0,
+                persisted_items=0,
+                trajectory_ref=None,
+                source_checksum=None,
+                trajectory_checksum=None,
+                builder_version="sar-finalize-v1",
+                created_at=datetime.now(timezone.utc),
+            )
+            if self._task_response is None:
+                self._task_response = TaskResponse(
+                    id=self.task.id,
+                    context=context,
+                    success=False,
+                    status=TaskStatusValue.FAILED,
+                    msg="Task execution did not start.",
+                )
+            self._task_response.trajectory = []
+            self._task_response.trajectory_build_result = build_result
+            runner_conf = getattr(self, "conf", None) or self.task.conf or {}
+            llm_calls = []
+            receipt = await self._safe_deliver_trajectory(
+                build_result=build_result,
+                inline_trajectory=[],
+                llm_calls=llm_calls,
+                runner_conf=runner_conf,
+            )
+            self._task_response.trajectory_delivery_receipt = receipt
+            self._trajectory_finalize_result = build_result
+            return build_result
 
     async def _save_trajectories(self):
         if not hasattr(self, "_trajectory_finalize_lock"):
@@ -875,7 +1180,7 @@ class TaskEventRunner(TaskRunner):
                 task_id=self.task.id,
                 session_id=self.context.session_id,
                 trace_id=self.context.trace_id,
-                task_epoch=None,
+                task_epoch=self._trajectory_task_epoch(),
                 status=status,
                 fidelity=fidelity,
                 reason_code=reason_code,
@@ -902,47 +1207,13 @@ class TaskEventRunner(TaskRunner):
 
             logger.debug(f"{self.task.id}|{self.task.is_sub_task}#trajectory from context: {trajectory}")
             logger.debug(f"{self.task.id}|{self.task.is_sub_task}#task_graph from context: {self.context._task_graph}")
-            sink_config = TrajectorySinkConfig.from_sources(runner_conf)
-            if inline_trajectory and sink_config.writes_legacy:
-                token_id_traj = None
-                if self.context.token_id_traj:
-                    token_id_traj = json.dumps(to_serializable(self.context.token_id_traj))
-                res = {
-                    "task_id": self.task.id,
-                    "is_sub_task": self.task.is_sub_task,
-                    "trajectory": json.dumps(to_serializable(inline_trajectory), ensure_ascii=False),
-                    "token_id_trajectory": token_id_traj,
-                    "llm_calls": json.dumps(copy.deepcopy(llm_calls), ensure_ascii=False),
-                    "trajectory_build_result": build_result.to_dict(),
-                }
-                try:
-                    trajectory_logger.info(f"{res}")
-                except Exception as exc:
-                    logger.warning("Failed to emit finalized trajectory log: {}", exc)
-
-            if sink_config.writes_v2:
-                token_id_trajectory = (
-                    to_serializable(self.context.token_id_traj)
-                    if self.context.token_id_traj
-                    else None
-                )
-                envelope = TrajectoryEnvelope(
-                    build_result=build_result,
-                    # A task produces one immutable finalized snapshot. Reusing a
-                    # task id for a distinct run is an identity conflict rather
-                    # than an update-sequence-derived artifact revision.
-                    revision=1,
-                    trajectory=inline_trajectory,
-                    llm_calls=copy.deepcopy(llm_calls) if isinstance(llm_calls, list) else [],
-                    token_id_trajectory=token_id_trajectory,
-                    is_sub_task=self.task.is_sub_task,
-                )
-                try:
-                    await asyncio.to_thread(TrajectoryJsonlSink(sink_config).append, envelope)
-                except Exception as exc:
-                    # Export is an observability boundary: it must not rewrite
-                    # execution success or the already-bound SAR build result.
-                    logger.warning("Failed to emit trajectory JSONL v2 snapshot: {}", exc)
+            receipt = await self._safe_deliver_trajectory(
+                build_result=build_result,
+                inline_trajectory=inline_trajectory,
+                llm_calls=copy.deepcopy(llm_calls) if isinstance(llm_calls, list) else [],
+                runner_conf=runner_conf,
+            )
+            response.trajectory_delivery_receipt = receipt
 
             self._trajectory_finalize_result = build_result
             registry.release(self.task.id)
