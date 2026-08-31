@@ -170,6 +170,8 @@ non-blocking P2 remains: thread-backed file export has no bounded I/O acknowledg
 - Added an Amni neuron pre-fold sidecar contract and owner adapter. It observes exact executed neuron outputs without
   executing neurons or reconstructing them from the folded system message, preserves identity/order/duplicates, and only
   maps explicitly supplied owner evidence; new contract tests are five passed and combined compiler/assembly is 46 passed.
+- The combined dependency-light compiler plus all current owner adapters is green at 55 passed. A duplicate pytest module
+  basename discovered only in the combined run was removed by giving the Skill adapter test a unique module name.
 - Existing PromptAssemblyProvider still sees Amni neuron sections only after folding; the new `NeuronOutputOccurrence`
   contract provides the required pre-fold sidecar shape, but runtime emission remains deliberately unconnected in observe
   adapter scope and must be wired at the owner assembly boundary before enforce mode.
