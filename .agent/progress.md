@@ -237,5 +237,16 @@ model-boundary fidelity is explicit, correlation is task-local, and full Agent/m
   original request order with one decision per occurrence. Required overflow, unknown estimates, and required item-cap
   violations are typed failures; no reducer, offload, reserve mutation, or payload rewrite occurs implicitly. Dedicated
   budget tests are 6/6 and the combined compiler/PromptSection/neuron adapter suite is 48/48.
+- Hardened sidecar redaction after adversarial review: owner-controlled diagnostic codes are hashed and unknown fields are
+  reduced to counts, so default observability cannot leak arbitrary diagnostic strings. Child construction and root task-id
+  transitions now clear request observations instead of silently inheriting an epoch-less prior-task sidecar; same-task deep
+  copies still retain the immutable observation. Checkpoint stale/unavailable diagnostics remain part of Milestone 4.
+- Hardened the budget planner after adversarial review. Atomic identities are now typed and owner/namespace-scoped, internal
+  singleton keys cannot collide with caller groups, and optional allocation uses explicit global tiers while comparing
+  item priority only within the same authority/scope domain. Complete reserve evidence is fingerprinted in
+  `TokenAccounting`, item-cap group mates receive a distinct reason, and enforce refuses unversioned estimator identities.
+  Independent budget re-review approved P0/P1=0 at 33 tests. The broader compiler/Amni/TaskRunner regression is green at
+  67 tests, including cross-authority Tool pairs and real root Context reuse. Independent sidecar/lifecycle re-review also
+  approved P0/P1=0; both Base Context and ApplicationContext task-transition behavior now have persistent regressions.
 - Authority, trust, lifetime, stability, source URI, task epoch, and exact token counts remain UNKNOWN unless their owner can
   prove them; role/content heuristics are not acceptable.

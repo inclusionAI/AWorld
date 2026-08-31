@@ -57,6 +57,8 @@ from .observe import (
 from .trace import ContextDecisionTrace
 from .sidecar import ContextObservationSidecar
 from .budget import (
+    AtomicGroupRef,
+    BudgetAllocationTier,
     BudgetCandidate,
     ContextBudgetError,
     ContextBudgetPlan,
@@ -64,6 +66,7 @@ from .budget import (
     ItemTokenLimitExceeded,
     RequiredContextBudgetExceeded,
     UnknownTokenEstimate,
+    UnversionedTokenEstimator,
     plan_context_budget,
 )
 
@@ -72,6 +75,8 @@ __all__ = [
     "AdapterDiagnosticSeverity",
     "AdapterResult",
     "Authority",
+    "AtomicGroupRef",
+    "BudgetAllocationTier",
     "BudgetCandidate",
     "CacheBreakReason",
     "CacheIdentity",
@@ -114,6 +119,7 @@ __all__ = [
     "TokenEstimate",
     "Trust",
     "UnknownTokenEstimate",
+    "UnversionedTokenEstimator",
     "adapt_final_messages",
     "adapt_tool_schemas",
     "canonical_json_bytes",

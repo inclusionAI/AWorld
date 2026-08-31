@@ -3,7 +3,9 @@ from __future__ import annotations
 import pytest
 
 from aworld.core.context.compiler import (
+    AtomicGroupRef,
     Authority,
+    BudgetAllocationTier,
     BudgetCandidate,
     ContextInputBudget,
     ContextItem,
@@ -20,6 +22,7 @@ from aworld.core.context.compiler import (
     TokenEstimate,
     Trust,
     UnknownTokenEstimate,
+    UnversionedTokenEstimator,
     plan_context_budget,
 )
 
@@ -31,18 +34,21 @@ def _item(
     required: bool = False,
     kind: ContextKind = ContextKind.MEMORY,
     token_limit: int | None = None,
+    authority: Authority = Authority.APPLICATION_AGENT,
+    scope: ContextScope | None = None,
+    trust: Trust = Trust.TRUSTED,
 ) -> ContextItem:
     return ContextItem(
         id=item_id,
         kind=kind,
         payload={"content": item_id},
         task_epoch=1,
-        authority=Authority.APPLICATION_AGENT,
-        scope=ContextScope.unknown(),
+        authority=authority,
+        scope=scope or ContextScope.unknown(),
         lifetime=Lifetime.TASK,
         priority=priority,
         required=required,
-        trust=Trust.TRUSTED,
+        trust=trust,
         stability=Stability.TURN_DYNAMIC,
         token_limit=token_limit,
         reducer=None,
@@ -56,7 +62,8 @@ def _candidate(
     tokens: int | None,
     *,
     exact: bool = True,
-    atomic_group: str | None = None,
+    atomic_group: AtomicGroupRef | None = None,
+    allocation_tier: BudgetAllocationTier | None = None,
 ) -> BudgetCandidate:
     estimate = (
         TokenEstimate.unknown()
@@ -66,6 +73,7 @@ def _candidate(
     return BudgetCandidate(
         item=item,
         tokens=estimate,
+        allocation_tier=allocation_tier or BudgetAllocationTier(0, "default"),
         atomic_group=atomic_group,
     )
 
@@ -126,6 +134,9 @@ def test_budget_keeps_required_then_explicit_priority_but_preserves_request_orde
     assert plan.decisions[1].reason is ResolutionReason.REQUIRED
     assert plan.token_accounting.total_before.value == 20
     assert plan.token_accounting.total_after.value == 16
+    assert plan.token_accounting.provider_protocol_reserve.value == 0
+    assert plan.token_accounting.safety_margin.value == 0
+    assert plan.token_accounting.available_input.value == 16
 
 
 def test_required_overflow_is_typed_and_never_reduces_reserved_output() -> None:
@@ -151,17 +162,29 @@ def test_required_overflow_is_typed_and_never_reduces_reserved_output() -> None:
 
 
 def test_atomic_tool_pair_is_selected_or_excluded_as_one_unit() -> None:
+    tool_pair = AtomicGroupRef(
+        "tool",
+        "request",
+        "tool-pair-1",
+        selection_priority=10,
+    )
     candidates = (
         _candidate(_item("background", priority=20), 6),
         _candidate(
             _item("tool-call", priority=10, kind=ContextKind.SYSTEM),
             3,
-            atomic_group="tool-pair-1",
+            atomic_group=tool_pair,
         ),
         _candidate(
-            _item("tool-result", priority=10, kind=ContextKind.TOOL_RESULT),
+            _item(
+                "tool-result",
+                priority=999,
+                kind=ContextKind.TOOL_RESULT,
+                authority=Authority.EXTERNAL_TOOL,
+                trust=Trust.TOOL_UNTRUSTED,
+            ),
             4,
-            atomic_group="tool-pair-1",
+            atomic_group=tool_pair,
         ),
     )
     budget = ContextInputBudget(
@@ -220,12 +243,12 @@ def test_optional_item_limit_excludes_the_whole_atomic_group() -> None:
         _candidate(
             _item("oversized", priority=10),
             21,
-            atomic_group="optional-group",
+            atomic_group=AtomicGroupRef("test", "request", "optional-group"),
         ),
         _candidate(
             _item("mate", priority=10),
             1,
-            atomic_group="optional-group",
+            atomic_group=AtomicGroupRef("test", "request", "optional-group"),
         ),
         _candidate(_item("kept", priority=1), 2),
     )
@@ -235,7 +258,124 @@ def test_optional_item_limit_excludes_the_whole_atomic_group() -> None:
     assert [item.id for item in plan.selected_items] == ["kept"]
     assert [decision.reason for decision in plan.decisions] == [
         ResolutionReason.ITEM_TOKEN_LIMIT_EXCEEDED,
-        ResolutionReason.ITEM_TOKEN_LIMIT_EXCEEDED,
+        ResolutionReason.ATOMIC_GROUP_ITEM_LIMIT_EXCEEDED,
         ResolutionReason.BUDGET_INCLUDED,
     ]
 
+
+def test_caller_atomic_group_cannot_collide_with_internal_singleton_key() -> None:
+    budget = ContextInputBudget(
+        context_limit=2,
+        reserved_output_tokens=0,
+        provider_protocol_reserve=0,
+        safety_margin_tokens=0,
+        max_item_tokens=2,
+    )
+    candidates = (
+        _candidate(_item("standalone", priority=20), 2),
+        _candidate(
+            _item("caller-group", priority=10),
+            1,
+            atomic_group=AtomicGroupRef("caller", "request", "__single__:0"),
+        ),
+    )
+
+    plan = plan_context_budget(candidates, budget)
+
+    assert [item.id for item in plan.selected_items] == ["standalone"]
+    assert plan.decisions[1].action is ResolutionAction.EXCLUDED
+
+
+def test_same_group_id_from_different_owners_remains_independent() -> None:
+    budget = ContextInputBudget(4, 0, 0, 0, 4)
+    candidates = (
+        _candidate(
+            _item("owner-a", priority=20),
+            4,
+            atomic_group=AtomicGroupRef("owner-a", "request", "pair"),
+        ),
+        _candidate(
+            _item("owner-b", priority=10),
+            1,
+            atomic_group=AtomicGroupRef("owner-b", "request", "pair"),
+        ),
+    )
+
+    plan = plan_context_budget(candidates, budget)
+
+    assert [item.id for item in plan.selected_items] == ["owner-a"]
+
+
+def test_allocation_tier_precedes_priority_across_authority_scope_domains() -> None:
+    instruction_scope = ContextScope(kinds=("task",), task_id="task-1")
+    external_scope = ContextScope(kinds=("session",), session_id="session-1")
+    candidates = (
+        _candidate(
+            _item(
+                "external-memory",
+                priority=100,
+                authority=Authority.EXTERNAL_TOOL,
+                scope=external_scope,
+            ),
+            4,
+            allocation_tier=BudgetAllocationTier(20, "optional-evidence"),
+        ),
+        _candidate(
+            _item(
+                "instruction",
+                priority=1,
+                kind=ContextKind.INSTRUCTION,
+                authority=Authority.APPLICATION_AGENT,
+                scope=instruction_scope,
+            ),
+            4,
+            allocation_tier=BudgetAllocationTier(10, "control"),
+        ),
+    )
+    budget = ContextInputBudget(4, 0, 0, 0, 4)
+
+    plan = plan_context_budget(candidates, budget)
+
+    assert [item.id for item in plan.selected_items] == ["instruction"]
+
+
+def test_priority_only_reorders_within_same_authority_scope_domain() -> None:
+    scope_a = ContextScope(kinds=("task",), task_id="task-a")
+    scope_b = ContextScope(kinds=("task",), task_id="task-b")
+    tier = BudgetAllocationTier(10, "evidence")
+    candidates = (
+        _candidate(
+            _item("a-low", priority=1, scope=scope_a),
+            2,
+            allocation_tier=tier,
+        ),
+        _candidate(
+            _item("b-high", priority=100, scope=scope_b),
+            2,
+            allocation_tier=tier,
+        ),
+        _candidate(
+            _item("a-high", priority=10, scope=scope_a),
+            2,
+            allocation_tier=tier,
+        ),
+    )
+    budget = ContextInputBudget(2, 0, 0, 0, 2)
+
+    plan = plan_context_budget(candidates, budget)
+
+    assert [item.id for item in plan.selected_items] == ["a-high"]
+
+
+def test_enforce_refuses_unversioned_token_estimator() -> None:
+    budget = ContextInputBudget(10, 0, 0, 0, 10)
+    candidate = BudgetCandidate(
+        item=_item("unversioned"),
+        tokens=TokenEstimate(value=1, estimator="approximate", exact=False),
+        allocation_tier=BudgetAllocationTier(0, "default"),
+    )
+
+    with pytest.raises(UnversionedTokenEstimator) as captured:
+        plan_context_budget((candidate,), budget)
+
+    assert captured.value.code == "token_estimator_unversioned"
