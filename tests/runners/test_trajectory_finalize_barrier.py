@@ -1,5 +1,6 @@
 import ast
 import asyncio
+import threading
 from contextlib import asynccontextmanager
 from dataclasses import replace
 
@@ -60,6 +61,7 @@ def _runner(*, timeout=1, sub_task=False):
     runner._task_response = TaskResponse(id=task.id, context=context, success=True)
     runner._trajectory_finalize_lock = asyncio.Lock()
     runner._trajectory_finalize_result = None
+    runner._trajectory_finalize_delivery_task = None
     runner._execution_started = False
     runner._deferred_task_response = None
     runner._task_response_publish_lock = asyncio.Lock()
@@ -921,3 +923,293 @@ async def test_emit_failure_never_overwrites_business_result_or_exception(
         with pytest.raises(ValueError, match="business failed"):
             await runner.do_run()
     assert response_attempts == 1
+
+
+@pytest.mark.asyncio
+async def test_cancel_during_terminal_emit_installs_same_finalized_stream_fallback(
+    monkeypatch,
+):
+    runner, context = _runner(sub_task=True)
+    runner.task.streaming_mode = StreamingMode.ALL
+    runner.inited = True
+    context.trajectory_update_registry.open("task-1")
+    monkeypatch.setattr(
+        context,
+        "get_task_trajectory",
+        lambda task_id, **kwargs: _async_result([]),
+    )
+    await runner._save_trajectories()
+
+    bus_queue = asyncio.Queue()
+    emit_entered = asyncio.Event()
+    attempts = 0
+
+    class _Bus:
+        async def get(self, task_id):
+            return await bus_queue.get()
+
+    class _Events:
+        streaming_eventbus = _Bus()
+
+        async def emit_message(self, event):
+            nonlocal attempts
+            attempts += 1
+            emit_entered.set()
+            await asyncio.Event().wait()
+
+    runner.event_mng = _Events()
+    waiter = asyncio.create_task(anext(runner.streaming()))
+    publish = asyncio.create_task(runner._finalize_for_delivery())
+    await emit_entered.wait()
+    publish.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await publish
+    terminal = await asyncio.wait_for(waiter, timeout=1)
+
+    assert attempts == 1
+    assert terminal is runner._stream_terminal_fallback
+    assert terminal.payload is runner._task_response
+    assert terminal.payload.trajectory_build_result is not None
+    assert await runner._publish_task_response_once() is False
+
+
+@pytest.mark.asyncio
+async def test_cancel_during_v2_append_reuses_one_finalize_delivery_attempt(
+    tmp_path, monkeypatch
+):
+    runner, context = _runner(sub_task=True)
+    registry = context.trajectory_update_registry
+    registry.open("task-1")
+    registry.schedule(
+        task_id="task-1",
+        logical_step_id="message-1",
+        revision=2,
+        update_factory=lambda: _async_result(
+            TrajectoryUpdateOutcome(True, True, persisted=True)
+        ),
+    )
+    jsonl_path = tmp_path / "trajectory.jsonl"
+    runner.conf.trajectory_format = "jsonl_v2"
+    runner.conf.trajectory_v2_path = str(jsonl_path)
+    monkeypatch.setattr(
+        context,
+        "get_task_trajectory",
+        lambda task_id, **kwargs: _async_result([_Step()]),
+    )
+
+    class _Events:
+        async def emit_message(self, event):
+            return True
+
+    runner.event_mng = _Events()
+    append_entered = threading.Event()
+    release_append = threading.Event()
+    append_calls = 0
+    from aworld.dataset.trajectory_io import TrajectoryJsonlSink
+
+    original_append = TrajectoryJsonlSink.append
+
+    def blocked_append(self, envelope):
+        nonlocal append_calls
+        append_calls += 1
+        append_entered.set()
+        assert release_append.wait(timeout=2)
+        return original_append(self, envelope)
+
+    monkeypatch.setattr(
+        "aworld.runners.event_runner.TrajectoryJsonlSink.append", blocked_append
+    )
+
+    first = asyncio.create_task(runner._finalize_for_delivery())
+    assert await asyncio.to_thread(append_entered.wait, 1)
+    first.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await first
+    release_append.set()
+
+    result = await asyncio.wait_for(runner._finalize_for_delivery(), timeout=2)
+    receipt = runner._task_response.trajectory_delivery_receipt
+    physical_lines = jsonl_path.read_text(encoding="utf-8").splitlines()
+    read_result = read_trajectory_records(jsonl_path, include_rotations=False)
+
+    assert append_calls == 1
+    assert len(physical_lines) == 1
+    assert len(read_result.records) == 1
+    assert read_result.diagnostics == ()
+    assert result is runner._task_response.trajectory_build_result
+    assert receipt.v2.status is TrajectoryDeliveryState.PERSISTED
+
+
+@pytest.mark.asyncio
+async def test_pre_run_failure_cancel_during_v2_append_joins_same_typed_attempt(
+    tmp_path, monkeypatch
+):
+    runner, context = _runner(sub_task=True)
+    jsonl_path = tmp_path / "trajectory.jsonl"
+    runner.conf.trajectory_format = "jsonl_v2"
+    runner.conf.trajectory_v2_path = str(jsonl_path)
+    append_entered = threading.Event()
+    release_append = threading.Event()
+    append_calls = 0
+    from aworld.dataset.trajectory_io import TrajectoryJsonlSink
+
+    original_append = TrajectoryJsonlSink.append
+
+    def blocked_append(self, envelope):
+        nonlocal append_calls
+        append_calls += 1
+        append_entered.set()
+        assert release_append.wait(timeout=2)
+        return original_append(self, envelope)
+
+    async def broken_pre_run():
+        raise RuntimeError("pre-run failed")
+
+    async def post_run():
+        return None
+
+    monkeypatch.setattr(
+        "aworld.runners.event_runner.TrajectoryJsonlSink.append", blocked_append
+    )
+    monkeypatch.setattr(runner, "pre_run", broken_pre_run)
+    monkeypatch.setattr(runner, "post_run", post_run)
+
+    run_task = asyncio.create_task(runner.run())
+    assert await asyncio.to_thread(append_entered.wait, 1)
+    run_task.cancel()
+    release_append.set()
+
+    with pytest.raises(RuntimeError, match="pre-run failed"):
+        await asyncio.wait_for(run_task, timeout=2)
+
+    receipt = runner._task_response.trajectory_delivery_receipt
+    result = runner._task_response.trajectory_build_result
+    read_result = read_trajectory_records(jsonl_path, include_rotations=False)
+    assert append_calls == 1
+    assert len(jsonl_path.read_text(encoding="utf-8").splitlines()) == 1
+    assert len(read_result.records) == 1
+    assert read_result.diagnostics == ()
+    assert result.status is TrajectoryBuildStatus.EMPTY
+    assert result.reason_code is TrajectoryReasonCode.EXECUTION_NOT_STARTED
+    assert receipt.v2.status is TrajectoryDeliveryState.PERSISTED
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "failure_point", ["sar_projection", "to_serializable", "checksum"]
+)
+async def test_sar_projection_failures_produce_typed_build_failure(
+    failure_point, monkeypatch
+):
+    runner, context = _runner(sub_task=True)
+    registry = context.trajectory_update_registry
+    registry.open("task-1")
+    registry.schedule(
+        task_id="task-1",
+        logical_step_id="message-1",
+        revision=2,
+        update_factory=lambda: _async_result(
+            TrajectoryUpdateOutcome(True, True, persisted=True)
+        ),
+    )
+    if failure_point == "sar_projection":
+
+        class _BrokenStep:
+            def to_dict(self):
+                raise TypeError("SAR projection failed")
+
+        trajectory = [_BrokenStep()]
+    elif failure_point == "to_serializable":
+        trajectory = [object()]
+
+        def fail_projection(value):
+            raise TypeError("projection failed")
+
+        monkeypatch.setattr("aworld.runners.event_runner.to_serializable", fail_projection)
+    else:
+        trajectory = [_Step()]
+
+        def fail_checksum(value):
+            raise TypeError("checksum failed")
+
+        monkeypatch.setattr(
+            "aworld.runners.event_runner.compute_trajectory_checksum", fail_checksum
+        )
+    monkeypatch.setattr(
+        context,
+        "get_task_trajectory",
+        lambda task_id, **kwargs: _async_result(trajectory),
+    )
+
+    result = await runner._save_trajectories()
+
+    assert result.status is TrajectoryBuildStatus.FAILED
+    assert result.fidelity is TrajectoryFidelity.BUILD_FAILED
+    assert result.reason_code is TrajectoryReasonCode.TRAJECTORY_BUILD_FAILED
+    assert result.persisted_items == 0
+    assert result.trajectory_checksum is None
+    assert runner._task_response.trajectory == []
+    assert runner._task_response.trajectory_delivery_receipt is not None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("business_error", [None, ValueError("business failed")])
+async def test_projection_failure_never_changes_business_result_or_exception(
+    business_error, monkeypatch
+):
+    runner, context = _runner(sub_task=True)
+    runner.init_messages = [Message(payload="start", headers={"context": context})]
+    registry = context.trajectory_update_registry
+    registry.open("task-1")
+    registry.schedule(
+        task_id="task-1",
+        logical_step_id="message-1",
+        revision=2,
+        update_factory=lambda: _async_result(
+            TrajectoryUpdateOutcome(True, True, persisted=True)
+        ),
+    )
+    monkeypatch.setattr(
+        context,
+        "get_task_trajectory",
+        lambda task_id, **kwargs: _async_result([_Step()]),
+    )
+
+    def fail_checksum(value):
+        raise TypeError("checksum failed")
+
+    monkeypatch.setattr(
+        "aworld.runners.event_runner.compute_trajectory_checksum", fail_checksum
+    )
+
+    class _Events:
+        async def emit_message(self, event):
+            return True
+
+    runner.event_mng = _Events()
+
+    async def business_run():
+        if business_error is not None:
+            raise business_error
+        runner._task_response.answer = "business answer"
+
+    @asynccontextmanager
+    async def no_trace_span(*args, **kwargs):
+        yield
+
+    monkeypatch.setattr(runner, "_do_run", business_run)
+    monkeypatch.setattr("aworld.runners.event_runner.trace.task_span", no_trace_span)
+
+    if business_error is None:
+        response = await runner.do_run()
+        assert response.answer == "business answer"
+    else:
+        with pytest.raises(ValueError, match="business failed"):
+            await runner.do_run()
+
+    result = runner._task_response.trajectory_build_result
+    assert result.status is TrajectoryBuildStatus.FAILED
+    assert result.fidelity is TrajectoryFidelity.BUILD_FAILED
+    assert result.reason_code is TrajectoryReasonCode.TRAJECTORY_BUILD_FAILED
+    assert runner._task_response.trajectory_delivery_receipt is not None
