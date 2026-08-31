@@ -4,6 +4,9 @@ import json
 import multiprocessing
 import os
 import stat
+import subprocess
+import sys
+import textwrap
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
@@ -56,6 +59,7 @@ def _build_result(
     trajectory: list[dict] | None = None,
     *,
     task_id: str = "task-1",
+    task_epoch: int = 0,
     status: TrajectoryBuildStatus = TrajectoryBuildStatus.COMPLETE,
     fidelity: TrajectoryFidelity = TrajectoryFidelity.COMPLETE,
     reason_code: TrajectoryReasonCode | None = None,
@@ -67,7 +71,7 @@ def _build_result(
         task_id=task_id,
         session_id="session-1",
         trace_id="trace-1",
-        task_epoch=0,
+        task_epoch=task_epoch,
         status=status,
         fidelity=fidelity,
         reason_code=reason_code,
@@ -111,6 +115,66 @@ def _append_revision(args: tuple[str, int]) -> None:
     ).append(_envelope(revision=revision))
 
 
+_REAL_DUAL_WRITER = textwrap.dedent(
+    r"""
+    import json
+    import os
+    import sys
+    import traceback
+
+    from aworld.core.trajectory import TrajectoryBuildResult
+    from aworld.dataset.trajectory_io import (
+        TrajectoryEnvelope,
+        TrajectoryFormat,
+        TrajectoryJsonlSink,
+        TrajectorySinkConfig,
+    )
+    from aworld.logs.util import base_logger, trajectory_logger
+
+    try:
+        records = json.loads(sys.stdin.read())
+        sink = TrajectoryJsonlSink(
+            TrajectorySinkConfig(
+                format=TrajectoryFormat.DUAL,
+                path=sys.argv[1],
+            )
+        )
+        for record in records:
+            build_result = TrajectoryBuildResult.from_dict(record["build_result"])
+            trajectory = record["trajectory"]
+            llm_calls = record["llm_calls"]
+            legacy_payload = {
+                "task_id": build_result.task_id,
+                "is_sub_task": False,
+                "trajectory": json.dumps(trajectory, ensure_ascii=False),
+                "token_id_trajectory": None,
+                "llm_calls": json.dumps(llm_calls, ensure_ascii=False),
+                "trajectory_build_result": build_result.to_dict(),
+            }
+            trajectory_logger.info(f"{legacy_payload}")
+            acknowledgement = sink.append(
+                TrajectoryEnvelope(
+                    build_result=build_result,
+                    revision=record["revision"],
+                    trajectory=trajectory,
+                    llm_calls=llm_calls,
+                )
+            )
+            if acknowledgement is None:
+                raise RuntimeError("dual JSONL sink did not acknowledge append")
+    except BaseException:
+        traceback.print_exc()
+        base_logger.remove()
+        os._exit(1)
+    else:
+        # File handlers are synchronous, and removal closes and flushes their sinks.
+        # Avoid unrelated package atexit hooks in this isolated writer process.
+        base_logger.remove()
+        os._exit(0)
+    """
+)
+
+
 def test_v2_round_trip_uses_one_json_object_with_direct_structures_and_safe_sink(tmp_path: Path) -> None:
     path = tmp_path / "trajectory.jsonl"
     sink = TrajectoryJsonlSink(
@@ -137,6 +201,118 @@ def test_v2_round_trip_uses_one_json_object_with_direct_structures_and_safe_sink
     assert record.task_id == "task-1"
     assert record.trajectory == [_step()]
     assert record.build_result["status"] == "complete"
+
+
+def test_tc_trajectory_io_023_real_legacy_formatter_dual_retry_round_trip(
+    tmp_path: Path,
+) -> None:
+    """Exercise the complete legacy + v2 retry contract with the real logger."""
+
+    task_id = "tc-trajectory-io-023"
+    initial_trajectory = [_step("initial")]
+    retry_trajectory = [_step("retry")]
+    initial_result = _build_result(
+        initial_trajectory,
+        task_id=task_id,
+        task_epoch=0,
+    )
+    retry_result = _build_result(
+        retry_trajectory,
+        task_id=task_id,
+        task_epoch=1,
+    )
+    records = [
+        {
+            "build_result": initial_result.to_dict(),
+            "revision": 1,
+            "trajectory": initial_trajectory,
+            "llm_calls": [{"request_id": "request-initial", "request": {"messages": []}}],
+        },
+        {
+            "build_result": retry_result.to_dict(),
+            "revision": 2,
+            "trajectory": retry_trajectory,
+            "llm_calls": [{"request_id": "request-retry", "request": {"messages": []}}],
+        },
+    ]
+    legacy_path = tmp_path / "trajectory.log"
+    v2_path = tmp_path / "trajectory.jsonl"
+    environment = os.environ.copy()
+    environment.pop("AWORLD_LOG_FORMAT", None)
+    environment.update(
+        {
+            "AWORLD_LOG_PATH": str(tmp_path),
+            "AWORLD_DISABLE_CONSOLE_LOG": "true",
+            "AWORLD_LOG_ENDABLE_MONKEY": "true",
+        }
+    )
+
+    completed = subprocess.run(
+        [sys.executable, "-c", _REAL_DUAL_WRITER, str(v2_path)],
+        input=json.dumps(records, ensure_ascii=False),
+        text=True,
+        capture_output=True,
+        env=environment,
+        timeout=60,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert legacy_path.is_file()
+    assert v2_path.is_file()
+    legacy_physical_lines = legacy_path.read_text(encoding="utf-8").splitlines()
+    assert any("trajectory PID:" in line for line in legacy_physical_lines)
+
+    physical_lines = v2_path.read_text(encoding="utf-8").splitlines()
+    assert len(physical_lines) == 2
+    v2_payloads = [json.loads(line) for line in physical_lines]
+    assert [payload["schema_version"] for payload in v2_payloads] == [
+        SCHEMA_VERSION,
+        SCHEMA_VERSION,
+    ]
+    assert [payload["revision"] for payload in v2_payloads] == [1, 2]
+    assert [payload["task_epoch"] for payload in v2_payloads] == [0, 1]
+    assert [payload["build_result"] for payload in v2_payloads] == [
+        initial_result.to_dict(),
+        retry_result.to_dict(),
+    ]
+    for payload, trajectory, build_result in zip(
+        v2_payloads,
+        (initial_trajectory, retry_trajectory),
+        (initial_result, retry_result),
+    ):
+        expected_checksum = compute_trajectory_checksum(trajectory)
+        assert payload["integrity"]["trajectory_checksum"] == expected_checksum
+        assert build_result.trajectory_checksum == expected_checksum
+
+    legacy_read = read_trajectory_records(
+        legacy_path, include_rotations=False
+    )
+    assert legacy_read.diagnostics
+    assert {diagnostic.code for diagnostic in legacy_read.diagnostics} == {
+        "ignored_header"
+    }
+    assert len(legacy_read.records) == 1
+    legacy_latest = legacy_read.records[0]
+    assert legacy_latest.schema_version == "legacy"
+    assert legacy_latest.trajectory == retry_trajectory
+    assert legacy_latest.build_result == retry_result.to_dict()
+
+    v2_read = read_trajectory_records(v2_path, include_rotations=False)
+    assert not v2_read.diagnostics
+    assert len(v2_read.records) == 1
+    v2_latest = v2_read.records[0]
+    assert v2_latest.revision == 2
+    assert v2_latest.trajectory == retry_trajectory
+    assert v2_latest.build_result == retry_result.to_dict()
+
+    mixed_latest = read_trajectory_records(legacy_path).records[0]
+    expected_checksum = compute_trajectory_checksum(retry_trajectory)
+    assert mixed_latest.schema_version == SCHEMA_VERSION
+    assert mixed_latest.revision == 2
+    assert mixed_latest.trajectory == retry_trajectory
+    assert mixed_latest.trajectory_checksum == expected_checksum
+    assert mixed_latest.build_result == retry_result.to_dict()
+    assert retry_result.trajectory_checksum == expected_checksum
 
 
 def test_v2_checksum_mutation_is_a_hard_failure(tmp_path: Path) -> None:
