@@ -45,10 +45,19 @@ from aworld.utils.common import scan_packages
 # Automatically scan and register all Neuron classes
 scan_packages("aworld.core.context.amni.prompt.neurons", [Neuron])
 
+from .context_adapter import (
+    NeuronContextAdapter,
+    NeuronOutputOccurrence,
+    adapt_neuron_outputs,
+)
+
 # Exports
 __all__ = [
     'Neuron',
     'Neurons',
     'NeuronFactory',
     'neuron_factory',
+    'NeuronContextAdapter',
+    'NeuronOutputOccurrence',
+    'adapt_neuron_outputs',
 ]
