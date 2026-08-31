@@ -69,6 +69,7 @@ class TaskEventRunner(TaskRunner):
         self.inited = False
         self._trajectory_finalize_lock = asyncio.Lock()
         self._trajectory_finalize_result = None
+        self._trajectory_finalize_delivery_task = None
         self._execution_started = False
         self._deferred_task_response = None
         self._task_response_publish_lock = asyncio.Lock()
@@ -124,8 +125,23 @@ class TaskEventRunner(TaskRunner):
             self._exception = exc
             if not self._execution_started:
                 try:
-                    await self._finalize_execution_not_started()
-                    await self._publish_task_response_once()
+                    await self._finalize_execution_not_started_for_delivery()
+                except asyncio.CancelledError as finalize_cancel:
+                    # A second cancellation may interrupt this cleanup await,
+                    # but not its cached, shielded export attempt. Join that
+                    # same attempt and publish its typed terminal response
+                    # before restoring the primary failure below.
+                    try:
+                        await self._finalize_execution_not_started_for_delivery()
+                    except BaseException as finalize_exc:
+                        logger.warning(
+                            "Failed to join cancelled execution-not-started finalization: {}",
+                            finalize_exc,
+                        )
+                    logger.debug(
+                        "Deferred cancellation during execution-not-started finalization: {}",
+                        finalize_cancel,
+                    )
                 except BaseException as finalize_exc:
                     logger.warning(
                         "Failed to finalize execution-not-started trajectory: {}", finalize_exc
@@ -791,6 +807,13 @@ class TaskEventRunner(TaskRunner):
                 return False
             try:
                 await event_manager.emit_message(event)
+            except asyncio.CancelledError:
+                # The attempt fence has already been raised. Make the exact
+                # finalized event available to a blocked local stream before
+                # preserving cancellation; a retry could duplicate a partial
+                # EventManager publication.
+                self._install_stream_terminal_fallback(event)
+                raise
             except Exception as exc:
                 logger.warning("Terminal TaskResponse emit failed: {}", exc)
                 self._install_stream_terminal_fallback(event)
@@ -957,9 +980,34 @@ class TaskEventRunner(TaskRunner):
         # asyncio task done callbacks schedule the final message revision.
         await asyncio.sleep(0)
 
-    async def _finalize_for_delivery(self) -> TrajectoryBuildResult:
+    async def _run_finalize_for_delivery_attempt(self) -> TrajectoryBuildResult:
         await self._quiesce_trajectory_producers()
-        result = await self._save_trajectories()
+        return await self._save_trajectories()
+
+    async def _await_trajectory_finalize_attempt(self, finalize) -> TrajectoryBuildResult:
+        if not hasattr(self, "_trajectory_finalize_delivery_task"):
+            self._trajectory_finalize_delivery_task = None
+        attempt = self._trajectory_finalize_delivery_task
+        if attempt is None:
+            attempt = asyncio.create_task(finalize())
+            self._trajectory_finalize_delivery_task = attempt
+        return await asyncio.shield(attempt)
+
+    async def _finalize_for_delivery(self) -> TrajectoryBuildResult:
+        """Await the one task-scoped finalize/delivery attempt.
+
+        Shielding the cached task is essential for thread-backed exporters:
+        cancelling an awaiter cannot stop an append already running in a
+        worker thread, so rebuilding the attempt would write the same revision
+        twice with different creation metadata.
+        """
+        result = await self._await_trajectory_finalize_attempt(
+            self._run_finalize_for_delivery_attempt
+        )
+        # Publication is intentionally outside the shield: cancellation must
+        # reach the emitter so it can install the runner-local fallback before
+        # it is re-raised. Only the non-repeatable build/export attempt needs
+        # cancellation protection.
         await self._publish_task_response_once()
         return result
 
@@ -1114,6 +1162,15 @@ class TaskEventRunner(TaskRunner):
                 requested_format="invalid", legacy=failed, v2=failed
             )
 
+    async def _finalize_execution_not_started_for_delivery(
+        self,
+    ) -> TrajectoryBuildResult:
+        result = await self._await_trajectory_finalize_attempt(
+            self._finalize_execution_not_started
+        )
+        await self._publish_task_response_once()
+        return result
+
     async def _finalize_execution_not_started(self) -> TrajectoryBuildResult:
         if not hasattr(self, "_trajectory_finalize_lock"):
             self._trajectory_finalize_lock = asyncio.Lock()
@@ -1216,20 +1273,41 @@ class TaskEventRunner(TaskRunner):
             except Exception as exc:
                 snapshot_error = exc
 
-            inline_trajectory = [
-                step.to_dict() if hasattr(step, "to_dict") else to_serializable(step)
-                for step in trajectory
-            ]
-            trajectory_checksum = (
-                compute_trajectory_checksum(inline_trajectory) if inline_trajectory else None
-            )
+            inline_trajectory = []
+            trajectory_checksum = None
+            projection_error = None
+            tool_call_count = 0
+            try:
+                inline_trajectory = [
+                    step.to_dict() if hasattr(step, "to_dict") else to_serializable(step)
+                    for step in trajectory
+                ]
+                trajectory_checksum = (
+                    compute_trajectory_checksum(inline_trajectory)
+                    if inline_trajectory
+                    else None
+                )
+                for step in inline_trajectory:
+                    action = step.get("action", {}) if isinstance(step, dict) else {}
+                    calls = action.get("tool_calls", []) if isinstance(action, dict) else []
+                    tool_call_count += len(calls) if isinstance(calls, list) else 0
+            except Exception as exc:
+                # A raw storage snapshot is not safely deliverable until its
+                # SAR projection and canonical integrity checksum both finish.
+                # Keep business completion independent while making the
+                # observability failure explicit and non-partial.
+                projection_error = exc
+                inline_trajectory = []
+                trajectory_checksum = None
+                tool_call_count = 0
+                logger.warning("Failed to project finalized trajectory snapshot: {}", exc)
             late_registrations, source_not_finalized = registry.diagnostics(self.task.id)
             all_scheduled_updates_acknowledged = (
                 drain.scheduled > 0 and drain.completed == drain.scheduled
             )
 
             reason_code = None
-            if snapshot_error is not None or drain.failed:
+            if snapshot_error is not None or projection_error is not None or drain.failed:
                 reason_code = TrajectoryReasonCode.TRAJECTORY_BUILD_FAILED
             elif drain.timed_out:
                 reason_code = TrajectoryReasonCode.TRAJECTORY_UPDATE_TIMEOUT
@@ -1240,7 +1318,10 @@ class TaskEventRunner(TaskRunner):
             elif not inline_trajectory:
                 reason_code = TrajectoryReasonCode.TRAJECTORY_STORAGE_EMPTY
 
-            if inline_trajectory and reason_code is None:
+            if projection_error is not None:
+                status = TrajectoryBuildStatus.FAILED
+                fidelity = TrajectoryFidelity.BUILD_FAILED
+            elif inline_trajectory and reason_code is None:
                 status = TrajectoryBuildStatus.COMPLETE
                 fidelity = TrajectoryFidelity.COMPLETE
             elif inline_trajectory:
@@ -1249,7 +1330,7 @@ class TaskEventRunner(TaskRunner):
             elif drain.timed_out or source_not_finalized or late_registrations:
                 status = TrajectoryBuildStatus.PARTIAL
                 fidelity = TrajectoryFidelity.PARTIAL
-            elif drain.failed or snapshot_error is not None:
+            elif drain.failed or snapshot_error is not None or projection_error is not None:
                 status = TrajectoryBuildStatus.FAILED
                 fidelity = TrajectoryFidelity.BUILD_FAILED
             else:
@@ -1257,12 +1338,6 @@ class TaskEventRunner(TaskRunner):
                 fidelity = TrajectoryFidelity.UNAVAILABLE
 
             llm_calls = self.context.context_info.get("llm_calls", [])
-            tool_call_count = 0
-            for step in inline_trajectory:
-                action = step.get("action", {}) if isinstance(step, dict) else {}
-                calls = action.get("tool_calls", []) if isinstance(action, dict) else []
-                tool_call_count += len(calls) if isinstance(calls, list) else 0
-
             build_result = TrajectoryBuildResult(
                 task_id=self.task.id,
                 session_id=self.context.session_id,
