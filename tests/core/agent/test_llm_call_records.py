@@ -12,6 +12,7 @@ from aworld.core.context.base import Context
 from aworld.core.context.context_state import ContextState
 from aworld.core.event.base import Constants, Message
 from aworld.core.task import Task
+from aworld.models.llm import AWORLD_CONTEXT_CALL_ID_KWARG
 from aworld.models.model_response import ModelResponse
 
 
@@ -282,6 +283,10 @@ async def test_async_policy_does_not_forward_prompt_cache_kwargs_to_unknown_prov
     ]
     assert "prompt_assembly_plan" not in captured["kwargs"]
     assert "provider_native_prompt_cache" not in captured["kwargs"]
+    assert captured["kwargs"][AWORLD_CONTEXT_CALL_ID_KWARG]
+    assert captured["kwargs"][AWORLD_CONTEXT_CALL_ID_KWARG] == (
+        context.get_llm_calls()[0]["call_id"]
+    )
 
 
 @pytest.mark.asyncio

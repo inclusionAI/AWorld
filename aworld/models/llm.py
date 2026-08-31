@@ -1,3 +1,4 @@
+import asyncio
 import re
 import time
 import uuid
@@ -28,8 +29,17 @@ from aworld.models.kling_avatar_provider import KlingAvatarProvider
 from aworld.models.volcano_seedance_provider import VolcanoSeedanceProvider
 from aworld.models.model_response import ModelResponse
 from aworld.core.context.base import Context
+from aworld.core.context.compiler import (
+    ProviderRequestFidelity,
+    RequestCaptureStage,
+    observe_legacy_provider_request,
+    request_trace_match,
+)
 from aworld.core.model_output_parser import ModelOutputParser, BaseContentParser
 from aworld.utils.common import sync_exec
+
+
+AWORLD_CONTEXT_CALL_ID_KWARG = "_aworld_context_call_id"
 
 # Predefined model names for common providers
 MODEL_NAMES = {
@@ -515,79 +525,168 @@ class LLMModel:
     def _resolve_request_model_name(self, **kwargs) -> Optional[str]:
         return kwargs.get("model_name") or getattr(self.provider, "model_name", None)
 
-    def _append_llm_call_record(
+    def _model_boundary_request(
         self,
         *,
-        context: Context,
-        request_id: str,
         messages: List[Dict[str, str]],
         temperature: float,
         max_tokens: int,
         stop: List[str],
-        response: ModelResponse,
+        tools: Any,
+    ) -> dict[str, Any]:
+        return {
+            "messages": self._safe_copy(messages),
+            "tools": self._safe_copy(tools),
+            "params": {
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+                "stop": self._safe_copy(stop),
+            },
+        }
+
+    def _begin_llm_call_record(
+        self,
+        *,
+        context: Context | None,
+        request_id: str,
+        agent_call_id: str | None,
+        messages: List[Dict[str, str]],
+        temperature: float,
+        max_tokens: int,
+        stop: List[str],
         started_at: float,
-        finished_at: float,
-        **kwargs,
+        tools: Any,
+        model_name: str | None,
     ) -> None:
-        if context is None or response is None:
+        if context is None:
             return
 
-        usage_normalized = self._safe_copy(getattr(response, "usage", None) or {})
-        usage_raw = self._safe_copy(getattr(response, "raw_usage", None) or usage_normalized)
-        agent_id = getattr(context.agent_info, "current_agent_id", None) if context.agent_info else None
+        agent_id = (
+            getattr(context.agent_info, "current_agent_id", None)
+            if context.agent_info
+            else None
+        )
+        request = self._model_boundary_request(
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            stop=stop,
+            tools=tools,
+        )
+        observe_payload: dict[str, Any]
+        observation = None
+        try:
+            observation = observe_legacy_provider_request(
+                messages=messages,
+                tools=tools,
+                params=request["params"],
+                provider_name=self.provider_name,
+                request_id=request_id,
+                capture_stage=RequestCaptureStage.MODEL_BOUNDARY,
+                fidelity=ProviderRequestFidelity.MODEL_BOUNDARY,
+                source_identity=f"llm-model-request:{request_id}",
+                task_id=context.task_id,
+                session_id=getattr(context, "session_id", None),
+                trace_id=getattr(context, "trace_id", None),
+            )
+            observe_payload = observation.to_redacted_dict()
+        except Exception:
+            observe_payload = {
+                "status": "error",
+                "error": {"code": "context_observe_failed"},
+            }
 
         llm_call = {
             "capture_stage": "provider_bound",
             "request_id": request_id,
-            "provider_request_id": getattr(response, "provider_request_id", None),
+            "provider_request_id": None,
             "task_id": context.task_id,
             "agent_id": agent_id,
-            "model": self._resolve_request_model_name(**kwargs),
+            "model": model_name or getattr(self.provider, "model_name", None),
             "provider_name": self.provider_name,
-            "status": "success",
+            "status": "in_progress",
             "started_at": started_at,
-            "finished_at": finished_at,
-            "request": {
-                "messages": self._safe_copy(messages),
-                "tools": self._safe_copy(kwargs.get("tools")),
-                "params": {
-                    "temperature": temperature,
-                    "max_tokens": max_tokens,
-                    "stop": self._safe_copy(stop),
-                },
-            },
-            "response": {
-                "id": getattr(response, "id", None),
-                "message": self._safe_copy(getattr(response, "message", None)),
-                "finish_reason": getattr(response, "finish_reason", None),
-            },
-            "usage_normalized": usage_normalized,
-            "usage_raw": usage_raw,
+            "request": request,
+            "context_observe": observe_payload,
         }
-        # Agent prompt assembly records a compiler-side snapshot before hooks and
-        # provider adapters run.  Merge the provider-bound truth into that same
-        # logical call instead of appending a second, ambiguous record.  Keeping
-        # both views makes request/trace fidelity measurable without making
-        # TaskResponse the source of truth.
         llm_calls = context.get_llm_calls()
-        for index in range(len(llm_calls) - 1, -1, -1):
-            compiled = llm_calls[index]
-            if not isinstance(compiled, dict):
-                continue
-            if compiled.get("request_id") or not compiled.get("call_id"):
-                continue
-            if compiled.get("agent_id") != agent_id:
-                continue
-
-            compiler_request = self._safe_copy(compiled.get("request") or {})
-            merged = dict(compiled)
-            merged.update(llm_call)
-            merged["compiler_request"] = compiler_request
-            merged["request_trace_match"] = compiler_request == llm_call["request"]
-            llm_calls[index] = merged
-            return
-
+        if agent_call_id:
+            for index, compiled in enumerate(llm_calls):
+                if not isinstance(compiled, dict) or compiled.get("call_id") != agent_call_id:
+                    continue
+                compiler_request = self._safe_copy(compiled.get("request") or {})
+                merged = dict(compiled)
+                merged.update(llm_call)
+                merged["compiler_request"] = compiler_request
+                if observation is not None:
+                    try:
+                        match = request_trace_match(
+                            observation.request_snapshot,
+                            compiler_request,
+                        )
+                        merged["request_trace_match"] = match.exact
+                        merged["request_trace_mismatch_paths"] = list(
+                            match.mismatch_paths
+                        )
+                        merged["request_trace_mismatch_count"] = match.mismatch_count
+                    except Exception:
+                        merged["request_trace_match"] = None
+                        merged["request_trace_mismatch_paths"] = []
+                        merged["request_trace_mismatch_count"] = 0
+                        merged["request_trace_match_error"] = {
+                            "code": "request_trace_match_failed"
+                        }
+                else:
+                    merged["request_trace_match"] = None
+                    merged["request_trace_mismatch_paths"] = []
+                    merged["request_trace_mismatch_count"] = 0
+                llm_calls[index] = merged
+                return
+            llm_call["call_id"] = agent_call_id
+            llm_call["correlation"] = {"status": "compiler_call_not_found"}
         context.append_llm_call(llm_call)
+
+    def _finish_llm_call_record(
+        self,
+        *,
+        context: Context | None,
+        request_id: str,
+        status: str,
+        finished_at: float,
+        response: ModelResponse | None = None,
+        error_code: str | None = None,
+    ) -> None:
+        if context is None:
+            return
+        llm_calls = context.get_llm_calls()
+        for index, record in enumerate(llm_calls):
+            if not isinstance(record, dict) or record.get("request_id") != request_id:
+                continue
+            updated = dict(record)
+            updated["status"] = status
+            updated["finished_at"] = finished_at
+            if error_code is not None:
+                updated["error"] = {"code": error_code}
+            else:
+                updated.pop("error", None)
+            if response is not None:
+                usage_normalized = self._safe_copy(
+                    getattr(response, "usage", None) or {}
+                )
+                updated["provider_request_id"] = getattr(
+                    response, "provider_request_id", None
+                )
+                updated["response"] = {
+                    "id": getattr(response, "id", None),
+                    "message": self._safe_copy(getattr(response, "message", None)),
+                    "finish_reason": getattr(response, "finish_reason", None),
+                }
+                updated["usage_normalized"] = usage_normalized
+                updated["usage_raw"] = self._safe_copy(
+                    getattr(response, "raw_usage", None) or usage_normalized
+                )
+            llm_calls[index] = updated
+            return
 
     def _apply_updated_output(self, response: ModelResponse, updated_output: Any, *, sync_mode: bool = False) -> ModelResponse:
         if updated_output is None:
@@ -642,6 +741,7 @@ class LLMModel:
             ModelResponse: Unified model response object.
         """
         # Call provider's acompletion method directly
+        agent_call_id = kwargs.pop(AWORLD_CONTEXT_CALL_ID_KWARG, None)
         start_ms = time.time()
         request_id = LLMModel._generate_llm_request_id()
         # `context` is optional in some call sites (e.g. background summary). We should
@@ -698,6 +798,18 @@ class LLMModel:
             except Exception as e:
                 logger.warning(f"BEFORE_LLM_CALL hook execution failed: {e}")
 
+        self._begin_llm_call_record(
+            context=context,
+            request_id=request_id,
+            agent_call_id=agent_call_id,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            stop=stop,
+            started_at=start_ms,
+            tools=kwargs.get("tools"),
+            model_name=kwargs.get("model_name") or kwargs.get("model"),
+        )
         try:
             resp = await self.provider.acompletion(
                 messages=messages,
@@ -755,28 +867,57 @@ class LLMModel:
                 except Exception as e:
                     logger.warning(f"AFTER_LLM_CALL hook execution failed: {e}")
 
-            self._append_llm_call_record(
+            self._finish_llm_call_record(
                 context=context,
                 request_id=request_id,
-                messages=messages,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                stop=stop,
+                status="success",
                 response=resp,
-                started_at=start_ms,
                 finished_at=time.time(),
-                **kwargs,
             )
             return resp
+        except asyncio.CancelledError:
+            self._finish_llm_call_record(
+                context=context,
+                request_id=request_id,
+                status="cancelled",
+                finished_at=time.time(),
+                error_code="provider_call_cancelled",
+            )
+            raise
         except AttributeError as e:
+            self._finish_llm_call_record(
+                context=context,
+                request_id=request_id,
+                status="failed",
+                finished_at=time.time(),
+                error_code="provider_call_failed",
+            )
             logger.error(f"Provider {self.provider_name} does not support acompletion: {e}")
             raise NotImplementedError(f"Provider {self.provider_name} does not support async completion") from e
         except (ConnectionError, TimeoutError) as e:
+            self._finish_llm_call_record(
+                context=context,
+                request_id=request_id,
+                status="failed",
+                finished_at=time.time(),
+                error_code="provider_call_failed",
+            )
             logger.error(f"Network error calling {self.provider_name}: {e}")
             raise ConnectionError(f"Failed to connect to {self.provider_name} API") from e
         except Exception as e:
+            self._finish_llm_call_record(
+                context=context,
+                request_id=request_id,
+                status="failed",
+                finished_at=time.time(),
+                error_code="provider_call_failed",
+            )
             logger.error(f"Unexpected error calling model {self.provider_name}: {traceback.format_exc()}")
-            logger.debug(f"Failed request details - messages: {messages}, kwargs: {kwargs}")
+            logger.debug(
+                "Failed request details redacted: "
+                f"message_count={len(messages) if isinstance(messages, list) else None}, "
+                f"kwarg_keys={sorted(str(key) for key in kwargs)}"
+            )
             raise RuntimeError(f"Model call failed: {str(e)}") from e
 
     def completion(self,
@@ -800,6 +941,7 @@ class LLMModel:
             ModelResponse: Unified model response object.
         """
         # Call provider's completion method directly
+        agent_call_id = kwargs.pop(AWORLD_CONTEXT_CALL_ID_KWARG, None)
         start_ms = time.time()
         request_id = LLMModel._generate_llm_request_id()
         context_task_id = context.task_id if context else None
@@ -858,17 +1000,44 @@ class LLMModel:
             except Exception as e:
                 logger.warning(f"BEFORE_LLM_CALL hook execution failed: {e}")
 
-        resp = self.provider.completion(
+        self._begin_llm_call_record(
+            context=context,
+            request_id=request_id,
+            agent_call_id=agent_call_id,
             messages=messages,
             temperature=temperature,
             max_tokens=max_tokens,
             stop=stop,
-            context=context,
-            **kwargs
+            started_at=start_ms,
+            tools=kwargs.get("tools"),
+            model_name=kwargs.get("model_name") or kwargs.get("model"),
         )
-        if self.llm_response_parser:
-            response_parse_args = kwargs.get("response_parse_args") or {}
-            resp = sync_exec(self.llm_response_parser.parse, resp, **response_parse_args)
+        try:
+            resp = self.provider.completion(
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                stop=stop,
+                context=context,
+                **kwargs
+            )
+            if self.llm_response_parser:
+                response_parse_args = kwargs.get("response_parse_args") or {}
+                resp = sync_exec(self.llm_response_parser.parse, resp, **response_parse_args)
+        except BaseException as exc:
+            cancelled = isinstance(
+                exc, (asyncio.CancelledError, GeneratorExit, KeyboardInterrupt)
+            )
+            self._finish_llm_call_record(
+                context=context,
+                request_id=request_id,
+                status="cancelled" if cancelled else "failed",
+                finished_at=time.time(),
+                error_code=(
+                    "provider_call_cancelled" if cancelled else "provider_call_failed"
+                ),
+            )
+            raise
 
         log_params["time_cost"] = round(time.time() - start_ms, 3)
         log_llm_record("OUTPUT", self.provider.model_name, resp, log_params, context_trace_id)
@@ -915,17 +1084,12 @@ class LLMModel:
             except Exception as e:
                 logger.warning(f"AFTER_LLM_CALL hook execution failed: {e}")
 
-        self._append_llm_call_record(
+        self._finish_llm_call_record(
             context=context,
             request_id=request_id,
-            messages=messages,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            stop=stop,
+            status="success",
             response=resp,
-            started_at=start_ms,
             finished_at=time.time(),
-            **kwargs,
         )
         return resp
 
@@ -948,6 +1112,7 @@ class LLMModel:
         Returns:
             Generator yielding ModelResponse chunks.
         """
+        agent_call_id = kwargs.pop(AWORLD_CONTEXT_CALL_ID_KWARG, None)
         start_ms = time.time()
         request_id = LLMModel._generate_llm_request_id()
         context_task_id = context.task_id if context else None
@@ -962,39 +1127,69 @@ class LLMModel:
 
         final_chunk = None
         record_chunk = None
-        for chunk in self.provider.stream_completion(
-            messages=messages,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            stop=stop,
-            context=context,
-            **kwargs
-        ):
-            if self.llm_response_parser:
-                response_parse_args = kwargs.get("response_parse_args") or {}
-                chunk = sync_exec(self.llm_response_parser.parse_chunk, chunk, **response_parse_args)
-            log_params["time_cost"] = round(time.time() - start_ms, 3)
-            log_llm_record("CHUNK", self.provider.model_name, chunk, log_params, context_trace_id)
-            start_ms = time.time()
-            final_chunk = chunk
-            if record_chunk is None or self._is_meaningful_stream_response(chunk):
-                record_chunk = self._merge_stream_response_record(record_chunk, chunk)
-            yield chunk
-
-        persisted_chunk = self._merge_stream_response_record(record_chunk, final_chunk)
-
-        self._append_llm_call_record(
+        terminal_status = "success"
+        terminal_error = None
+        self._begin_llm_call_record(
             context=context,
             request_id=request_id,
+            agent_call_id=agent_call_id,
             messages=messages,
             temperature=temperature,
             max_tokens=max_tokens,
             stop=stop,
-            response=persisted_chunk,
             started_at=stream_started_at,
-            finished_at=time.time(),
-            **kwargs,
+            tools=kwargs.get("tools"),
+            model_name=kwargs.get("model_name") or kwargs.get("model"),
         )
+        try:
+            for chunk in self.provider.stream_completion(
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                stop=stop,
+                context=context,
+                **kwargs
+            ):
+                if self.llm_response_parser:
+                    response_parse_args = kwargs.get("response_parse_args") or {}
+                    chunk = sync_exec(
+                        self.llm_response_parser.parse_chunk,
+                        chunk,
+                        **response_parse_args,
+                    )
+                log_params["time_cost"] = round(time.time() - start_ms, 3)
+                log_llm_record(
+                    "CHUNK", self.provider.model_name, chunk, log_params, context_trace_id
+                )
+                start_ms = time.time()
+                final_chunk = chunk
+                if record_chunk is None or self._is_meaningful_stream_response(chunk):
+                    record_chunk = self._merge_stream_response_record(record_chunk, chunk)
+                yield chunk
+        except GeneratorExit:
+            terminal_status = "cancelled"
+            terminal_error = "stream_closed_early"
+            raise
+        except BaseException as exc:
+            if isinstance(exc, (asyncio.CancelledError, KeyboardInterrupt)):
+                terminal_status = "cancelled"
+                terminal_error = "provider_stream_cancelled"
+            else:
+                terminal_status = "failed"
+                terminal_error = "provider_stream_failed"
+            raise
+        finally:
+            persisted_chunk = self._merge_stream_response_record(
+                record_chunk, final_chunk
+            )
+            self._finish_llm_call_record(
+                context=context,
+                request_id=request_id,
+                status=terminal_status,
+                response=persisted_chunk,
+                finished_at=time.time(),
+                error_code=terminal_error,
+            )
 
     async def astream_completion(self,
                                  messages: List[Dict[str, str]],
@@ -1019,6 +1214,7 @@ class LLMModel:
             AsyncGenerator yielding ModelResponse chunks.
         """
         # Call provider's astream_completion method directly
+        agent_call_id = kwargs.pop(AWORLD_CONTEXT_CALL_ID_KWARG, None)
         start_ms = time.time()
         request_id = LLMModel._generate_llm_request_id()
         context_task_id = context.task_id if context else None
@@ -1032,39 +1228,67 @@ class LLMModel:
         stream_started_at = start_ms
         final_chunk = None
         record_chunk = None
-        async for chunk in self.provider.astream_completion(
-                messages=messages,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                stop=stop,
-                context=context,
-                **kwargs
-        ):
-            if self.llm_response_parser:
-                response_parse_args = kwargs.get("response_parse_args") or {}
-                chunk = await self.llm_response_parser.parse_chunk(chunk, **response_parse_args)
-            log_params["time_cost"] = round(time.time() - start_ms, 3)
-            log_llm_record("CHUNK", self.provider.model_name, chunk, log_params, context_trace_id)
-            start_ms = time.time()
-            final_chunk = chunk
-            if record_chunk is None or self._is_meaningful_stream_response(chunk):
-                record_chunk = self._merge_stream_response_record(record_chunk, chunk)
-            yield chunk
-
-        persisted_chunk = self._merge_stream_response_record(record_chunk, final_chunk)
-
-        self._append_llm_call_record(
+        terminal_status = "success"
+        terminal_error = None
+        self._begin_llm_call_record(
             context=context,
             request_id=request_id,
+            agent_call_id=agent_call_id,
             messages=messages,
             temperature=temperature,
             max_tokens=max_tokens,
             stop=stop,
-            response=persisted_chunk,
             started_at=stream_started_at,
-            finished_at=time.time(),
-            **kwargs,
+            tools=kwargs.get("tools"),
+            model_name=kwargs.get("model_name") or kwargs.get("model"),
         )
+        try:
+            async for chunk in self.provider.astream_completion(
+                    messages=messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    stop=stop,
+                    context=context,
+                    **kwargs
+            ):
+                if self.llm_response_parser:
+                    response_parse_args = kwargs.get("response_parse_args") or {}
+                    chunk = await self.llm_response_parser.parse_chunk(
+                        chunk, **response_parse_args
+                    )
+                log_params["time_cost"] = round(time.time() - start_ms, 3)
+                log_llm_record(
+                    "CHUNK", self.provider.model_name, chunk, log_params, context_trace_id
+                )
+                start_ms = time.time()
+                final_chunk = chunk
+                if record_chunk is None or self._is_meaningful_stream_response(chunk):
+                    record_chunk = self._merge_stream_response_record(record_chunk, chunk)
+                yield chunk
+        except GeneratorExit:
+            terminal_status = "cancelled"
+            terminal_error = "stream_closed_early"
+            raise
+        except BaseException as exc:
+            if isinstance(exc, (asyncio.CancelledError, KeyboardInterrupt)):
+                terminal_status = "cancelled"
+                terminal_error = "provider_stream_cancelled"
+            else:
+                terminal_status = "failed"
+                terminal_error = "provider_stream_failed"
+            raise
+        finally:
+            persisted_chunk = self._merge_stream_response_record(
+                record_chunk, final_chunk
+            )
+            self._finish_llm_call_record(
+                context=context,
+                request_id=request_id,
+                status=terminal_status,
+                response=persisted_chunk,
+                finished_at=time.time(),
+                error_code=terminal_error,
+            )
 
     def speech_to_text(self,
                        audio_file: str,

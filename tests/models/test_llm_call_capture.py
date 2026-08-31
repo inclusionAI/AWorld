@@ -7,8 +7,9 @@ import pytest
 
 from aworld.config import ConfigDict
 from aworld.core.context.base import Context
+from aworld.core.context.compiler import canonical_json_hash
 from aworld.core.task import Task, TaskResponse
-from aworld.models.llm import LLMModel
+from aworld.models.llm import AWORLD_CONTEXT_CALL_ID_KWARG, LLMModel
 from aworld.models.model_response import ModelResponse
 from aworld.core.llm_provider import LLMProviderBase
 from aworld.runners.event_runner import TaskEventRunner
@@ -207,6 +208,19 @@ async def test_acompletion_appends_llm_call_with_final_messages_and_usage(monkey
     assert llm_call["provider_name"] == "custom"
     assert llm_call["model"] == "mock-model"
     assert llm_call["request"]["messages"] == final_messages
+    assert llm_call["context_observe"]["request"]["content_hash"] == (
+        canonical_json_hash(
+            {
+                "messages": final_messages,
+                "tools": None,
+                "params": {
+                    "temperature": 0.0,
+                    "max_tokens": None,
+                    "stop": None,
+                },
+            }
+        )
+    )
     assert llm_call["usage_normalized"] == {
         "prompt_tokens": 11,
         "completion_tokens": 7,
@@ -305,7 +319,11 @@ def test_provider_bound_capture_merges_agent_compiler_snapshot():
         }
     ]
 
-    llm_model.completion(provider_messages, context=context)
+    llm_model.completion(
+        provider_messages,
+        context=context,
+        **{AWORLD_CONTEXT_CALL_ID_KWARG: "compiler-call"},
+    )
 
     llm_calls = context.context_info["llm_calls"]
     assert len(llm_calls) == 1
