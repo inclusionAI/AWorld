@@ -4,9 +4,10 @@
 
 **Phase:** Milestone 3
 **Current milestone:** Universal Final Compiler and Rollout Modes
-**Current task:** Wire owner-side pre-fold observations before implementing enforce mode
-**Last action:** Milestone 2 passed independent review at `429fdf39` with P0=0/P1=0. Agent capture is fail-open,
-model-boundary fidelity is explicit, correlation is task-local, and full Agent/model suites pass 16/15 tests.
+**Current task:** Extend the sealed normal-model rollout boundary toward provider-owned immutable lowering
+**Last action:** Normal Agent/model rollout integration passed two independent re-reviews with P0=0/P1=0. Shadow uses
+one framework-owned pure compiler and the exact legacy provider objects; enforce remains blocked before provider lowering
+and persists a typed `provider_invoked=false` receipt.
 
 ## Completed Foundations
 
@@ -93,6 +94,27 @@ model-boundary fidelity is explicit, correlation is task-local, and full Agent/m
 - Chose: owner-supplied atomic groups, with any required member making the complete group required.
 - Rationale: the budget layer must never create an orphaned Tool call/result or split another owner-defined invariant.
 - Trade-offs accepted: owners must emit group evidence before enforce; the planner does not infer pairs from text.
+
+### Decision: Runtime candidate compiler boundary
+- Options considered: inject an arbitrary compiler Protocol; run third-party compilers with timeouts; use one sealed,
+  framework-owned pure function with frozen declarative input/policy.
+- Chose: a sealed pure function and exact frozen policy type; runtime APIs expose no callable, Context, provider, Tool,
+  workspace, artifact repository, or action executor to candidate compilation.
+- Rationale: a capability-free input does not constrain capabilities retained by an injected object, and a synchronous
+  arbitrary compiler can both perform hidden external actions and indefinitely block shadow's legacy request.
+- Trade-offs accepted: third-party compiler extensions require a future isolated serialized boundary; the current runtime
+  policy supports only framework-reviewed deterministic compilation.
+
+### Decision: Enforce readiness at the current model boundary
+- Options considered: thaw and send a model-boundary candidate; label a compiler-ready snapshot enforceable; block until a
+  provider owns immutable lowering and execution of the same snapshot.
+- Chose: fail closed before provider invocation and persist one `blocked_before_provider` llm-call attempt with
+  `provider_invoked=false`, candidate/legacy hashes, structural fidelity, projection, direction, compiler identity/version,
+  overhead, and a typed reason.
+- Rationale: the current projection omits provider-specific kwargs/serialization and cannot prove that the candidate is the
+  exact provider-bound request. Persisting the block distinguishes execution policy failure from missing trajectory capture.
+- Trade-offs accepted: normal-model enforce is intentionally unavailable until provider lowering supplies immutable
+  provider-prepared/serialized evidence; shadow remains the supported runtime rollout mode.
 
 ## Architecture State
 
@@ -259,5 +281,17 @@ model-boundary fidelity is explicit, correlation is task-local, and full Agent/m
   strings. Runtime integration and counted fake provider/Tool/offload tests remain required before shadow/enforce rollout.
   The complete dependency-light compiler suite is green at 58 tests. Independent cache and rollout/privacy re-reviews both
   approved P0/P1=0; the cache evidence review additionally verified that repr/asdict retain only hashes and lengths.
+- Wired rollout selection into async, sync, sync-stream, and async-stream model paths. Off preserves the pre-existing llm-call
+  record shape; observe never compiles; shadow compiles once with a sealed framework pure function, sends the exact original
+  legacy messages/Tools once, and records only redacted structural evidence. Candidate compilation consumes immutable
+  model-boundary snapshots plus owner observation sidecars and cannot receive runtime action capabilities.
+- Removed the arbitrary in-process compiler Protocol after adversarial tests proved it could retain provider/Tool/offload
+  capabilities and block the async event loop. Candidate policy and mode are exact-typed, private, and exposed read-only;
+  compiler identity/version are bounded identifiers and raw diagnostics/errors never enter rollout metadata.
+- Enforce now records a pre-provider blocked attempt instead of disappearing before llm-call capture. The receipt explicitly
+  says `provider_invoked=false`, retains candidate/legacy logical hashes and MODEL_BOUNDARY fidelity without claiming
+  provider bytes, and round-trips through the real JSONL v2 sink/reader. Provider-lowered immutable execution remains the
+  next gate. Focused compiler/model/trajectory regression is 140 passed; Agent/hook regression is 19 passed. Two independent
+  re-reviews approved P0/P1=0 after reproducing the original ambient-capability and missing-evidence counterexamples.
 - Authority, trust, lifetime, stability, source URI, task epoch, and exact token counts remain UNKNOWN unless their owner can
   prove them; role/content heuristics are not acceptable.

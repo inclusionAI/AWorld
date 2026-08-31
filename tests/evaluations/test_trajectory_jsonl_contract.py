@@ -23,6 +23,12 @@ from aworld.core.trajectory import (
     TrajectorySourceKind,
     compute_trajectory_checksum,
 )
+from aworld.core.context.base import Context
+from aworld.core.context.compiler import (
+    CandidateCompilePolicy,
+    CandidateRequestNotEnforceable,
+)
+from aworld.core.llm_provider import LLMProviderBase
 from aworld.dataset.trajectory_io import (
     SCHEMA_VERSION,
     TrajectoryChecksumMismatchError,
@@ -40,9 +46,27 @@ from aworld.evaluations.sources import (
     extract_aworld_trajectory_record,
     iter_aworld_trajectory_records,
 )
+from aworld.models.llm import LLMModel
+from aworld.models.model_response import ModelResponse
 
 
 CREATED_AT = datetime(2026, 8, 31, 3, 0, tzinfo=timezone.utc)
+
+
+class _NeverInvokedProvider(LLMProviderBase):
+    def __init__(self) -> None:
+        super().__init__(model_name="blocked-provider")
+        self.calls = 0
+
+    def _init_provider(self):
+        return None
+
+    def postprocess_response(self, response, **kwargs):
+        return response
+
+    def completion(self, messages, **kwargs):
+        self.calls += 1
+        return ModelResponse(content="unexpected")
 
 
 def _step(answer: str = "answer") -> dict:
@@ -104,7 +128,20 @@ def _envelope(
         build_result=_build_result(trajectory, task_id=task_id),
         revision=revision,
         trajectory=trajectory,
-        llm_calls=[{"request_id": "request-1", "request": {"messages": []}}],
+        llm_calls=[{
+            "request_id": "request-1",
+            "request": {"messages": []},
+            "context_rollout": {
+                "mode": "shadow",
+                "compiler_identity": "aworld.context.compiler.framework",
+                "compiler_version": "v1",
+                "comparison_projection": "aworld.standard.model_boundary.v1",
+                "candidate_snapshot": {"content_hash": "sha256:candidate"},
+                "legacy_snapshot": {"content_hash": "sha256:legacy"},
+                "external_actions_authorized": False,
+                "external_action_count_observed": None,
+            },
+        }],
     )
 
 
@@ -201,6 +238,51 @@ def test_v2_round_trip_uses_one_json_object_with_direct_structures_and_safe_sink
     assert record.task_id == "task-1"
     assert record.trajectory == [_step()]
     assert record.build_result["status"] == "complete"
+    rollout = record.llm_calls[0]["context_rollout"]
+    assert rollout["compiler_identity"] == "aworld.context.compiler.framework"
+    assert rollout["candidate_snapshot"]["content_hash"] == "sha256:candidate"
+    assert rollout["external_action_count_observed"] is None
+
+
+def test_real_enforce_blocked_record_round_trips_through_jsonl(tmp_path: Path) -> None:
+    provider = _NeverInvokedProvider()
+    model = LLMModel(
+        custom_provider=provider,
+        context_compiler={"mode": "enforce", "compiler_version": "v1"},
+        context_candidate_policy=CandidateCompilePolicy(enforce_ready=True),
+    )
+    context = Context(task_id="blocked-runtime-task")
+
+    with pytest.raises(CandidateRequestNotEnforceable):
+        model.completion(
+            [{"role": "user", "content": "runtime-input"}],
+            context=context,
+        )
+
+    runtime_record = context.get_llm_calls()[0]
+    assert provider.calls == 0
+    assert runtime_record["provider_invoked"] is False
+    path = tmp_path / "blocked-runtime.jsonl"
+    TrajectoryJsonlSink(
+        TrajectorySinkConfig(format=TrajectoryFormat.JSONL_V2, path=path)
+    ).append(
+        TrajectoryEnvelope(
+            build_result=_build_result(
+                [_step("blocked")], task_id="blocked-runtime-task"
+            ),
+            revision=1,
+            trajectory=[_step("blocked")],
+            llm_calls=[runtime_record],
+        )
+    )
+
+    persisted = read_trajectory_records(path).records[0].llm_calls[0]
+    assert persisted["status"] == "blocked_before_provider"
+    assert persisted["provider_invoked"] is False
+    rollout = persisted["context_rollout"]
+    assert rollout["error"] == {"code": "provider_lowering_required"}
+    assert rollout["candidate_snapshot"]["content_hash"]
+    assert "runtime-input" not in repr(rollout)
 
 
 def test_tc_trajectory_io_023_real_legacy_formatter_dual_retry_round_trip(
