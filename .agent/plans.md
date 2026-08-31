@@ -68,7 +68,7 @@ Tool output policy, cache identity, lifecycle, delegation, and evaluation consum
 - Amni neuron pre-fold output owner adapter. **Status: complete**
 - Deterministic occurrence ordering and redacted decision trace. **Status: complete**
 - Pure observe compiler freezes and compares finalized legacy requests. **Status: complete**
-- Model-boundary observe integration and request-id correlation without request mutation. **Status: pending**
+- Model-boundary observe integration and request-id correlation without request mutation. **Status: complete; review pending**
 - Acceptance: current requests remain unchanged and request-trace match is measurable for all supported paths.
 
 ### Milestone 3: Universal Final Compiler and Rollout Modes

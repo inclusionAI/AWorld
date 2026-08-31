@@ -4,10 +4,11 @@
 
 **Phase:** Milestone 2
 **Current milestone:** Context Models, Adapters, and Observe Mode
-**Current task:** Model-boundary observe integration and deterministic request-id correlation
-**Last action:** Fifth independent review approved Milestone 1 with P0=0/P1=0. Repeated-cancellation stress through N=10
-preserves one append/record, persisted receipt, one terminal response, and the original RuntimeError/CancelledError. One
-non-blocking P2 remains: thread-backed file export has no bounded I/O acknowledgement contract.
+**Current task:** Milestone 2 integration and architecture review
+**Last action:** Model-boundary observe is integrated with exact Agent call-id correlation and pre-provider request IDs.
+Sync/async/stream paths preserve one request snapshot through success, failure, cancellation, and early stream close; the
+internal correlation kwarg is removed before provider calls. Main-tree focused regression is 31 passed; independent review
+is in progress.
 
 ## Completed Foundations
 
@@ -176,7 +177,13 @@ non-blocking P2 remains: thread-backed file export has no bounded I/O acknowledg
   contract provides the required pre-fold sidecar shape, but runtime emission remains deliberately unconnected in observe
   adapter scope and must be wired at the owner assembly boundary before enforce mode.
 - Memory adapters must follow the exact cleaned replay list, including Tool pair repair and duplicate occurrences.
-- Provider-bound capture currently happens after success and correlates by the latest unmatched call; observe mode needs a
-  request id before send so failures and concurrent calls bind deterministically.
+- Removed the former post-success/latest-unmatched Agent correlation heuristic; request identity is now reserved before the
+  provider call so failures and concurrent calls bind deterministically.
+- Model-boundary observe now begins the authoritative `llm_calls` record after compatibility transforms and before provider
+  invocation, then finishes that exact request-id record on success/failure/cancellation. Agent calls pass a private exact
+  call-id that is popped before provider invocation; direct model calls append independently. The nested observe snapshot
+  declares only `model_boundary` fidelity, stores redacted trace/hash evidence, and leaves raw extra kwargs/secrets out.
+- Provider failure, caller cancellation, sync/async stream failure, and early stream close retain one terminal snapshot;
+  same-agent concurrent requests do not cross-correlate. Main-tree model-boundary/capture/Agent/hook regression: 31 passed.
 - Authority, trust, lifetime, stability, source URI, task epoch, and exact token counts remain UNKNOWN unless their owner can
   prove them; role/content heuristics are not acceptable.
