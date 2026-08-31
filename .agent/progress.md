@@ -5,7 +5,7 @@
 **Phase:** Milestone 1
 **Current milestone:** Trajectory Control Plane Foundation
 **Current task:** Tasks 1.2 and 1.3 implementation in isolated worktrees
-**Last action:** Merged and re-verified Task 1.1; dispatched finalize barrier and JSONL v2 codec/reader in parallel.
+**Last action:** Merged and re-verified Task 1.1; Tasks 1.2/1.3 are in test, and the Milestone 2 call-chain audit is complete.
 
 ## Completed Foundations
 
@@ -62,6 +62,22 @@
   line integrity. Dual mode preserves existing consumers.
 - Trade-offs accepted: dual mode duplicates redacted trajectory bytes during migration and requires explicit retention.
 
+### Decision: Context compiler dependency and truth boundary
+- Options considered: infer provenance from final role/content; let core import Amni/CLI owners; use owner-side adapters into a
+  dependency-light core model.
+- Chose: stdlib-only models/freeze/trace under `aworld.core.context.compiler`; Amni, memory, Skill, Tool, Steering, CLI, and
+  provider owners adapt downward and retain UNKNOWN when provenance cannot be proved.
+- Rationale: final folded system messages lose neuron ordering/source semantics, and upward imports would introduce cycles.
+- Trade-offs accepted: some legacy sources remain unknown until owner boundaries add provenance sidecars.
+
+### Decision: Observe-mode fidelity
+- Options considered: call providers from a reconstructed canonical request; inspect only the model-boundary request; freeze
+  a copy of the already-prepared provider request while sending the untouched original.
+- Chose: prepare once, snapshot a deep copy immediately before SDK/HTTP send, and send the original object unchanged.
+- Rationale: observe must not change types, ordering, defaults, cache hints, hooks, or external call count.
+- Trade-offs accepted: SDK providers report `provider_prepared` structural fidelity; only controlled HTTP paths may claim
+  serialized-byte fidelity.
+
 ## Architecture State
 
 ### Components
@@ -82,3 +98,12 @@
 - Update/storage exceptions are swallowed, so coroutine completion does not prove persistence acknowledgement.
 - Existing evaluation reader fails on real Loguru headers when iterating all records and selects the first repeated task.
 - Runtime/ATIF projection receipts live outside this repository and must not be claimed complete in Milestone 1.
+
+### Milestone 2 Readiness
+- Existing PromptAssemblyProvider sees Amni neuron sections only after they were folded into one system message; provenance
+  sidecars must be emitted before folding rather than inferred later.
+- Memory adapters must follow the exact cleaned replay list, including Tool pair repair and duplicate occurrences.
+- Provider-bound capture currently happens after success and correlates by the latest unmatched call; observe mode needs a
+  request id before send so failures and concurrent calls bind deterministically.
+- Authority, trust, lifetime, stability, source URI, task epoch, and exact token counts remain UNKNOWN unless their owner can
+  prove them; role/content heuristics are not acceptable.
