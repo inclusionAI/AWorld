@@ -33,8 +33,14 @@ from aworld.mcp_client.utils import mcp_tool_desc_transform, process_mcp_tools, 
 from aworld.memory.main import MemoryFactory
 from aworld.memory.tool_call_compaction import collect_replay_message_metrics
 from aworld.memory.models import MemoryItem, MemoryAIMessage, MemoryMessage, MemoryToolMessage
-from aworld.models.llm import get_llm_model, acall_llm_model, acall_llm_model_stream, apply_chat_template, \
-    ModelResponseParser
+from aworld.models.llm import (
+    AWORLD_CONTEXT_CALL_ID_KWARG,
+    ModelResponseParser,
+    acall_llm_model,
+    acall_llm_model_stream,
+    apply_chat_template,
+    get_llm_model,
+)
 from aworld.models.model_response import ModelResponse
 from aworld.models.prompt_cache import (
     resolve_provider_prompt_cache_key,
@@ -1232,6 +1238,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 kwargs["provider_native_prompt_cache"] = bool(
                     prompt_assembly_observability.get("provider_native_cache")
                 )
+            kwargs[AWORLD_CONTEXT_CALL_ID_KWARG] = llm_call_id
             llm_response = await self.invoke_model(messages, message=message, **kwargs)
         except asyncio.CancelledError:
             logger.info(f"{self.id()} LLM flow interrupted during invoke_model")
