@@ -167,8 +167,12 @@ non-blocking P2 remains: thread-backed file export has no bounded I/O acknowledg
 - Added a final Tool Catalog owner adapter that observes the exact schema occurrences after owner filtering/lowering. It
   reuses the generic immutable occurrence adapter, preserves full nested schemas/order/duplicates, and never minimizes,
   authorizes, deduplicates, or infers policy from names/descriptions; related adapter regression is 12 passed.
-- Existing PromptAssemblyProvider sees Amni neuron sections only after they were folded into one system message; provenance
-  sidecars must be emitted before folding rather than inferred later.
+- Added an Amni neuron pre-fold sidecar contract and owner adapter. It observes exact executed neuron outputs without
+  executing neurons or reconstructing them from the folded system message, preserves identity/order/duplicates, and only
+  maps explicitly supplied owner evidence; new contract tests are five passed and combined compiler/assembly is 46 passed.
+- Existing PromptAssemblyProvider still sees Amni neuron sections only after folding; the new `NeuronOutputOccurrence`
+  contract provides the required pre-fold sidecar shape, but runtime emission remains deliberately unconnected in observe
+  adapter scope and must be wired at the owner assembly boundary before enforce mode.
 - Memory adapters must follow the exact cleaned replay list, including Tool pair repair and duplicate occurrences.
 - Provider-bound capture currently happens after success and correlates by the latest unmatched call; observe mode needs a
   request id before send so failures and concurrent calls bind deterministically.
