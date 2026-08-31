@@ -16686,6 +16686,7 @@ async def test_candidate_capability_operational_preflight_blocks_paired_replay(
     capability = SimpleNamespace(
         capability_id="demo-replay",
         fingerprint="sha256:frozen",
+        services=(SimpleNamespace(transport="skill_runtime"),),
     )
     monkeypatch.setattr(
         runner,
@@ -16730,6 +16731,38 @@ async def test_candidate_capability_operational_preflight_blocks_paired_replay(
     assert gate.details["failure_class"] == "candidate"
     assert gate.details["code"] == "protocol_trace_schema_field_validation_failed"
     assert gate.details["failure_event"]["owner"] == "candidate"
+
+    async def fail_startup_preflight(*args, **kwargs):
+        raise runner_module.ReplayServiceReadinessTimeout(
+            "connection refused",
+            phase="startup",
+            timeout_seconds=15.0,
+            service_id="service-0",
+            transport="skill_runtime",
+            last_error_type="ConnectionRefusedError",
+            last_error_errno=61,
+            process_returncode=None,
+        )
+
+    monkeypatch.setattr(
+        runner_module,
+        "preflight_frozen_replay_capability",
+        fail_startup_preflight,
+    )
+    startup_gates = await runner._validate_candidate_capabilities(
+        run_id="run-operational-preflight-startup-timeout",
+        target=target,
+        dataset=dataset,
+        candidate=candidate,
+        requirements=(requirement,),
+    )
+
+    startup_gate = startup_gates[0]
+    assert startup_gate.details["failure_class"] == "infrastructure"
+    assert startup_gate.details["repairable"] is True
+    assert startup_gate.details["code"] == "replay_service_startup_timeout"
+    assert startup_gate.details["failure_event"]["owner"] == "infrastructure"
+    assert startup_gate.details["failure_event"]["scope"] == "shared_run"
 
 
 @pytest.mark.asyncio

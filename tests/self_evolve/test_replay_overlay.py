@@ -19,6 +19,8 @@ from typing import Any
 
 import pytest
 
+import aworld.self_evolve.replay as replay_module
+
 from aworld.core.tool.replay_policy import DynamicEndpointBinding
 from aworld.self_evolve.concurrency import SelfEvolveConcurrencyPolicy
 from aworld.self_evolve.datasets import (
@@ -4653,6 +4655,115 @@ def test_replay_service_startup_timeout_is_typed_as_retryable_infrastructure(
     assert event.stage is FailureStage.CAPABILITY_PREFLIGHT
     assert event.scope is FailureScope.SHARED_RUN
     assert event.repairable is True
+
+
+def test_replay_service_launch_diagnostic_is_bounded_and_payload_free(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "diagnostics" / "launch.json"
+    service = _frozen_skill_runtime_capability(tmp_path).services[0]
+
+    replay_module._write_replay_service_launch_diagnostic(
+        path,
+        service=service,
+        command=("python", "runtime.py", "--port", "9876"),
+        environment_keys=("AWORLD_REPLAY_PORT", "SECRET_VALUE"),
+        host="127.0.0.1",
+        port=9876,
+        status="started",
+        started_at=123.0,
+        process_id=42,
+    )
+
+    diagnostic = json.loads(path.read_text(encoding="utf-8"))
+    assert diagnostic["status"] == "started"
+    assert diagnostic["process_id"] == 42
+    assert diagnostic["command_fingerprint"].startswith("sha256:")
+    assert diagnostic["environment_keys"] == [
+        "AWORLD_REPLAY_PORT",
+        "SECRET_VALUE",
+    ]
+    assert "environment" not in diagnostic
+
+
+@pytest.mark.asyncio
+async def test_capability_preflight_retries_only_startup_timeout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    capability = _frozen_skill_runtime_capability(tmp_path)
+    attempt_dirs: list[Path] = []
+    stop_count = 0
+
+    class Session:
+        endpoints = {"service-0": "http://127.0.0.1:9876"}
+
+        async def stop(self) -> None:
+            nonlocal stop_count
+            stop_count += 1
+
+    async def start(capability_arg, *, artifact_dir, **kwargs):
+        del capability_arg, kwargs
+        attempt_dirs.append(Path(artifact_dir))
+        if len(attempt_dirs) == 1:
+            raise ReplayServiceReadinessTimeout(
+                "connection refused",
+                phase="startup",
+                timeout_seconds=5.0,
+                service_id="service-0",
+                transport="skill_runtime",
+                last_error_type="ConnectionRefusedError",
+                last_error_errno=61,
+                process_returncode=None,
+            )
+        return Session()
+
+    monkeypatch.setattr(replay_module, "_start_replay_services", start)
+
+    endpoints = await replay_module.preflight_frozen_replay_capability(
+        capability,
+        artifact_dir=tmp_path / "preflight",
+    )
+
+    assert endpoints == {"service-0": "http://127.0.0.1:9876"}
+    assert attempt_dirs == [
+        tmp_path / "preflight",
+        tmp_path / "preflight" / "startup_retry_2",
+    ]
+    assert stop_count == 1
+
+
+@pytest.mark.asyncio
+async def test_capability_preflight_does_not_retry_protocol_timeout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    attempt_count = 0
+
+    async def start(*args, **kwargs):
+        nonlocal attempt_count
+        del args, kwargs
+        attempt_count += 1
+        raise ReplayServiceReadinessTimeout(
+            "protocol response missing",
+            phase="protocol_probe",
+            timeout_seconds=5.0,
+            service_id="service-0",
+            transport="skill_runtime",
+            last_error_type="TimeoutError",
+            last_error_errno=None,
+            process_returncode=None,
+        )
+
+    monkeypatch.setattr(replay_module, "_start_replay_services", start)
+
+    with pytest.raises(ReplayServiceReadinessTimeout):
+        await replay_module.preflight_frozen_replay_capability(
+            _frozen_skill_runtime_capability(tmp_path),
+            artifact_dir=tmp_path / "preflight",
+        )
+
+    assert attempt_count == 1
 
 
 def test_evidence_finalization_failure_preserves_typed_framework_stage() -> None:

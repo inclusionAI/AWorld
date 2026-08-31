@@ -195,6 +195,7 @@ def test_rejects_multiple_json_objects_in_text() -> None:
         )
 
     assert error.value.code == "multiple_json_objects"
+    assert error.value.repairable is True
 
 
 def test_repairs_one_truncated_candidate_json_before_semantic_validation() -> None:

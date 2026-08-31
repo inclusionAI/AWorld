@@ -314,6 +314,15 @@ def _perform_bound_artifact_cleanup(
                 retention.prune_unselected_candidate_materializations
             ),
         ):
+            # Keep the report-linked repair-conformance evidence for the
+            # bounded latest-run window. Capability-preflight diagnostics are
+            # durable already; ordinary workspaces and candidate materialized
+            # copies remain subject to the normal compaction policy.
+            if (
+                run_dir.name in recent_run_ids
+                and path == run_dir / "repair_conformance"
+            ):
+                continue
             if _is_age_gated_raw_path(path, run_dir=run_dir, root=root) and _path_mtime(path) > cutoff:
                 continue
             if not path.exists() and not path.is_symlink():
