@@ -2,13 +2,14 @@ from typing import Dict, List, Any, Optional
 
 from aworld.sandbox.base import BaseSandbox
 from aworld.sandbox.models import SandboxEnvType
-from aworld.sandbox.implementations import Sandbox
+from aworld.sandbox.implementations import DockerSandbox, Sandbox
 from aworld.sandbox.builder import SandboxBuilder
 
 DefaultSandbox = Sandbox
 
 SANDBOX_CLASS_MAP = {
     SandboxEnvType.LOCAL: Sandbox,
+    SandboxEnvType.DOCKER: DockerSandbox,
 }
 
 
@@ -25,11 +26,13 @@ def create_sandbox(
     reuse: bool = True,
     **kwargs,
 ):
-    """Create a sandbox instance. Only LOCAL is supported."""
+    """Create a sandbox instance for the requested environment type."""
     env_type = env_type or SandboxEnvType.LOCAL
-    if env_type != SandboxEnvType.LOCAL:
-        raise ValueError(f"Invalid environment type: {env_type}. Only LOCAL is supported.")
-    return Sandbox(
+    sandbox_class = SANDBOX_CLASS_MAP.get(env_type)
+    if sandbox_class is None:
+        supported = ", ".join(item.name for item in SANDBOX_CLASS_MAP)
+        raise ValueError(f"Invalid environment type: {env_type}. Supported: {supported}.")
+    return sandbox_class(
         sandbox_id=sandbox_id,
         metadata=metadata,
         timeout=timeout,
@@ -45,6 +48,7 @@ def create_sandbox(
 
 __all__ = [
     "Sandbox",
+    "DockerSandbox",
     "BaseSandbox",
     "DefaultSandbox",
     "SandboxEnvType",

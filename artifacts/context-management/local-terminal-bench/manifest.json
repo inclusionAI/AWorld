@@ -1,0 +1,30 @@
+{
+  "dataset": "terminal-bench-2-1-executable-v2",
+  "scope": "two selected tasks",
+  "sandbox": {
+    "implementation": "aworld.sandbox.DockerSandbox",
+    "container_lifecycle": "external",
+    "transport": "host-side stdio MCP bridge to docker exec"
+  },
+  "runs": [
+    {
+      "task": "prove-plus-comm",
+      "task_response_success": true,
+      "reward": 1,
+      "trajectory_items": 9,
+      "raw_trajectory_bytes": 94171,
+      "trajectory_log_lines": 2,
+      "trajectory_log_bytes": 82771
+    },
+    {
+      "task": "cancel-async-tasks",
+      "task_response_success": true,
+      "reward": 0,
+      "trajectory_items": 13,
+      "raw_trajectory_bytes": 337214,
+      "trajectory_log_lines": 2,
+      "trajectory_log_bytes": 319959,
+      "failed_assertion": "test_tasks_cancel_above_max_concurrent"
+    }
+  ]
+}

@@ -23,6 +23,11 @@ ENV_TERMINAL_TOKEN = "AWORLD_TERMINAL_TOKEN"
 ENV_WORKSPACE = "AWORLD_WORKSPACE"
 ENV_MAC_UI_AUTOMATION_ENABLED = "AWORLD_ENABLE_MAC_UI_AUTOMATION"
 ENV_MAC_UI_AUTOMATION_BACKEND = "AWORLD_MAC_UI_AUTOMATION_BACKEND"
+ENV_DOCKER_CONTAINER = "AWORLD_DOCKER_CONTAINER"
+ENV_DOCKER_BINARY = "AWORLD_DOCKER_BINARY"
+ENV_DOCKER_WORKDIR = "AWORLD_DOCKER_WORKDIR"
+ENV_DOCKER_ALLOWED_DIRECTORIES = "AWORLD_DOCKER_ALLOWED_DIRECTORIES"
+ENV_DOCKER_SHELL = "AWORLD_DOCKER_SHELL"
 
 # Server type and timeouts
 STREAMABLE_HTTP_TYPE = "streamable-http"
@@ -52,6 +57,11 @@ def get_terminal_script_path() -> str:
 def get_mac_ui_automation_script_path() -> str:
     """Absolute path to the macOS UI automation server main.py."""
     return str(_tool_servers_root() / "platforms" / "mac" / "ui_automation" / "src" / "main.py")
+
+
+def get_docker_script_path() -> str:
+    """Absolute path to the host-side Docker MCP bridge."""
+    return str(_tool_servers_root() / "docker" / "src" / "server.py")
 
 
 def get_server_env() -> Dict[str, str]:

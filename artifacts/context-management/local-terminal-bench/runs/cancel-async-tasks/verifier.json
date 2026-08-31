@@ -1,0 +1,42 @@
+{
+  "task": "cancel-async-tasks",
+  "reward": 0,
+  "checks": {
+    "test_run_py_file_exists": {
+      "passed": true,
+      "return_code": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    "test_tasks_run_concurrently": {
+      "passed": true,
+      "return_code": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    "test_tasks_obey_max_concurrent": {
+      "passed": true,
+      "return_code": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    "test_tasks_cancel_below_max_concurrent": {
+      "passed": true,
+      "return_code": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    "test_tasks_cancel_at_max_concurrent": {
+      "passed": true,
+      "return_code": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    "test_tasks_cancel_above_max_concurrent": {
+      "passed": false,
+      "return_code": 1,
+      "stdout": "",
+      "stderr": "Traceback (most recent call last):\n  File \"<string>\", line 1, in <module>\n    import test_outputs; test_outputs.test_tasks_cancel_above_max_concurrent()\n                         ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^\n  File \"/app/test_outputs.py\", line 172, in test_tasks_cancel_above_max_concurrent\n    assert stdout.count(\"Cleaned up.\") == 2\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError\n"
+    }
+  }
+}

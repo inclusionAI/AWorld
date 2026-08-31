@@ -26,6 +26,8 @@ Skills、Tools、Steering、Delegation 七类上下文统一建模、解析、�
 - 只加载当前任务需要的指令、Skill 内容和 Tool schema，支持渐进式披露。
 - 对所有 Agent 路径强制执行 token budget、单项上限、压缩和可逆 offload。
 - 保持稳定前缀，提升 prompt cache 命中率，避免无关动态内容破坏缓存。
+- 显式管理 task/session 的 reset、checkpoint、rewind 和 resume，避免上一任务的动态上下文长期驻留。
+- 以 cache-adjusted cost per successful task 而非原始 token 数作为主要效率目标。
 - 将 steering 和可修改 prompt 的 hook 收敛到最终编译之前。
 - 为 subagent 提供显式的上下文、工具、预算、输出和合并契约。
 - 记录每个上下文项为何被包含、排除、压缩或 offload，并能与真实 provider 请求逐项核对。
@@ -41,6 +43,12 @@ Skills、Tools、Steering、Delegation 七类上下文统一建模、解析、�
 - 让 LLM 自行决定安全边界、工具授权或必需上下文是否可以丢弃。
 - 保证所有历史上下文永久保留在模型窗口中；完整内容可以被压缩或 offload 到 artifact。
 - 在没有线上证据前一次性删除旧的 prompt assembly 路径。
+
+## Related Design Inputs
+
+- [Maximizing the value of your Claude Code sessions](https://claude.com/blog/maximizing-the-value-of-your-claude-code-sessions)
+  提供了 prompt cache、task reset、compact/rewind、按需加载、Tool 输出降噪和 subagent 隔离的会话经济性
+  参考。本设计吸收其机制，但不把 Claude Code 命令名、固定 cache TTL 或厂商价格比例作为规范。
 
 ## Problem Statement
 
@@ -58,6 +66,8 @@ AWorld 已经具备较丰富的上下文原语，但它们分布在多个独立�
 - `aworld/skills/` 与 CLI skill registry 提供的 Skill descriptor/content 分离和激活入口。
 - `aworld/memory/tool_result_compaction.py` 等现有 tool result 压缩能力。
 - `aworld/models/llm.py` 中真实 LLM 请求、hook 和 `llm_calls` 捕获边界。
+- `TrajectoryDataset`、`trajectory.log`、`TaskResponse.trajectory` 和 Runtime ATIF exporter 已形成的
+  轨迹生成与交付数据面。
 - CLI steering、Tool hook/permission 和 Subagent Manager 已有的运行时控制能力。
 - prompt cache lowering、trajectory、memory 和 hook 的现有测试基础。
 
@@ -85,6 +95,29 @@ AWorld 已经具备较丰富的上下文原语，但它们分布在多个独立�
     输出 schema、停止条件和 merge policy。
 12. 现有日志无法完整回答“某项为何进入/未进入上下文”，也不能持续证明 trace 与真实 provider
     request 完全一致。
+13. task、session 和 turn 虽然已有作用域概念，但缺少 reset、checkpoint/compact、rewind/fork、
+    resume 的统一状态迁移语义，旧任务内容可能在后续 turn 中继续消耗上下文。
+14. cache stability 尚未完整建模 provider、model、effort、execution mode、序列化版本和 TTL 等
+    cache identity；中途切换这些参数时无法解释实际 cache miss。
+15. 按调用动态最小化 Skill 和 Tool Catalog 可能改变请求最前部的 schema，节省少量 token 的同时
+    击穿后续全部历史的 prompt cache，当前缺少显式收益/代价比较。
+16. 大 Tool Result 主要在执行完成后压缩，缺少执行前的 quiet/structured/artifact-stream 输出契约；
+    中等规模但高噪声的输出仍可能先被序列化、tokenize 并进入会话。
+17. 效率指标偏重输入 token，缺少 output/reasoning token、上下文驻留 turn 数、cache-adjusted cost
+    和 cost per successful task，可能把“prompt 更短但实际更贵”误判为优化。
+18. 当前 trajectory item 可通过异步 `_update_trajectory(...)` 增量生成，但这些更新与任务结束时的
+    `_save_trajectories()` 之间缺少统一 finalize barrier；最终读取内存 storage 时无法证明所有更新已完成。
+19. `trajectory.log` 是从 message、runtime state 和 `llm_calls` 派生出的最终快照，不是可独立恢复全部
+    执行过程的原始真值。空 trajectory 当前可能不写成功或失败 record，Runtime 只能降级为占位结果，
+    无法区分执行未发生、SAR 构建失败、TaskResponse 绑定失败或 artifact 持久化失败。
+20. 现有 trajectory log 使用通用 logger formatter、Python `repr` 和嵌套 JSON string，缺少稳定 JSONL
+    schema、builder version、source high watermark、fidelity 和 checksum；真实 formatter、rotation、重试
+    record 与 evaluation reader 之间缺少端到端兼容契约。
+21. trajectory 默认可暂存在内存 storage，并在任务完成后释放。AWorld、TaskResponse、Runtime artifact 和
+    Scheduler Raw trajectory 之间没有统一回执，导致下游缺失时不能判断数据在哪个边界丢失，也不能基于
+    持久化来源幂等重建。
+22. Agent 的自然语言完成声明与 deliverable 是否存在、是否通过最新验证没有分离；长 rollout 可能在
+    未形成目标 artifact 时提前结束，或在重复试错后仍用乐观文本声明完成。
 
 ## Design Principles
 
@@ -113,9 +146,31 @@ Skill 意图匹配可以由模型辅助，但不得突破确定性边界。
 每一个注入项都有硬上限。超限内容优先进行可逆 offload：模型看到摘要、头尾片段和 artifact
 引用，完整内容仍可通过受控工具取回。
 
+### Preserve Prefixes Across Turns
+
+对同一 task epoch，未变化的 provider-bound 前缀必须保持内容、顺序和序列化结果稳定。新增 turn
+优先只向动态尾部追加内容；只有显式 checkpoint/compact、策略版本变化、预算压力或用户操作才允许
+重写既有历史，并必须记录 cache break 原因。
+
+### Optimize End-to-End Value, Not Raw Token Count
+
+输入 token、缓存读取、缓存写入、输出/推理 token、Tool 往返和额外 subagent 都有不同成本。
+优化决策必须使用 provider 返回的真实 usage 或明确版本化的归一化成本模型，并以质量约束下的
+task-level cost、latency 和成功率为准，不把厂商特定的价格比例写入核心策略。
+
 ### Same Semantics Across Entry Points
 
 普通 Agent、Amni、CLI、ACP、resume 和 Subagent 只允许有 adapter 差异，不允许有核心解析语义差异。
+
+### Reuse the Trajectory Data Plane, Add a Verifiable Control Plane
+
+本设计不另建一套与现有轨迹并行的 capture 系统。`llm_calls`、event/runtime state、
+`TrajectoryDataset`、`trajectory.log`、`TaskResponse` 和 Runtime ATIF adapter 继续承担现有职责；新增能力
+只负责跟踪增量构建任务、建立 finalize barrier、输出 build manifest/fidelity/checksum，并验证各边界回执。
+
+`llm_calls[*].request` 是 provider 请求真值，event/runtime state 是动作和执行结果的上游证据，
+`trajectory.log` 与 ATIF 都是可版本化重建的派生投影。派生文件存在不能自动证明完整，派生文件缺失也
+不能自动证明 Agent 没有运行。
 
 ## Core Invariants
 
@@ -129,6 +184,22 @@ Skill 意图匹配可以由模型辅助，但不得突破确定性边界。
 8. Child agent 的工具权限只能等于父权限与 `DelegationSpec.allowed_tools` 的交集。
 9. Security/permission hook 失败必须 fail-closed；纯 observability hook 可以 fail-open 并记录错误。
 10. 相同输入、配置和依赖版本必须产生相同的解析顺序、稳定前缀 hash 和 trace。
+11. 同一 task epoch 中未变化的 cacheable prefix 必须产生相同的 canonical serialization 和
+    `serialized_prefix_hash`，不能只保证语义对象深度相等。
+12. model、effort、execution mode、Tool Catalog、Skill set、policy 或 serialization 的变化若会改变
+    cache identity，必须产生结构化 `CacheBreakReason`，不得表现为无法解释的 cache miss。
+13. 新 task 默认只继承 installation/workspace 等显式允许的稳定项；上一 task 的 history、Tool output、
+    Steering 和临时附件不得自动进入新 task。
+14. Tool output 在执行前必须有最大 inline token 契约；超限原文直接进入 artifact，不能依赖模型调用后
+    再决定是否压缩。
+15. task finalize 读取 trajectory storage 前必须等待所有已调度 trajectory update 到达确定 high watermark，
+    或在有界超时后显式产生 `partial/unavailable`，不得静默导出当时碰巧可见的快照。
+16. 无论 trajectory 构建成功、为空、部分完成还是失败，每个 task 都必须产生一个可持久化的
+    `TrajectoryBuildResult`；TaskResponse、Runtime 和 Scheduler 不得用占位文本替代结构化失败原因。
+17. 同一 trajectory artifact 在 AWorld、TaskResponse、Runtime 和 Scheduler 边界必须携带相同 checksum；
+    不一致必须产生明确错误，不能继续标记为 complete。
+18. `agent_finished`、`artifact_present`、`self_check_passed` 和 `external_verifier_passed` 是不同状态；
+    自然语言完成声明不能单独满足 `CompletionContract`。
 
 ## Architecture
 
@@ -154,6 +225,27 @@ flowchart LR
 Context Plane 只决定“模型能看到什么”；Control Plane 决定“谁有权改变什么”；Execution Plane
 负责执行不可变请求和受控动作。
 
+轨迹链路复用现有数据面，并增加独立的保真控制面：
+
+```mermaid
+flowchart LR
+    E["Agent messages and runtime state"] --> D["TrajectoryDataset SAR builder"]
+    L["llm_calls truth snapshots"] --> D
+    D --> Q["Tracked trajectory updates"]
+    Q --> F["Finalize barrier and build validation"]
+    F --> G["trajectory JSONL snapshot"]
+    F --> R["TaskResponse trajectory/ref"]
+    G --> A["Runtime ATIF adapter"]
+    R --> A
+    A --> S["Scheduler Raw trajectory"]
+    F -. "fidelity, counts, checksum" .-> M["TrajectoryBuildResult"]
+    A -. "artifact receipt" .-> M
+    S -. "projection receipt" .-> M
+```
+
+轨迹构建失败属于 observability/data-quality 状态，默认不能把已经成功执行的外部动作回滚成未执行；
+但 benchmark、训练和因果分析必须按 fidelity 过滤，不能把 placeholder 当作有效模型轨迹。
+
 ## Core Data Model
 
 ### ContextItem
@@ -166,6 +258,7 @@ class ContextItem:
     id: str
     kind: ContextKind
     payload: ContextPayload
+    task_epoch: int | None
     authority: Authority
     scope: ContextScope
     lifetime: Lifetime
@@ -187,6 +280,7 @@ class ContextItem:
 - `kind`：system、user、instruction、skill、memory、tool_result、steering、delegation 等。
 - `authority`：决定冲突时谁可以覆盖谁，不能由内容文本自行声明。
 - `scope`：global、workspace、directory、path pattern、session、turn、agent 或 child task。
+- `task_epoch`：task-scoped 项所属的单调递增 epoch；installation/workspace 项可以为空。
 - `lifetime`：installation、workspace、session、task、turn 或 single-call。
 - `priority`：同 authority、同 scope 内的保留和排序优先级，不等同于 authority。
 - `required`：预算不足时必须保留，否则编译失败。
@@ -204,12 +298,116 @@ class ResolvedContext:
     tools: tuple[ToolSchema, ...]
     provider_params: Mapping[str, Any]
     stable_prefix_hash: str
+    serialized_prefix_hash: str
     dynamic_context_hash: str
+    cache_identity: CacheIdentity
+    cache_break_reason: CacheBreakReason | None
     token_accounting: TokenAccounting
     decisions: tuple[ResolutionDecision, ...]
     request_snapshot: ProviderRequestSnapshot
     compiler_version: str
 ```
+
+### TrajectoryBuildResult and Fidelity
+
+`TrajectoryBuildResult` 是现有轨迹数据面的控制面，不替代 `TrajectoryDataset` 或 `TaskResponse`：
+
+```python
+TrajectoryFidelity = Literal[
+    "complete",
+    "partial",
+    "placeholder",
+    "unavailable",
+    "build_failed",
+    "legacy",
+]
+
+@dataclass(frozen=True)
+class TrajectoryBuildResult:
+    task_id: str
+    session_id: str | None
+    trace_id: str | None
+    task_epoch: int | None
+    status: Literal["complete", "partial", "empty", "failed"]
+    fidelity: TrajectoryFidelity
+    reason_code: str | None
+    source_kind: Literal["event_state", "legacy_log"]
+    source_high_watermark: str | int | None
+    scheduled_updates: int
+    completed_updates: int
+    failed_updates: int
+    pending_updates: int
+    source_agent_messages: int
+    llm_call_count: int
+    tool_call_count: int
+    persisted_items: int
+    trajectory_ref: str | None
+    source_checksum: str | None
+    trajectory_checksum: str | None
+    builder_version: str
+    created_at: datetime
+```
+
+稳定 `reason_code` 至少包括 `execution_not_started`、`execution_log_missing`、
+`source_not_finalized`、`trajectory_update_timeout`、`trajectory_build_failed`、
+`trajectory_storage_empty`、`taskresponse_binding_missing`、`runtime_artifact_upload_failed`、
+`scheduler_artifact_missing` 和 `checksum_mismatch`。
+
+finalize barrier 必须跟踪所有 trajectory update，而不是依赖裸 `asyncio.create_task`。相同 message 若存在
+before/after 两次派生，必须用同一 logical step id 和显式 revision 保证 after-handler 结果确定性覆盖，
+或只在 state manager 已完成该 message 后生成一次最终 SAR，不能由竞态决定最终版本。
+
+`trajectory.log` v2 使用专用 JSONL sink，每行是一个完整 object，不带通用 logger header，也不把
+`trajectory`/`llm_calls` 再编码成 JSON string。record 至少包含 schema version、build result、trajectory
+或 artifact ref 和 checksum。完整 Tool 原文仍存 artifact，trajectory 只保留受 `ToolOutputPolicy` 约束的
+inline view 与 ref。
+
+### CompletionContract
+
+需要产出文件、结构化结果或可执行验证的任务应在首轮解析后建立完成契约：
+
+```python
+@dataclass(frozen=True)
+class CompletionContract:
+    required_artifacts: tuple[ArtifactRequirement, ...]
+    immutable_inputs: tuple[str, ...]
+    validation_commands: tuple[ValidationCommand, ...]
+    max_evidence_age_seconds: int | None
+    required_final_evidence: tuple[str, ...]
+```
+
+框架在 FINISHED 前检查目标 artifact、schema、hash 和最新 self-check evidence。检查失败时进入 repair、
+显式失败或有界升级，不得只依据 final answer 中“已完成”的描述；外部 verifier 结果在执行后单独回填，
+不能伪装为 Agent 事先已知。
+
+### CacheIdentity and InferenceProfile
+
+`stable_prefix_hash` 描述逻辑 section，`serialized_prefix_hash` 描述最终 provider-bound canonical
+serialization；两者不能互相替代。缓存身份至少建模：
+
+```python
+@dataclass(frozen=True)
+class InferenceProfile:
+    provider: str
+    model: str
+    effort: str | None
+    execution_mode: str | None
+    response_format_hash: str | None
+
+@dataclass(frozen=True)
+class CacheIdentity:
+    inference_profile: InferenceProfile
+    serialization_version: str
+    policy_version: str
+    tool_catalog_hash: str
+    skill_set_hash: str
+    serialized_prefix_hash: str
+    provider_cache_namespace: str | None
+```
+
+`InferenceProfile` 默认在 task epoch 内保持不变。若确需中途切换，调用方必须接受显式 cache break，
+Compiler 记录原因和切换前后的身份。provider 的 TTL 和实际 cache namespace 由 lowering adapter
+报告；核心层不假设固定 TTL 或固定价格。
 
 ### ResolutionDecision
 
@@ -242,10 +440,12 @@ class DelegationSpec:
     context_pack: tuple[ContextItemRef, ...]
     allowed_tools: tuple[str, ...]
     token_budget: int
+    max_output_tokens: int
     max_turns: int
     max_depth: int
     deadline: datetime | None
     expected_output_schema: Mapping[str, Any]
+    inference_profile: InferenceProfile | None
     stop_conditions: tuple[StopCondition, ...]
     merge_policy: MergePolicy
 ```
@@ -301,6 +501,25 @@ Adapter 应支持将一个消息拆成不同 trust 的多个 ContextItem。
 9. 生成 `ResolutionDecision`、token accounting 和 immutable request snapshot。
 10. 将同一 snapshot 交给 provider、`llm_calls` 和 observability，不再重新序列化另一份语义对象。
 
+### Task and Session Lifecycle
+
+Context Compiler 不把一次 session 等同于一个无限延长的 task。session 内使用单调递增的
+`task_epoch`，所有 task/session/turn-scoped 项都记录所属 epoch。统一支持以下状态迁移：
+
+- `reset/new_task`：开启新 epoch，只继承 installation、workspace、显式 pinned facts 等允许项；
+  不为上一 task 自动生成摘要，也不复制其 history、Tool output、Steering 或临时附件。
+- `checkpoint/compact`：仍属于同一 task，但把已完成阶段压缩为结构化 decision state、未完成事项和
+  artifact refs。该操作会重写历史，必须记录 cache break，并允许用户或策略声明必须保留的字段。
+- `rewind/fork`：从事件日志的确定 offset 构造新分支，逻辑上排除走偏的尾部，但不破坏原始 audit log；
+  若此前 prefix 未改变，应继续复用其缓存身份。
+- `resume`：重新解析当前有效的 workspace instructions、policy 和 Tool permission，再恢复相关 task
+  state。除非 provider usage 证明仍命中，否则将旧 provider cache 视为 cold。
+- `background/recurring`：默认创建独立 task epoch 或 child context，只把结构化结果合并回发起者，
+  不在长期主会话中反复重放全部 history。
+
+每次迁移都产生 lifecycle event、前后 `task_epoch`、保留/丢弃项统计和 cache impact。框架不得仅依赖
+LLM 猜测任务是否已经切换；入口可以显式触发，自动识别只能作为可审计建议。
+
 ## The Seven Context Loading Mechanisms
 
 ### 1. User Prompt
@@ -308,6 +527,8 @@ Adapter 应支持将一个消息拆成不同 trust 的多个 ContextItem。
 - 当前 turn 的用户意图是必需项，保留原始文本和结构化附件引用。
 - 粘贴的文件、网页、日志和 Tool transcript 应拆为低 trust 数据项，而不是与用户指令混为一体。
 - 长附件默认进入 artifact，只向模型加载摘要、相关片段和可取回引用。
+- 客户端明确附加的文件应在首次请求中直接形成 ContextItem，避免先让模型搜索或发起 Read；同一
+  task epoch 内按 source identity 与 content hash 去重，后续引用复用已有 item，不重复注入正文。
 - multi-turn follow-up 需要显式关联被引用的历史决策，避免全量重放所有对话。
 
 ### 2. System Prompt
@@ -329,6 +550,9 @@ Adapter 应支持将一个消息拆成不同 trust 的多个 ContextItem。
 解析结果必须显示生效文件、覆盖关系和未生效原因。第一阶段保持现有 AWORLD.md 优先级兼容；
 启用新目录规则时通过配置和 migration warning 处理语义变化。
 
+Context Inspector 应单独显示启动时 instructions 的固定 token 成本，并识别长期较大但只服务单一工作流
+的 section。此类内容优先迁移为按需 Skill；框架只提供证据和建议，不自动改写用户指令文件。
+
 ### 4. Skills
 
 Skill 加载分为三层：
@@ -340,6 +564,10 @@ Skill 加载分为三层：
 Router 支持显式选择、确定性规则和模型辅助排序，可组合多个互不冲突的 Skill。激活结果必须记录
 候选集、得分/原因、未选原因、加载 token 和 Tool Catalog 变化。
 
+首个 provider call 前应尽可能完成本 task 所需 Skill 的路由。进入 task epoch 后，已注入请求前部的
+Skill descriptor/content 默认保持稳定；中途扩展 Skill set 必须产生 `skill_set_change`，并由 cache
+impact policy 判断是接受 cache break、延迟到新 epoch，还是交给独立 child context。
+
 ### 5. Tools
 
 Tool Catalog 是编译结果，不是启动时永久注入的全集：
@@ -349,6 +577,34 @@ Tool Catalog 是编译结果，不是启动时永久注入的全集：
 - 高成本 MCP schema 可以先暴露轻量 index，再按需加载完整 schema。
 - Tool description 和 schema 也进入 token accounting、稳定性 hash 和 provenance。
 - 工具返回一律按未信任数据处理；授权判断不能依赖 Tool output 中的文本。
+
+最小 Catalog 不等于每次调用都重新最小化。首个 provider call 前根据 task intent、激活 Skills 和
+permission 生成 task-sticky Catalog；同一 epoch 内保持 schema 内容和顺序稳定。若必须增加或删除工具，
+Compiler 需要记录 `tool_catalog_change` 及预计 cache impact，并允许在当前 epoch 变更、新建 child context
+或推迟到下一个 epoch 之间选择。
+
+#### Tool Execution Output Policy
+
+每个 Tool call 在执行前获得结构化输出策略，而不是等待结果进入 history 后再压缩：
+
+```python
+@dataclass(frozen=True)
+class ToolOutputPolicy:
+    max_inline_tokens: int
+    mode: Literal["structured", "quiet", "head_tail", "artifact_stream"]
+    preserve_fields: tuple[str, ...]
+    tail_tokens: int | None
+    artifact_retention: RetentionPolicy
+```
+
+- 测试、构建、日志和搜索工具可以配置 quiet flag 或结构化 reporter，优先在源头减少无价值输出。
+- 预计较大的输出直接流入 artifact；Context 只接收结构化摘要、关键字段、头尾片段和引用。
+- 即使输出低于全局大结果阈值，也必须受 `max_inline_tokens` 约束，避免中等规模噪声长期驻留。
+- Tool adapter 记录原始字节数、inline/offload token、策略版本和截断原因。
+- 输出策略不能丢失 Tool call/result 关联、错误码、关键 ID、路径和 permission/audit 字段。
+
+执行前策略负责限制进入上下文的体积；Reducer 仍负责在后续预算变化时进一步 compact。两者不能使用
+不兼容的摘要格式或生成无法回取原文的双重有损压缩。
 
 ### 6. Steering
 
@@ -374,9 +630,14 @@ final compile 后到达的 steering 留给下一次模型调用，并在 UI/trac
 - 选定的事实、artifact 引用和最近决策。
 - 允许的 Skills 和最小 Tools。
 - 独立 token/turn/depth/deadline budget。
+- 与任务复杂度匹配的 `InferenceProfile` 和最大返回 token。
 
 Child 返回结构化结果，父 Agent 按 merge policy 接收摘要、证据和显式 context delta。取消、超时、
 递归超限和部分成功都必须是结构化状态，不依赖自然语言猜测。
+
+Subagent 适合日志扫描、广泛检索等会产生大量一次性中间输出的工作；小任务可能因重复加载 system、
+instructions 和文件而更贵。Delegation policy 应记录预计隔离 token、重复读取成本和 child 实际成本，
+不能只因为可以委派就默认委派。
 
 ## Budget, Compaction and Offload
 
@@ -413,7 +674,7 @@ Reducer 必须返回：压缩内容、原 token、结果 token、保留事实、
 关键 ID、路径、错误码、用户决策、未完成事项和 Tool call/result 关联不得只靠自由摘要保留，应作为
 结构化字段进入 reducer 输出。
 
-### Cache Partition
+### Cache Partition and Economics
 
 Stable prefix 只包含跨调用不变且顺序确定的内容，例如固定 system policy、未变化的 workspace
 instructions、Skill descriptors 和 Tool schemas。session state、当前时间、git diff、history、user
@@ -421,6 +682,28 @@ prompt、Steering 和 Tool results 属于 dynamic suffix。
 
 每个 section 使用内容 hash；整体 prefix hash 由有序的 section id、version 和 content hash 计算。
 cache 命中指标必须来自 provider 原生 usage 或可验证的 prefix reuse，不以“标记为 stable”代替真实命中。
+
+Prompt cache 通常要求从请求起点开始精确匹配，因此逻辑 section hash 相同仍不够：Tool definitions、
+system sections、messages、provider params 的顺序和 canonical serialization 都必须稳定。Provider adapter
+必须声明哪些字段参与 cache identity、缓存 TTL 能否观测以及 cache usage 的可信度。
+
+以下变化至少产生结构化 `CacheBreakReason`：
+
+- `model_change`、`effort_change`、`execution_mode_change`
+- `tool_catalog_change`、`skill_set_change`
+- `policy_version_change`、`serialization_change`
+- `history_compaction`、`task_reset`
+- `resume_cache_expired` 或 `provider_cache_unknown`
+
+渐进式披露需要同时优化“当前请求少加载多少”与“前部变化导致多少既有 prefix 重新 prefill”。决策器
+使用 provider 原生 cache read/write usage；provider 不提供计费信息时，使用版本化的归一化成本模型，
+并把估算值与真实值分开报告。不得仅凭 `stable_prefix_hash` 推断命中，也不得为了维持 cache 而保留
+已经不相关、可能影响质量或越过权限边界的内容。
+
+Checkpoint/compact 会用较短状态替换历史，通常造成一次 cache 重建，但可能降低后续多 turn 的累计成本。
+策略应基于剩余任务长度、当前 context pressure、provider TTL 和摘要风险决定；无法可靠预测时提供显式
+操作或保守阈值，不在每次调用后自动重写历史。若 session 即将长时间空闲，可在 cache 仍有效时创建
+checkpoint，但不能依赖无法保证的固定过期时间。
 
 ## Hook and Policy Semantics
 
@@ -438,20 +721,58 @@ final snapshot 之后仅允许 observe hook。任何 hook 修改都产生新的 
 
 每次 LLM 调用至少记录：
 
-- compiler version、model、context limit 和配置快照 hash。
+- AWorld/framework、CLI、Context Compiler、trajectory builder 和 Runtime ATIF adapter 的 version/git SHA，
+  以及 task/session/run/trace id、task epoch、`InferenceProfile`、context limit 和配置快照 hash。
 - 所有候选项及其 included/excluded/compacted/offloaded decision。
 - 每个 section 和 Tool schema 的 token、hash、stability、scope、authority 和 trust。
-- stable/dynamic token 数、prefix hash、provider cache read/write usage。
+- stable/dynamic token 数、逻辑 prefix hash、serialized prefix hash 和 provider cache read/write usage。
+- cache identity、TTL evidence、`CacheBreakReason`、前后身份和 cache usage 可信度。
 - budget 前后 token、reducer/offload 次数和 artifact refs。
+- Tool 输出的原始大小、执行前输出策略、inline/offload token 和取回次数。
 - Skill 候选/激活、Tool Catalog 增减和 permission decision。
 - Steering 的接收、应用或 deferred 时间点。
-- Delegation 的 Context Pack、预算使用和 merge 结果。
+- lifecycle event 的前后 epoch、保留/排除项和 cache impact。
+- Delegation 的 Context Pack、InferenceProfile、预算/实际成本和 merge 结果。
 - `request_trace_match`：snapshot 与实际 provider-bound body 的结构化比较结果。
 
 `llm_calls[*].request` 是真实请求的 truth source。日志和 evaluation 从该快照读取，不重新从 memory
 推测当时模型看到了什么。
 
+### Trajectory Truth, Finalize and Receipts
+
+轨迹语义必须区分四层证据：
+
+1. `llm_calls` 与 event/runtime state：请求、动作和结果的上游 truth source。
+2. `TrajectoryDataset`：从上游证据生成的 SAR working projection，允许在 finalize 前更新。
+3. `trajectory.log`/artifact 与 `TaskResponse.trajectory/ref`：finalize 后的版本化派生快照。
+4. Runtime ATIF 与 Scheduler Raw trajectory：跨进程交付投影。
+
+每层使用同一 task/session/trace/task-epoch identity。`TrajectoryBuildResult` 记录 source high watermark、
+scheduled/completed/failed/pending update、message/LLM/Tool/persisted-item 数和 checksum；Runtime 与 Scheduler
+分别写 artifact receipt 和 projection receipt。只有计数契约满足、pending 为零且 checksum 对齐时才可标为
+`complete`。
+
+TaskResponse 继续携带 inline trajectory 以兼容旧调用方，同时可以携带 `trajectory_ref`、
+`trajectory_status` 和 `trajectory_checksum`。TaskResponse 没有 inline trajectory 但存在已确认的 artifact ref
+时不得降级为 placeholder；反之，只有占位文本不能标为完整轨迹。
+
+轨迹 build observe hook 可以 fail-open，避免 observability 故障改变已经发生的外部动作；但必须持久化
+失败结果并允许基于上游来源幂等重试。benchmark、训练和 paired analysis 默认只消费 `complete`，
+`partial/placeholder/unavailable/build_failed` 进入单独的数据质量队列。
+
 默认日志对 secrets 和敏感 Tool output 做字段级 redaction；hash、token 和 reason code 仍应保留。
+
+### User-Facing Context Inspector
+
+CLI、ACP 和可视化入口应基于同一 trace 提供只读 inspector，而不是实现另一套统计逻辑。至少显示：
+
+- fresh session 的固定 system/instructions/Skill index/Tool schema 基线占用。
+- 当前 task 各来源 token、最大项、重复附件、offload 项和排除原因。
+- 当前 cache identity、serialized prefix、最近 cache break 和 provider 实际命中情况。
+- 可关闭或延迟加载的 MCP/Tool/Skill，以及预估收益和权限影响。
+- `new_task`、`checkpoint`、`rewind/fork` 的预览，包括会保留什么、丢弃什么和是否重建 cache。
+
+Inspector 默认只显示 redacted preview 和 metadata，不因调试模式暴露 secret 或完整 Tool output。
 
 ## Proposed Module Boundaries
 
@@ -465,8 +786,12 @@ aworld/core/context/compiler/
   scope.py
   budget.py
   reducers.py
+  cache.py
+  lifecycle.py
   tool_catalog.py
+  tool_output.py
   delegation.py
+  cost.py
   trace.py
 ```
 
@@ -477,6 +802,13 @@ aworld/core/context/compiler/
 - `aworld-cli/src/aworld_cli/`：提供 instructions、Skills、Steering 和 CLI runtime adapters。
 - `aworld/models/llm.py`：只接受 compiled immutable request，捕获相同 snapshot 和 provider response。
 - `aworld/core/agent/subagent_manager.py`：消费 `DelegationSpec`，不自行定义另一套上下文复制语义。
+- Tool runtime：在执行前消费 `ToolOutputPolicy`，将原始大输出直接写入 artifact，返回有界结果。
+- `aworld/runners/event_runner.py`：跟踪 trajectory update task，执行有界 finalize barrier，在释放内存 storage
+  前产生 `TrajectoryBuildResult` 并将 trajectory/ref 绑定到 TaskResponse。
+- `aworld/dataset/trajectory_strategy.py`：继续优先读取 `llm_calls` 请求真值；输出 deterministic SAR 和
+  logical step revision，不自行承担 Runtime/Scheduler 持久化。
+- trajectory sink/reader：提供无通用 header 的 JSONL v2、checksum 和 legacy dual-read；Runtime adapter
+  将相同快照投影为 ATIF，并返回 artifact receipt。
 
 ## Configuration and Rollout Modes
 
@@ -492,8 +824,17 @@ context_compiler:
   scoped_instructions: workspace_only  # workspace_only | nested
   progressive_skills: true
   progressive_tools: true
+  task_catalog_policy: sticky  # per_call | sticky
+  checkpoint_policy: budget_pressure  # explicit | budget_pressure | adaptive
+  default_tool_output_inline_tokens: 4096
   artifact_offload: true
+  context_inspector: true
+  cost_model: provider_usage  # provider_usage | normalized
   trace_level: decisions  # none | summary | decisions | full_redacted
+  trajectory_finalize_timeout_seconds: 10
+  trajectory_format: jsonl_v2  # legacy | dual | jsonl_v2
+  trajectory_require_complete_for_training: true
+  completion_contract: observe  # off | observe | enforce
 ```
 
 - `off`：完全使用旧链路。
@@ -508,13 +849,23 @@ context_compiler:
 
 ### Phase 0: Baseline and Observability
 
-- 为当前所有入口捕获真实 request snapshot、token、cache、latency、Tool calls 和任务结果。
+- 为当前所有入口捕获真实 request snapshot、input/output/reasoning token、cache、latency、Tool calls、
+  task-level cost 和任务结果。
+- 建立 cache identity/break、context token-turn residency、Tool 原始/inline 输出的 baseline。
 - 建立固定 benchmark corpus 和当前 baseline。
 - 将 `request_trace_match_rate` 纳入持续测试。
+- 先复用现有 `TrajectoryDataset`/TaskResponse 数据面补齐 trajectory update tracking 和 finalize barrier；
+  在读取或释放内存 storage 前保证 pending update 为零，超时产生结构化 partial/failed 结果。
+- 为每个 task 输出 `TrajectoryBuildResult`，包括空轨迹和构建失败；建立 AWorld、TaskResponse、Runtime、
+  Scheduler 四个边界的计数与 checksum 回执。
+- 引入无 logger header 的 JSONL v2 并 dual-write/dual-read，验证真实 `trajectory.log` 文件而非只验证
+  人工构造的单行 fixture。
 
 ### Phase 1: Models and Adapters
 
-- 引入 `ContextItem`、`ResolvedContext` 和 decision trace。
+- 引入 `ContextItem`、`ResolvedContext`、`InferenceProfile`、`CacheIdentity` 和 decision trace。
+- 引入 `TrajectoryBuildResult`、`TrajectoryFidelity` 和 `CompletionContract`，TaskResponse 保持兼容字段并
+  增加 status/ref/checksum。
 - 为现有 PromptSection、neurons、AWORLD.md、Skill、Tool 和 memory 添加 adapters。
 - 使用 shadow 模式，保持旧 provider 请求不变。
 
@@ -522,23 +873,30 @@ context_compiler:
 
 - 将所有 prompt transform、Steering 和 hook 移到 final compile 之前。
 - 对所有入口启用统一 budget、单项上限、Tool pair 保留和 immutable snapshot。
+- 引入 task epoch 与 reset/checkpoint/rewind/resume 状态迁移；所有 cache break 可归因。
+- 固化 canonical provider serialization，验证 serialized prefix 而非只验证逻辑 hash。
 - 先在普通 Agent/CLI enforce，再扩展到 Amni/ACP。
 
 ### Phase 3: Scoped Instructions and Progressive Disclosure
 
 - 支持 nested/path-scoped instructions。
 - Skill 改为 index -> descriptor -> content 分层加载。
-- Tool Catalog 改为最小化和按需 schema 加载。
+- Tool Catalog 改为最小化和按需 schema 加载，并默认在 task epoch 内保持稳定。
+- 对 Skill/Tool 中途扩展执行 cache impact decision，支持转交独立 child context。
 
 ### Phase 4: Trust, Compaction and Offload
 
 - 统一 history/Tool Result reducer 和 artifact store contract。
+- 在 Tool runtime 接入执行前 `ToolOutputPolicy`，为高噪声命令提供 quiet/structured 输出。
+- 将 Tool 的 bounded inline view 与 raw artifact ref 写入 trajectory；在适用任务上灰度 enforce
+  `CompletionContract`，分离 agent finished、自检和外部 verifier 状态。
 - 对外部内容进行 trust 标记和 prompt injection 隔离。
 - 明确 policy/transform/observe hook 的失败策略。
 
 ### Phase 5: Structured Delegation
 
-- 引入 `DelegationSpec`、Context Pack、child result schema 和 merge policy。
+- 引入带 `InferenceProfile` 和输出上限的 `DelegationSpec`、Context Pack、child result schema 和
+  merge policy。
 - 加入递归、deadline、cancel 和预算传播测试。
 
 ### Phase 6: Default-On and Legacy Cleanup
@@ -554,6 +912,8 @@ context_compiler:
 任何“有收益”的结论必须来自 baseline 与 candidate 的 paired comparison：
 
 - 固定 model/provider/version、temperature、Tool 版本、repo snapshot 和环境变量。
+- 对比 Context Harness 时固定完整 `InferenceProfile`；评估模型/effort 路由时单独建立实验，不与
+  context compiler 收益混算。
 - 每个 case 使用相同初始 history、memory、Steering 到达时机和外部 fixture。
 - baseline 使用当前链路，candidate 使用统一 Context Compiler。
 - 确定性测试使用 capture provider；真实模型质量测试每个 variant 至少运行 5 次。
@@ -572,10 +932,15 @@ context_compiler:
 
 效率指标：
 
-- `input_tokens`
+- task-level `input_tokens`、`new_input_tokens` 和 `replayed_input_tokens`
+- `output_tokens` 和 provider 可用时的 `reasoning_tokens`
 - `tool_schema_tokens`
+- Tool `raw_output_bytes`、`inline_output_tokens`、`offloaded_output_tokens`
+- `context_token_turns`：每个 item 的 token 数乘以后续仍驻留的 provider request 数
 - `stable_prefix_reuse_rate`
 - provider `cache_read_tokens` / `cache_write_tokens`
+- `cache_adjusted_input_cost`、`provider_billed_cost` 或版本化 `normalized_cost`
+- `cost_per_successful_task`，同时报告 main agent 与 child agent 成本
 - time-to-first-token、端到端 latency 和 Tool call count
 
 稳定性与安全指标：
@@ -584,9 +949,21 @@ context_compiler:
 - `retry_count`
 - `wrong_tool_call_rate`
 - `unauthorized_tool_call_count`
+- `cache_break_count_by_reason` 和 `unexplained_cache_break_count`
+- `task_context_leak_count`
 - `request_trace_match_rate`
 - `child_success_rate`
 - `merge_conflict_count`
+- `raw_trajectory_available_rate`
+- `complete_trajectory_rate` 和 `trajectory_count_by_fidelity`
+- `placeholder_trajectory_count`
+- `trajectory_update_pending_count_at_finalize`
+- `trajectory_build_success_rate`
+- `llm_event_reconstruction_rate` 和 `tool_pair_reconstruction_rate`
+- `taskresponse_trajectory_binding_rate`
+- `runtime_artifact_persist_rate` 和 `scheduler_projection_rate`
+- `trajectory_checksum_mismatch_count`
+- `completion_contract_failure_count_by_reason`
 
 ### Test Matrix
 
@@ -606,6 +983,17 @@ context_compiler:
 | TC-TRACE-012 | transform hook 修改消息，Tool Catalog 随 Skill 改变 | 每项 decision 可解释；`request_snapshot == provider_body`；`llm_calls` 记录同一快照 |
 | TC-PARITY-013 | 同一任务分别经普通 Agent、Amni、CLI 和 ACP 发起 | 相同来源产生等价解析结果、预算和 authority 决策；仅入口专属 metadata 不同 |
 | TC-POLICY-014 | permission hook 抛异常，observe hook 也抛异常 | permission fail-closed 且不调用 Tool；observe fail-open 且错误被记录；请求语义不变 |
+| TC-CACHE-ID-015 | 同一 task 中依次改变 model、effort、execution mode 和 serialization version | 每次变化都有精确 `CacheBreakReason`；前后 identity 可审计；未变化时 serialized prefix 完全一致 |
+| TC-CACHE-CATALOG-016 | 首轮路由 read/search，后续请求激活需要新 MCP Tool 的 Skill | 初始 Catalog 最小且 task-sticky；扩展产生 cache impact decision；当前 epoch、child 或新 epoch 路径均无静默 cache miss |
+| TC-LIFECYCLE-017 | 完成任务 A 后开始 B；A 中先 checkpoint，再 rewind 并 resume | B 不含 A 的动态项；checkpoint 保留决策/未完成项；rewind 排除尾部且保留 audit；resume 重新解析 policy 并正确报告 cold/命中 |
+| TC-TOOL-OUTPUT-018 | 测试命令输出 20K 高噪声文本但低于旧大结果阈值 | 执行前 quiet/structured policy 生效；inline 不超 cap；原文进入 artifact；错误码和失败用例保留 |
+| TC-ATTACH-019 | 首轮显式附加文件，后续 turn 再次引用相同内容 | 首轮无需额外 search/Read；后续按 source/hash 复用且不重复注入正文；内容变化时生成新版本 |
+| TC-COST-020 | candidate 原始 input 更少，但触发 cache miss、额外 reasoning 和 child 调用 | evaluator 按实际或归一化总成本判定 candidate 更贵；不会仅因 input token 下降宣称优化 |
+| TC-TRAJECTORY-FINALIZE-021 | 最后一条 agent message 的 SAR 更新被刻意延迟，任务同时进入 FINISHED | finalize barrier 等待 tracked update；导出时 pending=0；TaskResponse、JSONL 和 storage step 数一致；不产生占位轨迹 |
+| TC-TRAJECTORY-EMPTY-022 | Agent 未启动、SAR builder 抛错、storage 为空三种场景 | 三者都输出 `TrajectoryBuildResult`，reason code 分别可归因；空轨迹不被静默吞掉或伪装为 complete |
+| TC-TRAJECTORY-IO-023 | 使用真实 logger formatter 写 legacy log，同时生成 JSONL v2；同一 task 再写一次 retry record | v2 每行可独立 JSON 解析；legacy dual-read 可用；reader 按 schema/revision 选择最新有效记录；checksum 一致 |
+| TC-TRAJECTORY-RECEIPT-024 | AWorld 构建成功，但分别模拟 TaskResponse 未绑定、Runtime 上传失败、Scheduler 未投影和 checksum 被修改 | 每个边界产生不同稳定 reason code；已执行任务不被回滚；训练/eval 拒绝非 complete 数据 |
+| TC-COMPLETION-025 | Agent 声称完成但目标文件缺失；另一 case 文件存在但验证证据过期 | FINISHED 不等于 deliverable verified；缺失/过期进入 repair 或结构化失败；外部 verifier 状态独立回填 |
 
 ### Test Tiers
 
@@ -614,8 +1002,10 @@ context_compiler:
 每个 PR 运行 deterministic unit/integration tests：
 
 - ContextItem serialization、scope、authority 和 conflict resolution。
-- budget、reducers、Tool pair、stable hash 和 deterministic ordering。
+- budget、reducers、Tool pair、stable/serialized hash 和 deterministic ordering。
+- task lifecycle、CacheIdentity/BreakReason、task-sticky Catalog 和 ToolOutputPolicy。
 - capture provider 验证 final snapshot、hook ordering 和 request trace exactness。
+- trajectory update drain、fidelity/reason、JSONL real-file parsing、TaskResponse/Runtime receipt 和 checksum。
 - 四个主要入口的 parity contract。
 
 建议测试文件：
@@ -628,6 +1018,10 @@ tests/agents/test_compiled_request_integration.py
 tests/hooks/test_steering_budget_integration.py
 tests/core/agent/test_delegation_spec_integration.py
 tests/evaluations/test_context_harness_benchmark.py
+tests/runners/test_trajectory_finalize_barrier.py
+tests/dataset/test_trajectory_build_result.py
+tests/evaluations/test_trajectory_jsonl_contract.py
+tests/integration/test_trajectory_runtime_receipts.py
 ```
 
 #### Nightly Evaluation
@@ -635,8 +1029,42 @@ tests/evaluations/test_context_harness_benchmark.py
 - 选择 30-50 个覆盖 coding、research、long history、Tool-heavy、prompt injection 和 delegation
   的真实任务。
 - baseline/candidate 各运行 5 次，随机交错运行顺序，避免 provider 时段偏差。
-- 同时报告 pass@5、pass^3、token、cache、latency、安全和 trace 指标。
+- 同时报告 pass@5、pass^3、task-level token、output/reasoning、cache-adjusted cost、latency、安全和
+  trace 指标。
 - 对失败 case 自动生成 request/trace diff，不只保留最终答案。
+- 分层保留双 0 失败、0/1 paired counterfactual 和少量双 1 success-cost 正例；只将 complete trajectory
+  用于策略归因，placeholder/unavailable 单独评估 capture reliability。
+- 对同为成功的 pair 报告 `cost_per_successful_task` 和 context/tool-output 差异，避免只优化 Reward。
+
+#### Local Docker Terminal Bench Fixture
+
+Context Management 的最小可复现环境使用 AWorld 自身的 `DockerSandbox`，只连接一个已经由调用方启动的
+本地 Docker 容器。AWorld 在宿主机启动 stdio MCP bridge，将 terminal/filesystem 操作通过参数化
+`docker exec` 路由到固定容器；AWorld cleanup 只关闭 bridge，不停止、删除或构建容器。题目镜像、测试
+挂载、verifier、reward 和容器生命周期继续由外部 harness 或调用脚本负责。该边界不要求修改
+mcpgateway、lingguang-bench-runtime-dsh 或题目镜像，也不在容器内安装 AWorld。
+
+首轮 fixture 只运行 Terminal Bench 2.1 的两个题目，证明其既能提供正例，也能捕获“框架成功、外部
+验证失败”的反例：
+
+| Task | TaskResponse | 外部 verifier reward | Raw trajectory | 关键结论 |
+|---|---:|---:|---:|---|
+| `prove-plus-comm` | success | 1 | 9 steps / 94,171 bytes | Agent 在容器内三次编译、修正 proof 后通过 `coqc`，适合作为双 1 正例 |
+| `cancel-async-tasks` | success | 0 | 13 steps / 337,214 bytes | 普通并发和两种 SIGINT case 通过，但 `n=3/max=2` 时未保证两个已启动任务均 cleanup，适合作为 reward 0 反例 |
+
+每个 run 保存三类独立证据：
+
+- `raw_trajectory.json`：从 TaskResponse 绑定的完整 SAR trajectory，不从 final answer 反推步骤；
+- `logs/trajectory.log`：现有 logger 真实输出，用于 legacy reader/finalize 验证；当前仍为“logger header +
+  Python repr payload”的两行格式；
+- `verifier.json`：独立于 TaskResponse success 的断言级 reward 与失败明细。
+
+本地 artifact 位于 `artifacts/context-management/local-terminal-bench/runs/<task>/`，通用执行入口为
+`examples/sandbox/docker_terminal_bench.py`。这个 fixture 的首要用途是验证 TC-TRAJECTORY-FINALIZE-021、
+TC-TRAJECTORY-IO-023 和 TC-COMPLETION-025：若未来出现 `AWorld completed without a captured response`，
+必须分别检查 runtime event/SAR 是否产生、finalize 是否 drain、TaskResponse 是否绑定、logger/artifact
+是否持久化和 verifier 是否独立完成，不能把“Agent 未生成 trajectory”和“runtime 存储失败”合并为同一
+原因。
 
 #### Release Canary
 
@@ -653,7 +1081,14 @@ tests/evaluations/test_context_harness_benchmark.py
 
 - `unauthorized_tool_call_count == 0`
 - `context_overflow_rate == 0`
+- `task_context_leak_count == 0`
+- `unexplained_cache_break_count == 0`
 - `request_trace_match_rate == 100%`
+- `trajectory_update_pending_count_at_finalize == 0`
+- `placeholder_trajectory_count == 0`
+- `trajectory_checksum_mismatch_count == 0`
+- benchmark 新生成 run 的 `raw_trajectory_available_rate == 100%`
+- `tool_pair_reconstruction_rate == 100%` 和 `taskresponse_trajectory_binding_rate == 100%`
 - benchmark 中 `required_context_recall == 100%`
 - 编译结果确定性测试 100% 通过
 
@@ -666,8 +1101,11 @@ tests/evaluations/test_context_harness_benchmark.py
 
 ### Efficiency Gates
 
-- median `input_tokens` 至少下降 15%。
+- median task-level `input_tokens` 至少下降 15%。
 - median `tool_schema_tokens` 至少下降 30%。
+- 在 provider 有真实 billing usage 时，median `cost_per_successful_task` 至少下降 10%；否则使用冻结版本
+  的 normalized cost，并同时报告各 token 类别，不能混用不同成本模型。
+- Tool-heavy 子集的 median `inline_output_tokens` 至少下降 30%，且 artifact 取回后的任务成功率不回退。
 - p95 latency 不劣化超过 5%，且 time-to-first-token 不显著回退。
 - 相同 session 的 `stable_prefix_reuse_rate` 至少提升 20 个百分点。
 
@@ -680,9 +1118,18 @@ tests/evaluations/test_context_harness_benchmark.py
   ContextItem，不要求调用方一次性迁移。
 - 已有 AWORLD.md 的 workspace-only 行为在默认配置下保持兼容；nested scope 先 opt-in。
 - 历史 task 没有 trace 或 `llm_calls` snapshot 时继续走现有 fallback，但标记 `fidelity=legacy`。
+- TaskResponse 的 inline `trajectory` 字段至少保留一个稳定版本；新调用方优先使用
+  `trajectory_status/ref/checksum`，不能要求所有入口原子迁移。
+- trajectory JSONL v2 上线时先 dual-write/dual-read；legacy reader 必须容忍通用 logger header、旧
+  Python `repr`、嵌套 JSON string 和 rotation 分片，并按 task/revision 选择最新有效 record。
+- 历史 placeholder/unavailable 不反向推断 Agent 未执行，也不伪造 complete；若上游 event/`llm_calls`
+  来源仍在，可以用版本化 builder 幂等回填新 artifact。
 - provider-specific cache hints 由 lowering adapter 消费统一 stability 信息，核心模型不依赖厂商字段。
 - resume 后必须重新解析当前有效 workspace instructions 和 policy，同时恢复 session history；不能盲目重放
   旧 system snapshot。
+- 旧入口无法表达 task epoch 时先映射为单一 legacy epoch；在未提供显式 reset 前不得猜测并删除 history。
+- provider 不暴露 effort、TTL、reasoning token 或 billing usage 时相应字段为 unknown，并使用带版本号的
+  代理指标；不得伪造零值或声称精确命中。
 
 ## Risks and Mitigations
 
@@ -695,10 +1142,43 @@ tests/evaluations/test_context_harness_benchmark.py
 关键字段结构化保留，完整内容 artifact offload 可取回，并用 TC-OFFLOAD-008、TC-HISTORY-011 和
 required-context scorer 持续验证。
 
+### Trajectory Control Plane Becomes a Competing Truth Source
+
+`TrajectoryBuildResult` 只描述构建和交付状态，不复制 semantic message、LLM response 或 Tool 原文。
+provider 请求继续以 `llm_calls` 为真值，动作结果继续来自 event/runtime state；SAR、JSONL 和 ATIF 都是
+带 source checksum 的派生投影。禁止从 TaskResponse final answer 反向虚构缺失步骤。
+
+### Trajectory Finalize Delays or Changes Task Semantics
+
+trajectory update 使用 tracked task 和有界 finalize timeout。observe/export 失败默认不撤销已经发生的外部
+动作，也不把业务成功改成业务失败；它产生独立 data-quality 状态并进入可重试队列。只有训练、benchmark
+或显式要求完整轨迹的入口可以把 incomplete trajectory 作为自身 gate。
+
+### Completion Contract Rejects Valid but Unusual Solutions
+
+先在 observe 模式从明确目标路径、schema 和已有测试入口生成契约；不能可靠推导的条件保持 unknown，
+不得由模型臆造为 required。enforce 仅覆盖确定性 artifact/test 条件，并持续对照 external verifier 的
+false-positive/false-negative。
+
 ### Cache Optimization Changes Semantics
 
 stability 只决定缓存分区，不决定 authority 或是否保留。任何 prefix 重排都必须通过 request semantic
 equivalence 和质量 Gate。
+
+### Progressive Disclosure Causes Cache Churn
+
+更小的逐调用 Skill/Tool 集合可能频繁改写请求前部。默认采用 task-sticky Catalog，所有扩展记录 cache
+impact；对一次性能力优先考虑 child context。paired evaluation 同时比较 schema token 与实际 cache cost。
+
+### Compaction Happens at the Wrong Time
+
+过早 compact 会丢失细节并重建 cache，过晚则让无关内容驻留过多 turn。通过显式 checkpoint、预算压力
+阈值、provider TTL evidence 和 `context_token_turns` 评估时机；不把每 turn 自动摘要作为默认策略。
+
+### Subagent Isolation Costs More Than It Saves
+
+小任务可能因 child 重复加载 system、instructions 和文件而增加总成本。Delegation trace 分开记录主/子
+成本、重复读取和返回 token，只在隔离噪声、并行性或能力边界有可验证收益时默认委派。
 
 ### Shadow Mode Doubles CPU or Tokenization Cost
 
@@ -725,6 +1205,13 @@ TC-PARITY-013 阻止入口语义分叉。
 5. provider 不返回 cache usage 时，prefix reuse 使用哪一种可比较的代理指标？
 6. Delegation result schema 是框架固定字段加业务扩展，还是完全由 `expected_output_schema` 定义？
 7. enforce 模式下 required items 超预算时，是直接失败还是允许自动降低 reserved output？
+8. 哪些 provider 参数参与 `CacheIdentity`，adapter 如何报告 TTL evidence 和 usage 可信度？
+9. task-sticky Tool/Skill 集合的默认粒度是 task epoch、session 还是 provider-specific cache segment？
+10. `checkpoint/compact` 的默认触发是仅显式、预算压力还是预测未来 turn 的 adaptive policy？
+11. Tool adapter 如何声明 quiet/structured 输出能力，无法控制的第三方 Tool 使用哪种 fallback？
+12. provider 缺少 billing/reasoning/cache usage 时，normalized cost 的权重、版本和跨 provider 可比性
+    如何治理？
+13. client 如何暴露 new task、checkpoint、rewind 和 context inspector，同时保持 CLI、ACP 语义一致？
 
 ## Delivery Boundary
 
@@ -737,4 +1224,5 @@ TC-PARITY-013 阻止入口语义分叉。
 - 不在未完成 parity、trace exactness 和回退能力前删除旧链路。
 
 完成标准不是 Context Compiler 类存在，而是所有入口通过同一不变量，且 paired evaluation 证明质量不
-回退、上下文和 Tool token 明显下降、缓存与长任务稳定性提升、安全边界保持为零违规。
+回退、cache-adjusted cost per successful task 与 Tool inline output 明显下降、缓存与长任务稳定性提升、
+安全边界保持为零违规。

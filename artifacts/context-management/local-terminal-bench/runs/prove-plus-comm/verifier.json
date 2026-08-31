@@ -1,0 +1,41 @@
+{
+  "task": "prove-plus-comm",
+  "reward": 1,
+  "checks": {
+    "plus_comm_v_exists": {
+      "passed": true,
+      "return_code": 0,
+      "stderr": ""
+    },
+    "plus_comm_vo_exists": {
+      "passed": true,
+      "return_code": 0,
+      "stderr": ""
+    },
+    "contains_theorem": {
+      "passed": true,
+      "return_code": 0,
+      "stderr": ""
+    },
+    "contains_proof": {
+      "passed": true,
+      "return_code": 0,
+      "stderr": ""
+    },
+    "contains_qed": {
+      "passed": true,
+      "return_code": 0,
+      "stderr": ""
+    },
+    "no_admit": {
+      "passed": true,
+      "return_code": 0,
+      "stderr": ""
+    },
+    "compiles": {
+      "passed": true,
+      "return_code": 0,
+      "stderr": ""
+    }
+  }
+}
