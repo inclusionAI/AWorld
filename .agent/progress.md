@@ -5,9 +5,9 @@
 **Phase:** Milestone 1
 **Current milestone:** Trajectory Control Plane Foundation
 **Current task:** Task 1.4 integration and architecture review
-**Last action:** The second independent review rejected Milestone 1 with five P1 and one P2 findings. Canonical legacy
-metadata, remote-child single import, strict task epoch, truthful legacy delivery receipt, and Redis failure propagation
-are fixed locally; native-stream wakeup/publication and cancellation hardening remain in progress.
+**Last action:** All six second-review findings now have implementations: canonical legacy metadata, remote-child single
+import, strict task epoch, truthful delivery receipts, Redis failure propagation, native-stream terminal fallback,
+at-most-once publication, and cancellation-preserving cleanup. Combined regression and independent re-review remain.
 
 ## Completed Foundations
 
@@ -112,13 +112,18 @@ are fixed locally; native-stream wakeup/publication and cancellation hardening r
   legacy canonical metadata, a false legacy persistence receipt, and weak float epoch validation.
 - Fixed legacy embedded build-result round-trip, remote child import independence from emitted handler-event count,
   strict integer epochs, `emitted/unacknowledged` legacy receipts, and Redis publish failure propagation. Focused tests:
-  49 passed after these fixes; streaming/cancellation fixes and combined re-review remain pending.
+  49 passed after these fixes.
+- Added runner-local terminal fallback and bootstrap completion signals so pre-run and partial emit failures terminate native
+  streams. Publication is fenced before the first external attempt and cannot be retried into duplicate responses.
+- Hardened terminal cleanup so finalize, publish, output, and sandbox cleanup failures cannot replace an original or newly
+  arriving `CancelledError`; focused cancellation/publication tests pass.
 
 ### Milestone 2 Readiness
 - Task 2.1 dependency-light frozen models/trace is merged; it has no runtime integration and therefore cannot bypass the
   unfinished Milestone 1 finalize/writer gate.
 - Task 2.2a generic occurrence-preserving legacy adapters and the Amni PromptSection owner adapter are implemented and
-  tested on `codex/context-legacy-adapters`; merge waits for inspection against the current milestone branch.
+  merged, tested, and exposed through owner/core public APIs. Their dedicated seven tests pass; a broader context run had
+  84 passes and nine unrelated AWORLD-file tests that selected the user's real `~/.aworld/AWORLD.md` instead of fixtures.
 - Existing PromptAssemblyProvider sees Amni neuron sections only after they were folded into one system message; provenance
   sidecars must be emitted before folding rather than inferred later.
 - Memory adapters must follow the exact cleaned replay list, including Tool pair repair and duplicate occurrences.

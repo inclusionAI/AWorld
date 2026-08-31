@@ -6,6 +6,7 @@ from .provider import (
 )
 from .hashing import compute_stable_prefix_hash
 from .state import PromptAssemblyRuntimeState
+from .context_adapter import PromptSectionContextAdapter, adapt_prompt_sections
 
 __all__ = [
     "PromptAssemblyPlan",
@@ -16,4 +17,6 @@ __all__ = [
     "CacheAwarePromptAssemblyProvider",
     "compute_stable_prefix_hash",
     "PromptAssemblyRuntimeState",
+    "PromptSectionContextAdapter",
+    "adapt_prompt_sections",
 ]
