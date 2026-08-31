@@ -7,6 +7,9 @@ import pytest
 
 from aworld.core.task import TaskResponse
 from aworld.core.trajectory import (
+    TrajectoryDeliveryReceipt,
+    TrajectoryDeliveryState,
+    TrajectoryDeliveryTargetReceipt,
     TrajectoryBuildResult,
     TrajectoryBuildStatus,
     TrajectoryFidelity,
@@ -224,6 +227,30 @@ def test_task_response_additively_binds_one_canonical_build_result() -> None:
     assert payload["trajectory_fidelity"] == response.trajectory_fidelity
     assert payload["trajectory_ref"] == response.trajectory_ref
     assert payload["trajectory_checksum"] == response.trajectory_checksum
+
+
+def test_delivery_receipt_is_immutable_additive_and_contains_no_artifact_body_or_path() -> None:
+    receipt = TrajectoryDeliveryReceipt(
+        requested_format="dual",
+        legacy=TrajectoryDeliveryTargetReceipt(status=TrajectoryDeliveryState.PERSISTED),
+        v2=TrajectoryDeliveryTargetReceipt(
+            status=TrajectoryDeliveryState.PERSISTED,
+            record_checksum=_checksum(),
+        ),
+    )
+    response = TaskResponse(trajectory_delivery_receipt=receipt)
+
+    with pytest.raises(FrozenInstanceError):
+        receipt.requested_format = "legacy"  # type: ignore[misc]
+
+    payload = response.to_dict()["trajectory_delivery_receipt"]
+    assert payload == receipt.to_dict()
+    assert payload["legacy"]["status"] == "persisted"
+    assert payload["v2"]["record_checksum"] == _checksum()
+    serialized = json.dumps(payload)
+    assert "trajectory.jsonl" not in serialized
+    assert "artifact_path" not in serialized
+    assert "trajectory" not in payload
 
 
 def test_legacy_task_response_constructor_and_inline_trajectory_remain_compatible() -> None:
