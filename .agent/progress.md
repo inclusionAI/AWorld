@@ -164,6 +164,9 @@ non-blocking P2 remains: thread-backed file export has no bounded I/O acknowledg
 - Added a CLI steering owner adapter for already-drained `SteeringInput` occurrences. It preserves coordinator sequence,
   duplicates, text, and timestamp; maps only explicitly supplied session/task scope; and leaves policy semantics unknown.
   It neither drains nor applies steering and does not alter the existing hook; steering regression is 67 passed.
+- Added a final Tool Catalog owner adapter that observes the exact schema occurrences after owner filtering/lowering. It
+  reuses the generic immutable occurrence adapter, preserves full nested schemas/order/duplicates, and never minimizes,
+  authorizes, deduplicates, or infers policy from names/descriptions; related adapter regression is 12 passed.
 - Existing PromptAssemblyProvider sees Amni neuron sections only after they were folded into one system message; provenance
   sidecars must be emitted before folding rather than inferred later.
 - Memory adapters must follow the exact cleaned replay list, including Tool pair repair and duplicate occurrences.
