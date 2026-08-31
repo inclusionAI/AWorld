@@ -4,9 +4,8 @@
 
 **Phase:** Milestone 1
 **Current milestone:** Trajectory Control Plane Foundation
-**Current task:** Task 1.1 typed trajectory build contracts implementation
-**Last action:** Completed read-only audits for contracts, finalize concurrency, and trajectory I/O; Task 1.1 is running in
-an isolated worktree.
+**Current task:** Task 1.2 tracked update/finalize barrier
+**Last action:** Completed Task 1.1 typed trajectory build contracts and TaskResponse additive binding.
 
 ## Completed Foundations
 
@@ -21,9 +20,9 @@ an isolated worktree.
 
 | Task | Status | Notes |
 |---|---|---|
-| 1.1 Typed trajectory build contracts | in_progress | `/tmp/aworld-context-trajectory-contracts` |
-| 1.2 Tracked update/finalize barrier | pending | Audit complete; depends on 1.1 contracts |
-| 1.3 JSONL v2 dual-read/write | pending | Audit complete; codec may parallelize after 1.1 |
+| 1.1 Typed trajectory build contracts | complete | Immutable control result, canonical checksum, invariants, TaskResponse projections |
+| 1.2 Tracked update/finalize barrier | in_progress | Audit complete; registry/finalize implementation next |
+| 1.3 JSONL v2 dual-read/write | pending | Audit complete; codec may parallelize with 1.2 |
 | 1.4 Integration and architecture review | pending | Depends on 1.1-1.3 |
 
 ## Decisions Log
@@ -40,6 +39,15 @@ an isolated worktree.
 - Chose: interchangeable validation adapter.
 - Rationale: the goal is generalized AWorld framework capability from Context Management.
 - Trade-offs accepted: improvements require broader evidence and may take longer to validate.
+
+### Decision: Trajectory build contract ownership
+- Options considered: store control metadata inside `TrajectoryItem`; import a dataset contract from `core.task`; define a
+  dependency-light core contract.
+- Chose: `aworld.core.trajectory` owns immutable build metadata and canonical trajectory checksum; `TaskResponse` binds one
+  canonical result and exposes read-only compatibility projections.
+- Rationale: SAR remains the existing semantic projection, and importing `aworld.dataset` from `core.task` would initialize
+  dataset modules that already depend on core, risking a circular import.
+- Trade-offs accepted: JSONL envelopes and finalize integration remain separate Tasks 1.2-1.3.
 
 ### Decision: Trajectory registry ownership
 - Options considered: runner-local task set; Context-owned registry; root TrajectoryDataset-owned registry.
@@ -63,7 +71,7 @@ an isolated worktree.
 - Benchmark driver: frozen invariant manifests, independent verifier, paired Context metrics.
 
 ### Known Issues
-- No typed TrajectoryBuildResult is bound across storage/TaskResponse/runtime boundaries.
+- Typed TrajectoryBuildResult is bound to TaskResponse but not yet produced by runner finalization or sinks.
 - Trajectory updates may race task finalization.
 - `trajectory.log` remains legacy logger/Python-repr encoding.
 - Current compiler/request capture can observe hook drift but does not yet enforce a universal final boundary.
