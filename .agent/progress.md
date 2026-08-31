@@ -2,13 +2,11 @@
 
 ## Current Status
 
-**Phase:** Milestone 2
-**Current milestone:** Context Models, Adapters, and Observe Mode
-**Current task:** Milestone 2 integration and architecture review
-**Last action:** Model-boundary observe is integrated with exact Agent call-id correlation and pre-provider request IDs.
-Sync/async/stream paths preserve one request snapshot through success, failure, cancellation, and early stream close; the
-internal correlation kwarg is removed before provider calls. Main-tree focused regression is 31 passed; independent review
-is in progress.
+**Phase:** Milestone 3
+**Current milestone:** Universal Final Compiler and Rollout Modes
+**Current task:** Wire owner-side pre-fold observations before implementing enforce mode
+**Last action:** Milestone 2 passed independent review at `429fdf39` with P0=0/P1=0. Agent capture is fail-open,
+model-boundary fidelity is explicit, correlation is task-local, and full Agent/model suites pass 16/15 tests.
 
 ## Completed Foundations
 
@@ -211,5 +209,8 @@ is in progress.
   overrides no longer receive the private `_aworld_context_call_id` extension kwarg, while the standard model boundary still
   resolves the exact compiled call id; the historical direct-call kwarg remains accepted and is popped before providers.
 - Full post-fix Agent call-record and model-boundary suites are green at 16 and 15 tests respectively.
+- Independent final review approved Milestone 2 with no P0/P1. Accepted P2s: a failed best-effort finish may retain an
+  `in_progress` record; ContextVar correlation does not cross a caller-created non-context-propagating thread; synchronous
+  capture wrappers deliberately do not swallow process-control `BaseException`. None changes provider/task semantics.
 - Authority, trust, lifetime, stability, source URI, task epoch, and exact token counts remain UNKNOWN unless their owner can
   prove them; role/content heuristics are not acceptable.
