@@ -203,5 +203,13 @@ is in progress.
   is green at 30 passed.
 - `AdapterDiagnostic` now tuple-freezes caller-supplied `unknown_fields`, so its frozen dataclass contract cannot retain a
   mutable list alias. The dedicated legacy adapter suite is green at five passed.
+- Agent-side compiled-request, assembly-metadata, and response capture now use fail-open wrappers, so their serialization or
+  `ContextState` failures cannot skip `invoke_model`, replace a successful response, or mask provider failure/cancellation.
+  The invoke `finally` only performs response business logic after a normal return; active failures are re-raised unchanged
+  after best-effort capture. Seven focused Agent regressions pass, including the pre-existing interrupted-task path.
+- Agent/model correlation now travels through a task-local `ContextVar` for the duration of `invoke_model`. Custom Agent
+  overrides no longer receive the private `_aworld_context_call_id` extension kwarg, while the standard model boundary still
+  resolves the exact compiled call id; the historical direct-call kwarg remains accepted and is popped before providers.
+- Full post-fix Agent call-record and model-boundary suites are green at 16 and 15 tests respectively.
 - Authority, trust, lifetime, stability, source URI, task epoch, and exact token counts remain UNKNOWN unless their owner can
   prove them; role/content heuristics are not acceptable.

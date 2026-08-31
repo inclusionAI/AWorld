@@ -12,6 +12,7 @@ from aworld.core.context.base import Context
 from aworld.core.context.context_state import ContextState
 from aworld.core.event.base import Constants, Message
 from aworld.core.task import Task
+from aworld.core.exceptions import AWorldRuntimeException
 from aworld.models.llm import AWORLD_CONTEXT_CALL_ID_KWARG
 from aworld.models.model_response import ModelResponse
 
@@ -283,10 +284,173 @@ async def test_async_policy_does_not_forward_prompt_cache_kwargs_to_unknown_prov
     ]
     assert "prompt_assembly_plan" not in captured["kwargs"]
     assert "provider_native_prompt_cache" not in captured["kwargs"]
-    assert captured["kwargs"][AWORLD_CONTEXT_CALL_ID_KWARG]
-    assert captured["kwargs"][AWORLD_CONTEXT_CALL_ID_KWARG] == (
-        context.get_llm_calls()[0]["call_id"]
+    assert AWORLD_CONTEXT_CALL_ID_KWARG not in captured["kwargs"]
+    assert context.get_llm_calls()[0]["call_id"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "capture_method",
+    ["_record_llm_call_request", "_update_llm_call_observability"],
+)
+async def test_async_policy_request_or_assembly_capture_failure_does_not_skip_model(
+    monkeypatch,
+    capture_method,
+):
+    model_calls = 0
+
+    class CapturingAgent(Agent):
+        async def build_llm_input(self, observation, info=None, message=None, **kwargs):
+            return [{"role": "user", "content": "hello"}]
+
+        async def _filter_tools(self, context=None):
+            return None
+
+        async def invoke_model(self, messages=None, message=None, **kwargs):
+            nonlocal model_calls
+            model_calls += 1
+            return ModelResponse(
+                id="resp-capture-begin",
+                model="fake-model",
+                content="done",
+                usage={"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            )
+
+    agent = CapturingAgent(
+        name="Aworld",
+        conf=AgentConfig(
+            llm_provider="custom",
+            llm_model_name="fake-model",
+            llm_api_key="fake-key",
+        ),
     )
+
+    def fail_request_capture(*args, **kwargs):
+        raise RuntimeError("agent-request-capture-secret")
+
+    monkeypatch.setattr(agent, capture_method, fail_request_capture)
+
+    async def skip_memory(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(agent, "_add_message_to_memory", skip_memory)
+    context = _build_context("task-agent-request-fail-open")
+    message = Message(
+        category=Constants.AGENT,
+        sender="user",
+        receiver=agent.name(),
+        headers={"context": context},
+    )
+
+    await agent.async_policy(
+        SimpleNamespace(observer="user", from_agent_name=None, context=None),
+        message=message,
+    )
+
+    assert model_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_async_policy_response_capture_failure_preserves_success(monkeypatch):
+    class SuccessfulAgent(Agent):
+        async def build_llm_input(self, observation, info=None, message=None, **kwargs):
+            return [{"role": "user", "content": "hello"}]
+
+        async def _filter_tools(self, context=None):
+            return None
+
+        async def invoke_model(self, messages=None, message=None, **kwargs):
+            return ModelResponse(
+                id="resp-capture-finish",
+                model="fake-model",
+                content="done",
+                usage={"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            )
+
+    agent = SuccessfulAgent(
+        name="Aworld",
+        conf=AgentConfig(
+            llm_provider="custom",
+            llm_model_name="fake-model",
+            llm_api_key="fake-key",
+        ),
+    )
+
+    def fail_response_capture(*args, **kwargs):
+        raise RuntimeError("agent-response-capture-secret")
+
+    monkeypatch.setattr(agent, "_record_llm_call_response", fail_response_capture)
+
+    async def skip_memory(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(agent, "_add_message_to_memory", skip_memory)
+    context = _build_context("task-agent-response-success")
+    message = Message(
+        category=Constants.AGENT,
+        sender="user",
+        receiver=agent.name(),
+        headers={"context": context},
+    )
+
+    result = await agent.async_policy(
+        SimpleNamespace(observer="user", from_agent_name=None, context=None),
+        message=message,
+    )
+
+    assert len(result) == 1
+    assert result[0].policy_info == "done"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("primary", [ValueError("provider-primary"), asyncio.CancelledError()])
+async def test_async_policy_response_capture_failure_preserves_primary_error(
+    monkeypatch,
+    primary,
+):
+    class FailingAgent(Agent):
+        async def build_llm_input(self, observation, info=None, message=None, **kwargs):
+            return [{"role": "user", "content": "hello"}]
+
+        async def _filter_tools(self, context=None):
+            return None
+
+        async def invoke_model(self, messages=None, message=None, **kwargs):
+            raise primary
+
+    agent = FailingAgent(
+        name="Aworld",
+        conf=AgentConfig(
+            llm_provider="custom",
+            llm_model_name="fake-model",
+            llm_api_key="fake-key",
+        ),
+    )
+
+    def fail_response_capture(*args, **kwargs):
+        raise RuntimeError("agent-response-capture-secret")
+
+    monkeypatch.setattr(agent, "_record_llm_call_response", fail_response_capture)
+    context = _build_context("task-agent-response-primary")
+    message = Message(
+        category=Constants.AGENT,
+        sender="user",
+        receiver=agent.name(),
+        headers={"context": context},
+    )
+
+    if isinstance(primary, asyncio.CancelledError):
+        with pytest.raises(asyncio.CancelledError):
+            await agent.async_policy(
+                SimpleNamespace(observer="user", from_agent_name=None, context=None),
+                message=message,
+            )
+    else:
+        with pytest.raises(AWorldRuntimeException, match="provider-primary"):
+            await agent.async_policy(
+                SimpleNamespace(observer="user", from_agent_name=None, context=None),
+                message=message,
+            )
 
 
 @pytest.mark.asyncio

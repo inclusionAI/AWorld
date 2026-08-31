@@ -10,7 +10,11 @@ from aworld.core.context.base import Context
 from aworld.core.context.context_state import ContextState
 from aworld.core.llm_provider import LLMProviderBase
 from aworld.core.task import Task  # completes context/model initialization before LLMModel
-from aworld.models.llm import LLMModel, acall_llm_model_stream
+from aworld.models.llm import (
+    LLMModel,
+    acall_llm_model_stream,
+    bind_llm_context_call_id,
+)
 from aworld.models.model_response import ModelResponse
 
 
@@ -183,6 +187,27 @@ def test_sync_observe_correlates_exact_call_id_and_records_redacted_match() -> N
     assert provider.seen[0][2]["api_key"] == "extra-kwarg-secret"
 
 
+def test_context_local_call_id_correlates_without_extension_kwarg() -> None:
+    provider = BoundaryProvider()
+    model = LLMModel(custom_provider=provider)
+    context = Context(task_id="task-context-local-correlation")
+    context.context_info["llm_calls"] = [
+        _compiled_record("context-local-call", "context-local")
+    ]
+
+    with bind_llm_context_call_id("context-local-call"):
+        model.completion(
+            [{"role": "user", "content": "context-local"}],
+            context=context,
+        )
+
+    calls = context.get_llm_calls()
+    assert len(calls) == 1
+    assert calls[0]["call_id"] == "context-local-call"
+    assert calls[0]["status"] == "success"
+    _assert_internal_kwarg_not_forwarded(provider)
+
+
 @pytest.mark.asyncio
 async def test_async_concurrent_same_agent_calls_do_not_cross_correlate() -> None:
     provider = BoundaryProvider()
@@ -194,17 +219,16 @@ async def test_async_concurrent_same_agent_calls_do_not_cross_correlate() -> Non
         _compiled_record("call-fast", "fast"),
     ]
 
+    async def bound_call(call_id: str, content: str):
+        with bind_llm_context_call_id(call_id):
+            return await model.acompletion(
+                [{"role": "user", "content": content}],
+                context=context,
+            )
+
     await asyncio.gather(
-        model.acompletion(
-            [{"role": "user", "content": "slow"}],
-            context=context,
-            **{INTERNAL_CALL_ID: "call-slow"},
-        ),
-        model.acompletion(
-            [{"role": "user", "content": "fast"}],
-            context=context,
-            **{INTERNAL_CALL_ID: "call-fast"},
-        ),
+        bound_call("call-slow", "slow"),
+        bound_call("call-fast", "fast"),
     )
 
     records = {item["call_id"]: item for item in context.get_llm_calls()}
