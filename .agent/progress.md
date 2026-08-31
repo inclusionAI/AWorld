@@ -5,8 +5,8 @@
 **Phase:** Milestone 1
 **Current milestone:** Trajectory Control Plane Foundation
 **Current task:** Task 1.4 integration and architecture review
-**Last action:** Architecture review found finalize-before-delivery and I/O invariants gaps; compatibility and remote-child
-tracking fixes are merged while two focused P1 repair branches run.
+**Last action:** All first-review P1/P2 fixes are merged; combined trajectory/context regression is 284 passed and the
+second independent Milestone 1 acceptance review is running.
 
 ## Completed Foundations
 
@@ -104,8 +104,8 @@ tracking fixes are merged while two focused P1 repair branches run.
 - Fixed a dataset lazy-import regression that left TaskConfig subclasses with unresolved Pydantic forward refs; the wider
   runner/evaluation/dataset suite now passes 219 tests.
 - Fixed separate/remote child imports so they open, drain, acknowledge, fence, and retain diagnostics in the root registry.
-- Envelope invariants, legacy partial fidelity, execution-not-started classification, retry epoch, and delivery receipts are
-  undergoing the required review-fix cycle before Milestone 1 can pass.
+- Envelope invariants, legacy partial fidelity, execution-not-started classification, retry epoch, delivery receipts, and
+  finalize-before-response are implemented and in the second review pass.
 
 ### Milestone 2 Readiness
 - Task 2.1 dependency-light frozen models/trace is in progress at `/tmp/aworld-context-compiler-models`; it has no runtime
