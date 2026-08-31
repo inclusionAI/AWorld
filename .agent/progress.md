@@ -4,8 +4,9 @@
 
 **Phase:** Milestone 1
 **Current milestone:** Trajectory Control Plane Foundation
-**Current task:** Architecture/code audit for Tasks 1.1-1.3
-**Last action:** Initialized long-running project state from the approved Context Management spec.
+**Current task:** Task 1.1 typed trajectory build contracts implementation
+**Last action:** Completed read-only audits for contracts, finalize concurrency, and trajectory I/O; Task 1.1 is running in
+an isolated worktree.
 
 ## Completed Foundations
 
@@ -20,9 +21,9 @@
 
 | Task | Status | Notes |
 |---|---|---|
-| 1.1 Typed trajectory build contracts | pending | Audit current TaskResponse and dataset models first |
-| 1.2 Tracked update/finalize barrier | pending | Audit all `_update_trajectory` scheduling paths |
-| 1.3 JSONL v2 dual-read/write | pending | Audit current logger/storage/reader formats |
+| 1.1 Typed trajectory build contracts | in_progress | `/tmp/aworld-context-trajectory-contracts` |
+| 1.2 Tracked update/finalize barrier | pending | Audit complete; depends on 1.1 contracts |
+| 1.3 JSONL v2 dual-read/write | pending | Audit complete; codec may parallelize after 1.1 |
 | 1.4 Integration and architecture review | pending | Depends on 1.1-1.3 |
 
 ## Decisions Log
@@ -40,6 +41,19 @@
 - Rationale: the goal is generalized AWorld framework capability from Context Management.
 - Trade-offs accepted: improvements require broader evidence and may take longer to validate.
 
+### Decision: Trajectory registry ownership
+- Options considered: runner-local task set; Context-owned registry; root TrajectoryDataset-owned registry.
+- Chose: one registry reachable from the root Context/TrajectoryDataset boundary, partitioned by task id.
+- Rationale: Post-LLM hooks, subtask group merges, deep-copied Context, and Amni root delegation bypass a runner-only set.
+- Trade-offs accepted: the dataset/control boundary gains lifecycle state and must explicitly fence storage writes.
+
+### Decision: JSONL v2 physical format
+- Options considered: reuse Loguru trajectory.log; replace legacy output; use an independent v2 JSONL sibling.
+- Chose: independent `trajectory.jsonl` sink with legacy/dual/jsonl_v2 modes.
+- Rationale: a real Loguru record has a header plus Python repr and nested JSON strings, so it cannot satisfy one-object-per-
+  line integrity. Dual mode preserves existing consumers.
+- Trade-offs accepted: dual mode duplicates redacted trajectory bytes during migration and requires explicit retention.
+
 ## Architecture State
 
 ### Components
@@ -54,3 +68,9 @@
 - `trajectory.log` remains legacy logger/Python-repr encoding.
 - Current compiler/request capture can observe hook drift but does not yet enforce a universal final boundary.
 
+### Audit Findings
+- Three event-runner trajectory updates are bare `create_task` calls and can race the final storage read.
+- The same logical message has before/after builds without revision fencing; completion order can overwrite newer state.
+- Update/storage exceptions are swallowed, so coroutine completion does not prove persistence acknowledgement.
+- Existing evaluation reader fails on real Loguru headers when iterating all records and selects the first repeated task.
+- Runtime/ATIF projection receipts live outside this repository and must not be claimed complete in Milestone 1.
