@@ -5,9 +5,9 @@
 **Phase:** Milestone 1
 **Current milestone:** Trajectory Control Plane Foundation
 **Current task:** Task 1.4 integration and architecture review
-**Last action:** All six second-review findings now have implementations. The merged runner/evaluation/dataset/compiler
-regression is 304 passed and four skipped; the real formatter + dual-write + retry fixture is merged. Independent
-Milestone 1 re-review remains.
+**Last action:** Third independent review approved TC-IO-023 but rejected Milestone 1 with three new cancellation/projection
+P1s: cancelled emitter lacks fallback, cancelled `to_thread` append can be retried into conflicting v2 records, and
+uncanonicalizable SAR content escapes the typed-failure boundary. Reproduction-driven fixes are in progress.
 
 ## Completed Foundations
 
@@ -122,6 +122,9 @@ Milestone 1 re-review remains.
   reads and canonical checksums.
 - Post-fix wide regression: 304 passed, four skipped across runners, evaluations, dataset, trajectory contracts, compiler
   adapters/models/trace, PromptSection adapter, and Redis delivery propagation.
+- Third review confirmed all second-review findings closed, then reproduced three deeper interleavings not covered by the
+  suite. TC-IO-023 is approved; TC-FINALIZE-021 and the generalized TC-EMPTY-022 contract remain blocked until a single
+  shielded finalize/delivery attempt and typed projection failure are implemented.
 
 ### Milestone 2 Readiness
 - Task 2.1 dependency-light frozen models/trace is merged; it has no runtime integration and therefore cannot bypass the
