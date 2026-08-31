@@ -1042,10 +1042,12 @@ async def test_cancel_during_v2_append_reuses_one_finalize_delivery_attempt(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("cancel_count", [2, 3])
 async def test_pre_run_failure_cancel_during_v2_append_joins_same_typed_attempt(
-    tmp_path, monkeypatch
+    cancel_count, tmp_path, monkeypatch
 ):
     runner, context = _runner(sub_task=True)
+    runner.task.streaming_mode = StreamingMode.ALL
     jsonl_path = tmp_path / "trajectory.jsonl"
     runner.conf.trajectory_format = "jsonl_v2"
     runner.conf.trajectory_v2_path = str(jsonl_path)
@@ -1075,13 +1077,19 @@ async def test_pre_run_failure_cancel_during_v2_append_joins_same_typed_attempt(
     monkeypatch.setattr(runner, "pre_run", broken_pre_run)
     monkeypatch.setattr(runner, "post_run", post_run)
 
+    stream = runner.streaming()
+    stream_task = asyncio.create_task(anext(stream))
     run_task = asyncio.create_task(runner.run())
     assert await asyncio.to_thread(append_entered.wait, 1)
-    run_task.cancel()
+    for _ in range(cancel_count):
+        run_task.cancel()
+        await asyncio.sleep(0)
+        assert not run_task.done()
     release_append.set()
 
     with pytest.raises(RuntimeError, match="pre-run failed"):
         await asyncio.wait_for(run_task, timeout=2)
+    terminal = await asyncio.wait_for(stream_task, timeout=1)
 
     receipt = runner._task_response.trajectory_delivery_receipt
     result = runner._task_response.trajectory_build_result
@@ -1093,6 +1101,79 @@ async def test_pre_run_failure_cancel_during_v2_append_joins_same_typed_attempt(
     assert result.status is TrajectoryBuildStatus.EMPTY
     assert result.reason_code is TrajectoryReasonCode.EXECUTION_NOT_STARTED
     assert receipt.v2.status is TrajectoryDeliveryState.PERSISTED
+    assert runner._task_response_publish_attempted or runner._stream_terminal_fallback_ready.is_set()
+    assert terminal.topic is TopicType.TASK_RESPONSE
+    assert terminal.payload is runner._task_response
+    with pytest.raises(StopAsyncIteration):
+        await anext(stream)
+
+
+@pytest.mark.asyncio
+async def test_pre_run_primary_cancel_is_restored_after_repeated_cleanup_cancels(
+    tmp_path, monkeypatch
+):
+    runner, _ = _runner(sub_task=True)
+    runner.task.streaming_mode = StreamingMode.ALL
+    jsonl_path = tmp_path / "trajectory.jsonl"
+    runner.conf.trajectory_format = "jsonl_v2"
+    runner.conf.trajectory_v2_path = str(jsonl_path)
+    pre_run_entered = asyncio.Event()
+    append_entered = threading.Event()
+    release_append = threading.Event()
+    append_calls = 0
+    from aworld.dataset.trajectory_io import TrajectoryJsonlSink
+
+    original_append = TrajectoryJsonlSink.append
+
+    def blocked_append(self, envelope):
+        nonlocal append_calls
+        append_calls += 1
+        append_entered.set()
+        assert release_append.wait(timeout=2)
+        return original_append(self, envelope)
+
+    async def blocked_pre_run():
+        pre_run_entered.set()
+        await asyncio.Event().wait()
+
+    async def post_run():
+        return None
+
+    monkeypatch.setattr(
+        "aworld.runners.event_runner.TrajectoryJsonlSink.append", blocked_append
+    )
+    monkeypatch.setattr(runner, "pre_run", blocked_pre_run)
+    monkeypatch.setattr(runner, "post_run", post_run)
+
+    stream = runner.streaming()
+    stream_task = asyncio.create_task(anext(stream))
+    run_task = asyncio.create_task(runner.run())
+    await pre_run_entered.wait()
+    run_task.cancel()
+    assert await asyncio.to_thread(append_entered.wait, 1)
+    for _ in range(2):
+        run_task.cancel()
+        await asyncio.sleep(0)
+        assert not run_task.done()
+    release_append.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(run_task, timeout=2)
+    terminal = await asyncio.wait_for(stream_task, timeout=1)
+
+    result = runner._task_response.trajectory_build_result
+    receipt = runner._task_response.trajectory_delivery_receipt
+    read_result = read_trajectory_records(jsonl_path, include_rotations=False)
+    assert append_calls == 1
+    assert len(jsonl_path.read_text(encoding="utf-8").splitlines()) == 1
+    assert len(read_result.records) == 1
+    assert read_result.diagnostics == ()
+    assert result.reason_code is TrajectoryReasonCode.EXECUTION_NOT_STARTED
+    assert receipt.v2.status is TrajectoryDeliveryState.PERSISTED
+    assert terminal.topic is TopicType.TASK_RESPONSE
+    assert terminal.payload is runner._task_response
+    with pytest.raises(StopAsyncIteration):
+        await anext(stream)
 
 
 @pytest.mark.asyncio
