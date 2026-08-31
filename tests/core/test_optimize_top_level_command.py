@@ -1354,6 +1354,88 @@ def test_run_optimize_cli_delegates_generic_request_to_framework_api(
     assert calls["judge_config"].model_profile == "judge"
 
 
+def test_run_optimize_cli_loads_skill_evolution_contract(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import aworld.self_evolve as self_evolve
+
+    calls = {}
+    contract_path = tmp_path / "agent-browser.contract.json"
+    contract_path.write_text(
+        json.dumps(
+            {
+                "schema_version": (
+                    "aworld.self_evolve.skill_evolution_contract.v1"
+                ),
+                "target_skill_id": "agent-browser",
+                "objective": "Handle large output",
+                "capabilities": [
+                    {
+                        "capability_id": "large_output",
+                        "description": "Read large output safely",
+                        "case_ids": ["case-1"],
+                    }
+                ],
+                "required_stable_cycles": 1,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def fake_optimize_from_cli_request(**kwargs):
+        calls.update(kwargs)
+        return {"report_path": str(tmp_path / "report.json")}
+
+    monkeypatch.setattr(
+        self_evolve,
+        "optimize_from_cli_request",
+        fake_optimize_from_cli_request,
+        raising=False,
+    )
+
+    run_optimize_cli(
+        agent=None,
+        task=None,
+        target="skill:agent-browser",
+        skill_evolution_contract=contract_path.name,
+        dataset="eval.jsonl",
+        from_session=None,
+        from_trajectory=None,
+        batch_config=None,
+        iterations=1,
+        apply="verified_only",
+        infer_target=False,
+        workspace_root=str(tmp_path),
+    )
+
+    assert calls["skill_evolution_contract"]["target_skill_id"] == (
+        "agent-browser"
+    )
+    assert calls["skill_evolution_contract"]["capabilities"][0][
+        "case_ids"
+    ] == ["case-1"]
+
+
+def test_render_optimize_summary_shows_skill_convergence() -> None:
+    summary = render_optimize_summary(
+        {
+            "status": "rejected",
+            "skill_evolution": {
+                "covered_required_capability_count": 1,
+                "required_capability_count": 2,
+                "stable_cycle_count": 0,
+                "required_stable_cycles": 2,
+                "missing_required_capability_ids": ["large_output"],
+            },
+        }
+    )
+
+    assert "Skill capability coverage: 1/2" in summary
+    assert "Skill stability cycles: 0/2" in summary
+    assert "Missing Skill capabilities: large_output" in summary
+
+
 def test_run_optimize_cli_injects_default_mutation_model_independent_of_judge(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

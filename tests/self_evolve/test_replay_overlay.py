@@ -102,6 +102,7 @@ from aworld.self_evolve.replay import (
     _load_variant_result_from_dir,
     _load_self_evolve_task_response,
     _measurement_terminal_state_for_variant,
+    _materialize_task_skill_mount,
 )
 from aworld.self_evolve.failure_events import (
     FailureEventSource,
@@ -7980,6 +7981,9 @@ async def test_aworld_cli_replay_executor_requests_machine_readable_trajectory_a
     assert len(task_text) < 3_500
     assert captured["kwargs"]["cwd"] == str(tmp_path)
     assert captured["kwargs"]["env"]["AWORLD_SELF_EVOLVE_AUTO_DRAIN"] == "0"
+    assert captured["kwargs"]["env"][
+        "AWORLD_SELF_EVOLVE_ISOLATED_SKILL_ROOTS"
+    ] == str(tmp_path / "skills")
     assert captured["kwargs"]["env"]["AWORLD_SELF_EVOLVE_REPLAY_ARTIFACT_DIR"] == str(
         tmp_path / "artifacts" / "evidence"
     )
@@ -11640,6 +11644,52 @@ def test_trusted_skill_activation_requires_signed_exact_package(
     )
     assert rejected["skill_activation_attested"] is False
     assert rejected["activated_skill_package_fingerprint"] is None
+
+
+def test_task_skill_mount_freezes_exact_candidate_package(
+    tmp_path: Path,
+) -> None:
+    source_package = tmp_path / "overlay" / "skills" / "demo"
+    source_package.mkdir(parents=True)
+    source_skill = source_package / "SKILL.md"
+    source_skill.write_text(
+        "---\nname: demo\n---\n# Candidate\n",
+        encoding="utf-8",
+    )
+    expected = fingerprint_skill_package(source_package)
+
+    mounted_root = _materialize_task_skill_mount(
+        skill_root=str(source_package.parent),
+        skill_name="demo",
+        artifact_dir=tmp_path / "artifacts",
+        expected_package_fingerprint=expected,
+    )
+
+    assert mounted_root is not None
+    mounted_package = Path(mounted_root) / "demo"
+    assert mounted_package != source_package
+    assert fingerprint_skill_package(mounted_package) == expected
+    source_skill.write_text("changed after mount\n", encoding="utf-8")
+    assert fingerprint_skill_package(mounted_package) == expected
+
+
+def test_task_skill_mount_rejects_source_fingerprint_drift(
+    tmp_path: Path,
+) -> None:
+    source_package = tmp_path / "overlay" / "skills" / "demo"
+    source_package.mkdir(parents=True)
+    (source_package / "SKILL.md").write_text(
+        "---\nname: demo\n---\n# Candidate\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="source fingerprint drifted"):
+        _materialize_task_skill_mount(
+            skill_root=str(source_package.parent),
+            skill_name="demo",
+            artifact_dir=tmp_path / "artifacts",
+            expected_package_fingerprint="sha256:" + "0" * 64,
+        )
 
 
 def test_replay_cli_supervisor_bounds_evidence_finalization_without_output(

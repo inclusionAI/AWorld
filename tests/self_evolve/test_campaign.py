@@ -5227,6 +5227,72 @@ def _write_successful_campaign_fixture(
     }
 
 
+def test_campaign_requires_consecutive_skill_contract_cycles(
+    tmp_path: Path,
+) -> None:
+    calls: list[dict] = []
+
+    def run_once(**request):
+        result = _write_successful_campaign_fixture(
+            tmp_path,
+            calls,
+            request,
+        )
+        report_path = Path(result["report_path"])
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        report["skill_evolution"] = {
+            "coverage_satisfied": True,
+            "covered_capability_ids": ["large_output"],
+            "covered_required_capability_count": 1,
+            "required_capability_count": 1,
+            "required_stable_cycles": 2,
+        }
+        report_path.write_text(json.dumps(report), encoding="utf-8")
+        return result
+
+    controller = SelfImprovementCampaignController(
+        workspace_root=tmp_path,
+        run_once=run_once,
+    )
+    campaign = controller.create(
+        {
+            "target": "skill:agent-browser",
+            "from_trajectory": "trajectory.log",
+            "apply_policy": "verified_only",
+            "infer_target": False,
+            "max_full_evaluation_candidates": 2,
+            "skill_evolution_contract": {
+                "schema_version": (
+                    "aworld.self_evolve.skill_evolution_contract.v1"
+                ),
+                "target_skill_id": "agent-browser",
+                "objective": "Handle large output",
+                "capabilities": [
+                    {
+                        "capability_id": "large_output",
+                        "description": "Read large output safely",
+                        "case_ids": ["case-1"],
+                    }
+                ],
+                "required_stable_cycles": 2,
+            },
+        },
+        max_cycles=2,
+    )
+
+    result = controller.run_bounded(campaign)
+
+    assert len(calls) == 2
+    assert result["campaign_status"] == "complete"
+    assert result["campaign_contract_stable_cycle_count"] == 2
+    first_report = controller.store.read_report(
+        calls[0]["campaign_id"] + "-cycle-001"
+    )
+    assert first_report["self_improvement_disposition"]["reason_code"] == (
+        "skill_contract_stability_pending"
+    )
+
+
 def test_candidate_prerequisite_enters_repair_without_measurement_retry(
     tmp_path: Path,
 ) -> None:

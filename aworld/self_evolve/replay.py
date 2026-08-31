@@ -3253,6 +3253,71 @@ def _clone_replay_variant_tree(source: Path, destination: Path) -> None:
     shutil.copytree(source, destination, copy_function=copy_file)
 
 
+def _materialize_task_skill_mount(
+    *,
+    skill_root: str | None,
+    skill_name: str,
+    artifact_dir: Path,
+    expected_package_fingerprint: str | None,
+) -> str | None:
+    """Copy the selected package into the immutable task artifact boundary.
+
+    Candidate overlays are run-scoped control-plane objects.  A child task
+    must not keep resolving them through a path whose lifecycle is owned by
+    the campaign runner.  Materializing the exact package beside the task
+    artifacts gives resolution, execution, and signed activation attestation
+    one stable byte identity.
+    """
+
+    if (
+        not skill_root
+        or not skill_name
+        or expected_package_fingerprint is None
+        or re.fullmatch(
+            r"sha256:[0-9a-f]{64}", expected_package_fingerprint
+        )
+        is None
+    ):
+        return skill_root
+    supplied_root = Path(skill_root).expanduser().resolve()
+    package_root = supplied_root / skill_name
+    if not (package_root / "SKILL.md").is_file() and not (
+        package_root / "skill.md"
+    ).is_file():
+        package_root = supplied_root
+    if not (package_root / "SKILL.md").is_file() and not (
+        package_root / "skill.md"
+    ).is_file():
+        raise ValueError(
+            "replay skill mount cannot locate requested package: "
+            f"{skill_name} under {supplied_root}"
+        )
+
+    observed_fingerprint = fingerprint_skill_package(package_root)
+    if (
+        expected_package_fingerprint is not None
+        and observed_fingerprint != expected_package_fingerprint
+    ):
+        raise ValueError(
+            "replay skill mount source fingerprint drifted: "
+            f"expected {expected_package_fingerprint}, observed "
+            f"{observed_fingerprint}"
+        )
+
+    mount_root = artifact_dir / "task_skill_mount"
+    if mount_root.is_symlink():
+        raise ValueError("replay task skill mount cannot be a symlink")
+    if mount_root.exists():
+        shutil.rmtree(mount_root)
+    mounted_package = mount_root / skill_name
+    mounted_package.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(package_root, mounted_package, symlinks=False)
+    mounted_fingerprint = fingerprint_skill_package(mounted_package)
+    if mounted_fingerprint != observed_fingerprint:
+        raise ValueError("replay task skill mount changed package bytes")
+    return str(mount_root)
+
+
 def _resume_root_is_compatible(
     current: CandidateReplayRequest,
     stored: CandidateReplayRequest,
@@ -5758,6 +5823,28 @@ class AWorldCliCandidateReplayBackend:
                 else "non_deterministic"
             )
             isolated_workspace_path = str(isolated_workspace)
+        effective_measurement_arm = measurement_arm or (
+            MeasurementArm.CONTROL
+            if (
+                variant_id == "baseline"
+                or variant_id.startswith("baseline-")
+                or variant_id.startswith("baseline__evidence_retry_")
+            )
+            else MeasurementArm.TREATMENT
+        )
+        expected_skill_package_fingerprint = (
+            request.verified_candidate_package_fingerprint
+            if effective_measurement_arm is MeasurementArm.TREATMENT
+            else request.baseline_skill_fingerprint
+        )
+        execution_skill_root = _materialize_task_skill_mount(
+            skill_root=skill_root,
+            skill_name=request.target.target_id,
+            artifact_dir=artifact_dir,
+            expected_package_fingerprint=(
+                expected_skill_package_fingerprint
+            ),
+        )
         service_session: _ReplayServiceSession | None = None
         service_failure: Mapping[str, Any] | None = None
         service_cleanup_status = "not_required"
@@ -5827,15 +5914,6 @@ class AWorldCliCandidateReplayBackend:
                     })
                     service_failure_details["diagnostics"] = diagnostics
                 service_failure = service_failure_details
-        effective_measurement_arm = measurement_arm or (
-            MeasurementArm.CONTROL
-            if (
-                variant_id == "baseline"
-                or variant_id.startswith("baseline-")
-                or variant_id.startswith("baseline__evidence_retry_")
-            )
-            else MeasurementArm.TREATMENT
-        )
         measurement_work_unit = _measurement_work_unit_for_replay(
             request,
             arm=effective_measurement_arm,
@@ -5856,7 +5934,7 @@ class AWorldCliCandidateReplayBackend:
             workspace_root=workspace_root,
             task_input=task_input,
             task_text=_task_text(task_input),
-            skill_root=skill_root,
+            skill_root=execution_skill_root,
             artifact_dir=str(artifact_dir),
             variant_role=(
                 "baseline"
@@ -5885,9 +5963,7 @@ class AWorldCliCandidateReplayBackend:
             dataset_fingerprint=request.dataset_fingerprint,
             baseline_skill_fingerprint=request.baseline_skill_fingerprint,
             expected_skill_package_fingerprint=(
-                request.verified_candidate_package_fingerprint
-                if effective_measurement_arm is MeasurementArm.TREATMENT
-                else request.baseline_skill_fingerprint
+                expected_skill_package_fingerprint
             ),
             adapter_determinism=adapter_determinism,
             isolated_workspace_path=isolated_workspace_path,
@@ -8070,6 +8146,13 @@ class AWorldCliReplayExecutor:
                 ),
                 "AWORLD_SELF_EVOLVE_TASK_RESPONSE_CAPABILITY_MAX_BYTES": str(
                     task_response_max_bytes
+                ),
+                # This root is already copied into a private replay workspace.
+                # Mark it as the only unpublished candidate source that the
+                # child resolver may prioritize.  Acceptance remains bound to
+                # the signed activation evidence and expected package digest.
+                "AWORLD_SELF_EVOLVE_ISOLATED_SKILL_ROOTS": str(
+                    request.skill_root or ""
                 ),
                 "AWORLD_REPLAY_EVIDENCE_POLICY": "1",
                 "AWORLD_REPLAY_EVIDENCE_POLICY_MODE": (

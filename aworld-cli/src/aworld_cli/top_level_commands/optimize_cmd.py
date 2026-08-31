@@ -37,6 +37,16 @@ class OptimizeTopLevelCommand:
         parser.add_argument("--agent", type=str)
         parser.add_argument("--task", type=str)
         parser.add_argument("--target", type=str)
+        parser.add_argument(
+            "--skill-evolution-contract",
+            type=str,
+            dest="skill_evolution_contract",
+            help=(
+                "Versioned JSON contract defining the target Skill, required "
+                "capabilities, dataset case bindings, invariants, and stable "
+                "verification cycles."
+            ),
+        )
         parser.add_argument("--dataset", type=str)
         parser.add_argument("--from-session", type=str, dest="from_session")
         parser.add_argument(
@@ -393,6 +403,9 @@ class OptimizeTopLevelCommand:
                 agent=getattr(args, "agent", None),
                 task=getattr(args, "task", None),
                 target=target,
+                skill_evolution_contract=getattr(
+                    args, "skill_evolution_contract", None
+                ),
                 dataset=getattr(args, "dataset", None),
                 from_session=getattr(args, "from_session", None),
                 from_trajectory=getattr(args, "from_trajectory", None),
@@ -572,6 +585,7 @@ def render_optimize_summary(report: Any) -> str:
         "campaign_failure_attribution",
     )
     measurement = _read_report_value(report, "measurement")
+    skill_evolution = _read_report_value(report, "skill_evolution")
 
     lines = [
         (
@@ -625,6 +639,20 @@ def render_optimize_summary(report: Any) -> str:
             "Self-improvement: "
             f"{disposition.get('kind')} ({disposition['reason_code']})"
         )
+    if isinstance(skill_evolution, Mapping):
+        covered = skill_evolution.get("covered_required_capability_count")
+        required = skill_evolution.get("required_capability_count")
+        if covered is not None and required is not None:
+            lines.append(f"Skill capability coverage: {covered}/{required}")
+        stable = skill_evolution.get("stable_cycle_count")
+        required_stable = skill_evolution.get("required_stable_cycles")
+        if stable is not None and required_stable is not None:
+            lines.append(
+                f"Skill stability cycles: {stable}/{required_stable}"
+            )
+        missing = skill_evolution.get("missing_required_capability_ids")
+        if isinstance(missing, list) and missing:
+            lines.append("Missing Skill capabilities: " + ", ".join(missing))
     if goal_handoff_path:
         lines.append(f"Goal handoff: {goal_handoff_path}")
         if campaign_id:
@@ -773,6 +801,7 @@ def run_optimize_cli(
     agent: str | None,
     task: str | None,
     target: str | None,
+    skill_evolution_contract: str | None = None,
     dataset: str | None,
     from_session: str | None,
     from_trajectory: str | None,
@@ -878,7 +907,34 @@ def run_optimize_cli(
     )
     import aworld.self_evolve as self_evolve
 
+    loaded_skill_evolution_contract_object = (
+        self_evolve.load_skill_evolution_contract(
+            skill_evolution_contract,
+            workspace_root=workspace_root,
+        )
+        if skill_evolution_contract is not None
+        else None
+    )
+    loaded_skill_evolution_contract = (
+        loaded_skill_evolution_contract_object.to_dict()
+        if loaded_skill_evolution_contract_object is not None
+        else None
+    )
+
     runtime_apply = apply
+    if loaded_skill_evolution_contract_object is not None:
+        if runtime_apply not in VERIFIED_APPLY_POLICIES:
+            raise ValueError(
+                "--skill-evolution-contract requires a verified apply policy"
+            )
+        if (
+            loaded_skill_evolution_contract_object.required_stable_cycles
+            > max_improvement_cycles
+        ):
+            raise ValueError(
+                "--max-improvement-cycles must cover the contract's "
+                "required_stable_cycles"
+            )
     replay_repetitions_explicit = (
         baseline_replay_repetitions is not None
         or candidate_replay_repetitions is not None
@@ -993,6 +1049,8 @@ def run_optimize_cli(
             candidate_replay_repetitions=candidate_replay_repetitions,
         ),
     }
+    if loaded_skill_evolution_contract is not None:
+        request["skill_evolution_contract"] = loaded_skill_evolution_contract
     if not rerun_evaluator and not ingestion_only and (
         resume_campaign
         or (

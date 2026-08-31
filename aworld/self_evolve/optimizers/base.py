@@ -296,6 +296,7 @@ class OptimizerRequest:
     improvement_signal_set_fingerprint: str | None = None
     consumed_mutation_families: tuple[str, ...] = ()
     active_repair_frontier_keys: tuple[str | None, ...] = ()
+    skill_evolution_contract: Mapping[str, object] | None = None
 
     @classmethod
     def from_dataset(
@@ -318,6 +319,7 @@ class OptimizerRequest:
         handbook_slice: Mapping[str, object] | None = None,
         consumed_mutation_families: tuple[str, ...] = (),
         active_repair_frontier_keys: tuple[str | None, ...] = (),
+        skill_evolution_contract: Mapping[str, object] | None = None,
     ) -> "OptimizerRequest":
         trainable_ids = set(dataset.recipe.trainable_case_ids)
         return cls(
@@ -338,6 +340,11 @@ class OptimizerRequest:
             handbook_slice=handbook_slice,
             consumed_mutation_families=tuple(consumed_mutation_families),
             active_repair_frontier_keys=tuple(active_repair_frontier_keys),
+            skill_evolution_contract=(
+                dict(skill_evolution_contract)
+                if skill_evolution_contract is not None
+                else None
+            ),
             improvement_signal_set_fingerprint=(
                 str(
                     dataset.recipe.source[

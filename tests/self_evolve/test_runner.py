@@ -101,6 +101,7 @@ from aworld.self_evolve.runner import (
     _default_post_apply_evaluator,
     _candidate_generation_limit,
     _candidate_generation_actual_usage,
+    _candidate_generation_request_derived_tokens,
     _campaign_failure_attribution,
     _candidate_conformance_failure_signatures,
     _candidate_conformance_repair_topologies,
@@ -144,6 +145,7 @@ from aworld.self_evolve.runner import (
     _candidate_screening_qualification_case_limit,
     _explicit_target_selection_report,
     _source_config_from_stored_dataset_recipe,
+    _support_specific_control_circuit_breaker_gate,
     _summary_with_replay_evidence_metrics,
     _stage_telemetry_usage_delta,
     _stage_telemetry_usage_snapshot,
@@ -2910,6 +2912,11 @@ def test_replay_adaptation_cache_reuses_behavior_only_sibling_capability(
 
     first_root = write_skill("first", "# First behavior\n")
     second_root = write_skill("second", "# Second behavior\n")
+    third_root = write_skill("third", "# Third behavior\n")
+    (third_root / "replay" / "compiler.py").write_text(
+        "# distinct compiler surface\n",
+        encoding="utf-8",
+    )
     dataset = SelfEvolveDataset(
         cases=(EvalCase(case_id="case-1", input="plain task"),),
         recipe=DatasetRecipe(
@@ -2928,6 +2935,15 @@ def test_replay_adaptation_cache_reuses_behavior_only_sibling_capability(
         store=FilesystemSelfEvolveStore(tmp_path),
         optimizer=NoopOptimizer(),
     )
+    preflight_call_count = 0
+    original_preflight = runner.replay_adaptation_compiler.preflight
+
+    def counting_preflight(**kwargs):
+        nonlocal preflight_call_count
+        preflight_call_count += 1
+        return original_preflight(**kwargs)
+
+    runner.replay_adaptation_compiler.preflight = counting_preflight
 
     first_bundle, first_gate = runner._prepare_replay_adaptation(
         run_id="run-shared-adaptation",
@@ -2943,11 +2959,24 @@ def test_replay_adaptation_cache_reuses_behavior_only_sibling_capability(
         candidate_package_fingerprint="sha256:second-full-package",
         emit_progress=False,
     )
+    third_bundle, third_gate = runner._prepare_replay_adaptation(
+        run_id="run-shared-adaptation",
+        dataset=dataset,
+        capability_skill_root=third_root,
+        candidate_package_fingerprint="sha256:third-full-package",
+        emit_progress=False,
+    )
 
     assert first_gate.passed is True
     assert second_gate.passed is True
+    assert third_gate.passed is True
     assert first_bundle is second_bundle
-    assert len(runner._replay_adaptation_cache) == 1
+    assert third_bundle is not first_bundle
+    assert len(runner._replay_adaptation_cache) == 2
+    assert len(runner._replay_dataset_preflight_cache) == 1
+    assert preflight_call_count == 1
+    assert first_gate.details["preflight_cache_hit"] is False
+    assert third_gate.details["preflight_cache_hit"] is True
 
 
 def test_candidate_screening_builds_stratified_multi_case_panel() -> None:
@@ -7558,7 +7587,8 @@ async def test_runner_records_terminal_artifact_retention_cleanup(
         (artifact_root / "run-current" / "report.json").read_text(encoding="utf-8")
     )
     cleanup = report["artifact_retention"]
-    assert cleanup["removed_run_count"] >= 1
+    assert cleanup["removed_run_count"] == 0
+    assert cleanup["compacted_run_count"] >= 1
     assert any(
         "run-old-0/replay/cand-1/workspace" in path
         for path in cleanup["removed_paths"]
@@ -7608,6 +7638,32 @@ def test_artifact_retention_merge_preserves_ingestion_cleanup_telemetry() -> Non
         "ingestion-old",
     ]
     assert merged["protected_ingestion_ids"] == ["ingestion-current"]
+
+
+def test_artifact_retention_merge_migrates_legacy_removed_runs_to_compacted() -> None:
+    merged = _merge_artifact_retention_reports(
+        {
+            "status": "completed",
+            "removed_run_ids": ["legacy-compacted-run"],
+        },
+        {
+            "schema_version": "aworld.self_evolve.artifact_retention.v2",
+            "status": "completed",
+            "removed_run_ids": [],
+            "compacted_run_ids": ["current-compacted-run"],
+        },
+    )
+
+    assert merged["schema_version"] == (
+        "aworld.self_evolve.artifact_retention.v2"
+    )
+    assert merged["removed_run_count"] == 0
+    assert merged["removed_run_ids"] == []
+    assert merged["compacted_run_count"] == 2
+    assert merged["compacted_run_ids"] == [
+        "current-compacted-run",
+        "legacy-compacted-run",
+    ]
 
 
 def test_artifact_retention_transaction_recovers_after_final_report_crash(
@@ -9000,6 +9056,7 @@ def test_skill_candidate_requires_matching_runtime_activation_attestation(
         variant_id="candidate-skill-activation",
         status="succeeded",
         trajectory=[{"action": {"content": "candidate"}}],
+        metrics={"replay_service_protocol_trace_count": 1},
     )
     dataset = SelfEvolveDataset(
         cases=(EvalCase(case_id="case-skill-activation", input="complete task"),),
@@ -9019,6 +9076,7 @@ def test_skill_candidate_requires_matching_runtime_activation_attestation(
         ),
         dataset=dataset,
         candidate_requires_intervention_exposure=True,
+        candidate_requires_service_intervention=True,
         candidate_requires_skill_activation=True,
     )
     attested = _replay_gate_details(
@@ -9028,6 +9086,7 @@ def test_skill_candidate_requires_matching_runtime_activation_attestation(
             candidate=replace(
                 unattested_candidate,
                 metrics={
+                    "replay_service_protocol_trace_count": 1,
                     "skill_activation_attested": True,
                     "activated_skill_package_fingerprint": candidate_fingerprint,
                 },
@@ -9035,12 +9094,17 @@ def test_skill_candidate_requires_matching_runtime_activation_attestation(
         ),
         dataset=dataset,
         candidate_requires_intervention_exposure=True,
+        candidate_requires_service_intervention=True,
         candidate_requires_skill_activation=True,
     )
 
     assert unattested["candidate_intervention_observed"] is False
+    assert unattested["candidate_service_intervention_observed"] is True
+    assert unattested["candidate_skill_activation_observed"] is False
     assert unattested["code"] == "candidate_intervention_unobserved"
     assert attested["candidate_intervention_observed"] is True
+    assert attested["candidate_service_intervention_observed"] is True
+    assert attested["candidate_skill_activation_observed"] is True
     assert not any(
         event["code"] == "candidate_intervention_unobserved"
         for event in attested.get("causal_failure_events", [])
@@ -12140,6 +12204,70 @@ def test_explicit_zero_proof_is_overridden_by_nonzero_actual_usage() -> None:
         cost_ceiling=None,
         wall_ceiling=None,
     ) is None
+
+
+def test_candidate_generation_default_reservation_covers_large_prompt_envelope(
+    tmp_path: Path,
+) -> None:
+    runner = SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=SimpleNamespace(),
+    )
+
+    usage = runner._budget_cold_start_by_stage[
+        BudgetStage.CANDIDATE_GENERATION
+    ]
+    assert usage is not None
+    assert usage.tokens == 65_536
+
+
+def test_request_derived_generation_tokens_replace_static_cold_start() -> None:
+    context = _RunBudgetContext(
+        ledger=RunBudgetLedger(BudgetCeilings(100_000, None)),
+        cold_start_by_stage={
+            BudgetStage.CANDIDATE_GENERATION: BudgetUsage(tokens=65_536)
+        },
+    )
+
+    decision = context.reserve(
+        BudgetStage.CANDIDATE_GENERATION,
+        "compiled-prompt",
+        request_derived_tokens=24_000,
+    )
+
+    assert decision.allowed is True
+    assert decision.estimate.tokens == 24_000
+    assert decision.estimate.source is BudgetEstimateSource.REQUEST_DERIVED
+
+
+def test_request_derived_generation_tokens_include_prompt_and_completion() -> None:
+    async def population(*_args, **_kwargs):
+        raise AssertionError("token estimation must not execute generation")
+
+    optimizer = TraceReflectiveLLMMutator(
+        mutate_text=lambda _prompt: {},
+        population_callable=population,
+    )
+    request = OptimizerRequest(
+        target=SelfEvolveTargetRef("skill", "demo"),
+        current_content="# Demo\n\n" + ("bounded behavior evidence\n" * 600),
+        target_fingerprint="sha256:demo",
+        trace_packs=(),
+        max_candidates=1,
+    )
+    request = replace(
+        request,
+        evolution_context=compile_evolution_context(request),
+    )
+
+    tokens = _candidate_generation_request_derived_tokens(
+        optimizer,
+        request,
+        output_tokens_per_candidate=16_000,
+    )
+
+    assert tokens is not None
+    assert tokens > 16_000
 
 
 def test_stored_resume_zero_budget_override_does_not_exempt_later_repair() -> None:
@@ -15285,6 +15413,45 @@ def test_screening_timeout_uses_one_bounded_same_case_escalation() -> None:
     ) is None
 
 
+def test_support_specific_control_circuit_requires_repeated_exact_timeouts() -> None:
+    identity = {
+        "control_identity_fingerprint": "sha256:exact-control",
+        "case_id": "case-1",
+        "support_fingerprint": "sha256:support",
+        "timeout_envelope_fingerprint": "sha256:timeout",
+    }
+    observations = {
+        "sha256:exact-control": {
+            "identity": identity,
+            "baseline_attempt_count": 3,
+            "baseline_success_count": 0,
+            "baseline_timeout_count": 3,
+        }
+    }
+
+    gate = _support_specific_control_circuit_breaker_gate(
+        control_identity=identity,
+        control_observations=observations,
+    )
+
+    assert gate is not None
+    assert gate.details["code"] == "screening_support_control_circuit_open"
+    assert gate.details["candidate_execution_observed"] is False
+    assert gate.details["baseline_status"] == "failed"
+    assert _support_specific_control_circuit_breaker_gate(
+        control_identity={
+            **identity,
+            "control_identity_fingerprint": "sha256:new-timeout-envelope",
+        },
+        control_observations=observations,
+    ) is None
+    observations["sha256:exact-control"]["baseline_success_count"] = 1
+    assert _support_specific_control_circuit_breaker_gate(
+        control_identity=identity,
+        control_observations=observations,
+    ) is None
+
+
 @pytest.mark.asyncio
 async def test_population_screening_uses_historical_latency_for_initial_timeout(
     tmp_path: Path,
@@ -15356,6 +15523,93 @@ async def test_population_screening_uses_historical_latency_for_initial_timeout(
     assert selected == (candidate,)
     assert observed_timeouts == [152]
     assert report is not None
+
+
+@pytest.mark.asyncio
+async def test_population_screening_enforces_reserved_stage_wall_deadline(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("---\nname: demo\n---\n# Demo\n", encoding="utf-8")
+    dataset = SelfEvolveDataset(
+        cases=(EvalCase(case_id="case-1", input="task"),),
+        recipe=DatasetRecipe(
+            source={"kind": "screening-stage-deadline"},
+            split_seed="screening-stage-deadline",
+            splits={"train": ["case-1"], "validation": [], "held_out": []},
+            trainable_case_ids=("case-1",),
+        ),
+    )
+    candidate = CandidateVariant(
+        candidate_id="candidate",
+        target=SelfEvolveTargetRef("skill", "demo", str(skill_path)),
+        content="# Demo\n\nCandidate.\n",
+        rationale="exercise the whole-screening deadline",
+    )
+    runner = SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=SimpleNamespace(),
+        replay_enabled=True,
+        candidate_replay_backend=object(),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_prepare_replay_adaptation",
+        lambda **_kwargs: (
+            None,
+            GateResult("replay_adaptation", True, "ready"),
+        ),
+    )
+
+    async def screening_that_exceeds_stage_deadline(**kwargs):
+        kwargs["lifecycle_callback"]("replay_started", {})
+        await asyncio.sleep(1)
+        raise AssertionError("the reserved stage deadline should cancel replay")
+
+    monkeypatch.setattr(
+        runner,
+        "_replay_selected_candidate",
+        screening_that_exceeds_stage_deadline,
+    )
+    budget_context = _RunBudgetContext(
+        ledger=RunBudgetLedger(BudgetCeilings(None, None)),
+        cold_start_by_stage={
+            BudgetStage.SCREENING: BudgetUsage(
+                wall_seconds=Decimal("0.02")
+            )
+        },
+    )
+
+    started_at = asyncio.get_running_loop().time()
+    selected, report = await runner._screen_candidate_population(
+        run_id="run-screening-stage-deadline",
+        target=SkillTextTarget(skill_path, allow_auto_apply=True),
+        dataset=dataset,
+        candidates=(candidate,),
+        apply_policy="verified_only",
+        require_single_candidate_screening=True,
+        budget_context=budget_context,
+    )
+    elapsed = asyncio.get_running_loop().time() - started_at
+
+    assert elapsed < 0.5
+    assert selected == (candidate,)
+    assert report is not None
+    screening = report["screening"]
+    assert screening["stopped_after_budget_censor"] is True
+    assert screening["screening_outcome"] == "right_censored"
+    assert screening["hard_deadline_exceeded_count"] == 1
+    attempt = screening["attempts"][0]
+    assert attempt["hard_deadline_seconds"] == pytest.approx(0.02)
+    assert attempt["hard_deadline_exceeded"] is True
+    assert attempt["details"]["code"] == "screening_budget_censored"
+    assert attempt["details"]["screening_censor_basis"] == "stage_deadline"
+    assert (
+        attempt["details"]["termination_budget_axis"]
+        == "screening_stage_wall_seconds"
+    )
 
 
 @pytest.mark.asyncio

@@ -62,6 +62,10 @@ from aworld.self_evolve.dataset_snapshot import (
 )
 from aworld.self_evolve.diagnostics import extract_harness_diagnostics
 from aworld.self_evolve.evolution_context import compile_evolution_context
+from aworld.self_evolve.skill_evolution_contract import (
+    SkillEvolutionContract,
+    evaluate_skill_evolution_replay,
+)
 from aworld.self_evolve.evaluation import (
     AWorldTrajectoryEvaluatorBackend,
     EvaluationBackend,
@@ -99,11 +103,13 @@ from aworld.self_evolve.gates import (
     TargetBehaviorDeltaGate,
     TrustProvenanceGate,
 )
-from aworld.self_evolve.lifecycle import (
-    acknowledge_self_evolve_retention_transactions,
-    cleanup_self_evolve_artifacts,
-    read_self_evolve_retention_transactions,
+from aworld.self_evolve.controllers.retention import (
+    ArtifactRetentionController,
+    acknowledge_reported_artifact_retention as _acknowledge_reported_artifact_retention,
+    merge_artifact_retention_reports as _merge_artifact_retention_reports,
+    recover_artifact_retention_transactions as _recover_artifact_retention_transactions,
 )
+from aworld.self_evolve.lifecycle import cleanup_self_evolve_artifacts
 from aworld.self_evolve.measurement import (
     AttributionReport,
     BudgetLedger,
@@ -111,7 +117,6 @@ from aworld.self_evolve.measurement import (
     ControlledExperimentSpec,
     ExperimentBudget,
     FrozenIdentities,
-    MeasurementObservation,
     MeasurementEarlyStopPolicy,
     MeasurementPolicyMode,
     MeasurementSummary,
@@ -120,14 +125,8 @@ from aworld.self_evolve.measurement import (
     SamplingPlan,
     SearchCandidateResult,
     SwapAxis,
-    TargetResolutionConfidence,
-    build_attribution_report,
     build_search_performance,
     evaluate_measurement_stopping,
-    observations_from_evaluation,
-    observations_from_replay,
-    observations_with_evaluation_metric,
-    observations_with_usage_fallback,
     stable_measurement_fingerprint,
 )
 from aworld.self_evolve.measurement_control import (
@@ -242,11 +241,28 @@ from aworld.self_evolve.campaign_policy import (
     effective_replay_repetitions as _effective_replay_repetitions,
     gate_has_candidate_owned_repair as _gate_has_candidate_owned_repair,
     is_verified_apply_policy as _is_verified_apply_policy,
-    rebase_measurement_experiment_for_materialization as _rebase_measurement_experiment_for_materialization,
 )
 from aworld.self_evolve.candidate_generation import (
     CandidateGenerationAgent,
     CandidateGenerationInfrastructureError,
+    _effective_candidate_output_token_limit,
+)
+from aworld.self_evolve.controllers.generation import (
+    CandidateGenerationController,
+    candidate_generation_request_derived_tokens as _candidate_generation_request_derived_tokens,
+)
+from aworld.self_evolve.controllers.measurement import (
+    CandidateMeasurementController,
+    measurement_promotion_gate as _measurement_promotion_gate,
+)
+from aworld.self_evolve.controllers.screening import (
+    SCREENING_BUDGET_CENSORED_CODE as _SCREENING_BUDGET_CENSORED_CODE,
+    CandidateScreeningController,
+    budget_decision_wall_limit_seconds as _budget_decision_wall_limit_seconds,
+    screening_attempt_is_budget_censored as _screening_attempt_is_budget_censored,
+    screening_gate_is_budget_censored as _screening_gate_is_budget_censored,
+    screening_stage_budget_censor_gate as _screening_stage_budget_censor_gate,
+    support_specific_control_circuit_breaker_gate as _support_specific_control_circuit_breaker_gate,
 )
 from aworld.self_evolve.challenger import (
     DEFAULT_CHALLENGE_CASES,
@@ -262,6 +278,8 @@ from aworld.self_evolve.handbook import load_handbook_slice_for_target
 from aworld.self_evolve.budget import (
     BudgetCeilings,
     BudgetDecision,
+    BudgetEstimateConfidence,
+    BudgetEstimateSource,
     BudgetStage,
     BudgetUsage,
     BudgetUsageCompleteness,
@@ -295,7 +313,9 @@ from aworld.self_evolve.optimizers.base import (
     OptimizerRequest,
     OptimizerResult,
 )
-from aworld.self_evolve.optimizers.llm_mutator import TraceReflectiveLLMMutator
+from aworld.self_evolve.optimizers.llm_mutator import (
+    TraceReflectiveLLMMutator,
+)
 from aworld.self_evolve.overlay import create_candidate_skill_overlay
 from aworld.self_evolve.provenance import (
     InferredNewSkillPolicy,
@@ -383,6 +403,7 @@ from aworld.self_evolve.replay_adaptation import (
     ReplayAdaptationBundle,
     ReplayAdaptationCompiler,
     ReplayCapabilityRequirement,
+    ReplayPreflightReport,
     compile_replay_adaptation_isolation_decision,
     replay_adaptation_semantic_fingerprint,
 )
@@ -540,14 +561,48 @@ class _RunBudgetContext:
         *,
         units: int = 1,
         backend_proven_zero: bool | None = None,
+        request_derived_tokens: int | None = None,
     ) -> BudgetDecision:
-        decision = self.ledger.reserve(
-            self.estimate(
-                stage,
-                item_id,
-                units=units,
-                backend_proven_zero=backend_proven_zero,
+        estimate = self.estimate(
+            stage,
+            item_id,
+            units=units,
+            backend_proven_zero=backend_proven_zero,
+        )
+        if request_derived_tokens is not None:
+            if (
+                isinstance(request_derived_tokens, bool)
+                or request_derived_tokens < 0
+            ):
+                raise ValueError("request_derived_tokens must be non-negative")
+            observed_estimate = estimate.source in {
+                BudgetEstimateSource.OBSERVED_ROBUST,
+                BudgetEstimateSource.OBSERVED_LOWER_BOUND,
+            }
+            resolved_tokens = (
+                max(request_derived_tokens, estimate.tokens or 0)
+                if observed_estimate
+                else request_derived_tokens
             )
+            estimate = replace(
+                estimate,
+                tokens=resolved_tokens,
+                source=(
+                    estimate.source
+                    if observed_estimate
+                    and (estimate.tokens or 0) >= request_derived_tokens
+                    else BudgetEstimateSource.REQUEST_DERIVED
+                ),
+                confidence=(
+                    estimate.confidence
+                    if observed_estimate
+                    and (estimate.tokens or 0) >= request_derived_tokens
+                    else BudgetEstimateConfidence.MEDIUM
+                ),
+                backend_proven_zero=False,
+            )
+        decision = self.ledger.reserve(
+            estimate
         )
         self.decisions.append(decision.to_dict())
         return decision
@@ -1772,6 +1827,7 @@ def _default_iteration_budget(
 
 _DEFAULT_CANDIDATE_SCREENING_TIMEOUT_SECONDS = 90
 _MAX_CANDIDATE_SCREENING_TIMEOUT_SECONDS = 300
+_DEFAULT_CANDIDATE_GENERATION_ESTIMATED_TOKENS = 65_536
 _SCREENING_CONTROL_HARNESS_ID = "aworld.self_evolve.screening_harness.v2"
 
 
@@ -1782,7 +1838,6 @@ def _screening_control_harness_fingerprint() -> str:
 _DEFAULT_CANDIDATE_SCREENING_TRACE_HORIZON = 4
 _DEFAULT_CANDIDATE_SCREENING_TOOL_CALL_LIMIT = 8
 _SCREENING_STEP_TIMEOUT_SECONDS = 30
-_SCREENING_BUDGET_CENSORED_CODE = "screening_budget_censored"
 _DEFAULT_AUTHORITATIVE_REPLAY_MAX_STEPS = 12
 _DEFAULT_AUTHORITATIVE_REPLAY_TOOL_CALL_LIMIT = 16
 
@@ -3574,7 +3629,11 @@ class SelfEvolveRunner:
         per_attempt_replay_token_limit: int | None = None,
         max_run_cost_usd: float | Decimal | None = None,
         max_run_wall_seconds: float | Decimal | None = None,
-        candidate_generation_tokens_per_unit: int | None = 4_096,
+        candidate_generation_tokens_per_unit: int | None = (
+            _DEFAULT_CANDIDATE_GENERATION_ESTIMATED_TOKENS
+        ),
+        candidate_generation_output_tokens_per_unit: int = 16_000,
+        candidate_generation_model_name: str = "gpt-4o",
         candidate_generation_cost_usd_per_unit: float | Decimal | None = Decimal("0.05"),
         candidate_generation_wall_seconds_per_unit: float | Decimal | None = Decimal("120"),
         candidate_screening_tokens_per_unit: int | None = 4_096,
@@ -3628,6 +3687,7 @@ class SelfEvolveRunner:
         concurrency_policy: SelfEvolveConcurrencyPolicy | None = None,
         task_batch_executor: DeterministicTaskBatchExecutor | None = None,
         ingestion_model_call_count: int = 0,
+        skill_evolution_contract: SkillEvolutionContract | None = None,
     ) -> None:
         self.store = store
         self.optimizer = optimizer
@@ -3661,6 +3721,30 @@ class SelfEvolveRunner:
                 "ingestion_model_call_count must be a non-negative integer"
             )
         self.ingestion_model_call_count = ingestion_model_call_count
+        self.skill_evolution_contract = skill_evolution_contract
+        if (
+            isinstance(candidate_generation_output_tokens_per_unit, bool)
+            or candidate_generation_output_tokens_per_unit <= 0
+        ):
+            raise ValueError(
+                "candidate_generation_output_tokens_per_unit must be positive"
+            )
+        self.candidate_generation_output_tokens_per_unit = (
+            candidate_generation_output_tokens_per_unit
+        )
+        if not isinstance(candidate_generation_model_name, str) or not (
+            candidate_generation_model_name.strip()
+        ):
+            raise ValueError("candidate_generation_model_name must be non-empty")
+        self.candidate_generation_model_name = (
+            candidate_generation_model_name.strip()
+        )
+        self._generation_controller = CandidateGenerationController(
+            output_tokens_per_candidate=(
+                self.candidate_generation_output_tokens_per_unit
+            ),
+            model_name=self.candidate_generation_model_name,
+        )
         self.max_run_tokens = max_run_tokens
         legacy_total_budget_mapping = (
             total_run_token_budget is None and max_run_tokens is not None
@@ -3725,7 +3809,7 @@ class SelfEvolveRunner:
                     )
                 )
         candidate_generation_tokens_per_unit = (
-            4_096
+            _DEFAULT_CANDIDATE_GENERATION_ESTIMATED_TOKENS
             if candidate_generation_tokens_per_unit is None
             else candidate_generation_tokens_per_unit
         )
@@ -3905,6 +3989,7 @@ class SelfEvolveRunner:
         if max_score_tiebreak_candidates < 0:
             raise ValueError("max_score_tiebreak_candidates must be non-negative")
         self.candidate_screening_max_cases = candidate_screening_max_cases
+        self._screening_controller = CandidateScreeningController()
         self.max_generated_candidates = max_generated_candidates
         self.max_full_evaluation_candidates = max_full_evaluation_candidates
         self.max_score_tiebreak_candidates = max_score_tiebreak_candidates
@@ -3950,6 +4035,11 @@ class SelfEvolveRunner:
         self._measurement_summaries: dict[
             tuple[str, str], MeasurementSummary
         ] = {}
+        self._measurement_controller = CandidateMeasurementController(
+            store=self.store,
+            primary_metric=self.measurement_primary_metric,
+            summaries=self._measurement_summaries,
+        )
         self.replay_agent = replay_agent
         self.runtime_registry_refresher = runtime_registry_refresher
         self.runtime_skill_activator = runtime_skill_activator
@@ -3966,6 +4056,9 @@ class SelfEvolveRunner:
         self._replay_adaptation_cache: dict[
             tuple[str, str, str],
             tuple[ReplayAdaptationBundle | None, GateResult],
+        ] = {}
+        self._replay_dataset_preflight_cache: dict[
+            str, ReplayPreflightReport
         ] = {}
         self._run_environment_fingerprints: dict[str, str] = {}
         # Screening is a comparative ranking plane.  Keep bounded empirical
@@ -4189,6 +4282,16 @@ class SelfEvolveRunner:
         scheduler_decisions: list[dict[str, object]] = []
         if apply_policy not in {"proposal", "auto_verified", "verified_only"}:
             raise ValueError(f"unsupported apply policy: {apply_policy}")
+        if self.skill_evolution_contract is not None:
+            if not _is_verified_apply_policy(apply_policy):
+                raise ValueError(
+                    "skill evolution contract requires a verified apply policy"
+                )
+            self.skill_evolution_contract.validate_run(
+                target_type=target.identity.target_type,
+                target_id=target.identity.target_id,
+                dataset_case_ids=tuple(case.case_id for case in dataset.cases),
+            )
         supplied_provenance = target_provenance
         supplied_decision = target_selection_decision
         if target_selection_decision is None and target_selection_report is None:
@@ -4854,31 +4957,6 @@ class SelfEvolveRunner:
             if scheduler_decision.stop or not scheduler_decision.slots:
                 break
             generation_slot_count = len(scheduler_decision.slots)
-            generation_budget = budget_context.reserve(
-                BudgetStage.CANDIDATE_GENERATION,
-                f"iteration-{iteration_index + 1}-generation",
-                units=generation_slot_count,
-                backend_proven_zero=(
-                    True if stored_admission_reason is not None else None
-                ),
-            )
-            if not generation_budget.allowed:
-                for slot in scheduler_decision.slots:
-                    placeholder = _candidate_attempt_placeholder(
-                        iteration_index,
-                        slot.slot,
-                    )
-                    key = attempt_tracker.start(
-                        iteration=iteration_index,
-                        slot=slot.slot,
-                        candidate_id=placeholder,
-                    )
-                    attempt_tracker.emit(
-                        key,
-                        CandidateAttemptStage.NOT_RUN,
-                        reason_code="generation_budget_denied",
-                    )
-                break
             if stored_admission_reason is not None:
                 _emit_progress(
                     self.progress_callback,
@@ -4941,10 +5019,6 @@ class SelfEvolveRunner:
                     behavior_signals=tuple(handbook_signals),
                 )
             except Exception as exc:
-                budget_context.release(
-                    generation_budget,
-                    reason_code="handbook_index_failed",
-                )
                 gate_results.append(
                     GateResult(
                         gate_name="handbook_locator_integrity",
@@ -4971,10 +5045,6 @@ class SelfEvolveRunner:
                     handbook_payload,
                 )
                 if not handbook_slice.mutation_allowed:
-                    budget_context.release(
-                        generation_budget,
-                        reason_code="handbook_locator_frozen",
-                    )
                     gate_results.append(
                         GateResult(
                             gate_name="handbook_locator_integrity",
@@ -5030,11 +5100,50 @@ class SelfEvolveRunner:
                 active_repair_frontier_keys=tuple(
                     slot.semantic_key for slot in scheduler_decision.slots
                 ),
+                skill_evolution_contract=(
+                    self.skill_evolution_contract.prompt_projection()
+                    if self.skill_evolution_contract is not None
+                    else None
+                ),
             )
             optimizer_request = replace(
                 optimizer_request,
                 evolution_context=compile_evolution_context(optimizer_request),
             )
+            request_derived_generation_tokens = (
+                self._generation_controller.request_derived_tokens(
+                    self.optimizer,
+                    optimizer_request,
+                )
+                if stored_admission_reason is None
+                else None
+            )
+            generation_budget = budget_context.reserve(
+                BudgetStage.CANDIDATE_GENERATION,
+                f"iteration-{iteration_index + 1}-generation",
+                units=generation_slot_count,
+                backend_proven_zero=(
+                    True if stored_admission_reason is not None else None
+                ),
+                request_derived_tokens=request_derived_generation_tokens,
+            )
+            if not generation_budget.allowed:
+                for slot in scheduler_decision.slots:
+                    placeholder = _candidate_attempt_placeholder(
+                        iteration_index,
+                        slot.slot,
+                    )
+                    key = attempt_tracker.start(
+                        iteration=iteration_index,
+                        slot=slot.slot,
+                        candidate_id=placeholder,
+                    )
+                    attempt_tracker.emit(
+                        key,
+                        CandidateAttemptStage.NOT_RUN,
+                        reason_code="generation_budget_denied",
+                    )
+                break
             try:
                 optimizer_result = await self.optimizer.propose(optimizer_request)
             except Exception as exc:
@@ -7096,6 +7205,55 @@ class SelfEvolveRunner:
                 # remains authoritative and already persisted.
                 pass
 
+        skill_evolution_progress: dict[str, object] | None = None
+        if (
+            self.skill_evolution_contract is not None
+            and replay_result is not None
+        ):
+            intervention_observed = any(
+                gate.gate_name == "candidate_replay"
+                and isinstance(gate.details, Mapping)
+                and gate.details.get("candidate_intervention_observed") is True
+                for gate in gate_results
+            )
+            skill_evolution_progress = evaluate_skill_evolution_replay(
+                self.skill_evolution_contract,
+                replay_result,
+                candidate_intervention_observed=intervention_observed,
+            )
+            coverage_satisfied = (
+                skill_evolution_progress["coverage_satisfied"] is True
+            )
+            gate_results.append(
+                GateResult(
+                    gate_name="skill_evolution_contract",
+                    passed=coverage_satisfied,
+                    reason=(
+                        "target Skill capability coverage is satisfied"
+                        if coverage_satisfied
+                        else "target Skill capability coverage is incomplete"
+                    ),
+                    details={
+                        **skill_evolution_progress,
+                        "failure_class": (
+                            None if coverage_satisfied else "candidate"
+                        ),
+                        "failure_owner": (
+                            None if coverage_satisfied else "candidate"
+                        ),
+                        "failure_scope": (
+                            None if coverage_satisfied else "candidate"
+                        ),
+                        "repairable": not coverage_satisfied,
+                        "code": (
+                            "skill_contract_coverage_satisfied"
+                            if coverage_satisfied
+                            else "skill_contract_coverage_incomplete"
+                        ),
+                    },
+                )
+            )
+
         post_apply: dict[str, object] | None = None
         promotion: dict[str, object] | None = None
         final_status = SelfEvolveRunStatus.SUCCEEDED
@@ -7746,6 +7904,8 @@ class SelfEvolveRunner:
             replay_capability_report = _replay_capability_report(replay_result)
             if replay_capability_report is not None:
                 report["replay_capability"] = replay_capability_report
+        if skill_evolution_progress is not None:
+            report["skill_evolution"] = skill_evolution_progress
         replay_evidence_reuse_gate = next(
             (
                 gate
@@ -8350,6 +8510,17 @@ class SelfEvolveRunner:
                 "replay",
             )
             screening_started_at = time.monotonic()
+            screening_hard_limit_seconds = (
+                self._screening_controller.hard_limit_seconds(screening_budget)
+                if screening_budget is not None
+                else None
+            )
+            screening_deadline = (
+                screening_started_at + screening_hard_limit_seconds
+                if screening_hard_limit_seconds is not None
+                else None
+            )
+            screening_stage_deadline_exceeded = False
             active_screening_dataset = screening_dataset
             active_baseline_replay_dir = screening_baseline_replay_dir
             control_case_attempts: list[dict[str, object]] = []
@@ -8479,8 +8650,79 @@ class SelfEvolveRunner:
                     escalated = False
                     while True:
                         control_attempt_started_at = time.monotonic()
-                        replay_result, replay_dataset, replay_gate = (
-                            await self._replay_selected_candidate(
+                        active_control_case_ids = tuple(
+                            case.case_id
+                            for case in active_screening_dataset.cases
+                        )
+                        control_identities = (
+                            tuple(
+                                _control_qualification_identity(
+                                    case_id=case_id,
+                                    baseline_skill_fingerprint=(
+                                        target.fingerprint_current_content()
+                                    ),
+                                    replay_adaptation=support_adaptation,
+                                    timeout_seconds=active_screening_timeout,
+                                    max_steps=active_screening_max_steps,
+                                    max_tool_calls=(
+                                        _DEFAULT_CANDIDATE_SCREENING_TOOL_CALL_LIMIT
+                                    ),
+                                )
+                                for case_id in active_control_case_ids
+                            )
+                            if support_adaptation is not None
+                            else ()
+                        )
+                        circuit_gates = tuple(
+                            gate
+                            for identity in control_identities
+                            if (
+                                gate := (
+                                    self._screening_controller
+                                    .support_specific_control_circuit_breaker_gate(
+                                        control_identity=identity,
+                                        control_observations=(
+                                            self._candidate_screening_control_observations
+                                        ),
+                                    )
+                                )
+                            )
+                            is not None
+                        )
+                        support_control_circuit_open = bool(
+                            control_identities
+                            and len(circuit_gates) == len(control_identities)
+                        )
+                        remaining_screening_seconds = (
+                            max(0.0, screening_deadline - time.monotonic())
+                            if screening_deadline is not None
+                            else None
+                        )
+                        if support_control_circuit_open:
+                            replay_result = None
+                            replay_dataset = None
+                            replay_gate = circuit_gates[0]
+                        elif remaining_screening_seconds == 0.0:
+                            replay_result = None
+                            replay_dataset = None
+                            replay_gate = (
+                                self._screening_controller
+                                .stage_budget_censor_gate(
+                                    hard_limit_seconds=(
+                                        screening_hard_limit_seconds or 0.0
+                                    ),
+                                    elapsed_seconds=max(
+                                        0.0,
+                                        time.monotonic() - screening_started_at,
+                                    ),
+                                    candidate_execution_observed=(
+                                        screening_replay_started
+                                    ),
+                                )
+                            )
+                            screening_stage_deadline_exceeded = True
+                        else:
+                            replay_operation = self._replay_selected_candidate(
                                 run_id=run_id,
                                 target=target,
                                 dataset=active_screening_dataset,
@@ -8507,38 +8749,62 @@ class SelfEvolveRunner:
                                 measurement_experiment=screening_experiment,
                                 measurement_stage="screening",
                             )
-                        )
-                        active_control_case_ids = tuple(
-                            case.case_id
-                            for case in active_screening_dataset.cases
-                        )
+                            try:
+                                if remaining_screening_seconds is None:
+                                    replay_result, replay_dataset, replay_gate = (
+                                        await replay_operation
+                                    )
+                                else:
+                                    replay_result, replay_dataset, replay_gate = (
+                                        await asyncio.wait_for(
+                                            replay_operation,
+                                            timeout=remaining_screening_seconds,
+                                        )
+                                    )
+                            except asyncio.TimeoutError:
+                                if (
+                                    screening_deadline is None
+                                    or time.monotonic() + 0.001
+                                    < screening_deadline
+                                ):
+                                    # Preserve a backend-raised TimeoutError as an
+                                    # infrastructure failure. Only the outer stage
+                                    # timer is a budget-censoring event.
+                                    raise
+                                replay_result = None
+                                replay_dataset = None
+                                replay_gate = (
+                                    self._screening_controller
+                                    .stage_budget_censor_gate(
+                                        hard_limit_seconds=(
+                                            screening_hard_limit_seconds or 0.0
+                                        ),
+                                        elapsed_seconds=max(
+                                            0.0,
+                                            time.monotonic() - screening_started_at,
+                                        ),
+                                        candidate_execution_observed=(
+                                            screening_replay_started
+                                        ),
+                                    )
+                                )
+                                screening_stage_deadline_exceeded = True
                         raw_replay_gate = replay_gate
                         timeout_escalation_required = (
-                            _screening_invalid_control_is_timeout(
-                                raw_replay_gate
+                            bool(
+                                raw_replay_gate is not None
+                                and isinstance(raw_replay_gate.details, Mapping)
+                                and raw_replay_gate.details.get("code")
+                                == "screening_support_control_circuit_open"
                             )
-                            and not _screening_required_intervention_unobserved(
-                                raw_replay_gate
-                            )
-                        )
-                        control_identities = (
-                            tuple(
-                                _control_qualification_identity(
-                                    case_id=case_id,
-                                    baseline_skill_fingerprint=(
-                                        target.fingerprint_current_content()
-                                    ),
-                                    replay_adaptation=support_adaptation,
-                                    timeout_seconds=active_screening_timeout,
-                                    max_steps=active_screening_max_steps,
-                                    max_tool_calls=(
-                                        _DEFAULT_CANDIDATE_SCREENING_TOOL_CALL_LIMIT
-                                    ),
+                            or (
+                                _screening_invalid_control_is_timeout(
+                                    raw_replay_gate
                                 )
-                                for case_id in active_control_case_ids
+                                and not _screening_required_intervention_unobserved(
+                                    raw_replay_gate
+                                )
                             )
-                            if support_adaptation is not None
-                            else ()
                         )
                         baseline_failure_case_ids = (
                             _screening_baseline_failure_case_ids(
@@ -8611,6 +8877,9 @@ class SelfEvolveRunner:
                             "timeout_seconds": active_screening_timeout,
                             "wall_seconds": control_wall_seconds,
                             "bounded_escalation": escalated,
+                            "support_control_circuit_open": (
+                                support_control_circuit_open
+                            ),
                             "control_identity": (
                                 control_identities[0]
                                 if len(control_identities) == 1
@@ -8645,27 +8914,28 @@ class SelfEvolveRunner:
                                 else {"code": "screening_replay_unavailable"}
                             ),
                         }
-                        _record_candidate_screening_observation(
-                            self._candidate_screening_case_observations,
-                            case_ids=(
-                                invalid_control_case_ids
-                                if invalid_control_case_ids
-                                else active_control_case_ids
-                            ),
-                            attempt=observation_attempt,
-                        )
-                        for control_identity in control_identities:
-                            _record_support_specific_control_observation(
-                                self._candidate_screening_control_observations,
-                                identity=control_identity,
-                                attempt={
-                                    **observation_attempt,
-                                    "wall_seconds": (
-                                        control_wall_seconds
-                                        / max(1, len(control_identities))
-                                    ),
-                                },
+                        if not support_control_circuit_open:
+                            _record_candidate_screening_observation(
+                                self._candidate_screening_case_observations,
+                                case_ids=(
+                                    invalid_control_case_ids
+                                    if invalid_control_case_ids
+                                    else active_control_case_ids
+                                ),
+                                attempt=observation_attempt,
                             )
+                            for control_identity in control_identities:
+                                _record_support_specific_control_observation(
+                                    self._candidate_screening_control_observations,
+                                    identity=control_identity,
+                                    attempt={
+                                        **observation_attempt,
+                                        "wall_seconds": (
+                                            control_wall_seconds
+                                            / max(1, len(control_identities))
+                                        ),
+                                    },
+                                )
                         escalated_timeout = (
                             _candidate_screening_escalated_timeout(
                                 active_screening_timeout,
@@ -8693,6 +8963,8 @@ class SelfEvolveRunner:
                             ),
                         )
                     attempted_control_dataset_count += 1
+                    if screening_stage_deadline_exceeded:
+                        break
                     if not _screening_gate_has_invalid_control(replay_gate):
                         break
                 attempted_control_limit = min(
@@ -8700,14 +8972,17 @@ class SelfEvolveRunner:
                     control_fallback_limit,
                 )
                 control_frontier_exhausted = bool(
-                    not control_case_datasets
-                    or (
-                        attempted_control_limit > 0
-                        and attempted_control_dataset_count
-                        >= attempted_control_limit
-                        and all(
-                            attempt.get("invalid_control") is True
-                            for attempt in control_case_attempts
+                    not screening_stage_deadline_exceeded
+                    and (
+                        not control_case_datasets
+                        or (
+                            attempted_control_limit > 0
+                            and attempted_control_dataset_count
+                            >= attempted_control_limit
+                            and all(
+                                attempt.get("invalid_control") is True
+                                for attempt in control_case_attempts
+                            )
                         )
                     )
                 )
@@ -8862,6 +9137,9 @@ class SelfEvolveRunner:
                     or replay_dataset is None
                 )
                 and not defer_invalid_control_to_authoritative
+                and not self._screening_controller.gate_is_budget_censored(
+                    replay_gate
+                )
                 and not attempt_tracker.terminal(attempt_key)
             ):
                 terminal_stage = (
@@ -9073,6 +9351,10 @@ class SelfEvolveRunner:
                         for item in control_case_attempts
                     ),
                     "wall_seconds": screening_elapsed_seconds,
+                    "hard_deadline_seconds": screening_hard_limit_seconds,
+                    "hard_deadline_exceeded": (
+                        screening_stage_deadline_exceeded
+                    ),
                     "physical_pair_executed": screening_replay_started,
                     "physical_pair_execution_count": (
                         screening_physical_pair_count
@@ -9081,7 +9363,9 @@ class SelfEvolveRunner:
             )
             if passed:
                 passing_candidates.append((candidate, screening_rank))
-            if _screening_attempt_is_budget_censored(attempts[-1]):
+            if self._screening_controller.attempt_is_budget_censored(
+                attempts[-1]
+            ):
                 # A bounded qualification replay is a ranking experiment.  When
                 # both paired variants hit the same screening horizon it contains
                 # no directional evidence, so repeating it for every candidate
@@ -9410,6 +9694,19 @@ class SelfEvolveRunner:
                     _non_negative_int(attempt.get("control_escalation_count"))
                     for attempt in attempts
                 ),
+                "support_control_circuit_open_count": sum(
+                    int(control.get("support_control_circuit_open") is True)
+                    for attempt in attempts
+                    for control in (
+                        attempt.get("control_case_attempts")
+                        if isinstance(
+                            attempt.get("control_case_attempts"),
+                            (list, tuple),
+                        )
+                        else ()
+                    )
+                    if isinstance(control, Mapping)
+                ),
                 "support_specific_control_qualification_count": sum(
                     int(
                         isinstance(
@@ -9425,6 +9722,10 @@ class SelfEvolveRunner:
                     float(attempt.get("wall_seconds") or 0.0)
                     for attempt in attempts
                     if not isinstance(attempt.get("wall_seconds"), bool)
+                ),
+                "hard_deadline_exceeded_count": sum(
+                    int(attempt.get("hard_deadline_exceeded") is True)
+                    for attempt in attempts
                 ),
                 "termination_budget_axis_counts": (
                     _screening_termination_axis_counts(attempts)
@@ -10436,97 +10737,19 @@ class SelfEvolveRunner:
         authoritative_candidate_count: int,
         target_selection_report: TargetSelectionReport | None,
     ) -> MeasurementSummary:
-        experiment = _rebase_measurement_experiment_for_materialization(
-            experiment,
-            run_id=materialization_run_id,
-        )
-        self.store.write_measurement_experiment(experiment)
-        key = (experiment.run_id, candidate.candidate_id)
-        cached = self._measurement_summaries.get(key)
-        if cached is not None:
-            return cached
-        replay_observations: tuple[MeasurementObservation, ...] = ()
-        if replay_result is not None:
-            replay_observations = observations_from_replay(
-                experiment,
-                dataset=dataset,
-                replay_result=replay_result,
-                run_root=self.store.run_path(experiment.run_id),
-            )
-        evaluation_observations = observations_from_evaluation(
-            experiment,
-            dataset=replay_dataset or dataset,
+        return self._measurement_controller.materialize_candidate(
+            experiment=experiment,
+            materialization_run_id=materialization_run_id,
+            candidate=candidate,
+            dataset=dataset,
+            replay_result=replay_result,
+            replay_dataset=replay_dataset,
             baseline_summary=baseline_summary,
             candidate_summary=candidate_summary,
-        )
-        if evaluation_observations and replay_observations:
-            evaluation_observations = observations_with_usage_fallback(
-                evaluation_observations,
-                replay_observations,
-            )
-        if (
-            self.measurement_primary_metric != "task_success"
-            and evaluation_observations
-            and replay_observations
-        ):
-            observations = observations_with_evaluation_metric(
-                replay_observations,
-                evaluation_observations,
-                metric=self.measurement_primary_metric,
-            )
-        elif (
-            self.measurement_primary_metric != "task_success"
-            and evaluation_observations
-        ):
-            observations = evaluation_observations
-        else:
-            observations = replay_observations or evaluation_observations
-        if observations:
-            self.store.append_measurement_observations(
-                experiment.run_id,
-                experiment.experiment_id,
-                observations,
-            )
-        usage = _complete_measurement_usage(
-            observations,
-            candidate_opportunities=candidate_count,
-        )
-        target_resolution = _measurement_target_resolution(
-            target_selection_report
-        )
-        admitted_primary_case_ids: tuple[str, ...] | None = None
-        if replay_result is not None and isinstance(
-            replay_result.measurement_decision,
-            Mapping,
-        ):
-            raw_admitted = replay_result.measurement_decision.get(
-                "baseline_qualified_case_ids"
-            )
-            if isinstance(raw_admitted, (list, tuple)):
-                frozen_primary = set(experiment.sampling.independent_case_ids)
-                admitted_primary_case_ids = tuple(
-                    case_id
-                    for case_id in raw_admitted
-                    if isinstance(case_id, str) and case_id in frozen_primary
-                )
-        attribution = build_attribution_report(
-            experiment,
-            observations,
-            target_resolution=target_resolution,
-            total_usage=usage,
-            generated_candidate_count=candidate_count,
+            candidate_count=candidate_count,
             authoritative_candidate_count=authoritative_candidate_count,
-            admitted_primary_case_ids=admitted_primary_case_ids,
+            target_selection_report=target_selection_report,
         )
-        self.store.write_measurement_attribution_report(attribution)
-        summary = attribution.summary(
-            attribution_report_path=self.store.measurement_attribution_ref(
-                experiment.run_id,
-                experiment.experiment_id,
-            )
-        )
-        self._measurement_summaries[key] = summary
-        return summary
 
     def _attach_measurement_search_performance(
         self,
@@ -12460,10 +12683,19 @@ class SelfEvolveRunner:
         try:
             if discovery_error is not None:
                 raise discovery_error
-            preflight = self.replay_adaptation_compiler.preflight(
-                dataset=replayable_dataset,
-                workspace_root=self.store.workspace_root,
+            preflight_cache_key = replay_dataset_fingerprint(replayable_dataset)
+            preflight = self._replay_dataset_preflight_cache.get(
+                preflight_cache_key
             )
+            preflight_cache_hit = preflight is not None
+            if preflight is None:
+                preflight = self.replay_adaptation_compiler.preflight(
+                    dataset=replayable_dataset,
+                    workspace_root=self.store.workspace_root,
+                )
+                self._replay_dataset_preflight_cache[preflight_cache_key] = (
+                    preflight
+                )
             if (
                 preflight.requirements
                 and capability is None
@@ -12502,6 +12734,7 @@ class SelfEvolveRunner:
                                 {item.kind for item in preflight.requirements}
                             ),
                             "preflight_fingerprint": preflight.fingerprint,
+                            "preflight_cache_hit": preflight_cache_hit,
                             "artifact_root": str(artifact_root),
                         },
                     ),
@@ -12647,6 +12880,7 @@ class SelfEvolveRunner:
                     readiness=readiness,
                     artifact_root=artifact_root,
                 ),
+                "preflight_cache_hit": preflight_cache_hit,
             },
         )
         result = (bundle, gate)
@@ -16106,8 +16340,26 @@ def optimize_from_cli_request(
     ingestion_only: bool = False,
     frozen_ingestion_id: str | None = None,
     ingestion_registry: IngestionRegistry | None = None,
+    skill_evolution_contract: (
+        Mapping[str, object] | SkillEvolutionContract | None
+    ) = None,
 ) -> Mapping[str, Any]:
     effective_concurrency_policy = concurrency_policy or SelfEvolveConcurrencyPolicy()
+    typed_skill_evolution_contract = (
+        skill_evolution_contract
+        if isinstance(skill_evolution_contract, SkillEvolutionContract)
+        else SkillEvolutionContract.from_dict(skill_evolution_contract)
+        if isinstance(skill_evolution_contract, Mapping)
+        else None
+    )
+    if (
+        typed_skill_evolution_contract is not None
+        and typed_skill_evolution_contract.required_stable_cycles > 1
+        and campaign_id is None
+    ):
+        raise ValueError(
+            "multi-cycle Skill evolution contract requires a Campaign"
+        )
     typed_new_skill_policy = InferredNewSkillPolicy(inferred_new_skill_policy)
     if apply_policy not in {"proposal", "auto_verified", "verified_only"}:
         raise ValueError(f"unsupported apply policy: {apply_policy}")
@@ -16986,6 +17238,17 @@ def optimize_from_cli_request(
         candidate_generation_tokens_per_unit=(
             candidate_generation_tokens_per_unit
         ),
+        candidate_generation_output_tokens_per_unit=(
+            _effective_candidate_output_token_limit(mutation_model_config)
+            if mutation_model_config is not None
+            else 16_000
+        ),
+        candidate_generation_model_name=(
+            mutation_model_config.llm_model_name
+            if mutation_model_config is not None
+            and mutation_model_config.llm_model_name
+            else "gpt-4o"
+        ),
         candidate_generation_cost_usd_per_unit=(
             candidate_generation_cost_usd_per_unit
         ),
@@ -17061,6 +17324,7 @@ def optimize_from_cli_request(
             )
             else 0
         ),
+        skill_evolution_contract=typed_skill_evolution_contract,
     )
     from aworld.self_evolve.runtime import (
         SelfEvolveTaskRequest,
@@ -17595,6 +17859,17 @@ def _stable_json_fingerprint(value: Any) -> str:
     return "sha256:" + hashlib.sha256(encoded).hexdigest()
 
 
+def _retention_controller(
+    store: FilesystemSelfEvolveStore,
+) -> ArtifactRetentionController:
+    """Build the controller with the legacy runner injection seam intact."""
+
+    return ArtifactRetentionController(
+        store=store,
+        cleanup=cleanup_self_evolve_artifacts,
+    )
+
+
 def _finalize_run_report(
     store: FilesystemSelfEvolveStore,
     run_id: str,
@@ -17603,18 +17878,12 @@ def _finalize_run_report(
     completed_run: SelfEvolveRun,
     previous_artifact_retention: Mapping[str, object] | None = None,
 ) -> Path:
-    """Persist terminal state before reclaiming artifacts from the completed run."""
-
-    store.write_report(run_id, report)
-    store.create_run(completed_run)
-    report["artifact_retention"] = _artifact_retention_report(
-        store,
+    return _retention_controller(store).finalize_run_report(
         run_id,
-        previous=previous_artifact_retention,
+        report=report,
+        completed_run=completed_run,
+        previous_artifact_retention=previous_artifact_retention,
     )
-    report_path = store.write_report(run_id, report)
-    _acknowledge_reported_artifact_retention(store, run_id, report)
-    return report_path
 
 
 def _artifact_retention_report(
@@ -17623,210 +17892,10 @@ def _artifact_retention_report(
     *,
     previous: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
-    recovered = _recover_artifact_retention_transactions(store)
-    recovered_current = recovered.get(run_id)
-    effective_previous = previous
-    if recovered_current is not None:
-        effective_previous = (
-            _merge_artifact_retention_reports(previous, recovered_current)
-            if previous is not None
-            else recovered_current
-        )
-    try:
-        cleanup: dict[str, object] = cleanup_self_evolve_artifacts(
-            store.workspace_root,
-            artifact_root=store.artifact_root,
-            current_run_id=run_id,
-        )
-    except Exception as exc:
-        current: dict[str, object] = {
-            "status": "failed",
-            "error": str(exc),
-        }
-        if effective_previous is None:
-            return current
-        return _merge_artifact_retention_reports(effective_previous, current)
-    current: dict[str, object] = {
-        "status": "completed",
-        **cleanup,
-    }
-    if effective_previous is None:
-        return current
-    return _merge_artifact_retention_reports(effective_previous, current)
-
-
-def _recover_artifact_retention_transactions(
-    store: FilesystemSelfEvolveStore,
-) -> dict[str, dict[str, object]]:
-    transactions = read_self_evolve_retention_transactions(
-        store.workspace_root,
-        artifact_root=store.artifact_root,
+    return _retention_controller(store).build_report(
+        run_id,
+        previous=previous,
     )
-    recovered_by_run: dict[str, dict[str, object]] = {}
-    for transaction in transactions:
-        owner_run_id = transaction.get("run_id")
-        transaction_id = transaction.get("transaction_id")
-        recovered_result = transaction.get("result")
-        if (
-            not isinstance(owner_run_id, str)
-            or not isinstance(transaction_id, str)
-            or not isinstance(recovered_result, Mapping)
-        ):
-            raise ValueError("artifact retention transaction projection is invalid")
-        try:
-            report = store.read_report(owner_run_id)
-        except FileNotFoundError:
-            continue
-        existing = report.get("artifact_retention")
-        merged_retention = (
-            _merge_artifact_retention_reports(existing, recovered_result)
-            if isinstance(existing, Mapping)
-            else dict(recovered_result)
-        )
-        report["artifact_retention"] = merged_retention
-        store.write_report(owner_run_id, report)
-        acknowledge_self_evolve_retention_transactions(
-            store.workspace_root,
-            artifact_root=store.artifact_root,
-            run_id=owner_run_id,
-            transaction_ids=(transaction_id,),
-        )
-        recovered_by_run[owner_run_id] = merged_retention
-    return recovered_by_run
-
-
-def _acknowledge_reported_artifact_retention(
-    store: FilesystemSelfEvolveStore,
-    run_id: str,
-    report: Mapping[str, object],
-) -> None:
-    retention = report.get("artifact_retention")
-    if not isinstance(retention, Mapping):
-        return
-    transaction_ids = tuple(
-        value
-        for value in _retention_sequence(retention.get("transaction_ids"))
-        if isinstance(value, str) and value
-    )
-    if not transaction_ids:
-        return
-    acknowledge_self_evolve_retention_transactions(
-        store.workspace_root,
-        artifact_root=store.artifact_root,
-        run_id=run_id,
-        transaction_ids=transaction_ids,
-    )
-
-
-def _merge_artifact_retention_reports(
-    previous: Mapping[str, object],
-    current: Mapping[str, object],
-) -> dict[str, object]:
-    removed_run_ids = sorted(
-        {
-            str(value)
-            for report in (previous, current)
-            for value in _retention_sequence(report.get("removed_run_ids"))
-            if isinstance(value, str) and value
-        }
-    )
-    removed_paths = list(
-        dict.fromkeys(
-            str(value)
-            for report in (previous, current)
-            for value in _retention_sequence(report.get("removed_paths"))
-            if isinstance(value, str) and value
-        )
-    )
-    final_state = current if current.get("status") == "completed" else previous
-    skipped_runs = [
-        value
-        for value in _retention_sequence(final_state.get("skipped_runs"))
-        if isinstance(value, Mapping)
-    ]
-    protected_run_ids = sorted(
-        {
-            str(value)
-            for value in _retention_sequence(final_state.get("protected_run_ids"))
-            if isinstance(value, str) and value
-        }
-    )
-    archived_run_ids = sorted(
-        {
-            str(value)
-            for report in (previous, current)
-            for value in _retention_sequence(report.get("archived_run_ids"))
-            if isinstance(value, str) and value
-        }
-    )
-    removed_ingestion_ids = sorted(
-        {
-            str(value)
-            for report in (previous, current)
-            for value in _retention_sequence(report.get("removed_ingestion_ids"))
-            if isinstance(value, str) and value
-        }
-    )
-    protected_ingestion_ids = sorted(
-        {
-            str(value)
-            for value in _retention_sequence(
-                final_state.get("protected_ingestion_ids")
-            )
-            if isinstance(value, str) and value
-        }
-    )
-    transaction_ids = sorted(
-        {
-            str(value)
-            for report in (previous, current)
-            for value in _retention_sequence(report.get("transaction_ids"))
-            if isinstance(value, str) and value
-        }
-    )
-    uncertain_removed_paths = sorted(
-        {
-            str(value)
-            for report in (previous, current)
-            for value in _retention_sequence(
-                report.get("uncertain_removed_paths")
-            )
-            if isinstance(value, str) and value
-        }
-    )
-    statuses = tuple(report.get("status") for report in (previous, current))
-    merged: dict[str, object] = {
-        "status": (
-            "completed" if statuses == ("completed", "completed") else "failed"
-        ),
-        "policy": current.get("policy", previous.get("policy", {})),
-        "removed_run_count": len(removed_run_ids),
-        "removed_run_ids": removed_run_ids,
-        "archived_run_ids": archived_run_ids,
-        "removed_path_count": len(removed_paths),
-        "removed_paths": removed_paths,
-        "skipped_runs": skipped_runs,
-        "protected_run_ids": protected_run_ids,
-        "removed_ingestion_ids": removed_ingestion_ids,
-        "protected_ingestion_ids": protected_ingestion_ids,
-        "transaction_ids": transaction_ids,
-    }
-    if uncertain_removed_paths:
-        merged["uncertain_removed_paths"] = uncertain_removed_paths
-    errors = [
-        report.get("error")
-        for report in (previous, current)
-        if isinstance(report.get("error"), str)
-    ]
-    if errors:
-        merged["errors"] = errors
-    return merged
-
-
-def _retention_sequence(value: object) -> tuple[object, ...]:
-    if not isinstance(value, (list, tuple, set)):
-        return ()
-    return tuple(value)
 
 
 def _rerun_evaluator_from_stored_run(
@@ -21486,19 +21555,20 @@ def _replay_gate_details(
     candidate_execution_observed = any(
         member.candidate.executed for member in normalized.members
     )
+    intervention_observation = _candidate_task_plane_intervention_observation(
+        normalized,
+        require_service_intervention=(
+            candidate_requires_service_intervention
+        ),
+        require_skill_activation=candidate_requires_skill_activation,
+        expected_skill_package_fingerprint=(
+            replay_result.request.verified_candidate_package_fingerprint
+        ),
+    )
     intervention_observed = (
         (
             not candidate_requires_intervention_exposure
-            or _candidate_task_plane_intervention_observed(
-                normalized,
-                require_service_intervention=(
-                    candidate_requires_service_intervention
-                ),
-                require_skill_activation=candidate_requires_skill_activation,
-                expected_skill_package_fingerprint=(
-                    replay_result.request.verified_candidate_package_fingerprint
-                ),
-            )
+            or intervention_observation["observed"] is True
         )
         if candidate_execution_observed
         else None
@@ -21513,6 +21583,12 @@ def _replay_gate_details(
     details["candidate_skill_activation_required"] = (
         candidate_requires_skill_activation
     )
+    details["candidate_service_intervention_observed"] = (
+        intervention_observation["service_observed"]
+    )
+    details["candidate_skill_activation_observed"] = (
+        intervention_observation["skill_activation_observed"]
+    )
     details["candidate_intervention_observed"] = intervention_observed
     recovery_trace = replay_recovery_trace(normalized.members)
     if recovery_trace is not None:
@@ -21523,6 +21599,12 @@ def _replay_gate_details(
             candidate_requires_intervention_exposure
         )
         recovery_trace["candidate_intervention_observed"] = intervention_observed
+        recovery_trace["candidate_service_intervention_observed"] = (
+            intervention_observation["service_observed"]
+        )
+        recovery_trace["candidate_skill_activation_observed"] = (
+            intervention_observation["skill_activation_observed"]
+        )
         if intervention_observed is False:
             guidance = recovery_trace.get("guidance")
             recovery_trace["guidance"] = list(guidance or []) + [
@@ -21593,6 +21675,12 @@ def _replay_gate_details(
                 "candidate_repetition_count": sum(
                     len(member.candidate.repetition_results) or 1
                     for member in normalized.members
+                ),
+                "candidate_service_intervention_observed": (
+                    intervention_observation["service_observed"]
+                ),
+                "candidate_skill_activation_observed": (
+                    intervention_observation["skill_activation_observed"]
                 ),
             }
         )
@@ -22125,6 +22213,12 @@ def _candidate_intervention_unobserved_failure_event(
             ),
             "candidate_intervention_required": True,
             "candidate_intervention_observed": False,
+            "candidate_service_intervention_observed": recovery_trace.get(
+                "candidate_service_intervention_observed"
+            ),
+            "candidate_skill_activation_observed": recovery_trace.get(
+                "candidate_skill_activation_observed"
+            ),
         },
     )
 
@@ -22211,6 +22305,25 @@ def _candidate_task_plane_intervention_observed(
     require_skill_activation: bool = False,
     expected_skill_package_fingerprint: str | None = None,
 ) -> bool:
+    return bool(
+        _candidate_task_plane_intervention_observation(
+            normalized,
+            require_service_intervention=require_service_intervention,
+            require_skill_activation=require_skill_activation,
+            expected_skill_package_fingerprint=(
+                expected_skill_package_fingerprint
+            ),
+        )["observed"]
+    )
+
+
+def _candidate_task_plane_intervention_observation(
+    normalized: NormalizedReplayMembers,
+    *,
+    require_service_intervention: bool = True,
+    require_skill_activation: bool = False,
+    expected_skill_package_fingerprint: str | None = None,
+) -> dict[str, bool]:
     service_observed = not require_service_intervention
     activation_observed = not require_skill_activation
     for member in normalized.members:
@@ -22243,7 +22356,11 @@ def _candidate_task_plane_intervention_observed(
             )
             if isinstance(traces, list) and traces:
                 service_observed = True
-    return service_observed and activation_observed
+    return {
+        "observed": service_observed and activation_observed,
+        "service_observed": service_observed,
+        "skill_activation_observed": activation_observed,
+    }
 
 
 def _candidate_replay_has_repairable_capability_failure(
@@ -22384,6 +22501,12 @@ def _screening_gate_has_invalid_control(
     if (
         isinstance(gate.details, Mapping)
         and gate.details.get("code")
+        == "screening_support_control_circuit_open"
+    ):
+        return True
+    if (
+        isinstance(gate.details, Mapping)
+        and gate.details.get("code")
         == "candidate_replay_support_baseline_incompatible"
         and gate.details.get("failure_owner") == FailureOwner.CANDIDATE.value
     ):
@@ -22459,6 +22582,8 @@ def _screening_invalid_control_is_timeout(gate: GateResult | None) -> bool:
     if not _screening_gate_has_invalid_control(gate) or gate is None:
         return False
     details = gate.details if isinstance(gate.details, Mapping) else {}
+    if details.get("code") == "screening_support_control_circuit_open":
+        return True
     if (
         details.get("code") == _SCREENING_BUDGET_CENSORED_CODE
         and details.get("screening_censor_basis") == "baseline_horizon"
@@ -22759,17 +22884,6 @@ def _screening_invalid_control_case_ids(
         elif isinstance(current, (list, tuple)):
             stack.extend(current)
     return tuple(located or fallback_case_ids)
-
-
-def _screening_attempt_is_budget_censored(
-    attempt: Mapping[str, object],
-) -> bool:
-    details = attempt.get("details")
-    return bool(
-        isinstance(details, Mapping)
-        and details.get("code") == _SCREENING_BUDGET_CENSORED_CODE
-        and details.get("screening_outcome") == "right_censored"
-    )
 
 
 def _deduplicate_conformance_phenotypes(
@@ -26019,87 +26133,6 @@ def _measurement_component_identity(component: object | None) -> dict[str, objec
             if value is not None:
                 identity[name] = value
     return identity
-
-
-def _complete_measurement_usage(
-    observations: Sequence[MeasurementObservation],
-    *,
-    candidate_opportunities: int,
-) -> MeasurementUsage:
-    if not observations or not all(item.usage.complete for item in observations):
-        return MeasurementUsage(
-            candidate_opportunities=candidate_opportunities,
-        )
-    cost_complete = all(item.usage.cost_usd is not None for item in observations)
-    return MeasurementUsage(
-        tokens=sum(item.usage.tokens or 0 for item in observations),
-        cost_usd=(
-            sum(item.usage.cost_usd or 0.0 for item in observations)
-            if cost_complete
-            else None
-        ),
-        wall_seconds=sum(
-            item.usage.wall_seconds or 0.0 for item in observations
-        ),
-        candidate_opportunities=candidate_opportunities,
-    )
-
-
-def _measurement_target_resolution(
-    report: TargetSelectionReport | None,
-) -> TargetResolutionConfidence:
-    if report is None:
-        return TargetResolutionConfidence(
-            confidence=1.0,
-            origin="direct_target_argument",
-            inference_bypassed=True,
-        )
-    raw_origin = report.selection_origin
-    origin = str(getattr(raw_origin, "value", raw_origin) or "unknown")
-    causal_confidence: float | None = None
-    diagnostics = report.diagnostics
-    if isinstance(diagnostics, Mapping):
-        raw_causal = diagnostics.get("causal_confidence")
-        if (
-            isinstance(raw_causal, (int, float))
-            and not isinstance(raw_causal, bool)
-            and 0 <= float(raw_causal) <= 1
-        ):
-            causal_confidence = float(raw_causal)
-    return TargetResolutionConfidence(
-        confidence=float(report.confidence),
-        origin=origin,
-        inference_bypassed=origin not in {"inferred", "model_inferred"},
-        causal_confidence=causal_confidence,
-    )
-
-
-def _measurement_promotion_gate(summary: MeasurementSummary) -> GateResult:
-    return GateResult(
-        gate_name="trusted_improvement_measurement",
-        passed=summary.promotion_eligible,
-        reason=(
-            "controlled measurement supports candidate promotion"
-            if summary.promotion_eligible
-            else f"controlled measurement blocked promotion: {summary.decision_reason}"
-        ),
-        details={
-            "failure_class": (
-                None if summary.promotion_eligible else "measurement"
-            ),
-            "code": (
-                None
-                if summary.promotion_eligible
-                else "trusted_improvement_not_established"
-            ),
-            "experiment_id": summary.experiment_id,
-            "validity_status": summary.validity_status.value,
-            "effect_direction": summary.effect_direction.value,
-            "confidence_lower_bound": summary.confidence_lower_bound,
-            "budget_normalized": summary.budget_normalized,
-            "next_action": summary.next_action.value,
-        },
-    )
 
 
 def _finite_measurement_metric(value: object) -> float | None:
