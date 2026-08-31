@@ -5,9 +5,9 @@
 **Phase:** Milestone 1
 **Current milestone:** Trajectory Control Plane Foundation
 **Current task:** Task 1.4 integration and architecture review
-**Last action:** All six second-review findings now have implementations: canonical legacy metadata, remote-child single
-import, strict task epoch, truthful delivery receipts, Redis failure propagation, native-stream terminal fallback,
-at-most-once publication, and cancellation-preserving cleanup. Combined regression and independent re-review remain.
+**Last action:** All six second-review findings now have implementations. The merged runner/evaluation/dataset/compiler
+regression is 304 passed and four skipped; the real formatter + dual-write + retry fixture is merged. Independent
+Milestone 1 re-review remains.
 
 ## Completed Foundations
 
@@ -117,6 +117,11 @@ at-most-once publication, and cancellation-preserving cleanup. Combined regressi
   streams. Publication is fenced before the first external attempt and cannot be retried into duplicate responses.
 - Hardened terminal cleanup so finalize, publish, output, and sandbox cleanup failures cannot replace an original or newly
   arriving `CancelledError`; focused cancellation/publication tests pass.
+- Added one TC-TRAJECTORY-IO-023 fixture that uses the real configured trajectory logger in an isolated process, dual v2
+  appends, and a second epoch/revision for the same task. It verifies physical JSON lines plus formal legacy/v2/mixed latest
+  reads and canonical checksums.
+- Post-fix wide regression: 304 passed, four skipped across runners, evaluations, dataset, trajectory contracts, compiler
+  adapters/models/trace, PromptSection adapter, and Redis delivery propagation.
 
 ### Milestone 2 Readiness
 - Task 2.1 dependency-light frozen models/trace is merged; it has no runtime integration and therefore cannot bypass the
