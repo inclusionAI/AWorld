@@ -9,6 +9,12 @@ from typing import (
 
 from aworld.models.model_response import ModelResponse
 from aworld.core.context.base import Context
+from aworld.core.context.compiler import (
+    CandidateRequestNotEnforceable,
+    ProviderCandidateEnvelope,
+    ProviderLoweringCapability,
+    ProviderLoweringReceipt,
+)
 from aworld.utils.common import nest_dict_counter
 
 
@@ -62,6 +68,86 @@ class LLMProviderBase(abc.ABC):
     @classmethod
     def supported_models(cls) -> list[str]:
         return []
+
+    def context_candidate_lowering_capability(
+        self,
+    ) -> ProviderLoweringCapability | None:
+        """Return a versioned provider-owned lowering contract, if supported."""
+        return None
+
+    def commit_context_candidate_lowering(
+        self,
+        *,
+        context: Context | None,
+        envelope: ProviderCandidateEnvelope,
+        receipt: ProviderLoweringReceipt,
+    ) -> None:
+        """Persist the lowering receipt before the provider action is attempted.
+
+        Enforce is fail-closed: missing or ambiguous request correlation must
+        never degrade into an unobserved provider request.
+        """
+        try:
+            if not isinstance(envelope, ProviderCandidateEnvelope):
+                raise TypeError("invalid candidate envelope")
+            if not isinstance(receipt, ProviderLoweringReceipt):
+                raise TypeError("invalid provider lowering receipt")
+            capability = self.context_candidate_lowering_capability()
+            if capability != envelope.expected_lowering or capability != receipt.lowering:
+                raise ValueError("provider lowering capability mismatch")
+            if receipt.candidate_content_hash != envelope.candidate_request.content_hash:
+                raise ValueError("provider receipt is not bound to the candidate")
+            if context is None:
+                raise ValueError("provider lowering receipt requires Context")
+            llm_calls = context.get_llm_calls()
+            matches = [
+                (index, record)
+                for index, record in enumerate(llm_calls)
+                if isinstance(record, dict)
+                and record.get("request_id") == envelope.candidate_request.request_id
+            ]
+            if len(matches) != 1:
+                raise ValueError("provider lowering receipt correlation is ambiguous")
+            index, record = matches[0]
+            rollout = record.get("context_rollout")
+            if not isinstance(rollout, dict) or rollout.get("mode") != "enforce":
+                raise ValueError("provider lowering receipt requires an enforce record")
+            candidate_evidence = rollout.get("candidate_snapshot")
+            if (
+                not isinstance(candidate_evidence, dict)
+                or candidate_evidence.get("content_hash")
+                != envelope.candidate_request.content_hash
+            ):
+                raise ValueError("persisted candidate evidence does not match envelope")
+
+            updated_rollout = dict(rollout)
+            updated_rollout.update({
+                "candidate_status": "provider_lowered",
+                "candidate_applied": True,
+                "provider_lowering_ready": True,
+                "provider_lowering": receipt.to_redacted_dict(),
+            })
+            updated_rollout.pop("error", None)
+            updated = dict(record)
+            updated.update({
+                # The persisted raw request remains the selected model-boundary
+                # candidate.  Provider-prepared truth is represented by the
+                # redacted receipt hash below, so the top-level field must not
+                # falsely claim that raw provider parameters were persisted.
+                "request": envelope.candidate_request.thaw(),
+                "request_selection": "candidate",
+                "context_observe_scope": "legacy_request_before_rollout",
+                "provider_invoked": True,
+                "provider_prepared_request_match": None,
+                "context_rollout": updated_rollout,
+            })
+            llm_calls[index] = updated
+        except CandidateRequestNotEnforceable:
+            raise
+        except Exception:
+            raise CandidateRequestNotEnforceable(
+                "provider_lowering_receipt_failed"
+            ) from None
 
     def preprocess_messages(self, messages: List[Dict[str, str]]) -> Any:
         """Preprocess messages, convert OpenAI format messages to specific provider required format.

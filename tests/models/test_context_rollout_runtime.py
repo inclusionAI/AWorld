@@ -13,6 +13,7 @@ from aworld.core.context.compiler import (
     CandidateRequestNotEnforceable,
     ContextCompilerMode,
     ContextObservationSidecar,
+    ProviderLoweringCapability,
     adapt_final_messages,
     canonical_json_hash,
     compile_context_candidate,
@@ -280,3 +281,27 @@ def test_runtime_rejects_arbitrary_compiler_object_before_it_can_act():
         model.context_compiler_mode = "enforce"
 
     assert counters == {"compiler": 0, "tool": 0, "artifact_offload": 0}
+
+
+def test_custom_provider_cannot_self_authorize_enforce_lowering():
+    class SelfAuthorizingProvider(CountingProvider):
+        def context_candidate_lowering_capability(self):
+            return ProviderLoweringCapability(
+                provider_name="custom",
+                adapter_identity="untrusted.custom.provider",
+                adapter_version="v1",
+                request_projection="custom.request.v1",
+            )
+
+    provider = SelfAuthorizingProvider()
+    model = _model(mode="enforce", provider=provider, policy=_candidate_policy())
+    context = Context(task_id="self-authorizing-provider")
+
+    with pytest.raises(CandidateRequestNotEnforceable) as raised:
+        model.completion(
+            [{"role": "user", "content": "legacy"}], context=context
+        )
+
+    assert raised.value.reason_code == "provider_lowering_required"
+    assert provider.calls == []
+    assert context.get_llm_calls()[0]["provider_invoked"] is False

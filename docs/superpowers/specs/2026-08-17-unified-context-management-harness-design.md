@@ -987,6 +987,29 @@ context_compiler:
 配置必须可按 entry point、agent、workspace 和流量比例灰度。shadow 模式不得额外执行 Tool 或产生
 外部写入。
 
+### Provider-Owned Immutable Lowering Gate
+
+`enforce` 不能只凭 model-boundary candidate 的 `enforce_ready` 标志开放。每个 provider 必须在自己的真实
+发送边界实现并通过以下门禁，未完成的 provider 继续 `blocked_before_provider`：
+
+- framework 只把 frozen、capability-free 的 candidate envelope 交给已注册且精确匹配的内置 provider
+  adapter；自定义 provider 不能通过自报 capability 获得 enforce 权限。
+- provider adapter 在最终 SDK/HTTP 参数组装前消费 candidate，且 candidate 的 messages、Tools 和统一参数
+  必须覆盖 legacy 对应字段。任何仍会在其后替换 messages 的 provider transform 都必须 fail-closed。
+- adapter 对最终参数建立 `PROVIDER_PREPARED` immutable snapshot，将 request id、candidate content hash、
+  adapter identity/version 和 provider request hash 绑定为 `ProviderLoweringReceipt`，然后把同一个未再修改的
+  参数映射交给 SDK 或 HTTP handler。SDK 的 `**kwargs` 只能声称结构一致，不能冒充 HTTP serialized bytes。
+- receipt 必须在外部调用前绑定到唯一的 `llm_calls.request_id`；Context 缺失、记录缺失/重复、candidate hash
+  不一致、最终参数不可冻结或 receipt 存储失败时一律阻止发送。
+- `llm_calls.request` 保存实际选择的 model-boundary candidate，并继续声明 `MODEL_BOUNDARY` fidelity；最终
+  provider 参数默认只保存 redacted hash receipt，不能把顶层 raw request 虚标成 `PROVIDER_PREPARED`；旧请求
+  observer 必须标记为 pre-rollout baseline，不能和已选择的 candidate 混成同一个 snapshot。
+
+首个实现切片只开放内置 `OpenAIProvider` 的 Chat Completions SDK/HTTP 路径，覆盖 sync、async、sync stream
+和 async stream。`AzureOpenAIProvider` 使用不同的 LangChain 发送边界，自定义 provider 也没有经过同一证明，
+因此仍保持 fail-closed。该门禁证明“candidate 确实成为 provider 请求”，但不单独证明 Context 优化有收益；
+收益仍必须通过固定 provider/model/environment 的 paired benchmark 和 independent verifier 归因。
+
 ## Migration Plan
 
 ### Phase 0: Baseline and Observability
