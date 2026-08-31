@@ -8,7 +8,11 @@ import re
 from typing import Any
 
 from .frozen_json import FrozenMap, freeze_json, thaw_json
-from .models import ProviderRequestSnapshot
+from .models import (
+    ProviderRequestFidelity,
+    ProviderRequestSnapshot,
+    RequestCaptureStage,
+)
 from .observe import RequestTraceMatch, request_trace_match
 from .sidecar import ContextObservationSidecar
 
@@ -45,6 +49,7 @@ class CandidateRequestNotEnforceable(RolloutContractError):
 
 
 FRAMEWORK_COMPILER_IDENTITY = "aworld.context.compiler.framework"
+AWORLD_PROVIDER_CANDIDATE_KWARG = "_aworld_provider_candidate_envelope"
 
 
 def _stable_identifier(name: str, value: str) -> None:
@@ -134,6 +139,119 @@ class CandidateCompileInput:
             raise TypeError(
                 "observations must contain ContextObservationSidecar values"
             )
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderLoweringCapability:
+    """Versioned provider-owned immutable lowering declaration."""
+
+    provider_name: str
+    adapter_identity: str
+    adapter_version: str
+    request_projection: str
+
+    def __post_init__(self) -> None:
+        for name in (
+            "provider_name",
+            "adapter_identity",
+            "adapter_version",
+            "request_projection",
+        ):
+            _stable_identifier(name, getattr(self, name))
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderCandidateEnvelope:
+    """Candidate handed to one declared provider lowering adapter.
+
+    The envelope is immutable and contains no Context, callback, Tool, client,
+    artifact repository, or other action capability.
+    """
+
+    candidate_request: ProviderRequestSnapshot
+    compiler_identity: str
+    compiler_version: str
+    expected_lowering: ProviderLoweringCapability
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.candidate_request, ProviderRequestSnapshot):
+            raise TypeError("candidate_request must be a ProviderRequestSnapshot")
+        if not isinstance(self.expected_lowering, ProviderLoweringCapability):
+            raise TypeError("expected_lowering must be a ProviderLoweringCapability")
+        for name in ("compiler_identity", "compiler_version"):
+            _stable_identifier(name, getattr(self, name))
+        if self.compiler_identity != FRAMEWORK_COMPILER_IDENTITY:
+            raise ValueError("candidate envelope requires the framework compiler")
+        if self.candidate_request.provider_name != self.expected_lowering.provider_name:
+            raise ValueError("candidate provider does not match lowering capability")
+        if (
+            self.candidate_request.capture_stage
+            is not RequestCaptureStage.MODEL_BOUNDARY
+            or self.candidate_request.fidelity
+            is not ProviderRequestFidelity.MODEL_BOUNDARY
+        ):
+            raise ValueError("candidate must be captured at the model boundary")
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderLoweringReceipt:
+    """Redactable proof that one candidate produced one final provider request."""
+
+    candidate_content_hash: str
+    provider_request: ProviderRequestSnapshot
+    lowering: ProviderLoweringCapability
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.candidate_content_hash, str) or not re.fullmatch(
+            r"sha256:[0-9a-f]{64}", self.candidate_content_hash
+        ):
+            raise ValueError("candidate_content_hash must be a canonical sha256 hash")
+        if not isinstance(self.provider_request, ProviderRequestSnapshot):
+            raise TypeError("provider_request must be a ProviderRequestSnapshot")
+        if not isinstance(self.lowering, ProviderLoweringCapability):
+            raise TypeError("lowering must be a ProviderLoweringCapability")
+        if self.provider_request.provider_name != self.lowering.provider_name:
+            raise ValueError("provider request does not match lowering capability")
+        if (
+            self.provider_request.capture_stage
+            is not RequestCaptureStage.PROVIDER_PREPARED
+            or self.provider_request.fidelity
+            is not ProviderRequestFidelity.PROVIDER_PREPARED
+        ):
+            raise ValueError("lowering receipt requires a provider-prepared snapshot")
+
+    @classmethod
+    def from_envelope(
+        cls,
+        *,
+        envelope: ProviderCandidateEnvelope,
+        provider_request: ProviderRequestSnapshot,
+        lowering: ProviderLoweringCapability,
+    ) -> "ProviderLoweringReceipt":
+        if not isinstance(envelope, ProviderCandidateEnvelope):
+            raise TypeError("envelope must be a ProviderCandidateEnvelope")
+        if lowering != envelope.expected_lowering:
+            raise ValueError("provider lowering capability changed after authorization")
+        if provider_request.request_id != envelope.candidate_request.request_id:
+            raise ValueError("provider request id does not match candidate")
+        return cls(
+            candidate_content_hash=envelope.candidate_request.content_hash,
+            provider_request=provider_request,
+            lowering=lowering,
+        )
+
+    def to_redacted_dict(self) -> dict[str, Any]:
+        return {
+            "adapter_identity": self.lowering.adapter_identity,
+            "adapter_version": self.lowering.adapter_version,
+            "request_projection": self.lowering.request_projection,
+            "candidate_content_hash": self.candidate_content_hash,
+            "provider_request": {
+                "content_hash": self.provider_request.content_hash,
+                "capture_stage": self.provider_request.capture_stage.value,
+                "fidelity": self.provider_request.fidelity.value,
+            },
+        }
 
 
 def compile_context_candidate(
@@ -257,6 +375,7 @@ def select_rollout_request(
 
 
 __all__ = [
+    "AWORLD_PROVIDER_CANDIDATE_KWARG",
     "CandidateCompileInput",
     "CandidateCompilePolicy",
     "CandidateCompilation",
@@ -266,6 +385,9 @@ __all__ = [
     "ContextCompilerMode",
     "ContextRolloutSelection",
     "FRAMEWORK_COMPILER_IDENTITY",
+    "ProviderCandidateEnvelope",
+    "ProviderLoweringCapability",
+    "ProviderLoweringReceipt",
     "RolloutContractError",
     "compile_context_candidate",
     "select_rollout_request",

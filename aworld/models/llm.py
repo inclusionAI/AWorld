@@ -32,6 +32,7 @@ from aworld.models.volcano_seedance_provider import VolcanoSeedanceProvider
 from aworld.models.model_response import ModelResponse
 from aworld.core.context.base import Context
 from aworld.core.context.compiler import (
+    AWORLD_PROVIDER_CANDIDATE_KWARG,
     CandidateCompileInput,
     CandidateCompilePolicy,
     CandidateCompilation,
@@ -39,6 +40,8 @@ from aworld.core.context.compiler import (
     ContextCompilerMode,
     FRAMEWORK_COMPILER_IDENTITY,
     ProviderRequestSnapshot,
+    ProviderCandidateEnvelope,
+    ProviderLoweringCapability,
     ProviderRequestFidelity,
     RequestCaptureStage,
     RolloutContractError,
@@ -660,7 +663,7 @@ class LLMModel:
         stop: List[str],
         tools: Any,
         model_name: str | None,
-    ) -> dict[str, Any] | None:
+    ) -> tuple[dict[str, Any] | None, ProviderCandidateEnvelope | None]:
         """Prepare redacted rollout metadata without invoking external actions.
 
         The current model boundary is structurally faithful but not a
@@ -672,7 +675,7 @@ class LLMModel:
         if mode is ContextCompilerMode.OFF:
             # Keep the default path byte-for-byte compatible at the model
             # boundary: no candidate snapshot, comparison, or record field.
-            return None
+            return None, None
         if mode is ContextCompilerMode.OBSERVE:
             # Existing context_observe capture below remains authoritative.
             # Observe never asks the candidate compiler to do work.
@@ -683,7 +686,7 @@ class LLMModel:
                 "external_actions_authorized": False,
                 "external_action_count_observed": None,
                 "comparison": None,
-            }
+            }, None
 
         compile_started = time.perf_counter()
         policy = getattr(self, "_context_candidate_policy", None)
@@ -744,8 +747,11 @@ class LLMModel:
                         status="blocked", error_code="invalid_compiler_policy"
                     ),
                 )
-            return fail_metadata(
-                status="failed", error_code="invalid_compiler_policy"
+            return (
+                fail_metadata(
+                    status="failed", error_code="invalid_compiler_policy"
+                ),
+                None,
             )
 
         try:
@@ -777,8 +783,11 @@ class LLMModel:
                         status="blocked", error_code="candidate_input_failed"
                     ),
                 )
-            return fail_metadata(
-                status="failed", error_code="candidate_input_failed"
+            return (
+                fail_metadata(
+                    status="failed", error_code="candidate_input_failed"
+                ),
+                None,
             )
 
         try:
@@ -837,19 +846,107 @@ class LLMModel:
                         status="blocked", error_code="candidate_compilation_failed"
                     ),
                 )
-            return fail_metadata(
-                status="failed", error_code="candidate_compilation_failed"
+            return (
+                fail_metadata(
+                    status="failed", error_code="candidate_compilation_failed"
+                ),
+                None,
             )
 
         if mode is ContextCompilerMode.ENFORCE:
-            blocked = dict(metadata)
-            blocked["candidate_status"] = "blocked"
-            blocked["error"] = {"code": "provider_lowering_required"}
-            block(
-                CandidateRequestNotEnforceable("provider_lowering_required"),
-                blocked,
+            if not candidate.enforce_ready:
+                blocked = dict(metadata)
+                blocked["candidate_status"] = "blocked"
+                blocked["error"] = {"code": "candidate_not_enforce_ready"}
+                block(
+                    CandidateRequestNotEnforceable(
+                        "candidate_not_enforce_ready"
+                    ),
+                    blocked,
+                )
+            try:
+                capability = self.provider.context_candidate_lowering_capability()
+            except Exception:
+                capability = None
+            if (
+                self.provider_name != "openai"
+                or type(self.provider) is not OpenAIProvider
+                or type(capability) is not ProviderLoweringCapability
+                or capability.provider_name != self.provider_name
+            ):
+                blocked = dict(metadata)
+                blocked["candidate_status"] = "blocked"
+                blocked["error"] = {"code": "provider_lowering_required"}
+                block(
+                    CandidateRequestNotEnforceable(
+                        "provider_lowering_required"
+                    ),
+                    blocked,
+                )
+            try:
+                envelope = ProviderCandidateEnvelope(
+                    candidate_request=snapshot,
+                    compiler_identity=candidate.compiler_identity,
+                    compiler_version=candidate.compiler_version,
+                    expected_lowering=capability,
+                )
+            except Exception:
+                blocked = dict(metadata)
+                blocked["candidate_status"] = "blocked"
+                blocked["error"] = {"code": "provider_lowering_contract_invalid"}
+                block(
+                    CandidateRequestNotEnforceable(
+                        "provider_lowering_contract_invalid"
+                    ),
+                    blocked,
+                )
+            prepared = dict(metadata)
+            prepared.update({
+                "candidate_status": "awaiting_provider_lowering",
+                "provider_lowering_ready": True,
+                "provider_lowering": {
+                    "adapter_identity": capability.adapter_identity,
+                    "adapter_version": capability.adapter_version,
+                    "request_projection": capability.request_projection,
+                    "status": "awaiting_receipt",
+                },
+            })
+            return prepared, envelope
+        return metadata, None
+
+    def _mark_context_rollout_blocked(
+        self,
+        *,
+        context: Context | None,
+        request_id: str,
+        reason_code: str,
+    ) -> None:
+        """Best-effort redacted receipt for a provider-lowering rejection."""
+        try:
+            if context is None:
+                return
+            llm_calls = context.get_llm_calls()
+            for index, record in enumerate(llm_calls):
+                if not isinstance(record, dict) or record.get("request_id") != request_id:
+                    continue
+                updated = dict(record)
+                rollout = dict(updated.get("context_rollout") or {})
+                rollout.update({
+                    "candidate_status": "blocked",
+                    "candidate_applied": False,
+                    "error": {"code": reason_code},
+                })
+                updated.update({
+                    "context_rollout": rollout,
+                    "provider_invoked": False,
+                })
+                llm_calls[index] = updated
+                return
+        except Exception as exc:
+            logger.warning(
+                "LLM provider lowering rejection capture failed; "
+                f"error_type={type(exc).__name__}"
             )
-        return metadata
 
     def _unsafe_begin_llm_call_record(
         self,
@@ -1171,7 +1268,7 @@ class LLMModel:
             except Exception as e:
                 logger.warning(f"BEFORE_LLM_CALL hook execution failed: {e}")
 
-        context_rollout = self._prepare_context_rollout(
+        context_rollout, provider_candidate = self._prepare_context_rollout(
             context=context,
             request_id=request_id,
             agent_call_id=agent_call_id,
@@ -1195,7 +1292,10 @@ class LLMModel:
             tools=kwargs.get("tools"),
             model_name=kwargs.get("model_name") or kwargs.get("model"),
             context_rollout=context_rollout,
+            provider_invoked=provider_candidate is None,
         )
+        if provider_candidate is not None:
+            kwargs[AWORLD_PROVIDER_CANDIDATE_KWARG] = provider_candidate
         try:
             resp = await self.provider.acompletion(
                 messages=messages,
@@ -1261,6 +1361,20 @@ class LLMModel:
                 finished_at=time.time(),
             )
             return resp
+        except CandidateRequestNotEnforceable as exc:
+            self._mark_context_rollout_blocked(
+                context=context,
+                request_id=request_id,
+                reason_code=exc.reason_code,
+            )
+            self._finish_llm_call_record(
+                context=context,
+                request_id=request_id,
+                status="blocked_before_provider",
+                finished_at=time.time(),
+                error_code=exc.code,
+            )
+            raise
         except asyncio.CancelledError:
             self._finish_llm_call_record(
                 context=context,
@@ -1400,7 +1514,7 @@ class LLMModel:
             except Exception as e:
                 logger.warning(f"BEFORE_LLM_CALL hook execution failed: {e}")
 
-        context_rollout = self._prepare_context_rollout(
+        context_rollout, provider_candidate = self._prepare_context_rollout(
             context=context,
             request_id=request_id,
             agent_call_id=agent_call_id,
@@ -1424,7 +1538,10 @@ class LLMModel:
             tools=kwargs.get("tools"),
             model_name=kwargs.get("model_name") or kwargs.get("model"),
             context_rollout=context_rollout,
+            provider_invoked=provider_candidate is None,
         )
+        if provider_candidate is not None:
+            kwargs[AWORLD_PROVIDER_CANDIDATE_KWARG] = provider_candidate
         try:
             resp = self.provider.completion(
                 messages=messages,
@@ -1438,6 +1555,20 @@ class LLMModel:
                 response_parse_args = kwargs.get("response_parse_args") or {}
                 resp = sync_exec(self.llm_response_parser.parse, resp, **response_parse_args)
         except BaseException as exc:
+            if isinstance(exc, CandidateRequestNotEnforceable):
+                self._mark_context_rollout_blocked(
+                    context=context,
+                    request_id=request_id,
+                    reason_code=exc.reason_code,
+                )
+                self._finish_llm_call_record(
+                    context=context,
+                    request_id=request_id,
+                    status="blocked_before_provider",
+                    finished_at=time.time(),
+                    error_code=exc.code,
+                )
+                raise
             cancelled = isinstance(
                 exc, (asyncio.CancelledError, GeneratorExit, KeyboardInterrupt)
             )
@@ -1542,7 +1673,7 @@ class LLMModel:
         record_chunk = None
         terminal_status = "success"
         terminal_error = None
-        context_rollout = self._prepare_context_rollout(
+        context_rollout, provider_candidate = self._prepare_context_rollout(
             context=context,
             request_id=request_id,
             agent_call_id=agent_call_id,
@@ -1566,7 +1697,10 @@ class LLMModel:
             tools=kwargs.get("tools"),
             model_name=kwargs.get("model_name") or kwargs.get("model"),
             context_rollout=context_rollout,
+            provider_invoked=provider_candidate is None,
         )
+        if provider_candidate is not None:
+            kwargs[AWORLD_PROVIDER_CANDIDATE_KWARG] = provider_candidate
         try:
             for chunk in self.provider.stream_completion(
                 messages=messages,
@@ -1598,7 +1732,15 @@ class LLMModel:
             terminal_error = "stream_closed_early"
             raise
         except BaseException as exc:
-            if isinstance(exc, (asyncio.CancelledError, KeyboardInterrupt)):
+            if isinstance(exc, CandidateRequestNotEnforceable):
+                terminal_status = "blocked_before_provider"
+                terminal_error = exc.code
+                self._mark_context_rollout_blocked(
+                    context=context,
+                    request_id=request_id,
+                    reason_code=exc.reason_code,
+                )
+            elif isinstance(exc, (asyncio.CancelledError, KeyboardInterrupt)):
                 terminal_status = "cancelled"
                 terminal_error = "provider_stream_cancelled"
             else:
@@ -1657,7 +1799,7 @@ class LLMModel:
         record_chunk = None
         terminal_status = "success"
         terminal_error = None
-        context_rollout = self._prepare_context_rollout(
+        context_rollout, provider_candidate = self._prepare_context_rollout(
             context=context,
             request_id=request_id,
             agent_call_id=agent_call_id,
@@ -1681,7 +1823,10 @@ class LLMModel:
             tools=kwargs.get("tools"),
             model_name=kwargs.get("model_name") or kwargs.get("model"),
             context_rollout=context_rollout,
+            provider_invoked=provider_candidate is None,
         )
+        if provider_candidate is not None:
+            kwargs[AWORLD_PROVIDER_CANDIDATE_KWARG] = provider_candidate
         try:
             async for chunk in self.provider.astream_completion(
                     messages=messages,
@@ -1711,7 +1856,15 @@ class LLMModel:
             terminal_error = "stream_closed_early"
             raise
         except BaseException as exc:
-            if isinstance(exc, (asyncio.CancelledError, KeyboardInterrupt)):
+            if isinstance(exc, CandidateRequestNotEnforceable):
+                terminal_status = "blocked_before_provider"
+                terminal_error = exc.code
+                self._mark_context_rollout_blocked(
+                    context=context,
+                    request_id=request_id,
+                    reason_code=exc.reason_code,
+                )
+            elif isinstance(exc, (asyncio.CancelledError, KeyboardInterrupt)):
                 terminal_status = "cancelled"
                 terminal_error = "provider_stream_cancelled"
             else:

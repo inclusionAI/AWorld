@@ -4,10 +4,11 @@
 
 **Phase:** Milestone 3
 **Current milestone:** Universal Final Compiler and Rollout Modes
-**Current task:** Extend the sealed normal-model rollout boundary toward provider-owned immutable lowering
-**Last action:** Normal Agent/model rollout integration passed two independent re-reviews with P0=0/P1=0. Shadow uses
-one framework-owned pure compiler and the exact legacy provider objects; enforce remains blocked before provider lowering
-and persists a typed `provider_invoked=false` receipt.
+**Current task:** Complete the first provider-owned immutable lowering slice
+**Last action:** Added an exact-type-gated OpenAI lowering adapter. Enforce now hands one frozen candidate envelope to the
+provider, freezes the final Chat Completions params, persists a candidate-bound redacted receipt, and sends the same
+provider-prepared structure through SDK/HTTP; receipt or lowering failure blocks before the external call. Focused compiler,
+OpenAI, trajectory, model-boundary, Agent, and hook regression is 108 passed.
 
 ## Completed Foundations
 
@@ -116,10 +117,22 @@ and persists a typed `provider_invoked=false` receipt.
 - Trade-offs accepted: normal-model enforce is intentionally unavailable until provider lowering supplies immutable
   provider-prepared/serialized evidence; shadow remains the supported runtime rollout mode.
 
+### Decision: First provider-owned lowering slice
+- Options considered: trust any provider capability declaration; enable all OpenAI-compatible subclasses; authorize only a
+  reviewed exact built-in provider class and add providers after their real send boundaries are tested.
+- Chose: exact built-in `OpenAIProvider` registration with a frozen candidate envelope and versioned
+  `ProviderLoweringReceipt`; Azure and custom providers remain blocked even if they self-declare the same interface.
+- Rationale: a declaration alone cannot prove the candidate was applied. The OpenAI adapter now owns candidate projection,
+  final parameter freezing, unique request-id receipt binding, and the immediately following SDK/HTTP invocation.
+- Trade-offs accepted: evidence is `PROVIDER_PREPARED` structural fidelity, not HTTP serialized bytes; enforce requires a
+  writable Context receipt and initially covers only OpenAI Chat Completions.
+
 ## Architecture State
 
 ### Components
 - `llm_calls`: provider request truth with provider-bound snapshots.
+- Provider lowering: exact registered adapters consume frozen candidates and persist provider-prepared hash receipts before
+  sending the same structure; the top-level raw request remains truthfully labeled model-boundary fidelity.
 - Runtime events/TrajectoryDataset: action/result truth and mutable SAR projection.
 - Docker Tool output policy: bounded inline view plus checksummed retrievable artifact.
 - Benchmark driver: frozen invariant manifests, independent verifier, paired Context metrics.
@@ -130,6 +143,8 @@ and persists a typed `provider_invoked=false` receipt.
 - Cancellation cleanup/finalization must preserve the original `CancelledError` even when secondary operations fail.
 - `trajectory.log` remains an unacknowledged legacy logger/Python-repr projection; only JSONL v2 can claim persisted.
 - Current compiler/request capture can observe hook drift but does not yet enforce a universal final boundary.
+- Provider-owned enforce currently covers only exact built-in `OpenAIProvider`; Azure/custom providers remain fail-closed,
+  and HTTP serialized-byte fidelity still requires a transport-owned serialization receipt.
 
 ### Audit Findings
 - Three event-runner trajectory updates are bare `create_task` calls and can race the final storage read.
@@ -293,5 +308,14 @@ and persists a typed `provider_invoked=false` receipt.
   provider bytes, and round-trips through the real JSONL v2 sink/reader. Provider-lowered immutable execution remains the
   next gate. Focused compiler/model/trajectory regression is 140 passed; Agent/hook regression is 19 passed. Two independent
   re-reviews approved P0/P1=0 after reproducing the original ambient-capability and missing-evidence counterexamples.
+- Added provider-owned immutable lowering for the exact built-in OpenAI Chat Completions adapter. A frozen envelope binds
+  compiler/candidate identity to a versioned provider capability; sync/async/stream paths freeze the final params, commit a
+  redacted `PROVIDER_PREPARED` receipt to the unique llm-call, then invoke SDK/HTTP with the same structure. Missing Context,
+  receipt failures, unsupported schemas/transforms, unsnapshotable lowering, non-ready candidates, Azure, and self-
+  authorizing custom providers all block before send. Focused lowering/runtime tests are 15 passed; the wider selected run
+  is 180 passed with four pre-existing `ModelResponse.usage` expectation failures in an untouched test/module pair.
+- Local final review kept the raw/capture fidelity boundaries distinct, labeled the legacy observer as pre-rollout baseline,
+  verified that private envelopes never reach SDK/HTTP params, and reran the focused compiler/OpenAI/trajectory/Agent/hook
+  suite at 108 passed. No reviewed issue remains open in this slice.
 - Authority, trust, lifetime, stability, source URI, task epoch, and exact token counts remain UNKNOWN unless their owner can
   prove them; role/content heuristics are not acceptable.

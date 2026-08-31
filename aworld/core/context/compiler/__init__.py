@@ -81,6 +81,7 @@ from .cache import (
     serialized_prefix_checksum,
 )
 from .rollout import (
+    AWORLD_PROVIDER_CANDIDATE_KWARG,
     CandidateCompileInput,
     CandidateCompilePolicy,
     CandidateCompilation,
@@ -90,12 +91,16 @@ from .rollout import (
     ContextCompilerMode,
     ContextRolloutSelection,
     FRAMEWORK_COMPILER_IDENTITY,
+    ProviderCandidateEnvelope,
+    ProviderLoweringCapability,
+    ProviderLoweringReceipt,
     RolloutContractError,
     compile_context_candidate,
     select_rollout_request,
 )
 
 __all__ = [
+    "AWORLD_PROVIDER_CANDIDATE_KWARG",
     "AdapterDiagnostic",
     "AdapterDiagnosticSeverity",
     "AdapterResult",
@@ -138,6 +143,9 @@ __all__ = [
     "ObserveCompilerResult",
     "ObserveHashEvidence",
     "ProviderRequestFidelity",
+    "ProviderCandidateEnvelope",
+    "ProviderLoweringCapability",
+    "ProviderLoweringReceipt",
     "ProviderVerifiedCacheIdentity",
     "ProviderRequestSnapshot",
     "OccurrenceContextAdapter",

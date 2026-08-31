@@ -24,6 +24,16 @@ from openai import (
 
 from aworld.config.conf import ClientType
 from aworld.core.llm_provider import LLMProviderBase
+from aworld.core.context.compiler import (
+    AWORLD_PROVIDER_CANDIDATE_KWARG,
+    CandidateRequestNotEnforceable,
+    ProviderCandidateEnvelope,
+    ProviderLoweringCapability,
+    ProviderLoweringReceipt,
+    ProviderRequestFidelity,
+    ProviderRequestSnapshot,
+    RequestCaptureStage,
+)
 from aworld.logs.util import logger, log_llm_record
 from aworld.models.llm_http_handler import LLMHTTPHandler
 from aworld.models.openai_message_sanitizer import sanitize_openai_messages
@@ -144,6 +154,116 @@ class OpenAIProvider(LLMProviderBase):
     def supported_models(cls) -> list[str]:
         return ["gpt-4o", "gpt-4", "gpt-3.5-turbo", "o3-mini", "gpt-4o-mini", "deepseek-chat", "deepseek-reasoner",
                 r"qwq-.*", r"qwen-.*"]
+
+    def context_candidate_lowering_capability(
+        self,
+    ) -> ProviderLoweringCapability | None:
+        return ProviderLoweringCapability(
+            provider_name="openai",
+            adapter_identity="aworld.provider.openai.chat_completions",
+            adapter_version="v1",
+            request_projection="openai.chat.completions.params.v1",
+        )
+
+    def _prepare_chat_completion_request(
+        self,
+        *,
+        messages: List[Dict[str, str]],
+        temperature: float,
+        max_tokens: int | None,
+        stop: List[str] | None,
+        kwargs: Dict[str, Any],
+        stream: bool,
+    ) -> Dict[str, Any]:
+        """Lower one immutable candidate and commit its receipt before send."""
+        request_kwargs = dict(kwargs) if stream else kwargs
+        if stream:
+            request_kwargs["stream"] = True
+        envelope = request_kwargs.pop(AWORLD_PROVIDER_CANDIDATE_KWARG, None)
+        if envelope is not None:
+            if not isinstance(envelope, ProviderCandidateEnvelope):
+                raise CandidateRequestNotEnforceable(
+                    "provider_lowering_contract_invalid"
+                )
+            capability = self.context_candidate_lowering_capability()
+            if capability != envelope.expected_lowering:
+                raise CandidateRequestNotEnforceable(
+                    "provider_lowering_contract_invalid"
+                )
+            if request_kwargs.get("prompt_assembly_plan") is not None:
+                raise CandidateRequestNotEnforceable(
+                    "provider_transform_after_candidate"
+                )
+            try:
+                payload = envelope.candidate_request.thaw()
+                if set(payload) != {"messages", "tools", "params"}:
+                    raise ValueError("unsupported model-boundary projection")
+                params = payload["params"]
+                if not isinstance(params, dict) or set(params) != {
+                    "temperature", "max_tokens", "stop"
+                }:
+                    raise ValueError("unsupported candidate parameter projection")
+                if not isinstance(payload["messages"], list):
+                    raise TypeError("candidate messages must be a list")
+                if payload["tools"] is not None and not isinstance(
+                    payload["tools"], list
+                ):
+                    raise TypeError("candidate tools must be a list or null")
+                messages = payload["messages"]
+                request_kwargs["tools"] = payload["tools"]
+                temperature = params["temperature"]
+                max_tokens = params["max_tokens"]
+                stop = params["stop"]
+            except Exception:
+                raise CandidateRequestNotEnforceable(
+                    "provider_candidate_schema_unsupported"
+                ) from None
+
+        try:
+            processed_messages = self.preprocess_messages(messages, **request_kwargs)
+            openai_params = self.get_openai_params(
+                processed_messages,
+                temperature,
+                max_tokens,
+                stop,
+                **request_kwargs,
+            )
+        except CandidateRequestNotEnforceable:
+            raise
+        except Exception:
+            if envelope is not None:
+                raise CandidateRequestNotEnforceable(
+                    "provider_request_lowering_failed"
+                ) from None
+            raise
+        if stream:
+            openai_params["stream"] = True
+
+        if envelope is not None:
+            capability = self.context_candidate_lowering_capability()
+            try:
+                provider_request = ProviderRequestSnapshot(
+                    request_id=envelope.candidate_request.request_id,
+                    provider_name=capability.provider_name,
+                    payload=openai_params,
+                    capture_stage=RequestCaptureStage.PROVIDER_PREPARED,
+                    fidelity=ProviderRequestFidelity.PROVIDER_PREPARED,
+                )
+                receipt = ProviderLoweringReceipt.from_envelope(
+                    envelope=envelope,
+                    provider_request=provider_request,
+                    lowering=capability,
+                )
+            except Exception:
+                raise CandidateRequestNotEnforceable(
+                    "provider_request_not_snapshotable"
+                ) from None
+            self.commit_context_candidate_lowering(
+                context=request_kwargs.get("context"),
+                envelope=envelope,
+                receipt=receipt,
+            )
+        return openai_params
 
     def preprocess_messages(self, messages: List[Dict[str, str]], **kwargs) -> List[Dict[str, str]]:
         """Preprocess messages, use OpenAI format directly.
@@ -338,10 +458,15 @@ class OpenAIProvider(LLMProviderBase):
             raise RuntimeError(
                 "Sync provider not initialized. Make sure 'sync_enabled' parameter is set to True in initialization.")
 
-        processed_messages = self.preprocess_messages(messages, **kwargs)
-
         try:
-            openai_params = self.get_openai_params(processed_messages, temperature, max_tokens, stop, **kwargs)
+            openai_params = self._prepare_chat_completion_request(
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                stop=stop,
+                kwargs=kwargs,
+                stream=False,
+            )
             if self.is_http_provider:
                 response = self.http_provider.sync_call(openai_params)
             else:
@@ -360,6 +485,8 @@ class OpenAIProvider(LLMProviderBase):
             resp = self.postprocess_response(response)
             return resp
         except Exception as e:
+            if isinstance(e, CandidateRequestNotEnforceable):
+                raise
             if isinstance(e, LLMResponseError):
                 raise e
             logger.warn(f"Error in OpenAI completion: {e}")
@@ -390,7 +517,6 @@ class OpenAIProvider(LLMProviderBase):
             raise RuntimeError(
                 "Sync provider not initialized. Make sure 'sync_enabled' parameter is set to True in initialization.")
 
-        processed_messages = self.preprocess_messages(messages, **kwargs)
         usage={
             "completion_tokens": 0,
             "prompt_tokens": 0,
@@ -398,10 +524,14 @@ class OpenAIProvider(LLMProviderBase):
         }
 
         try:
-            stream_kwargs = dict(kwargs)
-            stream_kwargs["stream"] = True
-            openai_params = self.get_openai_params(processed_messages, temperature, max_tokens, stop, **stream_kwargs)
-            openai_params["stream"] = True
+            openai_params = self._prepare_chat_completion_request(
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                stop=stop,
+                kwargs=kwargs,
+                stream=True,
+            )
             if self.is_http_provider:
                 response_stream = self.http_provider.sync_stream_call(openai_params)
             else:
@@ -425,6 +555,8 @@ class OpenAIProvider(LLMProviderBase):
                             provider_request_id=resp.provider_request_id)
 
         except Exception as e:
+            if isinstance(e, CandidateRequestNotEnforceable):
+                raise
             if isinstance(e, LLMResponseError):
                 raise e
             logger.warn(f"Error in stream_completion: {e}")
@@ -455,7 +587,6 @@ class OpenAIProvider(LLMProviderBase):
             raise RuntimeError(
                 "Async provider not initialized. Make sure 'async_enabled' parameter is set to True in initialization.")
 
-        processed_messages = self.preprocess_messages(messages, **kwargs)
         usage = {
             "completion_tokens": 0,
             "prompt_tokens": 0,
@@ -463,10 +594,14 @@ class OpenAIProvider(LLMProviderBase):
         }
 
         try:
-            stream_kwargs = dict(kwargs)
-            stream_kwargs["stream"] = True
-            openai_params = self.get_openai_params(processed_messages, temperature, max_tokens, stop, **stream_kwargs)
-            openai_params["stream"] = True
+            openai_params = self._prepare_chat_completion_request(
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                stop=stop,
+                kwargs=kwargs,
+                stream=True,
+            )
             logger.debug(f"openai_params: {openai_params}")
 
             if self.is_http_provider:
@@ -507,6 +642,8 @@ class OpenAIProvider(LLMProviderBase):
                                 provider_request_id=resp.provider_request_id)
 
         except Exception as e:
+            if isinstance(e, CandidateRequestNotEnforceable):
+                raise
             if isinstance(e, LLMResponseError):
                 raise e
             logger.warn(f"Error in astream_completion: {e} {traceback.format_exc()}")
@@ -537,9 +674,15 @@ class OpenAIProvider(LLMProviderBase):
             raise RuntimeError(
                 "Async provider not initialized. Make sure 'async_enabled' parameter is set to True in initialization.")
 
-        processed_messages = self.preprocess_messages(messages, **kwargs)
         try:
-            openai_params = self.get_openai_params(processed_messages, temperature, max_tokens, stop, **kwargs)
+            openai_params = self._prepare_chat_completion_request(
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                stop=stop,
+                kwargs=kwargs,
+                stream=False,
+            )
             logger.debug(f"openai_params: {json.dumps(openai_params)}")
             if self.is_http_provider:
                 response = await self.http_provider.async_call(openai_params)
@@ -559,6 +702,8 @@ class OpenAIProvider(LLMProviderBase):
             resp = self.postprocess_response(response)
             return resp
         except Exception as e:
+            if isinstance(e, CandidateRequestNotEnforceable):
+                raise
             if isinstance(e, LLMResponseError):
                 raise e
             logger.warn(f"Error in acompletion: {e}\n")
@@ -777,6 +922,13 @@ class OpenAIProvider(LLMProviderBase):
 class AzureOpenAIProvider(OpenAIProvider):
     """Azure OpenAI provider implementation.
     """
+
+    def context_candidate_lowering_capability(
+        self,
+    ) -> ProviderLoweringCapability | None:
+        # Azure currently uses a LangChain client with a different send
+        # boundary, so inheriting the OpenAI SDK receipt would be a false claim.
+        return None
 
     def _init_provider(self):
         """Initialize Azure OpenAI provider.
