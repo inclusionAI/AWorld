@@ -289,6 +289,34 @@ def test_completion_records_effective_request_model_when_overridden():
     assert llm_call["model"] == "request-override"
 
 
+def test_provider_bound_capture_merges_agent_compiler_snapshot():
+    provider = RecordingLLMProvider()
+    llm_model = LLMModel(custom_provider=provider)
+    context = Context(task_id="task-merged-capture")
+    context.agent_info.current_agent_id = "solver"
+    compiled_messages = [{"role": "user", "content": "compiled"}]
+    provider_messages = [{"role": "user", "content": "provider-bound"}]
+    context.context_info["llm_calls"] = [
+        {
+            "call_id": "compiler-call",
+            "agent_id": "solver",
+            "request": {"messages": compiled_messages},
+            "assembly_observability": {"stable_prefix_hash": "prefix-1"},
+        }
+    ]
+
+    llm_model.completion(provider_messages, context=context)
+
+    llm_calls = context.context_info["llm_calls"]
+    assert len(llm_calls) == 1
+    assert llm_calls[0]["call_id"] == "compiler-call"
+    assert llm_calls[0]["capture_stage"] == "provider_bound"
+    assert llm_calls[0]["compiler_request"] == {"messages": compiled_messages}
+    assert llm_calls[0]["request"]["messages"] == provider_messages
+    assert llm_calls[0]["request_trace_match"] is False
+    assert llm_calls[0]["assembly_observability"]["stable_prefix_hash"] == "prefix-1"
+
+
 @pytest.mark.asyncio
 async def test_merge_context_appends_only_child_local_llm_calls():
     parent = Context(task_id="parent-task")

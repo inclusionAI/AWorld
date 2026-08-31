@@ -4,13 +4,14 @@ import asyncio
 import base64
 import difflib
 import fnmatch
+import hashlib
 import json
 import mimetypes
 import os
 import posixpath
 import sys
 import time
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import Any, Optional
 
 from mcp.server import FastMCP
@@ -51,6 +52,19 @@ class DockerBridge:
             raise RuntimeError("AWORLD_DOCKER_ALLOWED_DIRECTORIES must be a non-empty JSON list")
         self.allowed_directories = [self._normalize_absolute(str(path)) for path in parsed_allowed]
         self.max_output_bytes = int(os.environ.get("AWORLD_DOCKER_MAX_OUTPUT_BYTES", "1048576"))
+        self.output_head_bytes = int(
+            os.environ.get("AWORLD_DOCKER_OUTPUT_HEAD_BYTES", str(self.max_output_bytes // 2))
+        )
+        if self.max_output_bytes < 1:
+            raise RuntimeError("AWORLD_DOCKER_MAX_OUTPUT_BYTES must be positive")
+        if not 0 <= self.output_head_bytes <= self.max_output_bytes:
+            raise RuntimeError(
+                "AWORLD_DOCKER_OUTPUT_HEAD_BYTES must be between 0 and AWORLD_DOCKER_MAX_OUTPUT_BYTES"
+            )
+        artifact_directory = os.environ.get("AWORLD_DOCKER_ARTIFACT_DIRECTORY", "").strip()
+        self.artifact_directory = Path(artifact_directory).resolve() if artifact_directory else None
+        if self.artifact_directory:
+            self.artifact_directory.mkdir(parents=True, exist_ok=True)
 
     @staticmethod
     def _normalize_absolute(path: str) -> str:
@@ -111,10 +125,65 @@ class DockerBridge:
             workdir=workdir or self.workdir,
         )
 
-    def truncate(self, data: bytes) -> tuple[bytes, bool]:
+    def bound_output(self, data: bytes, *, label: str) -> tuple[bytes, dict[str, Any]]:
+        """Return a deterministic inline view and persist full bytes when needed."""
+        digest = hashlib.sha256(data).hexdigest()
+        metadata: dict[str, Any] = {
+            "raw_bytes": len(data),
+            "inline_bytes": len(data),
+            "offloaded_bytes": 0,
+            "content_sha256": digest,
+            "output_truncated": False,
+            "truncation_strategy": "none",
+            "artifact_ref": None,
+            "head_bytes": len(data),
+            "tail_bytes": 0,
+        }
         if len(data) <= self.max_output_bytes:
-            return data, False
-        return data[: self.max_output_bytes], True
+            return data, metadata
+
+        tail_bytes = self.max_output_bytes - self.output_head_bytes
+        inline = data[: self.output_head_bytes]
+        if tail_bytes:
+            inline += data[-tail_bytes:]
+        metadata.update(
+            {
+                "inline_bytes": len(inline),
+                "offloaded_bytes": len(data) - len(inline),
+                "output_truncated": True,
+                "truncation_strategy": "head_tail_artifact",
+                "head_bytes": self.output_head_bytes,
+                "tail_bytes": tail_bytes,
+            }
+        )
+        if self.artifact_directory:
+            safe_label = "".join(ch if ch.isalnum() or ch in "-_" else "-" for ch in label)[:48]
+            artifact_path = self.artifact_directory / f"{safe_label}-{digest}.bin"
+            if not artifact_path.exists():
+                artifact_path.write_bytes(data)
+            metadata["artifact_ref"] = str(artifact_path)
+        return inline, metadata
+
+    @staticmethod
+    def decode_inline_text(data: bytes, metadata: dict[str, Any]) -> str:
+        if not metadata.get("output_truncated"):
+            return data.decode("utf-8", errors="replace")
+        head_bytes = int(metadata.get("head_bytes") or 0)
+        head = data[:head_bytes].decode("utf-8", errors="replace")
+        tail = data[head_bytes:].decode("utf-8", errors="replace")
+        marker = (
+            f"\n... [{metadata.get('offloaded_bytes', 0)} bytes offloaded; "
+            f"sha256={metadata.get('content_sha256')}] ...\n"
+        )
+        return head + marker + tail
+
+    def validate_artifact_ref(self, artifact_ref: str) -> Path:
+        if self.artifact_directory is None:
+            raise ValueError("Tool output artifact storage is not configured")
+        artifact = Path(artifact_ref).resolve()
+        if artifact.parent != self.artifact_directory or not artifact.is_file():
+            raise ValueError("artifact_ref is not a Tool output artifact from this sandbox")
+        return artifact
 
     async def require_success(
         self,
@@ -163,10 +232,10 @@ async def run_code(
     del ctx, output_format
     started = time.monotonic()
     return_code, stdout, stderr, timed_out = await bridge.shell_command(code, timeout=timeout)
-    stdout, stdout_truncated = bridge.truncate(stdout)
-    stderr, stderr_truncated = bridge.truncate(stderr)
-    stdout_text = stdout.decode("utf-8", errors="replace")
-    stderr_text = stderr.decode("utf-8", errors="replace")
+    stdout, stdout_policy = bridge.bound_output(stdout, label="run-code-stdout")
+    stderr, stderr_policy = bridge.bound_output(stderr, label="run-code-stderr")
+    stdout_text = bridge.decode_inline_text(stdout, stdout_policy)
+    stderr_text = bridge.decode_inline_text(stderr, stderr_policy)
     output = "\n".join(part for part in (stderr_text, stdout_text) if part)
     return _text(
         {
@@ -182,7 +251,11 @@ async def run_code(
                 "execution_time": time.monotonic() - started,
                 "stdout": stdout_text,
                 "stderr": stderr_text,
-                "output_truncated": stdout_truncated or stderr_truncated,
+                "output_truncated": stdout_policy["output_truncated"] or stderr_policy["output_truncated"],
+                "output_policy": {
+                    "stdout": stdout_policy,
+                    "stderr": stderr_policy,
+                },
             },
         }
     )
@@ -200,13 +273,16 @@ async def read_file(
     valid_path = bridge.validate_path(path)
     data = await bridge.require_success(["cat", valid_path])
     if output == "base64":
+        inline_data, output_policy = bridge.bound_output(data, label=f"read-file-{posixpath.basename(valid_path)}")
         mime_type = mimetypes.guess_type(valid_path)[0] or "application/octet-stream"
         return _text(
             {
                 "type": "base64",
-                "base64": base64.b64encode(data).decode("ascii"),
+                "base64": base64.b64encode(inline_data).decode("ascii"),
                 "mimeType": mime_type,
                 "fileName": posixpath.basename(valid_path),
+                "complete": not output_policy["output_truncated"],
+                "output_policy": output_policy,
             }
         )
     if output != "text":
@@ -221,7 +297,18 @@ async def read_file(
         content = "".join(lines[:head])
     elif tail is not None:
         content = "".join(lines[-tail:])
-    return _text({"type": "text", "content": content})
+    inline_content, output_policy = bridge.bound_output(
+        content.encode("utf-8"),
+        label=f"read-file-{posixpath.basename(valid_path)}",
+    )
+    return _text(
+        {
+            "type": "text",
+            "content": bridge.decode_inline_text(inline_content, output_policy),
+            "complete": not output_policy["output_truncated"],
+            "output_policy": output_policy,
+        }
+    )
 
 
 async def _write_bytes(path: str, content: bytes) -> None:
@@ -340,6 +427,47 @@ async def download_file(ctx: Context, path: str = Field(description="Absolute co
 @mcp.tool(description="Read image, audio, or other binary container file as base64.")
 async def read_media_file(ctx: Context, path: str = Field(description="Absolute container path")) -> TextContent:
     return await read_file(ctx, path, output="base64")
+
+
+@mcp.tool(description="Read a bounded chunk from a full Tool output artifact returned by this sandbox.")
+async def read_output_artifact(
+    ctx: Context,
+    artifact_ref: str = Field(description="Artifact reference returned in output_policy.artifact_ref"),
+    offset: int = Field(default=0, description="Zero-based byte offset"),
+    limit: Optional[int] = Field(default=None, description="Bytes to read; capped by the inline output policy"),
+    output: str = Field(default="text", description="text or base64"),
+) -> TextContent:
+    del ctx
+    if offset < 0:
+        raise ValueError("offset must be non-negative")
+    requested = bridge.max_output_bytes if limit is None else limit
+    if requested < 1 or requested > bridge.max_output_bytes:
+        raise ValueError(f"limit must be between 1 and {bridge.max_output_bytes}")
+    if output not in {"text", "base64"}:
+        raise ValueError("output must be 'text' or 'base64'")
+    artifact = bridge.validate_artifact_ref(artifact_ref)
+    total_bytes = artifact.stat().st_size
+    with artifact.open("rb") as stream:
+        stream.seek(offset)
+        data = stream.read(requested)
+    next_offset = offset + len(data)
+    content = (
+        data.decode("utf-8", errors="replace")
+        if output == "text"
+        else base64.b64encode(data).decode("ascii")
+    )
+    artifact_digest = artifact.stem.rsplit("-", 1)[-1]
+    return _text(
+        {
+            "type": output,
+            "content": content,
+            "offset": offset,
+            "next_offset": next_offset,
+            "total_bytes": total_bytes,
+            "complete": next_offset >= total_bytes,
+            "content_sha256": artifact_digest,
+        }
+    )
 
 
 @mcp.tool(description="Copy a file between two allowed paths inside the container.")

@@ -90,6 +90,7 @@ class CliRuntime(BaseCliRuntime):
 
         # Track agent sources for executor creation: agent_name -> {type, location, ...}
         self._agent_sources: Dict[str, Dict] = {}
+        self._agent_load_failures: List[Dict[str, str]] = []
         # Store session_id for executor creation
         self._session_id = session_id
         self._disable_live_display = disable_live_display
@@ -240,6 +241,7 @@ class CliRuntime(BaseCliRuntime):
             remote_backends=self.remote_backends,
             console=console
         )
+        self._agent_load_failures = list(plugin_manager.agent_load_failures)
         
         # Update _agent_sources based on final agents
         self._agent_sources.clear()

@@ -8,7 +8,7 @@ import re
 import shutil
 import subprocess
 import sys
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import Any, Dict, List, Optional
 
 from aworld.sandbox.config.templates import (
@@ -16,6 +16,9 @@ from aworld.sandbox.config.templates import (
     ENV_DOCKER_BINARY,
     ENV_DOCKER_CONTAINER,
     ENV_DOCKER_SHELL,
+    ENV_DOCKER_MAX_OUTPUT_BYTES,
+    ENV_DOCKER_OUTPUT_HEAD_BYTES,
+    ENV_DOCKER_ARTIFACT_DIRECTORY,
     ENV_DOCKER_WORKDIR,
     build_stdio_server_config,
     get_docker_script_path,
@@ -43,6 +46,9 @@ class DockerSandbox(Sandbox):
         workdir: Optional[str] = None,
         allowed_directories: Optional[List[str]] = None,
         shell: str = "/bin/sh",
+        max_inline_output_bytes: int = 1_048_576,
+        output_head_bytes: Optional[int] = None,
+        artifact_directory: Optional[str] = None,
         validate_connection: bool = True,
         metadata: Optional[Dict[str, str]] = None,
         mcp_config: Optional[Any] = None,
@@ -68,6 +74,15 @@ class DockerSandbox(Sandbox):
         self.container_workdir = effective_workdir
         self.allowed_directories = list(effective_allowed)
         self.container_shell = shell
+        if max_inline_output_bytes < 1:
+            raise ValueError("max_inline_output_bytes must be positive")
+        effective_head_bytes = output_head_bytes or max_inline_output_bytes // 2
+        if effective_head_bytes < 0 or effective_head_bytes > max_inline_output_bytes:
+            raise ValueError("output_head_bytes must be between 0 and max_inline_output_bytes")
+        resolved_artifact_directory = None
+        if artifact_directory:
+            resolved_artifact_directory = str(Path(artifact_directory).expanduser().resolve())
+            Path(resolved_artifact_directory).mkdir(parents=True, exist_ok=True)
 
         bridge_env = get_server_env()
         bridge_env.update(
@@ -77,8 +92,12 @@ class DockerSandbox(Sandbox):
                 ENV_DOCKER_WORKDIR: effective_workdir,
                 ENV_DOCKER_ALLOWED_DIRECTORIES: json.dumps(effective_allowed),
                 ENV_DOCKER_SHELL: shell,
+                ENV_DOCKER_MAX_OUTPUT_BYTES: str(max_inline_output_bytes),
+                ENV_DOCKER_OUTPUT_HEAD_BYTES: str(effective_head_bytes),
             }
         )
+        if resolved_artifact_directory:
+            bridge_env[ENV_DOCKER_ARTIFACT_DIRECTORY] = resolved_artifact_directory
         bridge_config = {
             "mcpServers": {
                 "docker": {
@@ -102,6 +121,12 @@ class DockerSandbox(Sandbox):
                 "docker_container": container,
                 "docker_workdir": effective_workdir,
                 "container_lifecycle": "external",
+                "tool_output_policy": {
+                    "strategy": "head_tail_artifact",
+                    "max_inline_bytes": max_inline_output_bytes,
+                    "head_bytes": effective_head_bytes,
+                    "artifact_directory": resolved_artifact_directory,
+                },
             }
         )
 

@@ -121,7 +121,16 @@ sandbox = create_sandbox(
 )
 ```
 
-For a single-task Terminal Bench run that saves `task_response.json`, `raw_trajectory.json`, and AWorld logs, see `examples/sandbox/docker_terminal_bench.py`.
+For a single attach-only Terminal Bench run that saves provider requests,
+`task_response.json`, `raw_trajectory.json`, Tool artifacts and AWorld logs, see
+`examples/sandbox/docker_terminal_bench.py`. For the reproducible dataset → image
+build → container → AWorld → independent verifier → cleanup workflow, use
+`examples/sandbox/terminal_bench_context_eval.py`. The latter accepts only
+Context/Tool-output variant fields so it cannot carry task prompts or answers.
+Generic legacy and bounded-context examples live under
+`examples/sandbox/context_eval_variants/`; use both with repeated
+`--variant-config` arguments and keep the generated randomized job order as part
+of the experiment manifest.
 
 ### Listing Tools
 ```python

@@ -18,6 +18,14 @@ class NumpyEncoder(json.JSONEncoder):
 
 
 def to_serializable(obj, _memo=None):
+    # Immutable scalar objects (especially small integers and interned strings)
+    # may legitimately be shared in many fields.  Treating their object IDs as
+    # cycle markers corrupts provider usage truth, e.g. the second integer 5
+    # becomes the string "5".  Only compound/object values need cycle tracking.
+    if isinstance(obj, Enum):
+        return obj.value
+    if obj is None or isinstance(obj, (str, int, float, bool)):
+        return obj
     if _memo is None:
         _memo = set()
     obj_id = id(obj)
@@ -27,10 +35,8 @@ def to_serializable(obj, _memo=None):
 
     if isinstance(obj, dict):
         return {k: to_serializable(v, _memo) for k, v in obj.items()}
-    elif isinstance(obj, (list, set)):
+    elif isinstance(obj, (list, tuple, set)):
         return [to_serializable(i, _memo) for i in obj]
-    elif isinstance(obj, Enum):
-        return obj.value
     elif isinstance(obj, asyncio.Task):
         # asyncio.Task is not JSON-serializable; often appears when serializing context/trajectory
         name = obj.get_name() if hasattr(obj, "get_name") else ""

@@ -348,6 +348,8 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         messages: List[Dict[str, Any]],
         *,
         started_at: str | None = None,
+        tools: List[Dict[str, Any]] | None = None,
+        request_params: Dict[str, Any] | None = None,
     ) -> str:
         """Persist one request snapshot without overwriting prior LLM call state."""
         started_at = started_at or datetime.now().isoformat()
@@ -357,12 +359,15 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         llm_calls = list(context_info.get("llm_calls") or [])
         llm_calls.append(
             {
+                "capture_stage": "compiled",
                 "call_id": call_id,
                 "step_id": message.context.current_step_id() if message.context else None,
                 "agent_id": self.id(),
                 "started_at": started_at,
                 "request": {
                     "messages": serializable_messages,
+                    "tools": to_serializable(tools),
+                    "params": to_serializable(request_params or {}),
                 },
                 "request_metrics": collect_replay_message_metrics(serializable_messages),
             }
@@ -1197,6 +1202,12 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             message,
             serializable_messages,
             started_at=llm_call_start_time,
+            tools=tools,
+            request_params={
+                "temperature": float(self.conf.llm_config.llm_temperature),
+                "max_tokens": kwargs.get("max_tokens"),
+                "stop": kwargs.get("stop"),
+            },
         )
         self._update_llm_call_observability(message, llm_call_id, prompt_assembly_observability)
 

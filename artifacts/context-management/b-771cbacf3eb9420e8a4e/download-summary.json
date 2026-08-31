@@ -1,0 +1,56 @@
+{
+  "batch_id": "b-771cbacf3eb9420e8a4e",
+  "categories": {
+    "both-zero": {
+      "requested": 88,
+      "included": 70,
+      "unavailable": 18,
+      "extracted": 70,
+      "unavailable_run_ids": [
+        "r-e329c6e456dd4d76abc9",
+        "r-edb523c89dd4427ea9dc",
+        "r-eea8bb7a072344f0a25b",
+        "r-f08c175479504fa785ba",
+        "r-29d7e1ff21b64d1db86a",
+        "r-761bcab2fec74a91a8a9",
+        "r-923f0e73d1954fe29cfd",
+        "r-245c2b42f9bb46f6a84b",
+        "r-cdde951ff9c74556a594",
+        "r-bdea330cc6a541b3a2db",
+        "r-e1db947d18244a4bb67d",
+        "r-b62712d38bca48ad9478",
+        "r-d97831cc4c894734aa7f",
+        "r-aaedb3649d7b461eb227",
+        "r-0bac716c2e2b40bf8b04",
+        "r-c8ce9b2e0c4246dfb69c",
+        "r-294fc1f8add64fbfb026",
+        "r-eb978b48f37344cfadb5"
+      ]
+    },
+    "split-reward": {
+      "requested": 26,
+      "included": 16,
+      "unavailable": 10,
+      "extracted": 16,
+      "unavailable_run_ids": [
+        "r-48cd2a56654f4c58bcca",
+        "r-f89678f114ec4ffc8669",
+        "r-1ded4aaf84b14679a7ce",
+        "r-4e4c0c83bc294c88b3cb",
+        "r-27d997b661204c16a455",
+        "r-f8b955c422c1425d9469",
+        "r-84659f4a03174582b120",
+        "r-efb6beca47434952b140",
+        "r-50889948504b477fbf69",
+        "r-505f6e83536148d6ba9e"
+      ]
+    },
+    "both-one-sample": {
+      "requested": 6,
+      "included": 6,
+      "unavailable": 0,
+      "extracted": 6,
+      "unavailable_run_ids": []
+    }
+  }
+}
