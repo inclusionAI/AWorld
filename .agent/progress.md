@@ -2,13 +2,12 @@
 
 ## Current Status
 
-**Phase:** Milestone 1
-**Current milestone:** Trajectory Control Plane Foundation
-**Current task:** Task 1.4 integration and architecture review
-**Last action:** The fourth-review repeated-cancellation P1 is fixed with one unbounded join state machine shared by normal
-and execution-not-started paths. It defers caller cancellation, rejoins the same shielded finalize/export attempt until
-publication or fallback is terminal, then restores the original primary error/cancellation. Double/triple-cancel focused
-regression is four passed; a fifth independent review is in progress.
+**Phase:** Milestone 2
+**Current milestone:** Context Models, Adapters, and Observe Mode
+**Current task:** Model-boundary observe integration and deterministic request-id correlation
+**Last action:** Fifth independent review approved Milestone 1 with P0=0/P1=0. Repeated-cancellation stress through N=10
+preserves one append/record, persisted receipt, one terminal response, and the original RuntimeError/CancelledError. One
+non-blocking P2 remains: thread-backed file export has no bounded I/O acknowledgement contract.
 
 ## Completed Foundations
 
@@ -26,7 +25,7 @@ regression is four passed; a fifth independent review is in progress.
 | 1.1 Typed trajectory build contracts | complete | Immutable control result, canonical checksum, invariants, TaskResponse projections |
 | 1.2 Tracked update/finalize barrier | complete | Root registry, HWM drain, revision fence, typed finalize and cancellation |
 | 1.3 JSONL v2 dual-read/write | complete | Finalize-time dual writer, codec, real legacy reader, checksum/revision selection |
-| 1.4 Integration and architecture review | in_progress | Second review findings are being fixed before re-review |
+| 1.4 Integration and architecture review | complete | Fifth review approved: P0=0, P1=0; focused TC suite 10 passed |
 
 ## Decisions Log
 
@@ -140,6 +139,12 @@ regression is four passed; a fifth independent review is in progress.
 - Replaced the execution-not-started fixed single compensation wait with an unbounded cancellation join loop also used by
   the normal path. Regression covers two and three cleanup cancellations plus a primary cancellation with two additional
   cleanup cancellations; the focused main-tree run is four passed, with one append/record and one native stream terminal.
+- Fifth independent review approved Milestone 1 with no P0/P1. It also stress-tested ten caller cancellations for both a
+  primary RuntimeError and primary CancelledError: both retained exactly one persisted record and one stream terminal while
+  restoring the primary outcome. The TC-FINALIZE/EMPTY/IO plus repeated-cancel focused suite is ten passed.
+- Non-blocking P2 carried forward: the thread-backed JSONL append/flock/write path has no bounded I/O acknowledgement, so a
+  permanently stuck exporter intentionally delays cleanup cancellation. A future bounded exporter must remain idempotent
+  and confirm persistence; cancelling a file-writing worker thread is not an acceptable fix.
 
 ### Milestone 2 Readiness
 - Task 2.1 dependency-light frozen models/trace is merged; it has no runtime integration and therefore cannot bypass the
