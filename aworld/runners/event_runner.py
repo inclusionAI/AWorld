@@ -364,7 +364,7 @@ class TaskEventRunner(TaskRunner):
 
                 # 重新抛出原始异常
                 raise
-            except asyncio.CancelledError as exc:
+            except BaseException as exc:
                 primary_error = exc
                 raise
             finally:
