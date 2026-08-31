@@ -41,6 +41,10 @@ class RedisEventbus(InMemoryEventbus):
             return msg_id
         except Exception:
             logger.error(f"Error sending msg to redis eventbus, {message}\n{traceback.format_exc()}")
+            # Publishing is part of the terminal response delivery contract.
+            # Propagate the failure so the runner can activate its local
+            # fallback instead of treating a dropped Redis write as success.
+            raise
 
     async def consume(self, message: Message = None, **kwargs):
         name = message.task_id

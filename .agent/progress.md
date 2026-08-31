@@ -5,8 +5,9 @@
 **Phase:** Milestone 1
 **Current milestone:** Trajectory Control Plane Foundation
 **Current task:** Task 1.4 integration and architecture review
-**Last action:** All first-review P1/P2 fixes are merged; combined trajectory/context regression is 284 passed and the
-second independent Milestone 1 acceptance review is running.
+**Last action:** The second independent review rejected Milestone 1 with five P1 and one P2 findings. Canonical legacy
+metadata, remote-child single import, strict task epoch, truthful legacy delivery receipt, and Redis failure propagation
+are fixed locally; native-stream wakeup/publication and cancellation hardening remain in progress.
 
 ## Completed Foundations
 
@@ -24,7 +25,7 @@ second independent Milestone 1 acceptance review is running.
 | 1.1 Typed trajectory build contracts | complete | Immutable control result, canonical checksum, invariants, TaskResponse projections |
 | 1.2 Tracked update/finalize barrier | complete | Root registry, HWM drain, revision fence, typed finalize and cancellation |
 | 1.3 JSONL v2 dual-read/write | complete | Finalize-time dual writer, codec, real legacy reader, checksum/revision selection |
-| 1.4 Integration and architecture review | in_progress | Cross-task suite passed; independent review running |
+| 1.4 Integration and architecture review | in_progress | Second review findings are being fixed before re-review |
 
 ## Decisions Log
 
@@ -88,9 +89,10 @@ second independent Milestone 1 acceptance review is running.
 - Benchmark driver: frozen invariant manifests, independent verifier, paired Context metrics.
 
 ### Known Issues
-- Typed TrajectoryBuildResult is bound to TaskResponse but not yet produced by runner finalization or sinks.
-- Trajectory updates may race task finalization.
-- `trajectory.log` remains legacy logger/Python-repr encoding.
+- Native streaming still needs a runner-local terminal fallback for failures before EventManager initialization and for
+  partial publication failures.
+- Cancellation cleanup/finalization must preserve the original `CancelledError` even when secondary operations fail.
+- `trajectory.log` remains an unacknowledged legacy logger/Python-repr projection; only JSONL v2 can claim persisted.
 - Current compiler/request capture can observe hook drift but does not yet enforce a universal final boundary.
 
 ### Audit Findings
@@ -106,10 +108,17 @@ second independent Milestone 1 acceptance review is running.
 - Fixed separate/remote child imports so they open, drain, acknowledge, fence, and retain diagnostics in the root registry.
 - Envelope invariants, legacy partial fidelity, execution-not-started classification, retry epoch, delivery receipts, and
   finalize-before-response are implemented and in the second review pass.
+- Second review found native-stream bootstrap hangs, non-atomic terminal publication, cancellation masking, rewritten
+  legacy canonical metadata, a false legacy persistence receipt, and weak float epoch validation.
+- Fixed legacy embedded build-result round-trip, remote child import independence from emitted handler-event count,
+  strict integer epochs, `emitted/unacknowledged` legacy receipts, and Redis publish failure propagation. Focused tests:
+  49 passed after these fixes; streaming/cancellation fixes and combined re-review remain pending.
 
 ### Milestone 2 Readiness
-- Task 2.1 dependency-light frozen models/trace is in progress at `/tmp/aworld-context-compiler-models`; it has no runtime
-  integration and therefore cannot bypass the unfinished Milestone 1 finalize/writer gate.
+- Task 2.1 dependency-light frozen models/trace is merged; it has no runtime integration and therefore cannot bypass the
+  unfinished Milestone 1 finalize/writer gate.
+- Task 2.2a generic occurrence-preserving legacy adapters and the Amni PromptSection owner adapter are implemented and
+  tested on `codex/context-legacy-adapters`; merge waits for inspection against the current milestone branch.
 - Existing PromptAssemblyProvider sees Amni neuron sections only after they were folded into one system message; provenance
   sidecars must be emitted before folding rather than inferred later.
 - Memory adapters must follow the exact cleaned replay list, including Tool pair repair and duplicate occurrences.
