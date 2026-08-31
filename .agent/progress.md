@@ -5,10 +5,10 @@
 **Phase:** Milestone 1
 **Current milestone:** Trajectory Control Plane Foundation
 **Current task:** Task 1.4 integration and architecture review
-**Last action:** Fourth review closed all three prior P1s but rejected Milestone 1 on one repeated-cancellation interleaving:
-the execution-not-started path joins its cached finalize/export attempt only once, so a second cancellation can restore the
-primary error before terminal publication/fallback. The fix must tolerate an unbounded number of cancellations, complete
-the single cached attempt and terminal publication/fallback, then restore the original primary error.
+**Last action:** The fourth-review repeated-cancellation P1 is fixed with one unbounded join state machine shared by normal
+and execution-not-started paths. It defers caller cancellation, rejoins the same shielded finalize/export attempt until
+publication or fallback is terminal, then restores the original primary error/cancellation. Double/triple-cancel focused
+regression is four passed; a fifth independent review is in progress.
 
 ## Completed Foundations
 
@@ -137,6 +137,9 @@ the single cached attempt and terminal publication/fallback, then restore the or
   ordering rather than trajectory duplication or storage corruption.
 - The post-observer/post-third-review wide regression is green: 322 passed and four skipped across runners, evaluations,
   dataset, trajectory contracts, compiler/owner adapters, PromptSection, and Redis delivery propagation.
+- Replaced the execution-not-started fixed single compensation wait with an unbounded cancellation join loop also used by
+  the normal path. Regression covers two and three cleanup cancellations plus a primary cancellation with two additional
+  cleanup cancellations; the focused main-tree run is four passed, with one append/record and one native stream terminal.
 
 ### Milestone 2 Readiness
 - Task 2.1 dependency-light frozen models/trace is merged; it has no runtime integration and therefore cannot bypass the
