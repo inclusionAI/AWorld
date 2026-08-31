@@ -5,9 +5,9 @@
 **Phase:** Milestone 1
 **Current milestone:** Trajectory Control Plane Foundation
 **Current task:** Task 1.4 integration and architecture review
-**Last action:** Third independent review approved TC-IO-023 but rejected Milestone 1 with three new cancellation/projection
-P1s: cancelled emitter lacks fallback, cancelled `to_thread` append can be retried into conflicting v2 records, and
-uncanonicalizable SAR content escapes the typed-failure boundary. Reproduction-driven fixes are in progress.
+**Last action:** All three third-review P1s are fixed with a single cached/shielded finalize-export attempt shared by normal
+and execution-not-started paths, cancellation-aware terminal fallback, and typed projection failures. Post-merge trajectory
+regression is 104 passed; a fourth independent review is pending.
 
 ## Completed Foundations
 
@@ -125,6 +125,10 @@ uncanonicalizable SAR content escapes the typed-failure boundary. Reproduction-d
 - Third review confirmed all second-review findings closed, then reproduced three deeper interleavings not covered by the
   suite. TC-IO-023 is approved; TC-FINALIZE-021 and the generalized TC-EMPTY-022 contract remain blocked until a single
   shielded finalize/delivery attempt and typed projection failure are implemented.
+- Fixed those three interleavings: emitter cancellation installs fallback before propagation; a cancelled `to_thread`
+  append is joined rather than recreated; pre-run and normal finalization share the same attempt; SAR projection/checksum
+  failures bind `FAILED/BUILD_FAILED/TRAJECTORY_BUILD_FAILED` with no inline items. Main-tree trajectory regression:
+  104 passed, including real IO-023.
 
 ### Milestone 2 Readiness
 - Task 2.1 dependency-light frozen models/trace is merged; it has no runtime integration and therefore cannot bypass the
@@ -135,6 +139,9 @@ uncanonicalizable SAR content escapes the typed-failure boundary. Reproduction-d
 - Task 2.2b adds an Agent-owner adapter for the exact replay occurrences after `LLMAgent.async_messages_transform` cleanup.
   It delegates to the generic occurrence adapter, performs no second cleanup/inference/runtime integration, and preserves
   repaired Tool ordering and duplicates; adapter plus owner cleanup regression is 16 passed.
+- Task 2.3 adds a pure legacy-request observer: exact immutable request snapshot, one legacy-included decision per
+  occurrence, unknown token/hash evidence when unproved, redacted trace IDs, and raw-value-free mismatch paths. It performs
+  no resolver/provider/runtime action; compiler plus owner adapter regression is 46 passed.
 - Existing PromptAssemblyProvider sees Amni neuron sections only after they were folded into one system message; provenance
   sidecars must be emitted before folding rather than inferred later.
 - Memory adapters must follow the exact cleaned replay list, including Tool pair repair and duplicate occurrences.
