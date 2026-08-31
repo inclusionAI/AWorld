@@ -467,8 +467,9 @@ async def test_task_response_and_trajectory_payload_include_llm_calls(monkeypatc
         def to_dict(self):
             return {"step": 1}
 
-    async def fake_get_task_trajectory(task_id):
+    async def fake_get_task_trajectory(task_id, **kwargs):
         assert task_id == task.id
+        assert kwargs == {"strict": True}
         return [FakeTrajectoryStep()]
 
     monkeypatch.setattr(context, "get_task_trajectory", fake_get_task_trajectory)

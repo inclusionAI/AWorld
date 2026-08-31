@@ -12,6 +12,7 @@ from aworld.core.common import ActionModel, TaskItem, Observation, ActionResult
 from aworld.core.context.base import Context
 from aworld.core.event.base import Message, Constants, TopicType, GroupMessage, MemoryEventMessage, MemoryEventType
 from aworld.core.task import TaskResponse
+from aworld.core.trajectory_update_registry import TrajectoryRegistryState
 from aworld.events.util import send_message_with_future, send_message
 from aworld.logs.util import logger
 from aworld.output.base import StepOutput
@@ -478,7 +479,17 @@ class DefaultGroupHandler(GroupHandler):
                         event.category == Constants.AGENT or event.category == Constants.TASK):
                     finish_group_messages.append(event)
                     event.headers["sub_task_id"] = res.id
-                    await input_message.context.add_task_trajectory(res.id, res.trajectory)
+                    # Skip the legacy response merge only when this exact root
+                    # registry proves that the child finalized its shared dataset.
+                    # Separate child datasets still take the tracked import path.
+                    registry = getattr(input_message.context, "trajectory_update_registry", None)
+                    finalized_in_shared_root = (
+                        getattr(res, "trajectory_build_result", None) is not None
+                        and registry is not None
+                        and registry.state(res.id) is TrajectoryRegistryState.DRAINED
+                    )
+                    if not finalized_in_shared_root:
+                        await input_message.context.add_task_trajectory(res.id, res.trajectory)
             await state_manager.finish_sub_group(group_id, node_id, finish_group_messages)
 
         for agent_id in root_agent_set:

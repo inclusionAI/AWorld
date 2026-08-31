@@ -1781,14 +1781,14 @@ class ApplicationContext(AmniContext):
 
         self._initialized = True
 
-    async def add_task_trajectory(self, task_id: str, task_trajectory: List[Dict[str, Any]]):
+    async def add_task_trajectory(self, task_id: str, task_trajectory: List[Dict[str, Any]], **kwargs):
         """Add trajectory data for a task.
         Delegate to root context to centralize storage.
         """
         if self.root != self:
-            await self.root.add_task_trajectory(task_id, task_trajectory)
+            return await self.root.add_task_trajectory(task_id, task_trajectory, **kwargs)
         else:
-            await super().add_task_trajectory(task_id, task_trajectory)
+            return await super().add_task_trajectory(task_id, task_trajectory, **kwargs)
 
 
     async def update_task_trajectory(self, message: Any, task_id: str = None, **kwargs):
@@ -1796,18 +1796,18 @@ class ApplicationContext(AmniContext):
         Delegate to root context.
         """
         if self.root != self:
-            await self.root.update_task_trajectory(message, task_id, **kwargs)
+            return await self.root.update_task_trajectory(message, task_id, **kwargs)
         else:
-            await super().update_task_trajectory(message, task_id, **kwargs)
+            return await super().update_task_trajectory(message, task_id, **kwargs)
 
-    async def get_task_trajectory(self, task_id: str) -> List[TrajectoryItem]:
+    async def get_task_trajectory(self, task_id: str, **kwargs) -> List[TrajectoryItem]:
         """Get trajectory data for a task.
         Delegate to root context.
         """
         if self.root != self:
-            return await self.root.get_task_trajectory(task_id)
+            return await self.root.get_task_trajectory(task_id, **kwargs)
         else:
-            return await super().get_task_trajectory(task_id)
+            return await super().get_task_trajectory(task_id, **kwargs)
 
     def add_task_node(self, child_task_id: str, parent_task_id: str, caller_agent_info=None, **kwargs):
         """Record the relationship between child task and parent task.
