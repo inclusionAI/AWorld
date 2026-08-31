@@ -308,7 +308,7 @@ def test_cleanup_removes_only_expired_raw_artifacts_and_preserves_durable_run_fi
         / "capability"
         / "workspace_seed"
     ).exists()
-    assert not (recent_run / "repair_conformance").exists()
+    assert (recent_run / "repair_conformance").exists()
     assert not (recent_run / "candidates" / "cand-1.md").exists()
     assert not (recent_run / "candidates" / "cand-1").exists()
     assert not (recent_run / "overlays").exists()

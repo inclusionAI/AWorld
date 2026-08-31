@@ -297,7 +297,6 @@ def _decode_single_json_object(raw_output: Any) -> dict[str, Any]:
                 raise CandidateProtocolError(
                     "multiple_json_objects",
                     "candidate response must contain exactly one JSON object",
-                    repairable=False,
                 )
             try:
                 decoded = json_repair.repair_json(text, return_objects=True)
@@ -371,7 +370,6 @@ def _extract_one_surrounded_object(text: str) -> Mapping[str, Any]:
         raise CandidateProtocolError(
             "multiple_json_objects",
             "candidate response must contain exactly one JSON object",
-            repairable=False,
         )
     start, end, value = matches[0]
     prefix = text[:start].strip()

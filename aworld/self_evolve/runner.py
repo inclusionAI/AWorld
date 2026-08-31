@@ -319,7 +319,6 @@ from aworld.self_evolve.replay import (
     ReplayEvidenceDispositionKind,
     ReplayEvidenceReuseDisposition,
     ReplayServiceProcessExitedError,
-    ReplayServiceProtocolError,
     ReplayServiceReadinessTimeout,
     baseline_control_fingerprint,
     build_paired_replay_dataset,
@@ -345,6 +344,7 @@ from aworld.self_evolve.replay import (
     _member_baseline_replay_dir,
     _member_artifact_name,
     _replay_member_pair_is_comparable,
+    _replay_service_start_failure_details,
     _is_replayable_user_task_case,
     _select_replay_case,
 )
@@ -12310,30 +12310,21 @@ class SelfEvolveRunner:
                 artifact_dir=artifact_dir,
             )
         except Exception as exc:
-            candidate_owned = bool(
-                isinstance(exc, ReplayServiceProtocolError)
-                or (
-                    isinstance(
-                        exc,
-                        (
-                            ReplayServiceReadinessTimeout,
-                            ReplayServiceProcessExitedError,
-                        ),
-                    )
-                    and getattr(exc, "transport", None) == "skill_runtime"
-                )
+            failure_details = _replay_service_start_failure_details(
+                exc,
+                replay_capability=capability,
             )
-            raw_details = getattr(exc, "details", None)
-            diagnostic_details = (
-                dict(raw_details) if isinstance(raw_details, Mapping) else {}
+            candidate_owned = (
+                failure_details.get("outcome") == "candidate_failure"
             )
-            diagnostics_method = getattr(exc, "diagnostics", None)
-            if callable(diagnostics_method):
-                runtime_diagnostics = diagnostics_method()
-                if isinstance(runtime_diagnostics, Mapping):
-                    diagnostic_details.update(runtime_diagnostics)
+            repairable = failure_details.get("repairable") is True
+            diagnostic_details = dict(
+                failure_details.get("diagnostics")
+                if isinstance(failure_details.get("diagnostics"), Mapping)
+                else {}
+            )
             error_code = str(
-                getattr(exc, "code", None)
+                failure_details.get("code")
                 or "candidate_capability_operational_preflight_failed"
             )
             owner = (
@@ -12350,7 +12341,7 @@ class SelfEvolveRunner:
                     if candidate_owned
                     else FailureScope.SHARED_RUN
                 ),
-                repairable=candidate_owned,
+                repairable=repairable,
                 category="candidate_capability_preflight",
                 summary="candidate replay capability failed operational preflight",
                 diagnostics={
@@ -12376,7 +12367,7 @@ class SelfEvolveRunner:
                     "failure_class": (
                         "candidate" if candidate_owned else "infrastructure"
                     ),
-                    "repairable": candidate_owned,
+                    "repairable": repairable,
                     "stage": "capability_preflight",
                     "code": error_code,
                     "error_type": type(exc).__name__,

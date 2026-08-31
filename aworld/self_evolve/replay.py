@@ -9632,6 +9632,21 @@ async def _start_replay_services(
             service_dir.mkdir(parents=True, exist_ok=True)
             stdout_path = service_dir / "stdout.txt"
             stderr_path = service_dir / "stderr.txt"
+            diagnostics_service_dir = (
+                diagnostics_root / _safe_path(service.service_id)
+            )
+            launch_diagnostic_path = diagnostics_service_dir / "launch.json"
+            launch_started_at = time.time()
+            _write_replay_service_launch_diagnostic(
+                launch_diagnostic_path,
+                service=service,
+                command=command,
+                environment_keys=tuple(service_environment),
+                host="127.0.0.1",
+                port=port,
+                status="prepared",
+                started_at=launch_started_at,
+            )
             stdout_handle = stdout_path.open("wb")
             stderr_handle = stderr_path.open("wb")
             try:
@@ -9645,10 +9660,32 @@ async def _start_replay_services(
                     stderr=stderr_handle,
                     start_new_session=True,
                 )
-            except Exception:
+            except Exception as exc:
                 stdout_handle.close()
                 stderr_handle.close()
+                _write_replay_service_launch_diagnostic(
+                    launch_diagnostic_path,
+                    service=service,
+                    command=command,
+                    environment_keys=tuple(service_environment),
+                    host="127.0.0.1",
+                    port=port,
+                    status="launch_failed",
+                    started_at=launch_started_at,
+                    error_type=type(exc).__name__,
+                )
                 raise
+            _write_replay_service_launch_diagnostic(
+                launch_diagnostic_path,
+                service=service,
+                command=command,
+                environment_keys=tuple(service_environment),
+                host="127.0.0.1",
+                port=port,
+                status="started",
+                started_at=launch_started_at,
+                process_id=process.pid,
+            )
             session.processes.append(
                 _ReplayServiceProcess(
                     process=process,
@@ -9837,6 +9874,66 @@ async def _start_replay_services(
     return session
 
 
+def _write_replay_service_launch_diagnostic(
+    path: Path,
+    *,
+    service: ReplayServiceSpec,
+    command: Sequence[str],
+    environment_keys: Sequence[str],
+    host: str,
+    port: int,
+    status: str,
+    started_at: float,
+    process_id: int | None = None,
+    error_type: str | None = None,
+) -> None:
+    """Persist a bounded, payload-free service launch record for failed runs."""
+
+    raw_command = json.dumps(
+        list(command),
+        ensure_ascii=True,
+        separators=(",", ":"),
+    )
+    payload = {
+        "schema_version": "aworld.replay.service_launch_diagnostic.v1",
+        "service_id": service.service_id,
+        "requirement_id": service.requirement_id,
+        "transport": service.transport,
+        "runtime_entrypoint": service.runtime_entrypoint,
+        "status": status,
+        "started_at": started_at,
+        "host": host,
+        "port": port,
+        "process_id": process_id,
+        "error_type": error_type,
+        "command_fingerprint": (
+            "sha256:" + hashlib.sha256(raw_command.encode("utf-8")).hexdigest()
+        ),
+        "command": [
+            sanitize_text(argument, max_chars=4096)
+            for argument in list(command)[:32]
+        ],
+        "command_truncated": len(command) > 32,
+        "environment_keys": sorted(set(environment_keys)),
+        "readiness": {
+            "kind": service.readiness.kind,
+            "path": service.readiness.path,
+            "timeout_seconds": service.readiness.timeout_seconds,
+        },
+        "protocol_probe_count": len(service.protocol_probes),
+    }
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)
+            + "\n",
+            encoding="utf-8",
+        )
+    except OSError:
+        # Launch correctness must not depend on best-effort diagnostics.
+        return
+
+
 async def preflight_frozen_replay_capability(
     capability: FrozenReplayCapability,
     *,
@@ -9854,17 +9951,41 @@ async def preflight_frozen_replay_capability(
 
     resolved_artifact_dir = Path(artifact_dir).expanduser().resolve()
     resolved_artifact_dir.mkdir(parents=True, exist_ok=True)
-    session = await _start_replay_services(
-        capability,
-        artifact_dir=resolved_artifact_dir,
-        required_nonempty_probe_operations=required_nonempty_probe_operations,
-        required_recorded_probe_operations=required_recorded_probe_operations,
-        integrity_capability=integrity_capability,
-    )
-    try:
-        return dict(session.endpoints)
-    finally:
-        await session.stop()
+    for attempt_index in range(_SERVICE_STARTUP_RETRY_LIMIT + 1):
+        attempt_dir = (
+            resolved_artifact_dir
+            if attempt_index == 0
+            else resolved_artifact_dir / f"startup_retry_{attempt_index + 1}"
+        )
+        try:
+            session = await _start_replay_services(
+                capability,
+                artifact_dir=attempt_dir,
+                required_nonempty_probe_operations=(
+                    required_nonempty_probe_operations
+                ),
+                required_recorded_probe_operations=(
+                    required_recorded_probe_operations
+                ),
+                integrity_capability=integrity_capability,
+            )
+        except ReplayServiceReadinessTimeout as exc:
+            if (
+                exc.phase != "startup"
+                or attempt_index >= _SERVICE_STARTUP_RETRY_LIMIT
+            ):
+                raise
+            logger.info(
+                "self_evolve.replay.capability_preflight_startup_retry "
+                f"capability_id={capability.capability_id} "
+                f"attempt={attempt_index + 2}"
+            )
+            continue
+        try:
+            return dict(session.endpoints)
+        finally:
+            await session.stop()
+    raise RuntimeError("replay capability preflight retry loop was exhausted")
 
 
 def _replay_capability_fixture_summaries(

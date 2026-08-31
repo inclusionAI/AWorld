@@ -1462,6 +1462,57 @@ async def test_non_repairable_protocol_failure_skips_repair_task() -> None:
 
 
 @pytest.mark.asyncio
+async def test_multiple_json_objects_receive_one_bounded_repair() -> None:
+    task_ids: list[str] = []
+
+    async def run_task(task: Task):
+        task_ids.append(task.id)
+        answer = (
+            json.dumps(
+                {
+                    "content": "# Demo\n\nRepaired candidate.\n",
+                    "rationale": "return one candidate object",
+                    "files": [],
+                }
+            )
+            if task.id.endswith("-repair")
+            else (
+                '{"content":"# Demo\\nFirst"} '
+                '{"content":"# Demo\\nSecond"}'
+            )
+        )
+        return {
+            task.id: TaskResponse(
+                id=task.id,
+                success=True,
+                answer=answer,
+            )
+        }
+
+    executor = AWorldCandidatePopulationExecutor(
+        agent_factory=_FakeCandidateAgent,
+        parse_output=lambda raw: normalize_candidate_output(
+            raw,
+            current_content="# Demo\n\nOld guidance.\n",
+        ),
+        repair_prompt_builder=lambda invalid, error: (
+            f"Return exactly one candidate JSON object. Error: {error}. "
+            f"Invalid output: {invalid}"
+        ),
+        task_batch_executor=DeterministicTaskBatchExecutor(run_task=run_task),
+    )
+
+    result = await executor.run(["candidate prompt"], max_concurrency=1)
+
+    assert len(task_ids) == 2
+    assert task_ids[1].endswith("-repair")
+    assert result.slots[0].status == "succeeded"
+    assert result.slots[0].repaired is True
+    assert result.diagnostics["repair_attempt_count"] == 1
+    assert result.diagnostics["repair_success_count"] == 1
+
+
+@pytest.mark.asyncio
 async def test_llm_mutator_preserves_non_repairable_protocol_disposition() -> None:
     async def population_callable(
         prompts,
