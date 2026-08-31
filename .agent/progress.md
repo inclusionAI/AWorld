@@ -5,9 +5,10 @@
 **Phase:** Milestone 1
 **Current milestone:** Trajectory Control Plane Foundation
 **Current task:** Task 1.4 integration and architecture review
-**Last action:** All three third-review P1s are fixed with a single cached/shielded finalize-export attempt shared by normal
-and execution-not-started paths, cancellation-aware terminal fallback, and typed projection failures. Post-merge trajectory
-regression is 104 passed; a fourth independent review is pending.
+**Last action:** Fourth review closed all three prior P1s but rejected Milestone 1 on one repeated-cancellation interleaving:
+the execution-not-started path joins its cached finalize/export attempt only once, so a second cancellation can restore the
+primary error before terminal publication/fallback. The fix must tolerate an unbounded number of cancellations, complete
+the single cached attempt and terminal publication/fallback, then restore the original primary error.
 
 ## Completed Foundations
 
@@ -129,6 +130,11 @@ regression is 104 passed; a fourth independent review is pending.
   append is joined rather than recreated; pre-run and normal finalization share the same attempt; SAR projection/checksum
   failures bind `FAILED/BUILD_FAILED/TRAJECTORY_BUILD_FAILED` with no inline items. Main-tree trajectory regression:
   104 passed, including real IO-023.
+- Fourth review approved the normal-run repeated-cancellation path and all prior fidelity/delivery fixes, but found one P1
+  in the execution-not-started path: after two cancellations during a blocked v2 append, the run restores the pre-run
+  failure before `_publish_task_response_once`, leaving native streaming without a terminal response or fallback. The
+  physical append remains exactly once and its receipt eventually persists, so the remaining defect is terminal-delivery
+  ordering rather than trajectory duplication or storage corruption.
 
 ### Milestone 2 Readiness
 - Task 2.1 dependency-light frozen models/trace is merged; it has no runtime integration and therefore cannot bypass the
