@@ -135,6 +135,8 @@ the single cached attempt and terminal publication/fallback, then restore the or
   failure before `_publish_task_response_once`, leaving native streaming without a terminal response or fallback. The
   physical append remains exactly once and its receipt eventually persists, so the remaining defect is terminal-delivery
   ordering rather than trajectory duplication or storage corruption.
+- The post-observer/post-third-review wide regression is green: 322 passed and four skipped across runners, evaluations,
+  dataset, trajectory contracts, compiler/owner adapters, PromptSection, and Redis delivery propagation.
 
 ### Milestone 2 Readiness
 - Task 2.1 dependency-light frozen models/trace is merged; it has no runtime integration and therefore cannot bypass the
