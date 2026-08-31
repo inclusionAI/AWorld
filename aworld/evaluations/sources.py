@@ -1,12 +1,15 @@
 # coding: utf-8
 from __future__ import annotations
 
-import ast
 import json
-import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Protocol
+
+from aworld.dataset.trajectory_io import (
+    TrajectorySnapshot,
+    read_trajectory_records,
+)
 
 
 _SCALAR_TYPES = (str, int, float, bool, type(None))
@@ -256,48 +259,43 @@ def extract_aworld_trajectory_payload(
     }
 
 
-def _parse_aworld_trajectory_log_line(line: str) -> Mapping[str, Any]:
-    clean = re.sub(r"\x1b\[[0-9;]*m", "", line).strip()
-    record = ast.literal_eval(clean)
-    if not isinstance(record, Mapping):
-        raise ValueError("trajectory log line must contain a mapping")
-    return record
-
-
-def _extract_aworld_trajectory_record_payload(record: Mapping[str, Any], *, task_id: str) -> dict[str, Any]:
-    trajectory = json.loads(record["trajectory"])
-    return extract_aworld_trajectory_payload(
-        trajectory,
-        task_id=task_id,
-        is_sub_task=record.get("is_sub_task"),
+def _extract_aworld_trajectory_record_payload(record: TrajectorySnapshot) -> dict[str, Any]:
+    extracted = extract_aworld_trajectory_payload(
+        record.trajectory or [],
+        task_id=record.task_id,
+        is_sub_task=record.is_sub_task,
     )
+    extracted["trajectory_record"] = {
+        "schema_version": record.schema_version,
+        "revision": record.revision,
+        "fidelity": record.fidelity,
+        "build_result": dict(record.build_result),
+        "trajectory_ref": record.trajectory_ref,
+        "trajectory_checksum": record.trajectory_checksum,
+        "record_checksum": record.record_checksum,
+    }
+    return extracted
 
 
 def iter_aworld_trajectory_records(log_path: str | Path) -> Iterable[tuple[str, dict[str, Any]]]:
     path = Path(log_path).expanduser()
-    with path.open(encoding="utf-8", errors="replace") as handle:
-        for line_number, line in enumerate(handle, start=1):
-            if not line.strip():
-                continue
-            try:
-                record = _parse_aworld_trajectory_log_line(line)
-            except (SyntaxError, ValueError) as exc:
-                raise ValueError(f"{path}:{line_number} is not a valid AWorld trajectory log record") from exc
-            task_id = record.get("task_id")
-            if task_id is None:
-                raise ValueError(f"{path}:{line_number} missing required field: task_id")
-            yield str(task_id), _extract_aworld_trajectory_record_payload(record, task_id=str(task_id))
+    result = read_trajectory_records(path)
+    if not result.records:
+        details = "; ".join(
+            f"{item.source}:{item.line_number or '?'} {item.code}"
+            for item in result.diagnostics[-3:]
+        )
+        suffix = f" ({details})" if details else ""
+        raise ValueError(f"no valid AWorld trajectory records found in {path}{suffix}")
+    for record in result.records:
+        yield record.task_id, _extract_aworld_trajectory_record_payload(record)
 
 
 def extract_aworld_trajectory_record(log_path: str | Path, task_id: str) -> dict[str, Any]:
     path = Path(log_path).expanduser()
-    with path.open(encoding="utf-8", errors="replace") as handle:
-        for line in handle:
-            if task_id not in line:
-                continue
-            record = _parse_aworld_trajectory_log_line(line)
-            if str(record.get("task_id")) == str(task_id):
-                return _extract_aworld_trajectory_record_payload(record, task_id=str(task_id))
+    for record in read_trajectory_records(path).records:
+        if record.task_id == str(task_id):
+            return _extract_aworld_trajectory_record_payload(record)
     raise ValueError(f"task_id {task_id} not found in {path}")
 
 
