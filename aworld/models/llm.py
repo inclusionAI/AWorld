@@ -522,6 +522,27 @@ class LLMModel:
             merged.message = message
         return merged
 
+    def _capture_stream_response_record(
+        self,
+        base_response: Optional[ModelResponse],
+        next_response: Optional[ModelResponse],
+    ) -> Optional[ModelResponse]:
+        """Fold a stream record without changing the provider-facing stream."""
+        try:
+            if base_response is None or self._is_meaningful_stream_response(
+                next_response
+            ):
+                return self._merge_stream_response_record(
+                    base_response, next_response
+                )
+            return base_response
+        except Exception as exc:
+            logger.warning(
+                "LLM stream capture merge failed; error_type={}",
+                type(exc).__name__,
+            )
+            return base_response
+
     def _resolve_request_model_name(self, **kwargs) -> Optional[str]:
         return kwargs.get("model_name") or getattr(self.provider, "model_name", None)
 
@@ -608,15 +629,48 @@ class LLMModel:
             "started_at": started_at,
             "request": request,
             "context_observe": observe_payload,
+            "attempt": 1,
         }
         llm_calls = context.get_llm_calls()
         if agent_call_id:
-            for index, compiled in enumerate(llm_calls):
-                if not isinstance(compiled, dict) or compiled.get("call_id") != agent_call_id:
-                    continue
-                compiler_request = self._safe_copy(compiled.get("request") or {})
-                merged = dict(compiled)
+            matched = [
+                (index, record)
+                for index, record in enumerate(llm_calls)
+                if isinstance(record, dict)
+                and record.get("call_id") == agent_call_id
+            ]
+            unbound = next(
+                (
+                    (index, record)
+                    for index, record in matched
+                    if not record.get("request_id")
+                ),
+                None,
+            )
+            if matched:
+                source = unbound[1] if unbound is not None else matched[0][1]
+                compiler_request = self._safe_copy(
+                    source.get("compiler_request") or source.get("request") or {}
+                )
+                bound_attempts = sum(
+                    1 for _, record in matched if record.get("request_id")
+                )
+                if unbound is not None:
+                    merged = dict(source)
+                else:
+                    merged = {
+                        key: self._safe_copy(source[key])
+                        for key in (
+                            "call_id",
+                            "step_id",
+                            "agent_id",
+                            "assembly_observability",
+                            "request_metrics",
+                        )
+                        if key in source
+                    }
                 merged.update(llm_call)
+                merged["attempt"] = bound_attempts + 1
                 merged["compiler_request"] = compiler_request
                 if observation is not None:
                     try:
@@ -640,7 +694,10 @@ class LLMModel:
                     merged["request_trace_match"] = None
                     merged["request_trace_mismatch_paths"] = []
                     merged["request_trace_mismatch_count"] = 0
-                llm_calls[index] = merged
+                if unbound is not None:
+                    llm_calls[unbound[0]] = merged
+                else:
+                    llm_calls.append(merged)
                 return
             llm_call["call_id"] = agent_call_id
             llm_call["correlation"] = {"status": "compiler_call_not_found"}
@@ -1183,8 +1240,9 @@ class LLMModel:
                 )
                 start_ms = time.time()
                 final_chunk = chunk
-                if record_chunk is None or self._is_meaningful_stream_response(chunk):
-                    record_chunk = self._merge_stream_response_record(record_chunk, chunk)
+                record_chunk = self._capture_stream_response_record(
+                    record_chunk, chunk
+                )
                 yield chunk
         except GeneratorExit:
             terminal_status = "cancelled"
@@ -1199,7 +1257,7 @@ class LLMModel:
                 terminal_error = "provider_stream_failed"
             raise
         finally:
-            persisted_chunk = self._merge_stream_response_record(
+            persisted_chunk = self._capture_stream_response_record(
                 record_chunk, final_chunk
             )
             self._finish_llm_call_record(
@@ -1282,8 +1340,9 @@ class LLMModel:
                 )
                 start_ms = time.time()
                 final_chunk = chunk
-                if record_chunk is None or self._is_meaningful_stream_response(chunk):
-                    record_chunk = self._merge_stream_response_record(record_chunk, chunk)
+                record_chunk = self._capture_stream_response_record(
+                    record_chunk, chunk
+                )
                 yield chunk
         except GeneratorExit:
             terminal_status = "cancelled"
@@ -1298,7 +1357,7 @@ class LLMModel:
                 terminal_error = "provider_stream_failed"
             raise
         finally:
-            persisted_chunk = self._merge_stream_response_record(
+            persisted_chunk = self._capture_stream_response_record(
                 record_chunk, final_chunk
             )
             self._finish_llm_call_record(
@@ -1612,14 +1671,18 @@ async def acall_llm_model_stream(
         **kwargs
 ) -> AsyncGenerator[ModelResponse, None]:
     # Fix: Cannot await an async generator, directly iterate over it
-    async for chunk in llm_model.astream_completion(
+    stream = llm_model.astream_completion(
             messages=messages,
             temperature=temperature,
             max_tokens=max_tokens,
             stop=stop,
             **kwargs
-    ):
-        yield chunk
+    )
+    try:
+        async for chunk in stream:
+            yield chunk
+    finally:
+        await stream.aclose()
 
 
 def speech_to_text(

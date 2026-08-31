@@ -189,5 +189,10 @@ is in progress.
   the provider was never called; if it raised during finish, it replaced provider success or the primary provider error.
   Begin/finish storage are now guarded by redacted type-only warnings, and focused regressions prove provider success/error
   semantics survive capture-storage failure (two passed).
+- The next adversarial pass reproduced four further model-boundary P1s: helper-level early async-stream close did not close
+  the underlying model generator; a reused Agent call id overwrote the previous provider attempt; a child `ContextState`
+  mutated an inherited parent `llm_calls` list; and stream response folding could leak capture exceptions into provider
+  delivery. The implementation now closes delegated streams, appends one attempt record per provider invocation, applies
+  child copy-on-write isolation, and contains response-folding failures. All four focused regressions pass.
 - Authority, trust, lifetime, stability, source URI, task epoch, and exact token counts remain UNKNOWN unless their owner can
   prove them; role/content heuristics are not acceptable.

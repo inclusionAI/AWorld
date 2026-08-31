@@ -7,9 +7,10 @@ import pytest
 
 from aworld.config import ConfigDict  # establishes the supported model/config import order
 from aworld.core.context.base import Context
+from aworld.core.context.context_state import ContextState
 from aworld.core.llm_provider import LLMProviderBase
 from aworld.core.task import Task  # completes context/model initialization before LLMModel
-from aworld.models.llm import LLMModel
+from aworld.models.llm import LLMModel, acall_llm_model_stream
 from aworld.models.model_response import ModelResponse
 
 
@@ -428,3 +429,108 @@ def test_llm_call_storage_finish_failure_preserves_success_and_provider_error(
             context=failure_context,
         )
     assert len(failure_provider.seen) == 1
+
+
+@pytest.mark.asyncio
+async def test_stream_helper_close_finalizes_underlying_model_record() -> None:
+    provider = BoundaryProvider()
+    model = LLMModel(custom_provider=provider)
+    context = Context(task_id="task-helper-close")
+    stream = acall_llm_model_stream(
+        model,
+        [{"role": "user", "content": "helper-close"}],
+        context=context,
+    )
+
+    assert (await anext(stream)).content == "first"
+    await stream.aclose()
+
+    calls = context.get_llm_calls()
+    assert len(calls) == 1
+    assert calls[0]["status"] == "cancelled"
+    assert calls[0]["error"] == {"code": "stream_closed_early"}
+
+
+def test_reused_agent_call_id_appends_one_record_per_provider_attempt() -> None:
+    provider = FailureProvider()
+    model = LLMModel(custom_provider=provider)
+    context = Context(task_id="task-retry-attempts")
+    context.agent_info.current_agent_id = "same-agent"
+    compiler_request = _compiled_record("call-retry", "same-request")
+    context.context_info["llm_calls"] = [compiler_request]
+
+    with pytest.raises(ValueError, match="provider-secret-sync"):
+        model.completion(
+            [{"role": "user", "content": "same-request"}],
+            context=context,
+            **{INTERNAL_CALL_ID: "call-retry"},
+        )
+
+    model.provider = BoundaryProvider()
+    model.completion(
+        [{"role": "user", "content": "same-request"}],
+        context=context,
+        **{INTERNAL_CALL_ID: "call-retry"},
+    )
+
+    calls = context.get_llm_calls()
+    assert len(calls) == 2
+    assert [item["status"] for item in calls] == ["failed", "success"]
+    assert [item["attempt"] for item in calls] == [1, 2]
+    assert len({item["request_id"] for item in calls}) == 2
+    assert all(item["call_id"] == "call-retry" for item in calls)
+    assert all(item["compiler_request"] == compiler_request["request"] for item in calls)
+
+
+def test_child_context_capture_does_not_mutate_inherited_parent_records() -> None:
+    provider = BoundaryProvider()
+    model = LLMModel(custom_provider=provider)
+    parent = Context(task_id="parent")
+    parent.context_info["llm_calls"] = [_compiled_record("parent-call", "parent")]
+    parent_before = json.loads(json.dumps(parent.context_info["llm_calls"]))
+
+    child = Context(task_id="child")
+    child.context_info = ContextState(parent_state=parent.context_info)
+    model.completion(
+        [{"role": "user", "content": "child"}],
+        context=child,
+        **{INTERNAL_CALL_ID: "parent-call"},
+    )
+
+    assert parent.context_info["llm_calls"] == parent_before
+    assert child.get_llm_calls() is not parent.context_info["llm_calls"]
+    assert child.get_llm_calls()[0]["request"]["messages"][-1]["content"] == "child"
+
+
+def test_stream_capture_merge_failure_does_not_change_chunk_or_provider_error(
+    monkeypatch,
+) -> None:
+    success_provider = BoundaryProvider()
+    success_model = LLMModel(custom_provider=success_provider)
+    success_context = Context(task_id="task-stream-capture-merge")
+
+    def fail_merge(*args, **kwargs):
+        raise RuntimeError("capture-merge-secret")
+
+    monkeypatch.setattr(success_model, "_merge_stream_response_record", fail_merge)
+    chunks = list(
+        success_model.stream_completion(
+            [{"role": "user", "content": "merge-success"}],
+            context=success_context,
+        )
+    )
+    assert [chunk.content for chunk in chunks] == ["first", "answer-merge-success"]
+    assert success_context.get_llm_calls()[0]["status"] == "success"
+
+    failure_provider = FailureProvider()
+    failure_model = LLMModel(custom_provider=failure_provider)
+    failure_context = Context(task_id="task-stream-capture-primary-error")
+    monkeypatch.setattr(failure_model, "_merge_stream_response_record", fail_merge)
+    with pytest.raises(ValueError, match="provider-secret-stream"):
+        list(
+            failure_model.stream_completion(
+                [{"role": "user", "content": "merge-failure"}],
+                context=failure_context,
+            )
+        )
+    assert failure_context.get_llm_calls()[0]["status"] == "failed"
