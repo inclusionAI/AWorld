@@ -618,7 +618,10 @@ class LLMModel:
             }
 
         llm_call = {
-            "capture_stage": "provider_bound",
+            "capture_stage": RequestCaptureStage.MODEL_BOUNDARY.value,
+            "capture_fidelity": ProviderRequestFidelity.MODEL_BOUNDARY.value,
+            "request_projection": "aworld.standard.model_boundary.v1",
+            "provider_prepared_request_match": None,
             "request_id": request_id,
             "provider_request_id": None,
             "task_id": context.task_id,
@@ -672,6 +675,9 @@ class LLMModel:
                 merged.update(llm_call)
                 merged["attempt"] = bound_attempts + 1
                 merged["compiler_request"] = compiler_request
+                merged["request_trace_match_scope"] = (
+                    "aworld.standard.model_boundary.v1"
+                )
                 if observation is not None:
                     try:
                         match = request_trace_match(
@@ -685,15 +691,15 @@ class LLMModel:
                         merged["request_trace_mismatch_count"] = match.mismatch_count
                     except Exception:
                         merged["request_trace_match"] = None
-                        merged["request_trace_mismatch_paths"] = []
-                        merged["request_trace_mismatch_count"] = 0
+                        merged["request_trace_mismatch_paths"] = None
+                        merged["request_trace_mismatch_count"] = None
                         merged["request_trace_match_error"] = {
                             "code": "request_trace_match_failed"
                         }
                 else:
                     merged["request_trace_match"] = None
-                    merged["request_trace_mismatch_paths"] = []
-                    merged["request_trace_mismatch_count"] = 0
+                    merged["request_trace_mismatch_paths"] = None
+                    merged["request_trace_mismatch_count"] = None
                 if unbound is not None:
                     llm_calls[unbound[0]] = merged
                 else:
@@ -996,6 +1002,20 @@ class LLMModel:
                 f"kwarg_keys={sorted(str(key) for key in kwargs)}"
             )
             raise RuntimeError(f"Model call failed: {str(e)}") from e
+        except BaseException as exc:
+            cancelled = isinstance(
+                exc, (asyncio.CancelledError, GeneratorExit, KeyboardInterrupt)
+            )
+            self._finish_llm_call_record(
+                context=context,
+                request_id=request_id,
+                status="cancelled" if cancelled else "failed",
+                finished_at=time.time(),
+                error_code=(
+                    "provider_call_cancelled" if cancelled else "provider_call_failed"
+                ),
+            )
+            raise
 
     def completion(self,
                    messages: List[Dict[str, str]],

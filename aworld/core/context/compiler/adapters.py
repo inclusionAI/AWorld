@@ -54,6 +54,7 @@ class AdapterDiagnostic:
             or self.occurrence < 0
         ):
             raise ValueError("diagnostic occurrence must be a non-negative integer or None")
+        object.__setattr__(self, "unknown_fields", tuple(self.unknown_fields))
         if any(not isinstance(field, str) or not field for field in self.unknown_fields):
             raise ValueError("diagnostic unknown_fields must contain non-empty strings")
 

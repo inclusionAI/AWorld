@@ -197,7 +197,7 @@ class ContextDecisionTrace:
         dynamic_context_hash: str | None,
         request_snapshot: ProviderRequestSnapshot,
         created_at: datetime,
-        redact_item_ids: bool = False,
+        redact_item_ids: bool = True,
     ) -> "ContextDecisionTrace":
         item_values = tuple(items)
         decision_values = tuple(decisions)

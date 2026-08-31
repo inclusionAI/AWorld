@@ -194,5 +194,14 @@ is in progress.
   mutated an inherited parent `llm_calls` list; and stream response folding could leak capture exceptions into provider
   delivery. The implementation now closes delegated streams, appends one attempt record per provider invocation, applies
   child copy-on-write isolation, and contains response-folding failures. All four focused regressions pass.
+- Model-boundary records no longer claim `provider_bound` fidelity: they now identify the exact AWorld standard projection,
+  explicitly leave provider-prepared matching unknown, and scope compiler matching to that projection. Match-observation
+  failures retain unknown (`None`) mismatch evidence instead of falsely reporting zero differences. Async process-control
+  exceptions now also close the request record before the original `KeyboardInterrupt`/`SystemExit` is re-raised.
+- `ContextDecisionTrace.build` now redacts item identifiers by default, closing a path/URI disclosure risk for owner-derived
+  ids while retaining an explicit opt-out for trusted local diagnostics. Model boundary, legacy capture, and trace regression
+  is green at 30 passed.
+- `AdapterDiagnostic` now tuple-freezes caller-supplied `unknown_fields`, so its frozen dataclass contract cannot retain a
+  mutable list alias. The dedicated legacy adapter suite is green at five passed.
 - Authority, trust, lifetime, stability, source URI, task epoch, and exact token counts remain UNKNOWN unless their owner can
   prove them; role/content heuristics are not acceptable.

@@ -93,7 +93,8 @@ def _snapshot() -> ProviderRequestSnapshot:
 
 
 def test_default_trace_contains_only_redacted_refs_and_decision_metadata() -> None:
-    item = _sensitive_item("random-item-id", 0)
+    sensitive_item_id = "file:///Users/private/project/AWORLD.md#workspace"
+    item = _sensitive_item(sensitive_item_id, 0)
     trace = ContextDecisionTrace.build(
         trace_id="trace-random",
         task_id="task-1",
@@ -115,6 +116,8 @@ def test_default_trace_contains_only_redacted_refs_and_decision_metadata() -> No
 
     assert payload["items"][0]["preview"] == "<object fields=3>"
     assert payload["items"][0]["source_kind"] == "workspace_file"
+    assert payload["items"][0]["item_id"].startswith("item:sha256:")
+    assert payload["decisions"][0]["item_id"] == payload["items"][0]["item_id"]
     assert payload["decisions"][0]["artifact_present"] is True
     assert payload["decisions"][0]["scope_kinds"] == ["workspace", "path_pattern"]
     assert trace.decisions[0].artifact_ref == "<redacted>"
@@ -128,6 +131,7 @@ def test_default_trace_contains_only_redacted_refs_and_decision_metadata() -> No
         "Bearer secret",
         "/Users/private/project",
         "file:///Users/private/project/AWORLD.md",
+        sensitive_item_id,
         "raw-secret.txt",
         "extra_body",
         "api_key",
