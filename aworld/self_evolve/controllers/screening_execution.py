@@ -710,7 +710,7 @@ def _replay_result_has_reusable_baseline(
     )
 
 
-def _find_reusable_baseline_replay_dir(
+def find_reusable_baseline_replay_dir(
     *,
     store: FilesystemSelfEvolveStore,
     run_id: str,
@@ -1551,7 +1551,7 @@ async def execute_screen_candidate_population(
     passing_candidates: list[
         tuple[CandidateVariant, tuple[int, ...]]
     ] = []
-    screening_baseline_replay_dir = _find_reusable_baseline_replay_dir(
+    screening_baseline_replay_dir = find_reusable_baseline_replay_dir(
         store=runtime.store,
         run_id=run_id,
         target=target.identity,
@@ -2437,7 +2437,7 @@ async def execute_screen_candidate_population(
                     _baseline_replay_artifact_dir(replay_result)
                 )
             refreshed_screening_baseline_dir = (
-                _find_reusable_baseline_replay_dir(
+                find_reusable_baseline_replay_dir(
                     store=runtime.store,
                     run_id=run_id,
                     target=target.identity,
