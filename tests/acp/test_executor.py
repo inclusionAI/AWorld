@@ -15,6 +15,16 @@ from aworld_cli.acp.executor import AcpLocalExecutor
 from aworld_cli.executors.local import LocalAgentExecutor
 
 
+def test_cli_and_acp_publish_distinct_entrypoint_labels() -> None:
+    local = LocalAgentExecutor.__new__(LocalAgentExecutor)
+    acp = AcpLocalExecutor.__new__(AcpLocalExecutor)
+
+    assert local._context_entry_point() == "cli"
+    local._aworld_cli_resumed = True
+    assert local._context_entry_point() == "resume"
+    assert acp._context_entry_point() == "acp"
+
+
 @pytest.mark.asyncio
 async def test_acp_local_executor_create_workspace_does_not_mutate_global_workspace_env(
     monkeypatch, tmp_path: Path

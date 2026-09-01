@@ -14,6 +14,9 @@ class AcpLocalExecutor(LocalAgentExecutor):
         self._working_directory = str(Path(working_directory).expanduser().resolve())
         super().__init__(**kwargs)
 
+    def _context_entry_point(self) -> str:
+        return "acp"
+
     def _workspace_base_dir(self) -> Path:
         return Path(self._working_directory) / ".aworld" / "workspaces"
 

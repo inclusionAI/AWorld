@@ -44,6 +44,8 @@ from aworld.core.context.compiler import (
     CandidateCompilation,
     CandidateRequestNotEnforceable,
     ContextCompilerMode,
+    ContextEntryPoint,
+    ContextEntrypointParityReceipt,
     ContextObservationSidecar,
     ContextInputBudget,
     ContextResolutionTarget,
@@ -476,6 +478,16 @@ class LLMModel:
     def context_candidate_policy(self) -> CandidateCompilePolicy:
         """Expose the frozen policy without allowing ambient replacement."""
         return self._context_candidate_policy
+
+    @staticmethod
+    def _context_entry_point(context: Context | None) -> ContextEntryPoint:
+        if context is None:
+            return ContextEntryPoint.DIRECT
+        try:
+            value = context.get_state("context_entry_point")
+            return ContextEntryPoint(value) if value is not None else ContextEntryPoint.DIRECT
+        except Exception:
+            return ContextEntryPoint.UNKNOWN
 
     def enforced_tool_output_policy(self):
         """Return the runtime policy only when candidate execution is authoritative."""
@@ -1278,6 +1290,20 @@ class LLMModel:
                 metadata["final_compile"] = inspect_final_context(
                     candidate.final_result
                 )
+                try:
+                    metadata["entrypoint_parity"] = (
+                        ContextEntrypointParityReceipt.from_final_result(
+                            entry_point=self._context_entry_point(context),
+                            result=candidate.final_result,
+                        ).to_dict()
+                    )
+                except Exception:
+                    metadata["entrypoint_parity"] = {
+                        "schema_version": ContextEntrypointParityReceipt.SCHEMA_VERSION,
+                        "entry_point": self._context_entry_point(context).value,
+                        "status": "unavailable",
+                        "reason_code": "entrypoint_parity_receipt_failed",
+                    }
         except Exception as exc:
             logger.error(
                 "Context candidate compilation failed before provider lowering; "

@@ -136,6 +136,11 @@ from .final import (
     StaleContextItem,
     compile_final_context,
 )
+from .parity import (
+    ContextEntryPoint,
+    ContextEntrypointParityReceipt,
+    assess_entrypoint_parity,
+)
 from .scope import (
     ContextResolutionTarget,
     lifetime_matches,
@@ -283,6 +288,8 @@ __all__ = [
     "CompletionStatus",
     "ContextCompilerMode",
     "ContextEmissionKind",
+    "ContextEntryPoint",
+    "ContextEntrypointParityReceipt",
     "ContextDecisionTrace",
     "ContextItem",
     "ContextItemRef",
@@ -400,6 +407,7 @@ __all__ = [
     "adapt_final_messages",
     "adapt_tool_schemas",
     "artifact_offload_receipt",
+    "assess_entrypoint_parity",
     "assess_completion",
     "assess_default_on_readiness",
     "assign_rollout_mode",

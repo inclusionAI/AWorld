@@ -24,8 +24,12 @@ def _sha256_bytes(payload: bytes) -> str:
 
 
 def _logical_item_identity(item: ContextItem) -> dict[str, str | None]:
+    # Runtime item ids intentionally preserve source/request occurrence
+    # identity. They must not participate in a logical cache partition: doing
+    # so makes byte-equivalent requests break cache continuity on every call.
+    # The surrounding ordered list retains duplicate occurrences.
     return {
-        "item_id": item.id,
+        "kind": item.kind.value,
         "version": item.version,
         "content_hash": item.content_hash,
     }

@@ -114,7 +114,7 @@ def test_partition_is_contiguous_and_never_reorders_late_stable_items() -> None:
             dynamic_context_hash=canonical_json_hash(
                 [
                     {
-                        "item_id": items[0].id,
+                        "kind": items[0].kind.value,
                         "version": items[0].version,
                         "content_hash": items[0].content_hash,
                     }

@@ -1468,6 +1468,11 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             kwargs["prepared_tools"] = tools
             if context_compiler_mode != "off":
                 try:
+                    if message.context.get_state("context_entry_point") is None:
+                        message.context.set_state(
+                            "context_entry_point",
+                            "amni" if self._is_amni_context(message.context) else "agent",
+                        )
                     from aworld.agents.final_context_adapter import adapt_agent_final_request
                     from aworld.core.context.compiler import ContextObservationSidecar
 
