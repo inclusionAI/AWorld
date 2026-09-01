@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import MutableMapping
+from collections.abc import Callable, Iterable, MutableMapping
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import AbstractSet, Protocol
 
 from aworld.self_evolve.budget import (
@@ -12,13 +13,23 @@ from aworld.self_evolve.budget import (
     CandidateAttemptKey,
     CandidateAttemptStage,
 )
+from aworld.self_evolve.campaign_policy import is_verified_apply_policy
+from aworld.self_evolve.challenger import ChallengeReport
 from aworld.self_evolve.credit_assignment import (
     TargetSelectionDecision,
     TargetSelectionReport,
 )
 from aworld.self_evolve.datasets import SelfEvolveDataset
 from aworld.self_evolve.optimizers.base import CandidateSourceDisposition
-from aworld.self_evolve.provenance import TargetProvenance
+from aworld.self_evolve.provenance import (
+    InferredNewSkillPolicy,
+    TargetMutationIntent,
+    TargetProvenance,
+)
+from aworld.self_evolve.regression import RegressionEvidence
+from aworld.self_evolve.replay import (
+    CandidateReplayResult,
+)
 from aworld.self_evolve.replay_adaptation import ReplayCapabilityRequirement
 from aworld.self_evolve.targets import SelfEvolveTarget
 from aworld.self_evolve.trace_pack import TracePack
@@ -261,3 +272,335 @@ class CandidateEvaluationResult:
             report_item=report_item,
             feedback=feedback,
         )
+
+
+CandidateGateEvaluator = Callable[..., list[GateResult]]
+CandidateFeedbackBuilder = Callable[..., tuple[EvaluationSummary, ...]]
+
+
+@dataclass(frozen=True)
+class CandidateLocalAdmissionPolicy:
+    """Runner-owned policy injected into controller-owned local admission."""
+
+    workspace_root: Path
+    max_candidate_chars: int
+    allow_generated_target_mutation: bool
+    allow_external_target_mutation: bool
+    target_intent: TargetMutationIntent | str | None
+    inferred_new_skill_policy: InferredNewSkillPolicy | str
+    skip_duplicate_rejected_candidate_gate: bool
+    gate_evaluator: CandidateGateEvaluator
+
+    def __post_init__(self) -> None:
+        if self.max_candidate_chars < 1:
+            raise ValueError("max_candidate_chars must be positive")
+        if not callable(self.gate_evaluator):
+            raise TypeError("candidate gate evaluator must be callable")
+
+
+@dataclass(frozen=True)
+class CandidateLocalAdmissionResult:
+    """Local gate outcome and optional terminal duplicate decision."""
+
+    gate_results: tuple[GateResult, ...]
+    terminal_result: CandidateEvaluationResult | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "gate_results", tuple(self.gate_results))
+        if not all(isinstance(gate, GateResult) for gate in self.gate_results):
+            raise TypeError("local admission gate_results must be typed")
+
+
+def duplicate_rejected_candidate_gate(
+    candidate: CandidateVariant,
+    *,
+    rejected_candidate_ids: AbstractSet[str],
+    apply_policy: str,
+) -> GateResult | None:
+    if not is_verified_apply_policy(apply_policy):
+        return None
+    if candidate.candidate_id not in rejected_candidate_ids:
+        return GateResult(
+            gate_name="duplicate_rejected_candidate",
+            passed=True,
+            reason="candidate has not been previously rejected for this target",
+        )
+    return GateResult(
+        gate_name="duplicate_rejected_candidate",
+        passed=False,
+        reason="candidate repeats a previously rejected candidate for this target",
+        details={"candidate_id": candidate.candidate_id},
+    )
+
+
+def duplicate_accepted_candidate_gate(
+    candidate: CandidateVariant,
+    *,
+    accepted_candidate_ids: AbstractSet[str],
+    apply_policy: str,
+) -> GateResult | None:
+    if not is_verified_apply_policy(apply_policy):
+        return None
+    if candidate.candidate_id not in accepted_candidate_ids:
+        return GateResult(
+            gate_name="duplicate_accepted_candidate",
+            passed=True,
+            reason="candidate has not been previously accepted for this target",
+        )
+    return GateResult(
+        gate_name="duplicate_accepted_candidate",
+        passed=False,
+        reason="candidate repeats a previously accepted candidate for this target",
+        details={"candidate_id": candidate.candidate_id},
+    )
+
+
+def iteration_report_item(
+    *,
+    iteration_number: int,
+    candidate_number: int,
+    candidate_count: int,
+    candidate: CandidateVariant,
+    status: str,
+    baseline_summary: EvaluationSummary | None,
+    candidate_summary: EvaluationSummary | None,
+    held_out_summary: EvaluationSummary | None,
+    failed_gates: Iterable[GateResult],
+    regression_evidence: RegressionEvidence | None = None,
+    challenge_report: ChallengeReport | None = None,
+) -> dict[str, object]:
+    return {
+        "iteration": iteration_number,
+        "candidate_number": candidate_number,
+        "candidate_count": candidate_count,
+        "candidate_id": candidate.candidate_id,
+        "status": status,
+        "baseline_metrics": (
+            dict(baseline_summary.metrics)
+            if baseline_summary is not None
+            else None
+        ),
+        "candidate_metrics": (
+            dict(candidate_summary.metrics)
+            if candidate_summary is not None
+            else None
+        ),
+        "held_out_metrics": (
+            dict(held_out_summary.metrics)
+            if held_out_summary is not None
+            else None
+        ),
+        "failed_gates": [gate.gate_name for gate in failed_gates],
+        "regression_evidence": (
+            regression_evidence.to_dict()
+            if regression_evidence is not None
+            else None
+        ),
+        "challenge_report": (
+            challenge_report.to_dict()
+            if challenge_report is not None
+            else None
+        ),
+    }
+
+
+def iteration_state(
+    *,
+    candidate: CandidateVariant,
+    baseline_summary: EvaluationSummary | None,
+    candidate_summary: EvaluationSummary | None,
+    held_out_summary: EvaluationSummary | None,
+    replay_result: CandidateReplayResult | None,
+    replay_dataset: SelfEvolveDataset | None,
+    gate_results: list[GateResult] | tuple[GateResult, ...],
+    feedback: tuple[EvaluationSummary, ...],
+    status: str,
+    regression_evidence: RegressionEvidence | None = None,
+    challenge_report: ChallengeReport | None = None,
+) -> dict[str, object]:
+    return {
+        "candidate": candidate,
+        "baseline_summary": baseline_summary,
+        "candidate_summary": candidate_summary,
+        "held_out_summary": held_out_summary,
+        "replay_result": replay_result,
+        "replay_dataset": replay_dataset,
+        "gate_results": gate_results,
+        "feedback": feedback,
+        "status": status,
+        "regression_evidence": regression_evidence,
+        "challenge_report": challenge_report,
+    }
+
+
+def terminal_candidate_evaluation_result(
+    *,
+    candidate: CandidateVariant,
+    iteration_number: int,
+    candidate_number: int,
+    candidate_count: int,
+    gate_results: Iterable[GateResult],
+    feedback_builder: CandidateFeedbackBuilder,
+    status: str = "rejected",
+    replay_result: CandidateReplayResult | None = None,
+    replay_dataset: SelfEvolveDataset | None = None,
+) -> CandidateEvaluationResult:
+    gates = tuple(gate_results)
+    failed_gates = [gate for gate in gates if not gate.passed]
+    feedback = feedback_builder(
+        candidate=candidate,
+        baseline_summary=None,
+        candidate_summary=None,
+        held_out_summary=None,
+        failed_gates=failed_gates,
+    )
+    report_item = iteration_report_item(
+        iteration_number=iteration_number,
+        candidate_number=candidate_number,
+        candidate_count=candidate_count,
+        candidate=candidate,
+        status=status,
+        baseline_summary=None,
+        candidate_summary=None,
+        held_out_summary=None,
+        failed_gates=failed_gates,
+    )
+    state = iteration_state(
+        candidate=candidate,
+        baseline_summary=None,
+        candidate_summary=None,
+        held_out_summary=None,
+        replay_result=replay_result,
+        replay_dataset=replay_dataset,
+        gate_results=gates,
+        feedback=feedback,
+        status=status,
+    )
+    return CandidateEvaluationResult.from_tuple(
+        (state, report_item, feedback)
+    )
+
+
+def duplicate_candidate_evaluation_result(
+    *,
+    request: CandidateEvaluationRequest,
+    gate_results: Iterable[GateResult],
+) -> CandidateEvaluationResult:
+    """Preserve the minimal historical duplicate-rejection feedback shape."""
+
+    gates = tuple(gate_results)
+    failed_gates = [gate for gate in gates if not gate.passed]
+    feedback = (
+        EvaluationSummary(
+            variant_id=request.candidate.candidate_id,
+            metrics={
+                "failed_gates": [gate.gate_name for gate in failed_gates],
+                "candidate_status": "rejected",
+            },
+            dataset_split="validation",
+        ),
+    )
+    report_item = iteration_report_item(
+        iteration_number=request.iteration_number,
+        candidate_number=request.candidate_number,
+        candidate_count=request.candidate_count,
+        candidate=request.candidate,
+        status="rejected",
+        baseline_summary=None,
+        candidate_summary=None,
+        held_out_summary=None,
+        failed_gates=failed_gates,
+    )
+    state = iteration_state(
+        candidate=request.candidate,
+        baseline_summary=None,
+        candidate_summary=None,
+        held_out_summary=None,
+        replay_result=None,
+        replay_dataset=None,
+        gate_results=list(gates),
+        feedback=feedback,
+        status="rejected",
+    )
+    return CandidateEvaluationResult.from_tuple(
+        (state, report_item, feedback)
+    )
+
+
+def execute_candidate_local_admission(
+    request: CandidateEvaluationRequest,
+    policy: CandidateLocalAdmissionPolicy,
+) -> CandidateLocalAdmissionResult:
+    """Evaluate local contracts and historical duplicate admission."""
+
+    gate_results = list(request.precomputed_gate_results)
+    if not gate_results:
+        gate_results.extend(
+            policy.gate_evaluator(
+                request.candidate,
+                current_content=request.target.load_current_content(),
+                workspace_root=policy.workspace_root,
+                max_chars=policy.max_candidate_chars,
+                target_provenance=request.target_provenance,
+                target_provenance_unresolved_reason=(
+                    request.target_provenance_unresolved_reason
+                ),
+                allow_generated_target_mutation=(
+                    policy.allow_generated_target_mutation
+                ),
+                allow_external_target_mutation=(
+                    policy.allow_external_target_mutation
+                ),
+                target_intent=policy.target_intent,
+                inferred_new_skill_policy=policy.inferred_new_skill_policy,
+                apply_policy=request.apply_policy,
+            )
+        )
+        if request.attempt_tracker is not None and request.attempt_key is not None:
+            request.attempt_tracker.emit(
+                request.attempt_key,
+                CandidateAttemptStage.LOCAL_GATES,
+            )
+    if (
+        not policy.skip_duplicate_rejected_candidate_gate
+        and not request.source_disposition.bypass_historical_deduplication
+    ):
+        accepted_gate = duplicate_accepted_candidate_gate(
+            request.candidate,
+            accepted_candidate_ids=request.accepted_candidate_ids,
+            apply_policy=request.apply_policy,
+        )
+        if accepted_gate is not None:
+            gate_results.append(accepted_gate)
+        rejected_gate = duplicate_rejected_candidate_gate(
+            request.candidate,
+            rejected_candidate_ids=request.rejected_candidate_ids,
+            apply_policy=request.apply_policy,
+        )
+        if rejected_gate is not None:
+            gate_results.append(rejected_gate)
+    duplicate_blocked = any(
+        gate.gate_name
+        in {"duplicate_accepted_candidate", "duplicate_rejected_candidate"}
+        and not gate.passed
+        for gate in gate_results
+    )
+    if not duplicate_blocked:
+        return CandidateLocalAdmissionResult(tuple(gate_results))
+    if (
+        request.attempt_tracker is not None
+        and request.attempt_key is not None
+        and not request.attempt_tracker.terminal(request.attempt_key)
+    ):
+        request.attempt_tracker.emit(
+            request.attempt_key,
+            CandidateAttemptStage.REJECTED,
+            reason_code="duplicate_prior_candidate",
+        )
+    return CandidateLocalAdmissionResult(
+        gate_results=tuple(gate_results),
+        terminal_result=duplicate_candidate_evaluation_result(
+            request=request,
+            gate_results=gate_results,
+        ),
+    )
