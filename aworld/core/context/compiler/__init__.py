@@ -238,6 +238,7 @@ from .trust import (
     TrustIsolationReceipt,
     has_trust_boundary,
     isolate_untrusted_context_item,
+    verifies_trust_isolation,
 )
 from .tool_output import (
     ToolOutputMode,
@@ -455,6 +456,7 @@ __all__ = [
     "has_trust_boundary",
     "hashed_identity",
     "isolate_untrusted_context_item",
+    "verifies_trust_isolation",
     "partition_stable_prefix",
     "plan_context_budget",
     "plan_tool_output",
