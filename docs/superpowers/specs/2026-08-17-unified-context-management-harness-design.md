@@ -1096,6 +1096,22 @@ Management 已产生正收益，下一优化应消除通用固定开销和多余
 Docker reader 读取同一来源 receipt 均成功；candidate-only 模型 smoke 也保持 reward 1，但因模型主动重定向文件
 未触发 artifact，故不把该随机 rollout 当作 receipt 互操作证据。
 
+Milestone 7.1 已实现 provider-bound section attribution 的首个纵向切片。Final compiler 在生成最终
+`messages`/`tools` 的同一 occurrence 循环产生不可变 plan，只保存 hashed item identity、allowlisted owner code、
+kind/source kind、实际 stable-prefix/dynamic-suffix residency、collection+ordinal、content hash 和版本化 token
+estimate；不保存 payload、role 文本、path、URI 或 namespace。model-boundary provenance 只能绑定当前 request 的
+`model.final_messages`/`model.final_tool_catalog` sidecar collection ordinal，hash 只校验已绑定 ordinal；sidecar
+缺失、长度/ordinal/hash 错位时保留 explicit unknown fallback 并阻止 enforce，不再按 content hash 搜索或排名。
+
+内置 OpenAI adapter 在最终 `openai_params` 形成后逐 ordinal 验证 plan，任何 add/drop/reorder/transform 在发送前以
+`provider_attribution_mismatch` fail-closed。SDK receipt 明确标为 `provider_prepared_canonical_json`；只有 HTTP
+实际发送同一 canonical body 时才标为 `http_serialized_canonical_json`。每个 message/Tool occurrence 统计自身
+canonical JSON value bytes，其余顶层 key、数组/对象分隔符、provider params 与 runtime 字段统一归入
+`provider_envelope_and_params`，并强制 `sum(entries)+overhead==total canonical bytes`。Inspector 与 benefit report
+只聚合该 provider receipt 的 owner/kind/source/residency bytes；receipt 缺失显式报告 unavailable，禁止回退到
+prompt 文本分类。该能力解释 candidate overhead，但本身不构成收益或 default-on 证据；Milestone 7.2 仍须依据
+归因结果消除重复/非驻留 Context，7.3 仍须量化额外 turn 与真实 artifact retrieval economics。
+
 ## Migration Plan
 
 ### Phase 0: Baseline and Observability

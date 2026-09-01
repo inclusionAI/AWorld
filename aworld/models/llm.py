@@ -59,6 +59,7 @@ from aworld.core.context.compiler import (
     canonical_json_hash,
     compile_context_candidate,
     inspect_final_context,
+    build_unknown_attribution_plan,
     observe_legacy_provider_request,
     request_trace_match,
     reviewed_provider_lowerings,
@@ -1260,6 +1261,11 @@ class LLMModel:
                     compiler_identity=candidate.compiler_identity,
                     compiler_version=candidate.compiler_version,
                     expected_lowering=capability,
+                    attribution_plan=(
+                        candidate.final_result.attribution_plan
+                        if candidate.final_result is not None
+                        else build_unknown_attribution_plan(snapshot)
+                    ),
                     cache_material=cache_material,
                 )
             except Exception:
