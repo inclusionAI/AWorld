@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 import random
 import shutil
@@ -157,6 +158,14 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Pull/use task.toml docker_image instead of building the packaged Dockerfile.",
     )
+    parser.add_argument(
+        "--build-timeout-sec",
+        type=float,
+        help=(
+            "Override the task's packaged Docker image build timeout. When omitted, "
+            "the dataset build_timeout_sec (or 600 seconds) is used."
+        ),
+    )
     parser.add_argument("--keep-containers", action="store_true")
     parser.add_argument(
         "--verifier-mode",
@@ -171,7 +180,12 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def docker_image_for_task(fixture: TaskFixture, docker: str, use_declared_image: bool) -> str:
+def docker_image_for_task(
+    fixture: TaskFixture,
+    docker: str,
+    use_declared_image: bool,
+    build_timeout_sec: float | None = None,
+) -> str:
     declared = fixture.config["environment"].get("docker_image")
     if use_declared_image:
         if not declared:
@@ -186,13 +200,27 @@ def docker_image_for_task(fixture: TaskFixture, docker: str, use_declared_image:
     image = f"aworld-context-eval:{dockerfile_sha}"
     inspect = run_command([docker, "image", "inspect", image], capture_output=True)
     if inspect.returncode != 0:
-        timeout = float(fixture.config["environment"].get("build_timeout_sec", 600))
-        build = run_command(
-            [docker, "build", "--label", "aworld.context-eval=true", "-t", image, "."],
-            cwd=fixture.environment,
-            capture_output=True,
-            timeout=timeout,
+        timeout = (
+            build_timeout_sec
+            if build_timeout_sec is not None
+            else float(fixture.config["environment"].get("build_timeout_sec", 600))
         )
+        try:
+            build = run_command(
+                [docker, "build", "--label", "aworld.context-eval=true", "-t", image, "."],
+                cwd=fixture.environment,
+                capture_output=True,
+                timeout=timeout,
+            )
+        except subprocess.TimeoutExpired as exc:
+            output = exc.stderr or exc.stdout or ""
+            if isinstance(output, bytes):
+                output = output.decode(errors="replace")
+            detail = str(output).strip()
+            suffix = f": {detail}" if detail else ""
+            raise RuntimeError(
+                f"build image for {fixture.name} timed out after {timeout:g} seconds{suffix}"
+            ) from exc
         require_success(build, f"build image for {fixture.name}")
     return image
 
@@ -505,6 +533,10 @@ def main() -> None:
     args = parse_args()
     if args.repeat < 1:
         raise ValueError("--repeat must be positive")
+    if args.build_timeout_sec is not None and (
+        not math.isfinite(args.build_timeout_sec) or args.build_timeout_sec <= 0
+    ):
+        raise ValueError("--build-timeout-sec must be positive")
     dataset = args.dataset.resolve()
     if not dataset.is_file():
         raise FileNotFoundError(dataset)
@@ -555,6 +587,8 @@ def main() -> None:
         "anti_overfitting": "Variants cannot contain task prompts, names, expected answers, or verifier logic.",
         "normalized_cost_policy": NormalizedCostPolicy().to_dict(),
         "verifier_mode": args.verifier_mode,
+        "build_timeout_sec_override": args.build_timeout_sec,
+        "use_declared_image": args.use_declared_image,
         "created_at_epoch": time.time(),
     }
     write_json(output_dir / "experiment_manifest.json", experiment)
@@ -564,7 +598,12 @@ def main() -> None:
 
     assert docker is not None
     images = {
-        fixture.name: docker_image_for_task(fixture, docker, args.use_declared_image)
+        fixture.name: docker_image_for_task(
+            fixture,
+            docker,
+            args.use_declared_image,
+            args.build_timeout_sec,
+        )
         for fixture in fixtures
     }
     results = []

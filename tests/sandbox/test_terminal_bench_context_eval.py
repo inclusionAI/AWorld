@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import io
 import json
+import subprocess
 import sys
 import tarfile
 import zipfile
@@ -184,6 +185,41 @@ def test_dataset_adapter_extracts_generic_task_archive(tmp_path):
     assert fixture.instruction.read_text() == "Do the task"
     assert fixture.environment.joinpath("Dockerfile").exists()
     assert fixture.tests.joinpath("test.sh").exists()
+
+
+def test_packaged_image_build_timeout_can_override_dataset_default(tmp_path, monkeypatch):
+    harness = _load_example("terminal_bench_context_eval")
+    environment = tmp_path / "environment"
+    environment.mkdir()
+    environment.joinpath("Dockerfile").write_text("FROM scratch\n", encoding="utf-8")
+    fixture = harness.TaskFixture(
+        name="sample",
+        root=tmp_path,
+        archive_sha256="0" * 64,
+        config={"environment": {"build_timeout_sec": 600}},
+    )
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append((command, kwargs))
+        return subprocess.CompletedProcess(
+            command,
+            1 if command[1:3] == ["image", "inspect"] else 0,
+            stdout="",
+            stderr="",
+        )
+
+    monkeypatch.setattr(harness, "run_command", fake_run)
+
+    image = harness.docker_image_for_task(
+        fixture,
+        "docker",
+        use_declared_image=False,
+        build_timeout_sec=1800,
+    )
+
+    assert image.startswith("aworld-context-eval:")
+    assert calls[-1][1]["timeout"] == 1800
 
 
 def test_summary_pairs_reward_with_context_effects():
