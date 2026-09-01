@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 import hashlib
 import math
@@ -10,7 +10,14 @@ import re
 from typing import Iterable
 
 from .frozen_json import FrozenMap, canonical_json_hash, freeze_json
+from .lifecycle import ContextLifecycleState
+from .parity import VerifiedContextEntrypointParityReceipt
 from .rollout import ContextCompilerMode
+from aworld.core.trajectory import (
+    TrajectoryBuildResult,
+    TrajectoryBuildStatus,
+    TrajectoryFidelity,
+)
 
 
 class ReadinessStatus(str, Enum):
@@ -51,10 +58,97 @@ class RolloutCapability:
     request_trace_match: bool
     lifecycle: bool
     trajectory_complete: bool
+    call_shape: str = "unknown"
+    evidence_fingerprint: str | None = field(default=None, init=False)
+
+    @classmethod
+    def from_verified_evidence(
+        cls,
+        *,
+        entrypoint_receipt: VerifiedContextEntrypointParityReceipt,
+        lifecycle_state: ContextLifecycleState,
+        trajectory_result: TrajectoryBuildResult,
+    ) -> "RolloutCapability":
+        if not isinstance(
+            entrypoint_receipt, VerifiedContextEntrypointParityReceipt
+        ):
+            raise TypeError("entrypoint_receipt must be provider-verified")
+        if not isinstance(lifecycle_state, ContextLifecycleState):
+            raise TypeError("lifecycle_state must be ContextLifecycleState")
+        if not isinstance(trajectory_result, TrajectoryBuildResult):
+            raise TypeError("trajectory_result must be TrajectoryBuildResult")
+        if (
+            trajectory_result.task_epoch is not None
+            and trajectory_result.task_epoch != lifecycle_state.task_epoch
+        ):
+            raise ValueError("trajectory and lifecycle task epochs do not match")
+        trajectory_complete = (
+            trajectory_result.status is TrajectoryBuildStatus.COMPLETE
+            and trajectory_result.fidelity is TrajectoryFidelity.COMPLETE
+            and trajectory_result.llm_call_count > 0
+        )
+        receipt = entrypoint_receipt.receipt
+        value = cls(
+            provider=entrypoint_receipt.provider_name,
+            entry_point=receipt.entry_point.value,
+            call_shape=receipt.call_shape.value,
+            provider_lowering=True,
+            request_trace_match=True,
+            lifecycle=True,
+            trajectory_complete=trajectory_complete,
+        )
+        object.__setattr__(value, "evidence_fingerprint", canonical_json_hash({
+            "entrypoint_evidence": entrypoint_receipt.evidence_fingerprint,
+            "lifecycle": {
+                "session_epoch": lifecycle_state.session_epoch,
+                "task_epoch": lifecycle_state.task_epoch,
+                "turn_epoch": lifecycle_state.turn_epoch,
+                "branch_id": lifecycle_state.branch_id,
+                "checkpoint_revision": lifecycle_state.checkpoint_revision,
+            },
+            "trajectory": {
+                "builder_version": trajectory_result.builder_version,
+                "trajectory_checksum": trajectory_result.trajectory_checksum,
+                "status": trajectory_result.status.value,
+                "fidelity": trajectory_result.fidelity.value,
+            },
+        }))
+        return value
+
+    @classmethod
+    def combine_verified(
+        cls, capabilities: Iterable["RolloutCapability"]
+    ) -> "RolloutCapability":
+        values = tuple(capabilities)
+        if not values or any(not value.enforce_ready for value in values):
+            raise ValueError("all combined capabilities must be verified and ready")
+        keys = {
+            (value.provider, value.entry_point, value.call_shape)
+            for value in values
+        }
+        if len(keys) != 1:
+            raise ValueError("combined capabilities must share one matrix key")
+        first = values[0]
+        value = cls(
+            provider=first.provider,
+            entry_point=first.entry_point,
+            call_shape=first.call_shape,
+            provider_lowering=True,
+            request_trace_match=True,
+            lifecycle=True,
+            trajectory_complete=True,
+        )
+        object.__setattr__(value, "evidence_fingerprint", canonical_json_hash({
+            "capability_key": next(iter(keys)),
+            "run_evidence": sorted(
+                item.evidence_fingerprint for item in values
+            ),
+        }))
+        return value
 
     @property
     def enforce_ready(self) -> bool:
-        return all(
+        return self.evidence_fingerprint is not None and all(
             (
                 self.provider_lowering,
                 self.request_trace_match,
@@ -177,6 +271,24 @@ class RollbackBundle:
             provider_capability_hash=provider_capability_hash,
             bundle_hash=bundle_hash,
         )
+
+    @classmethod
+    def from_dict(cls, payload: dict) -> "RollbackBundle":
+        if not isinstance(payload, dict) or set(payload) != {
+            "previous_mode",
+            "previous_config",
+            "provider_capability_hash",
+            "bundle_hash",
+        }:
+            raise ValueError("unsupported rollback bundle")
+        rebuilt = cls.build(
+            previous_mode=ContextCompilerMode(payload["previous_mode"]),
+            previous_config=payload["previous_config"],
+            provider_capability_hash=payload["provider_capability_hash"],
+        )
+        if rebuilt.bundle_hash != payload["bundle_hash"]:
+            raise ValueError("rollback bundle hash mismatch")
+        return rebuilt
 
 
 @dataclass(frozen=True, slots=True)
@@ -442,7 +554,9 @@ def assess_default_on_readiness(
     trajectory_complete_rate: float,
     rollback_config_hash: str | None,
     hard_gate_failures: Iterable[str] = (),
-    required_capabilities: Iterable[tuple[str, str]] = (),
+    required_capabilities: Iterable[
+        tuple[str, str] | tuple[str, str, str]
+    ] = (),
     canary_health_decision: CanaryHealthDecision | None = None,
     required_canary_policy_fingerprint: str | None = None,
     minimum_complete_pairs: int = 10,
@@ -481,23 +595,40 @@ def assess_default_on_readiness(
     ):
         raise ValueError("hard gate failures must be stable reason codes")
     capability_values = tuple(capabilities)
-    capability_keys = [(value.provider, value.entry_point) for value in capability_values]
+    if not all(isinstance(value, RolloutCapability) for value in capability_values):
+        raise TypeError("capabilities must contain RolloutCapability values")
+    capability_keys = [
+        (value.provider, value.entry_point, value.call_shape)
+        for value in capability_values
+    ]
     if len(set(capability_keys)) != len(capability_keys):
-        raise ValueError("capabilities must be unique by provider and entry point")
-    required_capability_keys = tuple(required_capabilities)
+        raise ValueError(
+            "capabilities must be unique by provider, entry point and call shape"
+        )
+    required_capability_values = tuple(required_capabilities)
     if any(
         not isinstance(value, tuple)
-        or len(value) != 2
+        or len(value) not in {2, 3}
         or not all(isinstance(item, str) and item for item in value)
-        for value in required_capability_keys
+        for value in required_capability_values
     ):
-        raise ValueError("required_capabilities must contain provider/entry-point pairs")
+        raise ValueError(
+            "required_capabilities must contain provider/entry-point pairs or "
+            "provider/entry-point/call-shape triples"
+        )
+    # Legacy pairs remain parseable for API compatibility, but cannot silently
+    # authorize a concrete sync/async path.
+    required_capability_keys = tuple(
+        value if len(value) == 3 else (value[0], value[1], "unknown")
+        for value in required_capability_values
+    )
     if len(set(required_capability_keys)) != len(required_capability_keys):
         raise ValueError("required_capabilities must be unique")
     kinds = tuple(sorted(set(workload_kinds)))
     capability_by_key = dict(zip(capability_keys, capability_values))
     if (
         not capability_values
+        or not required_capability_keys
         or any(not value.enforce_ready for value in capability_values)
         or any(
             key not in capability_by_key

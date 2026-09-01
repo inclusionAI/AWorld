@@ -284,6 +284,8 @@ class FinalCompileResult:
     decisions: tuple[ResolutionDecision, ...]
     token_accounting: TokenAccounting
     stable_partition: StablePrefixPartition
+    inference_profile: InferenceProfile
+    input_budget: ContextInputBudget
     tool_catalog_hash: str
     skill_set_hash: str
     trace: ContextDecisionTrace
@@ -308,6 +310,10 @@ class FinalCompileResult:
             raise TypeError("token_accounting must be a TokenAccounting")
         if not isinstance(self.stable_partition, StablePrefixPartition):
             raise TypeError("stable_partition must be a StablePrefixPartition")
+        if not isinstance(self.inference_profile, InferenceProfile):
+            raise TypeError("inference_profile must be an InferenceProfile")
+        if not isinstance(self.input_budget, ContextInputBudget):
+            raise TypeError("input_budget must be a ContextInputBudget")
         if not isinstance(self.trace, ContextDecisionTrace):
             raise TypeError("trace must be a ContextDecisionTrace")
         if self.attribution_plan is not None:
@@ -655,6 +661,8 @@ def compile_final_context(
         decisions=decisions,
         token_accounting=budget_plan.token_accounting,
         stable_partition=partition,
+        inference_profile=compiler_input.inference_profile,
+        input_budget=policy.input_budget,
         tool_catalog_hash=canonical_json_hash(
             [
                 item.content_hash

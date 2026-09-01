@@ -208,6 +208,11 @@ def test_benefit_report_consumes_real_artifact_contract_and_stays_not_ready_for_
     assert "insufficient_paired_evidence" in report["default_on_readiness"]["gate_failures"]
     assert "cross_workload_evidence_missing" in report["default_on_readiness"]["gate_failures"]
     assert "provider_attribution_pairing_incomplete" in report["default_on_readiness"]["gate_failures"]
+    assert "capability_matrix_incomplete" in report["default_on_readiness"]["gate_failures"]
+    assert "canary_receipt_evidence_incomplete" in report["default_on_readiness"]["gate_failures"]
+    assert "rollback_bundle_missing" in report["default_on_readiness"]["gate_failures"]
+    assert report["rollout_capabilities"] == []
+    assert report["rollback_bundle"] is None
 
 
 def test_benefit_report_accepts_only_explicit_cost_metric_for_efficiency_path():

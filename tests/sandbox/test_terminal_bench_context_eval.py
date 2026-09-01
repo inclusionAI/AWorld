@@ -12,6 +12,8 @@ from pathlib import Path
 
 import pytest
 
+from aworld.core.context.base import Context
+
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -187,6 +189,21 @@ def test_capture_reconciliation_preserves_live_retry_attempts_for_diagnostics():
     assert calls[0]["status"] == "success"
     assert continuity["snapshots_match"] is False
     assert continuity["reconciled_count"] == 2
+
+
+def test_lifecycle_evidence_is_typed_hashed_and_privacy_safe():
+    runner = _load_example("docker_terminal_bench")
+    context = Context(task_id="private-task", session_id="private-session")
+    agent = type("Agent", (), {"context": context})()
+
+    evidence = runner._context_lifecycle_evidence(agent)
+
+    assert evidence["status"] == "available"
+    assert evidence["state_hash"].startswith("sha256:")
+    assert evidence["state"]["session_id_hash"].startswith("sha256:")
+    assert evidence["state"]["branch_id_hash"].startswith("sha256:")
+    assert "private-session" not in repr(evidence)
+    assert "private-task" not in repr(evidence)
 
 
 def test_dataset_adapter_extracts_generic_task_archive(tmp_path, monkeypatch):

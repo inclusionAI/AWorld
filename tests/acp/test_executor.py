@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from aworld_cli.acp import executor as executor_module
 from aworld_cli.acp.executor import AcpLocalExecutor
 from aworld_cli.executors.local import LocalAgentExecutor
+from aworld.core.context.base import Context
 
 
 def test_cli_and_acp_publish_distinct_entrypoint_labels() -> None:
@@ -23,6 +24,14 @@ def test_cli_and_acp_publish_distinct_entrypoint_labels() -> None:
     local._aworld_cli_resumed = True
     assert local._context_entry_point() == "resume"
     assert acp._context_entry_point() == "acp"
+
+    context = Context(task_id="entrypoint-label")
+    local._attest_context_entry_point(context)
+    assert context._aworld_context_entrypoint_claim.entry_point.value == "resume"
+    assert context._aworld_context_entrypoint_claim.source.value == "session_restore"
+    acp._attest_context_entry_point(context)
+    assert context._aworld_context_entrypoint_claim.entry_point.value == "acp"
+    assert context._aworld_context_entrypoint_claim.source.value == "acp_executor"
 
 
 @pytest.mark.asyncio

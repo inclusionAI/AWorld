@@ -60,6 +60,35 @@ def _llm_calls_digest(calls: list) -> str:
     return _sha256_bytes(encoded)
 
 
+def _context_lifecycle_evidence(agent) -> dict:
+    """Export typed, privacy-safe lifecycle evidence for canary verification."""
+    from aworld.core.context.compiler import canonical_json_hash
+    from aworld.core.context.compiler.lifecycle import ContextLifecycleState
+
+    context = getattr(agent, "context", None)
+    state = getattr(context, "context_lifecycle_state", None)
+    if not isinstance(state, ContextLifecycleState):
+        return {
+            "schema_version": "aworld.context.lifecycle-evidence.v1",
+            "status": "unavailable",
+            "reason_code": "typed_lifecycle_state_unavailable",
+        }
+    projection = {
+        "session_id_hash": canonical_json_hash({"session_id": state.session_id}),
+        "session_epoch": state.session_epoch,
+        "task_epoch": state.task_epoch,
+        "turn_epoch": state.turn_epoch,
+        "branch_id_hash": canonical_json_hash({"branch_id": state.branch_id}),
+        "checkpoint_revision": state.checkpoint_revision,
+    }
+    return {
+        "schema_version": "aworld.context.lifecycle-evidence.v1",
+        "status": "available",
+        "state": projection,
+        "state_hash": canonical_json_hash(projection),
+    }
+
+
 def _resolve_llm_call_capture(response, agent) -> tuple[list, str, dict]:
     """Preserve blocked-call evidence when TaskResponse propagation is incomplete."""
     response_calls = list(getattr(response, "llm_calls", None) or [])
@@ -334,11 +363,15 @@ async def run(args: argparse.Namespace) -> None:
         provider_capture_gate_passed = bool(provider_calls) and bool(
             llm_capture_continuity["snapshots_match"]
         )
+        lifecycle_evidence = _context_lifecycle_evidence(agent)
         checksums = {
             "task_response.json": _write_json(args.output_dir / "task_response.json", response_payload),
             "raw_trajectory.json": _write_json(args.output_dir / "raw_trajectory.json", trajectory_payload),
             "llm_calls.json": _write_json(args.output_dir / "llm_calls.json", llm_calls),
             "provider_calls.json": _write_json(args.output_dir / "provider_calls.json", provider_calls),
+            "context_lifecycle.json": _write_json(
+                args.output_dir / "context_lifecycle.json", lifecycle_evidence
+            ),
             "context_trace.json": _write_json(
                 args.output_dir / "context_trace.json",
                 [
