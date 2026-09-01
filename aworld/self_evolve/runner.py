@@ -385,6 +385,11 @@ from aworld.self_evolve.controllers.run_execution import (
     iteration_state as _iteration_state,
     terminal_candidate_evaluation_result as _controller_terminal_candidate_result,
 )
+from aworld.self_evolve.controllers.run_replay_execution import (
+    CandidateReplayExecutionRequest,
+    CandidateReplayExecutionRuntime,
+    execute_candidate_replay,
+)
 from aworld.self_evolve.controllers.measurement_execution_admission import (
     _candidate_intervention_unobserved,
     _candidate_intervention_unobserved_failure_event,
@@ -8728,7 +8733,6 @@ class SelfEvolveRunner:
         iteration_number = request.iteration_number
         candidate_number = request.candidate_number
         candidate_count = request.candidate_count
-        baseline_replay_dir = request.baseline_replay_dir
         attempt_key = request.attempt_key
         attempt_tracker = request.attempt_tracker
         budget_context = request.budget_context
@@ -8824,197 +8828,27 @@ class SelfEvolveRunner:
         gate_results = list(replay_admission.gate_results)
         if replay_admission.terminal_result is not None:
             return replay_admission.terminal_result
-        replay_case_count = replay_admission.replay_case_count
-        replay_budget = replay_admission.replay_budget
-        capability_blocked = replay_admission.capability_blocked
-        replay_started = False
-        replay_stage_started_at: float | None = None
-        replay_telemetry_before = _TelemetryUsageSnapshot()
-        replay_telemetry_after = replay_telemetry_before
-
-        def replay_lifecycle(
-            stage: str,
-            payload: Mapping[str, object],
-        ) -> None:
-            nonlocal replay_started
-            if stage == "replay_started":
-                replay_started = True
-            if attempt_tracker is None or attempt_key is None:
-                return
-            if (
-                stage == "adaptation_completed"
-                and attempt_tracker.last_stage(attempt_key)
-                is CandidateAttemptStage.LOCAL_GATES
-            ):
-                attempt_tracker.emit(
-                    attempt_key,
-                    CandidateAttemptStage.ADAPTATION,
-                    case_count=replay_case_count,
-                )
-            elif stage == "replay_started":
-                attempt_tracker.emit(
-                    attempt_key,
-                    CandidateAttemptStage.PAIRED_REPLAY_STARTED,
-                    case_count=replay_case_count,
-                    usage=(
-                        _budget_usage_for_attempt_event(replay_budget)
-                        if replay_budget is not None
-                        else None
-                    ),
-                )
-            elif stage == "replay_evidence_reused":
-                attempt_tracker.emit(
-                    attempt_key,
-                    CandidateAttemptStage.REPLAY_EVIDENCE_REUSED,
-                    case_count=replay_case_count,
-                )
-            elif stage == "replay_completed":
-                attempt_tracker.emit(
-                    attempt_key,
-                    CandidateAttemptStage.PAIRED_REPLAY_COMPLETED,
-                    case_count=replay_case_count,
-                )
-            elif stage == "replay_comparable":
-                attempt_tracker.emit(
-                    attempt_key,
-                    CandidateAttemptStage.PAIRED_REPLAY_COMPARABLE,
-                    case_count=replay_case_count,
-                )
-        if not capability_blocked:
-            replay_stage_started_at = time.monotonic()
-            replay_telemetry_before = _stage_telemetry_usage_snapshot(
-                self.execution_telemetry,
-                "replay",
-            )
-            try:
-                replay_result, replay_dataset, replay_gate = (
-                    await self._replay_selected_candidate(
-                        run_id=run_id,
-                        target=target,
-                        dataset=dataset,
-                        selected_candidate=candidate,
-                        apply_policy=apply_policy,
-                        baseline_replay_dir=baseline_replay_dir,
-                        lifecycle_callback=replay_lifecycle,
-                        source_disposition=source_disposition,
-                    )
-                )
-            except Exception as exc:
-                replay_result = None
-                replay_dataset = None
-                error_message = sanitize_text(str(exc), max_chars=2_000)
-                failure_event = ReplayFailureEvent(
-                    code="candidate_replay_infrastructure_error",
-                    owner=FailureOwner.INFRASTRUCTURE,
-                    stage=FailureStage.EVALUATION,
-                    scope=FailureScope.SHARED_RUN,
-                    repairable=True,
-                    category="measurement_execution",
-                    summary=(
-                        error_message
-                        or "candidate replay backend failed without diagnostics"
-                    ),
-                    diagnostics={
-                        "error_type": type(exc).__name__,
-                        "candidate_id": candidate.candidate_id,
-                        "replay_started": replay_started,
-                    },
-                )
-                replay_gate = GateResult(
-                    gate_name="candidate_replay",
-                    passed=False,
-                    reason=(
-                        "candidate replay backend failed: " + error_message
-                        if error_message
-                        else "candidate replay backend failed"
-                    ),
-                    details={
-                        "failure_class": "infrastructure",
-                        "failure_owner": FailureOwner.INFRASTRUCTURE.value,
-                        "failure_scope": FailureScope.SHARED_RUN.value,
-                        "failure_stage": FailureStage.EVALUATION.value,
-                        "repairable": True,
-                        "next_action": "retry_infrastructure",
-                        "resume_safe": True,
-                        "code": failure_event.code,
-                        "type": type(exc).__name__,
-                        "error": error_message,
-                        "failure_event": failure_event.to_dict(),
-                        "causal_failure_events": [failure_event.to_dict()],
-                    },
-                )
-            if replay_gate is not None:
-                replay_gate = _with_typed_gate_failure_event(replay_gate)
-                gate_results.append(replay_gate)
-            replay_telemetry_after = _stage_telemetry_usage_snapshot(
-                self.execution_telemetry,
-                "replay",
-            )
-        if replay_budget is not None:
-            if replay_started:
-                replay_usage = _stage_telemetry_usage_delta(
-                    replay_telemetry_before,
-                    replay_telemetry_after,
-                )
-                if replay_stage_started_at is not None:
-                    replay_usage = _telemetry_usage_with_observed_wall(
-                        replay_usage,
-                        elapsed_seconds=(
-                            time.monotonic() - replay_stage_started_at
-                        ),
-                    )
-                budget_context.debit(
-                    replay_budget,
-                    usage_observation=replay_usage.observation,
-                    actual_source=replay_usage.source,
-                )
-            else:
-                budget_context.release(
-                    replay_budget,
-                    reason_code=(
-                        "capability_gate_blocked"
-                        if capability_blocked
-                        else "replay_not_started"
-                    ),
-                )
-        replay_confidence_gate = _replay_confidence_gate(
-            replay_result,
-            dataset=dataset,
-            apply_policy=apply_policy,
+        replay_execution = await execute_candidate_replay(
+            CandidateReplayExecutionRequest(
+                evaluation=request,
+                admission=replay_admission,
+            ),
+            CandidateReplayExecutionRuntime(
+                replay_candidate=self._replay_selected_candidate,
+                execution_telemetry=self.execution_telemetry,
+                replay_confidence_gate=_replay_confidence_gate,
+                replay_evaluator_admission_gate=(
+                    _replay_evaluator_admission_gate
+                ),
+                typed_gate_failure=_with_typed_gate_failure_event,
+                feedback_builder=_iteration_validation_feedback,
+            ),
         )
-        if replay_confidence_gate is not None:
-            gate_results.append(replay_confidence_gate)
-
-        replay_evaluator_admission_gate = _replay_evaluator_admission_gate(
-            replay_result,
-            apply_policy=apply_policy,
-        )
-        if replay_evaluator_admission_gate is not None:
-            replay_evaluator_admission_gate = _with_typed_gate_failure_event(
-                replay_evaluator_admission_gate
-            )
-            gate_results.append(replay_evaluator_admission_gate)
-            if not replay_evaluator_admission_gate.passed:
-                if (
-                    attempt_tracker is not None
-                    and attempt_key is not None
-                    and not attempt_tracker.terminal(attempt_key)
-                ):
-                    attempt_tracker.emit(
-                        attempt_key,
-                        CandidateAttemptStage.REJECTED,
-                        reason_code="deterministic_replay_evidence_regressed",
-                    )
-                return _typed_terminal_candidate_evaluation_result(
-                    candidate=candidate,
-                    iteration_number=iteration_number,
-                    candidate_number=candidate_number,
-                    candidate_count=candidate_count,
-                    gate_results=gate_results,
-                    status="rejected",
-                    replay_result=replay_result,
-                    replay_dataset=replay_dataset,
-                )
+        gate_results = list(replay_execution.gate_results)
+        if replay_execution.terminal_result is not None:
+            return replay_execution.terminal_result
+        replay_result = replay_execution.replay_result
+        replay_dataset = replay_execution.replay_dataset
 
         target_behavior_gate = _with_typed_gate_failure_event(
             TargetBehaviorDeltaGate().evaluate(
