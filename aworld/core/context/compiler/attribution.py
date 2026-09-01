@@ -63,6 +63,13 @@ class AttributionSerialization(str, Enum):
     HTTP_SERIALIZED_CANONICAL_JSON = "http_serialized_canonical_json"
 
 
+class ProviderAttributionSubject(str, Enum):
+    """The independently bound request whose bytes are being attributed."""
+
+    LEGACY_OBSERVED = "legacy_observed"
+    CANDIDATE_SELECTED = "candidate_selected"
+
+
 @dataclass(frozen=True, slots=True)
 class ContextAttributionPlanEntry:
     """One emitted occurrence; deliberately contains no raw owner data."""
@@ -141,9 +148,9 @@ class ContextAttributionPlanEntry:
 
 @dataclass(frozen=True, slots=True)
 class ProviderRequestAttributionPlan:
-    SCHEMA_VERSION: ClassVar[str] = "aworld.context.attribution-plan.v1"
+    SCHEMA_VERSION: ClassVar[str] = "aworld.context.attribution-plan.v2"
     FINGERPRINT_SCHEMA_VERSION: ClassVar[str] = (
-        "aworld.context.attribution-plan-fingerprint.v1"
+        "aworld.context.attribution-plan-fingerprint.v2"
     )
 
     request_id_hash: str
@@ -152,9 +159,11 @@ class ProviderRequestAttributionPlan:
     messages_count: int | None = None
     tools_shape: AttributionCollectionShape | None = None
     tools_count: int | None = None
+    subject: ProviderAttributionSubject = ProviderAttributionSubject.CANDIDATE_SELECTED
     shape_explicit: bool = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
+        object.__setattr__(self, "subject", ProviderAttributionSubject(self.subject))
         for name in ("request_id_hash", "candidate_content_hash"):
             if not isinstance(getattr(self, name), str) or not _SHA256_RE.fullmatch(
                 getattr(self, name)
@@ -207,6 +216,7 @@ class ProviderRequestAttributionPlan:
             "schema_version": self.FINGERPRINT_SCHEMA_VERSION,
             "request_id_hash": self.request_id_hash,
             "candidate_content_hash": self.candidate_content_hash,
+            "subject": self.subject.value,
             "messages_shape": AttributionCollectionShape.ARRAY.value,
             "messages_count": self.messages_count,
             "tools_shape": self.tools_shape.value,
@@ -251,7 +261,7 @@ class ProviderRequestAttributionEntry:
 
 @dataclass(frozen=True, slots=True)
 class ProviderRequestAttributionReceipt:
-    SCHEMA_VERSION: ClassVar[str] = "aworld.context.provider-attribution.v1"
+    SCHEMA_VERSION: ClassVar[str] = "aworld.context.provider-attribution.v2"
     OVERHEAD_BUCKET: ClassVar[str] = "provider_envelope_and_params"
 
     serialization: AttributionSerialization
@@ -269,6 +279,7 @@ class ProviderRequestAttributionReceipt:
     provider_tools_shape: AttributionCollectionShape | None = None
     tools_lowering: ProviderToolsLowering | None = None
     plan_fingerprint: str | None = None
+    subject: ProviderAttributionSubject | None = None
     binding_explicit: bool = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -292,6 +303,13 @@ class ProviderRequestAttributionReceipt:
             raise ValueError("provider attribution binding fields must be atomic")
         object.__setattr__(self, "binding_explicit", explicit)
         if explicit:
+            if self.subject is None:
+                # Additive compatibility for pre-v2 in-process constructors.
+                object.__setattr__(
+                    self,
+                    "subject",
+                    ProviderAttributionSubject.CANDIDATE_SELECTED,
+                )
             for name in (
                 "plan_request_id_hash",
                 "candidate_content_hash",
@@ -303,11 +321,14 @@ class ProviderRequestAttributionReceipt:
             object.__setattr__(self, "tools_shape", AttributionCollectionShape(self.tools_shape))
             object.__setattr__(self, "provider_tools_shape", AttributionCollectionShape(self.provider_tools_shape))
             object.__setattr__(self, "tools_lowering", ProviderToolsLowering(self.tools_lowering))
+            object.__setattr__(self, "subject", ProviderAttributionSubject(self.subject))
             if self.tools_shape is AttributionCollectionShape.ARRAY:
                 if isinstance(self.tools_count, bool) or not isinstance(self.tools_count, int) or self.tools_count < 0:
                     raise ValueError("array tools require a non-negative tools_count")
             elif self.tools_count is not None:
                 raise ValueError("non-array tools cannot have tools_count")
+        elif self.subject is not None:
+            raise ValueError("subject requires a complete canonical binding")
         if self.plan_fingerprint is not None and (
             not explicit or not _SHA256_RE.fullmatch(self.plan_fingerprint)
         ):
@@ -357,6 +378,7 @@ class ProviderRequestAttributionReceipt:
                 "provider_tools_shape": self.provider_tools_shape.value,
                 "tools_lowering": self.tools_lowering.value,
                 "plan_fingerprint": self.plan_fingerprint,
+                "subject": self.subject.value,
             })
         return payload
 
@@ -371,6 +393,7 @@ class ProviderRequestAttributionReceipt:
             and self.tools_shape is plan.tools_shape
             and self.tools_count == plan.tools_count
             and self.plan_fingerprint == plan.fingerprint
+            and self.subject is plan.subject
             and tuple(entry.plan for entry in self.entries) == plan.entries
         )
 
@@ -448,6 +471,7 @@ def build_provider_attribution_receipt(
         provider_tools_shape=provider_tools_shape,
         tools_lowering=tools_lowering,
         plan_fingerprint=plan.fingerprint,
+        subject=plan.subject,
     )
 
 
@@ -535,6 +559,7 @@ __all__ = [
     "ContextAttributionPlanEntry",
     "LogicalResidency",
     "ProviderAttributionMismatch",
+    "ProviderAttributionSubject",
     "ProviderToolsLowering",
     "ProviderRequestAttributionEntry",
     "ProviderRequestAttributionPlan",

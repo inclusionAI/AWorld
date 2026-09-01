@@ -304,17 +304,27 @@ class OpenAIProvider(LLMProviderBase):
         if stream:
             openai_params["stream"] = True
 
-        canonical_body = (
-            canonical_json_bytes(openai_params)
-            if envelope is not None or observed_envelope is not None or self.is_http_provider
-            else None
-        )
+        canonical_body = None
+        if envelope is not None or observed_envelope is not None or self.is_http_provider:
+            try:
+                canonical_body = canonical_json_bytes(openai_params)
+            except Exception:
+                if envelope is not None:
+                    raise CandidateRequestNotEnforceable(
+                        "provider_request_lowering_failed"
+                    ) from None
+                if self.is_http_provider:
+                    # HTTP transport owns these exact bytes; serialization is
+                    # execution, not optional observe instrumentation.
+                    raise
+                observed_reason = "provider_request_not_snapshotable"
         serialized_body = None
         serialized_evidence = None
         cache_identity = None
         if self.is_http_provider:
             try:
-                assert canonical_body is not None
+                if canonical_body is None:
+                    raise ValueError("HTTP request is not serializable")
                 serialized_body = canonical_body
                 if envelope is not None and envelope.cache_material is not None:
                     material = envelope.cache_material
@@ -471,21 +481,58 @@ class OpenAIProvider(LLMProviderBase):
             except Exception:
                 if envelope is not None:
                     raise
+                if observed_envelope is not None:
+                    try:
+                        self.commit_provider_prepared_attempt(
+                            context=request_kwargs.get("context"),
+                            request_id=provider_request.request_id,
+                            snapshot=provider_request,
+                        )
+                        self.commit_provider_observation_unavailable(
+                            context=request_kwargs.get("context"),
+                            request_id=provider_request.request_id,
+                            envelope=observed_envelope,
+                            reason_code="provider_attribution_storage_failed",
+                            snapshot=provider_request,
+                        )
+                        attempt_tracking_ready = True
+                    except Exception:
+                        self.commit_provider_observation_unavailable(
+                            context=request_kwargs.get("context"),
+                            request_id=provider_request.request_id,
+                            envelope=observed_envelope,
+                            reason_code="provider_capture_storage_failed",
+                            snapshot=provider_request,
+                        )
                 logger.warning("OpenAI provider prepared capture failed before send; continuing because Context enforcement is not active")
+        elif observed_envelope is not None:
+            self.commit_provider_observation_unavailable(
+                context=request_kwargs.get("context"),
+                request_id=request_kwargs.get("llm_request_id"),
+                envelope=observed_envelope,
+                reason_code=observed_reason or "provider_request_not_snapshotable",
+            )
         return _PreparedOpenAIRequest(
             params=openai_params,
             serialized_body=serialized_body,
             context=request_kwargs.get("context"),
-            request_id=(provider_request.request_id if provider_request is not None else None),
+            request_id=(
+                provider_request.request_id
+                if provider_request is not None
+                else request_kwargs.get("llm_request_id")
+            ),
             cache_identity=(receipt.cache_identity if envelope is not None else None),
             attempt_tracking_ready=attempt_tracking_ready,
-            attempt_tracking_fail_open=(observed_envelope is not None),
+            attempt_tracking_fail_open=(envelope is None),
         )
 
     def _mark_prepared_attempt(self, prepared: _PreparedOpenAIRequest) -> None:
         if prepared.context is None or prepared.request_id is None:
             return
         if not prepared.attempt_tracking_ready and prepared.attempt_tracking_fail_open:
+            self.mark_provider_attempted_fail_open(
+                context=prepared.context, request_id=prepared.request_id
+            )
             return
         self.mark_provider_attempted(
             context=prepared.context,
@@ -927,7 +974,7 @@ class OpenAIProvider(LLMProviderBase):
                 stream=False,
             )
             openai_params = prepared_request.params
-            logger.debug(f"openai_params: {json.dumps(openai_params)}")
+            logger.debug(f"openai_params keys: {tuple(openai_params)}")
             self._mark_prepared_attempt(prepared_request)
             if self.is_http_provider:
                 response = await self.http_provider.async_call(
@@ -1011,7 +1058,15 @@ class OpenAIProvider(LLMProviderBase):
                 llm_params["stream_options"] = merged_stream_options
         else:
             llm_params.pop("stream_options", None)
-        log_llm_record("OPENAI_PARAMS", model_name, llm_params, {"request_id": llm_params.pop("llm_request_id", None)})
+        llm_request_id = llm_params.pop("llm_request_id", None)
+        try:
+            log_llm_record(
+                "OPENAI_PARAMS", model_name, llm_params, {"request_id": llm_request_id}
+            )
+        except Exception:
+            # Request logging is not part of provider execution semantics and
+            # must not reject opaque SDK-native values accepted by the SDK.
+            pass
 
         for param in llm_params:
             if param not in supported_params:

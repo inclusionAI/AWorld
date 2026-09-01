@@ -26,6 +26,21 @@ main-tree verification is 32/32 and the implementation worktree wider regression
   model-visible insertion; intentional non-resident instruction/context-pack owners opt in structurally.
 - Affected compiler, provider, reporting, progressive Skill, and delegation suites pass (177 tests).
 
+### Task 7.2b: Observe attribution and residency hardening
+
+**Status:** complete in isolated branch `codex/task-7-2-observe-residency-fixes`
+
+- Observe SDK canonicalization, receipt construction, and Context storage are fail-open; SDK-native opaque parameters reach
+  the provider exactly once with the same public kwargs as off mode. HTTP serialization remains transport-owned and errors
+  are not reclassified as optional observation failures.
+- Provider invocation truth now starts false for observe and moves to attempted at the immediate send boundary. Attribution
+  commit failure falls back to ordinary provider capture, then typed unavailable evidence where Context remains writable.
+- Attribution plan/receipt schema v2 binds `legacy_observed` versus `candidate_selected` into the independent fingerprint.
+  Reports require attempted successful calls and expose owner/residency resolution mismatches as unsupported dimensions while
+  retaining total-byte and compatible kind/source comparisons.
+- Progressive Skill observations no longer assert `NOT_RESIDENT/MESSAGE` without request-bound composition proof. Their safe
+  default is `UNKNOWN/EVIDENCE_ONLY`, preventing duplicate Skill injection into already-folded legacy/Amni requests.
+
 ## Completed Foundations
 
 - Built-in Agent portability, optional native capability degradation, and direct-run typed failure/non-zero semantics.

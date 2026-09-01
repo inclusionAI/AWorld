@@ -321,15 +321,17 @@ def _compiler_plan_evidence(
     messages_count,
     tools_shape="null",
     tools_count=None,
+    subject="candidate_selected",
 ):
     entries = [
         {key: value for key, value in entry.items() if key != "canonical_value_bytes"}
         for entry in receipt_entries
     ]
     projection = {
-        "schema_version": "aworld.context.attribution-plan-fingerprint.v1",
+        "schema_version": "aworld.context.attribution-plan-fingerprint.v2",
         "request_id_hash": reporter.value_hash({"request_id": request_id}),
         "candidate_content_hash": candidate_hash,
+        "subject": subject,
         "messages_shape": "array",
         "messages_count": messages_count,
         "tools_shape": tools_shape,
@@ -338,7 +340,7 @@ def _compiler_plan_evidence(
     }
     return {
         **projection,
-        "schema_version": "aworld.context.attribution-plan.v1",
+        "schema_version": "aworld.context.attribution-plan.v2",
         "plan_fingerprint": reporter.value_hash(projection),
         "entry_count": len(entries),
     }
@@ -351,7 +353,8 @@ def test_benefit_report_aggregates_receipts_and_never_classifies_missing_prompt(
     total_bytes = len(reporter.canonical_json_bytes(payload))
     candidate_hash = "sha256:" + "a" * 64
     receipt = {
-        "schema_version": "aworld.context.provider-attribution.v1",
+        "schema_version": "aworld.context.provider-attribution.v2",
+        "subject": "candidate_selected",
         "status": "available",
         "serialization": "provider_prepared_canonical_json",
         "provider_request_content_hash": reporter.value_hash(payload),
@@ -396,6 +399,9 @@ def test_benefit_report_aggregates_receipts_and_never_classifies_missing_prompt(
     calls = [
         {
             "request_id": "r1",
+            "provider_invoked": True,
+            "provider_attempt_status": "attempted",
+            "status": "success",
             "provider_request": {
                 "request_id": "r1",
                 "payload": payload,
@@ -447,7 +453,8 @@ def test_benefit_report_rejects_legal_owner_tamper_against_compiler_plan():
     reporter = _load_reporter()
     payload = {"messages": [{"role": "user", "content": "actual"}], "model": "gpt"}
     forged = {
-        "schema_version": "aworld.context.provider-attribution.v1",
+        "schema_version": "aworld.context.provider-attribution.v2",
+        "subject": "candidate_selected",
         "status": "available",
         "serialization": "provider_prepared_canonical_json",
         "provider_request_content_hash": reporter.value_hash(payload),
@@ -566,6 +573,52 @@ def test_provider_attribution_delta_rejects_subject_mismatch():
 
     assert delta["status"] == "unsupported"
     assert delta["reason"] == "paired_attribution_subject_mismatch"
+
+
+def test_provider_attribution_delta_marks_owner_and_residency_resolution_mismatch():
+    reporter = _load_reporter()
+    common = {
+        "status": "available",
+        "total_canonical_bytes": 100,
+        "by_dimension": {
+            "owner": {"unknown": 40},
+            "kind": {"user": 40},
+            "source_kind": {"agent": 40},
+            "residency": {"unknown": 40},
+        },
+    }
+    legacy = {
+        **common,
+        "subject": "legacy_observed",
+        "dimension_resolution": {
+            "owner": "legacy_model_boundary_owner_v1",
+            "kind": "provider_occurrence_kind_v1",
+            "source_kind": "provider_occurrence_source_v1",
+            "residency": "legacy_unknown_residency_v1",
+        },
+    }
+    candidate = {
+        **common,
+        "subject": "candidate_selected",
+        "total_canonical_bytes": 90,
+        "dimension_resolution": {
+            "owner": "compiler_owner_v1",
+            "kind": "provider_occurrence_kind_v1",
+            "source_kind": "provider_occurrence_source_v1",
+            "residency": "compiler_logical_residency_v1",
+        },
+    }
+    delta = reporter.paired_attribution_deltas([
+        {"experiment": "exp", "run": "legacy", "case_id": "case", "repeat": 1, "variant": "legacy", "summary": legacy},
+        {"experiment": "exp", "run": "candidate", "case_id": "case", "repeat": 1, "variant": "candidate", "summary": candidate},
+    ], baseline="legacy", candidate="candidate")[0]
+
+    assert delta["status"] == "available"
+    assert delta["total_canonical_bytes_delta"] == -10
+    assert delta["by_dimension_delta"]["owner"] is None
+    assert delta["by_dimension_delta"]["residency"] is None
+    assert delta["dimension_status"]["owner"]["reason"] == "resolution_mismatch"
+    assert delta["dimension_status"]["kind"]["status"] == "available"
 
 
 def test_attribution_pairing_gate_detects_manifest_run_missing_after_ten_pairs():

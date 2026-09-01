@@ -1786,7 +1786,7 @@ class LLMModel:
             tools=kwargs.get("tools"),
             model_name=kwargs.get("model_name") or kwargs.get("model"),
             context_rollout=context_rollout,
-            provider_invoked=provider_candidate is None,
+            provider_invoked=(provider_candidate is None and observed_attribution is None),
         )
         if provider_candidate is not None:
             kwargs[AWORLD_PROVIDER_CANDIDATE_KWARG] = provider_candidate
@@ -2012,7 +2012,7 @@ class LLMModel:
             tools=kwargs.get("tools"),
             model_name=kwargs.get("model_name") or kwargs.get("model"),
             context_rollout=context_rollout,
-            provider_invoked=provider_candidate is None,
+            provider_invoked=(provider_candidate is None and observed_attribution is None),
         )
         if provider_candidate is not None:
             kwargs[AWORLD_PROVIDER_CANDIDATE_KWARG] = provider_candidate
@@ -2198,7 +2198,7 @@ class LLMModel:
             tools=kwargs.get("tools"),
             model_name=kwargs.get("model_name") or kwargs.get("model"),
             context_rollout=context_rollout,
-            provider_invoked=provider_candidate is None,
+            provider_invoked=(provider_candidate is None and observed_attribution is None),
         )
         if provider_candidate is not None:
             kwargs[AWORLD_PROVIDER_CANDIDATE_KWARG] = provider_candidate
@@ -2350,7 +2350,7 @@ class LLMModel:
             tools=kwargs.get("tools"),
             model_name=kwargs.get("model_name") or kwargs.get("model"),
             context_rollout=context_rollout,
-            provider_invoked=provider_candidate is None,
+            provider_invoked=(provider_candidate is None and observed_attribution is None),
         )
         if provider_candidate is not None:
             kwargs[AWORLD_PROVIDER_CANDIDATE_KWARG] = provider_candidate
