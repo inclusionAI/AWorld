@@ -505,6 +505,12 @@ from aworld.self_evolve.controllers.run_terminal_finalization import (
     lesson_extraction_counts as _lesson_extraction_counts,
     lesson_type_counts as _lesson_type_counts,
 )
+from aworld.self_evolve.controllers.run_terminal_lifecycle import (
+    RunTerminalLifecycleRequest,
+    RunTerminalLifecycleRuntime,
+    RunTerminalLifecycleServices,
+    execute_terminal_lifecycle,
+)
 from aworld.self_evolve.controllers.measurement_execution_admission import (
     _candidate_intervention_unobserved,
     _candidate_intervention_unobserved_failure_event,
@@ -3756,699 +3762,125 @@ class SelfEvolveRunner:
         latest_handbook_slice = iteration_execution.latest_handbook_slice
         scheduler_state = iteration_execution.scheduler_state
         shared_validation_gate = iteration_execution.shared_validation_gate
-        attempt_tracker.finalize_open(reason_code="run_terminated_before_candidate")
-        budget_context.release_all(reason_code="run_terminal_cleanup")
-        selected_projection = (
-            None
-            if shared_validation_gate is not None
-            else run_state.select_iteration_evidence(
-                fresh_evaluation_required=fresh_evaluation_required,
-                selector=_select_iteration_state,
-            )
-        )
-        selected_state = (
-            selected_projection.state if selected_projection is not None else None
-        )
-        if shared_validation_gate is not None:
-            gate_results.append(shared_validation_gate)
-        elif selected_projection is not None:
-            baseline_summary = selected_projection.baseline_summary
-            candidate_summary = selected_projection.candidate_summary
-            held_out_summary = selected_projection.held_out_summary
-            regression_evidence = selected_projection.regression_evidence
-            challenge_report = selected_projection.challenge_report
-            replay_result = selected_projection.replay_result
-            replay_dataset = selected_projection.replay_dataset
-            gate_results = list(selected_projection.gate_results)
-            selected_candidate = selected_projection.selected_candidate
-        else:
-            semantic_dedup_exhausted = (
-                run_state.generation.semantic_lesson_duplicate_attempt_count > 0
-                and run_state.generation.semantic_lesson_duplicate_attempt_count
-                == run_state.generation.raw_generation_attempt_count
-                and not all_candidates
-            )
-            candidate_generation_failure_events = (
-                (
-                    _candidate_policy_frontier_stalled_event(
-                        run_state.generation.last_policy_filter_outcomes
-                    ),
-                )
-                if run_state.generation.policy_frontier_exhausted
-                else _candidate_generation_failure_events(optimizer_diagnostics)
-            )
-            candidate_generation_failure_event = (
-                candidate_generation_failure_events[0]
-                if candidate_generation_failure_events
-                else None
-            )
-            candidate_generation_details: dict[str, object] = {
-                "generated_candidate_count": len(all_candidates),
-                "iterations": len(optimizer_diagnostics),
-            }
-            if run_state.generation.raw_generation_attempt_count:
-                candidate_generation_details["generation_attempt_count"] = (
-                    run_state.generation.raw_generation_attempt_count
-                )
-            if run_state.generation.policy_frontier_exhausted:
-                candidate_generation_details["generation_policy_frontier_exhausted"] = (
-                    True
-                )
-            if run_state.generation.materialization_frontier_exhausted:
-                candidate_generation_details[
-                    "generation_materialization_frontier_exhausted"
-                ] = True
-            if run_state.generation.protocol_frontier_exhausted:
-                candidate_generation_details[
-                    "generation_protocol_frontier_exhausted"
-                ] = True
-            if candidate_generation_failure_event is not None:
-                candidate_generation_details.update(
-                    {
-                        "failure_class": "candidate",
-                        "code": candidate_generation_failure_event["code"],
-                        "failure_event": candidate_generation_failure_event,
-                        "causal_failure_events": list(
-                            candidate_generation_failure_events
-                        ),
-                    }
-                )
-            gate_results.append(
-                GateResult(
-                    gate_name=(
-                        "candidate_generation_exhausted_by_semantic_dedup"
-                        if semantic_dedup_exhausted
-                        else "candidate_generation"
-                        if _is_verified_apply_policy(apply_policy)
-                        else "no_candidate"
-                    ),
-                    passed=False,
-                    reason=(
-                        (
-                            "all generated candidates repeated historically rejected "
-                            "complete semantic packages under the active verification "
-                            "contract"
-                        )
-                        if semantic_dedup_exhausted
-                        else (
-                            "candidate generation policy frontier repeated without "
-                            "structural progress"
-                        )
-                        if run_state.generation.policy_frontier_exhausted
-                        else (
-                            "candidate generation repeated the same typed "
-                            "materialization failure without repair progress"
-                        )
-                        if run_state.generation.materialization_frontier_exhausted
-                        else (
-                            "candidate generation produced a non-repairable "
-                            "protocol failure"
-                        )
-                        if run_state.generation.protocol_frontier_exhausted
-                        else "optimizer did not produce a replayable candidate"
-                        if _is_verified_apply_policy(apply_policy)
-                        else "optimizer did not produce a candidate"
-                    ),
-                    details=(
-                        {
-                            "failure_class": "candidate",
-                            "code": "candidate_generation_exhausted_by_semantic_dedup",
-                            "generation_attempt_count": (
-                                run_state.generation.raw_generation_attempt_count
-                            ),
-                            "canonical_unique_candidate_count": len(all_candidates),
-                            "semantic_lesson_duplicate_attempt_count": (
-                                run_state.generation.semantic_lesson_duplicate_attempt_count
-                            ),
-                            "semantic_identity_version": (
-                                _SEMANTIC_DEDUP_IDENTITY_VERSION
-                            ),
-                            "verification_contract_version": (
-                                _VERIFICATION_CONTRACT_VERSION
-                            ),
-                            "iterations": len(optimizer_diagnostics),
-                        }
-                        if semantic_dedup_exhausted
-                        else candidate_generation_details
-                        if _is_verified_apply_policy(apply_policy)
-                        else None
-                    ),
-                )
-            )
-
-        terminal_selection = project_terminal_selection(
-            TerminalSelectionRequest(
-                selected_candidate=selected_candidate,
-                gate_results=tuple(gate_results),
-            ),
-            runtime=TerminalSelectionRuntime(
-                candidate_prerequisite_failure=(
-                    _gate_has_candidate_prerequisite_failure
-                ),
-                measurement_materialization_blocked=(
-                    _gate_blocks_measurement_materialization
-                ),
-            ),
-        )
-        gate_results = list(terminal_selection.gate_results)
-        candidate_prerequisite_blocked = (
-            terminal_selection.candidate_prerequisite_blocked
-        )
-        repair_focus_candidate = terminal_selection.repair_focus_candidate
-        reported_selected_candidate = terminal_selection.reported_selected_candidate
-        measurement_prerequisite_blocked = (
-            terminal_selection.measurement_prerequisite_blocked
-        )
-        if selected_state is not None and not candidate_prerequisite_blocked:
-            raw_measurement_summary = selected_state.get("measurement_summary")
-            if isinstance(raw_measurement_summary, MeasurementSummary):
-                measurement_summary = raw_measurement_summary
-            elif (
-                self.measurement_mode is not MeasurementPolicyMode.OFF
-                and not measurement_prerequisite_blocked
-            ):
-                state_candidate = selected_state.get("candidate")
-                if isinstance(state_candidate, CandidateVariant):
-                    experiment = self._measurement_experiments.get(
-                        (run_id, state_candidate.candidate_id)
-                    )
-                    if experiment is not None:
-                        try:
-                            measurement_summary = (
-                                self._materialize_candidate_measurement(
-                                    experiment=experiment,
-                                    materialization_run_id=run_id,
-                                    candidate=state_candidate,
-                                    dataset=dataset,
-                                    replay_result=(
-                                        selected_state.get("replay_result")
-                                        if isinstance(
-                                            selected_state.get("replay_result"),
-                                            CandidateReplayResult,
-                                        )
-                                        else None
-                                    ),
-                                    replay_dataset=(
-                                        selected_state.get("replay_dataset")
-                                        if isinstance(
-                                            selected_state.get("replay_dataset"),
-                                            SelfEvolveDataset,
-                                        )
-                                        else None
-                                    ),
-                                    baseline_summary=(
-                                        selected_state.get("baseline_summary")
-                                        if isinstance(
-                                            selected_state.get("baseline_summary"),
-                                            EvaluationSummary,
-                                        )
-                                        else None
-                                    ),
-                                    candidate_summary=(
-                                        selected_state.get("candidate_summary")
-                                        if isinstance(
-                                            selected_state.get("candidate_summary"),
-                                            EvaluationSummary,
-                                        )
-                                        else None
-                                    ),
-                                    candidate_count=max(1, len(all_candidates)),
-                                    authoritative_candidate_count=1,
-                                    target_selection_report=(target_selection_report),
-                                )
-                            )
-                            selected_state["measurement_summary"] = measurement_summary
-                            if (
-                                self.measurement_mode is MeasurementPolicyMode.REQUIRED
-                                and not any(
-                                    gate.gate_name == "trusted_improvement_measurement"
-                                    for gate in gate_results
-                                )
-                            ):
-                                gate_results.append(
-                                    _measurement_promotion_gate(measurement_summary)
-                                )
-                        except (OSError, TypeError, ValueError):
-                            if (
-                                self.measurement_mode is MeasurementPolicyMode.REQUIRED
-                                and not any(
-                                    gate.gate_name == "trusted_improvement_measurement"
-                                    for gate in gate_results
-                                )
-                            ):
-                                gate_results.append(
-                                    GateResult(
-                                        gate_name=("trusted_improvement_measurement"),
-                                        passed=False,
-                                        reason=(
-                                            "controlled measurement could not "
-                                            "be finalized"
-                                        ),
-                                        details={
-                                            "failure_class": "measurement",
-                                            "code": (
-                                                "measurement_materialization_failed"
-                                            ),
-                                        },
-                                    )
-                                )
-
-        elif (
-            not candidate_prerequisite_blocked
-            and not measurement_prerequisite_blocked
-            and self.measurement_mode is not MeasurementPolicyMode.OFF
-            and all_candidates
-        ):
-            fallback_candidate = all_candidates[-1]
-            fallback_experiment = self._measurement_experiments.get(
-                (run_id, fallback_candidate.candidate_id)
-            )
-            if fallback_experiment is not None:
-                try:
-                    measurement_summary = self._materialize_candidate_measurement(
-                        experiment=fallback_experiment,
-                        materialization_run_id=run_id,
-                        candidate=fallback_candidate,
-                        dataset=dataset,
-                        replay_result=None,
-                        replay_dataset=None,
-                        baseline_summary=None,
-                        candidate_summary=None,
-                        candidate_count=max(1, len(all_candidates)),
-                        authoritative_candidate_count=0,
-                        target_selection_report=target_selection_report,
-                    )
-                    if self.measurement_mode is MeasurementPolicyMode.REQUIRED:
-                        gate_results.append(
-                            _measurement_promotion_gate(measurement_summary)
-                        )
-                except (OSError, TypeError, ValueError):
-                    if self.measurement_mode is MeasurementPolicyMode.REQUIRED:
-                        gate_results.append(
-                            GateResult(
-                                gate_name="trusted_improvement_measurement",
-                                passed=False,
-                                reason=(
-                                    "controlled measurement could not be finalized"
-                                ),
-                                details={
-                                    "failure_class": "measurement",
-                                    "code": "measurement_materialization_failed",
-                                },
-                            )
-                        )
-
-        if measurement_summary is not None:
-            try:
-                measurement_summary = self._attach_measurement_search_performance(
-                    run_id=run_id,
-                    summary=measurement_summary,
-                    candidates=all_candidates,
-                    iteration_reports=iteration_reports,
-                )
-            except (OSError, TypeError, ValueError):
-                # Search curves are diagnostic. The controlled effect report
-                # remains authoritative and already persisted.
-                pass
-
-        skill_evolution_progress: dict[str, object] | None = None
-        if self.skill_evolution_contract is not None and replay_result is not None:
-            intervention_observed = any(
-                gate.gate_name == "candidate_replay"
-                and isinstance(gate.details, Mapping)
-                and gate.details.get("candidate_intervention_observed") is True
-                for gate in gate_results
-            )
-            skill_evolution_progress = evaluate_skill_evolution_replay(
-                self.skill_evolution_contract,
-                replay_result,
-                candidate_intervention_observed=intervention_observed,
-            )
-            coverage_satisfied = skill_evolution_progress["coverage_satisfied"] is True
-            gate_results.append(
-                GateResult(
-                    gate_name="skill_evolution_contract",
-                    passed=coverage_satisfied,
-                    reason=(
-                        "target Skill capability coverage is satisfied"
-                        if coverage_satisfied
-                        else "target Skill capability coverage is incomplete"
-                    ),
-                    details={
-                        **skill_evolution_progress,
-                        "failure_class": (None if coverage_satisfied else "candidate"),
-                        "failure_owner": (None if coverage_satisfied else "candidate"),
-                        "failure_scope": (None if coverage_satisfied else "candidate"),
-                        "repairable": not coverage_satisfied,
-                        "code": (
-                            "skill_contract_coverage_satisfied"
-                            if coverage_satisfied
-                            else "skill_contract_coverage_incomplete"
-                        ),
-                    },
-                )
-            )
-
-        post_apply: dict[str, object] | None = None
-        inferred_draft_creation = (
-            self._active_target_intent == TargetMutationIntent.INFERRED_DRAFT_CREATION
-        )
-        promotion_plan = plan_terminal_promotion(
-            TerminalPromotionRequest(
-                selected_candidate=selected_candidate,
-                gate_results=tuple(gate_results),
+        terminal = await execute_terminal_lifecycle(
+            RunTerminalLifecycleRequest(
+                run_id=run_id,
+                target=target,
+                dataset=dataset,
+                trace_packs=trace_packs,
                 apply_policy=apply_policy,
-                measurement_mode=self.measurement_mode,
-                measurement_summary=measurement_summary,
-                fresh_evaluation_required=fresh_evaluation_required,
-                optimizer_diagnostics=tuple(optimizer_diagnostics),
-                baseline_summary=baseline_summary,
-                candidate_summary=candidate_summary,
-                inferred_draft_creation=inferred_draft_creation,
-                inferred_new_skill_policy=self.inferred_new_skill_policy,
-            ),
-            runtime=TerminalPromotionRuntime(
-                verified_apply_policy=_is_verified_apply_policy,
-                infrastructure_prevented_comparable_evaluation=(
-                    _infrastructure_prevented_comparable_evaluation
-                ),
-                status_without_selected_candidate=(_status_without_selected_candidate),
-            ),
-        )
-        final_status = promotion_plan.final_status
-        promotion = (
-            dict(promotion_plan.promotion)
-            if promotion_plan.promotion is not None
-            else None
-        )
-        if promotion_plan.should_apply:
-            assert selected_candidate is not None
-            apply_kwargs = {
-                "expected_package_fingerprint": (
-                    replay_result.request.verified_candidate_package_fingerprint
-                    if replay_result is not None
-                    else None
-                ),
-                "addressed_lesson_ids": _lineage_addressed_lesson_ids(
-                    optimizer_lineage_paths_by_candidate.get(
-                        selected_candidate.candidate_id
-                    )
-                ),
-            }
-            if apply_policy == "verified_only":
-                post_apply = await self._apply_verified_only(
-                    run_id,
-                    target,
-                    selected_candidate,
-                    **apply_kwargs,
-                )
-            else:
-                post_apply = await self._apply_auto_verified(
-                    run_id,
-                    target,
-                    selected_candidate,
-                    **apply_kwargs,
-                )
-            final_status = settle_post_apply_status(final_status, post_apply)
-
-        if inferred_draft_creation:
-            published = (
-                apply_policy == "auto_verified"
-                and post_apply is not None
-                and post_apply.get("status") == "accepted"
-            )
-            if selected_candidate is not None and not published:
-                try:
-                    if isinstance(target, DraftSkillTextTarget):
-                        target.preserve_selected_draft(selected_candidate.content)
-                except (FileExistsError, OSError, ValueError) as exc:
-                    gate_results.append(
-                        GateResult(
-                            gate_name="draft_persistence",
-                            passed=False,
-                            reason="selected inferred skill draft could not be persisted",
-                            details={
-                                "failure_class": "infrastructure",
-                                "code": "draft_persistence_failed",
-                                "type": type(exc).__name__,
-                                "reason": str(exc),
-                            },
-                        )
-                    )
-                    final_status = SelfEvolveRunStatus.FAILED
-            runtime_skill_path = _target_runtime_skill_path(target)
-            promotion = project_inferred_draft_promotion(
-                InferredDraftPromotionRequest(
-                    policy=self.inferred_new_skill_policy,
-                    apply_policy=apply_policy,
-                    selected_candidate=selected_candidate,
-                    post_apply=post_apply,
-                    draft_path=target.identity.path,
-                    release_path=(
-                        str(runtime_skill_path)
-                        if runtime_skill_path is not None
-                        else None
-                    ),
-                    runtime_registry_refresh_configured=(
-                        self.runtime_registry_refresher is not None
-                    ),
-                    initial_promotion=promotion,
-                )
-            )
-            if target_selection_report is not None:
-                target_selection_report = replace(
-                    target_selection_report,
-                    diagnostics=project_target_selection_promotion_diagnostics(
-                        target_selection_report.diagnostics,
-                        promotion,
-                    ),
-                )
-                self.store.write_target_selection_report(
-                    run_id,
-                    target_selection_report,
-                )
-
-        if optimizer_lineage_paths_by_candidate:
-            _persist_lineage_lifecycle(
-                optimizer_lineage_paths_by_candidate,
-                iteration_states=iteration_states,
-                attempt_events=self.store.read_all_candidate_attempt_events(run_id),
-                selected_candidate_id=(
-                    reported_selected_candidate.candidate_id
-                    if reported_selected_candidate is not None
-                    else None
-                ),
-                post_apply=post_apply,
-            )
-
-        execution_stages = self.execution_telemetry.to_report()
-        generation_stop_reason = run_state.generation.stop_reason()
-        report = {
-            "run_id": run_id,
-            "target": {
-                "target_type": target.identity.target_type,
-                "target_id": target.identity.target_id,
-                "path": target.identity.path,
-            },
-            "apply_policy": apply_policy,
-            "candidate_ids": [candidate.candidate_id for candidate in all_candidates],
-            "selected_candidate_id": (
-                reported_selected_candidate.candidate_id
-                if reported_selected_candidate is not None
-                else None
-            ),
-            "repair_focus_candidate_id": (
-                repair_focus_candidate.candidate_id
-                if repair_focus_candidate is not None
-                else None
-            ),
-            "status": final_status.value,
-            "target_provenance": target_provenance_report,
-            "optimizer_diagnostics": (
-                optimizer_diagnostics[0]["diagnostics"]
-                if len(optimizer_diagnostics) == 1
-                else {"iterations": optimizer_diagnostics}
-            ),
-            "prior_feedback_count": len(prior_feedback),
-            "screening_control_preflight": screening_control_preflight,
-            "support_specific_control_health": {
-                "schema_version": (
-                    "aworld.self_evolve.support_specific_control_health.v1"
-                ),
-                "identity_fields": [
-                    "case_id",
-                    "baseline_skill_fingerprint",
-                    "capability_package_fingerprint",
-                    "replay_capability_fingerprint",
-                    "adaptation_fingerprint",
-                    "timeout_envelope_fingerprint",
-                ],
-                "observations": [
-                    dict(observation)
-                    for observation in list(
-                        self._candidate_screening_control_observations.values()
-                    )[-128:]
-                ],
-            },
-            "iterations": iteration_reports,
-            "execution": {
-                "stages": execution_stages,
-                "total_usage": _execution_usage_report(
-                    optimizer_diagnostics=optimizer_diagnostics,
-                    iteration_states=iteration_states,
-                    stages=execution_stages,
-                ),
-            },
-            "budget": budget_context.to_dict(),
-            "regression_evidence": (
-                regression_evidence.to_dict()
-                if regression_evidence is not None
-                else None
-            ),
-            "challenge_report": (
-                challenge_report.to_dict() if challenge_report is not None else None
-            ),
-            "composition_prerequisites": [
-                {
-                    "candidate_id": candidate_id,
-                    "status": "verified_support",
-                    "next_stage": "target_behavior_composition",
-                    "inherit_candidate_package": True,
-                    "evidence": "all_applicable_prerequisite_gates_passed",
-                }
-                for candidate_id in dict.fromkeys(run_state.prerequisite_candidate_ids)
-            ],
-            "verification_funnel": run_state.verification_funnel_report(
-                VerificationFunnelRequest(
-                    screening_max_cases=self.candidate_screening_max_cases,
-                    repair_iteration_horizon=iteration_budget,
-                    candidate_generation_batch_count=len(optimizer_diagnostics),
-                    max_generated_candidates=self.max_generated_candidates,
-                    repair_reserved_slot_count=repair_reserved_slot_count,
-                    unique_generated_candidate_count=len(all_candidates),
-                    policy_filtered_candidate_count=sum(
-                        len(_candidate_policy_filter_outcomes(diagnostics))
-                        for diagnostics in _optimizer_iteration_diagnostics(
-                            optimizer_diagnostics
-                        )
-                    ),
-                    max_authoritative_candidates=(self.max_full_evaluation_candidates),
-                    max_score_tiebreak_candidates=(self.max_score_tiebreak_candidates),
-                    authoritative_case_observations=(
-                        self._current_run_authoritative_case_observations
-                    ),
-                )
-            ),
-            "handbook_slice": latest_handbook_slice,
-            "repair_frontier_state": _repair_frontier_state_report(
-                store=self.store,
-                target=target.identity,
-                current_run_id=run_id,
-                allowed_run_ids=campaign_prior_run_ids,
-                observed_frontiers=_typed_repair_frontiers(validation_feedback),
-                scheduler_state=scheduler_state,
-                selected_candidate_id=(
-                    selected_candidate.candidate_id
-                    if selected_candidate is not None
-                    else None
-                ),
-                run_succeeded=final_status is SelfEvolveRunStatus.SUCCEEDED,
+                campaign_prior_run_ids=campaign_prior_run_ids,
                 campaign_id=campaign_id,
                 campaign_cycle=campaign_cycle,
-            ),
-            "regression_suites": [
-                suite.spec.to_dict()
-                for suite in (
-                    *self.regression_suites,
-                    *(challenge_report.suites if challenge_report is not None else ()),
-                )
-            ],
-        }
-        measurement_report = project_measurement_report(
-            MeasurementReportRequest(
-                summary=measurement_summary,
-                mode=self.measurement_mode,
-                candidate_prerequisite_blocked=(candidate_prerequisite_blocked),
-                measurement_prerequisite_blocked=(measurement_prerequisite_blocked),
-                gate_results=tuple(gate_results),
-            ),
-            candidate_prerequisite_failure=(_gate_has_candidate_prerequisite_failure),
-            measurement_materialization_blocked=(
-                _gate_blocks_measurement_materialization
-            ),
-        )
-        if measurement_report is not None:
-            report["measurement"] = measurement_report
-        _emit_progress(
-            self.progress_callback,
-            "lesson_extraction",
-            "Extracting lesson memory and harness diagnostics",
-        )
-        finalization = finalize_terminal_run(
-            TerminalFinalizationRequest(
-                run_id=run_id,
-                target=target.identity,
-                final_status=final_status,
-                reported_selected_candidate=reported_selected_candidate,
-                repair_focus_candidate=repair_focus_candidate,
-                apply_policy=apply_policy,
-                base_report=report,
-                optimizer_diagnostics=tuple(optimizer_diagnostics),
-                gate_results=tuple(gate_results),
-                scheduler_decisions=tuple(scheduler_decisions),
-                population_screening_reports=tuple(population_screening_reports),
-                iteration_states=tuple(iteration_states),
-                iteration_reports=tuple(iteration_reports),
-                generation_stop_reason=generation_stop_reason,
-                dataset=dataset,
-                all_candidates=tuple(all_candidates),
-                replay_candidate_limit=self.replay_candidate_limit,
-                budget_report=budget_context.to_dict(),
-                optimizer_lineage_paths=tuple(optimizer_lineage_paths),
+                target_provenance_report=target_provenance_report,
                 target_selection_report=target_selection_report,
-                post_apply=post_apply,
-                promotion=promotion,
+                screening_control_preflight=screening_control_preflight,
+                startup_artifact_retention=startup_artifact_retention,
+                prior_feedback=prior_feedback,
+                validation_feedback=validation_feedback,
+                all_candidates=all_candidates,
+                candidate_source_dispositions=candidate_source_dispositions,
+                fresh_evaluation_required=fresh_evaluation_required,
+                optimizer_diagnostics=optimizer_diagnostics,
+                optimizer_lineage_paths=optimizer_lineage_paths,
+                optimizer_lineage_paths_by_candidate=(
+                    optimizer_lineage_paths_by_candidate
+                ),
+                iteration_reports=iteration_reports,
+                iteration_states=iteration_states,
+                population_screening_reports=population_screening_reports,
+                scheduler_decisions=scheduler_decisions,
+                scheduler_state=scheduler_state,
+                budget_context=budget_context,
+                run_state=run_state,
+                iteration_budget=iteration_budget,
+                repair_reserved_slot_count=repair_reserved_slot_count,
+                selected_candidate=selected_candidate,
                 baseline_summary=baseline_summary,
                 candidate_summary=candidate_summary,
                 held_out_summary=held_out_summary,
+                measurement_summary=measurement_summary,
+                regression_evidence=regression_evidence,
+                challenge_report=challenge_report,
                 replay_result=replay_result,
                 replay_dataset=replay_dataset,
-                skill_evolution_progress=skill_evolution_progress,
-                trace_packs=tuple(trace_packs),
-                candidate_source_dispositions=(candidate_source_dispositions),
-                deprecated_config_mappings=(self.deprecated_config_mappings),
-                previous_artifact_retention=startup_artifact_retention,
+                latest_handbook_slice=latest_handbook_slice,
+                shared_validation_gate=shared_validation_gate,
+                gate_results=gate_results,
+                attempt_tracker=attempt_tracker,
             ),
-            runtime=TerminalFinalizationRuntime(
+            RunTerminalLifecycleRuntime(
                 store=self.store,
-                terminal_cause=_terminal_cause,
-                rejection_attribution=_rejection_attribution,
-                resolved_contract_fingerprints=(
+                progress_callback=self.progress_callback,
+                execution_telemetry=self.execution_telemetry,
+                measurement_mode=self.measurement_mode,
+                _measurement_experiments=self._measurement_experiments,
+                _candidate_screening_control_observations=(
+                    self._candidate_screening_control_observations
+                ),
+                _current_run_authoritative_case_observations=(
+                    self._current_run_authoritative_case_observations
+                ),
+                _candidate_screening_loaded_run_ids=(
+                    self._candidate_screening_loaded_run_ids
+                ),
+                _active_target_intent=self._active_target_intent,
+                inferred_new_skill_policy=self.inferred_new_skill_policy,
+                skill_evolution_contract=self.skill_evolution_contract,
+                runtime_registry_refresher=self.runtime_registry_refresher,
+                candidate_screening_max_cases=self.candidate_screening_max_cases,
+                max_generated_candidates=self.max_generated_candidates,
+                max_full_evaluation_candidates=(self.max_full_evaluation_candidates),
+                max_score_tiebreak_candidates=(self.max_score_tiebreak_candidates),
+                replay_candidate_limit=self.replay_candidate_limit,
+                regression_suites=tuple(self.regression_suites),
+                deprecated_config_mappings=self.deprecated_config_mappings,
+                _materialize_candidate_measurement=(
+                    self._materialize_candidate_measurement
+                ),
+                _attach_measurement_search_performance=(
+                    self._attach_measurement_search_performance
+                ),
+                _apply_auto_verified=self._apply_auto_verified,
+                _apply_verified_only=self._apply_verified_only,
+            ),
+            RunTerminalLifecycleServices(
+                _acceptance_confidence_report=_acceptance_confidence_report,
+                _campaign_failure_attribution=_campaign_failure_attribution,
+                _candidate_generation_failure_events=(
+                    _candidate_generation_failure_events
+                ),
+                _candidate_policy_filter_outcomes=(_candidate_policy_filter_outcomes),
+                _candidate_policy_frontier_stalled_event=(
+                    _candidate_policy_frontier_stalled_event
+                ),
+                _evaluator_report_paths=_evaluator_report_paths,
+                _execution_usage_report=_execution_usage_report,
+                _finalize_run_report=_finalize_run_report,
+                _gate_blocks_measurement_materialization=(
+                    _gate_blocks_measurement_materialization
+                ),
+                _lineage_addressed_lesson_ids=(_lineage_addressed_lesson_ids),
+                _no_op_report=_no_op_report,
+                _optimizer_iteration_diagnostics=(_optimizer_iteration_diagnostics),
+                _persist_lineage_lifecycle=_persist_lineage_lifecycle,
+                _population_report=_population_report,
+                _rejection_attribution=_rejection_attribution,
+                _repair_frontier_state_report=(_repair_frontier_state_report),
+                _replay_capability_report=_replay_capability_report,
+                _replay_report=_replay_report,
+                _resolved_conformance_contract_fingerprints=(
                     _resolved_conformance_contract_fingerprints
                 ),
-                campaign_failure_attribution=(_campaign_failure_attribution),
-                trajectory_set_report=_trajectory_set_report,
-                population_report=_population_report,
-                no_op_report=_no_op_report,
-                replay_report=_replay_report,
-                replay_artifact_path=_replay_artifact_path,
-                campaign_measurement_outcome=(_campaign_measurement_outcome_for_replay),
-                replay_capability_report=_replay_capability_report,
-                evaluator_report_paths=_evaluator_report_paths,
-                acceptance_confidence_report=(_acceptance_confidence_report),
-                finalize_run_report=_finalize_run_report,
+                _select_iteration_state=_select_iteration_state,
+                _status_without_selected_candidate=(_status_without_selected_candidate),
+                _terminal_cause=_terminal_cause,
+                _trajectory_set_report=_trajectory_set_report,
             ),
         )
-        completed_run = finalization.completed_run
-        self._candidate_screening_loaded_run_ids.add(run_id)
-        _emit_progress(
-            self.progress_callback,
-            "completed",
-            f"Self-evolve run {run_id} finished with status {completed_run.status.value}",
-        )
         return SelfEvolveRunnerResult(
-            run=completed_run,
-            selected_candidate=reported_selected_candidate,
+            run=terminal.completed_run,
+            selected_candidate=terminal.selected_candidate,
         )
 
     async def _screen_candidate_population(

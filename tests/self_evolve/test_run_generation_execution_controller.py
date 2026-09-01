@@ -9,6 +9,7 @@ from aworld.self_evolve.controllers import (
     run_generation_helpers,
     run_iteration_execution,
     run_iteration_helpers,
+    run_terminal_lifecycle,
 )
 from aworld.self_evolve.controllers.run_generation_execution import (
     GenerationExecutionDisposition,
@@ -22,6 +23,7 @@ def test_generation_execution_modules_do_not_import_runner() -> None:
         run_generation_helpers,
         run_iteration_execution,
         run_iteration_helpers,
+        run_terminal_lifecycle,
     ):
         source = inspect.getsource(module)
         assert "from aworld.self_evolve.runner" not in source
