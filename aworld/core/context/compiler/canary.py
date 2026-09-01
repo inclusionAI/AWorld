@@ -113,6 +113,7 @@ class DefaultOnReadinessReport:
     workload_kinds: tuple[str, ...]
     complete_pairs: int
     rollback_config_hash: str | None
+    canary_health_decision_fingerprint: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -121,6 +122,28 @@ class RollbackBundle:
     previous_config: FrozenMap
     provider_capability_hash: str
     bundle_hash: str
+
+    def __post_init__(self) -> None:
+        mode = ContextCompilerMode(self.previous_mode)
+        config = freeze_json(self.previous_config)
+        if not isinstance(config, FrozenMap):
+            raise TypeError("previous_config must be a JSON object")
+        if mode is ContextCompilerMode.ENFORCE:
+            raise ValueError("rollback previous_mode cannot be enforce")
+        configured_mode = config.get("mode")
+        if configured_mode is not None and configured_mode != mode.value:
+            raise ValueError("previous_config mode must match previous_mode")
+        if not re.fullmatch(r"sha256:[0-9a-f]{64}", self.provider_capability_hash):
+            raise ValueError("provider_capability_hash must be canonical")
+        expected_hash = canonical_json_hash({
+            "previous_mode": mode.value,
+            "previous_config": config,
+            "provider_capability_hash": self.provider_capability_hash,
+        })
+        if self.bundle_hash != expected_hash:
+            raise ValueError("rollback bundle hash mismatch")
+        object.__setattr__(self, "previous_mode", mode)
+        object.__setattr__(self, "previous_config", config)
 
     @classmethod
     def build(
@@ -134,6 +157,11 @@ class RollbackBundle:
         config = freeze_json(previous_config)
         if not isinstance(config, FrozenMap):
             raise TypeError("previous_config must be a JSON object")
+        if mode is ContextCompilerMode.ENFORCE:
+            raise ValueError("rollback previous_mode cannot be enforce")
+        configured_mode = config.get("mode")
+        if configured_mode is not None and configured_mode != mode.value:
+            raise ValueError("previous_config mode must match previous_mode")
         if not re.fullmatch(r"sha256:[0-9a-f]{64}", provider_capability_hash):
             raise ValueError("provider_capability_hash must be canonical")
         bundle_hash = canonical_json_hash(
@@ -157,11 +185,18 @@ class CanaryHealthPolicy:
     minimum_shadow_calls: int
     minimum_enforce_sessions: int
     max_provider_error_rate_delta: float
+    minimum_baseline_provider_attempts: int = 1
+    minimum_enforce_provider_attempts: int = 1
 
     def __post_init__(self) -> None:
         if not isinstance(self.policy_version, str) or not self.policy_version:
             raise ValueError("policy_version must be non-empty")
-        for name in ("minimum_shadow_calls", "minimum_enforce_sessions"):
+        for name in (
+            "minimum_shadow_calls",
+            "minimum_enforce_sessions",
+            "minimum_baseline_provider_attempts",
+            "minimum_enforce_provider_attempts",
+        ):
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
                 raise ValueError(f"{name} must be positive")
@@ -186,6 +221,9 @@ class CanaryHealthEvidence:
     security_violation_count: int
     trajectory_incomplete_count: int
     quality_regression: bool
+    baseline_provider_attempt_count: int = 0
+    baseline_provider_error_count: int = 0
+    enforce_sessions_with_provider_attempt_count: int = 0
 
     def __post_init__(self) -> None:
         count_names = (
@@ -197,6 +235,9 @@ class CanaryHealthEvidence:
             "enforce_provider_error_count",
             "security_violation_count",
             "trajectory_incomplete_count",
+            "baseline_provider_attempt_count",
+            "baseline_provider_error_count",
+            "enforce_sessions_with_provider_attempt_count",
         )
         for name in count_names:
             value = getattr(self, name)
@@ -208,6 +249,20 @@ class CanaryHealthEvidence:
             raise ValueError("shadow attribution count cannot exceed calls")
         if self.enforce_provider_error_count > self.enforce_provider_attempt_count:
             raise ValueError("provider errors cannot exceed attempts")
+        if self.baseline_provider_error_count > self.baseline_provider_attempt_count:
+            raise ValueError("baseline provider errors cannot exceed attempts")
+        if (
+            self.enforce_sessions_with_provider_attempt_count
+            > self.enforce_session_count
+        ):
+            raise ValueError("sessions with provider attempts cannot exceed sessions")
+        if (
+            self.enforce_sessions_with_provider_attempt_count
+            > self.enforce_provider_attempt_count
+        ):
+            raise ValueError(
+                "sessions with provider attempts cannot exceed provider attempts"
+            )
         if (
             isinstance(self.baseline_provider_error_rate, bool)
             or not isinstance(self.baseline_provider_error_rate, (int, float))
@@ -217,6 +272,15 @@ class CanaryHealthEvidence:
             raise ValueError("baseline_provider_error_rate must be within 0..1")
         if not isinstance(self.quality_regression, bool):
             raise TypeError("quality_regression must be boolean")
+        computed_baseline_rate = (
+            self.baseline_provider_error_count / self.baseline_provider_attempt_count
+            if self.baseline_provider_attempt_count
+            else 0.0
+        )
+        if float(self.baseline_provider_error_rate) != computed_baseline_rate:
+            raise ValueError(
+                "baseline_provider_error_rate must match the exact baseline counts"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -224,7 +288,43 @@ class CanaryHealthDecision:
     status: CanaryHealthStatus
     reason_codes: tuple[str, ...]
     rollback_bundle_hash: str | None
+    policy_fingerprint: str
     evidence_fingerprint: str
+    decision_fingerprint: str
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "status", CanaryHealthStatus(self.status))
+        if (
+            not isinstance(self.reason_codes, tuple)
+            or tuple(sorted(set(self.reason_codes))) != self.reason_codes
+            or any(
+                not isinstance(code, str)
+                or not re.fullmatch(r"[a-z][a-z0-9_]{0,127}", code)
+                for code in self.reason_codes
+            )
+        ):
+            raise ValueError("reason_codes must be unique sorted stable codes")
+        for name in (
+            "policy_fingerprint",
+            "evidence_fingerprint",
+            "decision_fingerprint",
+        ):
+            if not re.fullmatch(r"sha256:[0-9a-f]{64}", str(getattr(self, name))):
+                raise ValueError(f"{name} must be canonical")
+        if self.rollback_bundle_hash is not None and not re.fullmatch(
+            r"sha256:[0-9a-f]{64}", self.rollback_bundle_hash
+        ):
+            raise ValueError("rollback_bundle_hash must be canonical or None")
+        expected_fingerprint = canonical_json_hash({
+            "schema_version": "aworld.context.canary-health-decision.v1",
+            "status": self.status.value,
+            "reason_codes": self.reason_codes,
+            "rollback_bundle_hash": self.rollback_bundle_hash,
+            "policy_fingerprint": self.policy_fingerprint,
+            "evidence_fingerprint": self.evidence_fingerprint,
+        })
+        if self.decision_fingerprint != expected_fingerprint:
+            raise ValueError("canary health decision fingerprint mismatch")
 
 
 def assess_canary_health(
@@ -250,8 +350,21 @@ def assess_canary_health(
         rollback_reasons.add("shadow_provider_attribution_incomplete")
     if evidence.enforce_session_count < policy.minimum_enforce_sessions:
         hold_reasons.add("enforce_sample_incomplete")
-    if evidence.enforce_provider_attempt_count < policy.minimum_enforce_sessions:
+    if (
+        evidence.enforce_provider_attempt_count
+        < policy.minimum_enforce_provider_attempts
+    ):
         hold_reasons.add("enforce_provider_attempt_sample_incomplete")
+    if (
+        evidence.baseline_provider_attempt_count
+        < policy.minimum_baseline_provider_attempts
+    ):
+        hold_reasons.add("baseline_provider_attempt_sample_incomplete")
+    if (
+        evidence.enforce_sessions_with_provider_attempt_count
+        != evidence.enforce_session_count
+    ):
+        hold_reasons.add("enforce_session_provider_coverage_incomplete")
     if evidence.security_violation_count:
         rollback_reasons.add("security_violation")
     if evidence.trajectory_incomplete_count:
@@ -265,12 +378,21 @@ def assess_canary_health(
     )
     if (
         evidence.enforce_provider_attempt_count
-        and candidate_error_rate - float(evidence.baseline_provider_error_rate)
+        and candidate_error_rate
+        - (
+            evidence.baseline_provider_error_count
+            / evidence.baseline_provider_attempt_count
+            if evidence.baseline_provider_attempt_count
+            else 0.0
+        )
         > float(policy.max_provider_error_rate_delta)
     ):
         rollback_reasons.add("provider_error_rate_regression")
-    if rollback_reasons and rollback_bundle is None:
-        rollback_reasons.add("rollback_bundle_missing")
+    if rollback_bundle is None:
+        if rollback_reasons:
+            rollback_reasons.add("rollback_bundle_missing")
+        else:
+            hold_reasons.add("rollback_bundle_missing")
 
     if rollback_reasons:
         status = CanaryHealthStatus.ROLLBACK_REQUIRED
@@ -281,24 +403,32 @@ def assess_canary_health(
     else:
         status = CanaryHealthStatus.CONTINUE
         reasons = ()
+    policy_payload = {
+        name: getattr(policy, name) for name in policy.__dataclass_fields__
+    }
+    evidence_payload = {
+        name: getattr(evidence, name) for name in evidence.__dataclass_fields__
+    }
+    policy_fingerprint = canonical_json_hash(policy_payload)
+    evidence_fingerprint = canonical_json_hash(evidence_payload)
+    rollback_bundle_hash = (
+        rollback_bundle.bundle_hash if rollback_bundle is not None else None
+    )
+    decision_fingerprint = canonical_json_hash({
+        "schema_version": "aworld.context.canary-health-decision.v1",
+        "status": status.value,
+        "reason_codes": reasons,
+        "rollback_bundle_hash": rollback_bundle_hash,
+        "policy_fingerprint": policy_fingerprint,
+        "evidence_fingerprint": evidence_fingerprint,
+    })
     return CanaryHealthDecision(
         status=status,
         reason_codes=reasons,
-        rollback_bundle_hash=(
-            rollback_bundle.bundle_hash if rollback_bundle is not None else None
-        ),
-        evidence_fingerprint=canonical_json_hash({
-            "policy": {
-                "policy_version": policy.policy_version,
-                "minimum_shadow_calls": policy.minimum_shadow_calls,
-                "minimum_enforce_sessions": policy.minimum_enforce_sessions,
-                "max_provider_error_rate_delta": policy.max_provider_error_rate_delta,
-            },
-            "evidence": {
-                name: getattr(evidence, name)
-                for name in evidence.__dataclass_fields__
-            },
-        }),
+        rollback_bundle_hash=rollback_bundle_hash,
+        policy_fingerprint=policy_fingerprint,
+        evidence_fingerprint=evidence_fingerprint,
+        decision_fingerprint=decision_fingerprint,
     )
 
 
@@ -313,6 +443,8 @@ def assess_default_on_readiness(
     rollback_config_hash: str | None,
     hard_gate_failures: Iterable[str] = (),
     required_capabilities: Iterable[tuple[str, str]] = (),
+    canary_health_decision: CanaryHealthDecision | None = None,
+    required_canary_policy_fingerprint: str | None = None,
     minimum_complete_pairs: int = 10,
 ) -> DefaultOnReadinessReport:
     if isinstance(complete_pairs, bool) or not isinstance(complete_pairs, int) or complete_pairs < 0:
@@ -333,6 +465,14 @@ def assess_default_on_readiness(
         r"sha256:[0-9a-f]{64}", rollback_config_hash
     ):
         raise ValueError("rollback_config_hash must be canonical or None")
+    if canary_health_decision is not None and not isinstance(
+        canary_health_decision, CanaryHealthDecision
+    ):
+        raise TypeError("canary_health_decision must be CanaryHealthDecision or None")
+    if required_canary_policy_fingerprint is not None and not re.fullmatch(
+        r"sha256:[0-9a-f]{64}", required_canary_policy_fingerprint
+    ):
+        raise ValueError("required_canary_policy_fingerprint must be canonical or None")
     failures: set[str] = set(hard_gate_failures)
     if any(
         not isinstance(code, str)
@@ -380,9 +520,27 @@ def assess_default_on_readiness(
         failures.add("trajectory_fidelity_incomplete")
     if rollback_config_hash is None:
         failures.add("rollback_bundle_missing")
+    canary_rollback_required = False
+    if canary_health_decision is None:
+        failures.add("canary_health_missing")
+    else:
+        if required_canary_policy_fingerprint is None:
+            failures.add("canary_policy_binding_missing")
+        elif (
+            canary_health_decision.policy_fingerprint
+            != required_canary_policy_fingerprint
+        ):
+            failures.add("canary_policy_mismatch")
+        if canary_health_decision.rollback_bundle_hash != rollback_config_hash:
+            failures.add("canary_rollback_bundle_mismatch")
+        if canary_health_decision.status is CanaryHealthStatus.HOLD:
+            failures.add("canary_health_hold")
+        elif canary_health_decision.status is CanaryHealthStatus.ROLLBACK_REQUIRED:
+            failures.add("canary_rollback_required")
+            canary_rollback_required = True
     status = (
         ReadinessStatus.ROLLBACK_REQUIRED
-        if quality_regression
+        if quality_regression or canary_rollback_required
         else ReadinessStatus.NOT_READY if failures else ReadinessStatus.READY
     )
     return DefaultOnReadinessReport(
@@ -391,6 +549,11 @@ def assess_default_on_readiness(
         workload_kinds=kinds,
         complete_pairs=complete_pairs,
         rollback_config_hash=rollback_config_hash,
+        canary_health_decision_fingerprint=(
+            canary_health_decision.decision_fingerprint
+            if canary_health_decision is not None
+            else None
+        ),
     )
 
 

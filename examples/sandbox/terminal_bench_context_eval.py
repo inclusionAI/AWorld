@@ -13,7 +13,9 @@ import json
 import math
 import os
 import random
+import re
 import shutil
+import stat
 import statistics
 import subprocess
 import sys
@@ -41,6 +43,27 @@ def sha256_file(path: Path) -> str:
     with path.open("rb") as stream:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
+    return digest.hexdigest()
+
+
+def sha256_directory(path: Path) -> str:
+    """Hash the complete Docker build context, including paths and permissions."""
+    root = path.resolve()
+    digest = hashlib.sha256()
+    for entry in sorted(root.rglob("*"), key=lambda value: value.relative_to(root).as_posix()):
+        relative = entry.relative_to(root).as_posix().encode("utf-8")
+        metadata = entry.lstat()
+        if stat.S_ISLNK(metadata.st_mode):
+            raise ValueError(f"Docker build context cannot contain links: {entry}")
+        kind = b"d" if entry.is_dir() else b"f" if entry.is_file() else None
+        if kind is None:
+            raise ValueError(f"Unsupported Docker build context entry: {entry}")
+        digest.update(kind + b"\0" + relative + b"\0")
+        digest.update(f"{stat.S_IMODE(metadata.st_mode):o}".encode("ascii") + b"\0")
+        if entry.is_file():
+            with entry.open("rb") as stream:
+                for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                    digest.update(chunk)
     return digest.hexdigest()
 
 
@@ -193,25 +216,24 @@ def docker_image_for_task(
     use_declared_image: bool,
     build_timeout_sec: float | None = None,
 ) -> str:
-    declared = fixture.config["environment"].get("docker_image")
+    plan = docker_image_build_plan(
+        fixture,
+        use_declared_image=use_declared_image,
+        build_timeout_sec=build_timeout_sec,
+    )
+    declared = plan.get("declared_image")
     if use_declared_image:
-        if not declared:
-            raise ValueError(f"Task {fixture.name} has no declared docker_image")
+        assert isinstance(declared, str)
         inspect = run_command([docker, "image", "inspect", declared], capture_output=True)
         if inspect.returncode != 0:
             pull = run_command([docker, "pull", declared], capture_output=True)
             require_success(pull, f"pull image for {fixture.name}")
         return declared
 
-    dockerfile_sha = sha256_file(fixture.environment / "Dockerfile")[:16]
-    image = f"aworld-context-eval:{dockerfile_sha}"
+    image = str(plan["image_ref"])
     inspect = run_command([docker, "image", "inspect", image], capture_output=True)
     if inspect.returncode != 0:
-        timeout = (
-            build_timeout_sec
-            if build_timeout_sec is not None
-            else float(fixture.config["environment"].get("build_timeout_sec", 600))
-        )
+        timeout = float(plan["effective_build_timeout_sec"])
         try:
             build = run_command(
                 [docker, "build", "--label", "aworld.context-eval=true", "-t", image, "."],
@@ -220,16 +242,76 @@ def docker_image_for_task(
                 timeout=timeout,
             )
         except subprocess.TimeoutExpired as exc:
-            output = exc.stderr or exc.stdout or ""
-            if isinstance(output, bytes):
-                output = output.decode(errors="replace")
-            detail = str(output).strip()
-            suffix = f": {detail}" if detail else ""
             raise RuntimeError(
-                f"build image for {fixture.name} timed out after {timeout:g} seconds{suffix}"
+                f"build image for {fixture.name} timed out after {timeout:g} seconds"
             ) from exc
         require_success(build, f"build image for {fixture.name}")
     return image
+
+
+def docker_image_build_plan(
+    fixture: TaskFixture,
+    *,
+    use_declared_image: bool,
+    build_timeout_sec: float | None,
+) -> dict[str, object]:
+    """Return reproducible, manifest-safe image resolution inputs."""
+    environment = fixture.config.get("environment")
+    if not isinstance(environment, dict):
+        raise ValueError(f"Task {fixture.name} has no environment configuration")
+    declared = environment.get("docker_image")
+    if use_declared_image:
+        if not isinstance(declared, str) or not declared.strip():
+            raise ValueError(f"Task {fixture.name} has no declared docker_image")
+        return {
+            "mode": "declared_image",
+            "declared_image": declared,
+            "image_ref": declared,
+            "task_archive_sha256": fixture.archive_sha256,
+            "build_context_sha256": None,
+            "effective_build_timeout_sec": None,
+            "build_timeout_source": "not_applicable",
+        }
+
+    timeout_source = (
+        "cli_override"
+        if build_timeout_sec is not None
+        else "dataset"
+        if "build_timeout_sec" in environment
+        else "framework_default"
+    )
+    timeout_value = (
+        build_timeout_sec
+        if build_timeout_sec is not None
+        else environment.get("build_timeout_sec", 600)
+    )
+    if (
+        isinstance(timeout_value, bool)
+        or not isinstance(timeout_value, (int, float))
+        or not math.isfinite(float(timeout_value))
+        or float(timeout_value) <= 0
+    ):
+        raise ValueError(
+            f"Task {fixture.name} Docker build timeout must be a positive finite number"
+        )
+    context_sha = sha256_directory(fixture.environment)
+    return {
+        "mode": "packaged_dockerfile",
+        "declared_image": declared if isinstance(declared, str) else None,
+        "image_ref": f"aworld-context-eval:{context_sha[:24]}",
+        "task_archive_sha256": fixture.archive_sha256,
+        "build_context_sha256": context_sha,
+        "effective_build_timeout_sec": float(timeout_value),
+        "build_timeout_source": timeout_source,
+    }
+
+
+def docker_image_id(docker: str, image: str) -> str | None:
+    result = run_command(
+        [docker, "image", "inspect", "--format", "{{.Id}}", image],
+        capture_output=True,
+    )
+    return result.stdout.strip() if result.returncode == 0 else None
 
 
 def container_image_id(docker: str, target: str) -> str | None:
@@ -238,23 +320,28 @@ def container_image_id(docker: str, target: str) -> str | None:
 
 
 def collect_context_metrics(run_dir: Path) -> dict:
+    parse_failures: list[str] = []
+
+    def load_evidence(path: Path, default: object, reason_code: str) -> object:
+        if not path.exists():
+            return default
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            parse_failures.append(reason_code)
+            return default
+
     provider_calls_path = run_dir / "provider_calls.json"
     trajectory_path = run_dir / "raw_trajectory.json"
-    provider_calls = (
-        json.loads(provider_calls_path.read_text(encoding="utf-8"))
-        if provider_calls_path.exists()
-        else []
+    provider_calls = load_evidence(
+        provider_calls_path, [], "provider_calls_malformed"
     )
-    trajectory = (
-        json.loads(trajectory_path.read_text(encoding="utf-8"))
-        if trajectory_path.exists()
-        else []
+    trajectory = load_evidence(
+        trajectory_path, [], "raw_trajectory_malformed"
     )
     manifest_path = run_dir / "run_manifest.json"
-    manifest = (
-        json.loads(manifest_path.read_text(encoding="utf-8"))
-        if manifest_path.exists()
-        else {}
+    manifest = load_evidence(
+        manifest_path, {}, "run_manifest_malformed"
     )
     capture = manifest.get("capture") if isinstance(manifest, dict) else {}
     continuity = capture.get("llm_call_continuity") if isinstance(capture, dict) else {}
@@ -301,7 +388,10 @@ def collect_context_metrics(run_dir: Path) -> dict:
         "offloaded_artifact_count": len(artifact_paths),
         "offloaded_artifact_bytes": sum(path.stat().st_size for path in artifact_paths),
         "provider_truth_available": provider_calls_path.exists() and bool(provider_calls),
-        "raw_trajectory_available": trajectory_path.exists(),
+        "raw_trajectory_available": bool(
+            trajectory_path.exists()
+            and "raw_trajectory_malformed" not in parse_failures
+        ),
         "capture_integrity_available": bool(
             isinstance(capture, dict)
             and capture.get("provider_capture_gate_passed") is True
@@ -316,6 +406,8 @@ def collect_context_metrics(run_dir: Path) -> dict:
                 for call in provider_calls
             )
         ),
+        "evidence_parse_error_count": len(parse_failures),
+        "evidence_parse_error_reason_codes": sorted(parse_failures),
     }
 
 
@@ -614,6 +706,14 @@ def main() -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     fixture_root = output_dir / "fixture"
     fixtures = [extract_task(dataset, name, fixture_root / name) for name in args.tasks]
+    image_build_plans = {
+        fixture.name: docker_image_build_plan(
+            fixture,
+            use_declared_image=args.use_declared_image,
+            build_timeout_sec=args.build_timeout_sec,
+        )
+        for fixture in fixtures
+    }
 
     jobs = [
         (fixture, variant_name, variant_path, repetition)
@@ -652,6 +752,8 @@ def main() -> None:
         "verifier_mode": args.verifier_mode,
         "build_timeout_sec_override": args.build_timeout_sec,
         "use_declared_image": args.use_declared_image,
+        "image_build_plans": image_build_plans,
+        "image_resolution": {"status": "not_attempted", "images": {}},
         "created_at_epoch": time.time(),
     }
     write_json(output_dir / "experiment_manifest.json", experiment)
@@ -660,15 +762,62 @@ def main() -> None:
         return
 
     assert docker is not None
-    images = {
-        fixture.name: docker_image_for_task(
-            fixture,
-            docker,
-            args.use_declared_image,
-            args.build_timeout_sec,
+    images: dict[str, str] = {}
+    resolved_images: dict[str, dict[str, object]] = {}
+    try:
+        for fixture in fixtures:
+            image = docker_image_for_task(
+                fixture,
+                docker,
+                args.use_declared_image,
+                args.build_timeout_sec,
+            )
+            resolved_image_id = docker_image_id(docker, image)
+            if not isinstance(resolved_image_id, str) or not re.fullmatch(
+                r"sha256:[0-9a-f]{64}", resolved_image_id
+            ):
+                raise RuntimeError(
+                    f"resolve immutable image id for {fixture.name} failed"
+                )
+            # Execute every paired variant against the resolved immutable image,
+            # not a tag that can move between resolution and docker run.
+            images[fixture.name] = resolved_image_id
+            resolved_images[fixture.name] = {
+                "status": "available",
+                "image_ref": image,
+                "image_id": resolved_image_id,
+                "build_context_sha256": image_build_plans[fixture.name][
+                    "build_context_sha256"
+                ],
+            }
+    except Exception as exc:
+        failed_task = next(
+            (fixture.name for fixture in fixtures if fixture.name not in images),
+            "unknown",
         )
-        for fixture in fixtures
+        resolved_images[failed_task] = {
+            "status": "failed",
+            "reason_code": (
+                "docker_build_timeout"
+                if isinstance(exc.__cause__, subprocess.TimeoutExpired)
+                else "docker_image_resolution_failed"
+            ),
+            "exception_type": type(exc).__name__,
+            "build_context_sha256": image_build_plans.get(failed_task, {}).get(
+                "build_context_sha256"
+            ),
+        }
+        experiment["image_resolution"] = {
+            "status": "failed",
+            "images": resolved_images,
+        }
+        write_json(output_dir / "experiment_manifest.json", experiment)
+        raise
+    experiment["image_resolution"] = {
+        "status": "available",
+        "images": resolved_images,
     }
+    write_json(output_dir / "experiment_manifest.json", experiment)
     results = []
     for fixture, variant_name, variant_path, repetition in jobs:
         results.append(

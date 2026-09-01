@@ -189,7 +189,7 @@ def test_capture_reconciliation_preserves_live_retry_attempts_for_diagnostics():
     assert continuity["reconciled_count"] == 2
 
 
-def test_dataset_adapter_extracts_generic_task_archive(tmp_path):
+def test_dataset_adapter_extracts_generic_task_archive(tmp_path, monkeypatch):
     harness = _load_example("terminal_bench_context_eval")
     archive_buffer = io.BytesIO()
     files = {
@@ -214,6 +214,36 @@ def test_dataset_adapter_extracts_generic_task_archive(tmp_path):
     assert fixture.instruction.read_text() == "Do the task"
     assert fixture.environment.joinpath("Dockerfile").exists()
     assert fixture.tests.joinpath("test.sh").exists()
+
+    output_dir = tmp_path / "dry-run"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "terminal_bench_context_eval.py",
+            "--dataset",
+            str(dataset),
+            "--task",
+            "sample",
+            "--output-dir",
+            str(output_dir),
+            "--build-timeout-sec",
+            "1800",
+            "--dry-run",
+        ],
+    )
+    harness.main()
+    manifest = json.loads(
+        (output_dir / "experiment_manifest.json").read_text(encoding="utf-8")
+    )
+    plan = manifest["image_build_plans"]["sample"]
+    assert plan["build_timeout_source"] == "cli_override"
+    assert plan["effective_build_timeout_sec"] == 1800.0
+    assert plan["build_context_sha256"]
+    assert manifest["image_resolution"] == {
+        "status": "not_attempted",
+        "images": {},
+    }
 
 
 def test_packaged_image_build_timeout_can_override_dataset_default(tmp_path, monkeypatch):
@@ -249,6 +279,101 @@ def test_packaged_image_build_timeout_can_override_dataset_default(tmp_path, mon
 
     assert image.startswith("aworld-context-eval:")
     assert calls[-1][1]["timeout"] == 1800
+    plan = harness.docker_image_build_plan(
+        fixture,
+        use_declared_image=False,
+        build_timeout_sec=1800,
+    )
+    assert plan["effective_build_timeout_sec"] == 1800.0
+    assert plan["build_timeout_source"] == "cli_override"
+    assert plan["build_context_sha256"]
+
+
+def test_packaged_image_identity_covers_complete_build_context(tmp_path):
+    harness = _load_example("terminal_bench_context_eval")
+    environment = tmp_path / "environment"
+    environment.mkdir()
+    environment.joinpath("Dockerfile").write_text("FROM scratch\n", encoding="utf-8")
+    copied = environment / "payload.txt"
+    copied.write_text("first", encoding="utf-8")
+    fixture = harness.TaskFixture(
+        name="sample",
+        root=tmp_path,
+        archive_sha256="0" * 64,
+        config={"environment": {"build_timeout_sec": 600}},
+    )
+
+    first = harness.docker_image_build_plan(
+        fixture, use_declared_image=False, build_timeout_sec=None
+    )
+    copied.write_text("second", encoding="utf-8")
+    second = harness.docker_image_build_plan(
+        fixture, use_declared_image=False, build_timeout_sec=None
+    )
+
+    assert first["build_context_sha256"] != second["build_context_sha256"]
+    assert first["image_ref"] != second["image_ref"]
+    assert first["effective_build_timeout_sec"] == 600.0
+    assert first["build_timeout_source"] == "dataset"
+
+
+def test_dataset_build_timeout_is_validated_and_timeout_error_is_redacted(
+    tmp_path, monkeypatch
+):
+    harness = _load_example("terminal_bench_context_eval")
+    environment = tmp_path / "environment"
+    environment.mkdir()
+    environment.joinpath("Dockerfile").write_text("FROM scratch\n", encoding="utf-8")
+    fixture = harness.TaskFixture(
+        name="sample",
+        root=tmp_path,
+        archive_sha256="0" * 64,
+        config={"environment": {"build_timeout_sec": float("nan")}},
+    )
+    with pytest.raises(ValueError, match="positive finite"):
+        harness.docker_image_build_plan(
+            fixture, use_declared_image=False, build_timeout_sec=None
+        )
+
+    fixture.config["environment"]["build_timeout_sec"] = 600
+
+    def fake_run(command, **kwargs):
+        if command[1:3] == ["image", "inspect"]:
+            return subprocess.CompletedProcess(command, 1, stdout="", stderr="")
+        raise subprocess.TimeoutExpired(
+            command,
+            kwargs["timeout"],
+            stderr="registry-secret-must-not-leak",
+        )
+
+    monkeypatch.setattr(harness, "run_command", fake_run)
+    with pytest.raises(RuntimeError, match="timed out after 600 seconds") as raised:
+        harness.docker_image_for_task(
+            fixture,
+            "docker",
+            use_declared_image=False,
+            build_timeout_sec=None,
+        )
+    assert "registry-secret" not in str(raised.value)
+
+
+def test_partial_timeout_evidence_is_typed_unavailable(tmp_path):
+    harness = _load_example("terminal_bench_context_eval")
+    tmp_path.joinpath("provider_calls.json").write_text("[{", encoding="utf-8")
+    tmp_path.joinpath("raw_trajectory.json").write_text("[", encoding="utf-8")
+    tmp_path.joinpath("run_manifest.json").write_text("{", encoding="utf-8")
+
+    metrics = harness.collect_context_metrics(tmp_path)
+
+    assert metrics["provider_truth_available"] is False
+    assert metrics["raw_trajectory_available"] is False
+    assert metrics["capture_integrity_available"] is False
+    assert metrics["evidence_parse_error_count"] == 3
+    assert metrics["evidence_parse_error_reason_codes"] == [
+        "provider_calls_malformed",
+        "raw_trajectory_malformed",
+        "run_manifest_malformed",
+    ]
 
 
 def test_timeout_output_accepts_text_and_bytes():
@@ -312,6 +437,56 @@ def test_agent_timeout_is_persisted_as_typed_incomplete_result(tmp_path, monkeyp
     assert json.loads(run_dir.joinpath("result.json").read_text())["failure"] == result["failure"]
     assert run_dir.joinpath("agent.stdout.log").read_text() == "partial"
     assert run_dir.joinpath("agent.stderr.log").read_text() == "timed out"
+
+
+def test_verifier_timeout_is_persisted_and_excluded_from_pairs(tmp_path, monkeypatch):
+    harness = _load_example("terminal_bench_context_eval")
+    root = tmp_path / "fixture"
+    root.joinpath("environment").mkdir(parents=True)
+    root.joinpath("tests").mkdir()
+    root.joinpath("instruction.md").write_text("do the task", encoding="utf-8")
+    fixture = harness.TaskFixture(
+        name="sample",
+        root=root,
+        archive_sha256="a" * 64,
+        config={"environment": {}, "verifier": {"timeout_sec": 2}},
+    )
+
+    def fake_run(command, **kwargs):
+        if command[0] == sys.executable:
+            return subprocess.CompletedProcess(command, 0, stdout="done", stderr="")
+        if command[:2] == ["docker", "exec"]:
+            raise subprocess.TimeoutExpired(
+                command, kwargs["timeout"], output="checking", stderr="too slow"
+            )
+        return subprocess.CompletedProcess(command, 0, stdout="image-id\n", stderr="")
+
+    monkeypatch.setattr(harness, "run_command", fake_run)
+    result = harness.execute_job(
+        docker="docker",
+        fixture=fixture,
+        image="sha256:" + "b" * 64,
+        variant_name="candidate",
+        variant_path=None,
+        repetition=1,
+        output_dir=tmp_path / "output",
+        max_steps=1,
+        keep_container=False,
+        verifier_mode="python-functions",
+    )
+
+    run_dir = tmp_path / "output" / "runs" / "sample" / "candidate" / "repeat-01"
+    assert result["reward"] is None
+    assert result["failure"] == {
+        "stage": "verifier",
+        "reason_code": "verifier_timeout",
+        "timeout_sec": 2.0,
+    }
+    assert run_dir.joinpath("verifier", "stdout.log").read_text() == "checking"
+    assert json.loads(run_dir.joinpath("result.json").read_text())["failure"] == result["failure"]
+    assert harness.summarize_results(
+        [result], baseline_variant="candidate"
+    )["paired_deltas"] == []
 
 
 def test_summary_pairs_reward_with_context_effects():
