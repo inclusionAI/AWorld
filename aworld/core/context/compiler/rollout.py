@@ -64,6 +64,14 @@ class CandidateRequestNotEnforceable(RolloutContractError):
 
 FRAMEWORK_COMPILER_IDENTITY = "aworld.context.compiler.framework"
 AWORLD_PROVIDER_CANDIDATE_KWARG = "_aworld_provider_candidate_envelope"
+AWORLD_PROVIDER_OBSERVED_ATTRIBUTION_KWARG = (
+    "_aworld_provider_observed_attribution_envelope"
+)
+
+
+class ProviderAttributionSubject(str, Enum):
+    LEGACY_OBSERVED = "legacy_observed"
+    CANDIDATE_SELECTED = "candidate_selected"
 
 
 def _stable_identifier(name: str, value: str) -> None:
@@ -308,6 +316,93 @@ class ProviderCandidateEnvelope:
             is not ProviderRequestFidelity.MODEL_BOUNDARY
         ):
             raise ValueError("candidate must be captured at the model boundary")
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderObservedAttributionEnvelope:
+    """Read-only evidence for attributing a legacy request in observe mode.
+
+    Unlike :class:`ProviderCandidateEnvelope`, this contract never authorizes a
+    provider adapter to replace any request value.  It may only verify the
+    already-selected legacy request and attach redacted attribution evidence.
+    """
+
+    observed_request: ProviderRequestSnapshot
+    attribution_plan: ProviderRequestAttributionPlan
+    expected_lowering: ProviderLoweringCapability
+    subject: ProviderAttributionSubject = ProviderAttributionSubject.LEGACY_OBSERVED
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "subject", ProviderAttributionSubject(self.subject))
+        if self.subject is not ProviderAttributionSubject.LEGACY_OBSERVED:
+            raise ValueError("observed attribution envelope requires legacy_observed")
+        if not isinstance(self.observed_request, ProviderRequestSnapshot):
+            raise TypeError("observed_request must be a ProviderRequestSnapshot")
+        if not isinstance(self.attribution_plan, ProviderRequestAttributionPlan):
+            raise TypeError("attribution_plan must be a ProviderRequestAttributionPlan")
+        if not isinstance(self.expected_lowering, ProviderLoweringCapability):
+            raise TypeError("expected_lowering must be a ProviderLoweringCapability")
+        if not self.attribution_plan.shape_explicit:
+            raise ValueError("observed attribution requires explicit collection shape")
+        if self.attribution_plan.candidate_content_hash != self.observed_request.content_hash:
+            raise ValueError("observed attribution plan does not match request")
+        if self.attribution_plan.request_id_hash != canonical_json_hash(
+            {"request_id": self.observed_request.request_id}
+        ):
+            raise ValueError("observed attribution request id mismatch")
+        if self.observed_request.provider_name != self.expected_lowering.provider_name:
+            raise ValueError("observed request provider does not match adapter")
+        if (
+            self.observed_request.capture_stage is not RequestCaptureStage.MODEL_BOUNDARY
+            or self.observed_request.fidelity is not ProviderRequestFidelity.MODEL_BOUNDARY
+        ):
+            raise ValueError("observed request must be captured at the model boundary")
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderObservedAttributionReceipt:
+    """Provider-owned proof for one read-only observed request projection."""
+
+    envelope: ProviderObservedAttributionEnvelope
+    provider_request: ProviderRequestSnapshot
+    lowering: ProviderLoweringCapability
+    attribution: ProviderRequestAttributionReceipt
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.envelope, ProviderObservedAttributionEnvelope):
+            raise TypeError("envelope must be a ProviderObservedAttributionEnvelope")
+        if not isinstance(self.provider_request, ProviderRequestSnapshot):
+            raise TypeError("provider_request must be a ProviderRequestSnapshot")
+        if not isinstance(self.lowering, ProviderLoweringCapability):
+            raise TypeError("lowering must be a ProviderLoweringCapability")
+        if not isinstance(self.attribution, ProviderRequestAttributionReceipt):
+            raise TypeError("attribution must be a ProviderRequestAttributionReceipt")
+        if self.lowering != self.envelope.expected_lowering:
+            raise ValueError("observed attribution adapter changed")
+        if self.provider_request.request_id != self.envelope.observed_request.request_id:
+            raise ValueError("provider request id does not match observed request")
+        if self.provider_request.provider_name != self.lowering.provider_name:
+            raise ValueError("provider request does not match observed adapter")
+        if not self.attribution.binds_plan(self.envelope.attribution_plan):
+            raise ValueError("provider attribution is not bound to observed plan")
+        if self.attribution.provider_request_content_hash != self.provider_request.content_hash:
+            raise ValueError("provider attribution does not match provider request")
+
+    def to_redacted_dict(self) -> dict[str, Any]:
+        return {
+            "subject": self.envelope.subject.value,
+            "subject_content_hash": self.envelope.observed_request.content_hash,
+            "plan_fingerprint": self.envelope.attribution_plan.fingerprint,
+            "adapter_identity": self.lowering.adapter_identity,
+            "adapter_version": self.lowering.adapter_version,
+            "request_projection": self.lowering.request_projection,
+            "provider_request": {
+                "content_hash": self.provider_request.content_hash,
+                "capture_stage": self.provider_request.capture_stage.value,
+                "fidelity": self.provider_request.fidelity.value,
+            },
+            "attribution": self.attribution.to_redacted_dict(),
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -595,6 +690,7 @@ def select_rollout_request(
 
 __all__ = [
     "AWORLD_PROVIDER_CANDIDATE_KWARG",
+    "AWORLD_PROVIDER_OBSERVED_ATTRIBUTION_KWARG",
     "CandidateCompileInput",
     "CandidateCompilePolicy",
     "CandidateCompilation",
@@ -605,6 +701,9 @@ __all__ = [
     "ContextRolloutSelection",
     "FRAMEWORK_COMPILER_IDENTITY",
     "ProviderCandidateEnvelope",
+    "ProviderAttributionSubject",
+    "ProviderObservedAttributionEnvelope",
+    "ProviderObservedAttributionReceipt",
     "ProviderLoweringCapability",
     "ProviderCacheMaterial",
     "ProviderLoweringReceipt",

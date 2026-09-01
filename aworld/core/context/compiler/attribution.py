@@ -53,6 +53,7 @@ class ProviderToolsLowering(str, Enum):
 
 
 class LogicalResidency(str, Enum):
+    UNKNOWN = "unknown"
     STABLE = "stable"
     DYNAMIC = "dynamic"
 

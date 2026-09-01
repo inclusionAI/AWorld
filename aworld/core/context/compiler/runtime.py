@@ -17,7 +17,14 @@ from .final import (
     compile_final_context,
 )
 from .frozen_json import FrozenMap, canonical_json_bytes, canonical_json_hash
-from .attribution import AttributionCollection, AttributionOwnerCode
+from .attribution import (
+    AttributionCollection,
+    AttributionCollectionShape,
+    AttributionOwnerCode,
+    ContextAttributionPlanEntry,
+    LogicalResidency,
+    ProviderRequestAttributionPlan,
+)
 from .models import (
     ContextItem,
     ContextKind,
@@ -26,7 +33,11 @@ from .models import (
     TokenEstimate,
 )
 from .scope import ContextResolutionTarget
-from .sidecar import ContextObservationSidecar
+from .sidecar import (
+    ContextEmissionIntent,
+    ContextObservationSidecar,
+    ModelResidency,
+)
 
 
 _TOKEN_ESTIMATOR = "aworld-canonical-json-byte4-v1"
@@ -125,6 +136,93 @@ def _bind_final_collection(
             return fallback_items, False
         bound.append(item)
     return tuple(bound), True
+
+
+def build_observed_model_boundary_attribution_plan(
+    *,
+    observed_request: ProviderRequestSnapshot,
+    observations: Iterable[ContextObservationSidecar],
+    task_epoch: int | None,
+) -> ProviderRequestAttributionPlan:
+    """Attribute an already-selected legacy request without compiling a candidate."""
+    payload = observed_request.payload
+    if not isinstance(payload, FrozenMap):
+        raise TypeError("observed model-boundary payload must be an object")
+    messages = payload.get("messages")
+    tools = payload.get("tools")
+    if not isinstance(messages, tuple):
+        raise TypeError("observed messages must be an array")
+    if tools is not None and not isinstance(tools, tuple):
+        raise TypeError("observed tools must be an array or null")
+    observations = tuple(observations)
+    fallback_messages = adapt_final_messages(
+        messages,
+        source_identity=f"observed-boundary:{observed_request.request_id}:messages",
+        task_epoch=task_epoch,
+    ).items
+    fallback_tools = adapt_tool_schemas(
+        tools or (),
+        source_identity=f"observed-boundary:{observed_request.request_id}:tools",
+        task_epoch=task_epoch,
+    ).items
+    message_items, messages_bound = _bind_final_collection(
+        fallback_messages,
+        _final_owner_sidecar(
+            observations,
+            owner="model.final_messages",
+            request_id=observed_request.request_id or "",
+            collection=AttributionCollection.MESSAGES,
+            task_epoch=task_epoch,
+        ),
+    )
+    tool_items, tools_bound = _bind_final_collection(
+        fallback_tools,
+        _final_owner_sidecar(
+            observations,
+            owner="model.final_tool_catalog",
+            request_id=observed_request.request_id or "",
+            collection=AttributionCollection.TOOLS,
+            task_epoch=task_epoch,
+        ),
+    )
+    entries: list[ContextAttributionPlanEntry] = []
+    for collection, items, bound, owner_code in (
+        (
+            AttributionCollection.MESSAGES,
+            message_items,
+            messages_bound,
+            AttributionOwnerCode.MODEL_FINAL_MESSAGES,
+        ),
+        (
+            AttributionCollection.TOOLS,
+            tool_items,
+            tools_bound,
+            AttributionOwnerCode.MODEL_FINAL_TOOL_CATALOG,
+        ),
+    ):
+        for ordinal, item in enumerate(items):
+            entries.append(
+                ContextAttributionPlanEntry.from_item(
+                    item=item,
+                    owner_code=(owner_code if bound else AttributionOwnerCode.UNKNOWN),
+                    collection=collection,
+                    ordinal=ordinal,
+                    token_estimate=estimate_canonical_json_tokens(item.payload),
+                    residency=LogicalResidency.UNKNOWN,
+                )
+            )
+    return ProviderRequestAttributionPlan(
+        request_id_hash=canonical_json_hash({"request_id": observed_request.request_id}),
+        candidate_content_hash=observed_request.content_hash,
+        entries=tuple(entries),
+        messages_count=len(messages),
+        tools_shape=(
+            AttributionCollectionShape.NULL
+            if tools is None
+            else AttributionCollectionShape.ARRAY
+        ),
+        tools_count=(None if tools is None else len(tools)),
+    )
 
 
 def _owner_code(owner: str) -> AttributionOwnerCode:
@@ -247,7 +345,7 @@ def compile_model_boundary_context(
         sidecar.owner in {"amni.folded_system", "amni.restored_folded_system"}
         for sidecar in observations
     )
-    evidence_by_id: dict[str, tuple[str, ContextItem]] = {}
+    evidence_by_id: dict[str, tuple[ContextObservationSidecar, ContextItem]] = {}
     for sidecar in observations:
         for item in sidecar.result.items:
             if item.id in consumed_owner_ids:
@@ -274,9 +372,10 @@ def compile_model_boundary_context(
             existing = evidence_by_id.get(item.id)
             if existing is not None and existing[1] != item:
                 raise ValueError("owner sidecars contain conflicting Context item ids")
-            evidence_by_id[item.id] = (sidecar.owner, item)
+            evidence_by_id[item.id] = (sidecar, item)
     additional_message_candidates: list[FinalCompileCandidate] = []
-    for sidecar_owner, item in evidence_by_id.values():
+    for sidecar, item in evidence_by_id.values():
+        sidecar_owner = sidecar.owner
         if item.id in candidate_ids:
             raise ValueError("owner evidence collides with an emitted candidate id")
         delegated = (
@@ -287,8 +386,13 @@ def compile_model_boundary_context(
             isinstance(item.payload, FrozenMap)
             and isinstance(item.payload.get("content"), str)
         )
+        has_explicit_non_resident_emission = (
+            sidecar.model_residency is ModelResidency.NOT_RESIDENT
+            and sidecar.emission_intent is ContextEmissionIntent.MESSAGE
+        )
         can_lower_instruction = (
-            message_shaped
+            has_explicit_non_resident_emission
+            and message_shaped
             and _known_semantics(item, task_epoch)
             and (
                 (
@@ -374,4 +478,5 @@ def compile_model_boundary_context(
 __all__ = [
     "compile_model_boundary_context",
     "estimate_canonical_json_tokens",
+    "build_observed_model_boundary_attribution_plan",
 ]

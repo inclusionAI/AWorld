@@ -923,7 +923,9 @@ class Context:
         from aworld.core.context.compiler import (
             AdapterResult,
             Authority,
+            ContextEmissionIntent,
             ContextObservationSidecar,
+            ModelResidency,
         )
         from aworld.core.context.instructions import ScopedInstructionLoader
 
@@ -946,6 +948,8 @@ class Context:
                 items=nested_items,
                 diagnostics=result.diagnostics,
             ),
+            model_residency=ModelResidency.NOT_RESIDENT,
+            emission_intent=ContextEmissionIntent.MESSAGE,
         )
         self.publish_context_observation(sidecar)
         return sidecar

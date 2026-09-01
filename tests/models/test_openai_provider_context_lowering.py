@@ -113,6 +113,15 @@ def _model(provider: OpenAIProvider, *, policy: CandidateCompilePolicy | None = 
     return model
 
 
+def _observe_model(provider: OpenAIProvider):
+    model = LLMModel(
+        conf=ModelConfig(context_compiler={"mode": "observe"}),
+        custom_provider=provider,
+    )
+    model.provider_name = "openai"
+    return model
+
+
 def _assert_lowering_receipt(context: Context, sent: dict[str, Any]) -> None:
     record = context.get_llm_calls()[0]
     rollout = record["context_rollout"]
@@ -180,6 +189,97 @@ def test_openai_off_mode_captures_provider_prepared_request_before_send():
         sync_calls[0]
     )
     assert record["provider_invoked"] is True
+    assert "context_rollout" not in record
+
+
+def test_openai_observe_is_byte_compatible_and_does_not_compile_or_leak_metadata(monkeypatch):
+    off_provider, off_calls, _ = _provider()
+    observe_provider, observe_calls, _ = _provider()
+    off = LLMModel(custom_provider=off_provider)
+    off.provider_name = "openai"
+    observe = _observe_model(observe_provider)
+    monkeypatch.setattr(
+        "aworld.models.llm.compile_context_candidate",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("candidate compiled")),
+    )
+    messages = [{"role": "user", "content": "same"}]
+    tools = [{"type": "function", "function": {"name": "same_tool"}}]
+    kwargs = {"tools": tools, "response_format": {"type": "json_object"}}
+
+    off.completion(messages, context=Context(task_id="off-bytes"), **kwargs)
+    context = Context(task_id="observe-bytes")
+    observe.completion(messages, context=context, **kwargs)
+
+    assert off_calls == observe_calls
+    assert len(observe_calls) == 1
+    assert all(not key.startswith("_aworld_") for key in observe_calls[0])
+    assert "context" not in observe_calls[0]
+    rollout = context.get_llm_calls()[0]["context_rollout"]
+    assert rollout["candidate_status"] == "not_requested"
+    assert rollout["provider_attribution"]["subject"] == "legacy_observed"
+    assert rollout["provider_attribution"]["status"] == "available"
+    assert rollout["provider_attribution"]["attribution"]["byte_conservation"] is True
+
+
+def test_openai_observe_capture_failure_is_fail_open_and_sends_once():
+    class BrokenCaptureContext(Context):
+        def get_llm_calls(self):
+            raise RuntimeError("storage-failed")
+
+    provider, sync_calls, _ = _provider()
+    model = _observe_model(provider)
+
+    model.completion(
+        [{"role": "user", "content": "legacy"}],
+        context=BrokenCaptureContext(task_id="observe-fail-open"),
+    )
+
+    assert len(sync_calls) == 1
+
+
+def test_openai_observe_provider_transform_is_unavailable_but_still_sends_once():
+    provider, sync_calls, _ = _provider()
+    provider.preprocess_messages = MethodType(
+        lambda self, messages, **kwargs: [
+            *messages, {"role": "system", "content": "provider-added"}
+        ],
+        provider,
+    )
+    model = _observe_model(provider)
+    context = Context(task_id="observe-transform")
+
+    model.completion([{"role": "user", "content": "legacy"}], context=context)
+
+    assert len(sync_calls) == 1
+    assert len(sync_calls[0]["messages"]) == 2
+    evidence = context.get_llm_calls()[0]["context_rollout"]["provider_attribution"]
+    assert evidence["status"] == "unavailable"
+    assert evidence["reason_code"] == "provider_attribution_mismatch"
+
+
+def test_openai_http_observe_binds_serialized_provider_payload():
+    provider, _, _ = _provider()
+    sent = []
+
+    class HTTPHandler:
+        def sync_call(self, data, *, serialized_body=None):
+            sent.append((data, serialized_body))
+            return object()
+
+    provider.is_http_provider = True
+    provider.http_provider = HTTPHandler()
+    model = _observe_model(provider)
+    context = Context(task_id="observe-http")
+
+    model.completion([{"role": "user", "content": "legacy"}], context=context)
+
+    assert len(sent) == 1
+    assert sent[0][1] is not None
+    record = context.get_llm_calls()[0]
+    evidence = record["context_rollout"]["provider_attribution"]
+    assert evidence["status"] == "available"
+    assert evidence["attribution"]["serialization"] == "http_serialized_canonical_json"
+    assert record["provider_request"]["serialized_checksum"] == canonical_json_hash(sent[0][0])
 
 
 @pytest.mark.asyncio
