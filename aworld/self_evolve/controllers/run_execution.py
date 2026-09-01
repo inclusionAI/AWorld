@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, MutableMapping
-from dataclasses import dataclass, field
+from collections.abc import Awaitable, Callable, Iterable, Mapping, MutableMapping
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import AbstractSet, Protocol
 
@@ -12,14 +12,24 @@ from aworld.self_evolve.budget import (
     BudgetStage,
     CandidateAttemptKey,
     CandidateAttemptStage,
+    ZeroBudgetUsageProofProvider,
 )
-from aworld.self_evolve.campaign_policy import is_verified_apply_policy
+from aworld.self_evolve.campaign_policy import (
+    effective_replay_repetitions,
+    is_verified_apply_policy,
+)
+from aworld.self_evolve.candidate_package import (
+    CandidateMutationKind,
+    classify_candidate_mutation,
+)
 from aworld.self_evolve.challenger import ChallengeReport
 from aworld.self_evolve.credit_assignment import (
     TargetSelectionDecision,
     TargetSelectionReport,
 )
 from aworld.self_evolve.datasets import SelfEvolveDataset
+from aworld.self_evolve.evaluation import estimate_replay_cost
+from aworld.self_evolve.gates import BudgetGate, TargetBehaviorDeltaGate
 from aworld.self_evolve.optimizers.base import CandidateSourceDisposition
 from aworld.self_evolve.provenance import (
     InferredNewSkillPolicy,
@@ -28,7 +38,9 @@ from aworld.self_evolve.provenance import (
 )
 from aworld.self_evolve.regression import RegressionEvidence
 from aworld.self_evolve.replay import (
+    CandidateReplayEvidenceReuseBackend,
     CandidateReplayResult,
+    _is_replayable_user_task_case,
 )
 from aworld.self_evolve.replay_adaptation import ReplayCapabilityRequirement
 from aworld.self_evolve.targets import SelfEvolveTarget
@@ -311,6 +323,115 @@ class CandidateLocalAdmissionResult:
             raise TypeError("local admission gate_results must be typed")
 
 
+CandidateCapabilityValidator = Callable[..., Awaitable[list[GateResult]]]
+ReusableBaselineCaseCounter = Callable[..., int]
+TypedGateFailureMapper = Callable[[GateResult], GateResult]
+
+
+@dataclass(frozen=True)
+class CandidateReplayAdmissionPolicy:
+    """Runner-owned replay planning and reservation policy."""
+
+    replay_enabled: bool
+    replay_backend: object | None
+    repetitions_explicit: bool
+    measurement_min_independent_cases: int
+    baseline_repetitions: int
+    candidate_repetitions: int
+    judge_repetitions: int
+    replay_candidate_limit: int | None
+    per_attempt_replay_token_limit: int | None
+    replay_tokens_per_unit: int | None
+
+    def __post_init__(self) -> None:
+        for field_name, value in (
+            (
+                "measurement_min_independent_cases",
+                self.measurement_min_independent_cases,
+            ),
+            ("baseline_repetitions", self.baseline_repetitions),
+            ("candidate_repetitions", self.candidate_repetitions),
+        ):
+            if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                raise ValueError(f"{field_name} must be a positive integer")
+        if (
+            isinstance(self.judge_repetitions, bool)
+            or not isinstance(self.judge_repetitions, int)
+            or self.judge_repetitions < 0
+        ):
+            raise ValueError("judge_repetitions must be a non-negative integer")
+        if self.replay_candidate_limit is not None and (
+            isinstance(self.replay_candidate_limit, bool)
+            or not isinstance(self.replay_candidate_limit, int)
+            or self.replay_candidate_limit < 1
+        ):
+            raise ValueError("replay_candidate_limit must be positive when set")
+        if self.per_attempt_replay_token_limit is not None and (
+            isinstance(self.per_attempt_replay_token_limit, bool)
+            or not isinstance(self.per_attempt_replay_token_limit, int)
+            or self.per_attempt_replay_token_limit < 1
+        ):
+            raise ValueError(
+                "per_attempt_replay_token_limit must be positive when set"
+            )
+        if self.replay_tokens_per_unit is not None and (
+            isinstance(self.replay_tokens_per_unit, bool)
+            or not isinstance(self.replay_tokens_per_unit, int)
+            or self.replay_tokens_per_unit < 0
+        ):
+            raise ValueError("replay_tokens_per_unit must be non-negative when set")
+
+
+@dataclass(frozen=True)
+class CandidateReplayAdmissionRuntime:
+    """Injected seams used by controller-owned replay admission."""
+
+    reusable_baseline_case_count: ReusableBaselineCaseCounter
+    validate_capabilities: CandidateCapabilityValidator
+    typed_gate_failure: TypedGateFailureMapper
+    feedback_builder: CandidateFeedbackBuilder
+
+    def __post_init__(self) -> None:
+        for field_name in (
+            "reusable_baseline_case_count",
+            "validate_capabilities",
+            "typed_gate_failure",
+            "feedback_builder",
+        ):
+            if not callable(getattr(self, field_name)):
+                raise TypeError(f"{field_name} must be callable")
+
+
+@dataclass(frozen=True)
+class CandidateReplayAdmissionResult:
+    """Replay plan, admission gates, and the held run-budget reservation."""
+
+    gate_results: tuple[GateResult, ...]
+    replay_case_count: int
+    replay_planned: bool
+    reuses_replay_evidence: bool
+    effective_baseline_repetitions: int
+    effective_candidate_repetitions: int
+    replay_budget: BudgetDecision | None
+    capability_gates: tuple[GateResult, ...]
+    capability_blocked: bool
+    terminal_result: CandidateEvaluationResult | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "gate_results", tuple(self.gate_results))
+        object.__setattr__(self, "capability_gates", tuple(self.capability_gates))
+        if not all(isinstance(gate, GateResult) for gate in self.gate_results):
+            raise TypeError("replay admission gate_results must be typed")
+        if not all(isinstance(gate, GateResult) for gate in self.capability_gates):
+            raise TypeError("replay admission capability_gates must be typed")
+        if self.replay_case_count < 0:
+            raise ValueError("replay_case_count must be non-negative")
+        if self.effective_baseline_repetitions < 1:
+            raise ValueError("effective_baseline_repetitions must be positive")
+        if self.effective_candidate_repetitions < 1:
+            raise ValueError("effective_candidate_repetitions must be positive")
+
+
 def duplicate_rejected_candidate_gate(
     candidate: CandidateVariant,
     *,
@@ -478,6 +599,339 @@ def terminal_candidate_evaluation_result(
     )
     return CandidateEvaluationResult.from_tuple(
         (state, report_item, feedback)
+    )
+
+
+def _replayable_user_task_dataset(
+    dataset: SelfEvolveDataset,
+) -> SelfEvolveDataset:
+    return SelfEvolveDataset(
+        cases=tuple(
+            case
+            for case in dataset.cases
+            if _is_replayable_user_task_case(case)
+        ),
+        recipe=dataset.recipe,
+    )
+
+
+def _backend_proves_zero_budget_usage(
+    backend: object | None,
+    stage: BudgetStage,
+) -> bool:
+    if not isinstance(backend, ZeroBudgetUsageProofProvider):
+        return False
+    try:
+        return backend.proves_zero_budget_usage(stage) is True
+    except Exception:
+        return False
+
+
+async def execute_candidate_replay_admission(
+    request: CandidateEvaluationRequest,
+    policy: CandidateReplayAdmissionPolicy,
+    runtime: CandidateReplayAdmissionRuntime,
+    *,
+    initial_gate_results: Iterable[GateResult],
+) -> CandidateReplayAdmissionResult:
+    """Plan paired replay and admit it through budget/capability gates."""
+
+    gate_results = list(initial_gate_results)
+    replay_dataset = _replayable_user_task_dataset(request.dataset)
+    replay_case_count = len(replay_dataset.cases)
+    replay_planned = bool(
+        policy.replay_enabled
+        and request.candidate.target.target_type == "skill"
+        and policy.replay_backend is not None
+        and replay_case_count > 0
+    )
+    reuses_replay_evidence = bool(
+        replay_planned
+        and isinstance(
+            policy.replay_backend,
+            CandidateReplayEvidenceReuseBackend,
+        )
+    )
+    (
+        effective_baseline_repetitions,
+        effective_candidate_repetitions,
+        _,
+    ) = effective_replay_repetitions(
+        apply_policy=request.apply_policy,
+        repetitions_explicit=policy.repetitions_explicit,
+        replay_case_count=replay_case_count,
+        measurement_min_independent_cases=(
+            policy.measurement_min_independent_cases
+        ),
+        baseline_repetitions=policy.baseline_repetitions,
+        candidate_repetitions=policy.candidate_repetitions,
+    )
+
+    per_attempt_budget_gate: GateResult | None = None
+    if not reuses_replay_evidence:
+        replay_backend_proven_zero = _backend_proves_zero_budget_usage(
+            policy.replay_backend,
+            BudgetStage.PAIRED_REPLAY,
+        )
+        per_attempt_budget_gate = BudgetGate().evaluate(
+            estimate_replay_cost(
+                dataset=replay_dataset,
+                candidate_count=1,
+                judge_repetitions=policy.judge_repetitions,
+                baseline_repetitions=effective_baseline_repetitions,
+                candidate_repetitions=effective_candidate_repetitions,
+                replay_candidate_limit=policy.replay_candidate_limit,
+                max_run_tokens=policy.per_attempt_replay_token_limit,
+                estimated_tokens_per_replay=(
+                    None
+                    if replay_backend_proven_zero
+                    else policy.replay_tokens_per_unit
+                ),
+                backend_proven_zero=replay_backend_proven_zero,
+            )
+        )
+        per_attempt_budget_gate = replace(
+            per_attempt_budget_gate,
+            details={
+                **dict(per_attempt_budget_gate.details or {}),
+                "budget_semantics": "per_attempt_replay_ceiling",
+                "baseline_reuse_accounting": (
+                    "conservative_independent_attempt_includes_baseline"
+                ),
+                "run_ledger_is_authoritative_for_baseline_reuse": True,
+            },
+        )
+        gate_results.append(per_attempt_budget_gate)
+    if (
+        replay_planned
+        and per_attempt_budget_gate is not None
+        and not per_attempt_budget_gate.passed
+    ):
+        if request.attempt_tracker is not None and request.attempt_key is not None:
+            request.attempt_tracker.emit(
+                request.attempt_key,
+                CandidateAttemptStage.NOT_RUN,
+                reason_code="per_attempt_replay_budget_denied",
+            )
+        return CandidateReplayAdmissionResult(
+            gate_results=tuple(gate_results),
+            replay_case_count=replay_case_count,
+            replay_planned=replay_planned,
+            reuses_replay_evidence=reuses_replay_evidence,
+            effective_baseline_repetitions=effective_baseline_repetitions,
+            effective_candidate_repetitions=effective_candidate_repetitions,
+            replay_budget=None,
+            capability_gates=(),
+            capability_blocked=False,
+            terminal_result=terminal_candidate_evaluation_result(
+                candidate=request.candidate,
+                iteration_number=request.iteration_number,
+                candidate_number=request.candidate_number,
+                candidate_count=request.candidate_count,
+                gate_results=gate_results,
+                feedback_builder=runtime.feedback_builder,
+            ),
+        )
+
+    replay_budget: BudgetDecision | None = None
+    if (
+        replay_planned
+        and not reuses_replay_evidence
+        and request.budget_context is not None
+    ):
+        reusable_baseline_case_count = runtime.reusable_baseline_case_count(
+            dataset=request.dataset,
+            baseline_replay_dir=request.baseline_replay_dir,
+            baseline_repetitions=effective_baseline_repetitions,
+        )
+        replay_units = (
+            replay_case_count * effective_candidate_repetitions
+            + max(0, replay_case_count - reusable_baseline_case_count)
+            * effective_baseline_repetitions
+        )
+        replay_budget = request.budget_context.reserve(
+            BudgetStage.PAIRED_REPLAY,
+            f"{request.candidate.candidate_id}-paired-replay",
+            units=replay_units,
+        )
+        if not replay_budget.allowed:
+            gate_results.append(
+                GateResult(
+                    gate_name="run_budget_paired_replay",
+                    passed=False,
+                    reason="paired replay was not run because budget was denied",
+                    details={
+                        "failure_class": "budget",
+                        "code": "replay_budget_denied",
+                        "budget_decision": replay_budget.to_dict(),
+                    },
+                )
+            )
+            if (
+                request.attempt_tracker is not None
+                and request.attempt_key is not None
+            ):
+                request.attempt_tracker.emit(
+                    request.attempt_key,
+                    CandidateAttemptStage.NOT_RUN,
+                    reason_code="replay_budget_denied",
+                )
+            return CandidateReplayAdmissionResult(
+                gate_results=tuple(gate_results),
+                replay_case_count=replay_case_count,
+                replay_planned=replay_planned,
+                reuses_replay_evidence=reuses_replay_evidence,
+                effective_baseline_repetitions=effective_baseline_repetitions,
+                effective_candidate_repetitions=effective_candidate_repetitions,
+                replay_budget=replay_budget,
+                capability_gates=(),
+                capability_blocked=False,
+                terminal_result=terminal_candidate_evaluation_result(
+                    candidate=request.candidate,
+                    iteration_number=request.iteration_number,
+                    candidate_number=request.candidate_number,
+                    candidate_count=request.candidate_count,
+                    gate_results=gate_results,
+                    feedback_builder=runtime.feedback_builder,
+                ),
+            )
+
+    capability_gates = (
+        ()
+        if reuses_replay_evidence
+        else tuple(
+            await runtime.validate_capabilities(
+                run_id=request.run_id,
+                target=request.target,
+                dataset=request.dataset,
+                candidate=request.candidate,
+                requirements=request.capability_requirements,
+            )
+        )
+    )
+    if not all(isinstance(gate, GateResult) for gate in capability_gates):
+        raise TypeError("candidate capability validator must return GateResult values")
+    gate_results.extend(capability_gates)
+    capability_blocked = any(not gate.passed for gate in capability_gates)
+    mutation_classification = classify_candidate_mutation(
+        request.candidate,
+        current_content=request.target.load_current_content(),
+    )
+    if (
+        is_verified_apply_policy(request.apply_policy)
+        and mutation_classification.kind
+        is CandidateMutationKind.EVALUATION_SUPPORT
+    ):
+        support_preflight_gates = tuple(
+            gate
+            for gate in capability_gates
+            if gate.gate_name == "candidate_capability_replay"
+            and gate.passed
+            and isinstance(gate.details, Mapping)
+            and gate.details.get("operational_preflight") is True
+        )
+        support_bootstrap_ready = bool(
+            support_preflight_gates
+            and all(gate.passed for gate in gate_results)
+        )
+        gate_results.append(
+            GateResult(
+                gate_name="evaluation_support_prerequisite",
+                passed=support_bootstrap_ready,
+                reason=(
+                    "evaluation support passed deterministic capability preflight"
+                    if support_bootstrap_ready
+                    else (
+                        "evaluation support requires a successful deterministic "
+                        "capability preflight before composition"
+                    )
+                ),
+                details={
+                    "candidate_status": (
+                        "prerequisite" if support_bootstrap_ready else "rejected"
+                    ),
+                    "code": (
+                        "evaluation_support_prerequisite_ready"
+                        if support_bootstrap_ready
+                        else "evaluation_support_preflight_missing"
+                    ),
+                    "failure_class": (
+                        None if support_bootstrap_ready else "candidate"
+                    ),
+                    "repairable": not support_bootstrap_ready,
+                    "proof_gate_names": [
+                        gate.gate_name for gate in support_preflight_gates
+                    ],
+                    "mutation": mutation_classification.to_dict(),
+                },
+            )
+        )
+        gate_results.append(
+            runtime.typed_gate_failure(
+                TargetBehaviorDeltaGate().evaluate(
+                    current_content=request.target.load_current_content(),
+                    candidate=request.candidate,
+                )
+            )
+        )
+        if replay_budget is not None:
+            if request.budget_context is None:
+                raise RuntimeError("replay reservation requires a budget context")
+            request.budget_context.release(
+                replay_budget,
+                reason_code="evaluation_support_prerequisite_lane",
+            )
+            replay_budget = None
+        if (
+            request.attempt_tracker is not None
+            and request.attempt_key is not None
+            and not request.attempt_tracker.terminal(request.attempt_key)
+        ):
+            request.attempt_tracker.emit(
+                request.attempt_key,
+                (
+                    CandidateAttemptStage.PREREQUISITE_READY
+                    if support_bootstrap_ready
+                    else CandidateAttemptStage.REJECTED
+                ),
+                reason_code=(
+                    "evaluation_support_bootstrap_ready"
+                    if support_bootstrap_ready
+                    else "evaluation_support_preflight_missing"
+                ),
+            )
+        status = "prerequisite" if support_bootstrap_ready else "rejected"
+        return CandidateReplayAdmissionResult(
+            gate_results=tuple(gate_results),
+            replay_case_count=replay_case_count,
+            replay_planned=replay_planned,
+            reuses_replay_evidence=reuses_replay_evidence,
+            effective_baseline_repetitions=effective_baseline_repetitions,
+            effective_candidate_repetitions=effective_candidate_repetitions,
+            replay_budget=replay_budget,
+            capability_gates=capability_gates,
+            capability_blocked=capability_blocked,
+            terminal_result=terminal_candidate_evaluation_result(
+                candidate=request.candidate,
+                iteration_number=request.iteration_number,
+                candidate_number=request.candidate_number,
+                candidate_count=request.candidate_count,
+                gate_results=gate_results,
+                feedback_builder=runtime.feedback_builder,
+                status=status,
+            ),
+        )
+
+    return CandidateReplayAdmissionResult(
+        gate_results=tuple(gate_results),
+        replay_case_count=replay_case_count,
+        replay_planned=replay_planned,
+        reuses_replay_evidence=reuses_replay_evidence,
+        effective_baseline_repetitions=effective_baseline_repetitions,
+        effective_candidate_repetitions=effective_candidate_repetitions,
+        replay_budget=replay_budget,
+        capability_gates=capability_gates,
+        capability_blocked=capability_blocked,
     )
 
 

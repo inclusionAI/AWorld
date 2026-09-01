@@ -72,13 +72,11 @@ from aworld.self_evolve.evaluation import (
     EvaluationRequest,
     SkillCandidateOverlayBackend,
     determine_candidate_confidence,
-    estimate_replay_cost,
     evaluate_baseline_and_candidate,
     evaluation_request_identity,
     evaluate_variant_task,
 )
 from aworld.self_evolve.gates import (
-    BudgetGate,
     CandidatePackageGate,
     CostLatencyRegressionGate,
     EvaluationComparabilityGate,
@@ -376,10 +374,13 @@ from aworld.self_evolve.controllers.run_execution import (
     CandidateEvaluationRequest,
     CandidateEvaluationResult,
     CandidateLocalAdmissionPolicy,
+    CandidateReplayAdmissionPolicy,
+    CandidateReplayAdmissionRuntime,
     ExplicitTargetRunRequest,
     duplicate_accepted_candidate_gate as _duplicate_accepted_candidate_gate,
     duplicate_rejected_candidate_gate as _duplicate_rejected_candidate_gate,
     execute_candidate_local_admission,
+    execute_candidate_replay_admission,
     iteration_report_item as _iteration_report_item,
     iteration_state as _iteration_state,
     terminal_candidate_evaluation_result as _controller_terminal_candidate_result,
@@ -8728,7 +8729,6 @@ class SelfEvolveRunner:
         candidate_number = request.candidate_number
         candidate_count = request.candidate_count
         baseline_replay_dir = request.baseline_replay_dir
-        capability_requirements = request.capability_requirements
         attempt_key = request.attempt_key
         attempt_tracker = request.attempt_tracker
         budget_context = request.budget_context
@@ -8795,252 +8795,38 @@ class SelfEvolveRunner:
                         )
                     )
 
-        replay_case_count = sum(
-            1
-            for case in dataset.cases
-            if _is_replayable_user_task_case(case)
-        )
-        replay_planned = bool(
-            self.replay_enabled
-            and candidate.target.target_type == "skill"
-            and self.candidate_replay_backend is not None
-            and replay_case_count > 0
-        )
-        replay_evidence_reuse_backend = (
-            self.candidate_replay_backend
-            if replay_planned
-            and isinstance(
-                self.candidate_replay_backend,
-                CandidateReplayEvidenceReuseBackend,
-            )
-            else None
-        )
-        (
-            effective_replay_baseline_repetitions,
-            effective_replay_candidate_repetitions,
-            _,
-        ) = _effective_replay_repetitions(
-            apply_policy=apply_policy,
-            repetitions_explicit=self.replay_repetitions_explicit,
-            replay_case_count=replay_case_count,
-            measurement_min_independent_cases=(
-                self.measurement_min_independent_cases
+        replay_admission = await execute_candidate_replay_admission(
+            request,
+            CandidateReplayAdmissionPolicy(
+                replay_enabled=self.replay_enabled,
+                replay_backend=self.candidate_replay_backend,
+                repetitions_explicit=self.replay_repetitions_explicit,
+                measurement_min_independent_cases=(
+                    self.measurement_min_independent_cases
+                ),
+                baseline_repetitions=self.baseline_replay_repetitions,
+                candidate_repetitions=self.candidate_replay_repetitions,
+                judge_repetitions=self.judge_repetitions,
+                replay_candidate_limit=self.replay_candidate_limit,
+                per_attempt_replay_token_limit=(
+                    self.per_attempt_replay_token_limit
+                ),
+                replay_tokens_per_unit=self.replay_tokens_per_unit,
             ),
-            baseline_repetitions=self.baseline_replay_repetitions,
-            candidate_repetitions=self.candidate_replay_repetitions,
+            CandidateReplayAdmissionRuntime(
+                reusable_baseline_case_count=_reusable_baseline_case_count,
+                validate_capabilities=self._validate_candidate_capabilities,
+                typed_gate_failure=_with_typed_gate_failure_event,
+                feedback_builder=_iteration_validation_feedback,
+            ),
+            initial_gate_results=gate_results,
         )
-        per_attempt_budget_gate: GateResult | None = None
-        if replay_evidence_reuse_backend is None:
-            replay_backend_proven_zero = _backend_proves_zero_budget_usage(
-                self.candidate_replay_backend,
-                BudgetStage.PAIRED_REPLAY,
-            )
-            per_attempt_budget_gate = BudgetGate().evaluate(
-                estimate_replay_cost(
-                    dataset=_replayable_user_task_dataset(dataset),
-                    candidate_count=1,
-                    judge_repetitions=self.judge_repetitions,
-                    baseline_repetitions=(
-                        effective_replay_baseline_repetitions
-                    ),
-                    candidate_repetitions=(
-                        effective_replay_candidate_repetitions
-                    ),
-                    replay_candidate_limit=self.replay_candidate_limit,
-                    max_run_tokens=self.per_attempt_replay_token_limit,
-                    estimated_tokens_per_replay=(
-                        None
-                        if replay_backend_proven_zero
-                        else self.replay_tokens_per_unit
-                    ),
-                    backend_proven_zero=replay_backend_proven_zero,
-                )
-            )
-            per_attempt_budget_gate = replace(
-                per_attempt_budget_gate,
-                details={
-                    **dict(per_attempt_budget_gate.details or {}),
-                    "budget_semantics": "per_attempt_replay_ceiling",
-                    "baseline_reuse_accounting": (
-                        "conservative_independent_attempt_includes_baseline"
-                    ),
-                    "run_ledger_is_authoritative_for_baseline_reuse": True,
-                },
-            )
-            gate_results.append(per_attempt_budget_gate)
-        if (
-            replay_planned
-            and per_attempt_budget_gate is not None
-            and not per_attempt_budget_gate.passed
-        ):
-            if attempt_tracker is not None and attempt_key is not None:
-                attempt_tracker.emit(
-                    attempt_key,
-                    CandidateAttemptStage.NOT_RUN,
-                    reason_code="per_attempt_replay_budget_denied",
-                )
-            return _typed_terminal_candidate_evaluation_result(
-                candidate=candidate,
-                iteration_number=iteration_number,
-                candidate_number=candidate_number,
-                candidate_count=candidate_count,
-                gate_results=gate_results,
-            )
-        replay_budget: BudgetDecision | None = None
-        if (
-            replay_planned
-            and replay_evidence_reuse_backend is None
-            and budget_context is not None
-        ):
-            reusable_baseline_case_count = _reusable_baseline_case_count(
-                dataset=dataset,
-                baseline_replay_dir=baseline_replay_dir,
-                baseline_repetitions=(
-                    effective_replay_baseline_repetitions
-                ),
-            )
-            replay_units = (
-                replay_case_count * effective_replay_candidate_repetitions
-                + max(0, replay_case_count - reusable_baseline_case_count)
-                * effective_replay_baseline_repetitions
-            )
-            replay_budget = budget_context.reserve(
-                BudgetStage.PAIRED_REPLAY,
-                f"{candidate.candidate_id}-paired-replay",
-                units=replay_units,
-            )
-            if not replay_budget.allowed:
-                gate_results.append(
-                    GateResult(
-                        gate_name="run_budget_paired_replay",
-                        passed=False,
-                        reason="paired replay was not run because budget was denied",
-                        details={
-                            "failure_class": "budget",
-                            "code": "replay_budget_denied",
-                            "budget_decision": replay_budget.to_dict(),
-                        },
-                    )
-                )
-                if attempt_tracker is not None and attempt_key is not None:
-                    attempt_tracker.emit(
-                        attempt_key,
-                        CandidateAttemptStage.NOT_RUN,
-                        reason_code="replay_budget_denied",
-                    )
-                return _typed_terminal_candidate_evaluation_result(
-                    candidate=candidate,
-                    iteration_number=iteration_number,
-                    candidate_number=candidate_number,
-                    candidate_count=candidate_count,
-                    gate_results=gate_results,
-                )
-        capability_gates = (
-            []
-            if replay_evidence_reuse_backend is not None
-            else await self._validate_candidate_capabilities(
-                run_id=run_id,
-                target=target,
-                dataset=dataset,
-                candidate=candidate,
-                requirements=capability_requirements,
-            )
-        )
-        gate_results.extend(capability_gates)
-        capability_blocked = any(not gate.passed for gate in capability_gates)
-        mutation_classification = classify_candidate_mutation(
-            candidate,
-            current_content=target.load_current_content(),
-        )
-        if (
-            _is_verified_apply_policy(apply_policy)
-            and mutation_classification.kind
-            is CandidateMutationKind.EVALUATION_SUPPORT
-        ):
-            support_preflight_gates = tuple(
-                gate
-                for gate in capability_gates
-                if gate.gate_name == "candidate_capability_replay"
-                and gate.passed
-                and isinstance(gate.details, Mapping)
-                and gate.details.get("operational_preflight") is True
-            )
-            support_bootstrap_ready = bool(
-                support_preflight_gates
-                and all(gate.passed for gate in gate_results)
-            )
-            support_gate = GateResult(
-                gate_name="evaluation_support_prerequisite",
-                passed=support_bootstrap_ready,
-                reason=(
-                    "evaluation support passed deterministic capability preflight"
-                    if support_bootstrap_ready
-                    else (
-                        "evaluation support requires a successful deterministic "
-                        "capability preflight before composition"
-                    )
-                ),
-                details={
-                    "candidate_status": (
-                        "prerequisite" if support_bootstrap_ready else "rejected"
-                    ),
-                    "code": (
-                        "evaluation_support_prerequisite_ready"
-                        if support_bootstrap_ready
-                        else "evaluation_support_preflight_missing"
-                    ),
-                    "failure_class": (
-                        None if support_bootstrap_ready else "candidate"
-                    ),
-                    "repairable": not support_bootstrap_ready,
-                    "proof_gate_names": [
-                        gate.gate_name for gate in support_preflight_gates
-                    ],
-                    "mutation": mutation_classification.to_dict(),
-                },
-            )
-            # Put the typed disposition before the expected target-delta gate so
-            # feedback cannot mislabel an unverified support package as ready.
-            gate_results.append(support_gate)
-            target_behavior_gate = _with_typed_gate_failure_event(
-                TargetBehaviorDeltaGate().evaluate(
-                    current_content=target.load_current_content(),
-                    candidate=candidate,
-                )
-            )
-            gate_results.append(target_behavior_gate)
-            if replay_budget is not None:
-                budget_context.release(
-                    replay_budget,
-                    reason_code="evaluation_support_prerequisite_lane",
-                )
-                replay_budget = None
-            if (
-                attempt_tracker is not None
-                and attempt_key is not None
-                and not attempt_tracker.terminal(attempt_key)
-            ):
-                attempt_tracker.emit(
-                    attempt_key,
-                    (
-                        CandidateAttemptStage.PREREQUISITE_READY
-                        if support_bootstrap_ready
-                        else CandidateAttemptStage.REJECTED
-                    ),
-                    reason_code=(
-                        "evaluation_support_bootstrap_ready"
-                        if support_bootstrap_ready
-                        else "evaluation_support_preflight_missing"
-                    ),
-                )
-            return _typed_terminal_candidate_evaluation_result(
-                candidate=candidate,
-                iteration_number=iteration_number,
-                candidate_number=candidate_number,
-                candidate_count=candidate_count,
-                gate_results=gate_results,
-                status=("prerequisite" if support_bootstrap_ready else "rejected"),
-            )
+        gate_results = list(replay_admission.gate_results)
+        if replay_admission.terminal_result is not None:
+            return replay_admission.terminal_result
+        replay_case_count = replay_admission.replay_case_count
+        replay_budget = replay_admission.replay_budget
+        capability_blocked = replay_admission.capability_blocked
         replay_started = False
         replay_stage_started_at: float | None = None
         replay_telemetry_before = _TelemetryUsageSnapshot()
