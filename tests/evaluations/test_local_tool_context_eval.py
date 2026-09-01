@@ -200,24 +200,58 @@ def test_benefit_report_accepts_only_explicit_cost_metric_for_efficiency_path():
 
 def test_benefit_report_aggregates_receipts_and_never_classifies_missing_prompt():
     reporter = _load_reporter()
+    payload = {"messages": [{"role": "user", "content": "actual"}], "model": "gpt"}
+    message_bytes = len(reporter.canonical_json_bytes(payload["messages"][0]))
+    total_bytes = len(reporter.canonical_json_bytes(payload))
+    candidate_hash = "sha256:" + "a" * 64
     receipt = {
+        "schema_version": "aworld.context.provider-attribution.v1",
         "status": "available",
-        "total_canonical_bytes": 17,
-        "attributed_value_bytes": 5,
-        "provider_envelope_and_params": 12,
+        "serialization": "provider_prepared_canonical_json",
+        "provider_request_content_hash": reporter.value_hash(payload),
+        "canonical_request_checksum": reporter.value_hash(payload),
+        "plan_request_id_hash": reporter.value_hash({"request_id": "r1"}),
+        "candidate_content_hash": candidate_hash,
+        "messages_shape": "array",
+        "messages_count": 1,
+        "tools_shape": "null",
+        "tools_count": None,
+        "provider_tools_shape": "absent",
+        "tools_lowering": "null_to_absent",
+        "total_canonical_bytes": total_bytes,
+        "attributed_value_bytes": message_bytes,
+        "provider_envelope_and_params": total_bytes - message_bytes,
         "byte_conservation": True,
+        "entry_count": 1,
         "entries": [
             {
+                "item_identity_hash": "sha256:" + "b" * 64,
                 "owner_code": "model_final_messages",
                 "kind": "user",
                 "source_kind": "agent",
+                "stability": "turn_dynamic",
+                "collection": "messages",
+                "ordinal": 0,
+                "content_hash": reporter.value_hash(payload["messages"][0]),
+                "token_estimate": {"value": 1, "estimator": "test-v1", "exact": False},
                 "residency": "dynamic",
-                "canonical_value_bytes": 5,
+                "canonical_value_bytes": message_bytes,
             }
         ],
     }
     calls = [
-        {"context_rollout": {"provider_lowering": {"attribution": receipt}}},
+        {
+            "request_id": "r1",
+            "provider_request": {
+                "request_id": "r1",
+                "payload": payload,
+                "content_hash": reporter.value_hash(payload),
+            },
+            "context_rollout": {
+                "candidate_snapshot": {"content_hash": candidate_hash},
+                "provider_lowering": {"candidate_content_hash": candidate_hash, "attribution": receipt},
+            },
+        },
         {
             "request": {
                 "messages": [
@@ -229,10 +263,10 @@ def test_benefit_report_aggregates_receipts_and_never_classifies_missing_prompt(
 
     summary = reporter.provider_attribution_summary(calls)
 
-    assert summary["status"] == "available"
+    assert summary["status"] == "unavailable"
     assert summary["coverage_rate"] == 0.5
-    assert summary["byte_conservation"] is True
-    assert summary["by_dimension"]["owner"] == {"model_final_messages": 5}
+    assert summary["byte_conservation"] is False
+    assert summary["by_dimension"]["owner"] == {"model_final_messages": message_bytes}
     assert summary["unavailable_receipt_count"] == 1
     assert summary["fallback"] == "none"
     assert "must-not-be-classified" not in repr(summary)
@@ -247,5 +281,95 @@ def test_benefit_report_marks_all_missing_attribution_unavailable():
 
     assert summary["status"] == "unavailable"
     assert summary["available_receipt_count"] == 0
-    assert summary["reason"] == "provider_attribution_receipt_unavailable"
+    assert summary["reason"] == "provider_attribution_incomplete"
     assert summary["by_dimension"]["owner"] == {}
+
+
+def test_benefit_report_rejects_forged_receipt_against_raw_provider_payload():
+    reporter = _load_reporter()
+    payload = {"messages": [{"role": "user", "content": "actual"}], "model": "gpt"}
+    forged = {
+        "schema_version": "aworld.context.provider-attribution.v1",
+        "status": "available",
+        "serialization": "provider_prepared_canonical_json",
+        "provider_request_content_hash": reporter.value_hash(payload),
+        "canonical_request_checksum": reporter.value_hash(payload),
+        "plan_request_id_hash": reporter.value_hash({"request_id": "r1"}),
+        "candidate_content_hash": "sha256:" + "a" * 64,
+        "messages_count": 1,
+        "tools_shape": "null",
+        "tools_count": None,
+        "provider_tools_shape": "absent",
+        "tools_lowering": "null_to_absent",
+        "total_canonical_bytes": len(reporter.canonical_json_bytes(payload)),
+        "attributed_value_bytes": 1,
+        "provider_envelope_and_params": len(reporter.canonical_json_bytes(payload)) - 1,
+        "byte_conservation": True,
+        "entry_count": 1,
+        "entries": [{
+            "item_identity_hash": "sha256:" + "b" * 64,
+            "owner_code": "leak-secret-owner",
+            "kind": "user",
+            "source_kind": "agent",
+            "stability": "turn_dynamic",
+            "collection": "messages",
+            "ordinal": 0,
+            "content_hash": reporter.value_hash(payload["messages"][0]),
+            "token_estimate": {"value": 1, "estimator": "test-v1", "exact": False},
+            "residency": "dynamic",
+            "canonical_value_bytes": 1,
+        }],
+    }
+    calls = [{
+        "request_id": "r1",
+        "provider_request": {
+            "request_id": "r1",
+            "payload": payload,
+            "content_hash": reporter.value_hash(payload),
+            "capture_stage": "provider_prepared",
+            "fidelity": "provider_prepared",
+        },
+        "context_rollout": {
+            "candidate_snapshot": {"content_hash": "sha256:" + "a" * 64},
+            "provider_lowering": {
+                "candidate_content_hash": "sha256:" + "a" * 64,
+                "attribution": forged,
+            },
+        },
+    }]
+
+    summary = reporter.provider_attribution_summary(calls)
+
+    assert summary["status"] == "unavailable"
+    assert summary["invalid_receipt_count"] == 1
+    assert summary["byte_conservation"] is False
+    assert "leak-secret-owner" not in repr(summary)
+
+
+def test_provider_attribution_deltas_are_run_bound_and_unsupported_without_baseline():
+    reporter = _load_reporter()
+    available = {
+        "status": "available",
+        "by_dimension": {
+            "owner": {"model_final_messages": 10},
+            "kind": {"user": 10},
+            "source_kind": {"agent": 10},
+            "residency": {"dynamic": 10},
+        },
+    }
+    rows = [
+        {"experiment": "exp-a", "run": "legacy-run", "case_id": "case", "repeat": 0, "variant": "legacy", "summary": available},
+        {"experiment": "exp-a", "run": "candidate-run", "case_id": "case", "repeat": 0, "variant": "candidate", "summary": available},
+        {"experiment": "exp-b", "run": "candidate-only", "case_id": "case", "repeat": 0, "variant": "candidate", "summary": available},
+    ]
+
+    deltas = reporter.paired_attribution_deltas(
+        rows, baseline="legacy", candidate="candidate"
+    )
+
+    assert deltas[0]["status"] == "available"
+    assert deltas[0]["baseline_run"] == "legacy-run"
+    assert deltas[0]["candidate_run"] == "candidate-run"
+    assert deltas[1]["status"] == "unsupported"
+    assert deltas[1]["reason"] == "paired_variant_missing"
+    assert deltas[1]["baseline_run"] is None

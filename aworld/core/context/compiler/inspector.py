@@ -32,6 +32,19 @@ def inspect_final_context(result: FinalCompileResult) -> dict[str, Any]:
         for decision in result.decisions
         if decision.action is ResolutionAction.OFFLOADED
     ]
+    attribution = (
+        {
+            **summarize_attribution_plan(result.attribution_plan.entries),
+            "request_id_hash": result.attribution_plan.request_id_hash,
+            "candidate_content_hash": result.attribution_plan.candidate_content_hash,
+            "entries": [
+                entry.to_redacted_dict()
+                for entry in result.attribution_plan.entries
+            ],
+        }
+        if result.attribution_plan is not None
+        else {"status": "unavailable", "reason_code": "legacy_result_without_attribution"}
+    )
     return {
         "schema_version": "aworld.context.inspector.v1",
         "compiler": {
@@ -51,15 +64,7 @@ def inspect_final_context(result: FinalCompileResult) -> dict[str, Any]:
             "skill_set_hash": result.skill_set_hash,
         },
         "tokens": result.token_accounting.to_dict(),
-        "attribution": {
-            **summarize_attribution_plan(result.attribution_plan.entries),
-            "request_id_hash": result.attribution_plan.request_id_hash,
-            "candidate_content_hash": result.attribution_plan.candidate_content_hash,
-            "entries": [
-                entry.to_redacted_dict()
-                for entry in result.attribution_plan.entries
-            ],
-        },
+        "attribution": attribution,
         "decisions": {
             "action_counts": dict(sorted(actions.items())),
             "reason_counts": dict(sorted(reasons.items())),

@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import sys
 from dataclasses import fields, is_dataclass
 from enum import Enum
@@ -17,12 +18,22 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from aworld.core.context.compiler import (
+    AttributionCollection,
+    AttributionCollectionShape,
+    AttributionOwnerCode,
+    AttributionSerialization,
+    ContextKind,
     ContextCompilerMode,
     RollbackBundle,
     RolloutCapability,
     assess_default_on_readiness,
     canonical_json_hash,
     FrozenMap,
+    LogicalResidency,
+    ProviderToolsLowering,
+    SourceKind,
+    Stability,
+    canonical_json_bytes,
     thaw_json,
 )
 from aworld.evaluations.context_benefit import (
@@ -127,15 +138,133 @@ def provider_attribution_summary(calls: list[dict]) -> dict[str, Any]:
     overhead = 0
     total = 0
     for call in calls:
+        provider_snapshot = call.get("provider_request") or {}
+        provider_payload = provider_snapshot.get("payload")
+        rollout = call.get("context_rollout") or {}
+        lowering = rollout.get("provider_lowering") or {}
         receipt = (
-            ((call.get("context_rollout") or {}).get("provider_lowering") or {})
-            .get("attribution")
+            lowering.get("attribution")
         )
-        if not isinstance(receipt, dict) or receipt.get("status") != "available":
+        if not isinstance(receipt, dict):
             continue
         entries = receipt.get("entries")
-        if not isinstance(entries, list) or not all(
+        if (
+            receipt.get("schema_version") != "aworld.context.provider-attribution.v1"
+            or receipt.get("status") != "available"
+            or receipt.get("serialization") not in {value.value for value in AttributionSerialization}
+            or not isinstance(provider_payload, dict)
+            or not isinstance(entries, list)
+            or not all(
             isinstance(entry, dict) for entry in entries
+            )
+        ):
+            invalid += 1
+            continue
+        canonical_body = canonical_json_bytes(provider_payload)
+        canonical_hash = value_hash(provider_payload)
+        candidate_hash = ((rollout.get("candidate_snapshot") or {}).get("content_hash"))
+        if (
+            provider_snapshot.get("request_id") != call.get("request_id")
+            or provider_snapshot.get("content_hash") != canonical_hash
+            or receipt.get("provider_request_content_hash") != canonical_hash
+            or receipt.get("canonical_request_checksum") != canonical_hash
+            or receipt.get("total_canonical_bytes") != len(canonical_body)
+            or receipt.get("plan_request_id_hash") != value_hash({"request_id": call.get("request_id")})
+            or receipt.get("candidate_content_hash") != candidate_hash
+            or lowering.get("candidate_content_hash") != candidate_hash
+        ):
+            invalid += 1
+            continue
+        if (
+            receipt.get("serialization")
+            == AttributionSerialization.HTTP_SERIALIZED_CANONICAL_JSON.value
+            and provider_snapshot.get("serialized_checksum") != canonical_hash
+        ) or (
+            receipt.get("serialization")
+            == AttributionSerialization.PROVIDER_PREPARED_CANONICAL_JSON.value
+            and provider_snapshot.get("serialized_checksum") is not None
+        ):
+            invalid += 1
+            continue
+        messages = provider_payload.get("messages")
+        tools_present = "tools" in provider_payload
+        tools = provider_payload.get("tools")
+        provider_tools_shape = (
+            "absent" if not tools_present else "null" if tools is None else "array" if isinstance(tools, list) else "invalid"
+        )
+        tools_lowering = receipt.get("tools_lowering")
+        expected_provider_tools_shape = (
+            "absent"
+            if receipt.get("tools_shape") == "null"
+            and tools_lowering == ProviderToolsLowering.NULL_TO_ABSENT.value
+            else receipt.get("tools_shape")
+        )
+        if (
+            receipt.get("messages_shape") != "array"
+            or not isinstance(messages, list)
+            or receipt.get("messages_count") != len(messages)
+            or receipt.get("tools_shape") not in {"null", "array"}
+            or tools_lowering not in {value.value for value in ProviderToolsLowering}
+            or receipt.get("provider_tools_shape") != provider_tools_shape
+            or provider_tools_shape != expected_provider_tools_shape
+            or (
+                receipt.get("tools_shape") == "array"
+                and (not isinstance(tools, list) or receipt.get("tools_count") != len(tools))
+            )
+            or (
+                receipt.get("tools_shape") == "null"
+                and receipt.get("tools_count") is not None
+            )
+        ):
+            invalid += 1
+            continue
+        allowed = {
+            "owner_code": {value.value for value in AttributionOwnerCode},
+            "kind": {value.value for value in ContextKind},
+            "source_kind": {value.value for value in SourceKind},
+            "stability": {value.value for value in Stability},
+            "collection": {value.value for value in AttributionCollection},
+            "residency": {value.value for value in LogicalResidency},
+        }
+        positions = []
+        entries_valid = True
+        for entry in entries:
+            token_estimate = entry.get("token_estimate")
+            if (
+                any(entry.get(field) not in values for field, values in allowed.items())
+                or not re.fullmatch(r"sha256:[0-9a-f]{64}", str(entry.get("item_identity_hash", "")))
+                or not re.fullmatch(r"sha256:[0-9a-f]{64}", str(entry.get("content_hash", "")))
+                or not isinstance(token_estimate, dict)
+                or isinstance(token_estimate.get("value"), bool)
+                or not isinstance(token_estimate.get("value"), int)
+                or token_estimate.get("value") < 0
+                or not isinstance(token_estimate.get("estimator"), str)
+                or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", token_estimate["estimator"])
+                or not isinstance(token_estimate.get("exact"), bool)
+            ):
+                entries_valid = False
+                break
+            collection = entry["collection"]
+            ordinal = entry.get("ordinal")
+            values = messages if collection == "messages" else tools
+            if (
+                isinstance(ordinal, bool) or not isinstance(ordinal, int) or ordinal < 0
+                or not isinstance(values, list) or ordinal >= len(values)
+                or entry.get("content_hash") != value_hash(values[ordinal])
+                or entry.get("canonical_value_bytes") != len(canonical_json_bytes(values[ordinal]))
+            ):
+                entries_valid = False
+                break
+            positions.append((collection, ordinal))
+        expected_positions = [
+            *(('messages', index) for index in range(len(messages))),
+            *(('tools', index) for index in range(len(tools) if isinstance(tools, list) else 0)),
+        ]
+        if (
+            not entries_valid
+            or receipt.get("entry_count") != len(entries)
+            or positions != expected_positions
+            or len(set(positions)) != len(positions)
         ):
             invalid += 1
             continue
@@ -177,14 +306,15 @@ def provider_attribution_summary(calls: list[dict]) -> dict[str, Any]:
                 bucket = dimensions[dimension]
                 bucket[code] = bucket.get(code, 0) + value_bytes
     unavailable = len(calls) - available - invalid
+    complete = bool(calls) and available == len(calls) and invalid == 0
     return {
-        "status": "available" if available else "unavailable",
+        "status": "available" if complete else "unavailable",
         "provider_call_count": len(calls),
         "available_receipt_count": available,
         "unavailable_receipt_count": unavailable,
         "invalid_receipt_count": invalid,
         "coverage_rate": (available / len(calls)) if calls else 0.0,
-        "byte_conservation": invalid == 0 and available > 0,
+        "byte_conservation": complete,
         "attributed_value_bytes": attributed,
         "provider_envelope_and_params": overhead,
         "total_canonical_bytes": total,
@@ -192,8 +322,51 @@ def provider_attribution_summary(calls: list[dict]) -> dict[str, Any]:
             name: dict(sorted(values.items())) for name, values in dimensions.items()
         },
         "fallback": "none",
-        "reason": None if available else "provider_attribution_receipt_unavailable",
+        "reason": None if complete else "provider_attribution_incomplete",
     }
+
+
+def paired_attribution_deltas(
+    rows: list[dict[str, Any]], *, baseline: str, candidate: str
+) -> list[dict[str, Any]]:
+    grouped: dict[tuple[str, str, int], dict[str, dict[str, Any]]] = {}
+    for row in rows:
+        grouped.setdefault(
+            (row["experiment"], row["case_id"], row["repeat"]), {}
+        )[row["variant"]] = row
+    deltas = []
+    for (experiment, case_id, repeat), variants in sorted(grouped.items()):
+        base = variants.get(baseline)
+        cand = variants.get(candidate)
+        if base is None or cand is None:
+            status, reason = "unsupported", "paired_variant_missing"
+            dimension_delta = None
+        elif base["summary"]["status"] != "available" or cand["summary"]["status"] != "available":
+            status, reason = "unsupported", "baseline_or_candidate_attribution_unavailable"
+            dimension_delta = None
+        else:
+            status, reason = "available", None
+            dimension_delta = {}
+            for dimension in ("owner", "kind", "source_kind", "residency"):
+                before = base["summary"]["by_dimension"][dimension]
+                after = cand["summary"]["by_dimension"][dimension]
+                dimension_delta[dimension] = {
+                    code: after.get(code, 0) - before.get(code, 0)
+                    for code in sorted(set(before) | set(after))
+                }
+        deltas.append({
+            "experiment": experiment,
+            "case_id": case_id,
+            "repeat": repeat,
+            "baseline_variant": baseline,
+            "candidate_variant": candidate,
+            "baseline_run": base["run"] if base is not None else None,
+            "candidate_run": cand["run"] if cand is not None else None,
+            "status": status,
+            "reason": reason,
+            "by_dimension_delta": dimension_delta,
+        })
+    return deltas
 
 
 def authoritative_provider_metrics(calls: list[dict]) -> dict[str, int | float]:
@@ -453,6 +626,7 @@ def aggregate(
     all_deltas = []
     all_gates = []
     all_calls: list[dict] = []
+    all_attribution_runs: list[dict[str, Any]] = []
     workload_kinds = []
     for experiment in experiments:
         manifest_payload = read_json(experiment / "experiment_manifest.json")
@@ -463,6 +637,7 @@ def aggregate(
         trials = []
         gate_rows = []
         experiment_calls: list[dict] = []
+        attribution_runs: list[dict[str, Any]] = []
         for result in results:
             trial, gates = trial_from_result(experiment, manifest, result)
             gate_rows.append({"task": result.get("task"), "variant": result.get("variant"), **gates})
@@ -472,9 +647,16 @@ def aggregate(
                 run_directory(experiment, result) / "provider_calls.json", []
             )
             if isinstance(calls, list):
-                experiment_calls.extend(
-                    call for call in calls if isinstance(call, dict)
-                )
+                valid_calls = [call for call in calls if isinstance(call, dict)]
+                experiment_calls.extend(valid_calls)
+                attribution_runs.append({
+                    "experiment": str(experiment),
+                    "run": str(run_directory(experiment, result)),
+                    "case_id": result["task"],
+                    "variant": result["variant"],
+                    "repeat": int(result["repetition"]),
+                    "summary": provider_attribution_summary(valid_calls),
+                })
         deltas = build_paired_deltas(
             trials,
             baseline_variant=baseline,
@@ -496,12 +678,16 @@ def aggregate(
                 "trials": [plain(trial) for trial in trials],
                 "gates": gate_rows,
                 "benefit": plain(summary) if summary else None,
-                "provider_attribution": provider_attribution_summary(experiment_calls),
+                "provider_attribution_runs": attribution_runs,
+                "provider_attribution_deltas": paired_attribution_deltas(
+                    attribution_runs, baseline=baseline, candidate=candidate
+                ),
             }
         )
         all_deltas.extend(deltas)
         all_gates.extend(gate_rows)
         all_calls.extend(experiment_calls)
+        all_attribution_runs.extend(attribution_runs)
         workload_kinds.append(manifest.workload_kind)
     combined = (
         summarize_context_benefit(
@@ -535,6 +721,8 @@ def aggregate(
     benefit = benefit_evidence(combined)
     if not benefit["proven"]:
         hard_failures.add("positive_benefit_not_proven")
+    if any(row["summary"]["status"] != "available" for row in all_attribution_runs) or not all_attribution_runs:
+        hard_failures.add("provider_attribution_incomplete")
     rollback = RollbackBundle.build(
         previous_mode=ContextCompilerMode.SHADOW,
         previous_config={"mode": "shadow"},
@@ -571,7 +759,10 @@ def aggregate(
         "capture_integrity_rate": capture_rate,
         "request_trace_match_rate": request_trace_rate,
         "trajectory_complete_rate": trajectory_rate,
-        "provider_attribution": provider_attribution_summary(all_calls),
+        "provider_attribution_runs": all_attribution_runs,
+        "provider_attribution_deltas": paired_attribution_deltas(
+            all_attribution_runs, baseline=baseline, candidate=candidate
+        ),
         "rollback_bundle": plain(rollback),
         "default_on_readiness": plain(readiness),
         "decision_note": (

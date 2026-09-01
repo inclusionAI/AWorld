@@ -12,6 +12,8 @@ from aworld.core.context.compiler import (
     AttributionCollection,
     AttributionOwnerCode,
     AttributionSerialization,
+    AttributionCollectionShape,
+    ProviderToolsLowering,
     Authority,
     BudgetAllocationTier,
     ContextEmissionKind,
@@ -45,6 +47,7 @@ from aworld.core.context.compiler import (
     build_cache_identity,
     build_unknown_attribution_plan,
     canonical_json_bytes,
+    canonical_json_hash,
     compile_final_context,
     compile_model_boundary_context,
     inspect_final_context,
@@ -155,10 +158,12 @@ def test_runtime_binds_only_current_model_collection_ordinal_not_hash():
     )
     observations = (
         ContextObservationSidecar.from_adapter_result(
-            owner="model.final_messages", namespace="agent", source_identity="model-final://agent/task-task/epoch-1/request-request-2", result=message_result
+            owner="model.final_messages", namespace="agent", source_identity="opaque-message-provenance", result=message_result,
+            request_id_hash=canonical_json_hash({"request_id": "request-2"}), collection=AttributionCollection.MESSAGES, task_epoch=1,
         ),
         ContextObservationSidecar.from_adapter_result(
-            owner="model.final_tool_catalog", namespace="agent", source_identity="model-final://agent/task-task/epoch-1/request-request-2", result=tool_result
+            owner="model.final_tool_catalog", namespace="agent", source_identity="opaque-tool-provenance", result=tool_result,
+            request_id_hash=canonical_json_hash({"request_id": "request-2"}), collection=AttributionCollection.TOOLS, task_epoch=1,
         ),
     )
     legacy = ProviderRequestSnapshot(
@@ -198,6 +203,9 @@ def test_runtime_binds_only_current_model_collection_ordinal_not_hash():
         result=AdapterResult(
             items=(wrong_first, message_result.items[1]), diagnostics=()
         ),
+        request_id_hash=canonical_json_hash({"request_id": "request-2"}),
+        collection=AttributionCollection.MESSAGES,
+        task_epoch=1,
     )
     blocked = compile_model_boundary_context(
         legacy_request=legacy,
@@ -283,6 +291,94 @@ def test_provider_reorder_add_drop_or_transform_is_attribution_mismatch():
             )
 
 
+def test_collection_shape_does_not_conflate_absent_null_and_empty_tools():
+    null_snapshot = ProviderRequestSnapshot(
+        request_id="shape-null",
+        provider_name="openai",
+        payload={"messages": [], "tools": None, "params": {}},
+        capture_stage=RequestCaptureStage.MODEL_BOUNDARY,
+        fidelity=ProviderRequestFidelity.MODEL_BOUNDARY,
+    )
+    null_plan = build_unknown_attribution_plan(null_snapshot)
+    assert null_plan.messages_count == 0
+    assert null_plan.tools_shape is AttributionCollectionShape.NULL
+    assert null_plan.tools_count is None
+    with pytest.raises(ProviderAttributionMismatch):
+        build_provider_attribution_receipt(
+            plan=null_plan,
+            provider_request={"messages": [], "tools": []},
+            serialization=AttributionSerialization.PROVIDER_PREPARED_CANONICAL_JSON,
+            tools_lowering=ProviderToolsLowering.NULL_TO_ABSENT,
+        )
+    build_provider_attribution_receipt(
+        plan=null_plan,
+        provider_request={"messages": []},
+        serialization=AttributionSerialization.PROVIDER_PREPARED_CANONICAL_JSON,
+        tools_lowering=ProviderToolsLowering.NULL_TO_ABSENT,
+    )
+    with pytest.raises(ProviderAttributionMismatch):
+        build_provider_attribution_receipt(
+            plan=null_plan,
+            provider_request={"messages": []},
+            serialization=AttributionSerialization.PROVIDER_PREPARED_CANONICAL_JSON,
+            tools_lowering=ProviderToolsLowering.PRESERVE,
+        )
+
+    empty_snapshot = ProviderRequestSnapshot(
+        request_id="shape-empty",
+        provider_name="openai",
+        payload={"messages": [], "tools": [], "params": {}},
+        capture_stage=RequestCaptureStage.MODEL_BOUNDARY,
+        fidelity=ProviderRequestFidelity.MODEL_BOUNDARY,
+    )
+    empty_plan = build_unknown_attribution_plan(empty_snapshot)
+    assert empty_plan.tools_shape is AttributionCollectionShape.ARRAY
+    assert empty_plan.tools_count == 0
+    with pytest.raises(ProviderAttributionMismatch):
+        build_provider_attribution_receipt(
+            plan=empty_plan,
+            provider_request={"messages": []},
+            serialization=AttributionSerialization.PROVIDER_PREPARED_CANONICAL_JSON,
+            tools_lowering=ProviderToolsLowering.NULL_TO_ABSENT,
+        )
+
+
+def test_legacy_public_constructors_allow_missing_attribution_but_enforce_rejects_it():
+    candidate = ProviderRequestSnapshot(
+        request_id="legacy-envelope",
+        provider_name="openai",
+        payload={"messages": [], "tools": None, "params": {}},
+        capture_stage=RequestCaptureStage.MODEL_BOUNDARY,
+        fidelity=ProviderRequestFidelity.MODEL_BOUNDARY,
+    )
+    lowering = ProviderLoweringCapability(
+        provider_name="openai",
+        adapter_identity="test.openai",
+        adapter_version="v1",
+        request_projection="test.params.v1",
+    )
+    envelope = ProviderCandidateEnvelope(
+        candidate_request=candidate,
+        compiler_identity="aworld.context.compiler.framework",
+        compiler_version="legacy-v1",
+        expected_lowering=lowering,
+    )
+    assert envelope.attribution_plan is None
+    prepared = ProviderRequestSnapshot(
+        request_id="legacy-envelope",
+        provider_name="openai",
+        payload={"messages": [], "model": "gpt-test"},
+        capture_stage=RequestCaptureStage.PROVIDER_PREPARED,
+        fidelity=ProviderRequestFidelity.PROVIDER_PREPARED,
+    )
+    receipt = ProviderLoweringReceipt(
+        candidate_content_hash=candidate.content_hash,
+        provider_request=prepared,
+        lowering=lowering,
+    )
+    assert receipt.attribution is None
+
+
 def test_lowering_serialized_evidence_binds_snapshot_serialized_checksum():
     candidate = ProviderRequestSnapshot(
         request_id="request-5",
@@ -348,6 +444,7 @@ def test_lowering_serialized_evidence_binds_snapshot_serialized_checksum():
         plan=plan,
         provider_request=provider_payload,
         serialization=AttributionSerialization.PROVIDER_PREPARED_CANONICAL_JSON,
+        tools_lowering=ProviderToolsLowering.NULL_TO_ABSENT,
     )
 
     receipt = ProviderLoweringReceipt.from_envelope(

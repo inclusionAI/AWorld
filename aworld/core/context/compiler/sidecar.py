@@ -9,6 +9,7 @@ from typing import Any, ClassVar
 from .adapters import AdapterResult
 from .frozen_json import canonical_json_hash
 from .models import ContextItemRef
+from .attribution import AttributionCollection
 
 
 def _non_empty(name: str, value: str) -> None:
@@ -32,6 +33,9 @@ class ContextObservationSidecar:
     namespace: str
     source_identity: str
     result: AdapterResult
+    request_id_hash: str | None = None
+    collection: AttributionCollection | None = None
+    task_epoch: int | None = None
 
     def __post_init__(self) -> None:
         for name in ("owner", "namespace", "source_identity"):
@@ -40,6 +44,14 @@ class ContextObservationSidecar:
             raise ValueError("owner must be a stable lowercase identifier")
         if not isinstance(self.result, AdapterResult):
             raise TypeError("result must be an AdapterResult")
+        if self.request_id_hash is not None and not re.fullmatch(r"sha256:[0-9a-f]{64}", self.request_id_hash):
+            raise ValueError("request_id_hash must be canonical or None")
+        if self.collection is not None:
+            object.__setattr__(self, "collection", AttributionCollection(self.collection))
+        if self.task_epoch is not None and (
+            isinstance(self.task_epoch, bool) or not isinstance(self.task_epoch, int) or self.task_epoch < 0
+        ):
+            raise ValueError("task_epoch must be non-negative or None")
 
     @classmethod
     def from_adapter_result(
@@ -49,12 +61,18 @@ class ContextObservationSidecar:
         namespace: str,
         source_identity: str,
         result: AdapterResult,
+        request_id_hash: str | None = None,
+        collection: AttributionCollection | None = None,
+        task_epoch: int | None = None,
     ) -> "ContextObservationSidecar":
         return cls(
             owner=owner,
             namespace=namespace,
             source_identity=source_identity,
             result=result,
+            request_id_hash=request_id_hash,
+            collection=collection,
+            task_epoch=task_epoch,
         )
 
     @staticmethod
@@ -69,6 +87,15 @@ class ContextObservationSidecar:
         return {
             "schema_version": self.SCHEMA_VERSION,
             "owner": self.owner,
+            "request_binding": (
+                {
+                    "request_id_hash": self.request_id_hash,
+                    "collection": self.collection.value,
+                    "task_epoch": self.task_epoch,
+                }
+                if self.request_id_hash is not None and self.collection is not None
+                else None
+            ),
             "items": [
                 self._redacted_ref(item.to_ref()) for item in self.result.items
             ],

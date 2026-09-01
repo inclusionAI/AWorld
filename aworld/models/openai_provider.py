@@ -31,6 +31,7 @@ from aworld.core.context.compiler import (
     CandidateRequestNotEnforceable,
     ProviderCandidateEnvelope,
     ProviderAttributionMismatch,
+    ProviderToolsLowering,
     AttributionSerialization,
     ProviderLoweringCapability,
     ProviderLoweringReceipt,
@@ -53,6 +54,9 @@ from aworld.models.prompt_cache import OpenAIPromptAssemblyLowerer
 class _PreparedOpenAIRequest:
     params: Dict[str, Any]
     serialized_body: bytes | None = None
+    context: Any = None
+    request_id: str | None = None
+    cache_identity: Any = None
 
 
 OPENAI_CONTEXT_LOWERING = ProviderLoweringCapability(
@@ -364,6 +368,7 @@ class OpenAIProvider(LLMProviderBase):
                         else AttributionSerialization.PROVIDER_PREPARED_CANONICAL_JSON
                     ),
                     canonical_request_body=serialized_body,
+                    tools_lowering=ProviderToolsLowering.NULL_TO_ABSENT,
                 )
                 receipt = ProviderLoweringReceipt.from_envelope(
                     envelope=envelope,
@@ -381,30 +386,34 @@ class OpenAIProvider(LLMProviderBase):
                 raise CandidateRequestNotEnforceable(
                     "provider_request_not_snapshotable"
                 ) from None
-            self.commit_context_candidate_lowering(
-                context=request_kwargs.get("context"),
-                envelope=envelope,
-                receipt=receipt,
-            )
         if provider_request is not None:
             try:
-                self.commit_provider_request_capture(
+                self.commit_provider_prepared_attempt(
                     context=request_kwargs.get("context"),
                     request_id=provider_request.request_id,
                     snapshot=provider_request,
+                    envelope=envelope,
+                    receipt=(receipt if envelope is not None else None),
                 )
             except Exception:
                 if envelope is not None:
-                    raise CandidateRequestNotEnforceable(
-                        "provider_request_capture_failed"
-                    ) from None
-                logger.warning(
-                    "OpenAI provider request capture failed before send; "
-                    "continuing because Context enforcement is not active"
-                )
+                    raise
+                logger.warning("OpenAI provider prepared capture failed before send; continuing because Context enforcement is not active")
         return _PreparedOpenAIRequest(
             params=openai_params,
             serialized_body=serialized_body,
+            context=request_kwargs.get("context"),
+            request_id=(provider_request.request_id if provider_request is not None else None),
+            cache_identity=(receipt.cache_identity if envelope is not None else None),
+        )
+
+    def _mark_prepared_attempt(self, prepared: _PreparedOpenAIRequest) -> None:
+        if prepared.context is None or prepared.request_id is None:
+            return
+        self.mark_provider_attempted(
+            context=prepared.context,
+            request_id=prepared.request_id,
+            cache_identity=prepared.cache_identity,
         )
 
     def preprocess_messages(self, messages: List[Dict[str, str]], **kwargs) -> List[Dict[str, str]]:
@@ -610,6 +619,7 @@ class OpenAIProvider(LLMProviderBase):
                 stream=False,
             )
             openai_params = prepared_request.params
+            self._mark_prepared_attempt(prepared_request)
             if self.is_http_provider:
                 response = self.http_provider.sync_call(
                     openai_params,
@@ -679,6 +689,7 @@ class OpenAIProvider(LLMProviderBase):
                 stream=True,
             )
             openai_params = prepared_request.params
+            self._mark_prepared_attempt(prepared_request)
             if self.is_http_provider:
                 response_stream = self.http_provider.sync_stream_call(
                     openai_params,
@@ -754,6 +765,7 @@ class OpenAIProvider(LLMProviderBase):
             )
             openai_params = prepared_request.params
             logger.debug(f"openai_params: {openai_params}")
+            self._mark_prepared_attempt(prepared_request)
 
             if self.is_http_provider:
                 async for chunk in self.http_provider.async_stream_call(
@@ -839,6 +851,7 @@ class OpenAIProvider(LLMProviderBase):
             )
             openai_params = prepared_request.params
             logger.debug(f"openai_params: {json.dumps(openai_params)}")
+            self._mark_prepared_attempt(prepared_request)
             if self.is_http_provider:
                 response = await self.http_provider.async_call(
                     openai_params,

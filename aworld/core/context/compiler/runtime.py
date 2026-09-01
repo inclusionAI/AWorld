@@ -16,8 +16,8 @@ from .final import (
     FinalCompileResult,
     compile_final_context,
 )
-from .frozen_json import FrozenMap, canonical_json_bytes
-from .attribution import AttributionOwnerCode
+from .frozen_json import FrozenMap, canonical_json_bytes, canonical_json_hash
+from .attribution import AttributionCollection, AttributionOwnerCode
 from .models import (
     ContextItem,
     ContextKind,
@@ -66,17 +66,22 @@ def _final_owner_sidecar(
     *,
     owner: str,
     request_id: str,
+    collection: AttributionCollection,
+    task_epoch: int | None,
 ) -> ContextObservationSidecar | None:
     """Select only the current model-owned collection sidecar.
 
     Source identity is an in-memory correlation key.  Payload hashes are not
     used to find, rank, or choose provenance.
     """
-    suffix = f"/request-{request_id}"
+    request_id_hash = canonical_json_hash({"request_id": request_id})
     matches = [
         sidecar
         for sidecar in observations
-        if sidecar.owner == owner and sidecar.source_identity.endswith(suffix)
+        if sidecar.owner == owner
+        and sidecar.request_id_hash == request_id_hash
+        and sidecar.collection is collection
+        and sidecar.task_epoch == task_epoch
     ]
     return matches[0] if len(matches) == 1 else None
 
@@ -178,6 +183,8 @@ def compile_model_boundary_context(
             observations,
             owner="model.final_messages",
             request_id=legacy_request.request_id or "",
+            collection=AttributionCollection.MESSAGES,
+            task_epoch=task_epoch,
         ),
     )
     tool_items, tools_bound = _bind_final_collection(
@@ -186,6 +193,8 @@ def compile_model_boundary_context(
             observations,
             owner="model.final_tool_catalog",
             request_id=legacy_request.request_id or "",
+            collection=AttributionCollection.TOOLS,
+            task_epoch=task_epoch,
         ),
     )
     consumed_owner_ids = {
