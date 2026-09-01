@@ -75,10 +75,42 @@ def _resolve_llm_call_capture(response, agent) -> tuple[list, str, dict]:
         "snapshots_match": _llm_calls_digest(response_calls)
         == _llm_calls_digest(live_calls),
     }
+    if response_calls and live_calls:
+        reconciled: list = []
+        index_by_identity: dict[tuple[str, str], int] = {}
+
+        def identity(call) -> tuple[str, str] | None:
+            if not isinstance(call, dict):
+                return None
+            for field in ("request_id", "call_id"):
+                value = call.get(field)
+                if isinstance(value, str) and value:
+                    return field, value
+            return None
+
+        for call in (*response_calls, *live_calls):
+            call_identity = identity(call)
+            if call_identity is not None and call_identity in index_by_identity:
+                reconciled[index_by_identity[call_identity]] = call
+            else:
+                if call_identity is not None:
+                    index_by_identity[call_identity] = len(reconciled)
+                reconciled.append(call)
+        continuity["reconciled_count"] = len(reconciled)
+        continuity["reconciled_sha256"] = _llm_calls_digest(reconciled)
+        if continuity["snapshots_match"]:
+            return reconciled, "task_response", continuity
+        return reconciled, "reconciled_task_response_live_context", continuity
     if response_calls:
+        continuity["reconciled_count"] = len(response_calls)
+        continuity["reconciled_sha256"] = _llm_calls_digest(response_calls)
         return response_calls, "task_response", continuity
     if live_calls:
+        continuity["reconciled_count"] = len(live_calls)
+        continuity["reconciled_sha256"] = _llm_calls_digest(live_calls)
         return live_calls, "live_context_fallback", continuity
+    continuity["reconciled_count"] = 0
+    continuity["reconciled_sha256"] = _llm_calls_digest([])
     return [], "unavailable", continuity
 
 

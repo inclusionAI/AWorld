@@ -152,6 +152,58 @@ def test_final_plan_preserves_duplicate_occurrences_and_actual_residency():
     assert "rules" not in repr(inspected["attribution"])
 
 
+def test_audit_only_evidence_cannot_block_an_exact_emitted_request():
+    emitted = _item(
+        "emitted",
+        {"role": "user", "content": "hello"},
+        kind=ContextKind.USER,
+        stability=Stability.TURN_DYNAMIC,
+        occurrence=0,
+    )
+    audit_only = _item(
+        "audit-only",
+        {"receipt": "opaque"},
+        kind=ContextKind.MEMORY,
+        stability=Stability.TURN_DYNAMIC,
+        occurrence=1,
+    )
+    result = compile_final_context(
+        compiler_input=FinalCompileInput(
+            request_id="request-evidence-only",
+            provider_name="openai",
+            provider_params={},
+            candidates=(
+                FinalCompileCandidate(
+                    item=emitted,
+                    tokens=TokenEstimate(1, "test-v1", False),
+                    allocation_tier=BudgetAllocationTier(0, "required"),
+                    emission=ContextEmissionKind.MESSAGE,
+                    semantics_proven=True,
+                    lowering_proven=True,
+                    owner_code=AttributionOwnerCode.MODEL_FINAL_MESSAGES,
+                ),
+                FinalCompileCandidate(
+                    item=audit_only,
+                    tokens=TokenEstimate(0, "audit-only-v1", True),
+                    allocation_tier=BudgetAllocationTier(4, "owner_evidence"),
+                    emission=ContextEmissionKind.EVIDENCE_ONLY,
+                    semantics_proven=False,
+                    lowering_proven=False,
+                ),
+            ),
+            inference_profile=_profile(),
+            created_at=datetime.now(timezone.utc),
+            task_id="task",
+            task_epoch=1,
+        ),
+        policy=_policy(),
+    )
+
+    assert result.enforce_ready is True
+    assert result.blocker_codes == ()
+    assert result.request_snapshot.payload["messages"] == (emitted.payload,)
+
+
 def test_runtime_binds_only_current_model_collection_ordinal_not_hash():
     messages = ({"role": "user", "content": "same"},) * 2
     tools = ({"role": "user", "content": "same"},)

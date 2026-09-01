@@ -6,6 +6,7 @@ import json
 import subprocess
 import sys
 import tarfile
+from types import SimpleNamespace
 import zipfile
 from pathlib import Path
 
@@ -122,6 +123,10 @@ def test_llm_call_capture_falls_back_to_live_context_for_blocked_calls():
             [{"status": "blocked_before_provider"}]
         ),
         "snapshots_match": False,
+        "reconciled_count": 1,
+        "reconciled_sha256": runner._llm_calls_digest(
+            [{"status": "blocked_before_provider"}]
+        ),
     }
 
 
@@ -158,6 +163,30 @@ def test_provider_bound_gate_accepts_provider_owned_off_mode_capture():
     }
 
     assert runner._is_provider_bound_call(call) is True
+
+
+def test_capture_reconciliation_preserves_live_retry_attempts_for_diagnostics():
+    runner = _load_example("docker_terminal_bench")
+    response = SimpleNamespace(
+        llm_calls=[
+            {"call_id": "agent-call", "request_id": "request-1", "status": "started"}
+        ]
+    )
+    live_calls = [
+        {"call_id": "agent-call", "request_id": "request-1", "status": "success"},
+        {"call_id": "agent-call", "request_id": "request-2", "status": "blocked"},
+    ]
+    agent = SimpleNamespace(
+        context=SimpleNamespace(get_llm_calls=lambda: live_calls)
+    )
+
+    calls, source, continuity = runner._resolve_llm_call_capture(response, agent)
+
+    assert source == "reconciled_task_response_live_context"
+    assert [call["request_id"] for call in calls] == ["request-1", "request-2"]
+    assert calls[0]["status"] == "success"
+    assert continuity["snapshots_match"] is False
+    assert continuity["reconciled_count"] == 2
 
 
 def test_dataset_adapter_extracts_generic_task_archive(tmp_path):
