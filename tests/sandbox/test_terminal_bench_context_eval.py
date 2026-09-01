@@ -345,6 +345,156 @@ def test_dataset_adapter_extracts_generic_task_archive(tmp_path, monkeypatch):
     }
 
 
+def test_dataset_adapter_extracts_skillsbench_archive_and_preserves_digest(
+    tmp_path, monkeypatch
+):
+    harness = _load_example("terminal_bench_context_eval")
+    archive_buffer = io.BytesIO()
+    digest = "b" * 64
+    declared_image = (
+        "registry-vpc.example.com/team/skillsbench:sample@sha256:" + digest
+    )
+    files = {
+        "sample/task.md": b"# task metadata\n",
+        "sample/instruction.md": b"Use the relevant skill and solve the task",
+        "sample/environment/Dockerfile": (
+            f"FROM {declared_image}\n".encode("utf-8")
+        ),
+        "sample/environment/skills/retrieval/SKILL.md": (
+            b"---\nname: retrieval\ndescription: Retrieve evidence.\n---\n\n"
+            b"Read evidence with the terminal.\n"
+        ),
+        "sample/verifier/test.sh": (
+            b"#!/bin/sh\necho 1 > /logs/verifier/reward.txt\n"
+        ),
+    }
+    with tarfile.open(fileobj=archive_buffer, mode="w:gz") as archive:
+        for name, content in files.items():
+            info = tarfile.TarInfo(name)
+            info.size = len(content)
+            archive.addfile(info, io.BytesIO(content))
+
+    dataset = tmp_path / "skillsbench.zip"
+    catalog_row = {
+        "task_id": "sample",
+        "task_dir": "tasks/sample.tar.gz",
+        "harbor_task_name": "skillsbench/sample",
+        "prebuilt_environment_image": declared_image,
+    }
+    with zipfile.ZipFile(dataset, "w") as package:
+        package.writestr("dataset.jsonl", json.dumps(catalog_row) + "\n")
+        package.writestr("tasks/sample.tar.gz", archive_buffer.getvalue())
+
+    fixture = harness.extract_task(dataset, "sample", tmp_path / "fixture")
+
+    assert fixture.benchmark_adapter == "skillsbench-official-1.1"
+    assert fixture.verifier == fixture.root / "verifier"
+    assert fixture.skills == fixture.root / "environment" / "skills"
+    assert fixture.config["environment"]["docker_image"] == declared_image
+    plan = harness.docker_image_build_plan(
+        fixture,
+        use_declared_image=True,
+        build_timeout_sec=None,
+        registry_rewrites=(("registry-vpc.example.com", "registry.example.com"),),
+    )
+    assert plan["declared_image"] == declared_image
+    assert plan["image_ref"] == declared_image.replace(
+        "registry-vpc.example.com", "registry.example.com", 1
+    )
+    assert plan["image_ref"].endswith("@sha256:" + digest)
+    assert plan["image_registry_source"] == "cli_registry_rewrite"
+
+    output_dir = tmp_path / "dry-run"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "terminal_bench_context_eval.py",
+            "--dataset",
+            str(dataset),
+            "--task",
+            "sample",
+            "--variant-config",
+            str(ROOT / "examples/sandbox/context_eval_variants/legacy-observe.json"),
+            "--variant-config",
+            str(
+                ROOT
+                / "examples/sandbox/context_eval_variants/unified-context-progressive.json"
+            ),
+            "--output-dir",
+            str(output_dir),
+            "--use-declared-image",
+            "--image-registry-rewrite",
+            "registry-vpc.example.com=registry.example.com",
+            "--dry-run",
+        ],
+    )
+    harness.main()
+    manifest = json.loads(
+        output_dir.joinpath("experiment_manifest.json").read_text(encoding="utf-8")
+    )
+    assert manifest["benchmark_adapter"] == "skillsbench-official-1.1"
+    assert manifest["tasks"] == ["sample"]
+    assert manifest["image_registry_rewrites"] == [
+        {
+            "source": "registry-vpc.example.com",
+            "destination": "registry.example.com",
+        }
+    ]
+    assert len(manifest["job_order"]) == 2
+
+
+def test_task_skill_loader_discovers_real_skill_content(tmp_path):
+    runner = _load_example("docker_terminal_bench")
+    skill = tmp_path / "evidence-search"
+    skill.mkdir()
+    skill.joinpath("SKILL.md").write_text(
+        "---\nname: evidence-search\ndescription: Search evidence.\n---\n\n"
+        "Keep the main context lean.\n",
+        encoding="utf-8",
+    )
+
+    configs = runner._load_task_skills(tmp_path)
+
+    assert list(configs) == ["evidence-search"]
+    assert configs["evidence-search"]["description"] == "Search evidence."
+    assert "Keep the main context lean" in configs["evidence-search"]["usage"]
+    assert runner._load_task_skills(None) == {}
+
+
+def test_runner_max_steps_binds_the_actual_agent_loop_guard():
+    runner = _load_example("docker_terminal_bench")
+
+    assert runner._agent_loop_budget(7) == {"max_loop_steps": 7}
+    with pytest.raises(ValueError, match="max-steps must be positive"):
+        runner._agent_loop_budget(0)
+
+
+def test_registry_rewrite_is_host_exact_and_rejects_ambiguity():
+    harness = _load_example("terminal_bench_context_eval")
+    image = "registry-vpc.example.com/team/image:tag@sha256:" + "a" * 64
+
+    rewritten, source = harness.rewrite_image_registry(
+        image, (("registry-vpc.example.com", "registry.example.com"),)
+    )
+
+    assert rewritten == image.replace(
+        "registry-vpc.example.com", "registry.example.com", 1
+    )
+    assert source == "cli_registry_rewrite"
+    assert harness.rewrite_image_registry(
+        image, (("other.example.com", "registry.example.com"),)
+    ) == (image, "not_applied")
+    with pytest.raises(ValueError, match="Multiple registry rewrites"):
+        harness.rewrite_image_registry(
+            image,
+            (
+                ("registry-vpc.example.com", "one.example.com"),
+                ("registry-vpc.example.com", "two.example.com"),
+            ),
+        )
+
+
 def test_packaged_image_build_timeout_can_override_dataset_default(tmp_path, monkeypatch):
     harness = _load_example("terminal_bench_context_eval")
     environment = tmp_path / "environment"
@@ -536,6 +686,47 @@ def test_agent_timeout_is_persisted_as_typed_incomplete_result(tmp_path, monkeyp
     assert json.loads(run_dir.joinpath("result.json").read_text())["failure"] == result["failure"]
     assert run_dir.joinpath("agent.stdout.log").read_text() == "partial"
     assert run_dir.joinpath("agent.stderr.log").read_text() == "timed out"
+
+
+def test_agent_timeout_override_is_the_effective_typed_timeout(tmp_path, monkeypatch):
+    harness = _load_example("terminal_bench_context_eval")
+    root = tmp_path / "fixture"
+    root.joinpath("environment").mkdir(parents=True)
+    root.joinpath("tests").mkdir()
+    root.joinpath("instruction.md").write_text("do the task", encoding="utf-8")
+    fixture = harness.TaskFixture(
+        name="sample",
+        root=root,
+        archive_sha256="a" * 64,
+        config={"environment": {}, "agent": {"timeout_sec": 900}},
+    )
+
+    def fake_run(command, **kwargs):
+        if command[0] == sys.executable:
+            raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+        return subprocess.CompletedProcess(command, 0, stdout="image-id\n", stderr="")
+
+    monkeypatch.setattr(harness, "run_command", fake_run)
+
+    result = harness.execute_job(
+        docker="docker",
+        fixture=fixture,
+        image="sample:1",
+        variant_name="legacy",
+        variant_path=None,
+        repetition=1,
+        output_dir=tmp_path / "output",
+        max_steps=1,
+        keep_container=False,
+        verifier_mode="packaged",
+        agent_timeout_sec_override=12.5,
+    )
+
+    assert result["failure"] == {
+        "stage": "agent",
+        "reason_code": "agent_timeout",
+        "timeout_sec": 12.5,
+    }
 
 
 def test_verifier_timeout_is_persisted_and_excluded_from_pairs(tmp_path, monkeypatch):

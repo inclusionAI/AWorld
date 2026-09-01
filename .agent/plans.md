@@ -213,7 +213,9 @@ Tool output policy, cache identity, lifecycle, delegation, and evaluation consum
 - Run real-model variants at least five times where quality variance is measured, randomly interleaved.
 - Add provider billing or a frozen/versioned normalized-cost model; report paired bootstrap confidence intervals.
 - **Status:** evidence collection in progress; two complete cross-workload observe-baseline pairs have full attribution and a
-  smoke-level normalized-cost efficiency path, but 2/10 pairs, workload breadth and stochastic repeats remain insufficient.
+  smoke-level normalized-cost efficiency path. A frozen three-task SkillsBench suite now covers artifact search,
+  multi-Skill planning and long prefix-cache traces, with immutable-image/verifier substrate proven; provider timeout left
+  it at 0 complete pairs, so the aggregate remains 2/10 and workload/repeat evidence is still insufficient.
 
 ### Milestone 10: Canary, Default-On, and Legacy Cleanup
 **Goal:** Ship only after all hard gates and one quality-or-cost benefit path pass.

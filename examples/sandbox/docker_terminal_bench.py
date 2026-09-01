@@ -280,6 +280,32 @@ def _load_variant(path: Path | None) -> dict:
     return payload
 
 
+def _load_task_skills(path: Path | None) -> dict[str, dict]:
+    if path is None:
+        return {}
+    skills_directory = path.resolve()
+    if not skills_directory.is_dir():
+        raise ValueError(f"Skills directory does not exist: {skills_directory}")
+    from aworld.skills.compat_provider import build_compat_registry
+
+    registry = build_compat_registry(skills_directory)
+    descriptors = registry.list_descriptors()
+    if not descriptors:
+        raise ValueError(f"Skills directory contains no Skills: {skills_directory}")
+    return {
+        descriptor.skill_name: registry.build_skill_config(descriptor.skill_id)
+        for descriptor in descriptors
+    }
+
+
+def _agent_loop_budget(max_steps: int) -> dict[str, int]:
+    if isinstance(max_steps, bool) or not isinstance(max_steps, int) or max_steps <= 0:
+        raise ValueError("--max-steps must be positive")
+    # BaseAgent owns the actual loop guard through max_loop_steps. AgentConfig's
+    # max_steps is retained for compatibility but does not bind that guard.
+    return {"max_loop_steps": max_steps}
+
+
 def _git_snapshot() -> dict:
     commit = subprocess.run(
         ["git", "rev-parse", "HEAD"],
@@ -323,6 +349,14 @@ def parse_args() -> argparse.Namespace:
         help="JSON variant that may change context/output policy only, never task prompts or answers.",
     )
     parser.add_argument(
+        "--skills-directory",
+        type=Path,
+        help=(
+            "Task-provided Skills directory. The harness mounts the same directory in the "
+            "task container at /aworld-skills."
+        ),
+    )
+    parser.add_argument(
         "--allow-missing-provider-trace",
         action="store_true",
         help="Compatibility escape hatch; context evaluations should keep the provider trace hard gate enabled.",
@@ -352,6 +386,7 @@ async def run(args: argparse.Namespace) -> None:
 
     instruction = args.instruction.read_text(encoding="utf-8")
     variant = _load_variant(args.variant_config)
+    skill_configs = _load_task_skills(args.skills_directory)
     output_policy = variant["docker_output_policy"]
     sandbox = DockerSandbox(
         container=args.container,
@@ -363,6 +398,12 @@ async def run(args: argparse.Namespace) -> None:
         reuse=True,
     )
     try:
+        system_prompt = SYSTEM_PROMPT + (
+            " Task-provided Skill assets are mounted read-only at /aworld-skills. "
+            "Activate only relevant Skills and use the container paths documented there."
+            if skill_configs
+            else ""
+        )
         agent = Agent(
             name="terminal_bench_solver",
             conf=AgentConfig(
@@ -375,10 +416,12 @@ async def run(args: argparse.Namespace) -> None:
                 use_vision=False,
                 memory_config=AgentMemoryConfig(**variant["agent_memory_config"]),
                 context_compiler=variant["context_compiler"],
+                skill_configs=skill_configs,
             ),
             sandbox=sandbox,
             feedback_tool_result=True,
-            system_prompt=SYSTEM_PROMPT,
+            system_prompt=system_prompt,
+            **_agent_loop_budget(args.max_steps),
         )
         response = await Runners.run(instruction, agent=agent)
         response_payload = to_serializable(response.to_dict())
@@ -438,8 +481,24 @@ async def run(args: argparse.Namespace) -> None:
                 "provider": os.environ.get("LLM_PROVIDER", "openai"),
                 "temperature": float(os.environ.get("LLM_TEMPERATURE", "0")),
                 "max_steps": args.max_steps,
-                "system_prompt_sha256": _sha256_bytes(SYSTEM_PROMPT.encode("utf-8")),
+                "system_prompt_sha256": _sha256_bytes(system_prompt.encode("utf-8")),
                 "instruction_sha256": _sha256_bytes(instruction.encode("utf-8")),
+                "task_skill_count": len(skill_configs),
+                "task_skill_catalog_sha256": _sha256_bytes(
+                    json.dumps(
+                        {
+                            name: {
+                                "description": config.get("description"),
+                                "usage_sha256": _sha256_bytes(
+                                    str(config.get("usage") or "").encode("utf-8")
+                                ),
+                            }
+                            for name, config in sorted(skill_configs.items())
+                        },
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    ).encode("utf-8")
+                ),
             },
             "container": {
                 "name": args.container,

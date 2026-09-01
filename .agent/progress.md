@@ -5,10 +5,10 @@
 **Phase:** Milestone 9 cross-workload evidence collection
 **Current milestone:** Benefit evidence and operational rollout gates
 **Current task:** expand pre-frozen paired samples without benchmark-specific policy
-**Last action:** provider/entry-point parity, canary control-plane and normalized-cost mechanisms are code-complete. Real
-Terminal and Tool/research observe-baseline pairs now have complete provider attribution, TaskResponse/live continuity,
-request trace and Raw trajectory evidence. A two-pair efficiency path is visible but default-on remains not-ready because
-sample size, real retrieval opportunity, operational canary health and an external rollback bundle are missing.
+**Last action:** added SkillsBench official 1.1 as a third, outcome-blind workload family. Three frozen tasks now cover
+artifact search, progressive multi-Skill planning and long prefix-cache traces; immutable public-endpoint images, task
+Skills and the original verifier substrate pass locally. The first real-model pair produced a typed provider-driven timeout,
+not a reward, so complete evidence remains 2/10 and default-on is still not-ready.
 
 ### Task 7.2a: Legacy observe attribution baseline
 
@@ -578,3 +578,16 @@ sample size, real retrieval opportunity, operational canary health and an extern
   cost deltas are negative and the two-pair bootstrap interval is `[-1,502,400,000, -1,278,000,000]` microunits, which proves
   only a smoke-level efficiency path. Default-on remains `NOT_READY`: 2/10 pairs, no qualifying retrieval opportunity,
   missing operational canary health, and no external rollback bundle.
+
+### 2026-09-01 SkillsBench acceptance extension
+
+- Added safe extraction for `yolo-dataset-package/v2` archives, catalog/task binding, immutable prebuilt-image enforcement,
+  original verifier mounts and task Skill discovery. Registry rewriting is hostname-exact and retains the image digest.
+- Froze `enterprise-information-search`, `travel-planning` and `llm-prefix-cache-replay` before any complete reward was
+  observed. Their dimensions are artifact retrieval, progressive multi-Skill/tool constraints and long stable-prefix traces.
+- All three immutable public ACR images pulled successfully and passed input/Skill mount preflight. The prefix-cache official
+  oracle plus unmodified verifier passed 10/10 with reward 1; this is labeled substrate-only evidence.
+- A real paired attempt exposed that `--max-steps` had not controlled `BaseAgent.max_loop_steps`; the runner now binds the
+  actual loop guard and supports independently recorded agent/verifier timeout overrides. The bounded retry still hit
+  repeated `glm-5.2` connection failures and persisted `agent_timeout`, `reward=null`; it is excluded from paired benefit
+  evidence and the candidate was stopped after the baseline became unavailable.

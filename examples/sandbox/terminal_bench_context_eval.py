@@ -106,6 +106,8 @@ class TaskFixture:
     root: Path
     archive_sha256: str
     config: dict
+    benchmark_adapter: str = "terminal-bench-2.1"
+    verifier_directory: str = "tests"
 
     @property
     def instruction(self) -> Path:
@@ -117,12 +119,46 @@ class TaskFixture:
 
     @property
     def tests(self) -> Path:
-        return self.root / "tests"
+        return self.verifier
+
+    @property
+    def verifier(self) -> Path:
+        return self.root / self.verifier_directory
+
+    @property
+    def skills(self) -> Path | None:
+        path = self.environment / "skills"
+        return path if path.is_dir() else None
+
+
+def _dataset_catalog(package: zipfile.ZipFile) -> dict[str, dict]:
+    try:
+        rows = package.read("dataset.jsonl").decode("utf-8").splitlines()
+    except KeyError:
+        return {}
+    catalog: dict[str, dict] = {}
+    for ordinal, line in enumerate(rows, start=1):
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"Invalid dataset.jsonl row {ordinal}") from exc
+        task_id = row.get("task_id") if isinstance(row, dict) else None
+        if not isinstance(task_id, str) or not task_id:
+            raise ValueError(f"dataset.jsonl row {ordinal} has no task_id")
+        if task_id in catalog:
+            raise ValueError(f"dataset.jsonl contains duplicate task_id {task_id!r}")
+        catalog[task_id] = row
+    return catalog
 
 
 def extract_task(dataset: Path, task_name: str, destination: Path) -> TaskFixture:
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+", task_name):
+        raise ValueError(f"Unsafe task name {task_name!r}")
     archive_name = f"tasks/{task_name}.tar.gz"
     with zipfile.ZipFile(dataset) as package:
+        catalog = _dataset_catalog(package)
         try:
             archive_bytes = package.read(archive_name)
         except KeyError as exc:
@@ -141,10 +177,43 @@ def extract_task(dataset: Path, task_name: str, destination: Path) -> TaskFixtur
             safe_extract_tar(archive, destination)
 
     task_files = list(destination.rglob("task.toml"))
-    if len(task_files) != 1:
+    if len(task_files) == 1:
+        root = task_files[0].parent
+        config = tomllib.loads(task_files[0].read_text(encoding="utf-8"))
+        benchmark_adapter = "terminal-bench-2.1"
+        verifier_directory = "tests"
+    elif not task_files and task_name in catalog:
+        roots = [path.parent for path in destination.rglob("task.md")]
+        if len(roots) != 1:
+            raise ValueError(
+                f"Expected one task.md for catalog task {task_name}, found {len(roots)}"
+            )
+        root = roots[0]
+        catalog_row = catalog[task_name]
+        declared_image = catalog_row.get("prebuilt_environment_image")
+        if catalog_row.get("task_dir") != archive_name:
+            raise ValueError(f"Catalog task_dir mismatch for {task_name}")
+        if not isinstance(declared_image, str) or not re.search(
+            r"@sha256:[0-9a-f]{64}$", declared_image
+        ):
+            raise ValueError(
+                f"SkillsBench task {task_name} requires an immutable prebuilt image"
+            )
+        config = {
+            "task": {"name": catalog_row.get("harbor_task_name") or task_name},
+            "environment": {"docker_image": declared_image},
+            "agent": {"timeout_sec": 900},
+            "verifier": {"timeout_sec": 900},
+        }
+        benchmark_adapter = "skillsbench-official-1.1"
+        verifier_directory = "verifier"
+    else:
         raise ValueError(f"Expected one task.toml for {task_name}, found {len(task_files)}")
-    root = task_files[0].parent
-    required = [root / "instruction.md", root / "environment" / "Dockerfile", root / "tests" / "test.sh"]
+    required = [
+        root / "instruction.md",
+        root / "environment" / "Dockerfile",
+        root / verifier_directory / "test.sh",
+    ]
     missing = [str(path) for path in required if not path.exists()]
     if missing:
         raise ValueError(f"Task {task_name} is incomplete: {', '.join(missing)}")
@@ -152,8 +221,39 @@ def extract_task(dataset: Path, task_name: str, destination: Path) -> TaskFixtur
         name=task_name,
         root=root,
         archive_sha256=hashlib.sha256(archive_bytes).hexdigest(),
-        config=tomllib.loads(task_files[0].read_text(encoding="utf-8")),
+        config=config,
+        benchmark_adapter=benchmark_adapter,
+        verifier_directory=verifier_directory,
     )
+
+
+def parse_registry_rewrite(value: str) -> tuple[str, str]:
+    source, separator, destination = value.partition("=")
+    if not separator or not source.strip() or not destination.strip():
+        raise argparse.ArgumentTypeError(
+            "registry rewrite must use SOURCE=DESTINATION"
+        )
+    source = source.strip().rstrip("/")
+    destination = destination.strip().rstrip("/")
+    if "/" in source or "/" in destination:
+        raise argparse.ArgumentTypeError(
+            "registry rewrite endpoints must be registry hostnames"
+        )
+    return source, destination
+
+
+def rewrite_image_registry(
+    image: str, rewrites: tuple[tuple[str, str], ...]
+) -> tuple[str, str]:
+    registry, separator, remainder = image.partition("/")
+    if not separator:
+        return image, "not_applied"
+    matches = [destination for source, destination in rewrites if registry == source]
+    if len(matches) > 1:
+        raise ValueError(f"Multiple registry rewrites match {registry!r}")
+    if not matches:
+        return image, "not_applied"
+    return f"{matches[0]}/{remainder}", "cli_registry_rewrite"
 
 
 def load_variant(path: Path | None) -> tuple[str, Path | None, dict]:
@@ -196,6 +296,27 @@ def parse_args() -> argparse.Namespace:
             "the dataset build_timeout_sec (or 600 seconds) is used."
         ),
     )
+    parser.add_argument(
+        "--agent-timeout-sec",
+        type=float,
+        help="Override the per-run AWorld agent timeout; typed timeout evidence is retained.",
+    )
+    parser.add_argument(
+        "--verifier-timeout-sec",
+        type=float,
+        help="Override the per-run independent verifier timeout.",
+    )
+    parser.add_argument(
+        "--image-registry-rewrite",
+        action="append",
+        type=parse_registry_rewrite,
+        default=[],
+        metavar="SOURCE=DESTINATION",
+        help=(
+            "Rewrite only the registry hostname while retaining the repository, tag and "
+            "immutable digest. Useful when a packaged VPC registry has a public endpoint."
+        ),
+    )
     parser.add_argument("--keep-containers", action="store_true")
     parser.add_argument(
         "--verifier-mode",
@@ -215,22 +336,22 @@ def docker_image_for_task(
     docker: str,
     use_declared_image: bool,
     build_timeout_sec: float | None = None,
+    registry_rewrites: tuple[tuple[str, str], ...] = (),
 ) -> str:
     plan = docker_image_build_plan(
         fixture,
         use_declared_image=use_declared_image,
         build_timeout_sec=build_timeout_sec,
+        registry_rewrites=registry_rewrites,
     )
-    declared = plan.get("declared_image")
-    if use_declared_image:
-        assert isinstance(declared, str)
-        inspect = run_command([docker, "image", "inspect", declared], capture_output=True)
-        if inspect.returncode != 0:
-            pull = run_command([docker, "pull", declared], capture_output=True)
-            require_success(pull, f"pull image for {fixture.name}")
-        return declared
-
     image = str(plan["image_ref"])
+    if use_declared_image:
+        inspect = run_command([docker, "image", "inspect", image], capture_output=True)
+        if inspect.returncode != 0:
+            pull = run_command([docker, "pull", image], capture_output=True)
+            require_success(pull, f"pull image for {fixture.name}")
+        return image
+
     inspect = run_command([docker, "image", "inspect", image], capture_output=True)
     if inspect.returncode != 0:
         timeout = float(plan["effective_build_timeout_sec"])
@@ -254,6 +375,7 @@ def docker_image_build_plan(
     *,
     use_declared_image: bool,
     build_timeout_sec: float | None,
+    registry_rewrites: tuple[tuple[str, str], ...] = (),
 ) -> dict[str, object]:
     """Return reproducible, manifest-safe image resolution inputs."""
     environment = fixture.config.get("environment")
@@ -263,10 +385,14 @@ def docker_image_build_plan(
     if use_declared_image:
         if not isinstance(declared, str) or not declared.strip():
             raise ValueError(f"Task {fixture.name} has no declared docker_image")
+        effective_image, rewrite_source = rewrite_image_registry(
+            declared, registry_rewrites
+        )
         return {
             "mode": "declared_image",
             "declared_image": declared,
-            "image_ref": declared,
+            "image_ref": effective_image,
+            "image_registry_source": rewrite_source,
             "task_archive_sha256": fixture.archive_sha256,
             "build_context_sha256": None,
             "effective_build_timeout_sec": None,
@@ -299,6 +425,7 @@ def docker_image_build_plan(
         "mode": "packaged_dockerfile",
         "declared_image": declared if isinstance(declared, str) else None,
         "image_ref": f"aworld-context-eval:{context_sha[:24]}",
+        "image_registry_source": "not_applicable",
         "task_archive_sha256": fixture.archive_sha256,
         "build_context_sha256": context_sha,
         "effective_build_timeout_sec": float(timeout_value),
@@ -511,6 +638,8 @@ def execute_job(
     max_steps: int,
     keep_container: bool,
     verifier_mode: str,
+    agent_timeout_sec_override: float | None = None,
+    verifier_timeout_sec_override: float | None = None,
 ) -> dict:
     run_dir = output_dir / "runs" / fixture.name / variant_name / f"repeat-{repetition:02d}"
     verifier_dir = run_dir / "verifier"
@@ -522,10 +651,14 @@ def execute_job(
         command.extend(["--cpus", str(environment["cpus"])])
     if environment.get("memory_mb"):
         command.extend(["--memory", f"{environment['memory_mb']}m"])
+    verifier_mount = (
+        "/verifier" if fixture.verifier_directory == "verifier" else "/tests"
+    )
+    command.extend(["-v", f"{fixture.verifier.resolve()}:{verifier_mount}:ro"])
+    if fixture.skills is not None:
+        command.extend(["-v", f"{fixture.skills.resolve()}:/aworld-skills:ro"])
     command.extend(
         [
-            "-v",
-            f"{fixture.tests.resolve()}:/tests:ro",
             "-v",
             f"{verifier_dir.resolve()}:/logs/verifier",
             image,
@@ -553,7 +686,18 @@ def execute_job(
         ]
         if variant_path:
             agent_command.extend(["--variant-config", str(variant_path)])
-        agent_timeout = float(fixture.config.get("agent", {}).get("timeout_sec", 900)) + 60
+        if fixture.skills is not None:
+            agent_command.extend(
+                ["--skills-directory", str(fixture.skills.resolve())]
+            )
+        configured_agent_timeout = float(
+            fixture.config.get("agent", {}).get("timeout_sec", 900)
+        )
+        agent_timeout = float(
+            agent_timeout_sec_override
+            if agent_timeout_sec_override is not None
+            else configured_agent_timeout + 60
+        )
         agent_environment = os.environ.copy()
         repo_root = str(RUNNER.resolve().parents[2])
         existing_pythonpath = agent_environment.get("PYTHONPATH")
@@ -597,9 +741,19 @@ def execute_job(
         (run_dir / "agent.stdout.log").write_text(agent_result.stdout or "", encoding="utf-8")
         (run_dir / "agent.stderr.log").write_text(agent_result.stderr or "", encoding="utf-8")
 
-        verifier_timeout = float(fixture.config.get("verifier", {}).get("timeout_sec", 900))
+        verifier_timeout = float(
+            verifier_timeout_sec_override
+            if verifier_timeout_sec_override is not None
+            else fixture.config.get("verifier", {}).get("timeout_sec", 900)
+        )
         if verifier_mode == "packaged":
-            verifier_command = [docker, "exec", container, "/bin/bash", "/tests/test.sh"]
+            verifier_command = [
+                docker,
+                "exec",
+                container,
+                "/bin/bash",
+                f"{verifier_mount}/test.sh",
+            ]
         else:
             verifier_program = """
 import importlib.util
@@ -692,6 +846,12 @@ def main() -> None:
         not math.isfinite(args.build_timeout_sec) or args.build_timeout_sec <= 0
     ):
         raise ValueError("--build-timeout-sec must be positive")
+    for option_name, value in (
+        ("--agent-timeout-sec", args.agent_timeout_sec),
+        ("--verifier-timeout-sec", args.verifier_timeout_sec),
+    ):
+        if value is not None and (not math.isfinite(value) or value <= 0):
+            raise ValueError(f"{option_name} must be positive")
     dataset = args.dataset.resolve()
     if not dataset.is_file():
         raise FileNotFoundError(dataset)
@@ -711,6 +871,7 @@ def main() -> None:
             fixture,
             use_declared_image=args.use_declared_image,
             build_timeout_sec=args.build_timeout_sec,
+            registry_rewrites=tuple(args.image_registry_rewrite),
         )
         for fixture in fixtures
     }
@@ -728,7 +889,11 @@ def main() -> None:
             "Changing only AWorld context/output policy improves quality, stability, or cost "
             "across tool-heavy workloads without task-specific prompting."
         ),
-        "benchmark_adapter": "terminal-bench-2.1",
+        "benchmark_adapter": (
+            fixtures[0].benchmark_adapter
+            if len({fixture.benchmark_adapter for fixture in fixtures}) == 1
+            else "mixed"
+        ),
         "dataset": str(dataset),
         "dataset_sha256": sha256_file(dataset),
         "tasks": [fixture.name for fixture in fixtures],
@@ -751,6 +916,12 @@ def main() -> None:
         "normalized_cost_policy": NormalizedCostPolicy().to_dict(),
         "verifier_mode": args.verifier_mode,
         "build_timeout_sec_override": args.build_timeout_sec,
+        "agent_timeout_sec_override": args.agent_timeout_sec,
+        "verifier_timeout_sec_override": args.verifier_timeout_sec,
+        "image_registry_rewrites": [
+            {"source": source, "destination": destination}
+            for source, destination in args.image_registry_rewrite
+        ],
         "use_declared_image": args.use_declared_image,
         "image_build_plans": image_build_plans,
         "image_resolution": {"status": "not_attempted", "images": {}},
@@ -771,6 +942,7 @@ def main() -> None:
                 docker,
                 args.use_declared_image,
                 args.build_timeout_sec,
+                tuple(args.image_registry_rewrite),
             )
             resolved_image_id = docker_image_id(docker, image)
             if not isinstance(resolved_image_id, str) or not re.fullmatch(
@@ -832,6 +1004,8 @@ def main() -> None:
                 max_steps=args.max_steps,
                 keep_container=args.keep_containers,
                 verifier_mode=args.verifier_mode,
+                agent_timeout_sec_override=args.agent_timeout_sec,
+                verifier_timeout_sec_override=args.verifier_timeout_sec,
             )
         )
     write_json(output_dir / "results.json", results)
