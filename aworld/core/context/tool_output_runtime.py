@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import os
@@ -10,6 +11,8 @@ import tempfile
 from typing import Any, Iterable
 
 from aworld.core.context.compiler import (
+    ArtifactRetrievalPlan,
+    ArtifactRetrievalReceipt,
     ArtifactReceipt,
     ToolOutputPlan,
     ToolOutputMode,
@@ -20,6 +23,8 @@ from aworld.core.context.compiler import (
     freeze_json,
     plan_tool_output,
     thaw_json,
+    canonical_json_hash,
+    hashed_identity,
 )
 
 
@@ -127,20 +132,152 @@ def _raw_bytes(value: Any) -> bytes:
 def prepare_tool_output_plans(context, actions: Iterable[Any]) -> dict[str, ToolOutputPlan]:
     """Freeze output limits before the Tool is invoked."""
     policy = getattr(context, "_tool_output_policy", None) if context else None
-    if policy is None:
-        return {}
     plans: dict[str, ToolOutputPlan] = {}
     for action in actions:
         tool_call_id = getattr(action, "tool_call_id", None)
+        retrieval_planned = _prepare_artifact_retrieval(context, action)
         if not isinstance(tool_call_id, str) or not tool_call_id:
-            raise ValueError("enforced Tool output policy requires a tool_call_id")
+            if policy is not None or retrieval_planned:
+                raise ValueError("enforced Tool boundary requires a tool_call_id")
+            continue
         if tool_call_id in plans:
             raise ValueError("Tool output plan ids must be unique")
-        plans[tool_call_id] = plan_tool_output(
-            tool_call_id=tool_call_id,
-            policy=policy,
-        )
+        if policy is not None:
+            plans[tool_call_id] = plan_tool_output(
+                tool_call_id=tool_call_id,
+                policy=policy,
+            )
     return plans
+
+
+def _prepare_artifact_retrieval(context, action: Any) -> bool:
+    if context is None:
+        return False
+    owner_tool = getattr(action, "tool_name", None)
+    action_name = getattr(action, "action_name", None)
+    declared = [
+        receipt
+        for record in context.get_tool_output_records()
+        for receipt in record.upstream_artifacts
+        if receipt.owner_tool == owner_tool and receipt.retrieval_action == action_name
+    ]
+    if not declared:
+        return False
+    tool_call_id = getattr(action, "tool_call_id", None)
+    if not isinstance(tool_call_id, str) or not tool_call_id:
+        return True
+    params = getattr(action, "params", None) or {}
+    artifact_ref = params.get("artifact_ref")
+    matches = [receipt for receipt in declared if receipt.ref == artifact_ref]
+    if len(matches) != 1:
+        raise ValueError("artifact_retrieval_ref_mismatch")
+    source = matches[0]
+    offset = params.get("offset", 0)
+    limit = params.get("limit")
+    if limit is None and isinstance(offset, int) and not isinstance(offset, bool):
+        limit = max(1, source.byte_count - offset)
+    plan = ArtifactRetrievalPlan(
+        owner_tool=source.owner_tool,
+        retrieval_action=source.retrieval_action,
+        artifact_ref=source.ref,
+        artifact_content_hash=source.content_hash,
+        artifact_byte_count=source.byte_count,
+        offset=offset,
+        limit=limit,
+        consumer_tool_call_id_hash=hashed_identity("tool_call_id", tool_call_id),
+    )
+    context.register_artifact_retrieval_plan(tool_call_id, plan)
+    return True
+
+
+def _retrieval_result_fields(value: Any) -> dict[str, Any] | None:
+    visited = 0
+
+    def visit(current: Any, depth: int = 0) -> dict[str, Any] | None:
+        nonlocal visited
+        if depth > 12 or visited >= 4096:
+            return None
+        visited += 1
+        if isinstance(current, str):
+            stripped = current.strip()
+            if len(stripped) >= 2 and stripped[0] in "[{" and stripped[-1] in "]}":
+                try:
+                    return visit(json.loads(stripped), depth + 1)
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    return None
+            return None
+        if isinstance(current, list):
+            for item in current:
+                found = visit(item, depth + 1)
+                if found is not None:
+                    return found
+            return None
+        if not isinstance(current, dict):
+            return None
+        required = {
+            "artifact_ref", "offset", "next_offset", "returned_bytes",
+            "total_bytes", "content_sha256", "chunk_sha256", "complete",
+        }
+        if required.issubset(current):
+            return current
+        for nested in current.values():
+            found = visit(nested, depth + 1)
+            if found is not None:
+                return found
+        return None
+
+    return visit(value)
+
+
+def _record_turn_and_retrieval(
+    context, action: Any, action_result: Any, *, retrieval_fields: dict[str, Any] | None = None
+) -> None:
+    if context is None:
+        return
+    turn = context.record_tool_turn(action.tool_call_id)
+    metadata = dict(getattr(action_result, "metadata", None) or {})
+    metadata["turn_economics"] = turn.to_redacted_dict()
+    plan = getattr(context, "_artifact_retrieval_plans", {}).get(action.tool_call_id)
+    if plan is not None:
+        fields = retrieval_fields or _retrieval_result_fields(action_result.content)
+        if fields is None:
+            raise ValueError("artifact_retrieval_receipt_missing")
+        source_hash = _canonical_sha256(fields.get("content_sha256"))
+        chunk_hash = _canonical_sha256(fields.get("chunk_sha256"))
+        if source_hash is None or chunk_hash is None:
+            raise ValueError("artifact_retrieval_checksum_missing")
+        if fields.get("artifact_ref") != plan.artifact_ref or fields.get("total_bytes") != plan.artifact_byte_count:
+            raise ValueError("artifact_retrieval_source_mismatch")
+        content = fields.get("content")
+        content_type = fields.get("type", "text")
+        try:
+            chunk = (
+                base64.b64decode(content, validate=True)
+                if content_type == "base64" and isinstance(content, str)
+                else content.encode("utf-8")
+                if content_type == "text" and isinstance(content, str)
+                else None
+            )
+        except (ValueError, TypeError) as exc:
+            raise ValueError("artifact_retrieval_chunk_invalid") from exc
+        if chunk is None:
+            raise ValueError("artifact_retrieval_chunk_missing")
+        actual_chunk_hash = f"sha256:{hashlib.sha256(chunk).hexdigest()}"
+        if len(chunk) != fields.get("returned_bytes") or actual_chunk_hash != chunk_hash:
+            raise ValueError("artifact_retrieval_chunk_mismatch")
+        receipt = ArtifactRetrievalReceipt(
+            plan=plan,
+            returned_offset=fields.get("offset"),
+            next_offset=fields.get("next_offset"),
+            returned_byte_count=fields.get("returned_bytes"),
+            chunk_checksum=chunk_hash,
+            source_content_hash=source_hash,
+            result_content_hash=canonical_json_hash(action_result.content),
+            complete=fields.get("complete"),
+        )
+        context.record_artifact_retrieval(action.tool_call_id, receipt)
+        metadata["artifact_retrieval"] = receipt.to_redacted_dict()
+    action_result.metadata = metadata
 
 
 def _artifact_root(context) -> Path:
@@ -295,8 +432,6 @@ def enforce_tool_output_boundary(
     plans: dict[str, ToolOutputPlan],
 ):
     """Bind raw results to artifacts before any result enters Context history."""
-    if not plans:
-        return step_result
     action_values = tuple(actions)
     observation = step_result[0]
     results = getattr(observation, "action_result", None)
@@ -304,8 +439,14 @@ def enforce_tool_output_boundary(
         raise ValueError("Tool output policy cannot bind missing action results")
     for index, action in enumerate(action_values):
         tool_call_id = action.tool_call_id
-        plan = plans[tool_call_id]
         action_result = results[index]
+        retrieval_fields = _retrieval_result_fields(action_result.content)
+        if tool_call_id not in plans:
+            _record_turn_and_retrieval(
+                context, action, action_result, retrieval_fields=retrieval_fields
+            )
+            continue
+        plan = plans[tool_call_id]
         raw = _raw_bytes(action_result.content)
         owner_tool = str(
             getattr(action_result, "tool_name", None)
@@ -376,6 +517,9 @@ def enforce_tool_output_boundary(
         context.record_tool_output(
             record,
             artifact_path=str(artifact_path) if artifact_path is not None else None,
+        )
+        _record_turn_and_retrieval(
+            context, action, action_result, retrieval_fields=retrieval_fields
         )
     return step_result
 

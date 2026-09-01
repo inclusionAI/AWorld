@@ -193,6 +193,19 @@ class TaskEventRunner(TaskRunner):
             observation = Observation(**observation_payload)
             retry_context = self.context.deep_copy()
             retry_context._task = self.context.get_task()
+            from aworld.core.context.compiler import (
+                TurnCauseCode,
+                canonical_json_hash,
+            )
+            retry_context.schedule_turn_cause(
+                TurnCauseCode.FRAMEWORK_RETRY,
+                evidence_hash=canonical_json_hash({
+                    "watchdog": "post_tool_progress",
+                    "agent_id": state.get("agent_id"),
+                    "tool_name": state.get("tool_name"),
+                    "retry_count": 1,
+                }),
+            )
             retry_message = AgentMessage(
                 payload=observation,
                 sender=state.get("followup_sender") or state.get("tool_name") or "tool",

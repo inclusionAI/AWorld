@@ -199,6 +199,119 @@ def test_benefit_report_accepts_only_explicit_cost_metric_for_efficiency_path():
     assert evidence["cost_metric"] == "cost_per_successful_task"
 
 
+def _turn_receipt(reporter, kind, cause, identity):
+    return {
+        "schema_version": "aworld.context.turn-economics.v1",
+        "task_epoch": 0,
+        "turn_kind": kind,
+        "cause": cause,
+        "cause_supported": True,
+        "turn_id_hash": reporter.value_hash({"turn": identity}),
+        "request_id_hash": reporter.value_hash({"request": identity}) if kind == "model" else None,
+        "tool_call_id_hash": reporter.value_hash({"tool": identity}) if kind == "tool" else None,
+        "parent_turn_id_hash": None,
+        "evidence_hash": None,
+    }
+
+
+def _retrieval_receipt(reporter, *, consumed):
+    result_hash = reporter.value_hash({"chunk": "actual"})
+    plan = {
+        "schema_version": "aworld.context.artifact-retrieval-plan.v1",
+        "owner_code": reporter.value_hash({"owner": 1}),
+        "action_code": reporter.value_hash({"action": 1}),
+        "artifact_ref_hash": reporter.value_hash({"ref": 1}),
+        "artifact_content_hash": "sha256:" + "1" * 64,
+        "artifact_byte_count": 131072,
+        "offset": 4096,
+        "limit": 256,
+        "consumer_tool_call_id_hash": reporter.value_hash({"tool": "retrieve"}),
+    }
+    value = {
+        **plan,
+        "schema_version": "aworld.context.artifact-retrieval-receipt.v1",
+        "plan_fingerprint": reporter.value_hash(plan),
+        "returned_offset": 4096,
+        "next_offset": 4352,
+        "returned_byte_count": 256,
+        "chunk_checksum": "sha256:" + "2" * 64,
+        "source_content_hash": "sha256:" + "1" * 64,
+        "result_content_hash": result_hash,
+        "complete": False,
+        "next_request_id_hash": reporter.value_hash({"request": "after"}) if consumed else None,
+        "consumed_content_hash": result_hash if consumed else None,
+        "consumed": consumed,
+    }
+    return value
+
+
+def test_turn_artifact_economics_uses_only_typed_truth(tmp_path):
+    reporter = _load_reporter()
+    tool_retrieval = _retrieval_receipt(reporter, consumed=False)
+    provider_consumption = _retrieval_receipt(reporter, consumed=True)
+    raw = [{"state": {"input": {"action_result": [
+        {
+            "tool_call_id": "not-used-for-classification",
+            "metadata": {
+                "turn_economics": _turn_receipt(reporter, "tool", "artifact_retrieval", "retrieve"),
+                "tool_output_policy": {
+                    "policy_version": "v1",
+                    "raw_byte_count": 131072,
+                    "raw_checksum": "sha256:" + "3" * 64,
+                    "inline_tokens": 128,
+                    "offloaded_tokens": 32640,
+                    "artifact_ref": "opaque",
+                    "context_artifact_ref": "opaque-context",
+                    "upstream_artifacts": [{"content_hash": "sha256:" + "1" * 64}],
+                },
+                "artifact_retrieval": tool_retrieval,
+            },
+        }
+    ]}}}]
+    calls = [{
+        "turn_economics": _turn_receipt(reporter, "model", "artifact_retrieval", "after"),
+        "artifact_retrieval_consumption": [provider_consumption],
+    }]
+    artifact = tmp_path / "artifact.bin"
+    artifact.write_bytes(b"x" * 64)
+
+    summary = reporter.turn_artifact_economics_summary(calls, raw, [artifact])
+
+    assert summary["turn_causes"]["status"] == "available"
+    assert summary["turn_causes"]["counts"]["artifact_retrieval"] == {"model": 1, "tool": 1}
+    assert summary["tool_outputs"] == {
+        "status": "available",
+        "raw_bytes": 131072,
+        "inline_tokens": 128,
+        "offloaded_tokens": 32640,
+        "double_offload_count": 1,
+    }
+    assert summary["retrieval"]["retrieved_bytes"] == 256
+    assert summary["retrieval"]["consumed_count"] == 1
+    assert summary["artifacts"] == {"persisted_count": 1, "persisted_bytes": 64}
+    runs = [
+        {"experiment": "generic", "case_id": "noisy", "repeat": 1, "variant": variant, "summary": summary}
+        for variant in ("legacy", "candidate")
+    ]
+    delta = reporter.paired_turn_artifact_deltas(
+        runs, baseline="legacy", candidate="candidate"
+    )[0]
+    assert delta["status"] == "available"
+    assert delta["candidate_minus_baseline"]["retrieved_bytes"] == 0
+
+
+def test_turn_artifact_economics_missing_receipts_is_unavailable_not_heuristic():
+    reporter = _load_reporter()
+    calls = [{"request": {"messages": [{"content": "read_output_artifact retry validation"}]}}]
+    raw = [{"action_result": [{"content": "artifact retrieved", "metadata": {}}]}]
+
+    summary = reporter.turn_artifact_economics_summary(calls, raw, [])
+
+    assert summary["turn_causes"]["status"] == "unavailable"
+    assert summary["turn_causes"]["counts"] == {}
+    assert summary["tool_outputs"]["status"] == "unavailable"
+
+
 def _compiler_plan_evidence(
     reporter,
     *,

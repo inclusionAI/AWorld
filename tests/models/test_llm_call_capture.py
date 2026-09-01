@@ -143,7 +143,6 @@ class TerminalMarkerStreamProvider(RecordingLLMProvider):
             message={"role": "assistant", "content": ""},
             finish_reason="stop",
         )
-
     async def astream_completion(self, messages, **kwargs):
         self.seen_requests.append(messages)
         yield ModelResponse(
@@ -172,6 +171,21 @@ class TerminalMarkerStreamProvider(RecordingLLMProvider):
             message={"role": "assistant", "content": ""},
             finish_reason="stop",
         )
+
+
+class ToolChoiceProvider(RecordingLLMProvider):
+    def _build_response(self):
+        response = super()._build_response()
+        response.message = {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [{
+                "id": "chosen-tool-call",
+                "type": "function",
+                "function": {"name": "generic_tool", "arguments": "{}"},
+            }],
+        }
+        return response
 
 
 @pytest.mark.asyncio
@@ -233,6 +247,23 @@ async def test_acompletion_appends_llm_call_with_final_messages_and_usage(monkey
         "prompt_tokens_details": {"cached_tokens": 5},
         "cache_hit_tokens": 5,
     }
+    assert llm_call["turn_economics"]["turn_kind"] == "model"
+    assert llm_call["turn_economics"]["cause"] == "initial_input"
+
+
+@pytest.mark.asyncio
+async def test_llm_response_tool_choice_is_bound_to_the_following_tool_turn():
+    provider = ToolChoiceProvider()
+    llm_model = LLMModel(custom_provider=provider)
+    context = Context(task_id="typed-tool-choice")
+
+    await llm_model.acompletion(
+        [{"role": "user", "content": "choose a tool"}], context=context
+    )
+    tool_turn = context.record_tool_turn("chosen-tool-call")
+
+    assert tool_turn.cause.value == "model_choice"
+    assert tool_turn.parent_turn_id_hash is not None
 
 
 @pytest.mark.asyncio

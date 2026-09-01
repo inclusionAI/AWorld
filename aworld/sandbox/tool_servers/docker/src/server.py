@@ -461,11 +461,14 @@ async def read_output_artifact(
         {
             "type": output,
             "content": content,
+            "artifact_ref": artifact_ref,
             "offset": offset,
             "next_offset": next_offset,
+            "returned_bytes": len(data),
             "total_bytes": total_bytes,
             "complete": next_offset >= total_bytes,
             "content_sha256": artifact_digest,
+            "chunk_sha256": hashlib.sha256(data).hexdigest(),
         }
     )
 
