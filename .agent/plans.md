@@ -151,8 +151,73 @@ Tool output policy, cache identity, lifecycle, delegation, and evaluation consum
 - Session-sticky rollout cohorts, provider/entry-point capability gates, rollback bundle and default-on readiness report.
 
 #### Task 6.3: Deferred integrated validation
-- **Status:** in progress
+- **Status:** complete for smoke/mechanism validation; benefit gate remains not-ready
 - Only after Tasks 3.1-6.2 are code-complete: run unit/integration suites, local Docker Terminal Bench subset and at least
   one non-Terminal Tool/research/delegation workload; repair defects, then evaluate generalized Context benefit.
-- Local Docker execution/capture smoke is complete for one real Terminal Bench task; paired reward aggregation and the
-  independent second workload remain pending before any benefit/default-on decision.
+- One Terminal Bench and one non-Terminal Tool/research workload now have complete legacy/candidate pairs with independent
+  reward, provider-owned capture, exact request trace, TaskResponse/live-Context continuity, Raw trajectory and checksum
+  evidence. Both pairs are reward 1/1, but candidate request cost regressed and only 2/10 required pairs exist. This proves
+  the mechanism and evaluation data plane, not generalized benefit or default-on readiness.
+
+### Milestone 7: Candidate Overhead Attribution and Elimination
+**Goal:** Explain every candidate-only provider-bound byte/token and remove general fixed overhead without task-specific policy.
+**Depends on:** Milestone 6 smoke evidence.
+
+#### Task 7.1: Provider-bound section attribution
+- **Parallel:** no
+- **Files:** compiler trace/models/final/runtime, provider capture, benefit report, focused tests.
+- **Approach:** produce a privacy-safe, occurrence-preserving attribution from final provider messages/Tools to owner section,
+  including bytes, estimated tokens, stable/dynamic residency and legacy/candidate delta. Unknown ownership remains explicit.
+- **Tests:** duplicate content, repeated roles, Tool schemas, redaction, unmatched provider transforms, deterministic totals.
+- **Acceptance criteria:** per-section totals reconcile exactly with provider-bound canonical payload counts and never rely on
+  prompt-text heuristics.
+- **Status:** complete; approved after three architecture review iterations
+
+#### Task 7.2: Eliminate duplicate and non-resident candidate context
+- **Parallel:** no; depends on 7.1
+- **Files:** final compiler, sidecar/runtime integration, progressive catalog/skills, reducers.
+- **Approach:** use attribution evidence to remove legacy/candidate double inclusion and Context metadata accidentally made
+  model-visible; retain semantic equivalence, authority and Tool atomicity.
+- **Tests:** semantic-equivalent request fixtures, off/observe compatibility, cache continuity, no required-context loss.
+- **Acceptance criteria:** deterministic fixtures show no unexplained fixed candidate overhead and no hard-gate regression.
+- **Status:** in progress
+
+#### Task 7.3: Turn and artifact economics
+- **Parallel:** yes after 7.1
+- **Files:** evaluation report, Tool output runtime, generic noisy workload.
+- **Approach:** attribute extra model/Tool turns and validate real model artifact retrieval when output crosses the same generic
+  policy threshold; report inline/offloaded/read bytes and owner retrieval without benchmark-specific prompting.
+- **Tests:** deterministic retrieval, real Docker opt-in, paired report reconciliation.
+- **Acceptance criteria:** extra turns have typed causes; offload benefit and retrieval correctness are independently measurable.
+- **Status:** pending
+
+### Milestone 8: Provider and Entry-Point Production Parity
+**Goal:** Extend enforce only where the real send boundary can prove immutable candidate fidelity.
+**Depends on:** Milestone 7 attribution contract.
+
+- Add reviewed Azure lowering/canonical request evidence or keep it explicitly unsupported with complete parity tests.
+- Define a safe registration contract for additional built-in providers; custom/self-declared providers remain fail-closed.
+- Complete sync/async/stream/direct/Agent/Amni/CLI/ACP/resume parity matrices and error-path receipts.
+- Verify external runtime/Scheduler projection through artifacts/contracts without modifying mcpgateway or
+  lingguang-bench-runtime-dsh.
+- **Status:** pending
+
+### Milestone 9: Cross-Workload Benefit Evidence
+**Goal:** Reach statistically valid quality or cost benefit evidence without benchmark-specific optimization.
+**Depends on:** Milestones 7-8.
+
+- Freeze at least 10 complete paired cases spanning Terminal, Tool/research, long-history, lifecycle, injection and delegation.
+- Include 0/0, 0/1, 1/0 and 1/1 outcome classes when naturally present; never select policy after seeing answers.
+- Run real-model variants at least five times where quality variance is measured, randomly interleaved.
+- Add provider billing or a frozen/versioned normalized-cost model; report paired bootstrap confidence intervals.
+- **Status:** pending
+
+### Milestone 10: Canary, Default-On, and Legacy Cleanup
+**Goal:** Ship only after all hard gates and one quality-or-cost benefit path pass.
+**Depends on:** Milestone 9.
+
+- Execute 100% shadow request-diff audit, then session-sticky 5% low-risk enforce with automatic rollback bundles.
+- Validate all hard, quality, efficiency, latency, cache and security gates in the Spec.
+- Default-on only for reviewed provider/entry-point capabilities; preserve one stable-version rollback switch.
+- Remove duplicate legacy assembly paths only after parity and rollback acceptance.
+- **Status:** pending

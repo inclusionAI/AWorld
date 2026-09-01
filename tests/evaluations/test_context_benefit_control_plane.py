@@ -36,6 +36,7 @@ def _manifest():
                 "mode": "enforce",
                 "artifact_offload": True,
                 "progressive_tools": True,
+                "progressive_tool_base_tools": ["read_file"],
             }
         },
     )

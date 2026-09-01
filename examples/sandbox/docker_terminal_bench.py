@@ -161,6 +161,7 @@ def _load_variant(path: Path | None) -> dict:
         "scoped_instructions",
         "progressive_skills",
         "progressive_tools",
+        "progressive_tool_base_tools",
         "task_catalog_policy",
         "checkpoint_policy",
         "default_tool_output_inline_tokens",

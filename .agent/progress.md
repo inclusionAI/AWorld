@@ -2,15 +2,14 @@
 
 ## Current Status
 
-**Phase:** Milestone 6 integrated validation
-**Current milestone:** Evaluation, Canary, and Default-On Readiness
-**Current task:** Task 6.3 — cross-workload validation and benefit attribution
-**Last action:** Completed the integrated Milestone 3-6 code version, then opened the deferred validation gate. Focused
-universal-final/provider/cache/scope/progressive/offload/delegation/completion/evaluation/canary and adjacent runtime suites
-are green at 170 tests. A broader selected run reached 258/260 before both defects were fixed and individually rerun. The
-full repository run reached 1,154 passes before interruption in slow gateway tests; its remaining failures include local
-global-AWORLD.md contamination and unrelated command/cache tests, while the one change-related off-mode regression was
-fixed and rerun.
+**Phase:** Milestone 7 implementation
+**Current milestone:** Candidate Overhead Attribution and Elimination
+**Current task:** Task 7.2 — eliminate duplicate/non-resident context using verified attribution
+**Last action:** Milestone 7.1 provider-bound attribution was approved after three independent review iterations. Compiler
+provenance is ordinal-bound, provider shapes and canonical bytes are fail-closed, provider prepared/attempted state rolls
+back on pre-send mutation/cache failure, report dimensions are bound to an independent compiler-plan fingerprint, and
+manifest-complete paired attribution is a default-on hard gate. Main commits: `87aceab7`, `173f31dc`, `2c30f9f5`; focused
+main-tree verification is 32/32 and the implementation worktree wider regression is 130/130.
 
 ## Completed Foundations
 
@@ -18,6 +17,139 @@ fixed and rerun.
 - Provider-bound LLM call capture and compiler/provider snapshot merge.
 - DockerSandbox attach implementation, bounded/reversible Tool output artifacts, real Docker capability gate.
 - Generic paired benchmark driver, evidence provenance, and Context-benefit evaluation contract.
+- Cross-workload paired smoke, actual-provider metric recomputation, dual artifact-ownership interoperability and real Docker
+  artifact recovery gate.
+
+## Current Milestone: Candidate Overhead Attribution and Elimination
+
+### Task Status
+
+| Task | Status | Notes |
+|---|---|---|
+| 7.1 Provider-bound section attribution | complete | Third review APPROVE; ordinal plan, provider receipt, raw revalidation, paired hard gate |
+| 7.2 Eliminate duplicate/non-resident context | in_progress | Evidence-driven only; preserve semantic equivalence |
+| 7.3 Turn and artifact economics | in_progress | Truth-plane audit complete; typed causal/retrieval receipts in implementation |
+
+### Milestone 7 Evidence Audit (2026-09-01)
+- The first provider request in both paired workloads is byte-equivalent after removing `prompt_cache_key`; system/user
+  messages, all 15 Tool schemas, model and temperature are the same. The current evidence therefore does **not** support a
+  compiler fixed-prompt-injection hypothesis.
+- Terminal total request delta `+6,310` decomposes into messages `+13,332`, repeated Tool schemas `-6,148` from one fewer
+  provider call, and other/provider structure `-874`. Candidate made fewer provider calls but more Tool calls inside turns.
+- Non-Terminal total request delta `+52,313` decomposes into messages `+46,787`, repeated Tool schemas `+6,148` from one
+  extra provider call, and other/provider structure `-622`. One run per variant cannot attribute the extra turn or Tool
+  behavior to Context policy.
+- Every call sends the same 15-Tool catalog (`6,148` canonical bytes per call); this is a general progressive-catalog/cache
+  opportunity, not a candidate regression proven by these samples.
+- The only directly attributable request difference is that legacy carries `provider_request.payload.prompt_cache_key`
+  while candidate does not; candidate cache continuity is therefore `unavailable`. This is not yet classified as a defect:
+  the sampled Amni folded system is dynamic and the candidate logical stable prefix is empty, so copying the legacy key may
+  be unsafe. The provider boundary must first prove whether the legacy key represents the exact stable wire prefix.
+- All four real-model runs report zero offloaded artifacts, so the mechanism's deterministic Docker receipt proof is not yet
+  a behavioral benefit proof.
+
+### Task 7.2 Progressive Tool Catalog Audit (2026-09-01)
+- `progressive_tools=true` currently controls only sticky catalog transitions. The Agent builds the first
+  `TaskCatalogSnapshot` from the complete permission-filtered catalog and never calls `compile_minimal_tool_catalog`, so all
+  15 schemas in the paired runs are expected and do not prove a candidate-only regression.
+- Safe minimization must be explicit opt-in. Missing/`None` base-Tool configuration preserves the complete filtered catalog;
+  an explicit list selects only exact model-visible ids; an explicit empty list permits only Tools requested by activated
+  Skills. No task-text, Tool-description, history or benchmark-specific inference is allowed.
+- The result of `_filter_tools` is the sole permission upper bound. Skill configuration may request Tools but can never
+  restore a Tool removed by server/workspace/user policy. Selection must preserve the filtered catalog order for cache
+  continuity.
+- Current Skill `tool_list` keys are commonly MCP server ids while the provider catalog uses model-visible function ids.
+  These identities cannot be intersected or fuzzily matched. Unknown/ambiguous mappings require typed unavailable evidence;
+  Skill content and its required Tools must remain atomic under enforce.
+- Existing transition evidence conflates requested, applied and deferred additions, reports a cache break even when a
+  deferred expansion leaves the actual snapshot unchanged, and gives `CHILD_CONTEXT` no isolation semantics. These contract
+  defects must be fixed before real minimization is enabled.
+
+### Task 7.3 Turn and Artifact Economics Audit (2026-09-01)
+- The four real paired runs did not cross either output boundary. Candidate Docker output was at most 15,041 bytes versus a
+  65,536-byte cap, and the largest Context ActionResult was 3,915 estimated tokens versus a 4,096-token cap. The 322,505-byte
+  noisy stream was redirected into a workspace file, so it never became a Tool result. Zero offload is therefore valid
+  mechanism evidence, not a runtime failure.
+- Current `offloaded_artifact_count` scans only `run_dir/tool-output-artifacts/*.bin`; it does not prove all owner receipts,
+  successful retrieval, later provider consumption or absence of double offload. These metrics must be recomputed from Raw
+  trajectory, provider calls and checksum-bound artifacts, with unavailable used whenever the evidence chain is incomplete.
+- A generic noisy-output validation fixture must return deterministic 128–256 KiB content directly through the Tool boundary,
+  place required evidence outside the inline head/tail, and require receipt-bound retrieval. The paired prompt, Tool surface,
+  fixture checksum and verifier remain invariant; variants may change only generic Context/Tool-output policy.
+- Extra model/Tool turns require typed causal receipts written at scheduling boundaries. Supported causes are model choice,
+  validation repair, framework retry, deferred catalog expansion, deferred Skill expansion and artifact retrieval. Counts
+  cannot be inferred from text, Tool names or aggregate call differences.
+- Existing run-level `cache_read_tokens` summaries are stale zeros while provider-call truth recomputes non-zero values;
+  all new economics must continue to use the lowest available truth plane instead of trusting cached aggregates.
+
+### Milestone 7.1 Architecture Review — Iteration 1
+- Verdict: REQUEST CHANGES; P0/critical=0, important=4, minor=2.
+- Important fixes required: bind absent/null/empty collection shape; atomically commit lowering + provider snapshot without
+  premature `provider_invoked`/cache mutation; recompute attribution from raw provider payload in the benefit report; emit
+  variant-paired section deltas and require complete coverage before claiming byte conservation.
+- Minor follow-up: replace source-identity suffix correlation with typed sidecar request binding; preserve additive/versioned
+  compatibility for exported frozen contracts or clearly make them internal.
+- Positive result retained: emitted provenance is ordinal-selected then hash-validated; non-empty reorder/add/drop is
+  fail-closed; SDK/HTTP fidelity and serialized checksum semantics are correct.
+
+### Milestone 7.1 Architecture Review — Iteration 2
+- Verdict: REQUEST CHANGES; no critical, two important remain.
+- Closed: collection absent/null/array binding; provider prepared/attempted/cache rollback; typed sidecar request binding;
+  additive constructor compatibility.
+- Remaining: bind report dimensions to an independent compiler attribution-plan fingerprint so a valid-enum owner rewrite is
+  rejected; derive expected attribution pairs from manifest cases × repeats × variants so a missing run cannot disappear
+  from the hard gate.
+
+### Milestone 7.1 Architecture Review — Iteration 3
+- Verdict: APPROVE; no critical or important findings, focused adversarial suite 32/32.
+- Independent compiler plan evidence and provider receipt now reject legal-enum owner rewrites; receipt cannot self-certify.
+- Manifest Cartesian expected-run validation rejects missing, duplicate, unexpected or unavailable attribution pairs and
+  emits `provider_attribution_pairing_incomplete` even when ten other pairs are complete.
+
+## Architecture State — Milestone 7.1
+- Final compiler emits an immutable, privacy-safe ordinal attribution plan in the same loop that emits messages/Tools.
+- Reviewed OpenAI lowering validates collection shape, ordinal and hash, then records canonical provider bytes plus an
+  explicit provider-envelope/params bucket; SDK and HTTP fidelity remain distinct.
+- Provider execution records transition `prepared` → `attempted`; `provider_invoked` means the external invocation attempt
+  started, while pre-send Context/cache failures roll back and prevent external action.
+- Benefit reports recompute attribution from provider request truth, compare independent plan/receipt fingerprints, and only
+  expose paired section deltas when every manifest-declared run has valid evidence.
+- Known limitation: legacy/off runs created before attribution do not have comparable receipts; they remain explicitly
+  unsupported rather than being heuristically classified.
+
+### Decision: Continue from evidence, not benchmark outcomes
+- Options considered: tune Terminal prompts; reduce arbitrary sections; first add exact provider-bound attribution.
+- Chose: exact attribution first.
+- Rationale: current aggregate deltas cannot distinguish duplicate assembly, stable-prefix cost, Tool schema growth or model
+  variance. Removing context without owner/request evidence would violate the framework hypothesis and risk score tuning.
+- Trade-offs accepted: another compiler/reporting slice precedes broader paired runs.
+
+### Decision: Do not treat single-sample Tool behavior as compiler overhead
+- Options considered: remove Context based on aggregate prompt deltas; tune Tool-use prompts; isolate request components and
+  repeat model runs before causal changes.
+- Chose: exact component attribution, restore cache-key parity only where provider-wire stability is proven, then repeat
+  paired runs.
+- Rationale: initial request semantics are equal and later deltas are history accumulated from different stochastic Tool
+  paths. A single sample cannot establish causality.
+- Trade-offs accepted: no immediate token-reduction claim from the current two pairs.
+
+### Decision: Progressive Tool selection is explicit and permission-bounded
+- Options considered: infer a minimal catalog from the task/prompt; make `progressive_tools=true` immediately minimize;
+  introduce an explicit base set and combine it with precisely resolved activated-Skill requirements.
+- Chose: explicit base set with `None` preserving the current full catalog, exact identity resolution, permission
+  intersection, original-order retention and task-sticky expansion semantics.
+- Rationale: a Context framework must reduce generic repeated schema cost without learning benchmark answers or silently
+  changing existing applications. Exact owner evidence and ACL intersection make the reduction causal and auditable.
+- Trade-offs accepted: applications without an explicit base set see no schema reduction; unavailable Skill identity
+  mappings fail closed instead of receiving a guessed Tool.
+
+### Decision: Scope of provider parity
+- Options considered: authorize OpenAI-compatible subclasses generically; modify external runtimes; review each built-in send
+  boundary and keep unsupported providers fail-closed.
+- Chose: per-boundary reviewed built-in parity with artifact-level external integration only.
+- Rationale: self-declared compatibility does not prove immutable lowering, and the user explicitly excludes mcpgateway and
+  lingguang-bench-runtime-dsh code changes.
+- Trade-offs accepted: default-on can initially cover only a subset of providers/entry points.
 
 ## Current Milestone: Context Models, Adapters, and Observe Mode
 
