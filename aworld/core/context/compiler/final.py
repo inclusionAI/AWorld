@@ -42,6 +42,13 @@ from .models import (
 from .trace import ContextDecisionTrace
 from .resolver import ResolutionOccurrence, resolve_context_occurrences
 from .scope import ContextResolutionTarget
+from .attribution import (
+    AttributionCollection,
+    AttributionOwnerCode,
+    ContextAttributionPlanEntry,
+    LogicalResidency,
+    ProviderRequestAttributionPlan,
+)
 
 
 FINAL_COMPILER_IDENTITY = "aworld.context.compiler.final"
@@ -81,6 +88,7 @@ class FinalCompileCandidate:
     activated: bool = True
     allowed: bool = True
     conflict_domain: str | None = None
+    owner_code: AttributionOwnerCode = AttributionOwnerCode.UNKNOWN
 
     def __post_init__(self) -> None:
         if not isinstance(self.item, ContextItem):
@@ -92,6 +100,7 @@ class FinalCompileCandidate:
         if not isinstance(self.allocation_tier, BudgetAllocationTier):
             raise TypeError("allocation_tier must be a BudgetAllocationTier")
         object.__setattr__(self, "emission", ContextEmissionKind(self.emission))
+        object.__setattr__(self, "owner_code", AttributionOwnerCode(self.owner_code))
         if self.atomic_group is not None and not isinstance(
             self.atomic_group, AtomicGroupRef
         ):
@@ -270,6 +279,7 @@ class FinalCompileResult:
     tool_catalog_hash: str
     skill_set_hash: str
     trace: ContextDecisionTrace
+    attribution_plan: ProviderRequestAttributionPlan
     compiler_identity: str
     compiler_version: str
     policy_version: str
@@ -292,6 +302,10 @@ class FinalCompileResult:
             raise TypeError("stable_partition must be a StablePrefixPartition")
         if not isinstance(self.trace, ContextDecisionTrace):
             raise TypeError("trace must be a ContextDecisionTrace")
+        if not isinstance(self.attribution_plan, ProviderRequestAttributionPlan):
+            raise TypeError("attribution_plan must be a ProviderRequestAttributionPlan")
+        if self.attribution_plan.candidate_content_hash != self.request_snapshot.content_hash:
+            raise ValueError("attribution plan must bind the candidate snapshot")
         for name in (
             "tool_catalog_hash",
             "skill_set_hash",
@@ -371,6 +385,7 @@ def _replace_candidates(
                 activated=candidate.activated,
                 allowed=candidate.allowed,
                 conflict_domain=candidate.conflict_domain,
+                owner_code=candidate.owner_code,
             )
         )
     return tuple(values), by_id
@@ -522,33 +537,59 @@ def compile_final_context(
         if candidate.item.id in selected_ids
     )
     selected_items = tuple(candidate.item for candidate in selected_candidates)
-    messages = tuple(
-        candidate.item.payload
-        for candidate in selected_candidates
-        if candidate.emission is ContextEmissionKind.MESSAGE
-    )
-    tools = tuple(
-        candidate.item.payload
-        for candidate in selected_candidates
-        if candidate.emission is ContextEmissionKind.TOOL
-    )
-    request_snapshot = ProviderRequestSnapshot(
-        request_id=compiler_input.request_id,
-        provider_name=compiler_input.provider_name,
-        payload={
-            "messages": messages,
-            "tools": tools if compiler_input.tools_present else None,
-            "params": compiler_input.provider_params,
-        },
-        capture_stage=RequestCaptureStage.MODEL_BOUNDARY,
-        fidelity=ProviderRequestFidelity.MODEL_BOUNDARY,
-    )
     emitted_items = tuple(
         candidate.item
         for candidate in selected_candidates
         if candidate.emission is not ContextEmissionKind.EVIDENCE_ONLY
     )
     partition = partition_stable_prefix(emitted_items)
+    stable_item_ids = {item.id for item in partition.stable_items}
+    messages: list[FrozenJSON] = []
+    tools: list[FrozenJSON] = []
+    attribution_entries: list[ContextAttributionPlanEntry] = []
+    for candidate in selected_candidates:
+        if candidate.emission is ContextEmissionKind.EVIDENCE_ONLY:
+            continue
+        if candidate.emission is ContextEmissionKind.MESSAGE:
+            collection = AttributionCollection.MESSAGES
+            ordinal = len(messages)
+            messages.append(candidate.item.payload)
+        else:
+            collection = AttributionCollection.TOOLS
+            ordinal = len(tools)
+            tools.append(candidate.item.payload)
+        attribution_entries.append(
+            ContextAttributionPlanEntry.from_item(
+                item=candidate.item,
+                owner_code=candidate.owner_code,
+                collection=collection,
+                ordinal=ordinal,
+                token_estimate=candidate.tokens,
+                residency=(
+                    LogicalResidency.STABLE
+                    if candidate.item.id in stable_item_ids
+                    else LogicalResidency.DYNAMIC
+                ),
+            )
+        )
+    request_snapshot = ProviderRequestSnapshot(
+        request_id=compiler_input.request_id,
+        provider_name=compiler_input.provider_name,
+        payload={
+            "messages": tuple(messages),
+            "tools": tuple(tools) if compiler_input.tools_present else None,
+            "params": compiler_input.provider_params,
+        },
+        capture_stage=RequestCaptureStage.MODEL_BOUNDARY,
+        fidelity=ProviderRequestFidelity.MODEL_BOUNDARY,
+    )
+    attribution_plan = ProviderRequestAttributionPlan(
+        request_id_hash=canonical_json_hash(
+            {"request_id": compiler_input.request_id}
+        ),
+        candidate_content_hash=request_snapshot.content_hash,
+        entries=tuple(attribution_entries),
+    )
     budget_decisions = _resolved_decisions(
         original_candidates=eligible_candidates,
         budget_plan=budget_plan,
@@ -603,6 +644,7 @@ def compile_final_context(
             ]
         ),
         trace=trace,
+        attribution_plan=attribution_plan,
         compiler_identity=FINAL_COMPILER_IDENTITY,
         compiler_version=policy.compiler_version,
         policy_version=policy.policy_version,

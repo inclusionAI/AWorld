@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
 from datetime import datetime
 import math
 from typing import Iterable
@@ -18,16 +17,15 @@ from .final import (
     compile_final_context,
 )
 from .frozen_json import FrozenMap, canonical_json_bytes
+from .attribution import AttributionOwnerCode
 from .models import (
     ContextItem,
     ContextKind,
     InferenceProfile,
     ProviderRequestSnapshot,
-    SourceKind,
     TokenEstimate,
 )
 from .scope import ContextResolutionTarget
-from .scope import lifetime_matches, scope_matches
 from .sidecar import ContextObservationSidecar
 
 
@@ -63,19 +61,24 @@ def _known_semantics(item: ContextItem, task_epoch: int | None) -> bool:
     )
 
 
-def _owner_items(
-    observations: Iterable[ContextObservationSidecar],
-) -> dict[str, list[ContextItem]]:
-    by_hash: dict[str, list[ContextItem]] = {}
-    for sidecar in observations:
-        for item in sidecar.result.items:
-            by_hash.setdefault(item.content_hash or "", []).append(item)
-            ref = item.source.ref
-            if isinstance(ref, FrozenMap):
-                original_hash = ref.get("original_content_hash")
-                if isinstance(original_hash, str):
-                    by_hash.setdefault(original_hash, []).append(item)
-    return by_hash
+def _final_owner_sidecar(
+    observations: tuple[ContextObservationSidecar, ...],
+    *,
+    owner: str,
+    request_id: str,
+) -> ContextObservationSidecar | None:
+    """Select only the current model-owned collection sidecar.
+
+    Source identity is an in-memory correlation key.  Payload hashes are not
+    used to find, rank, or choose provenance.
+    """
+    suffix = f"/request-{request_id}"
+    matches = [
+        sidecar
+        for sidecar in observations
+        if sidecar.owner == owner and sidecar.source_identity.endswith(suffix)
+    ]
+    return matches[0] if len(matches) == 1 else None
 
 
 def _atomic_group(item: ContextItem) -> AtomicGroupRef | None:
@@ -96,79 +99,39 @@ def _atomic_group(item: ContextItem) -> AtomicGroupRef | None:
     )
 
 
-def _select_item(
-    fallback: ContextItem,
-    *,
-    owner_by_hash: dict[str, list[ContextItem]],
-    consumed_owner_ids: set[str],
-    task_epoch: int | None,
-    resolution_target: ContextResolutionTarget | None,
-) -> ContextItem:
-    matches = [
-        item
-        for item in owner_by_hash.get(fallback.content_hash or "", ())
-        if item.id not in consumed_owner_ids
-    ]
-    if not matches:
-        return fallback
-    if resolution_target is not None:
-        matches = [
-            item
-            for item in matches
-            if scope_matches(item.scope, resolution_target)
-            and lifetime_matches(item, resolution_target)
-        ]
-        if not matches:
-            return fallback
-    occurrence_matches = [
-        item for item in matches if item.occurrence == fallback.occurrence
-    ]
-    if occurrence_matches:
-        matches = occurrence_matches
-    source_rank = {
-        SourceKind.STEERING: 100,
-        SourceKind.TOOL_CATALOG: 90,
-        SourceKind.WORKSPACE_FILE: 80,
-        SourceKind.SKILL: 70,
-        SourceKind.NEURON: 60,
-        SourceKind.MEMORY: 50,
-        SourceKind.AGENT: 40,
-    }
-    ranked = sorted(
-        matches,
-        key=lambda item: (
-            int(_known_semantics(item, task_epoch)),
-            source_rank.get(item.source.kind, 0),
-            int(
-                isinstance(item.source.ref, FrozenMap)
-                and item.source.ref.get("model_final_boundary") is True
-            ),
-        ),
-        reverse=True,
-    )
-    best_score = (
-        int(_known_semantics(ranked[0], task_epoch)),
-        source_rank.get(ranked[0].source.kind, 0),
-        int(
-            isinstance(ranked[0].source.ref, FrozenMap)
-            and ranked[0].source.ref.get("model_final_boundary") is True
-        ),
-    )
-    if sum(
-        (
-            int(_known_semantics(item, task_epoch)),
-            source_rank.get(item.source.kind, 0),
-            int(
-                isinstance(item.source.ref, FrozenMap)
-                and item.source.ref.get("model_final_boundary") is True
-            ),
-        ) == best_score
-        for item in ranked
-    ) != 1:
-        return fallback
-    selected = ranked[0]
-    consumed_owner_ids.add(selected.id)
-    return selected
+def _bind_final_collection(
+    fallback_items: tuple[ContextItem, ...],
+    sidecar: ContextObservationSidecar | None,
+) -> tuple[tuple[ContextItem, ...], bool]:
+    """Bind by ordinal and then validate the value hash at that ordinal."""
+    if sidecar is None or len(sidecar.result.items) != len(fallback_items):
+        return fallback_items, False
+    bound: list[ContextItem] = []
+    for ordinal, fallback in enumerate(fallback_items):
+        item = sidecar.result.items[ordinal]
+        ref = item.source.ref
+        if (
+            item.occurrence != ordinal
+            or not isinstance(ref, FrozenMap)
+            or ref.get("occurrence") != ordinal
+            or ref.get("model_final_boundary") is not True
+            or item.content_hash != fallback.content_hash
+        ):
+            return fallback_items, False
+        bound.append(item)
+    return tuple(bound), True
+
+
+def _owner_code(owner: str) -> AttributionOwnerCode:
+    if owner == "workspace.nested_instructions":
+        return AttributionOwnerCode.SCOPED_INSTRUCTION
+    if owner == "skills.progressive":
+        return AttributionOwnerCode.PROGRESSIVE_SKILL
+    if owner == "delegation.context_pack":
+        return AttributionOwnerCode.DELEGATION_CONTEXT
+    if owner in {"amni.folded_system", "amni.restored_folded_system"}:
+        return AttributionOwnerCode.AMNI_FOLDED_SYSTEM
+    return AttributionOwnerCode.UNKNOWN
 
 
 def compile_model_boundary_context(
@@ -198,48 +161,43 @@ def compile_model_boundary_context(
     if not isinstance(params, FrozenMap):
         raise TypeError("legacy params must be an object")
 
-    message_items = adapt_final_messages(
+    observations = tuple(observations)
+    fallback_message_items = adapt_final_messages(
         messages,
         source_identity=f"model-boundary:{legacy_request.request_id}:messages",
         task_epoch=task_epoch,
     ).items
-    tool_items = adapt_tool_schemas(
+    fallback_tool_items = adapt_tool_schemas(
         tools or (),
         source_identity=f"model-boundary:{legacy_request.request_id}:tools",
         task_epoch=task_epoch,
     ).items
-    owner_by_hash = _owner_items(observations)
-    consumed_owner_ids: set[str] = set()
-    candidates: list[FinalCompileCandidate] = []
-    last_user_occurrence = max(
-        (
-            item.occurrence
-            for item in message_items
-            if isinstance(item.payload, FrozenMap)
-            and item.payload.get("role") == "user"
+    message_items, messages_bound = _bind_final_collection(
+        fallback_message_items,
+        _final_owner_sidecar(
+            observations,
+            owner="model.final_messages",
+            request_id=legacy_request.request_id or "",
         ),
-        default=-1,
     )
-    for fallback in message_items:
-        item = _select_item(
-            fallback,
-            owner_by_hash=owner_by_hash,
-            consumed_owner_ids=consumed_owner_ids,
-            task_epoch=task_epoch,
-            resolution_target=resolution_target,
+    tool_items, tools_bound = _bind_final_collection(
+        fallback_tool_items,
+        _final_owner_sidecar(
+            observations,
+            owner="model.final_tool_catalog",
+            request_id=legacy_request.request_id or "",
+        ),
+    )
+    consumed_owner_ids = {
+        item.id
+        for item in (
+            *(message_items if messages_bound else ()),
+            *(tool_items if tools_bound else ()),
         )
-        required = item.required or (
-            item is fallback
-            and (
-                item.kind is ContextKind.SYSTEM
-                or (
-                    item.kind is ContextKind.USER
-                    and item.occurrence == last_user_occurrence
-                )
-            )
-        )
-        if required != item.required:
-            item = replace(item, required=True)
+    }
+    candidates: list[FinalCompileCandidate] = []
+    for item in message_items:
+        required = item.required
         candidates.append(
             FinalCompileCandidate(
                 item=item,
@@ -250,37 +208,37 @@ def compile_model_boundary_context(
                 ),
                 emission=ContextEmissionKind.MESSAGE,
                 atomic_group=_atomic_group(item),
-                semantics_proven=_known_semantics(item, task_epoch),
+                semantics_proven=messages_bound and _known_semantics(item, task_epoch),
+                lowering_proven=messages_bound,
+                owner_code=(
+                    AttributionOwnerCode.MODEL_FINAL_MESSAGES
+                    if messages_bound
+                    else AttributionOwnerCode.UNKNOWN
+                ),
             )
         )
-    for fallback in tool_items:
-        item = _select_item(
-            fallback,
-            owner_by_hash=owner_by_hash,
-            consumed_owner_ids=consumed_owner_ids,
-            task_epoch=task_epoch,
-            resolution_target=resolution_target,
-        )
+    for item in tool_items:
         candidates.append(
             FinalCompileCandidate(
                 item=item,
                 tokens=estimate_canonical_json_tokens(item.payload),
                 allocation_tier=BudgetAllocationTier(rank=2, name="tool_catalog"),
                 emission=ContextEmissionKind.TOOL,
-                semantics_proven=_known_semantics(item, task_epoch),
+                semantics_proven=tools_bound and _known_semantics(item, task_epoch),
+                lowering_proven=tools_bound,
+                owner_code=(
+                    AttributionOwnerCode.MODEL_FINAL_TOOL_CATALOG
+                    if tools_bound
+                    else AttributionOwnerCode.UNKNOWN
+                ),
             )
         )
     candidate_ids = {candidate.item.id for candidate in candidates}
-    reconciled_occurrences = {
-        (candidate.item.content_hash, candidate.item.occurrence)
-        for candidate in candidates
-    }
     amni_folded_selected = any(
-        isinstance(candidate.item.source.ref, FrozenMap)
-        and candidate.item.source.ref.get("amni_folded_system") is True
-        for candidate in candidates
+        sidecar.owner in {"amni.folded_system", "amni.restored_folded_system"}
+        for sidecar in observations
     )
-    evidence_by_id: dict[str, ContextItem] = {}
+    evidence_by_id: dict[str, tuple[str, ContextItem]] = {}
     for sidecar in observations:
         for item in sidecar.result.items:
             if item.id in consumed_owner_ids:
@@ -290,16 +248,14 @@ def compile_model_boundary_context(
             # owner (for example Amni's post-template fold) may have won the
             # reconciliation without making the downstream observation a new
             # message.
-            if (
-                sidecar.owner in {
+            if sidecar.owner in {
                     "agent.final_messages",
                     "agent.final_tool_catalog",
                     "model.final_messages",
                     "model.final_tool_catalog",
-                }
-                and (item.content_hash, item.occurrence)
-                in reconciled_occurrences
-            ):
+                    "amni.folded_system",
+                    "amni.restored_folded_system",
+                }:
                 continue
             # Exact folded-system ownership covers the pre-fold neuron
             # observations.  They remain auditable sidecars but are not a
@@ -307,11 +263,11 @@ def compile_model_boundary_context(
             if amni_folded_selected and sidecar.owner == "amni.neuron_outputs":
                 continue
             existing = evidence_by_id.get(item.id)
-            if existing is not None and existing != item:
+            if existing is not None and existing[1] != item:
                 raise ValueError("owner sidecars contain conflicting Context item ids")
-            evidence_by_id[item.id] = item
+            evidence_by_id[item.id] = (sidecar.owner, item)
     additional_message_candidates: list[FinalCompileCandidate] = []
-    for item in evidence_by_id.values():
+    for sidecar_owner, item in evidence_by_id.values():
         if item.id in candidate_ids:
             raise ValueError("owner evidence collides with an emitted candidate id")
         delegated = (
@@ -369,6 +325,7 @@ def compile_model_boundary_context(
                 ),
                 semantics_proven=_known_semantics(item, task_epoch),
                 lowering_proven=can_lower_instruction,
+                owner_code=_owner_code(sidecar_owner),
             )
         if can_lower_instruction:
             additional_message_candidates.append(candidate)

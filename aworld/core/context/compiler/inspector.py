@@ -8,6 +8,7 @@ from typing import Any
 from .final import FinalCompileResult
 from .frozen_json import canonical_json_hash
 from .models import ResolutionAction
+from .attribution import summarize_attribution_plan
 
 
 def inspect_final_context(result: FinalCompileResult) -> dict[str, Any]:
@@ -50,6 +51,15 @@ def inspect_final_context(result: FinalCompileResult) -> dict[str, Any]:
             "skill_set_hash": result.skill_set_hash,
         },
         "tokens": result.token_accounting.to_dict(),
+        "attribution": {
+            **summarize_attribution_plan(result.attribution_plan.entries),
+            "request_id_hash": result.attribution_plan.request_id_hash,
+            "candidate_content_hash": result.attribution_plan.candidate_content_hash,
+            "entries": [
+                entry.to_redacted_dict()
+                for entry in result.attribution_plan.entries
+            ],
+        },
         "decisions": {
             "action_counts": dict(sorted(actions.items())),
             "reason_counts": dict(sorted(reasons.items())),

@@ -196,3 +196,56 @@ def test_benefit_report_accepts_only_explicit_cost_metric_for_efficiency_path():
     assert evidence["proven"] is True
     assert evidence["path"] == "efficiency"
     assert evidence["cost_metric"] == "cost_per_successful_task"
+
+
+def test_benefit_report_aggregates_receipts_and_never_classifies_missing_prompt():
+    reporter = _load_reporter()
+    receipt = {
+        "status": "available",
+        "total_canonical_bytes": 17,
+        "attributed_value_bytes": 5,
+        "provider_envelope_and_params": 12,
+        "byte_conservation": True,
+        "entries": [
+            {
+                "owner_code": "model_final_messages",
+                "kind": "user",
+                "source_kind": "agent",
+                "residency": "dynamic",
+                "canonical_value_bytes": 5,
+            }
+        ],
+    }
+    calls = [
+        {"context_rollout": {"provider_lowering": {"attribution": receipt}}},
+        {
+            "request": {
+                "messages": [
+                    {"role": "system", "content": "must-not-be-classified"}
+                ]
+            }
+        },
+    ]
+
+    summary = reporter.provider_attribution_summary(calls)
+
+    assert summary["status"] == "available"
+    assert summary["coverage_rate"] == 0.5
+    assert summary["byte_conservation"] is True
+    assert summary["by_dimension"]["owner"] == {"model_final_messages": 5}
+    assert summary["unavailable_receipt_count"] == 1
+    assert summary["fallback"] == "none"
+    assert "must-not-be-classified" not in repr(summary)
+
+
+def test_benefit_report_marks_all_missing_attribution_unavailable():
+    reporter = _load_reporter()
+
+    summary = reporter.provider_attribution_summary(
+        [{"request": {"messages": [{"role": "user", "content": "secret"}]}}]
+    )
+
+    assert summary["status"] == "unavailable"
+    assert summary["available_receipt_count"] == 0
+    assert summary["reason"] == "provider_attribution_receipt_unavailable"
+    assert summary["by_dimension"]["owner"] == {}

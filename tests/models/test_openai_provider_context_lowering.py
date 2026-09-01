@@ -143,6 +143,14 @@ def _assert_lowering_receipt(context: Context, sent: dict[str, Any]) -> None:
     assert receipt["adapter_identity"] == (
         "aworld.provider.openai.chat_completions"
     )
+    attribution = receipt["attribution"]
+    assert attribution["status"] == "available"
+    assert attribution["byte_conservation"] is True
+    assert (
+        attribution["attributed_value_bytes"]
+        + attribution["provider_envelope_and_params"]
+        == attribution["total_canonical_bytes"]
+    )
     assert "candidate-secret" not in repr(rollout)
     assert "provider_lowering" in json.dumps(record)
 
@@ -212,6 +220,11 @@ async def test_openai_enforce_lowers_same_candidate_once_across_all_paths():
         assert "llm_request_id" not in sent
         assert sent.get("stream", False) is (index >= 2)
         _assert_lowering_receipt(contexts[index], sent)
+        assert contexts[index].get_llm_calls()[0]["context_rollout"][
+            "provider_lowering"
+        ]["attribution"]["serialization"] == (
+            "provider_prepared_canonical_json"
+        )
 
 
 def test_openai_enforce_fails_closed_when_receipt_cannot_be_persisted():
@@ -273,6 +286,9 @@ def test_openai_http_enforce_binds_the_same_provider_prepared_mapping():
     assert len(sent) == 1
     assert serialized[0] is not None
     _assert_lowering_receipt(context, sent[0])
+    assert context.get_llm_calls()[0]["context_rollout"]["provider_lowering"][
+        "attribution"
+    ]["serialization"] == "http_serialized_canonical_json"
     assert context.get_llm_calls()[0]["capture_fidelity"] == "model_boundary"
 
 
@@ -336,6 +352,36 @@ def test_openai_enforce_rejects_provider_transform_after_candidate():
         )
 
     assert raised.value.reason_code == "provider_transform_after_candidate"
+    assert sync_calls == []
+    assert context.get_llm_calls()[0]["provider_invoked"] is False
+
+
+def test_openai_enforce_rejects_message_reorder_as_attribution_mismatch():
+    provider, sync_calls, _ = _provider()
+    policy = CandidateCompilePolicy(
+        compiler_version="openai-lowering-test-v1",
+        candidate_payload={
+            "messages": [
+                {"role": "user", "content": "one"},
+                {"role": "user", "content": "two"},
+            ],
+            "tools": None,
+            "params": {"temperature": 0.0, "max_tokens": 10, "stop": []},
+        },
+        enforce_ready=True,
+    )
+    model = _model(provider, policy=policy)
+    context = Context(task_id="provider-attribution-reorder")
+    provider.preprocess_messages = MethodType(
+        lambda self, messages, **kwargs: list(reversed(messages)), provider
+    )
+
+    with pytest.raises(CandidateRequestNotEnforceable) as raised:
+        model.completion(
+            [{"role": "user", "content": "legacy"}], context=context
+        )
+
+    assert raised.value.reason_code == "provider_attribution_mismatch"
     assert sync_calls == []
     assert context.get_llm_calls()[0]["provider_invoked"] is False
 

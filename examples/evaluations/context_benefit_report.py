@@ -118,6 +118,84 @@ def provider_snapshot_integrity(calls: list[dict]) -> bool:
     return True
 
 
+def provider_attribution_summary(calls: list[dict]) -> dict[str, Any]:
+    """Aggregate only provider receipts; prompt text is never classified."""
+    dimensions = {name: {} for name in ("owner", "kind", "source_kind", "residency")}
+    available = 0
+    invalid = 0
+    attributed = 0
+    overhead = 0
+    total = 0
+    for call in calls:
+        receipt = (
+            ((call.get("context_rollout") or {}).get("provider_lowering") or {})
+            .get("attribution")
+        )
+        if not isinstance(receipt, dict) or receipt.get("status") != "available":
+            continue
+        entries = receipt.get("entries")
+        if not isinstance(entries, list) or not all(
+            isinstance(entry, dict) for entry in entries
+        ):
+            invalid += 1
+            continue
+        byte_values = [entry.get("canonical_value_bytes") for entry in entries]
+        totals = [
+            receipt.get("attributed_value_bytes"),
+            receipt.get("provider_envelope_and_params"),
+            receipt.get("total_canonical_bytes"),
+        ]
+        if any(
+            isinstance(value, bool) or not isinstance(value, int) or value < 0
+            for value in (*byte_values, *totals)
+        ):
+            invalid += 1
+            continue
+        entry_bytes = sum(byte_values)
+        receipt_attributed, receipt_overhead, receipt_total = totals
+        if (
+            entry_bytes < 0
+            or entry_bytes != receipt_attributed
+            or receipt_attributed + receipt_overhead != receipt_total
+            or receipt.get("byte_conservation") is not True
+        ):
+            invalid += 1
+            continue
+        available += 1
+        attributed += receipt_attributed
+        overhead += receipt_overhead
+        total += receipt_total
+        for entry in entries:
+            value_bytes = int(entry["canonical_value_bytes"])
+            for dimension, field in (
+                ("owner", "owner_code"),
+                ("kind", "kind"),
+                ("source_kind", "source_kind"),
+                ("residency", "residency"),
+            ):
+                code = str(entry.get(field, "unknown"))
+                bucket = dimensions[dimension]
+                bucket[code] = bucket.get(code, 0) + value_bytes
+    unavailable = len(calls) - available - invalid
+    return {
+        "status": "available" if available else "unavailable",
+        "provider_call_count": len(calls),
+        "available_receipt_count": available,
+        "unavailable_receipt_count": unavailable,
+        "invalid_receipt_count": invalid,
+        "coverage_rate": (available / len(calls)) if calls else 0.0,
+        "byte_conservation": invalid == 0 and available > 0,
+        "attributed_value_bytes": attributed,
+        "provider_envelope_and_params": overhead,
+        "total_canonical_bytes": total,
+        "by_dimension": {
+            name: dict(sorted(values.items())) for name, values in dimensions.items()
+        },
+        "fallback": "none",
+        "reason": None if available else "provider_attribution_receipt_unavailable",
+    }
+
+
 def authoritative_provider_metrics(calls: list[dict]) -> dict[str, int | float]:
     """Recompute provider metrics from captured calls, never a stale summary."""
     metrics: dict[str, int | float] = {
@@ -128,6 +206,9 @@ def authoritative_provider_metrics(calls: list[dict]) -> dict[str, int | float]:
         "cache_read_tokens": 0,
         "request_trace_match_count": 0,
         "request_trace_match_rate": 0.0,
+        "provider_attribution_receipt_count": 0,
+        "provider_attributed_value_bytes": 0,
+        "provider_attribution_overhead_bytes": 0,
     }
     for call in calls:
         provider_request = call.get("provider_request") or {}
@@ -162,6 +243,16 @@ def authoritative_provider_metrics(calls: list[dict]) -> dict[str, int | float]:
         metrics["request_trace_match_rate"] = (
             metrics["request_trace_match_count"] / len(calls)
         )
+    attribution = provider_attribution_summary(calls)
+    metrics["provider_attribution_receipt_count"] = attribution[
+        "available_receipt_count"
+    ]
+    metrics["provider_attributed_value_bytes"] = attribution[
+        "attributed_value_bytes"
+    ]
+    metrics["provider_attribution_overhead_bytes"] = attribution[
+        "provider_envelope_and_params"
+    ]
     return metrics
 
 
@@ -371,11 +462,19 @@ def aggregate(
         manifest = experiment_manifest(experiment, manifest_payload, results)
         trials = []
         gate_rows = []
+        experiment_calls: list[dict] = []
         for result in results:
             trial, gates = trial_from_result(experiment, manifest, result)
             gate_rows.append({"task": result.get("task"), "variant": result.get("variant"), **gates})
             if trial is not None:
                 trials.append(trial)
+            calls = read_json(
+                run_directory(experiment, result) / "provider_calls.json", []
+            )
+            if isinstance(calls, list):
+                experiment_calls.extend(
+                    call for call in calls if isinstance(call, dict)
+                )
         deltas = build_paired_deltas(
             trials,
             baseline_variant=baseline,
@@ -397,17 +496,12 @@ def aggregate(
                 "trials": [plain(trial) for trial in trials],
                 "gates": gate_rows,
                 "benefit": plain(summary) if summary else None,
+                "provider_attribution": provider_attribution_summary(experiment_calls),
             }
         )
         all_deltas.extend(deltas)
         all_gates.extend(gate_rows)
-        for result in results:
-            calls = read_json(
-                run_directory(experiment, result) / "provider_calls.json",
-                [],
-            )
-            if isinstance(calls, list):
-                all_calls.extend(call for call in calls if isinstance(call, dict))
+        all_calls.extend(experiment_calls)
         workload_kinds.append(manifest.workload_kind)
     combined = (
         summarize_context_benefit(
@@ -477,6 +571,7 @@ def aggregate(
         "capture_integrity_rate": capture_rate,
         "request_trace_match_rate": request_trace_rate,
         "trajectory_complete_rate": trajectory_rate,
+        "provider_attribution": provider_attribution_summary(all_calls),
         "rollback_bundle": plain(rollback),
         "default_on_readiness": plain(readiness),
         "decision_note": (

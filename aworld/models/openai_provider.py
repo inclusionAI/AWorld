@@ -30,6 +30,8 @@ from aworld.core.context.compiler import (
     AWORLD_PROVIDER_CANDIDATE_KWARG,
     CandidateRequestNotEnforceable,
     ProviderCandidateEnvelope,
+    ProviderAttributionMismatch,
+    AttributionSerialization,
     ProviderLoweringCapability,
     ProviderLoweringReceipt,
     ProviderRequestFidelity,
@@ -37,6 +39,7 @@ from aworld.core.context.compiler import (
     RequestCaptureStage,
     SerializedPrefixEvidence,
     build_cache_identity,
+    build_provider_attribution_receipt,
     canonical_json_bytes,
 )
 from aworld.logs.util import logger, log_llm_record
@@ -243,7 +246,7 @@ class OpenAIProvider(LLMProviderBase):
             processed_messages = self.preprocess_messages(messages, **request_kwargs)
             if envelope is not None and processed_messages != messages:
                 raise CandidateRequestNotEnforceable(
-                    "provider_transform_after_candidate"
+                    "provider_attribution_mismatch"
                 )
             openai_params = self.get_openai_params(
                 processed_messages,
@@ -263,25 +266,40 @@ class OpenAIProvider(LLMProviderBase):
         if stream:
             openai_params["stream"] = True
 
+        canonical_body = (
+            canonical_json_bytes(openai_params)
+            if envelope is not None or self.is_http_provider
+            else None
+        )
         serialized_body = None
         serialized_evidence = None
         cache_identity = None
         if self.is_http_provider:
             try:
-                serialized_body = canonical_json_bytes(openai_params)
+                assert canonical_body is not None
+                serialized_body = canonical_body
                 if envelope is not None and envelope.cache_material is not None:
                     material = envelope.cache_material
-                    messages_bytes = canonical_json_bytes(openai_params["messages"])
-                    message_anchor = b'"messages":' + messages_bytes
-                    anchor_index = serialized_body.find(message_anchor)
-                    if anchor_index < 0:
-                        raise ValueError("serialized messages not found in request")
+                    sorted_keys = sorted(openai_params)
+                    message_index = sorted_keys.index("messages")
+                    preceding = b",".join(
+                        canonical_json_bytes(key)
+                        + b":"
+                        + canonical_json_bytes(openai_params[key])
+                        for key in sorted_keys[:message_index]
+                    )
+                    message_value_start = (
+                        1
+                        + len(preceding)
+                        + (1 if preceding else 0)
+                        + len(canonical_json_bytes("messages"))
+                        + 1
+                    )
                     stable_messages = openai_params["messages"][
                         : material.stable_message_count
                     ]
                     stable_array = canonical_json_bytes(stable_messages)
                     stable_fragment = stable_array[:-1]
-                    message_value_start = anchor_index + len(b'"messages":')
                     if not serialized_body.startswith(
                         stable_fragment, message_value_start
                     ):
@@ -337,13 +355,28 @@ class OpenAIProvider(LLMProviderBase):
             try:
                 if provider_request is None:
                     raise ValueError("provider request snapshot unavailable")
+                attribution = build_provider_attribution_receipt(
+                    plan=envelope.attribution_plan,
+                    provider_request=openai_params,
+                    serialization=(
+                        AttributionSerialization.HTTP_SERIALIZED_CANONICAL_JSON
+                        if serialized_body is not None
+                        else AttributionSerialization.PROVIDER_PREPARED_CANONICAL_JSON
+                    ),
+                    canonical_request_body=serialized_body,
+                )
                 receipt = ProviderLoweringReceipt.from_envelope(
                     envelope=envelope,
                     provider_request=provider_request,
                     lowering=capability,
+                    attribution=attribution,
                     serialized_prefix_evidence=serialized_evidence,
                     cache_identity=cache_identity,
                 )
+            except ProviderAttributionMismatch:
+                raise CandidateRequestNotEnforceable(
+                    "provider_attribution_mismatch"
+                ) from None
             except Exception:
                 raise CandidateRequestNotEnforceable(
                     "provider_request_not_snapshotable"
