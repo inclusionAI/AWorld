@@ -52,6 +52,236 @@ _COST_BENEFIT_METRICS = (
     "normalized_cost",
 )
 
+_TURN_CAUSES = {
+    "initial_input", "model_choice", "validation_repair", "framework_retry",
+    "deferred_catalog_expansion", "deferred_skill_expansion",
+    "artifact_retrieval", "unavailable",
+}
+_SUPPORTED_TURN_CAUSES = {
+    "initial_input", "model_choice", "framework_retry", "artifact_retrieval",
+}
+_SHA256 = re.compile(r"sha256:[0-9a-f]{64}")
+
+
+def _action_results(raw_trajectory: Any) -> list[dict[str, Any]]:
+    """Read typed ActionResult slots without classifying transcript text."""
+    found: list[dict[str, Any]] = []
+
+    def visit(value: Any) -> None:
+        if isinstance(value, list):
+            for item in value:
+                visit(item)
+            return
+        if not isinstance(value, dict):
+            return
+        action_results = value.get("action_result")
+        if isinstance(action_results, list):
+            found.extend(item for item in action_results if isinstance(item, dict))
+        for key, item in value.items():
+            if key != "action_result":
+                visit(item)
+
+    visit(raw_trajectory)
+    return found
+
+
+def _valid_turn_receipt(value: Any, *, expected_kind: str) -> bool:
+    if not isinstance(value, dict) or value.get("schema_version") != "aworld.context.turn-economics.v1":
+        return False
+    cause = value.get("cause")
+    supported = value.get("cause_supported")
+    return bool(
+        value.get("turn_kind") == expected_kind
+        and cause in _TURN_CAUSES
+        and isinstance(supported, bool)
+        and supported == (cause in _SUPPORTED_TURN_CAUSES)
+        and _SHA256.fullmatch(str(value.get("turn_id_hash", "")))
+        and (expected_kind != "model" or _SHA256.fullmatch(str(value.get("request_id_hash", ""))))
+        and (expected_kind != "tool" or _SHA256.fullmatch(str(value.get("tool_call_id_hash", ""))))
+    )
+
+
+def _valid_retrieval_receipt(value: Any) -> bool:
+    if not isinstance(value, dict) or value.get("schema_version") != "aworld.context.artifact-retrieval-receipt.v1":
+        return False
+    ints = ("artifact_byte_count", "offset", "limit", "returned_offset", "next_offset", "returned_byte_count")
+    if any(isinstance(value.get(key), bool) or not isinstance(value.get(key), int) or value[key] < 0 for key in ints):
+        return False
+    if value["limit"] <= 0 or value["offset"] > value["artifact_byte_count"] or not isinstance(value.get("complete"), bool):
+        return False
+    hashes = (
+        "plan_fingerprint", "owner_code", "action_code", "artifact_ref_hash",
+        "artifact_content_hash", "consumer_tool_call_id_hash", "chunk_checksum",
+        "source_content_hash", "result_content_hash",
+    )
+    if any(not _SHA256.fullmatch(str(value.get(key, ""))) for key in hashes):
+        return False
+    plan_projection = {
+        "schema_version": "aworld.context.artifact-retrieval-plan.v1",
+        **{
+            key: value[key]
+            for key in (
+                "owner_code", "action_code", "artifact_ref_hash",
+                "artifact_content_hash", "artifact_byte_count", "offset", "limit",
+                "consumer_tool_call_id_hash",
+            )
+        },
+    }
+    if value_hash(plan_projection) != value["plan_fingerprint"]:
+        return False
+    if value["source_content_hash"] != value["artifact_content_hash"]:
+        return False
+    if value["returned_offset"] != value["offset"] or value["next_offset"] - value["returned_offset"] != value["returned_byte_count"]:
+        return False
+    if value["returned_byte_count"] > value["limit"] or value["next_offset"] > value["artifact_byte_count"]:
+        return False
+    consumed = value.get("consumed")
+    next_request = value.get("next_request_id_hash")
+    consumed_hash = value.get("consumed_content_hash")
+    return bool(
+        isinstance(consumed, bool)
+        and consumed == (next_request is not None)
+        and (next_request is None or _SHA256.fullmatch(str(next_request)))
+        and (consumed_hash is None or _SHA256.fullmatch(str(consumed_hash)))
+        and ((next_request is None) == (consumed_hash is None))
+    )
+
+
+def turn_artifact_economics_summary(
+    calls: list[dict], raw_trajectory: Any, artifact_files: list[Path] | tuple[Path, ...]
+) -> dict[str, Any]:
+    """Recompute economics exclusively from typed runtime receipts and files."""
+    trajectory_available = isinstance(raw_trajectory, list)
+    action_results = _action_results(raw_trajectory)
+    model_receipts = [call.get("turn_economics") for call in calls]
+    tool_receipts = [((result.get("metadata") or {}).get("turn_economics")) for result in action_results]
+    model_valid = bool(calls) and all(
+        _valid_turn_receipt(item, expected_kind="model")
+        and item.get("cause") != "unavailable"
+        for item in model_receipts
+    ) and len({item["turn_id_hash"] for item in model_receipts}) == len(model_receipts)
+    tool_valid = trajectory_available and all(
+        _valid_turn_receipt(item, expected_kind="tool")
+        and item.get("cause") != "unavailable"
+        for item in tool_receipts
+    ) and len({item["turn_id_hash"] for item in tool_receipts}) == len(tool_receipts)
+    causes = {cause: {"model": 0, "tool": 0} for cause in sorted(_TURN_CAUSES)}
+    if model_valid and tool_valid:
+        for receipt in model_receipts:
+            causes[receipt["cause"]]["model"] += 1
+        for receipt in tool_receipts:
+            causes[receipt["cause"]]["tool"] += 1
+
+    output_receipts = [((result.get("metadata") or {}).get("tool_output_policy")) for result in action_results]
+    output_valid = trajectory_available and all(
+        isinstance(item, dict)
+        and isinstance(item.get("raw_byte_count"), int)
+        and not isinstance(item.get("raw_byte_count"), bool)
+        and isinstance(item.get("inline_tokens"), int)
+        and isinstance(item.get("offloaded_tokens"), int)
+        and _SHA256.fullmatch(str(item.get("raw_checksum", "")))
+        for item in output_receipts
+    )
+    retrieval_tool_receipts = [
+        (result.get("metadata") or {}).get("artifact_retrieval")
+        for result in action_results
+        if (result.get("metadata") or {}).get("artifact_retrieval") is not None
+    ]
+    consumption_receipts = [
+        item
+        for call in calls
+        for item in (call.get("artifact_retrieval_consumption") or [])
+    ]
+    retrieval_valid = trajectory_available and all(_valid_retrieval_receipt(item) for item in retrieval_tool_receipts + consumption_receipts)
+    tool_by_plan = {item["plan_fingerprint"]: item for item in retrieval_tool_receipts if _valid_retrieval_receipt(item)}
+    consumed_by_plan = {item["plan_fingerprint"]: item for item in consumption_receipts if _valid_retrieval_receipt(item)}
+    consumption_bound = all(
+        fingerprint in tool_by_plan
+        and item.get("consumed") is True
+        and item.get("result_content_hash") == tool_by_plan[fingerprint].get("result_content_hash")
+        for fingerprint, item in consumed_by_plan.items()
+    )
+    retrieval_valid = (
+        retrieval_valid
+        and consumption_bound
+        and len(tool_by_plan) == len(retrieval_tool_receipts)
+        and len(consumed_by_plan) == len(consumption_receipts)
+    )
+    artifact_files = list(artifact_files)
+    return {
+        "schema_version": "aworld.context.turn-artifact-economics-summary.v1",
+        "turn_causes": {
+            "status": "available" if model_valid and tool_valid else "unavailable",
+            "model_receipt_count": len(model_receipts) if model_valid else 0,
+            "tool_receipt_count": len(tool_receipts) if tool_valid else 0,
+            "counts": causes if model_valid and tool_valid else {},
+        },
+        "tool_outputs": {
+            "status": "available" if output_valid else "unavailable",
+            "raw_bytes": sum(item["raw_byte_count"] for item in output_receipts) if output_valid else None,
+            "inline_tokens": sum(item["inline_tokens"] for item in output_receipts) if output_valid else None,
+            "offloaded_tokens": sum(item["offloaded_tokens"] for item in output_receipts) if output_valid else None,
+            "double_offload_count": sum(bool(item.get("context_artifact_ref") and item.get("upstream_artifacts")) for item in output_receipts) if output_valid else None,
+        },
+        "artifacts": {
+            "persisted_count": len(artifact_files),
+            "persisted_bytes": sum(path.stat().st_size for path in artifact_files),
+        },
+        "retrieval": {
+            "status": "available" if retrieval_valid else "unavailable",
+            "retrieval_count": len(tool_by_plan) if retrieval_valid else None,
+            "retrieved_bytes": sum(item["returned_byte_count"] for item in tool_by_plan.values()) if retrieval_valid else None,
+            "consumed_count": len(consumed_by_plan) if retrieval_valid else None,
+        },
+    }
+
+
+def paired_turn_artifact_deltas(
+    runs: list[dict[str, Any]], *, baseline: str, candidate: str
+) -> list[dict[str, Any]]:
+    grouped: dict[tuple[str, str, int], dict[str, dict[str, Any]]] = {}
+    for run in runs:
+        grouped.setdefault(
+            (run["experiment"], run["case_id"], int(run["repeat"])), {}
+        )[run["variant"]] = run["summary"]
+    output: list[dict[str, Any]] = []
+    for (experiment, case_id, repeat), variants in sorted(grouped.items()):
+        left, right = variants.get(baseline), variants.get(candidate)
+        available = bool(
+            left and right
+            and all(
+                summary[section]["status"] == "available"
+                for summary in (left, right)
+                for section in ("turn_causes", "tool_outputs", "retrieval")
+            )
+        )
+        row: dict[str, Any] = {
+            "experiment": experiment,
+            "case_id": case_id,
+            "repeat": repeat,
+            "status": "available" if available else "unsupported",
+        }
+        if available:
+            row["candidate_minus_baseline"] = {
+                "raw_tool_output_bytes": right["tool_outputs"]["raw_bytes"] - left["tool_outputs"]["raw_bytes"],
+                "inline_tool_output_tokens": right["tool_outputs"]["inline_tokens"] - left["tool_outputs"]["inline_tokens"],
+                "offloaded_tool_output_tokens": right["tool_outputs"]["offloaded_tokens"] - left["tool_outputs"]["offloaded_tokens"],
+                "double_offload_count": right["tool_outputs"]["double_offload_count"] - left["tool_outputs"]["double_offload_count"],
+                "retrieved_bytes": right["retrieval"]["retrieved_bytes"] - left["retrieval"]["retrieved_bytes"],
+                "artifact_consumed_count": right["retrieval"]["consumed_count"] - left["retrieval"]["consumed_count"],
+                "turn_causes": {
+                    cause: {
+                        kind: right["turn_causes"]["counts"][cause][kind] - left["turn_causes"]["counts"][cause][kind]
+                        for kind in ("model", "tool")
+                    }
+                    for cause in sorted(_TURN_CAUSES)
+                },
+            }
+        else:
+            row["reason"] = "baseline_or_candidate_turn_artifact_economics_unavailable"
+        output.append(row)
+    return output
+
 
 def plain(value: Any) -> Any:
     if isinstance(value, Enum):
@@ -784,7 +1014,7 @@ def trial_from_result(
         if isinstance(value, (int, float)) and not isinstance(value, bool)
     }
     numeric_metrics.update(authoritative_provider_metrics(calls))
-    raw_trajectory = read_json(run_dir / "raw_trajectory.json", [])
+    raw_trajectory = read_json(run_dir / "raw_trajectory.json", None)
     numeric_metrics["trajectory_items"] = (
         len(raw_trajectory) if isinstance(raw_trajectory, list) else 0
     )
@@ -792,6 +1022,20 @@ def trial_from_result(
     numeric_metrics["offloaded_artifact_bytes"] = sum(
         path.stat().st_size for path in artifact_files
     )
+    economics = turn_artifact_economics_summary(calls, raw_trajectory, artifact_files)
+    if economics["tool_outputs"]["status"] == "available":
+        numeric_metrics.update({
+            "raw_tool_output_bytes": economics["tool_outputs"]["raw_bytes"],
+            "inline_tool_output_tokens": economics["tool_outputs"]["inline_tokens"],
+            "offloaded_tool_output_tokens": economics["tool_outputs"]["offloaded_tokens"],
+            "double_offload_count": economics["tool_outputs"]["double_offload_count"],
+        })
+    if economics["retrieval"]["status"] == "available":
+        numeric_metrics.update({
+            "artifact_retrieval_count": economics["retrieval"]["retrieval_count"],
+            "artifact_retrieved_bytes": economics["retrieval"]["retrieved_bytes"],
+            "artifact_consumed_count": economics["retrieval"]["consumed_count"],
+        })
     trial = ContextTrialEvidence(
         manifest_hash=manifest.manifest_hash,
         case_id=result["task"],
@@ -827,6 +1071,7 @@ def aggregate(
     all_calls: list[dict] = []
     all_attribution_runs: list[dict[str, Any]] = []
     all_attribution_pairing: list[dict[str, Any]] = []
+    all_economics_runs: list[dict[str, Any]] = []
     workload_kinds = []
     for experiment in experiments:
         manifest_payload = read_json(experiment / "experiment_manifest.json")
@@ -838,6 +1083,7 @@ def aggregate(
         gate_rows = []
         experiment_calls: list[dict] = []
         attribution_runs: list[dict[str, Any]] = []
+        economics_runs: list[dict[str, Any]] = []
         for result in results:
             trial, gates = trial_from_result(experiment, manifest, result)
             gate_rows.append({"task": result.get("task"), "variant": result.get("variant"), **gates})
@@ -856,6 +1102,23 @@ def aggregate(
                     "variant": result["variant"],
                     "repeat": int(result["repetition"]),
                     "summary": provider_attribution_summary(valid_calls),
+                })
+                run_dir = run_directory(experiment, result)
+                artifacts = sorted(
+                    path for path in (run_dir / "tool-output-artifacts").glob("*.bin")
+                    if path.is_file()
+                )
+                economics_runs.append({
+                    "experiment": str(experiment),
+                    "run": str(run_dir),
+                    "case_id": result["task"],
+                    "variant": result["variant"],
+                    "repeat": int(result["repetition"]),
+                    "summary": turn_artifact_economics_summary(
+                        valid_calls,
+                        read_json(run_dir / "raw_trajectory.json", None),
+                        artifacts,
+                    ),
                 })
         deltas = build_paired_deltas(
             trials,
@@ -891,6 +1154,10 @@ def aggregate(
                     attribution_runs, baseline=baseline, candidate=candidate
                 ),
                 "provider_attribution_pairing": attribution_pairing,
+                "turn_artifact_economics_runs": economics_runs,
+                "turn_artifact_economics_deltas": paired_turn_artifact_deltas(
+                    economics_runs, baseline=baseline, candidate=candidate
+                ),
             }
         )
         all_deltas.extend(deltas)
@@ -898,6 +1165,7 @@ def aggregate(
         all_calls.extend(experiment_calls)
         all_attribution_runs.extend(attribution_runs)
         all_attribution_pairing.append(attribution_pairing)
+        all_economics_runs.extend(economics_runs)
         workload_kinds.append(manifest.workload_kind)
     combined = (
         summarize_context_benefit(
@@ -935,6 +1203,16 @@ def aggregate(
         hard_failures.add("provider_attribution_incomplete")
     if any(row["status"] != "available" for row in all_attribution_pairing) or not all_attribution_pairing:
         hard_failures.add("provider_attribution_pairing_incomplete")
+    if (
+        not all_economics_runs
+        or any(
+            row["summary"]["turn_causes"]["status"] != "available"
+            or row["summary"]["tool_outputs"]["status"] != "available"
+            or row["summary"]["retrieval"]["status"] != "available"
+            for row in all_economics_runs
+        )
+    ):
+        hard_failures.add("turn_artifact_economics_incomplete")
     rollback = RollbackBundle.build(
         previous_mode=ContextCompilerMode.SHADOW,
         previous_config={"mode": "shadow"},
@@ -976,6 +1254,10 @@ def aggregate(
             all_attribution_runs, baseline=baseline, candidate=candidate
         ),
         "provider_attribution_pairing": all_attribution_pairing,
+        "turn_artifact_economics_runs": all_economics_runs,
+        "turn_artifact_economics_deltas": paired_turn_artifact_deltas(
+            all_economics_runs, baseline=baseline, candidate=candidate
+        ),
         "rollback_bundle": plain(rollback),
         "default_on_readiness": plain(readiness),
         "decision_note": (

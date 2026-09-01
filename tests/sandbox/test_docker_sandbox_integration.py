@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import importlib
 import json
 import os
@@ -133,6 +134,11 @@ async def test_real_docker_tool_capability_matrix(monkeypatch, tmp_path, record_
         tools_checked.append("read_output_artifact")
         assert artifact_chunk["content"] == "0123456789abcdef"
         assert artifact_chunk["complete"] is False
+        assert artifact_chunk["artifact_ref"] == artifact_ref
+        assert artifact_chunk["returned_bytes"] == 16
+        assert artifact_chunk["chunk_sha256"] == hashlib.sha256(
+            b"0123456789abcdef"
+        ).hexdigest()
 
         await server.write_file(None, "/workspace/a.txt", "alpha\nbeta\n")
         tools_checked.append("write_file")

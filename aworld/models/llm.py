@@ -1493,6 +1493,13 @@ class LLMModel:
             "context_observe": observe_payload,
             "attempt": 1,
         }
+        turn_receipt = context.record_model_turn(request_id, messages)
+        llm_call["turn_economics"] = turn_receipt.to_redacted_dict()
+        consumed_retrievals = context.artifact_retrievals_for_request(request_id)
+        if consumed_retrievals:
+            llm_call["artifact_retrieval_consumption"] = [
+                receipt.to_redacted_dict() for receipt in consumed_retrievals
+            ]
         if context_rollout is not None:
             llm_call["context_rollout"] = self._safe_copy(context_rollout)
         if not provider_invoked:
@@ -1647,6 +1654,11 @@ class LLMModel:
                 updated["usage_raw"] = self._safe_copy(
                     getattr(response, "raw_usage", None) or usage_normalized
                 )
+                response_message = getattr(response, "message", None)
+                if isinstance(response_message, dict):
+                    context.register_model_tool_choices(
+                        request_id, response_message.get("tool_calls")
+                    )
             llm_calls[index] = updated
             return
 

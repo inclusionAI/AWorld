@@ -38,6 +38,16 @@ from aworld.core.context.compiler.progressive import (
 )
 from aworld.core.context.compiler.reducers import ReductionReceipt
 from aworld.core.context.compiler.tool_output import ToolOutputPolicy, ToolOutputRecord
+from aworld.core.context.compiler.turn_economics import (
+    ArtifactRetrievalPlan,
+    ArtifactRetrievalReceipt,
+    TurnCauseCode,
+    TurnEconomicsReceipt,
+    TurnKind,
+    hashed_identity,
+    turn_cause_support,
+)
+from aworld.core.context.compiler.frozen_json import canonical_json_hash
 from aworld.core.context.session import Session
 from aworld.logs.util import logger
 from aworld.core.trajectory_update_registry import TrajectoryUpdateOutcome, TrajectoryUpdateRegistry
@@ -243,6 +253,11 @@ class Context:
         self._tool_output_artifact_offload = True
         self._tool_output_records: Dict[str, ToolOutputRecord] = {}
         self._tool_output_artifact_paths: Dict[str, str] = {}
+        self._turn_economics_receipts: List[TurnEconomicsReceipt] = []
+        self._model_tool_origins: Dict[str, str] = {}
+        self._artifact_retrieval_plans: Dict[str, ArtifactRetrievalPlan] = {}
+        self._artifact_retrieval_receipts: Dict[str, ArtifactRetrievalReceipt] = {}
+        self._pending_turn_cause: tuple[TurnCauseCode, str | None] | None = None
         # Provider cache identity is runtime evidence, never checkpoint payload.
         # It may be carried across an in-process task reset so the next exact
         # provider serialization can explain why the prefix cache changed.
@@ -392,6 +407,169 @@ class Context:
 
     def get_tool_output_records(self) -> tuple[ToolOutputRecord, ...]:
         return tuple(self._tool_output_records.values())
+
+    def register_model_tool_choices(self, request_id: str, tool_calls: Any) -> None:
+        if not isinstance(request_id, str) or not request_id:
+            raise ValueError("request_id must be non-empty")
+        for tool_call in tool_calls if isinstance(tool_calls, (list, tuple)) else ():
+            if isinstance(tool_call, dict):
+                tool_call_id = tool_call.get("id")
+            else:
+                tool_call_id = getattr(tool_call, "id", None)
+            if not isinstance(tool_call_id, str) or not tool_call_id:
+                continue
+            existing = self._model_tool_origins.get(tool_call_id)
+            if existing is not None and existing != request_id:
+                raise ValueError("tool_call_id has conflicting model origins")
+            self._model_tool_origins[tool_call_id] = request_id
+
+    def schedule_turn_cause(
+        self, cause: TurnCauseCode, *, evidence_hash: str | None = None
+    ) -> None:
+        cause = TurnCauseCode(cause)
+        if cause is not TurnCauseCode.FRAMEWORK_RETRY:
+            raise ValueError("only implemented scheduler causes may be scheduled")
+        if evidence_hash is not None and not evidence_hash.startswith("sha256:"):
+            raise ValueError("evidence_hash must be canonical or None")
+        self._pending_turn_cause = (cause, evidence_hash)
+
+    def _record_turn_economics(self, receipt: TurnEconomicsReceipt) -> None:
+        existing = next(
+            (item for item in self._turn_economics_receipts if item.turn_id_hash == receipt.turn_id_hash),
+            None,
+        )
+        if existing is not None and existing != receipt:
+            raise ValueError("turn receipt has conflicting evidence")
+        if existing is None:
+            self._turn_economics_receipts.append(receipt)
+
+    def record_tool_turn(self, tool_call_id: str) -> TurnEconomicsReceipt:
+        if not isinstance(tool_call_id, str) or not tool_call_id:
+            raise ValueError("tool_call_id must be non-empty")
+        retrieval = self._artifact_retrieval_plans.get(tool_call_id)
+        parent_request = self._model_tool_origins.get(tool_call_id)
+        cause = (
+            TurnCauseCode.ARTIFACT_RETRIEVAL
+            if retrieval is not None
+            else TurnCauseCode.MODEL_CHOICE
+            if parent_request is not None
+            else TurnCauseCode.UNAVAILABLE
+        )
+        receipt = TurnEconomicsReceipt(
+            task_epoch=self.task_epoch,
+            turn_kind=TurnKind.TOOL,
+            cause=cause,
+            cause_supported=cause is not TurnCauseCode.UNAVAILABLE,
+            turn_id_hash=hashed_identity("tool_turn", tool_call_id),
+            tool_call_id_hash=hashed_identity("tool_call_id", tool_call_id),
+            parent_turn_id_hash=(
+                hashed_identity("model_turn", parent_request)
+                if parent_request is not None else None
+            ),
+            evidence_hash=(
+                retrieval.fingerprint
+                if retrieval is not None
+                else hashed_identity("request_id", parent_request)
+                if parent_request is not None else None
+            ),
+        )
+        self._record_turn_economics(receipt)
+        return receipt
+
+    def register_artifact_retrieval_plan(
+        self, tool_call_id: str, plan: ArtifactRetrievalPlan
+    ) -> None:
+        if not isinstance(plan, ArtifactRetrievalPlan):
+            raise TypeError("plan must be ArtifactRetrievalPlan")
+        existing = self._artifact_retrieval_plans.get(tool_call_id)
+        if existing is not None and existing != plan:
+            raise ValueError("artifact retrieval plan conflict")
+        self._artifact_retrieval_plans[tool_call_id] = plan
+
+    def record_artifact_retrieval(
+        self, tool_call_id: str, receipt: ArtifactRetrievalReceipt
+    ) -> None:
+        if not isinstance(receipt, ArtifactRetrievalReceipt):
+            raise TypeError("receipt must be ArtifactRetrievalReceipt")
+        if receipt.plan != self._artifact_retrieval_plans.get(tool_call_id):
+            raise ValueError("artifact retrieval receipt is not bound to plan")
+        existing = self._artifact_retrieval_receipts.get(tool_call_id)
+        if existing is not None and existing != receipt:
+            raise ValueError("artifact retrieval receipt conflict")
+        self._artifact_retrieval_receipts[tool_call_id] = receipt
+
+    def record_model_turn(
+        self, request_id: str, messages: Any
+    ) -> TurnEconomicsReceipt:
+        consumed_tool_ids: list[str] = []
+        parent_tool_id = None
+        artifact_parent_tool_id = None
+        artifact_consumed = False
+        for message in messages if isinstance(messages, (list, tuple)) else ():
+            if not isinstance(message, dict) or message.get("role") != "tool":
+                continue
+            tool_call_id = message.get("tool_call_id")
+            if not isinstance(tool_call_id, str):
+                continue
+            consumed_tool_ids.append(tool_call_id)
+            parent_tool_id = tool_call_id
+            retrieval = self._artifact_retrieval_receipts.get(tool_call_id)
+            if retrieval is None or retrieval.consumed:
+                continue
+            content_hash = canonical_json_hash(message.get("content"))
+            if content_hash == retrieval.result_content_hash:
+                self._artifact_retrieval_receipts[tool_call_id] = retrieval.bind_consumption(
+                    request_id=request_id, content_hash=content_hash
+                )
+                artifact_consumed = True
+                artifact_parent_tool_id = tool_call_id
+        pending = self._pending_turn_cause
+        self._pending_turn_cause = None
+        if pending is not None:
+            cause, evidence_hash = pending
+        elif artifact_consumed:
+            cause = TurnCauseCode.ARTIFACT_RETRIEVAL
+            evidence_hash = self._artifact_retrieval_receipts[artifact_parent_tool_id].plan.fingerprint
+        elif any(tool_call_id in self._model_tool_origins for tool_call_id in consumed_tool_ids):
+            cause = TurnCauseCode.MODEL_CHOICE
+            evidence_hash = canonical_json_hash({"consumed_tool_call_ids": sorted(consumed_tool_ids)})
+        elif not any(item.turn_kind is TurnKind.MODEL for item in self._turn_economics_receipts):
+            cause = TurnCauseCode.INITIAL_INPUT
+            evidence_hash = None
+        else:
+            cause = TurnCauseCode.UNAVAILABLE
+            evidence_hash = None
+        receipt = TurnEconomicsReceipt(
+            task_epoch=self.task_epoch,
+            turn_kind=TurnKind.MODEL,
+            cause=cause,
+            cause_supported=cause is not TurnCauseCode.UNAVAILABLE,
+            turn_id_hash=hashed_identity("model_turn", request_id),
+            request_id_hash=hashed_identity("request_id", request_id),
+            parent_turn_id_hash=(
+                hashed_identity("tool_turn", parent_tool_id)
+                if parent_tool_id is not None else None
+            ),
+            evidence_hash=evidence_hash,
+        )
+        self._record_turn_economics(receipt)
+        return receipt
+
+    def artifact_retrievals_for_request(
+        self, request_id: str
+    ) -> tuple[ArtifactRetrievalReceipt, ...]:
+        request_id_hash = hashed_identity("request_id", request_id)
+        return tuple(
+            receipt
+            for receipt in self._artifact_retrieval_receipts.values()
+            if receipt.next_request_id_hash == request_id_hash
+        )
+
+    def get_turn_economics_receipts(self) -> tuple[TurnEconomicsReceipt, ...]:
+        return tuple(self._turn_economics_receipts)
+
+    def get_artifact_retrieval_receipts(self) -> tuple[ArtifactRetrievalReceipt, ...]:
+        return tuple(self._artifact_retrieval_receipts.values())
 
     def read_tool_output_artifact(self, artifact_ref: str) -> bytes:
         path = self._tool_output_artifact_paths.get(artifact_ref)
@@ -577,6 +755,11 @@ class Context:
             self._context_reduction_receipts = {}
             self._tool_output_records = {}
             self._tool_output_artifact_paths = {}
+            self._turn_economics_receipts = []
+            self._model_tool_origins = {}
+            self._artifact_retrieval_plans = {}
+            self._artifact_retrieval_receipts = {}
+            self._pending_turn_cause = None
         return event
 
     def commit_provider_cache_identity(self, verified_identity: Any) -> Dict[str, Any]:
@@ -661,6 +844,11 @@ class Context:
         self._context_reduction_receipts = {}
         self._tool_output_records = {}
         self._tool_output_artifact_paths = {}
+        self._turn_economics_receipts = []
+        self._model_tool_origins = {}
+        self._artifact_retrieval_plans = {}
+        self._artifact_retrieval_receipts = {}
+        self._pending_turn_cause = None
 
     def _fence_context_observations_for_task_transition(
         self,
@@ -884,6 +1072,17 @@ class Context:
                         }
                         for transition in self._tool_catalog_transitions
                     ],
+                    "turn_economics": {
+                        "cause_support": turn_cause_support(),
+                        "receipts": [
+                            receipt.to_redacted_dict()
+                            for receipt in self._turn_economics_receipts
+                        ],
+                        "artifact_retrievals": [
+                            receipt.to_redacted_dict()
+                            for receipt in self._artifact_retrieval_receipts.values()
+                        ],
+                    },
                 }
                 return inspector
         return None
@@ -1041,6 +1240,11 @@ class Context:
         new_context._tool_output_artifact_paths = dict(
             self._tool_output_artifact_paths
         )
+        new_context._turn_economics_receipts = list(self._turn_economics_receipts)
+        new_context._model_tool_origins = dict(self._model_tool_origins)
+        new_context._artifact_retrieval_plans = dict(self._artifact_retrieval_plans)
+        new_context._artifact_retrieval_receipts = dict(self._artifact_retrieval_receipts)
+        new_context._pending_turn_cause = self._pending_turn_cause
         new_context._provider_cache_identity = getattr(
             self, "_provider_cache_identity", None
         )

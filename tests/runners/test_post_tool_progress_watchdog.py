@@ -67,6 +67,10 @@ async def test_post_tool_progress_watchdog_retries_once_then_fails(monkeypatch):
     assert emitted[0].category == Constants.AGENT
     assert emitted[0].receiver == "agent-1"
     assert emitted[0].headers["history_sanitized_retry"] is True
+    retry_turn = emitted[0].headers["context"].record_model_turn(
+        "watchdog-retry-request", []
+    )
+    assert retry_turn.cause.value == "framework_retry"
     assert runner.context.context_info["post_tool_progress_watchdog"]["retry_count"] == 1
     assert runner.context.context_info["post_tool_progress_metrics"]["watchdog_trigger_count"] == 1
     assert runner.context.context_info["post_tool_progress_metrics"]["sanitized_history_retry_count"] == 1

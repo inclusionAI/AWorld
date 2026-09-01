@@ -230,6 +230,15 @@ from .tool_output import (
     bind_tool_output,
     plan_tool_output,
 )
+from .turn_economics import (
+    ArtifactRetrievalPlan,
+    ArtifactRetrievalReceipt,
+    TurnCauseCode,
+    TurnEconomicsReceipt,
+    TurnKind,
+    hashed_identity,
+    turn_cause_support,
+)
 from .provider_registry import (
     ReviewedProviderAdapter,
     ReviewedProviderLoweringRegistry,
@@ -243,6 +252,8 @@ __all__ = [
     "AdapterDiagnosticSeverity",
     "AdapterResult",
     "ArtifactEvidence",
+    "ArtifactRetrievalPlan",
+    "ArtifactRetrievalReceipt",
     "ArtifactReceipt",
     "ArtifactRequirement",
     "AttributionCollection",
@@ -377,6 +388,9 @@ __all__ = [
     "ToolOutputPlan",
     "ToolOutputPolicy",
     "ToolOutputRecord",
+    "TurnCauseCode",
+    "TurnEconomicsReceipt",
+    "TurnKind",
     "UpstreamToolArtifactReceipt",
     "TRUST_BOUNDARY_VERSION",
     "Trust",
@@ -406,6 +420,7 @@ __all__ = [
     "observe_legacy_provider_request",
     "inspect_final_context",
     "has_trust_boundary",
+    "hashed_identity",
     "isolate_untrusted_context_item",
     "partition_stable_prefix",
     "plan_context_budget",
@@ -426,6 +441,7 @@ __all__ = [
     "thaw_json",
     "transition_context_lifecycle",
     "transition_task_catalog",
+    "turn_cause_support",
     "truncate_head_tail",
     "ValidationCommand",
 ]
