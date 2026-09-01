@@ -23,6 +23,8 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SANDBOX_EXAMPLES = REPO_ROOT / "examples" / "sandbox"
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 if str(SANDBOX_EXAMPLES) not in sys.path:
     sys.path.insert(0, str(SANDBOX_EXAMPLES))
 
@@ -31,6 +33,7 @@ from terminal_bench_context_eval import (  # noqa: E402
     collect_context_metrics,
     summarize_results,
 )
+from aworld.evaluations.normalized_cost import NormalizedCostPolicy  # noqa: E402
 
 
 RUNNER = SANDBOX_EXAMPLES / "docker_terminal_bench.py"
@@ -274,6 +277,7 @@ def main() -> None:
             "host-only independent verifier",
         ],
         "anti_overfitting": "Variants cannot contain case ids, prompts, expected values, or verifier logic.",
+        "normalized_cost_policy": NormalizedCostPolicy().to_dict(),
         "created_at_epoch": time.time(),
     }
     write_json(output_dir / "experiment_manifest.json", manifest)

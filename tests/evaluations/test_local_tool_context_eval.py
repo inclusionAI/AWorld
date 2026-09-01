@@ -103,6 +103,7 @@ def test_benefit_report_consumes_real_artifact_contract_and_stays_not_ready_for_
                 "variants": variants,
                 "repeat": 1,
                 "seed": 7,
+                "normalized_cost_policy": reporter.NormalizedCostPolicy().to_dict(),
             }
         )
     )
@@ -178,6 +179,8 @@ def test_benefit_report_consumes_real_artifact_contract_and_stays_not_ready_for_
     assert report["combined_benefit"]["mean_reward_delta"] == 1.0
     assert report["benefit_evidence"]["path"] == "quality"
     assert report["combined_benefit"]["metric_means"]["prompt_tokens"] == -40.0
+    assert report["combined_benefit"]["metric_means"]["normalized_cost"] == -40.0
+    assert report["normalized_cost_policy_ready"] is True
     assert report["default_on_readiness"]["status"] == "not_ready"
     assert "insufficient_paired_evidence" in report["default_on_readiness"]["gate_failures"]
     assert "cross_workload_evidence_missing" in report["default_on_readiness"]["gate_failures"]
@@ -198,6 +201,25 @@ def test_benefit_report_accepts_only_explicit_cost_metric_for_efficiency_path():
     assert evidence["proven"] is True
     assert evidence["path"] == "efficiency"
     assert evidence["cost_metric"] == "cost_per_successful_task"
+
+
+def test_normalized_cost_efficiency_requires_a_revalidated_policy():
+    reporter = _load_reporter()
+    summary = SimpleNamespace(
+        reward_interval=SimpleNamespace(lower=0.0, upper=0.0),
+        metric_intervals={
+            "normalized_cost": SimpleNamespace(lower=-10.0, upper=-1.0)
+        },
+    )
+
+    unavailable = reporter.benefit_evidence(summary)
+    available = reporter.benefit_evidence(
+        summary, normalized_cost_policy_ready=True
+    )
+
+    assert unavailable["proven"] is False
+    assert available["proven"] is True
+    assert available["cost_metric"] == "normalized_cost"
 
 
 def _turn_receipt(reporter, kind, cause, identity, parent=None):

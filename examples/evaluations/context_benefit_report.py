@@ -45,6 +45,10 @@ from aworld.evaluations.context_benefit import (
     build_paired_deltas,
     summarize_context_benefit,
 )
+from aworld.evaluations.normalized_cost import (
+    NormalizedCostPolicy,
+    compute_normalized_cost,
+)
 
 
 _COST_BENEFIT_METRICS = (
@@ -1113,7 +1117,9 @@ def authoritative_provider_metrics(calls: list[dict]) -> dict[str, int | float]:
     return metrics
 
 
-def benefit_evidence(summary: Any) -> dict[str, Any]:
+def benefit_evidence(
+    summary: Any, *, normalized_cost_policy_ready: bool = False
+) -> dict[str, Any]:
     """Accept quality gain or quality-safe, explicitly costed efficiency gain."""
     if summary is None:
         return {
@@ -1131,6 +1137,8 @@ def benefit_evidence(summary: Any) -> dict[str, Any]:
     # The quality gate permits at most one percentage point of regression.
     quality_non_regression = reward_lower >= -0.01
     for metric in _COST_BENEFIT_METRICS:
+        if metric == "normalized_cost" and not normalized_cost_policy_ready:
+            continue
         interval = summary.metric_intervals.get(metric)
         if (
             quality_non_regression
@@ -1213,6 +1221,7 @@ def trial_from_result(
     experiment: Path,
     manifest: ContextEvaluationManifest,
     result: dict,
+    normalized_cost_policy: NormalizedCostPolicy | None = None,
 ) -> tuple[ContextTrialEvidence | None, dict]:
     run_dir = run_directory(experiment, result)
     task_response = read_json(run_dir / "task_response.json", {})
@@ -1268,7 +1277,19 @@ def trial_from_result(
         for key, value in metrics.items()
         if isinstance(value, (int, float)) and not isinstance(value, bool)
     }
-    numeric_metrics.update(authoritative_provider_metrics(calls))
+    provider_metrics = authoritative_provider_metrics(calls)
+    numeric_metrics.update(provider_metrics)
+    if normalized_cost_policy is not None:
+        try:
+            normalized = compute_normalized_cost(
+                policy=normalized_cost_policy,
+                input_tokens=int(provider_metrics["prompt_tokens"]),
+                cache_read_tokens=int(provider_metrics["cache_read_tokens"]),
+                output_tokens=int(provider_metrics["completion_tokens"]),
+            )
+            numeric_metrics["normalized_cost"] = normalized.normalized_cost
+        except (TypeError, ValueError):
+            pass
     raw_trajectory = read_json(run_dir / "raw_trajectory.json", None)
     numeric_metrics["trajectory_items"] = (
         len(raw_trajectory) if isinstance(raw_trajectory, list) else 0
@@ -1328,19 +1349,36 @@ def aggregate(
     all_attribution_pairing: list[dict[str, Any]] = []
     all_economics_runs: list[dict[str, Any]] = []
     workload_kinds = []
+    normalized_cost_policy_hashes: list[str | None] = []
     for experiment in experiments:
         manifest_payload = read_json(experiment / "experiment_manifest.json")
         results = read_json(experiment / "results.json", [])
         if not isinstance(manifest_payload, dict) or not isinstance(results, list):
             raise ValueError(f"Incomplete experiment directory: {experiment}")
         manifest = experiment_manifest(experiment, manifest_payload, results)
+        try:
+            normalized_cost_policy = NormalizedCostPolicy.from_dict(
+                manifest_payload["normalized_cost_policy"]
+            )
+        except (KeyError, TypeError, ValueError):
+            normalized_cost_policy = None
+        normalized_cost_policy_hashes.append(
+            normalized_cost_policy.policy_hash
+            if normalized_cost_policy is not None
+            else None
+        )
         trials = []
         gate_rows = []
         experiment_calls: list[dict] = []
         attribution_runs: list[dict[str, Any]] = []
         economics_runs: list[dict[str, Any]] = []
         for result in results:
-            trial, gates = trial_from_result(experiment, manifest, result)
+            trial, gates = trial_from_result(
+                experiment,
+                manifest,
+                result,
+                normalized_cost_policy=normalized_cost_policy,
+            )
             gate_rows.append({"task": result.get("task"), "variant": result.get("variant"), **gates})
             if trial is not None:
                 trials.append(trial)
@@ -1413,6 +1451,11 @@ def aggregate(
                 "turn_artifact_economics_deltas": paired_turn_artifact_deltas(
                     economics_runs, baseline=baseline, candidate=candidate
                 ),
+                "normalized_cost_policy": (
+                    normalized_cost_policy.to_dict()
+                    if normalized_cost_policy is not None
+                    else {"status": "unavailable"}
+                ),
             }
         )
         all_deltas.extend(deltas)
@@ -1451,9 +1494,26 @@ def aggregate(
     hard_failures = set()
     if not all_gates or any(not all(row.values()) for row in all_gates):
         hard_failures.add("trial_hard_gate_failed")
-    benefit = benefit_evidence(combined)
+    normalized_cost_policy_ready = bool(
+        normalized_cost_policy_hashes
+        and all(normalized_cost_policy_hashes)
+        and len(set(normalized_cost_policy_hashes)) == 1
+        and sum(len(report["trials"]) for report in workload_reports)
+        == len(all_gates)
+        and all(
+            "normalized_cost" in (trial.get("metrics") or {})
+            for report in workload_reports
+            for trial in report["trials"]
+        )
+    )
+    benefit = benefit_evidence(
+        combined,
+        normalized_cost_policy_ready=normalized_cost_policy_ready,
+    )
     if not benefit["proven"]:
         hard_failures.add("positive_benefit_not_proven")
+    if not normalized_cost_policy_ready:
+        hard_failures.add("normalized_cost_evidence_incomplete")
     if any(row["summary"]["status"] != "available" for row in all_attribution_runs) or not all_attribution_runs:
         hard_failures.add("provider_attribution_incomplete")
     if any(row["status"] != "available" for row in all_attribution_pairing) or not all_attribution_pairing:
@@ -1505,6 +1565,13 @@ def aggregate(
         trajectory_complete_rate=trajectory_rate,
         rollback_config_hash=rollback.bundle_hash,
         hard_gate_failures=hard_failures,
+        required_capabilities=(
+            ("openai", "agent"),
+            ("openai", "amni"),
+            ("openai", "cli"),
+            ("openai", "acp"),
+            ("openai", "resume"),
+        ),
     )
     return {
         "schema_version": "aworld.context-benefit-report/v1",
@@ -1513,6 +1580,7 @@ def aggregate(
         "workloads": workload_reports,
         "combined_benefit": plain(combined) if combined else None,
         "benefit_evidence": benefit,
+        "normalized_cost_policy_ready": normalized_cost_policy_ready,
         "capture_integrity_rate": capture_rate,
         "request_trace_match_rate": request_trace_rate,
         "trajectory_complete_rate": trajectory_rate,
