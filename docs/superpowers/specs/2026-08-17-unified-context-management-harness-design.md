@@ -1112,6 +1112,39 @@ canonical JSON value bytes，其余顶层 key、数组/对象分隔符、provide
 prompt 文本分类。该能力解释 candidate overhead，但本身不构成收益或 default-on 证据；Milestone 7.2 仍须依据
 归因结果消除重复/非驻留 Context，7.3 仍须量化额外 turn 与真实 artifact retrieval economics。
 
+Milestone 7.2-7.3 随后的实现与独立审查已收口机制层缺口，但仍不构成 paired 收益结论：
+
+- `observe` 现在只从真实 legacy request 建立 `legacy_observed` attribution，SDK opaque 参数、receipt 构造和
+  Context 存储失败均 fail-open，且 provider invocation truth 按 prepared/attempted/success 分离。subject 已进入
+  plan/receipt 独立 fingerprint；baseline 与 candidate 的 owner/residency taxonomy 分辨率不一致时，对应维度
+  显式 unsupported，不能把分类覆盖率提升伪装成成本下降。
+- progressive Tool Catalog 只在显式配置通用 base Tool 集时缩减；缺省 `None` 保持全量兼容。Skill content 与
+  exact provider-visible Tool 通过 typed dependency closure 原子预算，sticky Skill/Tool proposal 一起 apply 或
+  defer；permission contraction 立即移除不完整 Skill。`CHILD_CONTEXT` 仅做纯 preview，AMNI checkpoint/resume
+  持久化并校验 versioned Skill/Tool snapshot，避免恢复后绕过 defer。
+- model/Tool turn 在 scheduling boundary 写入 typed cause receipt；unsupported cause 保持 unavailable，不能由
+  文本或调用数猜测。Tool-owned upstream artifact 始终是模型可调用的 primary，Context exact ActionResult 只标
+  `audit_snapshot`；只有竞争 primary 或后续 re-offload 才计入 double offload。retrieval receipt 绑定 owner、
+  action、ref、source/chunk checksum、range、consumer Tool call 与下一 provider request；重复/replay/cardinality
+  不一致全部 fail-closed。零 retrieval 的单 run 是 `not_applicable`，但 default-on aggregate 至少要求一个真实
+  opportunity 且 consumption coverage 为 100%。本地 Docker opt-in gate 已用真实容器执行
+  `read_output_artifact` 并验证下一 model request consumption。
+
+Milestone 8 已增加精确 built-in provider/入口证据：Azure 因 LangChain 发送边界尚未实现 immutable lowering，
+在 sync/async/stream 四条 `enforce` 路径均保持 `blocked_before_provider`，off/observe 继续发送原 legacy request；
+custom/subclass 不能自报 capability。Final compiler 产生可独立重验的 `entrypoint-parity.v1` receipt，入口标签不
+参与 semantic fingerprint，fingerprint 覆盖 provider request、resolution decisions、budget accounting、authority、
+scope/trust、Tool/Skill 与 stable/dynamic partition。Agent、Amni、CLI、ACP 与 resume 只发布入口标签，不能改变
+provider request。该 gate 同时发现并修复 logical cache hash 误含 request-scoped item id 的问题；现在使用有序
+`kind + version + content hash` occurrence 序列，重复 occurrence 仍保留但相同请求不再产生虚假 cache break。
+default-on readiness 可声明 required provider/entry-point matrix，缺项或重复能力不能由已有一项自证完整。
+
+成本证据新增冻结的 `aworld.normalized-cost.cache-adjusted-tokens.v1`：未缓存 input 与 output 每 token 为 1 个
+token-equivalent，provider 明确报告的 cache-read 为 0.1；它不是货币或 provider price。manifest 保存完整 policy
+与 checksum，report 对每个 trial 从 provider-call truth 重算；policy 缺失/篡改、cache-read 大于 input 或跨 workload
+policy 不一致时 normalized cost unavailable，旧 artifact 不会被补算成效率收益。权重在查看 benchmark outcome 前
+冻结，后续只能通过新 version 做 sensitivity comparison，禁止为某个 case 改权重。
+
 ## Migration Plan
 
 ### Phase 0: Baseline and Observability
