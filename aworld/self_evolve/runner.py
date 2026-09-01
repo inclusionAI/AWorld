@@ -73,7 +73,6 @@ from aworld.self_evolve.evaluation import (
     SkillCandidateOverlayBackend,
     determine_candidate_confidence,
     evaluate_baseline_and_candidate,
-    evaluation_request_identity,
     evaluate_variant_task,
 )
 from aworld.self_evolve.gates import (
@@ -98,7 +97,6 @@ from aworld.self_evolve.gates import (
     StoppingConditionGate,
     StoppingConditionState,
     TokenLimitGate,
-    TargetBehaviorDeltaGate,
     TrustProvenanceGate,
 )
 from aworld.self_evolve.controllers.retention import (
@@ -389,6 +387,12 @@ from aworld.self_evolve.controllers.run_replay_execution import (
     CandidateReplayExecutionRequest,
     CandidateReplayExecutionRuntime,
     execute_candidate_replay,
+)
+from aworld.self_evolve.controllers.run_evaluation_admission import (
+    CandidateEvaluationAdmissionPolicy,
+    CandidateEvaluationAdmissionRequest,
+    CandidateEvaluationAdmissionRuntime,
+    plan_candidate_evaluation_admission,
 )
 from aworld.self_evolve.controllers.measurement_execution_admission import (
     _candidate_intervention_unobserved,
@@ -8849,172 +8853,40 @@ class SelfEvolveRunner:
             return replay_execution.terminal_result
         replay_result = replay_execution.replay_result
         replay_dataset = replay_execution.replay_dataset
-
-        target_behavior_gate = _with_typed_gate_failure_event(
-            TargetBehaviorDeltaGate().evaluate(
-                current_content=target.load_current_content(),
-                candidate=candidate,
-            )
-        )
-        gate_results.append(target_behavior_gate)
-        if not target_behavior_gate.passed:
-            classification = classify_candidate_mutation(
-                candidate,
-                current_content=target.load_current_content(),
-            )
-            support_bootstrap_ready = bool(
-                classification.kind is CandidateMutationKind.EVALUATION_SUPPORT
-                and all(gate.passed for gate in gate_results[:-1])
-            )
-            if (
-                attempt_tracker is not None
-                and attempt_key is not None
-                and not attempt_tracker.terminal(attempt_key)
-            ):
-                attempt_tracker.emit(
-                    attempt_key,
-                    (
-                        CandidateAttemptStage.PREREQUISITE_READY
-                        if support_bootstrap_ready
-                        else CandidateAttemptStage.REJECTED
-                    ),
-                    reason_code=(
-                        "evaluation_support_bootstrap_ready"
-                        if support_bootstrap_ready
-                        else "target_behavior_delta_missing"
-                    ),
-                )
-            return _typed_terminal_candidate_evaluation_result(
-                candidate=candidate,
-                iteration_number=iteration_number,
-                candidate_number=candidate_number,
-                candidate_count=candidate_count,
-                gate_results=gate_results,
-                status=("prerequisite" if support_bootstrap_ready else "rejected"),
-                replay_result=replay_result,
-                replay_dataset=replay_dataset,
-            )
-
-        evaluation_dataset = replay_dataset or dataset
-        replay_blocked_verified_apply = (
-            _is_verified_apply_policy(apply_policy)
-            and self.replay_enabled
-            and candidate.target.target_type == "skill"
-            and replay_dataset is None
-        )
-        evaluation_budget: BudgetDecision | None = None
-        judge_budget: BudgetDecision | None = None
-        expected_judge_summary_count = 0
-        evaluation_case_count = len(evaluation_dataset.cases)
-        if (
-            self.evaluation_backend is not None
-            and not replay_blocked_verified_apply
-            and budget_context is not None
-        ):
-            baseline_identity = evaluation_request_identity(
-                self.evaluation_backend,
-                EvaluationRequest(
-                    variant_id="baseline",
-                    candidate=None,
-                    dataset=evaluation_dataset,
-                    dataset_split="validation",
-                ),
-                baseline_target_fingerprint=candidate.target_fingerprint,
-            )
-            baseline_is_cached = bool(
-                baseline_evaluation_cache is not None
-                and baseline_identity.fingerprint in baseline_evaluation_cache
-            )
-            evaluation_variants = 1 if baseline_is_cached else 2
-            if _is_verified_apply_policy(apply_policy):
-                # Reserve one bounded paired tie-break. It is executed only when
-                # the initial score decision is inconclusive under judge noise.
-                evaluation_variants += 2
-            if (
-                _is_verified_apply_policy(apply_policy)
-                and not _can_reuse_single_case_replay_validation(evaluation_dataset)
-            ):
-                evaluation_variants += 1
-            expected_judge_summary_count = (
-                (1 if baseline_is_cached else 2)
-            )
-            regression_evaluation_units = (
-                sum(
-                    max(1, len(suite.dataset.cases)) * 2
+        evaluation_admission = plan_candidate_evaluation_admission(
+            CandidateEvaluationAdmissionRequest(
+                evaluation=request,
+                replay=replay_execution,
+            ),
+            CandidateEvaluationAdmissionPolicy(
+                replay_enabled=self.replay_enabled,
+                evaluation_backend=self.evaluation_backend,
+                judge_repetitions=self.judge_repetitions,
+                regression_suite_case_counts=tuple(
+                    len(suite.dataset.cases)
                     for suite in self.regression_suites
-                )
-                if _is_verified_apply_policy(apply_policy)
-                else 0
-            )
-            if (
-                _is_verified_apply_policy(apply_policy)
-                and self.challenger_enabled
-                and self.regression_suites
-            ):
-                regression_evaluation_units += self.challenger_max_cases * 2
-            evaluation_units = max(
-                1,
-                evaluation_case_count * evaluation_variants
-                + regression_evaluation_units,
-            )
-            evaluation_budget = budget_context.reserve(
-                BudgetStage.EVALUATION,
-                f"{candidate.candidate_id}-evaluation",
-                units=evaluation_units,
-            )
-            judge_budget = budget_context.reserve(
-                BudgetStage.JUDGE,
-                f"{candidate.candidate_id}-judge",
-                units=max(1, evaluation_units * self.judge_repetitions),
-            )
-            denied_decision = next(
-                (
-                    decision
-                    for decision in (evaluation_budget, judge_budget)
-                    if not decision.allowed
                 ),
-                None,
-            )
-            if denied_decision is not None:
-                for decision in (evaluation_budget, judge_budget):
-                    if decision.allowed:
-                        budget_context.release(
-                            decision,
-                            reason_code="dependent_evaluation_budget_denied",
-                        )
-                denied_stage = denied_decision.stage.value
-                gate_results.append(
-                    GateResult(
-                        gate_name=f"run_budget_{denied_stage}",
-                        passed=False,
-                        reason="evaluation was not run because budget was denied",
-                        details={
-                            "failure_class": "budget",
-                            "code": f"{denied_stage}_budget_denied",
-                            "budget_decision": denied_decision.to_dict(),
-                        },
-                    )
-                )
-                if attempt_tracker is not None and attempt_key is not None:
-                    attempt_tracker.emit(
-                        attempt_key,
-                        (
-                            CandidateAttemptStage.REJECTED
-                            if attempt_tracker.has_stage(
-                                attempt_key,
-                                CandidateAttemptStage.PAIRED_REPLAY_STARTED,
-                            )
-                            else CandidateAttemptStage.NOT_RUN
-                        ),
-                        reason_code=f"{denied_stage}_budget_denied",
-                    )
-                return _typed_terminal_candidate_evaluation_result(
-                    candidate=candidate,
-                    iteration_number=iteration_number,
-                    candidate_number=candidate_number,
-                    candidate_count=candidate_count,
-                    gate_results=gate_results,
-                )
+                challenger_enabled=self.challenger_enabled,
+                challenger_max_cases=self.challenger_max_cases,
+            ),
+            CandidateEvaluationAdmissionRuntime(
+                typed_gate_failure=_with_typed_gate_failure_event,
+                feedback_builder=_iteration_validation_feedback,
+            ),
+        )
+        gate_results = list(evaluation_admission.gate_results)
+        if evaluation_admission.terminal_result is not None:
+            return evaluation_admission.terminal_result
+        evaluation_dataset = evaluation_admission.evaluation_dataset
+        replay_blocked_verified_apply = (
+            evaluation_admission.replay_blocked_verified_apply
+        )
+        evaluation_budget = evaluation_admission.evaluation_budget
+        judge_budget = evaluation_admission.judge_budget
+        expected_judge_summary_count = (
+            evaluation_admission.expected_judge_summary_count
+        )
+        evaluation_case_count = evaluation_admission.evaluation_case_count
         if self.evaluation_backend is not None:
             if not replay_blocked_verified_apply:
                 if attempt_tracker is not None and attempt_key is not None:
