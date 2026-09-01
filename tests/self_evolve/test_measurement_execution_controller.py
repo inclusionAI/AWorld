@@ -10,6 +10,11 @@ import pytest
 from aworld.self_evolve.controllers import (
     measurement_execution as execution_module,
 )
+from aworld.self_evolve.controllers import (
+    measurement_execution_admission as execution_admission_module,
+    measurement_execution_datasets as execution_datasets_module,
+    measurement_execution_progress as execution_progress_module,
+)
 from aworld.self_evolve.controllers.measurement_execution import (
     PairedReplayExecutionConfig,
     PairedReplayExecutionController,
@@ -71,15 +76,6 @@ def _runtime() -> PairedReplayExecutionRuntime:
         baseline_reuse_provenance=unexpected,
         compile_measurement_plan=unexpected,
         load_measurement_resume_request=unexpected,
-        authoritative_replay_dataset=unexpected,
-        replay_gate_details=unexpected,
-        candidate_intervention_unobserved=unexpected,
-        partial_replay_evaluator_dataset=unexpected,
-        prioritize_candidate_intervention_cases=unexpected,
-        control_qualification_identity_from_request=unexpected,
-        replay_timeout_checkpoint_details=unexpected,
-        replay_member_progress_message=unexpected,
-        replay_member_hard_deadline_seconds=unexpected,
     )
 
 
@@ -127,8 +123,17 @@ async def test_verified_apply_without_backend_fails_closed(tmp_path) -> None:
     assert result.gate.gate_name == "candidate_replay"
 
 
-def test_measurement_execution_controller_does_not_import_runner() -> None:
-    tree = ast.parse(inspect.getsource(execution_module))
+@pytest.mark.parametrize(
+    "module",
+    (
+        execution_module,
+        execution_admission_module,
+        execution_datasets_module,
+        execution_progress_module,
+    ),
+)
+def test_measurement_execution_modules_do_not_import_runner(module) -> None:
+    tree = ast.parse(inspect.getsource(module))
     imported_modules = {
         node.module
         for node in ast.walk(tree)

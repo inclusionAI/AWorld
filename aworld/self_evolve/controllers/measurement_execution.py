@@ -18,6 +18,21 @@ from aworld.self_evolve.concurrency import SelfEvolveExecutionTelemetry
 from aworld.self_evolve.controllers.measurement_authority import (
     MeasurementAuthorityBundle,
 )
+from aworld.self_evolve.controllers.measurement_execution_admission import (
+    _candidate_intervention_unobserved,
+    _replay_gate_details,
+)
+from aworld.self_evolve.controllers.measurement_execution_datasets import (
+    _authoritative_replay_dataset,
+    _control_qualification_identity_from_request,
+    _partial_replay_evaluator_dataset,
+    _prioritize_candidate_intervention_cases,
+)
+from aworld.self_evolve.controllers.measurement_execution_progress import (
+    _replay_member_hard_deadline_seconds,
+    _replay_member_progress_message,
+    _replay_timeout_checkpoint_details,
+)
 from aworld.self_evolve.controllers.screening_execution import (
     find_reusable_baseline_replay_dir,
 )
@@ -131,25 +146,6 @@ class PairedReplayExecutionRuntime:
     baseline_reuse_provenance: Callable[..., Mapping[str, object]]
     compile_measurement_plan: Callable[..., MeasurementAuthorityBundle | None]
     load_measurement_resume_request: Callable[..., CandidateReplayRequest | None]
-    authoritative_replay_dataset: Callable[..., SelfEvolveDataset]
-    replay_gate_details: Callable[..., dict[str, object]]
-    candidate_intervention_unobserved: Callable[[Mapping[str, object]], bool]
-    partial_replay_evaluator_dataset: Callable[
-        ..., tuple[SelfEvolveDataset | None, tuple[str, ...]]
-    ]
-    prioritize_candidate_intervention_cases: Callable[
-        [SelfEvolveDataset, ReplayAdaptationBundle], SelfEvolveDataset
-    ]
-    control_qualification_identity_from_request: Callable[
-        [CandidateReplayRequest], Mapping[str, object] | None
-    ]
-    replay_timeout_checkpoint_details: Callable[
-        [CandidateReplayRequest], dict[str, object]
-    ]
-    replay_member_progress_message: Callable[[Mapping[str, object]], str]
-    replay_member_hard_deadline_seconds: Callable[
-        [CandidateReplayRequest, Mapping[str, object]], float | None
-    ]
 
 
 @dataclass(frozen=True)
@@ -233,7 +229,7 @@ class PairedReplayExecutionController:
                 ),
             )
         if progress_stage == "candidate_replay":
-            dataset = runtime.authoritative_replay_dataset(
+            dataset = _authoritative_replay_dataset(
                 dataset,
                 empirical_observations=runtime.screening_case_observations,
             )
@@ -336,7 +332,7 @@ class PairedReplayExecutionController:
         if replay_adaptation is None or not adaptation_gate.passed:
             return PairedReplayExecutionResult(None, None, adaptation_gate)
         if candidate_requires_intervention_exposure:
-            dataset = runtime.prioritize_candidate_intervention_cases(
+            dataset = _prioritize_candidate_intervention_cases(
                 dataset,
                 replay_adaptation,
             )
@@ -623,7 +619,7 @@ class PairedReplayExecutionController:
             "normalized_member_count": len(normalized.members),
             "source_provenance_matches": source_provenance_matches,
             "dataset_fingerprint_matches": dataset_fingerprint_matches,
-            **runtime.replay_gate_details(
+            **_replay_gate_details(
                 replay_result,
                 dataset=dataset,
                 normalized=normalized,
@@ -639,7 +635,7 @@ class PairedReplayExecutionController:
                 bounded_screening=(progress_stage == "candidate_screening"),
             ),
         }
-        intervention_unobserved = runtime.candidate_intervention_unobserved(
+        intervention_unobserved = _candidate_intervention_unobserved(
             reuse_details
         )
         if not comparable:
@@ -797,7 +793,7 @@ class PairedReplayExecutionController:
                 _emit_progress(
                     runtime.progress_callback,
                     progress_stage,
-                    runtime.replay_member_progress_message(payload),
+                    _replay_member_progress_message(payload),
                 )
 
             async def execute_replay() -> CandidateReplayResult:
@@ -842,7 +838,7 @@ class PairedReplayExecutionController:
                             "attempt_timeout_seconds"
                         )
                         member_hard_deadline = (
-                            runtime.replay_member_hard_deadline_seconds(
+                            _replay_member_hard_deadline_seconds(
                                 replay_request,
                                 replay_progress,
                             )
@@ -883,7 +879,7 @@ class PairedReplayExecutionController:
                                 estimated_remaining=estimated_remaining,
                                 now=now,
                                 progress_message=(
-                                    runtime.replay_member_progress_message(
+                                    _replay_member_progress_message(
                                         replay_progress
                                     )
                                 ),
@@ -907,7 +903,7 @@ class PairedReplayExecutionController:
                         ),
                     },
                 )
-            timeout_checkpoint = runtime.replay_timeout_checkpoint_details(
+            timeout_checkpoint = _replay_timeout_checkpoint_details(
                 replay_request
             )
             return PairedReplayExecutionResult(
@@ -1025,7 +1021,7 @@ class PairedReplayExecutionController:
                 reason=(
                     "candidate replay did not produce comparable paired outcomes"
                 ),
-                details=runtime.replay_gate_details(
+                details=_replay_gate_details(
                     replay_result,
                     dataset=replay_validation_dataset,
                     normalized=normalized,
@@ -1049,7 +1045,7 @@ class PairedReplayExecutionController:
                 replay_gate = _candidate_support_baseline_incompatibility_gate(
                     replay_gate,
                     control_identity=(
-                        runtime.control_qualification_identity_from_request(
+                        _control_qualification_identity_from_request(
                             member.request
                         )
                     ),
@@ -1061,7 +1057,7 @@ class PairedReplayExecutionController:
             evaluator_case_ids: tuple[str, ...] = ()
             if replay_request.measurement_plan is not None:
                 evaluator_dataset, evaluator_case_ids = (
-                    runtime.partial_replay_evaluator_dataset(
+                    _partial_replay_evaluator_dataset(
                         dataset=replay_validation_dataset,
                         replay_result=replay_result,
                         candidate=candidate,
@@ -1093,7 +1089,7 @@ class PairedReplayExecutionController:
                 evaluator_dataset,
                 replay_gate,
             )
-        replay_details = runtime.replay_gate_details(
+        replay_details = _replay_gate_details(
             replay_result,
             dataset=replay_validation_dataset,
             normalized=normalized,
@@ -1108,7 +1104,7 @@ class PairedReplayExecutionController:
             ),
             bounded_screening=(progress_stage == "candidate_screening"),
         )
-        if runtime.candidate_intervention_unobserved(replay_details):
+        if _candidate_intervention_unobserved(replay_details):
             return PairedReplayExecutionResult(
                 replay_result,
                 None,
