@@ -5,10 +5,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 import re
-from typing import Iterable
+from typing import Any, ClassVar, Iterable
 
 from .frozen_json import FrozenJSON, canonical_json_hash, freeze_json
-from .models import CacheBreakReason
+from .models import CacheBreakReason, ContextItem, ContextKind
 
 
 def _identifier(name: str, value: str) -> None:
@@ -92,6 +92,201 @@ class SkillActivation:
             self.loaded_tokens, int
         ) or self.loaded_tokens < 0:
             raise ValueError("loaded_tokens must be non-negative")
+
+
+@dataclass(frozen=True, slots=True)
+class SkillCatalogEntry:
+    """One exact Skill content/version bound to its model-visible Tool ids."""
+
+    skill_id: str
+    descriptor_content_hash: str
+    required_tools: tuple[str, ...]
+    content_item: ContextItem
+
+    def __post_init__(self) -> None:
+        _identifier("skill_id", self.skill_id)
+        if not re.fullmatch(r"sha256:[0-9a-f]{64}", self.descriptor_content_hash):
+            raise ValueError("descriptor_content_hash must be a canonical sha256 hash")
+        object.__setattr__(self, "required_tools", tuple(self.required_tools))
+        if len(set(self.required_tools)) != len(self.required_tools):
+            raise ValueError("required_tools must be unique")
+        for tool_id in self.required_tools:
+            _identifier("required tool", tool_id)
+        if not isinstance(self.content_item, ContextItem):
+            raise TypeError("content_item must be a ContextItem")
+        if self.content_item.kind is not ContextKind.SKILL:
+            raise ValueError("Skill Catalog content must be a Skill ContextItem")
+        ref = self.content_item.source.ref
+        if ref is None or ref.get("skill_id") != self.skill_id:
+            raise ValueError("Skill content item identity does not match skill_id")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "skill_id": self.skill_id,
+            "descriptor_content_hash": self.descriptor_content_hash,
+            "required_tools": list(self.required_tools),
+            "content_item": self.content_item.to_dict(),
+        }
+
+    @classmethod
+    def from_dict(cls, value: dict[str, Any]) -> "SkillCatalogEntry":
+        if not isinstance(value, dict) or set(value) != {
+            "skill_id", "descriptor_content_hash", "required_tools", "content_item"
+        }:
+            raise ValueError("invalid Skill Catalog entry")
+        return cls(
+            skill_id=value["skill_id"],
+            descriptor_content_hash=value["descriptor_content_hash"],
+            required_tools=tuple(value["required_tools"]),
+            content_item=ContextItem.from_dict(value["content_item"]),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class TaskSkillSnapshot:
+    """Task-sticky Skill content and its exact resolved Tool dependency set."""
+
+    SCHEMA_VERSION: ClassVar[str] = "aworld.context.task-skill-snapshot.v1"
+
+    task_epoch: int
+    entries: tuple[SkillCatalogEntry, ...]
+    snapshot_hash: str
+
+    @classmethod
+    def build(
+        cls, task_epoch: int, entries: Iterable[SkillCatalogEntry]
+    ) -> "TaskSkillSnapshot":
+        values = tuple(entries)
+        if isinstance(task_epoch, bool) or not isinstance(task_epoch, int) or task_epoch < 0:
+            raise ValueError("task_epoch must be a non-negative integer")
+        if len({entry.skill_id for entry in values}) != len(values):
+            raise ValueError("Skill ids must be unique")
+        snapshot_hash = canonical_json_hash(
+            [
+                {
+                    "skill_id": entry.skill_id,
+                    "descriptor_content_hash": entry.descriptor_content_hash,
+                    "required_tools": list(entry.required_tools),
+                    "content_hash": entry.content_item.content_hash,
+                    "content_version": entry.content_item.version,
+                }
+                for entry in values
+            ]
+        )
+        return cls(task_epoch=task_epoch, entries=values, snapshot_hash=snapshot_hash)
+
+    def __post_init__(self) -> None:
+        if isinstance(self.task_epoch, bool) or not isinstance(self.task_epoch, int) or self.task_epoch < 0:
+            raise ValueError("task_epoch must be a non-negative integer")
+        object.__setattr__(self, "entries", tuple(self.entries))
+        if not all(isinstance(entry, SkillCatalogEntry) for entry in self.entries):
+            raise TypeError("entries must contain SkillCatalogEntry values")
+        if len({entry.skill_id for entry in self.entries}) != len(self.entries):
+            raise ValueError("Skill ids must be unique")
+        if any(entry.content_item.task_epoch != self.task_epoch for entry in self.entries):
+            raise ValueError("Skill content item epoch does not match snapshot")
+        expected = canonical_json_hash(
+            [
+                {
+                    "skill_id": entry.skill_id,
+                    "descriptor_content_hash": entry.descriptor_content_hash,
+                    "required_tools": list(entry.required_tools),
+                    "content_hash": entry.content_item.content_hash,
+                    "content_version": entry.content_item.version,
+                }
+                for entry in self.entries
+            ]
+        )
+        if expected != self.snapshot_hash:
+            raise ValueError("Task Skill snapshot hash mismatch")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schema_version": self.SCHEMA_VERSION,
+            "task_epoch": self.task_epoch,
+            "entries": [entry.to_dict() for entry in self.entries],
+            "snapshot_hash": self.snapshot_hash,
+        }
+
+    @classmethod
+    def from_dict(cls, value: dict[str, Any]) -> "TaskSkillSnapshot":
+        if not isinstance(value, dict) or set(value) != {
+            "schema_version", "task_epoch", "entries", "snapshot_hash"
+        }:
+            raise ValueError("invalid Task Skill snapshot")
+        if value["schema_version"] != cls.SCHEMA_VERSION:
+            raise ValueError("unsupported Task Skill snapshot schema")
+        return cls(
+            task_epoch=value["task_epoch"],
+            entries=tuple(SkillCatalogEntry.from_dict(entry) for entry in value["entries"]),
+            snapshot_hash=value["snapshot_hash"],
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class SkillCatalogTransition:
+    snapshot: TaskSkillSnapshot
+    candidate_snapshot: TaskSkillSnapshot
+    applied: tuple[str, ...]
+    retained_previous: tuple[str, ...]
+    deferred: tuple[str, ...]
+    deactivated: tuple[str, ...]
+
+
+def transition_task_skills(
+    previous: TaskSkillSnapshot | None,
+    candidate: TaskSkillSnapshot,
+    *,
+    available_tool_ids: Iterable[str],
+    sticky: bool,
+) -> SkillCatalogTransition:
+    """Apply Skill content and resolved Tool dependencies as one snapshot."""
+    if previous is not None and previous.task_epoch != candidate.task_epoch:
+        previous = None
+    available = set(available_tool_ids)
+    previous_by_id = {
+        entry.skill_id: entry for entry in previous.entries
+    } if previous is not None else {}
+    applied_entries: list[SkillCatalogEntry] = []
+    applied: list[str] = []
+    retained: list[str] = []
+    deferred: list[str] = []
+    deactivated: list[str] = []
+    for entry in candidate.entries:
+        old = previous_by_id.get(entry.skill_id)
+        if previous is not None and sticky and old is None:
+            deferred.append(entry.skill_id)
+            continue
+        missing_dependencies = set(entry.required_tools) - available
+        if missing_dependencies:
+            added_dependencies = (
+                set(entry.required_tools) - set(old.required_tools)
+                if old is not None
+                else set(entry.required_tools)
+            )
+            if (
+                old is not None
+                and sticky
+                and missing_dependencies.issubset(added_dependencies)
+                and set(old.required_tools).issubset(available)
+            ):
+                applied_entries.append(old)
+                retained.append(entry.skill_id)
+                deferred.append(entry.skill_id)
+            else:
+                deactivated.append(entry.skill_id)
+            continue
+        applied_entries.append(entry)
+        applied.append(entry.skill_id)
+    snapshot = TaskSkillSnapshot.build(candidate.task_epoch, applied_entries)
+    return SkillCatalogTransition(
+        snapshot=snapshot,
+        candidate_snapshot=candidate,
+        applied=tuple(applied),
+        retained_previous=tuple(retained),
+        deferred=tuple(deferred),
+        deactivated=tuple(deactivated),
+    )
 
 
 def route_skills(
@@ -190,9 +385,30 @@ class ToolCatalogEntry:
         ) or self.estimated_tokens < 0:
             raise ValueError("estimated_tokens must be non-negative")
 
+    def to_dict(self) -> dict[str, Any]:
+        from .frozen_json import thaw_json
+
+        return {
+            "tool_id": self.tool_id,
+            "schema": thaw_json(self.schema),
+            "schema_version": self.schema_version,
+            "source": self.source,
+            "estimated_tokens": self.estimated_tokens,
+        }
+
+    @classmethod
+    def from_dict(cls, value: dict[str, Any]) -> "ToolCatalogEntry":
+        if not isinstance(value, dict) or set(value) != {
+            "tool_id", "schema", "schema_version", "source", "estimated_tokens"
+        }:
+            raise ValueError("invalid Tool Catalog entry")
+        return cls(**value)
+
 
 @dataclass(frozen=True, slots=True)
 class TaskCatalogSnapshot:
+    SCHEMA_VERSION: ClassVar[str] = "aworld.context.task-tool-catalog.v1"
+
     task_epoch: int
     entries: tuple[ToolCatalogEntry, ...]
     catalog_hash: str
@@ -217,6 +433,49 @@ class TaskCatalogSnapshot:
                     for entry in values
                 ]
             ),
+        )
+
+    def __post_init__(self) -> None:
+        if isinstance(self.task_epoch, bool) or not isinstance(self.task_epoch, int) or self.task_epoch < 0:
+            raise ValueError("task_epoch must be a non-negative integer")
+        object.__setattr__(self, "entries", tuple(self.entries))
+        if not all(isinstance(entry, ToolCatalogEntry) for entry in self.entries):
+            raise TypeError("entries must contain ToolCatalogEntry values")
+        if len({entry.tool_id for entry in self.entries}) != len(self.entries):
+            raise ValueError("tool ids must be unique")
+        expected = canonical_json_hash(
+            [
+                {
+                    "tool_id": entry.tool_id,
+                    "schema": entry.schema,
+                    "schema_version": entry.schema_version,
+                }
+                for entry in self.entries
+            ]
+        )
+        if expected != self.catalog_hash:
+            raise ValueError("Task Tool Catalog hash mismatch")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schema_version": self.SCHEMA_VERSION,
+            "task_epoch": self.task_epoch,
+            "entries": [entry.to_dict() for entry in self.entries],
+            "catalog_hash": self.catalog_hash,
+        }
+
+    @classmethod
+    def from_dict(cls, value: dict[str, Any]) -> "TaskCatalogSnapshot":
+        if not isinstance(value, dict) or set(value) != {
+            "schema_version", "task_epoch", "entries", "catalog_hash"
+        }:
+            raise ValueError("invalid Task Tool Catalog snapshot")
+        if value["schema_version"] != cls.SCHEMA_VERSION:
+            raise ValueError("unsupported Task Tool Catalog snapshot schema")
+        return cls(
+            task_epoch=value["task_epoch"],
+            entries=tuple(ToolCatalogEntry.from_dict(entry) for entry in value["entries"]),
+            catalog_hash=value["catalog_hash"],
         )
 
 
@@ -321,11 +580,15 @@ __all__ = [
     "CatalogTransition",
     "DisclosureLevel",
     "SkillActivation",
+    "SkillCatalogEntry",
+    "SkillCatalogTransition",
     "SkillDescriptor",
     "SkillIndexEntry",
     "TaskCatalogSnapshot",
+    "TaskSkillSnapshot",
     "ToolCatalogEntry",
     "compile_minimal_tool_catalog",
     "transition_task_catalog",
+    "transition_task_skills",
     "route_skills",
 ]

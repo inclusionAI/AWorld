@@ -28,7 +28,7 @@ main-tree verification is 32/32 and the implementation worktree wider regression
 
 ### Task 7.2b: Observe attribution and residency hardening
 
-**Status:** complete in isolated branch `codex/task-7-2-observe-residency-fixes`
+**Status:** complete
 
 - Observe SDK canonicalization, receipt construction, and Context storage are fail-open; SDK-native opaque parameters reach
   the provider exactly once with the same public kwargs as off mode. HTTP serialization remains transport-owned and errors
@@ -40,6 +40,21 @@ main-tree verification is 32/32 and the implementation worktree wider regression
   retaining total-byte and compatible kind/source comparisons.
 - Progressive Skill observations no longer assert `NOT_RESIDENT/MESSAGE` without request-bound composition proof. Their safe
   default is `UNKNOWN/EVIDENCE_ONLY`, preventing duplicate Skill injection into already-folded legacy/Amni requests.
+
+### Task 7.2c: Progressive Skill/Tool atomicity and lifecycle
+
+**Status:** complete
+
+- Final budget candidates now carry typed, exact item dependencies. Optional Skill content and its required provider-visible
+  Tool closure are selected or excluded together, including shared Tools; a required dependency closure fails closed when it
+  cannot fit or is unavailable.
+- Task-sticky Skill state is a versioned snapshot of descriptor/content identity plus resolved Tool ids. Skill and Tool
+  proposals are applied jointly: deferred Tool expansion retains the previous Skill content, while permission contraction
+  removes the incomplete Skill immediately.
+- `CHILD_CONTEXT` Tool Catalog transitions are pure previews and do not create or mutate parent active catalog state.
+- Versioned, hash-validated Tool/Skill snapshots now round-trip through AMNI checkpoints and same-task resume; deep copies
+  retain isolated immutable bindings and malformed checkpoint state is rejected.
+- Focused compiler/context/provider/evaluation regression is green at 164 tests; audit counterexamples are included.
 
 ## Completed Foundations
 

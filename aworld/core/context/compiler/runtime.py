@@ -297,6 +297,19 @@ def compile_model_boundary_context(
             task_epoch=task_epoch,
         ),
     )
+    tool_item_by_visible_id: dict[str, ContextItem] = {}
+    for item in tool_items:
+        payload = item.payload
+        function = payload.get("function") if isinstance(payload, FrozenMap) else None
+        tool_id = (
+            function.get("name")
+            if isinstance(function, FrozenMap)
+            else payload.get("name") if isinstance(payload, FrozenMap) else None
+        )
+        if isinstance(tool_id, str) and tool_id:
+            if tool_id in tool_item_by_visible_id:
+                raise ValueError("model-visible Tool ids must be unique")
+            tool_item_by_visible_id[tool_id] = item
     consumed_owner_ids = {
         item.id
         for item in (
@@ -392,6 +405,26 @@ def compile_model_boundary_context(
             sidecar.model_residency is ModelResidency.NOT_RESIDENT
             and sidecar.emission_intent is ContextEmissionIntent.MESSAGE
         )
+        dependency_item_ids: tuple[str, ...] = ()
+        if sidecar_owner == "skills.progressive" and item.kind is ContextKind.SKILL:
+            ref = item.source.ref
+            required_tool_ids = (
+                ref.get("required_tool_ids") if isinstance(ref, FrozenMap) else None
+            )
+            if not isinstance(required_tool_ids, tuple) or any(
+                not isinstance(tool_id, str) for tool_id in required_tool_ids
+            ):
+                raise ValueError("progressive Skill lacks exact Tool dependencies")
+            missing_tool_ids = tuple(
+                tool_id
+                for tool_id in required_tool_ids
+                if tool_id not in tool_item_by_visible_id
+            )
+            if missing_tool_ids:
+                raise ValueError("progressive Skill required Tool is unavailable")
+            dependency_item_ids = tuple(
+                tool_item_by_visible_id[tool_id].id for tool_id in required_tool_ids
+            )
         can_lower_instruction = (
             has_explicit_non_resident_emission
             and message_shaped
@@ -438,6 +471,7 @@ def compile_model_boundary_context(
                     if can_lower_instruction
                     else ContextEmissionKind.EVIDENCE_ONLY
                 ),
+                dependency_item_ids=dependency_item_ids,
                 semantics_proven=_known_semantics(item, task_epoch),
                 lowering_proven=can_lower_instruction,
                 owner_code=_owner_code(sidecar_owner),

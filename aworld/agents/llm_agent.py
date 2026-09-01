@@ -1294,34 +1294,43 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             for function in (schema.get("function", {}),)
             if isinstance(function, dict) and function.get("name")
         )
+        progressive_skill_proposal = None
+        progressive_sticky = (
+            getattr(self.llm, "_context_task_catalog_policy", "sticky")
+            == "sticky"
+        )
         if (
             getattr(self.llm, "_context_progressive_skills", True)
-            and self.skill_configs
             and context_compiler_mode != "off"
         ):
             from aworld.skills.progressive_context import (
+                prepare_progressive_skill_context,
                 publish_progressive_skill_context,
             )
 
             try:
-                publish_progressive_skill_context(
-                    context=message.context,
-                    agent_id=self.id(),
-                    skill_configs=self.skill_configs,
-                    sticky=(
-                        getattr(
-                            self.llm, "_context_task_catalog_policy", "sticky"
-                        ) == "sticky"
-                    ),
-                    available_tool_ids=available_tool_ids,
-                    tool_identity_mapping=(
+                skill_kwargs = {
+                    "context": message.context,
+                    "agent_id": self.id(),
+                    "skill_configs": self.skill_configs or {},
+                    "available_tool_ids": available_tool_ids,
+                    "tool_identity_mapping": (
                         getattr(self, "tool_mapping", {}) or {}
                     ),
-                    require_resolved_tools=(
+                    "require_resolved_tools": (
                         explicit_progressive_catalog
                         and context_compiler_mode == "enforce"
                     ),
-                )
+                }
+                if explicit_progressive_catalog and context_compiler_mode == "enforce":
+                    progressive_skill_proposal = prepare_progressive_skill_context(
+                        **skill_kwargs
+                    )
+                else:
+                    publish_progressive_skill_context(
+                        **skill_kwargs,
+                        sticky=progressive_sticky,
+                    )
             except Exception:
                 if context_compiler_mode == "enforce":
                     raise
@@ -1331,6 +1340,33 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 )
         if not tools:
             tools = None
+            if explicit_progressive_catalog and context_compiler_mode == "enforce":
+                from aworld.core.context.compiler import (
+                    CatalogChangeAction,
+                    TaskCatalogSnapshot,
+                )
+
+                transition = message.context.bind_task_tool_catalog(
+                    self.id(),
+                    TaskCatalogSnapshot.build(message.context.task_epoch, ()),
+                    action=(
+                        CatalogChangeAction.DEFER_NEXT_EPOCH
+                        if progressive_sticky
+                        else CatalogChangeAction.ACCEPT_CURRENT_EPOCH
+                    ),
+                )
+            if progressive_skill_proposal is not None:
+                from aworld.skills.progressive_context import (
+                    apply_progressive_skill_proposal,
+                )
+
+                apply_progressive_skill_proposal(
+                    context=message.context,
+                    agent_id=self.id(),
+                    proposal=progressive_skill_proposal,
+                    sticky=progressive_sticky,
+                    available_tool_ids=(),
+                )
         elif context_compiler_mode != "off":
             try:
                 from aworld.core.context.compiler import (
@@ -1363,14 +1399,14 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                     explicit_progressive_catalog
                     and context_compiler_mode == "enforce"
                 ):
-                    activations = message.context.get_skill_activations().get(
-                        self.id(), ()
-                    )
-                    skill_requested_tools = tuple(
-                        tool_id
-                        for activation in activations
-                        if activation.activated
-                        for tool_id in activation.requested_tools
+                    skill_requested_tools = (
+                        message.context.preview_task_skill_tool_requests(
+                            self.id(),
+                            progressive_skill_proposal.snapshot,
+                            sticky=progressive_sticky,
+                        )
+                        if progressive_skill_proposal is not None
+                        else ()
                     )
                     candidate_catalog = compile_minimal_tool_catalog(
                         entries,
@@ -1412,6 +1448,21 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                         thaw_json(entry.schema)
                         for entry in transition.snapshot.entries
                     ]
+                if progressive_skill_proposal is not None:
+                    from aworld.skills.progressive_context import (
+                        apply_progressive_skill_proposal,
+                    )
+
+                    applied_tool_ids = tuple(
+                        entry.tool_id for entry in transition.snapshot.entries
+                    )
+                    apply_progressive_skill_proposal(
+                        context=message.context,
+                        agent_id=self.id(),
+                        proposal=progressive_skill_proposal,
+                        sticky=progressive_sticky,
+                        available_tool_ids=applied_tool_ids,
+                    )
             except Exception as exc:
                 if context_compiler_mode == "enforce":
                     raise

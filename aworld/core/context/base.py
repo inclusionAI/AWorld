@@ -34,7 +34,10 @@ from aworld.core.context.compiler.progressive import (
     CatalogTransition,
     TaskCatalogSnapshot,
     SkillActivation,
+    SkillCatalogTransition,
+    TaskSkillSnapshot,
     transition_task_catalog,
+    transition_task_skills,
 )
 from aworld.core.context.compiler.reducers import ReductionReceipt
 from aworld.core.context.compiler.tool_output import ToolOutputPolicy, ToolOutputRecord
@@ -243,6 +246,7 @@ class Context:
         self._task_tool_catalogs: Dict[str, TaskCatalogSnapshot] = {}
         self._tool_catalog_transitions: List[CatalogTransition] = []
         self._task_skill_sets: Dict[str, tuple[str, ...]] = {}
+        self._task_skill_snapshots: Dict[str, TaskSkillSnapshot] = {}
         self._skill_activations: Dict[str, tuple[SkillActivation, ...]] = {}
         self._context_reduction_receipts: Dict[str, ReductionReceipt] = {}
         # Delegation depth belongs to the isolated execution Context.  It is
@@ -651,9 +655,105 @@ class Context:
             raise ValueError("Tool Catalog task epoch does not match Context")
         previous = self._task_tool_catalogs.get(namespace)
         transition = transition_task_catalog(previous, candidate, action=action)
+        if action is CatalogChangeAction.CHILD_CONTEXT:
+            return transition
         self._task_tool_catalogs[namespace] = transition.snapshot
         self._tool_catalog_transitions.append(transition)
         return transition
+
+    def preview_task_skill_tool_requests(
+        self,
+        namespace: str,
+        candidate: TaskSkillSnapshot,
+        *,
+        sticky: bool,
+    ) -> tuple[str, ...]:
+        if candidate.task_epoch != self.task_epoch:
+            raise ValueError("Skill snapshot task epoch does not match Context")
+        previous = self._task_skill_snapshots.get(namespace)
+        eligible_ids = (
+            {entry.skill_id for entry in candidate.entries}
+            if previous is None or not sticky
+            else {entry.skill_id for entry in previous.entries}
+        )
+        return tuple(dict.fromkeys(
+            tool_id
+            for entry in candidate.entries
+            if entry.skill_id in eligible_ids
+            for tool_id in entry.required_tools
+        ))
+
+    def bind_task_skill_snapshot(
+        self,
+        namespace: str,
+        candidate: TaskSkillSnapshot,
+        *,
+        available_tool_ids: tuple[str, ...],
+        sticky: bool,
+    ) -> SkillCatalogTransition:
+        if candidate.task_epoch != self.task_epoch:
+            raise ValueError("Skill snapshot task epoch does not match Context")
+        transition = transition_task_skills(
+            self._task_skill_snapshots.get(namespace),
+            candidate,
+            available_tool_ids=available_tool_ids,
+            sticky=sticky,
+        )
+        self._task_skill_snapshots[namespace] = transition.snapshot
+        self._task_skill_sets[namespace] = tuple(
+            entry.skill_id for entry in transition.snapshot.entries
+        )
+        return transition
+
+    def export_progressive_state(self) -> dict[str, Any]:
+        """Serialize versioned task-sticky Skill/Tool state for checkpoints."""
+        return {
+            "schema_version": "aworld.context.progressive-state.v1",
+            "task_epoch": self.task_epoch,
+            "tool_catalogs": {
+                namespace: snapshot.to_dict()
+                for namespace, snapshot in sorted(self._task_tool_catalogs.items())
+            },
+            "skill_snapshots": {
+                namespace: snapshot.to_dict()
+                for namespace, snapshot in sorted(self._task_skill_snapshots.items())
+            },
+        }
+
+    def restore_progressive_state(self, value: dict[str, Any]) -> None:
+        """Validate a complete checkpoint projection before replacing state."""
+        if not isinstance(value, dict) or set(value) != {
+            "schema_version", "task_epoch", "tool_catalogs", "skill_snapshots"
+        }:
+            raise ValueError("invalid progressive checkpoint state")
+        if value["schema_version"] != "aworld.context.progressive-state.v1":
+            raise ValueError("unsupported progressive checkpoint schema")
+        if value["task_epoch"] != self.task_epoch:
+            raise ValueError("progressive checkpoint task epoch mismatch")
+        if not isinstance(value["tool_catalogs"], dict) or not isinstance(
+            value["skill_snapshots"], dict
+        ):
+            raise ValueError("progressive checkpoint namespaces must be objects")
+        tool_catalogs = {
+            str(namespace): TaskCatalogSnapshot.from_dict(snapshot)
+            for namespace, snapshot in value["tool_catalogs"].items()
+        }
+        skill_snapshots = {
+            str(namespace): TaskSkillSnapshot.from_dict(snapshot)
+            for namespace, snapshot in value["skill_snapshots"].items()
+        }
+        if any(snapshot.task_epoch != self.task_epoch for snapshot in tool_catalogs.values()):
+            raise ValueError("restored Tool Catalog epoch mismatch")
+        if any(snapshot.task_epoch != self.task_epoch for snapshot in skill_snapshots.values()):
+            raise ValueError("restored Skill snapshot epoch mismatch")
+        self._task_tool_catalogs = tool_catalogs
+        self._task_skill_snapshots = skill_snapshots
+        self._task_skill_sets = {
+            namespace: tuple(entry.skill_id for entry in snapshot.entries)
+            for namespace, snapshot in skill_snapshots.items()
+        }
+        self._skill_activations = {}
+        self._tool_catalog_transitions = []
 
     def bind_task_skill_set(
         self,
@@ -751,6 +851,7 @@ class Context:
             self._task_tool_catalogs = {}
             self._tool_catalog_transitions = []
             self._task_skill_sets = {}
+            self._task_skill_snapshots = {}
             self._skill_activations = {}
             self._context_reduction_receipts = {}
             self._tool_output_records = {}
@@ -840,6 +941,7 @@ class Context:
         self._task_tool_catalogs = {}
         self._tool_catalog_transitions = []
         self._task_skill_sets = {}
+        self._task_skill_snapshots = {}
         self._skill_activations = {}
         self._context_reduction_receipts = {}
         self._tool_output_records = {}
@@ -1227,6 +1329,7 @@ class Context:
         new_context._task_tool_catalogs = dict(self._task_tool_catalogs)
         new_context._tool_catalog_transitions = list(self._tool_catalog_transitions)
         new_context._task_skill_sets = dict(self._task_skill_sets)
+        new_context._task_skill_snapshots = dict(self._task_skill_snapshots)
         new_context._skill_activations = dict(self._skill_activations)
         new_context._context_reduction_receipts = dict(
             self._context_reduction_receipts
@@ -1845,6 +1948,7 @@ class Context:
                 'branch_id': self._context_lifecycle_state.branch_id,
                 'checkpoint_revision': self._context_lifecycle_state.checkpoint_revision,
             },
+            'progressive_state': self.export_progressive_state(),
 
             # Timestamp for checkpoint creation
             'checkpoint_created_at': datetime.now().isoformat(),

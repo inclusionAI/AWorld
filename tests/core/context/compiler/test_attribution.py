@@ -53,6 +53,7 @@ from aworld.core.context.compiler import (
     canonical_json_hash,
     compile_final_context,
     compile_model_boundary_context,
+    estimate_canonical_json_tokens,
     inspect_final_context,
 )
 
@@ -322,6 +323,120 @@ def test_additional_sidecar_requires_typed_not_resident_message_intent():
 
     assert len(default_result.request_snapshot.payload["messages"]) == 1
     assert len(explicit_result.request_snapshot.payload["messages"]) == 2
+
+
+def test_progressive_skill_and_exact_required_tool_are_budget_atomic():
+    request_id = "skill-tool-budget"
+    messages = ({"role": "user", "content": "do it"},)
+    tools = ({
+        "type": "function",
+        "function": {
+            "name": "write",
+            "description": "w" * 120,
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },)
+    legacy = ProviderRequestSnapshot(
+        request_id=request_id,
+        provider_name="openai",
+        payload={"messages": messages, "tools": tools, "params": {}},
+        capture_stage=RequestCaptureStage.MODEL_BOUNDARY,
+        fidelity=ProviderRequestFidelity.MODEL_BOUNDARY,
+    )
+    message_result, tool_result = adapt_agent_final_request(
+        messages=messages,
+        tools=tools,
+        source_identity=(
+            "model-final://agent/task-task/epoch-1/"
+            f"request-{request_id}"
+        ),
+        task_id="task",
+        task_epoch=1,
+        agent_id="agent",
+        amni_folded_system=False,
+    )
+    binding = {
+        "request_id_hash": canonical_json_hash({"request_id": request_id}),
+        "task_epoch": 1,
+    }
+    model_sidecars = (
+        ContextObservationSidecar.from_adapter_result(
+            owner="model.final_messages",
+            namespace="agent",
+            source_identity="messages",
+            result=message_result,
+            collection=AttributionCollection.MESSAGES,
+            **binding,
+        ),
+        ContextObservationSidecar.from_adapter_result(
+            owner="model.final_tool_catalog",
+            namespace="agent",
+            source_identity="tools",
+            result=tool_result,
+            collection=AttributionCollection.TOOLS,
+            **binding,
+        ),
+    )
+    skill_payload = {
+        "role": "system",
+        "content": "Skill instructions: you must call write.",
+    }
+    skill = ContextItem(
+        id="progressive-skill:agent:writer",
+        kind=ContextKind.SKILL,
+        payload=skill_payload,
+        task_epoch=1,
+        authority=Authority.APPLICATION_AGENT,
+        scope=ContextScope(
+            kinds=(ScopeKind.TASK, ScopeKind.AGENT),
+            task_id="task",
+            agent_id="agent",
+        ),
+        lifetime=Lifetime.TASK,
+        priority=0,
+        required=False,
+        trust=Trust.USER_CONTROLLED,
+        stability=Stability.SESSION_STABLE,
+        token_limit=100,
+        reducer=None,
+        source=ContextSource(
+            kind=SourceKind.SKILL,
+            ref={"skill_id": "writer", "required_tool_ids": ["write"]},
+        ),
+        occurrence=0,
+    )
+    skill_sidecar = ContextObservationSidecar.from_adapter_result(
+        owner="skills.progressive",
+        namespace="agent",
+        source_identity="skills",
+        result=AdapterResult(items=(skill,), diagnostics=()),
+        model_residency=ModelResidency.NOT_RESIDENT,
+        emission_intent=ContextEmissionIntent.MESSAGE,
+    )
+    available = (
+        estimate_canonical_json_tokens(messages[0]).value
+        + estimate_canonical_json_tokens(skill_payload).value
+    )
+    result = compile_model_boundary_context(
+        legacy_request=legacy,
+        observations=(*model_sidecars, skill_sidecar),
+        inference_profile=_profile(),
+        policy=FinalCompilePolicy(
+            compiler_version="skill-atomic-v1",
+            policy_version="policy-v1",
+            input_budget=ContextInputBudget(available, 0, 0, 0, 1000),
+        ),
+        created_at=datetime.now(timezone.utc),
+        task_id="task",
+        session_id=None,
+        trace_id=None,
+        task_epoch=1,
+    )
+    request = result.request_snapshot.thaw()
+
+    assert request["messages"] == list(messages)
+    assert request["tools"] == []
+    assert result.enforce_ready is True
 
 
 @pytest.mark.parametrize("tools", [None, []])

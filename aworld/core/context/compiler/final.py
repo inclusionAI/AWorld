@@ -84,6 +84,7 @@ class FinalCompileCandidate:
     allocation_tier: BudgetAllocationTier
     emission: ContextEmissionKind
     atomic_group: AtomicGroupRef | None = None
+    dependency_item_ids: tuple[str, ...] = ()
     semantics_proven: bool = False
     lowering_proven: bool = True
     activated: bool = True
@@ -106,6 +107,11 @@ class FinalCompileCandidate:
             self.atomic_group, AtomicGroupRef
         ):
             raise TypeError("atomic_group must be an AtomicGroupRef or None")
+        object.__setattr__(self, "dependency_item_ids", tuple(self.dependency_item_ids))
+        if len(set(self.dependency_item_ids)) != len(self.dependency_item_ids):
+            raise ValueError("dependency_item_ids must be unique")
+        if any(not isinstance(value, str) or not value for value in self.dependency_item_ids):
+            raise ValueError("dependency item ids must be non-empty strings")
         if not isinstance(self.semantics_proven, bool):
             raise TypeError("semantics_proven must be a boolean")
         if not isinstance(self.lowering_proven, bool):
@@ -134,6 +140,7 @@ class FinalCompileCandidate:
             tokens=self.tokens,
             allocation_tier=self.allocation_tier,
             atomic_group=self.atomic_group,
+            dependency_item_ids=self.dependency_item_ids,
         )
 
 
@@ -382,6 +389,7 @@ def _replace_candidates(
                 allocation_tier=candidate.allocation_tier,
                 emission=candidate.emission,
                 atomic_group=candidate.atomic_group,
+                dependency_item_ids=candidate.dependency_item_ids,
                 semantics_proven=candidate.semantics_proven,
                 lowering_proven=candidate.lowering_proven,
                 activated=candidate.activated,

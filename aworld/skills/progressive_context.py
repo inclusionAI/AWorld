@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from typing import Any, Iterable, Mapping
 
 from aworld.core.context.compiler import (
@@ -17,9 +17,12 @@ from aworld.core.context.compiler import (
     Lifetime,
     ScopeKind,
     SkillDescriptor,
+    SkillCatalogEntry,
+    SkillActivation,
     SkillIndexEntry,
     SourceKind,
     Stability,
+    TaskSkillSnapshot,
     Trust,
     canonical_json_hash,
     estimate_canonical_json_tokens,
@@ -27,17 +30,22 @@ from aworld.core.context.compiler import (
 )
 
 
-def publish_progressive_skill_context(
+@dataclass(frozen=True, slots=True)
+class ProgressiveSkillProposal:
+    snapshot: TaskSkillSnapshot
+    activations: tuple[SkillActivation, ...]
+
+
+def prepare_progressive_skill_context(
     *,
     context,
     agent_id: str,
     skill_configs: Mapping[str, Any],
-    sticky: bool,
     available_tool_ids: Iterable[str] | None = None,
     tool_identity_mapping: Mapping[str, str] | None = None,
     require_resolved_tools: bool = False,
-) -> tuple[str, ...]:
-    """Publish only application-activated Skill content with proven semantics."""
+) -> ProgressiveSkillProposal:
+    """Build a typed Skill/content/Tool proposal without mutating Context."""
     indexes: list[SkillIndexEntry] = []
     descriptors: list[SkillDescriptor] = []
     configured_active: list[str] = []
@@ -133,12 +141,7 @@ def publish_progressive_skill_context(
         if config.get("active") is True:
             configured_active.append(stable_id)
 
-    requested = tuple(configured_active)
-    active_ids, _deferred = context.bind_task_skill_set(
-        agent_id,
-        requested,
-        sticky=sticky,
-    )
+    active_ids = tuple(configured_active)
     allowed_risks = {risk_by_id[skill_id] for skill_id in active_ids}
     activations = route_skills(
         indexes,
@@ -160,14 +163,6 @@ def publish_progressive_skill_context(
         else activation
         for activation in activations
     )
-    if require_resolved_tools and any(
-        activation.reason_code == "skill_required_tool_unavailable"
-        for activation in activations
-    ):
-        # Enforce callers opt into exact identity resolution.  Failing here
-        # keeps Skill content and its required Tool set atomic.
-        context.record_skill_activations(agent_id, activations)
-        raise ValueError("skill_required_tool_unavailable")
     activation_by_id = {value.skill_id: value for value in activations}
     descriptor_by_id = {
         value.index.skill_id: value for value in descriptors
@@ -215,23 +210,141 @@ def publish_progressive_skill_context(
                         "skill_id": skill_id,
                         "activation_reason": activation.reason_code,
                         "content_hash": descriptor_by_id[skill_id].content_hash,
+                        "required_tool_ids": list(
+                            activation.requested_tools
+                            if require_resolved_tools
+                            else ()
+                        ),
                     },
                 ),
-                version="v1",
+                version=descriptor_by_id[skill_id].index.version,
                 activation_reason=activation.reason_code,
                 occurrence=occurrence,
             )
         )
+    item_by_skill_id = {
+        item.source.ref.get("skill_id"): item for item in items
+    }
+    entries = tuple(
+        SkillCatalogEntry(
+            skill_id=activation.skill_id,
+            descriptor_content_hash=descriptor_by_id[activation.skill_id].content_hash,
+            required_tools=(
+                activation.requested_tools if require_resolved_tools else ()
+            ),
+            content_item=item_by_skill_id[activation.skill_id],
+        )
+        for activation in activations
+        if activation.activated and activation.skill_id in item_by_skill_id
+    )
+    return ProgressiveSkillProposal(
+        snapshot=TaskSkillSnapshot.build(context.task_epoch, entries),
+        activations=activations,
+    )
+
+
+def apply_progressive_skill_proposal(
+    *,
+    context,
+    agent_id: str,
+    proposal: ProgressiveSkillProposal,
+    sticky: bool,
+    available_tool_ids: Iterable[str],
+) -> tuple[str, ...]:
+    """Atomically apply one Skill proposal against the actual Tool snapshot."""
+    transition = context.bind_task_skill_snapshot(
+        agent_id,
+        proposal.snapshot,
+        available_tool_ids=tuple(available_tool_ids),
+        sticky=sticky,
+    )
+    applied_by_id = {entry.skill_id: entry for entry in transition.snapshot.entries}
+    candidate_by_id = {
+        entry.skill_id: entry for entry in proposal.snapshot.entries
+    }
+    final_activations = []
+    for activation in proposal.activations:
+        applied_entry = applied_by_id.get(activation.skill_id)
+        candidate_entry = candidate_by_id.get(activation.skill_id)
+        if applied_entry is None:
+            reason = (
+                "skill_required_tool_unavailable"
+                if activation.skill_id in transition.deactivated
+                else "skill_sticky_expansion_deferred"
+                if activation.skill_id in transition.deferred
+                else activation.reason_code
+            )
+            final_activations.append(replace(
+                activation,
+                activated=False,
+                level=DisclosureLevel.DESCRIPTOR,
+                reason_code=reason,
+                loaded_tokens=0,
+            ))
+        elif candidate_entry is not None and applied_entry != candidate_entry:
+            final_activations.append(replace(
+                activation,
+                activated=True,
+                reason_code="skill_sticky_previous_retained",
+                requested_tools=applied_entry.required_tools,
+                loaded_tokens=estimate_canonical_json_tokens(
+                    applied_entry.content_item.payload
+                ).value or 0,
+            ))
+        else:
+            final_activations.append(activation)
     context.publish_context_observation(
         ContextObservationSidecar.from_adapter_result(
             owner="skills.progressive",
             namespace=agent_id,
             source_identity=f"progressive-skills:{agent_id}:{context.task_epoch}",
-            result=AdapterResult(items=tuple(items), diagnostics=()),
+            result=AdapterResult(
+                items=tuple(entry.content_item for entry in transition.snapshot.entries),
+                diagnostics=(),
+            ),
         )
     )
-    context.record_skill_activations(agent_id, activations)
-    return active_ids
+    context.record_skill_activations(agent_id, tuple(final_activations))
+    return tuple(entry.skill_id for entry in transition.snapshot.entries)
 
 
-__all__ = ["publish_progressive_skill_context"]
+def publish_progressive_skill_context(
+    *,
+    context,
+    agent_id: str,
+    skill_configs: Mapping[str, Any],
+    sticky: bool,
+    available_tool_ids: Iterable[str] | None = None,
+    tool_identity_mapping: Mapping[str, str] | None = None,
+    require_resolved_tools: bool = False,
+) -> tuple[str, ...]:
+    """Compatibility wrapper for owners without a separate Tool transition."""
+    proposal = prepare_progressive_skill_context(
+        context=context,
+        agent_id=agent_id,
+        skill_configs=skill_configs,
+        available_tool_ids=available_tool_ids,
+        tool_identity_mapping=tool_identity_mapping,
+        require_resolved_tools=require_resolved_tools,
+    )
+    if require_resolved_tools and any(
+        activation.reason_code == "skill_required_tool_unavailable"
+        for activation in proposal.activations
+    ):
+        context.record_skill_activations(agent_id, proposal.activations)
+        raise ValueError("skill_required_tool_unavailable")
+    return apply_progressive_skill_proposal(
+        context=context,
+        agent_id=agent_id,
+        proposal=proposal,
+        sticky=sticky,
+        available_tool_ids=available_tool_ids or (),
+    )
+
+
+__all__ = [
+    "ProgressiveSkillProposal",
+    "apply_progressive_skill_proposal",
+    "prepare_progressive_skill_context",
+    "publish_progressive_skill_context",
+]
