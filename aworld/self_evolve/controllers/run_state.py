@@ -85,6 +85,60 @@ class ExplicitRunSelection:
 
 
 @dataclass(frozen=True)
+class VerificationFunnelRequest:
+    """Run policy and observations needed for the verification funnel."""
+
+    screening_max_cases: int
+    repair_iteration_horizon: int
+    candidate_generation_batch_count: int
+    max_generated_candidates: int
+    repair_reserved_slot_count: int
+    unique_generated_candidate_count: int
+    policy_filtered_candidate_count: int
+    max_authoritative_candidates: int
+    max_score_tiebreak_candidates: int
+    authoritative_case_observations: Mapping[
+        str,
+        Mapping[str, object],
+    ] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        for field_name in (
+            "screening_max_cases",
+            "repair_iteration_horizon",
+            "candidate_generation_batch_count",
+            "max_generated_candidates",
+            "repair_reserved_slot_count",
+            "unique_generated_candidate_count",
+            "policy_filtered_candidate_count",
+            "max_authoritative_candidates",
+            "max_score_tiebreak_candidates",
+        ):
+            value = getattr(self, field_name)
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, int)
+                or value < 0
+            ):
+                raise ValueError(f"{field_name} must be a non-negative integer")
+        observations = dict(self.authoritative_case_observations)
+        if not all(
+            isinstance(case_id, str)
+            and bool(case_id)
+            and isinstance(observation, Mapping)
+            for case_id, observation in observations.items()
+        ):
+            raise TypeError(
+                "authoritative case observations must map ids to mappings"
+            )
+        object.__setattr__(
+            self,
+            "authoritative_case_observations",
+            observations,
+        )
+
+
+@dataclass(frozen=True)
 class ConformanceStrategyTransition:
     """One conformance topology observation and its frontier effect."""
 
@@ -433,6 +487,121 @@ class ExplicitRunStateAccumulator:
     generation: GenerationFrontierState = field(
         default_factory=GenerationFrontierState
     )
+
+    def verification_funnel_report(
+        self,
+        request: VerificationFunnelRequest,
+    ) -> dict[str, object]:
+        """Project authoritative generation/evaluation state for reporting."""
+
+        generation_stop_reason = self.generation.stop_reason()
+        report: dict[str, object] = {
+            "screening_max_cases": request.screening_max_cases,
+            "repair_iteration_horizon": request.repair_iteration_horizon,
+            "candidate_generation_batch_count": (
+                request.candidate_generation_batch_count
+            ),
+            "max_generated_candidates": request.max_generated_candidates,
+            "repair_reserved_slot_count": request.repair_reserved_slot_count,
+            "generated_candidate_slot_count": (
+                self.generation.generated_candidate_slot_count
+            ),
+            "candidate_generation_attempt_slot_count": (
+                self.generation.candidate_generation_attempt_slot_count
+            ),
+            "unique_generated_candidate_count": (
+                request.unique_generated_candidate_count
+            ),
+            "generation_frontier_exhausted": self.generation.frontier_exhausted,
+            "generation_repair_capacity_reserved": (
+                self.generation.repair_capacity_reserved
+            ),
+            "generation_policy_frontier_exhausted": (
+                self.generation.policy_frontier_exhausted
+            ),
+            "conformance_strategy_switch_count": (
+                self.generation.conformance_strategy_switch_count
+            ),
+            "conformance_strategy_switch_request_count": (
+                self.generation.conformance_strategy_switch_request_count
+            ),
+            "conformance_strategy_switch_not_materialized": (
+                self.generation.conformance_strategy_switch_not_materialized
+            ),
+            "pending_conformance_counterexample_count": len(
+                self.generation.pending_conformance_counterexamples
+            ),
+            "resolved_conformance_counterexample_count": len(
+                self.generation.resolved_conformance_counterexamples
+            ),
+            "conformance_counterexamples_by_stage": {
+                stage: {
+                    "count": len(counterexample_ids),
+                    "counterexample_ids": sorted(counterexample_ids),
+                }
+                for stage, counterexample_ids in sorted(
+                    self.generation.conformance_counterexamples_by_stage.items()
+                )
+            },
+            "repeated_contract_replacement_candidate_count": len(
+                self.generation.repeated_contract_replacement_candidate_ids
+            ),
+            "repeated_contract_replacement_candidate_ids": sorted(
+                self.generation.repeated_contract_replacement_candidate_ids
+            ),
+            "conformance_same_slot_repair_count": (
+                self.generation.conformance_same_slot_repair_count
+            ),
+            "serialized_new_contract_repair_count": (
+                self.generation.serialized_new_contract_repair_count
+            ),
+            "policy_filtered_candidate_count": (
+                request.policy_filtered_candidate_count
+            ),
+            "max_authoritative_candidates": (
+                request.max_authoritative_candidates
+            ),
+            "authoritative_candidate_count": self.authoritative_candidate_count,
+            "authoritative_candidate_attempt_count": (
+                self.authoritative_candidate_attempt_count
+            ),
+            "authoritative_candidate_ids": sorted(
+                self.authoritative_candidate_ids
+            ),
+            "authoritative_candidate_attempt_ids": sorted(
+                self.authoritative_candidate_attempt_ids
+            ),
+            "max_score_tiebreak_candidates": (
+                request.max_score_tiebreak_candidates
+            ),
+            "score_tiebreak_candidate_count": (
+                self.score_tiebreak_candidate_count
+            ),
+            "frontier_exhausted": (
+                self.generation.verification_frontier_exhausted
+            ),
+            "authoritative_evaluation_uses_full_dataset": True,
+            "prerequisite_candidate_ids": list(
+                dict.fromkeys(self.prerequisite_candidate_ids)
+            ),
+        }
+        if self.generation.materialization_frontier_exhausted:
+            report["generation_materialization_frontier_exhausted"] = True
+        if self.generation.protocol_frontier_exhausted:
+            report["generation_protocol_frontier_exhausted"] = True
+        if self.generation.conformance_frontier_exhausted:
+            report["generation_conformance_frontier_exhausted"] = True
+        if generation_stop_reason is not None:
+            report["generation_stop_reason"] = generation_stop_reason
+        if request.authoritative_case_observations:
+            report["authoritative_case_observations"] = {
+                case_id: dict(observation)
+                for case_id, observation in sorted(
+                    request.authoritative_case_observations.items()
+                )
+            }
+            report["authoritative_case_observations_advisory_only"] = True
+        return report
 
     def select_iteration_evidence(
         self,

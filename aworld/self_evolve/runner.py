@@ -60,7 +60,6 @@ from aworld.self_evolve.dataset_snapshot import (
     load_campaign_dataset_snapshot_manifest,
     write_campaign_dataset_snapshot,
 )
-from aworld.self_evolve.diagnostics import extract_harness_diagnostics
 from aworld.self_evolve.evolution_context import compile_evolution_context
 from aworld.self_evolve.skill_evolution_contract import (
     SkillEvolutionContract,
@@ -185,7 +184,7 @@ from aworld.self_evolve.semantic_qualification import (
     load_semantic_model_qualification_report,
     load_semantic_qualification_registry,
 )
-from aworld.self_evolve.lessons import LessonRecord, extract_lesson_records
+from aworld.self_evolve.lessons import extract_lesson_records
 from aworld.self_evolve.candidate_package import (
     CandidateMutationKind,
     candidate_content_semantic_fingerprint,
@@ -402,6 +401,32 @@ from aworld.self_evolve.controllers.run_evaluation_finalization import (
 )
 from aworld.self_evolve.controllers.run_state import (
     ExplicitRunStateAccumulator,
+    VerificationFunnelRequest,
+)
+from aworld.self_evolve.controllers.run_terminal import (
+    InferredDraftPromotionRequest,
+    MeasurementReportRequest,
+    TerminalPromotionRequest,
+    TerminalPromotionRuntime,
+    TerminalSelectionRequest,
+    TerminalSelectionRuntime,
+    plan_terminal_promotion,
+    project_inferred_draft_promotion,
+    project_measurement_report,
+    project_target_selection_promotion_diagnostics,
+    project_terminal_selection,
+    release_normalization_report as _release_normalization_report,
+    settle_post_apply_status,
+)
+from aworld.self_evolve.controllers.run_terminal_finalization import (
+    TerminalFinalizationRequest,
+    TerminalFinalizationRuntime,
+    final_replay_causal_events as _final_replay_causal_events,
+    finalize_terminal_run,
+    harness_diagnostic_promotion_counts as _harness_diagnostic_promotion_counts,
+    harness_diagnostic_type_counts as _harness_diagnostic_type_counts,
+    lesson_extraction_counts as _lesson_extraction_counts,
+    lesson_type_counts as _lesson_type_counts,
 )
 from aworld.self_evolve.controllers.measurement_execution_admission import (
     _candidate_intervention_unobserved,
@@ -709,10 +734,6 @@ from aworld.self_evolve.replay_capability import (
     frozen_replay_fixture_shape_fingerprints,
     materialize_replay_evidence_derivations,
     replay_capability_semantic_fingerprint,
-)
-from aworld.self_evolve.release_checks import (
-    build_content_quality_diagnostics,
-    build_release_checklist,
 )
 from aworld.self_evolve.sanitization import (
     public_diagnostic_projection,
@@ -6524,35 +6545,30 @@ class SelfEvolveRunner:
                 )
             )
 
-        evolvability_preflight_blocked = any(
-            gate.gate_name == "evolvability_preflight" and not gate.passed
-            for gate in gate_results
+        terminal_selection = project_terminal_selection(
+            TerminalSelectionRequest(
+                selected_candidate=selected_candidate,
+                gate_results=tuple(gate_results),
+            ),
+            runtime=TerminalSelectionRuntime(
+                candidate_prerequisite_failure=(
+                    _gate_has_candidate_prerequisite_failure
+                ),
+                measurement_materialization_blocked=(
+                    _gate_blocks_measurement_materialization
+                ),
+            ),
         )
-        if evolvability_preflight_blocked:
-            gate_results = [
-                gate
-                for gate in gate_results
-                if gate.gate_name
-                not in {
-                    "candidate_generation",
-                    "candidate_generation_exhausted_by_semantic_dedup",
-                    "no_candidate",
-                }
-            ]
-        candidate_prerequisite_blocked = bool(
-            not evolvability_preflight_blocked
-            and _gate_results_have_candidate_prerequisite_failure(gate_results)
+        gate_results = list(terminal_selection.gate_results)
+        candidate_prerequisite_blocked = (
+            terminal_selection.candidate_prerequisite_blocked
         )
-        repair_focus_candidate = (
-            selected_candidate if candidate_prerequisite_blocked else None
-        )
+        repair_focus_candidate = terminal_selection.repair_focus_candidate
         reported_selected_candidate = (
-            None if repair_focus_candidate is not None else selected_candidate
+            terminal_selection.reported_selected_candidate
         )
-        measurement_prerequisite_blocked = any(
-            not gate.passed
-            and _gate_blocks_measurement_materialization(gate)
-            for gate in gate_results
+        measurement_prerequisite_blocked = (
+            terminal_selection.measurement_prerequisite_blocked
         )
         if selected_state is not None and not candidate_prerequisite_blocked:
             raw_measurement_summary = selected_state.get("measurement_summary")
@@ -6768,101 +6784,75 @@ class SelfEvolveRunner:
             )
 
         post_apply: dict[str, object] | None = None
-        promotion: dict[str, object] | None = None
-        final_status = SelfEvolveRunStatus.SUCCEEDED
         inferred_draft_creation = (
             self._active_target_intent
             == TargetMutationIntent.INFERRED_DRAFT_CREATION
         )
-        measurement_required_blocked = bool(
-            self.measurement_mode is MeasurementPolicyMode.REQUIRED
-            and (
-                measurement_summary is None
-                or not measurement_summary.promotion_eligible
-            )
+        promotion_plan = plan_terminal_promotion(
+            TerminalPromotionRequest(
+                selected_candidate=selected_candidate,
+                gate_results=tuple(gate_results),
+                apply_policy=apply_policy,
+                measurement_mode=self.measurement_mode,
+                measurement_summary=measurement_summary,
+                fresh_evaluation_required=fresh_evaluation_required,
+                optimizer_diagnostics=tuple(optimizer_diagnostics),
+                baseline_summary=baseline_summary,
+                candidate_summary=candidate_summary,
+                inferred_draft_creation=inferred_draft_creation,
+                inferred_new_skill_policy=self.inferred_new_skill_policy,
+            ),
+            runtime=TerminalPromotionRuntime(
+                verified_apply_policy=_is_verified_apply_policy,
+                infrastructure_prevented_comparable_evaluation=(
+                    _infrastructure_prevented_comparable_evaluation
+                ),
+                status_without_selected_candidate=(
+                    _status_without_selected_candidate
+                ),
+            ),
         )
-        if selected_candidate is not None and measurement_required_blocked:
-            final_status = SelfEvolveRunStatus.REJECTED
-        elif selected_candidate is None:
-            failed_gates = [gate for gate in gate_results if not gate.passed]
-            final_status = (
-                SelfEvolveRunStatus.FAILED
-                if fresh_evaluation_required
-                and _infrastructure_prevented_comparable_evaluation(
-                    failed_gates,
-                    baseline_summary=baseline_summary,
-                    candidate_summary=candidate_summary,
-                )
-                else _status_without_selected_candidate(optimizer_diagnostics)
-            )
-        elif _is_verified_apply_policy(apply_policy):
-            failed_gates = [gate for gate in gate_results if not gate.passed]
-            if failed_gates:
-                final_status = (
-                    SelfEvolveRunStatus.FAILED
-                    if _infrastructure_prevented_comparable_evaluation(
-                        failed_gates,
-                        baseline_summary=baseline_summary,
-                        candidate_summary=candidate_summary,
+        final_status = promotion_plan.final_status
+        promotion = (
+            dict(promotion_plan.promotion)
+            if promotion_plan.promotion is not None
+            else None
+        )
+        if promotion_plan.should_apply:
+            assert selected_candidate is not None
+            apply_kwargs = {
+                "expected_package_fingerprint": (
+                    replay_result.request.verified_candidate_package_fingerprint
+                    if replay_result is not None
+                    else None
+                ),
+                "addressed_lesson_ids": _lineage_addressed_lesson_ids(
+                    optimizer_lineage_paths_by_candidate.get(
+                        selected_candidate.candidate_id
                     )
-                    else SelfEvolveRunStatus.REJECTED
+                ),
+            }
+            if apply_policy == "verified_only":
+                post_apply = await self._apply_verified_only(
+                    run_id,
+                    target,
+                    selected_candidate,
+                    **apply_kwargs,
                 )
-            elif (
-                inferred_draft_creation
-                and self.inferred_new_skill_policy
-                == InferredNewSkillPolicy.DRAFT_ONLY
-            ):
-                promotion = {
-                    "policy": self.inferred_new_skill_policy.value,
-                    "status": "draft_retained",
-                    "publication_allowed": False,
-                    "reason": "new-skill policy permits verified draft evolution only",
-                }
             else:
-                apply_kwargs = {
-                    "expected_package_fingerprint": (
-                        replay_result.request.verified_candidate_package_fingerprint
-                        if replay_result is not None
-                        else None
-                    ),
-                    "addressed_lesson_ids": _lineage_addressed_lesson_ids(
-                        optimizer_lineage_paths_by_candidate.get(
-                            selected_candidate.candidate_id
-                        )
-                    ),
-                }
-                if apply_policy == "verified_only":
-                    post_apply = await self._apply_verified_only(
-                        run_id,
-                        target,
-                        selected_candidate,
-                        **apply_kwargs,
-                    )
-                else:
-                    post_apply = await self._apply_auto_verified(
-                        run_id,
-                        target,
-                        selected_candidate,
-                        **apply_kwargs,
-                    )
-                if post_apply["status"] != "accepted":
-                    final_status = SelfEvolveRunStatus.REJECTED
+                post_apply = await self._apply_auto_verified(
+                    run_id,
+                    target,
+                    selected_candidate,
+                    **apply_kwargs,
+                )
+            final_status = settle_post_apply_status(final_status, post_apply)
 
         if inferred_draft_creation:
             published = (
                 apply_policy == "auto_verified"
                 and post_apply is not None
                 and post_apply.get("status") == "accepted"
-            )
-            draft_path = target.identity.path
-            post_apply_metrics = (
-                post_apply.get("metrics")
-                if isinstance(post_apply, Mapping)
-                and isinstance(post_apply.get("metrics"), Mapping)
-                else {}
-            )
-            registry_refresh_failed = (
-                post_apply_metrics.get("registry_refresh_passed") is False
             )
             if selected_candidate is not None and not published:
                 try:
@@ -6883,73 +6873,32 @@ class SelfEvolveRunner:
                         )
                     )
                     final_status = SelfEvolveRunStatus.FAILED
-            if promotion is None:
-                promotion = {
-                    "policy": self.inferred_new_skill_policy.value,
-                    "status": (
-                        "published"
-                        if published
-                        else "verified_only"
-                        if post_apply is not None
-                        and post_apply.get("status") == "accepted"
-                        else "draft_retained"
-                        if selected_candidate is not None
-                        else "not_selected"
-                    ),
-                    "publication_allowed": (
-                        self.inferred_new_skill_policy
-                        == InferredNewSkillPolicy.AUTO_VERIFIED
-                        and apply_policy == "auto_verified"
-                    ),
-                    "reason": (
-                        "verified skill was published"
-                        if published
-                        else "candidate was verified in a run-owned isolated registry"
-                        if post_apply is not None
-                        and post_apply.get("status") == "accepted"
-                        else "publication rolled back after registry refresh failure"
-                        if registry_refresh_failed
-                        else "candidate remains isolated in the run-owned draft"
-                    ),
-                }
             runtime_skill_path = _target_runtime_skill_path(target)
-            promotion.update(
-                {
-                    "draft_path": draft_path,
-                    "release_path": (
+            promotion = project_inferred_draft_promotion(
+                InferredDraftPromotionRequest(
+                    policy=self.inferred_new_skill_policy,
+                    apply_policy=apply_policy,
+                    selected_candidate=selected_candidate,
+                    post_apply=post_apply,
+                    draft_path=target.identity.path,
+                    release_path=(
                         str(runtime_skill_path)
                         if runtime_skill_path is not None
                         else None
                     ),
-                    "registry_refresh_status": (
-                        "passed"
-                        if published
-                        and self.runtime_registry_refresher is not None
-                        else "failed"
-                        if registry_refresh_failed
-                        else "not_published"
+                    runtime_registry_refresh_configured=(
+                        self.runtime_registry_refresher is not None
                     ),
-                }
+                    initial_promotion=promotion,
+                )
             )
-            if registry_refresh_failed:
-                promotion["registry_refresh_error"] = post_apply_metrics.get(
-                    "registry_refresh_error"
-                )
             if target_selection_report is not None:
-                selection_diagnostics = dict(
-                    target_selection_report.diagnostics or {}
-                )
-                selection_diagnostics.update(
-                    {
-                        "draft_status": promotion["status"],
-                        "promotion_policy": promotion["policy"],
-                        "promotion_status": promotion["status"],
-                        "promotion_reason": promotion["reason"],
-                    }
-                )
                 target_selection_report = replace(
                     target_selection_report,
-                    diagnostics=selection_diagnostics,
+                    diagnostics=project_target_selection_promotion_diagnostics(
+                        target_selection_report.diagnostics,
+                        promotion,
+                    ),
                 )
                 self.store.write_target_selection_report(
                     run_id,
@@ -7054,143 +7003,33 @@ class SelfEvolveRunner:
                     run_state.prerequisite_candidate_ids
                 )
             ],
-            "verification_funnel": {
-                "screening_max_cases": self.candidate_screening_max_cases,
-                "repair_iteration_horizon": iteration_budget,
-                "candidate_generation_batch_count": len(
-                    optimizer_diagnostics
-                ),
-                "max_generated_candidates": self.max_generated_candidates,
-                "repair_reserved_slot_count": repair_reserved_slot_count,
-                "generated_candidate_slot_count": (
-                    run_state.generation.generated_candidate_slot_count
-                ),
-                "candidate_generation_attempt_slot_count": (
-                    run_state.generation.candidate_generation_attempt_slot_count
-                ),
-                "unique_generated_candidate_count": len(all_candidates),
-                "generation_frontier_exhausted": (
-                    run_state.generation.frontier_exhausted
-                ),
-                "generation_repair_capacity_reserved": (
-                    run_state.generation.repair_capacity_reserved
-                ),
-                "generation_policy_frontier_exhausted": (
-                    run_state.generation.policy_frontier_exhausted
-                ),
-                **(
-                    {
-                        "generation_materialization_frontier_exhausted": True
-                    }
-                    if run_state.generation.materialization_frontier_exhausted
-                    else {}
-                ),
-                **(
-                    {
-                        "generation_protocol_frontier_exhausted": True
-                    }
-                    if run_state.generation.protocol_frontier_exhausted
-                    else {}
-                ),
-                **(
-                    {
-                        "generation_conformance_frontier_exhausted": True,
-                    }
-                    if run_state.generation.conformance_frontier_exhausted
-                    else {}
-                ),
-                "conformance_strategy_switch_count": (
-                    run_state.generation.conformance_strategy_switch_count
-                ),
-                "conformance_strategy_switch_request_count": (
-                    run_state.generation.conformance_strategy_switch_request_count
-                ),
-                "conformance_strategy_switch_not_materialized": (
-                    run_state.generation.conformance_strategy_switch_not_materialized
-                ),
-                "pending_conformance_counterexample_count": len(
-                    run_state.generation.pending_conformance_counterexamples
-                ),
-                "resolved_conformance_counterexample_count": len(
-                    run_state.generation.resolved_conformance_counterexamples
-                ),
-                "conformance_counterexamples_by_stage": {
-                    stage: {
-                        "count": len(counterexample_ids),
-                        "counterexample_ids": sorted(counterexample_ids),
-                    }
-                    for stage, counterexample_ids in sorted(
-                        run_state.generation
-                        .conformance_counterexamples_by_stage.items()
-                    )
-                },
-                "repeated_contract_replacement_candidate_count": len(
-                    run_state.generation.repeated_contract_replacement_candidate_ids
-                ),
-                "repeated_contract_replacement_candidate_ids": sorted(
-                    run_state.generation.repeated_contract_replacement_candidate_ids
-                ),
-                "conformance_same_slot_repair_count": (
-                    run_state.generation.conformance_same_slot_repair_count
-                ),
-                "serialized_new_contract_repair_count": (
-                    run_state.generation.serialized_new_contract_repair_count
-                ),
-                **(
-                    {"generation_stop_reason": generation_stop_reason}
-                    if generation_stop_reason is not None
-                    else {}
-                ),
-                "policy_filtered_candidate_count": sum(
-                    len(_candidate_policy_filter_outcomes(diagnostics))
-                    for diagnostics in _optimizer_iteration_diagnostics(
+            "verification_funnel": run_state.verification_funnel_report(
+                VerificationFunnelRequest(
+                    screening_max_cases=self.candidate_screening_max_cases,
+                    repair_iteration_horizon=iteration_budget,
+                    candidate_generation_batch_count=len(
                         optimizer_diagnostics
-                    )
-                ),
-                "max_authoritative_candidates": (
-                    self.max_full_evaluation_candidates
-                ),
-                "authoritative_candidate_count": (
-                    run_state.authoritative_candidate_count
-                ),
-                "authoritative_candidate_attempt_count": (
-                    run_state.authoritative_candidate_attempt_count
-                ),
-                "authoritative_candidate_ids": sorted(
-                    run_state.authoritative_candidate_ids
-                ),
-                "authoritative_candidate_attempt_ids": sorted(
-                    run_state.authoritative_candidate_attempt_ids
-                ),
-                **(
-                    {
-                        "authoritative_case_observations": {
-                            case_id: dict(observation)
-                            for case_id, observation in sorted(
-                                (
-                                    self._current_run_authoritative_case_observations
-                                ).items()
-                            )
-                        },
-                        "authoritative_case_observations_advisory_only": True,
-                    }
-                    if self._current_run_authoritative_case_observations
-                    else {}
-                ),
-                "max_score_tiebreak_candidates": (
-                    self.max_score_tiebreak_candidates
-                ),
-                "score_tiebreak_candidate_count": (
-                    run_state.score_tiebreak_candidate_count
-                ),
-                "frontier_exhausted": (
-                    run_state.generation.verification_frontier_exhausted
-                ),
-                "authoritative_evaluation_uses_full_dataset": True,
-                "prerequisite_candidate_ids": list(
-                    dict.fromkeys(run_state.prerequisite_candidate_ids)
-                ),
-            },
+                    ),
+                    max_generated_candidates=self.max_generated_candidates,
+                    repair_reserved_slot_count=repair_reserved_slot_count,
+                    unique_generated_candidate_count=len(all_candidates),
+                    policy_filtered_candidate_count=sum(
+                        len(_candidate_policy_filter_outcomes(diagnostics))
+                        for diagnostics in _optimizer_iteration_diagnostics(
+                            optimizer_diagnostics
+                        )
+                    ),
+                    max_authoritative_candidates=(
+                        self.max_full_evaluation_candidates
+                    ),
+                    max_score_tiebreak_candidates=(
+                        self.max_score_tiebreak_candidates
+                    ),
+                    authoritative_case_observations=(
+                        self._current_run_authoritative_case_observations
+                    ),
+                )
+            ),
             "handbook_slice": latest_handbook_slice,
             "repair_frontier_state": _repair_frontier_state_report(
                 store=self.store,
@@ -7220,329 +7059,100 @@ class SelfEvolveRunner:
                 )
             ],
         }
-        if measurement_summary is not None:
-            report["measurement"] = measurement_summary.to_dict()
-        elif candidate_prerequisite_blocked:
-            prerequisite_gate = next(
-                gate
-                for gate in gate_results
-                if _gate_has_candidate_prerequisite_failure(gate)
-            )
-            prerequisite_details = (
-                prerequisite_gate.details
-                if isinstance(prerequisite_gate.details, Mapping)
-                else {}
-            )
-            report["measurement"] = {
-                "schema_version": "aworld.self_evolve.measurement_summary.v1",
-                "mode": self.measurement_mode.value,
-                "status": "not_started",
-                "validity_status": "prerequisite_blocked",
-                "measurement_readiness_stage": "candidate_admission_blocked",
-                "decision_reason": str(
-                    prerequisite_details.get("code")
-                    or "candidate_admission_blocked"
+        measurement_report = project_measurement_report(
+            MeasurementReportRequest(
+                summary=measurement_summary,
+                mode=self.measurement_mode,
+                candidate_prerequisite_blocked=(
+                    candidate_prerequisite_blocked
                 ),
-                "effect_direction": "unmeasured",
-                "independent_case_count": 0,
-                "comparable_pair_count": 0,
-                "promotion_eligible": False,
-                "next_action": str(
-                    prerequisite_details.get("next_action")
-                    or (
-                        "repair_framework_control_selection"
-                        if prerequisite_details.get("failure_owner")
-                        == FailureOwner.FRAMEWORK.value
-                        else "continue_candidate_repair"
-                    )
+                measurement_prerequisite_blocked=(
+                    measurement_prerequisite_blocked
                 ),
-            }
-        elif measurement_prerequisite_blocked:
-            prerequisite_gate = next(
-                gate
-                for gate in gate_results
-                if not gate.passed
-                and _gate_blocks_measurement_materialization(gate)
-            )
-            prerequisite_details = (
-                prerequisite_gate.details
-                if isinstance(prerequisite_gate.details, Mapping)
-                else {}
-            )
-            report["measurement"] = {
-                "schema_version": "aworld.self_evolve.measurement_summary.v1",
-                "mode": self.measurement_mode.value,
-                "status": "not_started",
-                "validity_status": "prerequisite_blocked",
-                "measurement_readiness_stage": "contract_blocked",
-                "decision_reason": str(
-                    prerequisite_details.get("code")
-                    or "measurement_prerequisite_blocked"
-                ),
-                "effect_direction": "unmeasured",
-                "independent_case_count": 0,
-                "comparable_pair_count": 0,
-                "promotion_eligible": False,
-                "next_action": str(
-                    prerequisite_details.get("next_action")
-                    or "repair_measurement"
-                ),
-            }
-        if candidate_source_dispositions:
-            report["candidate_source_dispositions"] = {
-                candidate_id: disposition.to_dict()
-                for candidate_id, disposition in sorted(
-                    candidate_source_dispositions.items()
-                )
-            }
-        if self.deprecated_config_mappings:
-            report["deprecated_config_mappings"] = (
-                dict(self.deprecated_config_mappings)
-                if isinstance(self.deprecated_config_mappings, Mapping)
-                else list(self.deprecated_config_mappings)
-            )
-        terminal_cause = _terminal_cause(
-            final_status=final_status,
-            optimizer_diagnostics=optimizer_diagnostics,
-            gate_results=gate_results,
-        )
-        if terminal_cause is not None:
-            report["terminal_cause"] = terminal_cause
-        rejection_attribution = _rejection_attribution(
-            final_status=final_status,
-            selected_candidate_id=(
-                repair_focus_candidate.candidate_id
-                if repair_focus_candidate is not None
-                else reported_selected_candidate.candidate_id
-                if reported_selected_candidate is not None
-                else None
+                gate_results=tuple(gate_results),
             ),
-            gate_results=gate_results,
-            scheduler_decisions=scheduler_decisions,
-        )
-        if rejection_attribution is not None:
-            report["rejection_attribution"] = rejection_attribution
-        if final_status is SelfEvolveRunStatus.REJECTED:
-            resolved_contract_fingerprints = (
-                _resolved_conformance_contract_fingerprints(
-                    population_screening_reports
-                )
-            )
-            campaign_failure_attribution = _campaign_failure_attribution(
-                iteration_states,
-                generation_stop_reason=generation_stop_reason,
-                terminal_gates=gate_results,
-                resolved_contract_fingerprints=(
-                    resolved_contract_fingerprints
-                ),
-            )
-            if campaign_failure_attribution is not None:
-                report["campaign_failure_attribution"] = (
-                    campaign_failure_attribution
-                )
-            if resolved_contract_fingerprints:
-                report["resolved_conformance_frontiers"] = {
-                    "count": len(resolved_contract_fingerprints),
-                    "contract_fingerprints": list(
-                        resolved_contract_fingerprints
-                    ),
-                }
-        trajectory_set_report = _trajectory_set_report(dataset)
-        if trajectory_set_report is not None:
-            report["trajectory_set"] = trajectory_set_report
-        population_report = _population_report(
-            all_candidates=all_candidates,
-            iteration_reports=iteration_reports,
-            replay_candidate_limit=self.replay_candidate_limit,
-            optimizer_diagnostics=optimizer_diagnostics,
-            screening_reports=population_screening_reports,
-            attempt_events=self.store.read_all_candidate_attempt_events(run_id),
-            budget_report=budget_context.to_dict(),
-            scheduler_decisions=scheduler_decisions,
-        )
-        if population_report is not None:
-            report["population"] = population_report
-        no_op_report = _no_op_report(gate_results, iteration_reports)
-        if no_op_report is not None:
-            report["no_op"] = no_op_report
-        if optimizer_lineage_paths:
-            report["optimizer_lineage"] = {
-                "count": len(optimizer_lineage_paths),
-                "paths": optimizer_lineage_paths,
-            }
-        if target_selection_report is not None:
-            report["target_selection"] = to_json_dict(target_selection_report)
-        if post_apply is not None:
-            report["post_apply"] = post_apply
-            report["release_state"] = post_apply.get("release_state")
-            report["published"] = post_apply.get("published") is True
-            if isinstance(post_apply.get("verified_target_path"), str):
-                report["verified_target_path"] = post_apply[
-                    "verified_target_path"
-                ]
-            release_normalization = _release_normalization_report(post_apply)
-            if release_normalization is not None:
-                report["release_normalization"] = release_normalization
-        if promotion is not None:
-            report["promotion"] = promotion
-        if baseline_summary is not None:
-            report["baseline_metrics"] = public_diagnostic_projection(
-                dict(baseline_summary.metrics)
-            )
-        if candidate_summary is not None:
-            report["candidate_metrics"] = public_diagnostic_projection(
-                dict(candidate_summary.metrics)
-            )
-        if held_out_summary is not None:
-            report["held_out_metrics"] = public_diagnostic_projection(
-                dict(held_out_summary.metrics)
-            )
-        if replay_result is not None:
-            report["replay"] = _replay_report(replay_result)
-            report["replay_path"] = _replay_artifact_path(replay_result)
-            campaign_measurement_outcome = (
-                _campaign_measurement_outcome_for_replay(
-                    replay_result,
-                    final_status=final_status,
-                    gate_results=gate_results,
-                )
-            )
-            if campaign_measurement_outcome is not None:
-                report["campaign_measurement_outcome"] = (
-                    campaign_measurement_outcome
-                )
-            replay_capability_report = _replay_capability_report(replay_result)
-            if replay_capability_report is not None:
-                report["replay_capability"] = replay_capability_report
-        if skill_evolution_progress is not None:
-            report["skill_evolution"] = skill_evolution_progress
-        replay_evidence_reuse_gate = next(
-            (
-                gate
-                for gate in gate_results
-                if gate.gate_name == "candidate_replay_evidence_reuse"
+            candidate_prerequisite_failure=(
+                _gate_has_candidate_prerequisite_failure
             ),
-            None,
+            measurement_materialization_blocked=(
+                _gate_blocks_measurement_materialization
+            ),
         )
-        if (
-            replay_evidence_reuse_gate is not None
-            and isinstance(replay_evidence_reuse_gate.details, Mapping)
-        ):
-            report["replay_evidence_reuse"] = {
-                key: replay_evidence_reuse_gate.details.get(key)
-                for key in (
-                    "disposition",
-                    "provenance_path",
-                    "source_request_run_id",
-                    "source_request_candidate_id",
-                    "replay_case_count",
-                    "normalized_member_count",
-                )
-            }
-        evaluator_report_paths = _evaluator_report_paths(
-            baseline_summary,
-            candidate_summary,
-            held_out_summary,
-        )
-        if evaluator_report_paths:
-            report["evaluator_report_paths"] = evaluator_report_paths
-        if gate_results:
-            report["gate_results"] = [
-                {
-                    "gate_name": gate_result.gate_name,
-                    "passed": gate_result.passed,
-                    "reason": public_diagnostic_projection(gate_result.reason),
-                    "details": public_diagnostic_projection(gate_result.details),
-                }
-                for gate_result in gate_results
-            ]
-            acceptance_confidence = _acceptance_confidence_report(gate_results)
-            if acceptance_confidence is not None:
-                report["acceptance_confidence"] = acceptance_confidence
-            report["release_checklist"] = build_release_checklist(
-                apply_policy=apply_policy,
-                gate_results=report["gate_results"],
-            )
+        if measurement_report is not None:
+            report["measurement"] = measurement_report
         _emit_progress(
             self.progress_callback,
             "lesson_extraction",
             "Extracting lesson memory and harness diagnostics",
         )
-        lesson_records = extract_lesson_records(
-            tuple(
-                feedback_item
-                for state in iteration_states
-                for feedback_item in state.get("feedback", ())
-            ),
-            target_scope={
-                "target_type": target.identity.target_type,
-                "target_id": target.identity.target_id,
-            },
-            trace_packs=trace_packs,
-        )
-        if lesson_records:
-            lessons_path = self.store.write_lesson_records(run_id, lesson_records)
-            report["lessons"] = {
-                "path": str(lessons_path),
-                **_lesson_extraction_counts(lesson_records),
-                "types": _lesson_type_counts(lesson_records),
-            }
-            report["lesson_extraction"] = {
-                "path": str(lessons_path),
-                **_lesson_extraction_counts(lesson_records),
-                "types": _lesson_type_counts(lesson_records),
-            }
-        harness_diagnostics = extract_harness_diagnostics(
-            gate_results=gate_results,
-            summaries=(baseline_summary, candidate_summary, held_out_summary),
-            replay_result=replay_result,
-            causal_events=_final_replay_causal_events(
+        finalization = finalize_terminal_run(
+            TerminalFinalizationRequest(
+                run_id=run_id,
+                target=target.identity,
+                final_status=final_status,
+                reported_selected_candidate=reported_selected_candidate,
+                repair_focus_candidate=repair_focus_candidate,
+                apply_policy=apply_policy,
+                base_report=report,
+                optimizer_diagnostics=tuple(optimizer_diagnostics),
+                gate_results=tuple(gate_results),
+                scheduler_decisions=tuple(scheduler_decisions),
+                population_screening_reports=tuple(
+                    population_screening_reports
+                ),
+                iteration_states=tuple(iteration_states),
+                iteration_reports=tuple(iteration_reports),
+                generation_stop_reason=generation_stop_reason,
+                dataset=dataset,
+                all_candidates=tuple(all_candidates),
+                replay_candidate_limit=self.replay_candidate_limit,
+                budget_report=budget_context.to_dict(),
+                optimizer_lineage_paths=tuple(optimizer_lineage_paths),
+                target_selection_report=target_selection_report,
+                post_apply=post_apply,
+                promotion=promotion,
+                baseline_summary=baseline_summary,
+                candidate_summary=candidate_summary,
+                held_out_summary=held_out_summary,
                 replay_result=replay_result,
                 replay_dataset=replay_dataset,
-            ),
-        )
-        if harness_diagnostics:
-            diagnostics_path = self.store.write_harness_diagnostics(
-                run_id,
-                harness_diagnostics,
-            )
-            report["harness_diagnostics"] = {
-                "path": str(diagnostics_path),
-                "count": len(harness_diagnostics),
-                "types": _harness_diagnostic_type_counts(harness_diagnostics),
-                "promotion_statuses": _harness_diagnostic_promotion_counts(
-                    harness_diagnostics
+                skill_evolution_progress=skill_evolution_progress,
+                trace_packs=tuple(trace_packs),
+                candidate_source_dispositions=(
+                    candidate_source_dispositions
                 ),
-            }
-        content_quality_metrics = (
-            dict(held_out_summary.metrics)
-            if held_out_summary is not None
-            else dict(candidate_summary.metrics)
-            if candidate_summary is not None
-            else {}
-        )
-        report["content_quality_diagnostics"] = build_content_quality_diagnostics(
-            content_quality_metrics
-        )
-        completed_run = SelfEvolveRun(
-            run_id=run_id,
-            target=target.identity,
-            status=final_status,
-            selected_candidate_id=(
-                reported_selected_candidate.candidate_id
-                if reported_selected_candidate is not None
-                else None
+                deprecated_config_mappings=(
+                    self.deprecated_config_mappings
+                ),
+                previous_artifact_retention=startup_artifact_retention,
             ),
-            metrics=tuple(item for item in (baseline_summary, candidate_summary) if item is not None),
-            gate_results=tuple(gate_results),
+            runtime=TerminalFinalizationRuntime(
+                store=self.store,
+                terminal_cause=_terminal_cause,
+                rejection_attribution=_rejection_attribution,
+                resolved_contract_fingerprints=(
+                    _resolved_conformance_contract_fingerprints
+                ),
+                campaign_failure_attribution=(
+                    _campaign_failure_attribution
+                ),
+                trajectory_set_report=_trajectory_set_report,
+                population_report=_population_report,
+                no_op_report=_no_op_report,
+                replay_report=_replay_report,
+                replay_artifact_path=_replay_artifact_path,
+                campaign_measurement_outcome=(
+                    _campaign_measurement_outcome_for_replay
+                ),
+                replay_capability_report=_replay_capability_report,
+                evaluator_report_paths=_evaluator_report_paths,
+                acceptance_confidence_report=(
+                    _acceptance_confidence_report
+                ),
+                finalize_run_report=_finalize_run_report,
+            ),
         )
-        _finalize_run_report(
-            self.store,
-            run_id,
-            report=report,
-            completed_run=completed_run,
-            previous_artifact_retention=startup_artifact_retention,
-        )
+        completed_run = finalization.completed_run
         self._candidate_screening_loaded_run_ids.add(run_id)
         _emit_progress(
             self.progress_callback,
@@ -13842,135 +13452,6 @@ def _budget_curve_points(total: int | float) -> tuple[int | float, ...]:
             )
         )
     )
-
-
-def _lesson_type_counts(lessons: tuple[LessonRecord, ...]) -> dict[str, int]:
-    counts: dict[str, int] = {}
-    for lesson in lessons:
-        counts[lesson.lesson_type] = counts.get(lesson.lesson_type, 0) + 1
-    return counts
-
-
-def _final_replay_causal_events(
-    *,
-    replay_result: CandidateReplayResult | None,
-    replay_dataset: SelfEvolveDataset | None,
-) -> tuple[AggregatedReplayFailure, ...]:
-    if replay_result is None:
-        return ()
-    normalized = (
-        normalize_replay_members(dataset=replay_dataset, replay_result=replay_result)
-        if replay_dataset is not None
-        else None
-    )
-    return aggregate_replay_failures(replay_result, normalized=normalized)
-
-
-def _lesson_extraction_counts(
-    lessons: tuple[LessonRecord, ...],
-) -> dict[str, object]:
-    occurrence_counts = [max(1, lesson.occurrence_count) for lesson in lessons]
-    code_counts: dict[str, int] = {}
-    code_occurrence_counts: dict[str, int] = {}
-    for lesson in lessons:
-        code = lesson.metrics.get("causal_code")
-        if isinstance(code, str) and code:
-            code_counts[code] = code_counts.get(code, 0) + 1
-            code_occurrence_counts[code] = (
-                code_occurrence_counts.get(code, 0)
-                + max(1, lesson.occurrence_count)
-            )
-    return {
-        # Compatibility: count remains the unique persisted row count.
-        "count": len(lessons),
-        "unique_lesson_count": len(lessons),
-        "raw_occurrence_count": sum(occurrence_counts),
-        "total_occurrence_count": sum(occurrence_counts),
-        "max_occurrence_count": max(occurrence_counts, default=0),
-        "codes": code_counts,
-        "occurrences_by_code": code_occurrence_counts,
-    }
-
-
-def _harness_diagnostic_type_counts(diagnostics: tuple[object, ...]) -> dict[str, int]:
-    counts: dict[str, int] = {}
-    for diagnostic in diagnostics:
-        kind = getattr(diagnostic, "kind", None)
-        kind_value = getattr(kind, "value", kind)
-        if isinstance(kind_value, str) and kind_value:
-            counts[kind_value] = counts.get(kind_value, 0) + 1
-    return counts
-
-
-def _harness_diagnostic_promotion_counts(
-    diagnostics: tuple[object, ...],
-) -> dict[str, int]:
-    counts: dict[str, int] = {}
-    for diagnostic in diagnostics:
-        status = getattr(diagnostic, "promotion_status", None)
-        status_value = getattr(status, "value", status)
-        if isinstance(status_value, str) and status_value:
-            counts[status_value] = counts.get(status_value, 0) + 1
-    return counts
-
-
-def _release_normalization_report(post_apply: Mapping[str, object]) -> dict[str, object] | None:
-    metrics = post_apply.get("metrics")
-    if not isinstance(metrics, Mapping):
-        return None
-    pre_fingerprint = metrics.get("pre_normalization_fingerprint")
-    normalized_fingerprint = metrics.get("normalized_release_fingerprint")
-    equivalence_passed = metrics.get("normalization_equivalence_passed")
-    preserved_constraints = metrics.get("preserved_runtime_constraints")
-    runtime_constraint_lesson_map = metrics.get("runtime_constraint_lesson_map")
-    addressed_lesson_ids = metrics.get("addressed_lesson_ids")
-    if (
-        pre_fingerprint is None
-        and normalized_fingerprint is None
-        and equivalence_passed is None
-    ):
-        return None
-    return {
-        "pre_normalization_fingerprint": pre_fingerprint,
-        "normalized_release_fingerprint": normalized_fingerprint,
-        "normalization_verification_passed": equivalence_passed,
-        "preserved_runtime_constraints": (
-            list(preserved_constraints)
-            if isinstance(preserved_constraints, list)
-            else []
-        ),
-        "runtime_constraint_lesson_map": (
-            list(runtime_constraint_lesson_map)
-            if isinstance(runtime_constraint_lesson_map, list)
-            else []
-        ),
-        "addressed_lesson_ids": (
-            list(addressed_lesson_ids)
-            if isinstance(addressed_lesson_ids, list)
-            else []
-        ),
-        "removed_internal_line_count": metrics.get("removed_internal_line_count"),
-        "structural_validation_passed": metrics.get(
-            "structural_validation_passed"
-        ),
-        "structural_failure_code": metrics.get(
-            "structural_failure_code"
-        ),
-        "structural_failure_field_path": metrics.get(
-            "structural_failure_field_path"
-        ),
-        "normalization_structural_intent_rebind_passed": metrics.get(
-            "normalization_structural_intent_rebind_passed"
-        ),
-        "failure_class": metrics.get("failure_class"),
-        "failure_owner": metrics.get("failure_owner"),
-        "failure_scope": metrics.get("failure_scope"),
-        "repairable": metrics.get("repairable"),
-        "structural_contract_fingerprint": metrics.get(
-            "structural_contract_fingerprint"
-        ),
-        "status": post_apply.get("status"),
-    }
 
 
 def _trajectory_set_report(dataset: SelfEvolveDataset) -> dict[str, object] | None:
