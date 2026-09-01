@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import sys
@@ -199,33 +200,50 @@ def test_benefit_report_accepts_only_explicit_cost_metric_for_efficiency_path():
     assert evidence["cost_metric"] == "cost_per_successful_task"
 
 
-def _turn_receipt(reporter, kind, cause, identity):
+def _turn_receipt(reporter, kind, cause, identity, parent=None):
     return {
         "schema_version": "aworld.context.turn-economics.v1",
         "task_epoch": 0,
         "turn_kind": kind,
         "cause": cause,
         "cause_supported": True,
-        "turn_id_hash": reporter.value_hash({"turn": identity}),
-        "request_id_hash": reporter.value_hash({"request": identity}) if kind == "model" else None,
-        "tool_call_id_hash": reporter.value_hash({"tool": identity}) if kind == "tool" else None,
-        "parent_turn_id_hash": None,
+        "turn_id_hash": reporter.value_hash({f"{kind}_turn": identity}),
+        "request_id_hash": reporter.value_hash({"request_id": identity}) if kind == "model" else None,
+        "tool_call_id_hash": reporter.value_hash({"tool_call_id": identity}) if kind == "tool" else None,
+        "parent_turn_id_hash": parent,
         "evidence_hash": None,
     }
 
 
+def _retrieval_content():
+    chunk = "x" * 256
+    return {
+        "type": "text",
+        "content": chunk,
+        "artifact_ref": "opaque-ref",
+        "offset": 4096,
+        "next_offset": 4352,
+        "returned_bytes": 256,
+        "total_bytes": 131072,
+        "content_sha256": "sha256:" + "1" * 64,
+        "chunk_sha256": "sha256:" + hashlib.sha256(chunk.encode()).hexdigest(),
+        "complete": False,
+    }
+
+
 def _retrieval_receipt(reporter, *, consumed):
-    result_hash = reporter.value_hash({"chunk": "actual"})
+    content = _retrieval_content()
+    result_hash = reporter.value_hash(content)
     plan = {
         "schema_version": "aworld.context.artifact-retrieval-plan.v1",
-        "owner_code": reporter.value_hash({"owner": 1}),
-        "action_code": reporter.value_hash({"action": 1}),
-        "artifact_ref_hash": reporter.value_hash({"ref": 1}),
+        "owner_code": reporter.value_hash({"owner_tool": "generic_stream"}),
+        "action_code": reporter.value_hash({"retrieval_action": "read_output_artifact"}),
+        "artifact_ref_hash": reporter.value_hash({"artifact_ref": "opaque-ref"}),
         "artifact_content_hash": "sha256:" + "1" * 64,
         "artifact_byte_count": 131072,
         "offset": 4096,
         "limit": 256,
-        "consumer_tool_call_id_hash": reporter.value_hash({"tool": "retrieve"}),
+        "consumer_tool_call_id_hash": reporter.value_hash({"tool_call_id": "retrieve"}),
     }
     value = {
         **plan,
@@ -234,11 +252,11 @@ def _retrieval_receipt(reporter, *, consumed):
         "returned_offset": 4096,
         "next_offset": 4352,
         "returned_byte_count": 256,
-        "chunk_checksum": "sha256:" + "2" * 64,
+        "chunk_checksum": content["chunk_sha256"],
         "source_content_hash": "sha256:" + "1" * 64,
         "result_content_hash": result_hash,
         "complete": False,
-        "next_request_id_hash": reporter.value_hash({"request": "after"}) if consumed else None,
+        "next_request_id_hash": reporter.value_hash({"request_id": "after"}) if consumed else None,
         "consumed_content_hash": result_hash if consumed else None,
         "consumed": consumed,
     }
@@ -247,33 +265,51 @@ def _retrieval_receipt(reporter, *, consumed):
 
 def test_turn_artifact_economics_uses_only_typed_truth(tmp_path):
     reporter = _load_reporter()
+    artifact_bytes = b"x" * 131072
     tool_retrieval = _retrieval_receipt(reporter, consumed=False)
     provider_consumption = _retrieval_receipt(reporter, consumed=True)
     raw = [{"state": {"input": {"action_result": [
         {
-            "tool_call_id": "not-used-for-classification",
+            "tool_call_id": "retrieve",
+            "tool_name": "generic_stream",
+            "action_name": "read_output_artifact",
+            "content": _retrieval_content(),
             "metadata": {
-                "turn_economics": _turn_receipt(reporter, "tool", "artifact_retrieval", "retrieve"),
+                "turn_economics": _turn_receipt(
+                    reporter, "tool", "artifact_retrieval", "retrieve",
+                    parent=reporter.value_hash({"model_turn": "after"}),
+                ),
                 "tool_output_policy": {
                     "policy_version": "v1",
                     "raw_byte_count": 131072,
-                    "raw_checksum": "sha256:" + "3" * 64,
+                    "raw_checksum": "sha256:" + hashlib.sha256(artifact_bytes).hexdigest(),
                     "inline_tokens": 128,
                     "offloaded_tokens": 32640,
                     "artifact_ref": "opaque",
                     "context_artifact_ref": "opaque-context",
-                    "upstream_artifacts": [{"content_hash": "sha256:" + "1" * 64}],
+                    "context_artifact_role": "audit_snapshot",
+                    "upstream_artifacts": [{
+                        "ref": "opaque",
+                        "content_hash": "sha256:" + "1" * 64,
+                        "byte_count": 131072,
+                        "owner_tool": "generic_stream",
+                        "retrieval_action": "read_output_artifact",
+                    }],
                 },
                 "artifact_retrieval": tool_retrieval,
             },
         }
     ]}}}]
     calls = [{
-        "turn_economics": _turn_receipt(reporter, "model", "artifact_retrieval", "after"),
+        "request_id": "after",
+        "turn_economics": _turn_receipt(
+            reporter, "model", "artifact_retrieval", "after",
+            parent=reporter.value_hash({"tool_turn": "retrieve"}),
+        ),
         "artifact_retrieval_consumption": [provider_consumption],
     }]
     artifact = tmp_path / "artifact.bin"
-    artifact.write_bytes(b"x" * 64)
+    artifact.write_bytes(artifact_bytes)
 
     summary = reporter.turn_artifact_economics_summary(calls, raw, [artifact])
 
@@ -284,11 +320,32 @@ def test_turn_artifact_economics_uses_only_typed_truth(tmp_path):
         "raw_bytes": 131072,
         "inline_tokens": 128,
         "offloaded_tokens": 32640,
-        "double_offload_count": 1,
+        "double_offload_count": 0,
+        "audit_snapshot_count": 1,
     }
     assert summary["retrieval"]["retrieved_bytes"] == 256
     assert summary["retrieval"]["consumed_count"] == 1
-    assert summary["artifacts"] == {"persisted_count": 1, "persisted_bytes": 64}
+    assert summary["retrieval"]["opportunity_count"] == 1
+    assert summary["retrieval"]["consumption_coverage"] == 1.0
+    assert summary["artifacts"] == {"persisted_count": 1, "persisted_bytes": 131072}
+    replayed_raw = json.loads(json.dumps(raw))
+    replayed_raw[0]["state"]["input"]["action_result"].append(
+        json.loads(json.dumps(raw[0]["state"]["input"]["action_result"][0]))
+    )
+    replayed = reporter.turn_artifact_economics_summary(
+        calls, replayed_raw, [artifact]
+    )
+    assert replayed["turn_causes"]["status"] == "unavailable"
+    assert replayed["retrieval"]["status"] == "unavailable"
+
+    broken_parent_calls = json.loads(json.dumps(calls))
+    broken_parent_calls[0]["turn_economics"]["parent_turn_id_hash"] = (
+        "sha256:" + "f" * 64
+    )
+    broken_parent = reporter.turn_artifact_economics_summary(
+        broken_parent_calls, raw, [artifact]
+    )
+    assert broken_parent["turn_causes"]["status"] == "unavailable"
     runs = [
         {"experiment": "generic", "case_id": "noisy", "repeat": 1, "variant": variant, "summary": summary}
         for variant in ("legacy", "candidate")
@@ -310,6 +367,8 @@ def test_turn_artifact_economics_missing_receipts_is_unavailable_not_heuristic()
     assert summary["turn_causes"]["status"] == "unavailable"
     assert summary["turn_causes"]["counts"] == {}
     assert summary["tool_outputs"]["status"] == "unavailable"
+    assert summary["retrieval"]["status"] == "not_applicable"
+    assert summary["retrieval"]["opportunity_count"] == 0
 
 
 def _compiler_plan_evidence(

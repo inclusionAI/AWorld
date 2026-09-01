@@ -442,10 +442,9 @@ class Context:
             (item for item in self._turn_economics_receipts if item.turn_id_hash == receipt.turn_id_hash),
             None,
         )
-        if existing is not None and existing != receipt:
-            raise ValueError("turn receipt has conflicting evidence")
-        if existing is None:
-            self._turn_economics_receipts.append(receipt)
+        if existing is not None:
+            raise ValueError("turn receipt replay")
+        self._turn_economics_receipts.append(receipt)
 
     def record_tool_turn(self, tool_call_id: str) -> TurnEconomicsReceipt:
         if not isinstance(tool_call_id, str) or not tool_call_id:
@@ -498,8 +497,12 @@ class Context:
         if receipt.plan != self._artifact_retrieval_plans.get(tool_call_id):
             raise ValueError("artifact retrieval receipt is not bound to plan")
         existing = self._artifact_retrieval_receipts.get(tool_call_id)
-        if existing is not None and existing != receipt:
-            raise ValueError("artifact retrieval receipt conflict")
+        if existing is not None:
+            raise ValueError(
+                "artifact retrieval receipt replay"
+                if existing == receipt
+                else "artifact retrieval receipt conflict"
+            )
         self._artifact_retrieval_receipts[tool_call_id] = receipt
 
     def record_model_turn(

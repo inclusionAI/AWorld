@@ -56,6 +56,22 @@ main-tree verification is 32/32 and the implementation worktree wider regression
   retain isolated immutable bindings and malformed checkpoint state is rejected.
 - Focused compiler/context/provider/evaluation regression is green at 164 tests; audit counterexamples are included.
 
+### Task 7.3: Turn and artifact economics hardening review
+
+**Status:** implementation hardened; paired benefit evidence remains pending
+
+- Legal dual ownership is explicit: the Tool-owned upstream artifact remains primary and the Context-owned exact
+  ActionResult is an `audit_snapshot`; only an explicitly competing Context primary counts as double offload.
+- Legacy/off Tool results now receive observation-only byte/token receipts without changing content. Economics recording and
+  retrieval receipt failures degrade to typed unavailable metadata and never change provider or Tool execution.
+- Reports revalidate request/Tool identities, parent-turn membership, raw inline bytes or checksum-bound artifact files,
+  retrieval chunks and provider consumption. Duplicate/replayed plans and receipts cannot disappear through dictionary
+  aggregation.
+- Zero retrieval opportunities are `not_applicable` per run, but cannot pass the aggregate default-on gate: at least one
+  opportunity is required and every opportunity must have a bound provider consumption receipt.
+- The opt-in Docker integration now routes an actual container artifact read through the runtime boundary and proves its
+  chunk checksum, source identity and next-model consumption receipt.
+
 ## Completed Foundations
 
 - Built-in Agent portability, optional native capability degradation, and direct-run typed failure/non-zero semantics.
@@ -73,7 +89,7 @@ main-tree verification is 32/32 and the implementation worktree wider regression
 |---|---|---|
 | 7.1 Provider-bound section attribution | complete | Third review APPROVE; ordinal plan, provider receipt, raw revalidation, paired hard gate |
 | 7.2 Eliminate duplicate/non-resident context | in_progress | Evidence-driven only; preserve semantic equivalence |
-| 7.3 Turn and artifact economics | in_progress | Truth-plane audit complete; typed causal/retrieval receipts in implementation |
+| 7.3 Turn and artifact economics | in_progress | Implementation hardened; paired noisy-workload benefit evidence pending |
 
 ### Milestone 7 Evidence Audit (2026-09-01)
 - The first provider request in both paired workloads is byte-equivalent after removing `prompt_cache_key`; system/user

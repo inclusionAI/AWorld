@@ -115,6 +115,27 @@ class RecordingLLMProvider(LLMProviderBase):
         )
 
 
+def test_turn_economics_storage_failure_does_not_block_provider(monkeypatch):
+    provider = RecordingLLMProvider()
+    model = LLMModel(custom_provider=provider)
+    context = Context(task_id="turn-economics-fail-open")
+    monkeypatch.setattr(
+        context,
+        "record_model_turn",
+        lambda request_id, messages: (_ for _ in ()).throw(RuntimeError("storage")),
+    )
+
+    model.completion([{"role": "user", "content": "go"}], context=context)
+
+    assert len(provider.seen_requests) == 1
+    call = context.get_llm_calls()[0]
+    assert call["status"] == "success"
+    assert call["turn_economics"] == {
+        "status": "unavailable",
+        "reason_code": "turn_economics_record_failed",
+    }
+
+
 class TerminalMarkerStreamProvider(RecordingLLMProvider):
     def stream_completion(self, messages, **kwargs):
         self.seen_requests.append(messages)

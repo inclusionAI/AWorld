@@ -139,6 +139,44 @@ async def test_real_docker_tool_capability_matrix(monkeypatch, tmp_path, record_
         assert artifact_chunk["chunk_sha256"] == hashlib.sha256(
             b"0123456789abcdef"
         ).hexdigest()
+        # Bind the actual container read through the same runtime boundary;
+        # this proves a checksum-bound receipt, not merely a shaped fake result.
+        aworld_context.register_model_tool_choices(
+            "docker-read-request", [{"id": "docker-read-artifact"}]
+        )
+        read_action = SimpleNamespace(
+            tool_call_id="docker-read-artifact",
+            tool_name="docker",
+            action_name="read_output_artifact",
+            params={"artifact_ref": artifact_ref, "offset": 0, "limit": 16},
+        )
+        read_result = ActionResult(
+            content=artifact_chunk,
+            metadata={},
+            tool_call_id=read_action.tool_call_id,
+            tool_name="docker",
+            action_name="read_output_artifact",
+            success=True,
+        )
+        read_step = (SimpleNamespace(action_result=[read_result]),)
+        read_plans = prepare_tool_output_plans(aworld_context, (read_action,))
+        enforce_tool_output_boundary(
+            read_step, (read_action,), aworld_context, read_plans
+        )
+        aworld_context.record_model_turn(
+            "docker-after-read",
+            [{
+                "role": "tool",
+                "tool_call_id": read_action.tool_call_id,
+                "content": read_result.content,
+            }],
+        )
+        retrieval_receipt = aworld_context.get_artifact_retrieval_receipts()[0]
+        assert retrieval_receipt.returned_byte_count == 16
+        assert retrieval_receipt.chunk_checksum == (
+            "sha256:" + hashlib.sha256(b"0123456789abcdef").hexdigest()
+        )
+        assert retrieval_receipt.consumed is True
 
         await server.write_file(None, "/workspace/a.txt", "alpha\nbeta\n")
         tools_checked.append("write_file")
