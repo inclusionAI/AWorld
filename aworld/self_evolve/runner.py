@@ -400,6 +400,9 @@ from aworld.self_evolve.controllers.run_evaluation_finalization import (
     CandidateEvaluationFinalizationRuntime,
     finalize_candidate_evaluation,
 )
+from aworld.self_evolve.controllers.run_state import (
+    ExplicitRunStateAccumulator,
+)
 from aworld.self_evolve.controllers.measurement_execution_admission import (
     _candidate_intervention_unobserved,
     _candidate_intervention_unobserved_failure_event,
@@ -4201,7 +4204,6 @@ class SelfEvolveRunner:
 
         selected_candidate: CandidateVariant | None = None
         validation_feedback: tuple[EvaluationSummary, ...] = ()
-        baseline_evaluation_cache: dict[str, EvaluationSummary] = {}
         all_candidates: list[CandidateVariant] = []
         candidate_source_dispositions: dict[str, CandidateSourceDisposition] = {}
         fresh_evaluation_required = False
@@ -4210,8 +4212,6 @@ class SelfEvolveRunner:
         optimizer_lineage_paths_by_candidate: dict[str, str] = {}
         iteration_reports: list[dict[str, object]] = []
         iteration_states: list[dict[str, object]] = []
-        measurement_attributions: list[AttributionReport] = []
-        measurement_frontier_stopped = False
         population_screening_reports: list[dict[str, object]] = []
         baseline_summary: EvaluationSummary | None = None
         candidate_summary: EvaluationSummary | None = None
@@ -4355,12 +4355,6 @@ class SelfEvolveRunner:
         candidate_generation_infrastructure_retries = 0
         raw_generation_attempt_count = 0
         semantic_lesson_duplicate_attempt_count = 0
-        authoritative_candidate_count = 0
-        authoritative_candidate_attempt_count = 0
-        authoritative_candidate_ids: set[str] = set()
-        authoritative_candidate_attempt_ids: set[str] = set()
-        score_tiebreak_candidate_count = 0
-        prerequisite_candidate_ids: list[str] = []
         generated_candidate_slot_count = 0
         candidate_generation_attempt_slot_count = 0
         effective_generated_candidate_ids: set[str] = set()
@@ -4373,6 +4367,18 @@ class SelfEvolveRunner:
         generation_frontier_exhausted = False
         generation_repair_capacity_reserved = False
         verification_frontier_exhausted = False
+        run_state = ExplicitRunStateAccumulator(
+            validation_feedback=validation_feedback,
+            iteration_reports=iteration_reports,
+            iteration_states=iteration_states,
+            current_run_attempted_candidate_ids=(
+                current_run_attempted_candidate_ids
+            ),
+            rejected_candidate_ids=rejected_candidate_ids,
+            accepted_candidate_ids=accepted_candidate_ids,
+            baseline_preflight_blocked=baseline_preflight_blocked,
+            infrastructure_blocked=infrastructure_blocked,
+        )
         iteration_budget = (
             self.max_iterations + _MAX_PROGRESS_REPAIR_EXTENSION_ITERATIONS
         )
@@ -4461,7 +4467,7 @@ class SelfEvolveRunner:
             return tuple(items)
 
         for iteration_index in range(iteration_budget):
-            if baseline_preflight_blocked:
+            if run_state.baseline_preflight_blocked:
                 break
             if iteration_index >= self.max_iterations:
                 repair_family = _next_progress_repair_extension_family(
@@ -4558,7 +4564,7 @@ class SelfEvolveRunner:
                 remaining_authoritative_slots = max(
                     0,
                     self.max_full_evaluation_candidates
-                    - authoritative_candidate_count,
+                    - run_state.authoritative_candidate_count,
                 )
                 if remaining_generation_slots == 0:
                     generation_frontier_exhausted = True
@@ -4845,7 +4851,7 @@ class SelfEvolveRunner:
                         },
                     }
                 )
-                infrastructure_blocked = True
+                run_state.infrastructure_blocked = True
                 break
             if (
                 optimizer_result.source_disposition.kind
@@ -5890,7 +5896,7 @@ class SelfEvolveRunner:
             if _candidate_validation_stopped_by_shared_infrastructure(
                 screening_report
             ):
-                infrastructure_blocked = True
+                run_state.infrastructure_blocked = True
                 framework_invalidated_ids = {
                     candidate.candidate_id for candidate in screening_candidates
                 }
@@ -6264,7 +6270,7 @@ class SelfEvolveRunner:
                 if (
                     _is_verified_apply_policy(apply_policy)
                     and counts_toward_authoritative
-                    and authoritative_candidate_count
+                    and run_state.authoritative_candidate_count
                     >= self.max_full_evaluation_candidates
                 ):
                     verification_frontier_exhausted = True
@@ -6292,10 +6298,9 @@ class SelfEvolveRunner:
                     )
                     break
                 if counts_toward_authoritative:
-                    authoritative_candidate_attempt_count += 1
-                    authoritative_candidate_count += 1
-                    authoritative_candidate_attempt_ids.add(
-                        iteration_candidate.candidate_id
+                    run_state.begin_authoritative_candidate(
+                        iteration_candidate.candidate_id,
+                        counts_toward_authoritative=True,
                     )
                 evaluation_result = await self._execute_iteration_candidate(
                     CandidateEvaluationRequest(
@@ -6331,48 +6336,16 @@ class SelfEvolveRunner:
                             iteration_candidate.candidate_id,
                             CandidateSourceDisposition(),
                         ),
-                        baseline_evaluation_cache=baseline_evaluation_cache,
+                        baseline_evaluation_cache=(
+                            run_state.baseline_evaluation_cache
+                        ),
                         allow_score_tiebreak=(
-                            score_tiebreak_candidate_count
+                            run_state.score_tiebreak_candidate_count
                             < self.max_score_tiebreak_candidates
                         ),
                     )
                 )
-                evaluation_state = evaluation_result.state
-                state = evaluation_state.payload
                 report_item = evaluation_result.report_item
-                candidate_feedback = evaluation_result.feedback
-                shared_measurement_invalid = any(
-                    not gate.passed
-                    and _gate_has_typed_shared_measurement_failure(gate)
-                    for gate in evaluation_state.gate_results
-                )
-                if shared_measurement_invalid:
-                    # No candidate observation exists when the shared control
-                    # plane is invalid.  Keep the diagnostic state, but do not
-                    # turn it into mutation feedback or persisted lesson data.
-                    candidate_feedback = ()
-                    state["feedback"] = ()
-                if (
-                    counts_toward_authoritative
-                    and not _authoritative_attempt_consumed(state)
-                ):
-                    # Entering the authoritative plane is only a reservation.
-                    # Shared framework/measurement failures that prevent any
-                    # candidate observation release that reservation so a
-                    # resumable Campaign is not exhausted by missing evidence.
-                    authoritative_candidate_count -= 1
-                elif counts_toward_authoritative:
-                    authoritative_candidate_ids.add(
-                        iteration_candidate.candidate_id
-                    )
-                if any(
-                    gate.gate_name == "score_improvement"
-                    and isinstance(gate.details, Mapping)
-                    and gate.details.get("tiebreak_round") is not None
-                    for gate in state["gate_results"]
-                ):
-                    score_tiebreak_candidate_count += 1
                 evaluated_attempt_key = attempt_key_by_candidate_id.get(
                     iteration_candidate.candidate_id
                 )
@@ -6390,17 +6363,24 @@ class SelfEvolveRunner:
                     report_item["lifecycle_stage"] = attempt_tracker.last_stage(
                         evaluated_attempt_key
                     ).value
-                if not shared_measurement_invalid:
-                    validation_feedback = _merge_validation_feedback(
-                        validation_feedback,
-                        candidate_feedback,
-                    )
-                    current_run_attempted_candidate_ids.add(
-                        iteration_candidate.candidate_id
-                    )
-                iteration_reports.append(report_item)
-                iteration_states.append(state)
-                state_measurement = state.get("measurement_summary")
+                run_state.validation_feedback = validation_feedback
+                candidate_record = run_state.record_candidate_evaluation(
+                    candidate_id=iteration_candidate.candidate_id,
+                    result=evaluation_result,
+                    counts_toward_authoritative=(
+                        counts_toward_authoritative
+                    ),
+                    merge_feedback=_merge_validation_feedback,
+                    shared_measurement_failure=(
+                        _gate_has_typed_shared_measurement_failure
+                    ),
+                    authoritative_attempt_consumed=(
+                        _authoritative_attempt_consumed
+                    ),
+                )
+                validation_feedback = run_state.validation_feedback
+                state = candidate_record.state
+                state_measurement = candidate_record.measurement_summary
                 if (
                     self.measurement_mode
                     in {MeasurementPolicyMode.ADVISORY, MeasurementPolicyMode.REQUIRED}
@@ -6419,9 +6399,9 @@ class SelfEvolveRunner:
                         measurement_authority_run_id,
                         state_measurement.experiment_id,
                     )
-                    measurement_attributions.append(attribution)
+                    run_state.measurement_attributions.append(attribution)
                     stop_record = evaluate_measurement_stopping(
-                        measurement_attributions,
+                        run_state.measurement_attributions,
                         policy=self.measurement_early_stop_policy,
                         unused_budget=_remaining_measurement_budget(budget_context),
                     )
@@ -6445,10 +6425,10 @@ class SelfEvolveRunner:
                         (run_id, iteration_candidate.candidate_id)
                     ] = updated_summary
                     if stop_record.triggered:
-                        measurement_frontier_stopped = True
+                        run_state.measurement_frontier_stopped = True
                         report_item["measurement_stop"] = stop_record.to_dict()
-                replay_state = state.get("replay_result")
-                if isinstance(replay_state, CandidateReplayResult):
+                replay_state = candidate_record.replay_result
+                if replay_state is not None:
                     _record_authoritative_replay_observations(
                         self._candidate_screening_case_observations,
                         dataset=dataset,
@@ -6481,87 +6461,62 @@ class SelfEvolveRunner:
                 )
                 if refreshed_baseline_dir is not None:
                     reusable_baseline_replay_dir = refreshed_baseline_dir
-                failed_gates = [
-                    gate for gate in state["gate_results"] if not gate.passed
-                ]
-                if (
-                    failed_gates
-                    and state["status"] != "prerequisite"
-                    and not shared_measurement_invalid
-                ):
-                    rejected_candidate_ids.add(iteration_candidate.candidate_id)
-                elif state["status"] == "prerequisite":
-                    prerequisite_candidate_ids.append(
-                        iteration_candidate.candidate_id
-                    )
-                if (
-                    isinstance(replay_state, CandidateReplayResult)
-                    and _shared_replay_failure_blocks_population(replay_state)
-                ):
-                    baseline_preflight_blocked = True
-                    break
-                if shared_measurement_invalid:
-                    # A shared framework/infrastructure measurement failure
-                    # invalidates the experiment, not the candidate. Further
-                    # mutation cannot repair that control plane, so do not
-                    # spend another authoritative candidate slot.
-                    baseline_preflight_blocked = True
-                    break
-                failed_state_gates = [
-                    gate for gate in state["gate_results"] if not gate.passed
-                ]
-                if _infrastructure_prevented_comparable_evaluation(
-                    failed_state_gates,
-                    baseline_summary=state.get("baseline_summary"),
-                    candidate_summary=state.get("candidate_summary"),
-                ):
-                    infrastructure_blocked = True
-                    break
-                if state["status"] == "accepted":
-                    accepted_in_iteration = True
-                    break
-                if measurement_frontier_stopped:
+                loop_decision = run_state.finalize_candidate_record(
+                    candidate_record,
+                    shared_replay_failure_blocks_population=(
+                        _shared_replay_failure_blocks_population
+                    ),
+                    infrastructure_prevented_comparable_evaluation=(
+                        _infrastructure_prevented_comparable_evaluation
+                    ),
+                )
+                accepted_in_iteration = loop_decision.accepted
+                if loop_decision.should_stop:
                     break
             if (
                 _is_verified_apply_policy(apply_policy)
                 and not accepted_in_iteration
-                and authoritative_candidate_count
+                and run_state.authoritative_candidate_count
                 >= self.max_full_evaluation_candidates
             ):
                 verification_frontier_exhausted = True
             if (
                 accepted_in_iteration
-                or baseline_preflight_blocked
-                or infrastructure_blocked
+                or run_state.baseline_preflight_blocked
+                or run_state.infrastructure_blocked
                 or verification_frontier_exhausted
-                or measurement_frontier_stopped
+                or run_state.measurement_frontier_stopped
             ):
                 break
         attempt_tracker.finalize_open(
             reason_code="run_terminated_before_candidate"
         )
         budget_context.release_all(reason_code="run_terminal_cleanup")
-        selected_state = (
+        selected_projection = (
             None
             if shared_validation_gate is not None
-            else _select_iteration_state(iteration_states)
+            else run_state.select_iteration_evidence(
+                fresh_evaluation_required=fresh_evaluation_required,
+                selector=_select_iteration_state,
+            )
+        )
+        selected_state = (
+            selected_projection.state
+            if selected_projection is not None
+            else None
         )
         if shared_validation_gate is not None:
             gate_results.append(shared_validation_gate)
-        elif selected_state is not None:
-            baseline_summary = selected_state["baseline_summary"]  # type: ignore[assignment]
-            candidate_summary = selected_state["candidate_summary"]  # type: ignore[assignment]
-            held_out_summary = selected_state["held_out_summary"]  # type: ignore[assignment]
-            regression_evidence = selected_state.get("regression_evidence")  # type: ignore[assignment]
-            challenge_report = selected_state.get("challenge_report")  # type: ignore[assignment]
-            replay_result = selected_state["replay_result"]  # type: ignore[assignment]
-            replay_dataset = selected_state["replay_dataset"]  # type: ignore[assignment]
-            gate_results = list(selected_state["gate_results"])  # type: ignore[arg-type]
-            if (
-                not fresh_evaluation_required
-                or selected_state.get("status") == "accepted"
-            ):
-                selected_candidate = selected_state["candidate"]  # type: ignore[assignment]
+        elif selected_projection is not None:
+            baseline_summary = selected_projection.baseline_summary
+            candidate_summary = selected_projection.candidate_summary
+            held_out_summary = selected_projection.held_out_summary
+            regression_evidence = selected_projection.regression_evidence
+            challenge_report = selected_projection.challenge_report
+            replay_result = selected_projection.replay_result
+            replay_dataset = selected_projection.replay_dataset
+            gate_results = list(selected_projection.gate_results)
+            selected_candidate = selected_projection.selected_candidate
         else:
             semantic_dedup_exhausted = (
                 semantic_lesson_duplicate_attempt_count > 0
@@ -7223,7 +7178,9 @@ class SelfEvolveRunner:
                     "inherit_candidate_package": True,
                     "evidence": "all_applicable_prerequisite_gates_passed",
                 }
-                for candidate_id in dict.fromkeys(prerequisite_candidate_ids)
+                for candidate_id in dict.fromkeys(
+                    run_state.prerequisite_candidate_ids
+                )
             ],
             "verification_funnel": {
                 "screening_max_cases": self.candidate_screening_max_cases,
@@ -7316,15 +7273,17 @@ class SelfEvolveRunner:
                 "max_authoritative_candidates": (
                     self.max_full_evaluation_candidates
                 ),
-                "authoritative_candidate_count": authoritative_candidate_count,
+                "authoritative_candidate_count": (
+                    run_state.authoritative_candidate_count
+                ),
                 "authoritative_candidate_attempt_count": (
-                    authoritative_candidate_attempt_count
+                    run_state.authoritative_candidate_attempt_count
                 ),
                 "authoritative_candidate_ids": sorted(
-                    authoritative_candidate_ids
+                    run_state.authoritative_candidate_ids
                 ),
                 "authoritative_candidate_attempt_ids": sorted(
-                    authoritative_candidate_attempt_ids
+                    run_state.authoritative_candidate_attempt_ids
                 ),
                 **(
                     {
@@ -7344,11 +7303,13 @@ class SelfEvolveRunner:
                 "max_score_tiebreak_candidates": (
                     self.max_score_tiebreak_candidates
                 ),
-                "score_tiebreak_candidate_count": score_tiebreak_candidate_count,
+                "score_tiebreak_candidate_count": (
+                    run_state.score_tiebreak_candidate_count
+                ),
                 "frontier_exhausted": verification_frontier_exhausted,
                 "authoritative_evaluation_uses_full_dataset": True,
                 "prerequisite_candidate_ids": list(
-                    dict.fromkeys(prerequisite_candidate_ids)
+                    dict.fromkeys(run_state.prerequisite_candidate_ids)
                 ),
             },
             "handbook_slice": latest_handbook_slice,
