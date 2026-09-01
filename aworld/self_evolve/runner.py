@@ -4330,43 +4330,12 @@ class SelfEvolveRunner:
                     details=dict(screening_control_preflight),
                 )
             )
-        progress_repair_families: set[str] = set()
-        duplicate_population_stalls = 0
-        consecutive_policy_filter_stalls = 0
-        consecutive_materialization_stalls = 0
-        last_policy_filter_signature: str | None = None
-        last_materialization_stall_signature: str | None = None
-        last_policy_filter_outcomes: tuple[CandidateGenerationOutcome, ...] = ()
-        generation_policy_frontier_exhausted = False
-        generation_materialization_frontier_exhausted = False
-        generation_protocol_frontier_exhausted = False
-        generation_conformance_frontier_exhausted = False
-        conformance_strategy_switch_count = 0
-        conformance_strategy_switch_request_count = 0
-        conformance_strategy_attempts: dict[str, int] = {}
-        conformance_strategy_topologies: dict[str, set[str]] = {}
-        pending_conformance_counterexamples: set[str] = set()
-        resolved_conformance_counterexamples: set[str] = set()
-        conformance_counterexamples_by_stage: dict[str, set[str]] = {}
-        repeated_contract_replacement_candidate_ids: set[str] = set()
-        conformance_same_slot_repair_count = 0
-        serialized_new_contract_repair_count = 0
-        conformance_strategy_switch_not_materialized = False
-        candidate_generation_infrastructure_retries = 0
-        raw_generation_attempt_count = 0
-        semantic_lesson_duplicate_attempt_count = 0
-        generated_candidate_slot_count = 0
-        candidate_generation_attempt_slot_count = 0
-        effective_generated_candidate_ids: set[str] = set()
         repair_reserved_slot_count = (
             1
             if _is_verified_apply_policy(apply_policy)
             and self.max_generated_candidates > 1
             else 0
         )
-        generation_frontier_exhausted = False
-        generation_repair_capacity_reserved = False
-        verification_frontier_exhausted = False
         run_state = ExplicitRunStateAccumulator(
             validation_feedback=validation_feedback,
             iteration_reports=iteration_reports,
@@ -4472,11 +4441,11 @@ class SelfEvolveRunner:
             if iteration_index >= self.max_iterations:
                 repair_family = _next_progress_repair_extension_family(
                     validation_feedback,
-                    consumed_families=progress_repair_families,
+                    consumed_families=run_state.generation.progress_repair_families,
                 )
                 if repair_family is None:
                     break
-                progress_repair_families.add(repair_family)
+                run_state.generation.progress_repair_families.add(repair_family)
             cumulative_feedback = (*prior_feedback, *validation_feedback)
             repair_frontiers = _typed_repair_frontiers(cumulative_feedback)
             focused_available = budget_context.can_fit_workflow(
@@ -4542,7 +4511,7 @@ class SelfEvolveRunner:
                 # contract discovered by the first sibling makes every other
                 # freshly generated sibling stale before it can run.
                 scheduled_slots = scheduled_slots[:1]
-                serialized_new_contract_repair_count += 1
+                run_state.generation.serialized_new_contract_repair_count += 1
                 scheduler_decision = replace(
                     scheduler_decision,
                     reason_code="focused_repair_serialized_new_contract",
@@ -4559,7 +4528,7 @@ class SelfEvolveRunner:
                 remaining_generation_slots = max(
                     0,
                     effective_generation_limit
-                    - generated_candidate_slot_count,
+                    - run_state.generation.generated_candidate_slot_count,
                 )
                 remaining_authoritative_slots = max(
                     0,
@@ -4567,10 +4536,10 @@ class SelfEvolveRunner:
                     - run_state.authoritative_candidate_count,
                 )
                 if remaining_generation_slots == 0:
-                    generation_frontier_exhausted = True
-                    generation_repair_capacity_reserved = bool(
-                        generated_candidate_slot_count
-                        < self.max_generated_candidates
+                    run_state.generation.exhaust_generation_limit(
+                        max_generated_candidates=(
+                            self.max_generated_candidates
+                        )
                     )
                     _emit_progress(
                         self.progress_callback,
@@ -4579,10 +4548,10 @@ class SelfEvolveRunner:
                             "Stopped candidate generation: "
                             + (
                                 "downstream repair capacity remains reserved "
-                                if generation_repair_capacity_reserved
+                                if run_state.generation.repair_capacity_reserved
                                 else "generated candidate slot limit reached "
                             )
-                            + f"({generated_candidate_slot_count}/"
+                            + f"({run_state.generation.generated_candidate_slot_count}/"
                             f"{self.max_generated_candidates}); repair horizon "
                             f"{iteration_index + 1}/{iteration_budget} was not "
                             "a required iteration count"
@@ -4590,7 +4559,7 @@ class SelfEvolveRunner:
                     )
                     scheduled_slots = ()
                 elif remaining_authoritative_slots == 0:
-                    verification_frontier_exhausted = True
+                    run_state.generation.verification_frontier_exhausted = True
                     scheduled_slots = ()
                 else:
                     screening_can_rank = bool(
@@ -4638,17 +4607,22 @@ class SelfEvolveRunner:
                 )
             else:
                 first_generation_attempt_slot = (
-                    candidate_generation_attempt_slot_count + 1
+                    run_state.generation.begin_generation_slots(
+                        generation_slot_count
+                    )
                 )
-                candidate_generation_attempt_slot_count += generation_slot_count
+                last_generation_attempt_slot = (
+                    run_state.generation.candidate_generation_attempt_slot_count
+                )
                 _emit_progress(
                     self.progress_callback,
                     "candidate_generation",
                     (
                         f"Generating candidate batch {iteration_index + 1}; "
                         f"candidate attempt slots {first_generation_attempt_slot}-"
-                        f"{candidate_generation_attempt_slot_count}; effective "
-                        f"candidate slots {generated_candidate_slot_count}/"
+                        f"{last_generation_attempt_slot}; "
+                        "effective candidate slots "
+                        f"{run_state.generation.generated_candidate_slot_count}/"
                         f"{self.max_generated_candidates}; repair horizon "
                         f"{iteration_index + 1}/{iteration_budget}"
                         if _is_verified_apply_policy(apply_policy)
@@ -4878,7 +4852,7 @@ class SelfEvolveRunner:
             )
             generation_outcomes = tuple(optimizer_result.generation_outcomes)
             if stored_admission_reason is None:
-                raw_generation_attempt_count += (
+                run_state.generation.raw_generation_attempt_count += (
                     sum(
                         outcome.kind
                         is not CandidateGenerationOutcomeKind.INFRASTRUCTURE_FAILED
@@ -5249,7 +5223,10 @@ class SelfEvolveRunner:
                             generated_candidate.candidate_id
                         )
                         if semantic_fingerprint is not None:
-                            semantic_lesson_duplicate_attempt_count += 1
+                            (
+                                run_state.generation
+                                .semantic_lesson_duplicate_attempt_count
+                            ) += 1
                             generation_duplicate_feedback.append(
                                 _semantic_lesson_duplicate_feedback(
                                     generated_candidate,
@@ -5278,12 +5255,9 @@ class SelfEvolveRunner:
                 ] = key
                 unique_generated.append(generated_candidate)
                 unique_candidate_ids.add(generated_candidate.candidate_id)
-                if stored_admission_reason is None:
-                    effective_generated_candidate_ids.add(
-                        generated_candidate.candidate_id
-                    )
-                generated_candidate_slot_count = len(
-                    effective_generated_candidate_ids
+                run_state.generation.record_effective_candidate(
+                    generated_candidate.candidate_id,
+                    consumes_slot=stored_admission_reason is None,
                 )
                 all_candidates.append(generated_candidate)
                 candidate_source_dispositions[
@@ -5388,7 +5362,6 @@ class SelfEvolveRunner:
                     is CandidateGenerationOutcomeKind.POLICY_FILTERED
                 )
                 if policy_filter_outcomes:
-                    last_policy_filter_outcomes = policy_filter_outcomes
                     policy_events = tuple(
                         _candidate_policy_filter_event(outcome)
                         for outcome in policy_filter_outcomes
@@ -5458,19 +5431,19 @@ class SelfEvolveRunner:
                     signature = _candidate_policy_filter_signature(
                         policy_filter_outcomes
                     )
-                    if signature == last_policy_filter_signature:
-                        consecutive_policy_filter_stalls += 1
-                    else:
-                        last_policy_filter_signature = signature
-                        consecutive_policy_filter_stalls = 1
-                    if (
+                    fully_filtered = (
                         len(policy_filter_outcomes) == generation_slot_count
-                        and consecutive_policy_filter_stalls
-                        >= _MAX_CONSECUTIVE_POLICY_FILTER_STALLS
+                    )
+                    if run_state.generation.record_policy_filter_stall(
+                        signature=signature,
+                        outcomes=policy_filter_outcomes,
+                        fully_filtered=fully_filtered,
+                        max_consecutive_stalls=(
+                            _MAX_CONSECUTIVE_POLICY_FILTER_STALLS
+                        ),
                     ):
-                        generation_policy_frontier_exhausted = True
                         break
-                    if len(policy_filter_outcomes) == generation_slot_count:
+                    if fully_filtered:
                         continue
                 generation_failure = optimizer_result.diagnostics.get(
                     "candidate_generation_failure"
@@ -5484,13 +5457,12 @@ class SelfEvolveRunner:
                             "failed_gates": ["candidate_generation"],
                         }
                     )
-                    if (
-                        candidate_generation_infrastructure_retries < 2
-                        and _retryable_candidate_generation_failure(
+                    if run_state.generation.claim_infrastructure_retry(
+                        retryable=_retryable_candidate_generation_failure(
                             generation_failure
-                        )
+                        ),
+                        max_retries=2,
                     ):
-                        candidate_generation_infrastructure_retries += 1
                         continue
                     break
                 protocol_invalid_count = _non_negative_int(
@@ -5581,38 +5553,29 @@ class SelfEvolveRunner:
                         }
                     )
                     if not generation_failure_repairable:
-                        generation_protocol_frontier_exhausted = True
+                        run_state.generation.protocol_frontier_exhausted = True
                         break
-                    if (
+                    full_population_failed = (
                         materialization_invalid_count
                         >= max(1, generation_slot_count)
-                    ):
-                        materialization_signature = (
+                    )
+                    materialization_signature = (
+                        (
                             _candidate_materialization_stall_signature(
                                 materialization_failures
                             )
                         )
-                        if (
-                            materialization_signature is not None
-                            and materialization_signature
-                            == last_materialization_stall_signature
-                        ):
-                            consecutive_materialization_stalls += 1
-                        else:
-                            last_materialization_stall_signature = (
-                                materialization_signature
-                            )
-                            consecutive_materialization_stalls = 1
-                        if (
-                            materialization_signature is not None
-                            and consecutive_materialization_stalls
-                            >= _MAX_CONSECUTIVE_MATERIALIZATION_STALLS
-                        ):
-                            generation_materialization_frontier_exhausted = True
-                            break
-                    else:
-                        consecutive_materialization_stalls = 0
-                        last_materialization_stall_signature = None
+                        if full_population_failed
+                        else None
+                    )
+                    if run_state.generation.record_materialization_stall(
+                        signature=materialization_signature,
+                        full_population_failed=full_population_failed,
+                        max_consecutive_stalls=(
+                            _MAX_CONSECUTIVE_MATERIALIZATION_STALLS
+                        ),
+                    ):
+                        break
                     continue
                 if generation_duplicate_feedback:
                     continue
@@ -5695,17 +5658,17 @@ class SelfEvolveRunner:
                         validation_feedback,
                         tuple(skipped_feedback),
                     )
-                    if all(
-                        candidate.candidate_id
-                        in current_run_attempted_candidate_ids
-                        for candidate in skipped_duplicates
+                    if run_state.generation.record_duplicate_population(
+                        all_candidates_previously_attempted=all(
+                            candidate.candidate_id
+                            in current_run_attempted_candidate_ids
+                            for candidate in skipped_duplicates
+                        ),
+                        max_consecutive_stalls=(
+                            _MAX_CONSECUTIVE_DUPLICATE_POPULATION_STALLS
+                        ),
                     ):
-                        duplicate_population_stalls += 1
-                        if (
-                            duplicate_population_stalls
-                            >= _MAX_CONSECUTIVE_DUPLICATE_POPULATION_STALLS
-                        ):
-                            break
+                        break
                     continue
                 iteration_reports.append(
                     {
@@ -5717,12 +5680,7 @@ class SelfEvolveRunner:
                 )
                 continue
 
-            duplicate_population_stalls = 0
-            consecutive_policy_filter_stalls = 0
-            consecutive_materialization_stalls = 0
-            last_policy_filter_signature = None
-            last_materialization_stall_signature = None
-            candidate_generation_infrastructure_retries = 0
+            run_state.generation.reset_candidate_progress_stalls()
 
             local_gate_results_by_candidate: dict[str, tuple[GateResult, ...]] = {}
             locally_valid_candidates: list[CandidateVariant] = []
@@ -5887,11 +5845,12 @@ class SelfEvolveRunner:
                     "superseded_candidate_ids"
                 )
                 if isinstance(raw_superseded, (list, tuple)):
-                    effective_generated_candidate_ids.difference_update(
-                        str(item) for item in raw_superseded if str(item)
-                    )
-                    generated_candidate_slot_count = len(
-                        effective_generated_candidate_ids
+                    run_state.generation.release_effective_candidates(
+                        {
+                            str(item)
+                            for item in raw_superseded
+                            if str(item)
+                        }
                     )
             if _candidate_validation_stopped_by_shared_infrastructure(
                 screening_report
@@ -5900,18 +5859,15 @@ class SelfEvolveRunner:
                 framework_invalidated_ids = {
                     candidate.candidate_id for candidate in screening_candidates
                 }
-                effective_generated_candidate_ids.difference_update(
+                run_state.generation.release_effective_candidates(
                     framework_invalidated_ids
-                )
-                generated_candidate_slot_count = len(
-                    effective_generated_candidate_ids
                 )
                 if isinstance(screening_report, dict):
                     screening_report["framework_invalidated_candidate_ids"] = (
                         sorted(framework_invalidated_ids)
                     )
                     screening_report["effective_candidate_slot_count"] = (
-                        generated_candidate_slot_count
+                        run_state.generation.generated_candidate_slot_count
                     )
                     for stage_name in ("conformance", "screening"):
                         stage_report = screening_report.get(stage_name)
@@ -5926,7 +5882,7 @@ class SelfEvolveRunner:
                                 "framework_invalidated_candidate_ids"
                             ] = sorted(framework_invalidated_ids)
                             stage_report["effective_candidate_slot_count"] = (
-                                generated_candidate_slot_count
+                                run_state.generation.generated_candidate_slot_count
                             )
                 shared_validation_gate = _candidate_validation_shared_failure_gate(
                     screening_report
@@ -6033,21 +5989,16 @@ class SelfEvolveRunner:
                 # effective slot immediately; the next generation batch is the
                 # bounded same-slot repair attempt and receives this batch's
                 # executable counterexamples through validation_feedback.
-                effective_generated_candidate_ids.difference_update(
-                    same_slot_conformance_repair_ids
-                )
-                conformance_same_slot_repair_count += len(
-                    same_slot_conformance_repair_ids
-                )
-                generated_candidate_slot_count = len(
-                    effective_generated_candidate_ids
+                run_state.generation.release_effective_candidates(
+                    same_slot_conformance_repair_ids,
+                    same_slot_repair=True,
                 )
                 if isinstance(screening_report, dict):
                     screening_report["same_slot_conformance_repair_ids"] = sorted(
                         same_slot_conformance_repair_ids
                     )
                     screening_report["effective_candidate_slot_count"] = (
-                        generated_candidate_slot_count
+                        run_state.generation.generated_candidate_slot_count
                     )
             conformance_failure_signatures = (
                 _candidate_conformance_failure_signatures(screening_failures)
@@ -6059,26 +6010,18 @@ class SelfEvolveRunner:
                 )
                 else ()
             )
-            prior_conformance_counterexamples = set(
-                pending_conformance_counterexamples
-            )
             observed_conformance_counterexamples = (
                 _candidate_conformance_counterexample_ids(
                     screening_failures
                 )
             )
-            for stage, counterexample_ids in (
-                _candidate_conformance_counterexample_stages(
-                    screening_failures
-                ).items()
-            ):
-                conformance_counterexamples_by_stage.setdefault(
-                    stage,
-                    set(),
-                ).update(counterexample_ids)
             repeated_conformance_counterexamples = (
-                prior_conformance_counterexamples
-                & observed_conformance_counterexamples
+                run_state.generation.record_conformance_counterexamples(
+                    observed=set(observed_conformance_counterexamples),
+                    by_stage=_candidate_conformance_counterexample_stages(
+                        screening_failures
+                    ),
+                )
             )
             released_repeated_contract_candidate_ids: set[str] = set()
             if repeated_conformance_counterexamples:
@@ -6096,14 +6039,9 @@ class SelfEvolveRunner:
                     released_repeated_contract_candidate_ids.add(
                         failed_candidate.candidate_id
                     )
-                effective_generated_candidate_ids.difference_update(
-                    released_repeated_contract_candidate_ids
-                )
-                repeated_contract_replacement_candidate_ids.update(
-                    released_repeated_contract_candidate_ids
-                )
-                generated_candidate_slot_count = len(
-                    effective_generated_candidate_ids
+                run_state.generation.release_effective_candidates(
+                    released_repeated_contract_candidate_ids,
+                    repeated_contract_replacement=True,
                 )
                 if screening_report is not None:
                     screening_report[
@@ -6112,58 +6050,22 @@ class SelfEvolveRunner:
                     screening_report[
                         "repeated_counterexample_ids"
                     ] = sorted(repeated_conformance_counterexamples)
-            resolved_conformance_counterexamples.update(
-                prior_conformance_counterexamples
-                - observed_conformance_counterexamples
-            )
-            pending_conformance_counterexamples = set(
-                observed_conformance_counterexamples
-            )
             if conformance_failure_signatures:
                 topology_by_signature = (
                     _candidate_conformance_repair_topologies(
                         screening_failures
                     )
                 )
-                new_switch_requests: list[str] = []
-                materialized_switches: list[str] = []
-                unmaterialized_switches: list[str] = []
-                for signature in conformance_failure_signatures:
-                    current_topologies = set(
-                        topology_by_signature.get(signature, ())
+                strategy_transition = (
+                    run_state.generation.observe_conformance_strategies(
+                        signatures=tuple(conformance_failure_signatures),
+                        topology_by_signature=topology_by_signature,
+                        max_switch_attempts=(
+                            _MAX_CONFORMANCE_STRATEGY_SWITCH_ATTEMPTS
+                        ),
                     )
-                    prior_topologies = conformance_strategy_topologies.get(
-                        signature
-                    )
-                    if prior_topologies is None:
-                        conformance_strategy_topologies[signature] = set(
-                            current_topologies
-                        )
-                        new_switch_requests.append(signature)
-                        continue
-                    new_topologies = current_topologies - prior_topologies
-                    if new_topologies:
-                        prior_topologies.update(new_topologies)
-                        conformance_strategy_attempts[signature] = (
-                            conformance_strategy_attempts.get(signature, 0) + 1
-                        )
-                        materialized_switches.append(signature)
-                    else:
-                        unmaterialized_switches.append(signature)
-                exhausted_materialized = tuple(
-                    signature
-                    for signature in materialized_switches
-                    if conformance_strategy_attempts.get(signature, 0)
-                    >= _MAX_CONFORMANCE_STRATEGY_SWITCH_ATTEMPTS
                 )
-                if exhausted_materialized or unmaterialized_switches:
-                    generation_conformance_frontier_exhausted = True
-                    conformance_strategy_switch_count += len(
-                        materialized_switches
-                    )
-                    conformance_strategy_switch_not_materialized = bool(
-                        unmaterialized_switches
-                    )
+                if strategy_transition.frontier_exhausted:
                     _emit_progress(
                         self.progress_callback,
                         "candidate_conformance",
@@ -6171,7 +6073,7 @@ class SelfEvolveRunner:
                             "Stopped candidate generation: the requested "
                             "structural strategy switch did not change the "
                             "authorized owner/edit topology"
-                            if unmaterialized_switches
+                            if strategy_transition.unmaterialized_switches
                             else (
                                 "Stopped candidate generation: the same typed "
                                 "conformance counterexample remained after the "
@@ -6180,32 +6082,17 @@ class SelfEvolveRunner:
                         ),
                     )
                 else:
-                    conformance_strategy_switch_request_count += len(
-                        new_switch_requests
-                    )
                     switch_signature = _candidate_conformance_stall_signature(
                         screening_failures
                     )
                     assert switch_signature is not None
-                    prior_topology_fingerprints = tuple(
-                        sorted(
-                            {
-                                topology
-                                for signature in new_switch_requests
-                                for topology in conformance_strategy_topologies.get(
-                                    signature,
-                                    set(),
-                                )
-                            }
-                        )
-                    )
                     validation_feedback = _merge_validation_feedback(
                         validation_feedback,
                         (
                             _candidate_conformance_strategy_switch_feedback(
                                 signature=switch_signature,
                                 prior_topology_fingerprints=(
-                                    prior_topology_fingerprints
+                                    strategy_transition.prior_topology_fingerprints
                                 ),
                             ),
                         ),
@@ -6220,7 +6107,7 @@ class SelfEvolveRunner:
                         ),
                     )
             if screening_feedback and not candidate_population:
-                if generation_conformance_frontier_exhausted:
+                if run_state.generation.conformance_frontier_exhausted:
                     break
                 continue
 
@@ -6273,7 +6160,7 @@ class SelfEvolveRunner:
                     and run_state.authoritative_candidate_count
                     >= self.max_full_evaluation_candidates
                 ):
-                    verification_frontier_exhausted = True
+                    run_state.generation.verification_frontier_exhausted = True
                     deferred_key = attempt_key_by_candidate_id.get(
                         iteration_candidate.candidate_id
                     )
@@ -6479,12 +6366,12 @@ class SelfEvolveRunner:
                 and run_state.authoritative_candidate_count
                 >= self.max_full_evaluation_candidates
             ):
-                verification_frontier_exhausted = True
+                run_state.generation.verification_frontier_exhausted = True
             if (
                 accepted_in_iteration
                 or run_state.baseline_preflight_blocked
                 or run_state.infrastructure_blocked
-                or verification_frontier_exhausted
+                or run_state.generation.verification_frontier_exhausted
                 or run_state.measurement_frontier_stopped
             ):
                 break
@@ -6519,18 +6406,18 @@ class SelfEvolveRunner:
             selected_candidate = selected_projection.selected_candidate
         else:
             semantic_dedup_exhausted = (
-                semantic_lesson_duplicate_attempt_count > 0
-                and semantic_lesson_duplicate_attempt_count
-                == raw_generation_attempt_count
+                run_state.generation.semantic_lesson_duplicate_attempt_count > 0
+                and run_state.generation.semantic_lesson_duplicate_attempt_count
+                == run_state.generation.raw_generation_attempt_count
                 and not all_candidates
             )
             candidate_generation_failure_events = (
                 (
                     _candidate_policy_frontier_stalled_event(
-                        last_policy_filter_outcomes
+                        run_state.generation.last_policy_filter_outcomes
                     ),
                 )
-                if generation_policy_frontier_exhausted
+                if run_state.generation.policy_frontier_exhausted
                 else _candidate_generation_failure_events(
                     optimizer_diagnostics
                 )
@@ -6544,19 +6431,19 @@ class SelfEvolveRunner:
                 "generated_candidate_count": len(all_candidates),
                 "iterations": len(optimizer_diagnostics),
             }
-            if raw_generation_attempt_count:
+            if run_state.generation.raw_generation_attempt_count:
                 candidate_generation_details["generation_attempt_count"] = (
-                    raw_generation_attempt_count
+                    run_state.generation.raw_generation_attempt_count
                 )
-            if generation_policy_frontier_exhausted:
+            if run_state.generation.policy_frontier_exhausted:
                 candidate_generation_details[
                     "generation_policy_frontier_exhausted"
                 ] = True
-            if generation_materialization_frontier_exhausted:
+            if run_state.generation.materialization_frontier_exhausted:
                 candidate_generation_details[
                     "generation_materialization_frontier_exhausted"
                 ] = True
-            if generation_protocol_frontier_exhausted:
+            if run_state.generation.protocol_frontier_exhausted:
                 candidate_generation_details[
                     "generation_protocol_frontier_exhausted"
                 ] = True
@@ -6592,17 +6479,17 @@ class SelfEvolveRunner:
                             "candidate generation policy frontier repeated without "
                             "structural progress"
                         )
-                        if generation_policy_frontier_exhausted
+                        if run_state.generation.policy_frontier_exhausted
                         else (
                             "candidate generation repeated the same typed "
                             "materialization failure without repair progress"
                         )
-                        if generation_materialization_frontier_exhausted
+                        if run_state.generation.materialization_frontier_exhausted
                         else (
                             "candidate generation produced a non-repairable "
                             "protocol failure"
                         )
-                        if generation_protocol_frontier_exhausted
+                        if run_state.generation.protocol_frontier_exhausted
                         else "optimizer did not produce a replayable candidate"
                         if _is_verified_apply_policy(apply_policy)
                         else "optimizer did not produce a candidate"
@@ -6612,13 +6499,14 @@ class SelfEvolveRunner:
                             "failure_class": "candidate",
                             "code": "candidate_generation_exhausted_by_semantic_dedup",
                             "generation_attempt_count": (
-                                raw_generation_attempt_count
+                                run_state.generation.raw_generation_attempt_count
                             ),
                             "canonical_unique_candidate_count": len(
                                 all_candidates
                             ),
                             "semantic_lesson_duplicate_attempt_count": (
-                                semantic_lesson_duplicate_attempt_count
+                                run_state.generation
+                                .semantic_lesson_duplicate_attempt_count
                             ),
                             "semantic_identity_version": (
                                 _SEMANTIC_DEDUP_IDENTITY_VERSION
@@ -7084,23 +6972,7 @@ class SelfEvolveRunner:
             )
 
         execution_stages = self.execution_telemetry.to_report()
-        generation_stop_reason = (
-            "conformance_strategy_switch_not_materialized"
-            if conformance_strategy_switch_not_materialized
-            else "conformance_frontier_repeated_after_strategy_switch"
-            if generation_conformance_frontier_exhausted
-            else "materialization_frontier_repeated"
-            if generation_materialization_frontier_exhausted
-            else "generation_policy_frontier_repeated"
-            if generation_policy_frontier_exhausted
-            else "repair_capacity_reserved_without_typed_frontier"
-            if generation_repair_capacity_reserved
-            else "generated_candidate_slot_limit_reached"
-            if generation_frontier_exhausted
-            else "authoritative_candidate_limit_reached"
-            if verification_frontier_exhausted
-            else None
-        )
+        generation_stop_reason = run_state.generation.stop_reason()
         report = {
             "run_id": run_id,
             "target": {
@@ -7190,53 +7062,57 @@ class SelfEvolveRunner:
                 ),
                 "max_generated_candidates": self.max_generated_candidates,
                 "repair_reserved_slot_count": repair_reserved_slot_count,
-                "generated_candidate_slot_count": generated_candidate_slot_count,
+                "generated_candidate_slot_count": (
+                    run_state.generation.generated_candidate_slot_count
+                ),
                 "candidate_generation_attempt_slot_count": (
-                    candidate_generation_attempt_slot_count
+                    run_state.generation.candidate_generation_attempt_slot_count
                 ),
                 "unique_generated_candidate_count": len(all_candidates),
-                "generation_frontier_exhausted": generation_frontier_exhausted,
+                "generation_frontier_exhausted": (
+                    run_state.generation.frontier_exhausted
+                ),
                 "generation_repair_capacity_reserved": (
-                    generation_repair_capacity_reserved
+                    run_state.generation.repair_capacity_reserved
                 ),
                 "generation_policy_frontier_exhausted": (
-                    generation_policy_frontier_exhausted
+                    run_state.generation.policy_frontier_exhausted
                 ),
                 **(
                     {
                         "generation_materialization_frontier_exhausted": True
                     }
-                    if generation_materialization_frontier_exhausted
+                    if run_state.generation.materialization_frontier_exhausted
                     else {}
                 ),
                 **(
                     {
                         "generation_protocol_frontier_exhausted": True
                     }
-                    if generation_protocol_frontier_exhausted
+                    if run_state.generation.protocol_frontier_exhausted
                     else {}
                 ),
                 **(
                     {
                         "generation_conformance_frontier_exhausted": True,
                     }
-                    if generation_conformance_frontier_exhausted
+                    if run_state.generation.conformance_frontier_exhausted
                     else {}
                 ),
                 "conformance_strategy_switch_count": (
-                    conformance_strategy_switch_count
+                    run_state.generation.conformance_strategy_switch_count
                 ),
                 "conformance_strategy_switch_request_count": (
-                    conformance_strategy_switch_request_count
+                    run_state.generation.conformance_strategy_switch_request_count
                 ),
                 "conformance_strategy_switch_not_materialized": (
-                    conformance_strategy_switch_not_materialized
+                    run_state.generation.conformance_strategy_switch_not_materialized
                 ),
                 "pending_conformance_counterexample_count": len(
-                    pending_conformance_counterexamples
+                    run_state.generation.pending_conformance_counterexamples
                 ),
                 "resolved_conformance_counterexample_count": len(
-                    resolved_conformance_counterexamples
+                    run_state.generation.resolved_conformance_counterexamples
                 ),
                 "conformance_counterexamples_by_stage": {
                     stage: {
@@ -7244,20 +7120,21 @@ class SelfEvolveRunner:
                         "counterexample_ids": sorted(counterexample_ids),
                     }
                     for stage, counterexample_ids in sorted(
-                        conformance_counterexamples_by_stage.items()
+                        run_state.generation
+                        .conformance_counterexamples_by_stage.items()
                     )
                 },
                 "repeated_contract_replacement_candidate_count": len(
-                    repeated_contract_replacement_candidate_ids
+                    run_state.generation.repeated_contract_replacement_candidate_ids
                 ),
                 "repeated_contract_replacement_candidate_ids": sorted(
-                    repeated_contract_replacement_candidate_ids
+                    run_state.generation.repeated_contract_replacement_candidate_ids
                 ),
                 "conformance_same_slot_repair_count": (
-                    conformance_same_slot_repair_count
+                    run_state.generation.conformance_same_slot_repair_count
                 ),
                 "serialized_new_contract_repair_count": (
-                    serialized_new_contract_repair_count
+                    run_state.generation.serialized_new_contract_repair_count
                 ),
                 **(
                     {"generation_stop_reason": generation_stop_reason}
@@ -7306,7 +7183,9 @@ class SelfEvolveRunner:
                 "score_tiebreak_candidate_count": (
                     run_state.score_tiebreak_candidate_count
                 ),
-                "frontier_exhausted": verification_frontier_exhausted,
+                "frontier_exhausted": (
+                    run_state.generation.verification_frontier_exhausted
+                ),
                 "authoritative_evaluation_uses_full_dataset": True,
                 "prerequisite_candidate_ids": list(
                     dict.fromkeys(run_state.prerequisite_candidate_ids)
