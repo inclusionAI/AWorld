@@ -1,0 +1,53 @@
+{
+  "schema_version": "aworld.context-eval-suite/v1",
+  "name": "skillsbench-official-1.1-context-smoke",
+  "dataset": {
+    "dataset_id": "skillsbench_official_prebuilt_1_1",
+    "sha256": "56c849d5d8088edaa57620410c26e864f2f8541c310d50f6408c19b373ebeffd"
+  },
+  "selection_policy": {
+    "frozen_before_complete_reward_observation": true,
+    "outcome_blind": true,
+    "case_specific_prompting_forbidden": true,
+    "purpose": "Cross-workload Context Management acceptance, not SkillsBench score tuning."
+  },
+  "tasks": [
+    {
+      "task_id": "enterprise-information-search",
+      "context_dimensions": [
+        "large_artifact_search",
+        "multi_hop_retrieval",
+        "artifact_offload_and_retrieval"
+      ]
+    },
+    {
+      "task_id": "travel-planning",
+      "context_dimensions": [
+        "progressive_skill_disclosure",
+        "multi_tool_constraints",
+        "cross_step_state_retention"
+      ]
+    },
+    {
+      "task_id": "llm-prefix-cache-replay",
+      "context_dimensions": [
+        "long_trace_processing",
+        "stable_prefix_semantics",
+        "skill_selection"
+      ]
+    }
+  ],
+  "variants": [
+    "legacy-observe",
+    "unified-context-progressive"
+  ],
+  "repeat": 1,
+  "seed": 20260901,
+  "max_steps": 6,
+  "minimum_complete_pair_requirement": 3,
+  "registry_rewrite": {
+    "source": "agentservice-lingguang-registry-vpc.cn-hongkong.cr.aliyuncs.com",
+    "destination": "agentservice-lingguang-registry.cn-hongkong.cr.aliyuncs.com",
+    "digest_must_be_preserved": true
+  }
+}

@@ -1468,6 +1468,34 @@ TC-PORTABILITY-TZ-026、TC-PORTABILITY-NATIVE-027 和 TC-DIRECT-FAILURE-028 由 
 操作题目容器，不在题目容器内安装 AWorld。本地 Docker 实现仍只负责 attach/exec，不接管镜像构建和
 容器生命周期，也不要求修改 mcpgateway、lingguang-bench-runtime-dsh 或 Harbor。
 
+#### SkillsBench Cross-Workload Fixture
+
+同一通用 driver 还支持 `yolo-dataset-package/v2` 的 SkillsBench official 1.1 task archive，不在 AWorld、
+mcpgateway 或 lingguang runtime 中增加 benchmark 专用执行分支。adapter 从 `dataset.jsonl` 校验 task/archive
+绑定，从 catalog 读取带 `@sha256` 的 immutable image，挂载原始 `verifier/`，并把 task 自带 Skills 同时作为
+AWorld Skill descriptor 和只读 `/aworld-skills` execution assets 提供。VPC registry 不可从本机访问时，
+`--image-registry-rewrite SOURCE=DESTINATION` 只允许精确改写 registry hostname，repository、tag 和 digest
+保持不变；manifest 同时保留 declared/effective image 和 rewrite source。
+
+首轮 outcome-blind suite 冻结在
+`examples/sandbox/context_eval_suites/skillsbench-official-1.1-context-smoke.json`，dataset SHA-256 为
+`56c849d5d8088edaa57620410c26e864f2f8541c310d50f6408c19b373ebeffd`，只选择三条互补压力样例：
+
+| Task | 通用 Context 压力面 |
+|---|---|
+| `enterprise-information-search` | 大 artifact、多跳检索、offload 后按需取回 |
+| `travel-planning` | 六个 task Skill 的渐进披露、多 Tool 约束、跨步骤状态保持 |
+| `llm-prefix-cache-replay` | 2,000-request 长 trace、Skill 选择、稳定前缀/缓存语义 |
+
+三条公网 endpoint 镜像已按 catalog digest 拉取并通过 task-input/Skill mount preflight；
+`llm-prefix-cache-replay` 还以官方 oracle + 原始 verifier 完成 10/10 断言并得到 reward 1。后者只证明本地
+Docker substrate 和 verifier 通道有效，不能冒充 AWorld rollout、Raw trajectory 或 Context 收益。真实 paired
+尝试中，`legacy-observe` 因现有 `glm-5.2` provider 多次 `Connection error` 在 960 秒后产生 typed
+`agent_timeout`、`reward=null`，因此不进入 paired aggregate；candidate 在确认 baseline 不可归因后停止，未被
+伪造为 reward 0。该 run 同时暴露并修复了 harness 的 step-budget gap：CLI `--max-steps` 现在绑定
+`BaseAgent.max_loop_steps`，而不是只写入不控制实际循环的 `AgentConfig.max_steps`。agent/verifier timeout 也可
+独立覆盖并记录 effective typed evidence。待 provider 恢复后按冻结 suite 重跑，不得依据这次 timeout 更换题目。
+
 真实 Docker capability gate 由 `tests/sandbox/test_docker_sandbox_integration.py` 自动执行 15 项 terminal/
 filesystem Tool matrix；默认跳过，CI/nightly 通过 `AWORLD_RUN_DOCKER_INTEGRATION=1` 开启，并记录 image
 digest 与 Tool matrix。该 gate 的超限 `run_code` 还必须穿过 Context boundary，分别验证 Context-owned exact
