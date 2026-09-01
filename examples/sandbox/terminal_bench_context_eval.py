@@ -59,6 +59,13 @@ def require_success(result: subprocess.CompletedProcess, operation: str) -> None
         raise RuntimeError(f"{operation} failed ({result.returncode}): {detail}")
 
 
+def timeout_output(exc: subprocess.TimeoutExpired, stream: str) -> str:
+    value = getattr(exc, stream, None) or ""
+    if isinstance(value, bytes):
+        return value.decode(errors="replace")
+    return str(value)
+
+
 def safe_extract_tar(archive: tarfile.TarFile, destination: Path) -> None:
     root = destination.resolve()
     for member in archive.getmembers():
@@ -461,12 +468,40 @@ def execute_job(
         agent_environment["PYTHONPATH"] = (
             repo_root if not existing_pythonpath else repo_root + os.pathsep + existing_pythonpath
         )
-        agent_result = run_command(
-            agent_command,
-            capture_output=True,
-            timeout=agent_timeout,
-            env=agent_environment,
-        )
+        try:
+            agent_result = run_command(
+                agent_command,
+                capture_output=True,
+                timeout=agent_timeout,
+                env=agent_environment,
+            )
+        except subprocess.TimeoutExpired as exc:
+            (run_dir / "agent.stdout.log").write_text(
+                timeout_output(exc, "stdout"), encoding="utf-8"
+            )
+            (run_dir / "agent.stderr.log").write_text(
+                timeout_output(exc, "stderr"), encoding="utf-8"
+            )
+            result = {
+                "schema_version": "aworld.context-eval-result/v1",
+                "task": fixture.name,
+                "variant": variant_name,
+                "repetition": repetition,
+                "agent_exit_code": None,
+                "verifier_exit_code": None,
+                "verifier_mode": verifier_mode,
+                "reward": None,
+                "failure": {
+                    "stage": "agent",
+                    "reason_code": "agent_timeout",
+                    "timeout_sec": agent_timeout,
+                },
+                "container_image_id": container_image_id(docker, container),
+                "task_archive_sha256": fixture.archive_sha256,
+                "context_metrics": collect_context_metrics(run_dir),
+            }
+            write_json(run_dir / "result.json", result)
+            return result
         (run_dir / "agent.stdout.log").write_text(agent_result.stdout or "", encoding="utf-8")
         (run_dir / "agent.stderr.log").write_text(agent_result.stderr or "", encoding="utf-8")
 
@@ -495,11 +530,39 @@ for test in tests:
     test()
 """.strip()
             verifier_command = [docker, "exec", container, "python3", "-c", verifier_program]
-        verifier_result = run_command(
-            verifier_command,
-            capture_output=True,
-            timeout=verifier_timeout,
-        )
+        try:
+            verifier_result = run_command(
+                verifier_command,
+                capture_output=True,
+                timeout=verifier_timeout,
+            )
+        except subprocess.TimeoutExpired as exc:
+            (verifier_dir / "stdout.log").write_text(
+                timeout_output(exc, "stdout"), encoding="utf-8"
+            )
+            (verifier_dir / "stderr.log").write_text(
+                timeout_output(exc, "stderr"), encoding="utf-8"
+            )
+            result = {
+                "schema_version": "aworld.context-eval-result/v1",
+                "task": fixture.name,
+                "variant": variant_name,
+                "repetition": repetition,
+                "agent_exit_code": agent_result.returncode,
+                "verifier_exit_code": None,
+                "verifier_mode": verifier_mode,
+                "reward": None,
+                "failure": {
+                    "stage": "verifier",
+                    "reason_code": "verifier_timeout",
+                    "timeout_sec": verifier_timeout,
+                },
+                "container_image_id": container_image_id(docker, container),
+                "task_archive_sha256": fixture.archive_sha256,
+                "context_metrics": collect_context_metrics(run_dir),
+            }
+            write_json(run_dir / "result.json", result)
+            return result
         (verifier_dir / "stdout.log").write_text(verifier_result.stdout or "", encoding="utf-8")
         (verifier_dir / "stderr.log").write_text(verifier_result.stderr or "", encoding="utf-8")
         reward_path = verifier_dir / "reward.txt"

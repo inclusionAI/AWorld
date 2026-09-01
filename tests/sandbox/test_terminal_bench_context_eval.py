@@ -222,6 +222,69 @@ def test_packaged_image_build_timeout_can_override_dataset_default(tmp_path, mon
     assert calls[-1][1]["timeout"] == 1800
 
 
+def test_timeout_output_accepts_text_and_bytes():
+    harness = _load_example("terminal_bench_context_eval")
+
+    text_timeout = subprocess.TimeoutExpired(
+        ["command"], 1, output="partial stdout", stderr="partial stderr"
+    )
+    bytes_timeout = subprocess.TimeoutExpired(
+        ["command"], 1, output=b"byte stdout", stderr=b"byte stderr"
+    )
+
+    assert harness.timeout_output(text_timeout, "stdout") == "partial stdout"
+    assert harness.timeout_output(text_timeout, "stderr") == "partial stderr"
+    assert harness.timeout_output(bytes_timeout, "stdout") == "byte stdout"
+    assert harness.timeout_output(bytes_timeout, "stderr") == "byte stderr"
+
+
+def test_agent_timeout_is_persisted_as_typed_incomplete_result(tmp_path, monkeypatch):
+    harness = _load_example("terminal_bench_context_eval")
+    root = tmp_path / "fixture"
+    root.joinpath("environment").mkdir(parents=True)
+    root.joinpath("tests").mkdir()
+    root.joinpath("instruction.md").write_text("do the task", encoding="utf-8")
+    fixture = harness.TaskFixture(
+        name="sample",
+        root=root,
+        archive_sha256="a" * 64,
+        config={"environment": {}, "agent": {"timeout_sec": 1}},
+    )
+
+    def fake_run(command, **kwargs):
+        if command[0] == sys.executable:
+            raise subprocess.TimeoutExpired(
+                command, kwargs["timeout"], output="partial", stderr="timed out"
+            )
+        return subprocess.CompletedProcess(command, 0, stdout="image-id\n", stderr="")
+
+    monkeypatch.setattr(harness, "run_command", fake_run)
+
+    result = harness.execute_job(
+        docker="docker",
+        fixture=fixture,
+        image="sample:1",
+        variant_name="legacy",
+        variant_path=None,
+        repetition=1,
+        output_dir=tmp_path / "output",
+        max_steps=1,
+        keep_container=False,
+        verifier_mode="python-functions",
+    )
+
+    run_dir = tmp_path / "output" / "runs" / "sample" / "legacy" / "repeat-01"
+    assert result["reward"] is None
+    assert result["failure"] == {
+        "stage": "agent",
+        "reason_code": "agent_timeout",
+        "timeout_sec": 61.0,
+    }
+    assert json.loads(run_dir.joinpath("result.json").read_text())["failure"] == result["failure"]
+    assert run_dir.joinpath("agent.stdout.log").read_text() == "partial"
+    assert run_dir.joinpath("agent.stderr.log").read_text() == "timed out"
+
+
 def test_summary_pairs_reward_with_context_effects():
     harness = _load_example("terminal_bench_context_eval")
     results = [
