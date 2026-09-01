@@ -180,7 +180,7 @@ Tool output policy, cache identity, lifecycle, delegation, and evaluation consum
   model-visible; retain semantic equivalence, authority and Tool atomicity.
 - **Tests:** semantic-equivalent request fixtures, off/observe compatibility, cache continuity, no required-context loss.
 - **Acceptance criteria:** deterministic fixtures show no unexplained fixed candidate overhead and no hard-gate regression.
-- **Status:** in progress
+- **Status:** complete; observe residency and progressive Skill/Tool atomicity passed independent review
 
 #### Task 7.3: Turn and artifact economics
 - **Parallel:** yes after 7.1
@@ -189,7 +189,7 @@ Tool output policy, cache identity, lifecycle, delegation, and evaluation consum
   policy threshold; report inline/offloaded/read bytes and owner retrieval without benchmark-specific prompting.
 - **Tests:** deterministic retrieval, real Docker opt-in, paired report reconciliation.
 - **Acceptance criteria:** extra turns have typed causes; offload benefit and retrieval correctness are independently measurable.
-- **Status:** pending
+- **Status:** complete for mechanism/economics truth; real paired benefit remains Milestone 9 evidence
 
 ### Milestone 8: Provider and Entry-Point Production Parity
 **Goal:** Extend enforce only where the real send boundary can prove immutable candidate fidelity.
@@ -200,7 +200,8 @@ Tool output policy, cache identity, lifecycle, delegation, and evaluation consum
 - Complete sync/async/stream/direct/Agent/Amni/CLI/ACP/resume parity matrices and error-path receipts.
 - Verify external runtime/Scheduler projection through artifacts/contracts without modifying mcpgateway or
   lingguang-bench-runtime-dsh.
-- **Status:** pending
+- **Status:** in progress; Azure is explicitly unsupported across all call shapes, exact OpenAI parity receipts and required
+  capability-matrix gating are implemented; production entry-point canary evidence remains pending
 
 ### Milestone 9: Cross-Workload Benefit Evidence
 **Goal:** Reach statistically valid quality or cost benefit evidence without benchmark-specific optimization.

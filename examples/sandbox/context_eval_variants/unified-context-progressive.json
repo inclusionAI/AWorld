@@ -1,0 +1,39 @@
+{
+  "schema_version": "aworld.context-eval-variant/v1",
+  "name": "unified-context-progressive",
+  "agent_memory_config": {
+    "tool_result_offload": true,
+    "tool_result_length_threshold": 4096,
+    "tool_result_preview_chars": 2000
+  },
+  "context_compiler": {
+    "mode": "enforce",
+    "universal_final": true,
+    "scoped_instructions": "nested",
+    "progressive_skills": true,
+    "progressive_tools": true,
+    "progressive_tool_base_tools": [
+      "run_code",
+      "read_output_artifact",
+      "read_file",
+      "write_file",
+      "edit_file",
+      "list_directory",
+      "search_content",
+      "search_files",
+      "create_directory",
+      "move_file"
+    ],
+    "task_catalog_policy": "sticky",
+    "checkpoint_policy": "adaptive",
+    "default_tool_output_inline_tokens": 4096,
+    "artifact_offload": true,
+    "context_inspector": true,
+    "trace_level": "decisions",
+    "completion_contract": "enforce"
+  },
+  "docker_output_policy": {
+    "max_inline_output_bytes": 65536,
+    "output_head_bytes": 32768
+  }
+}

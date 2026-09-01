@@ -2,14 +2,14 @@
 
 ## Current Status
 
-**Phase:** Milestone 7 implementation
-**Current milestone:** Candidate Overhead Attribution and Elimination
-**Current task:** Task 7.2 — eliminate duplicate/non-resident context using verified attribution
-**Last action:** Milestone 7.1 provider-bound attribution was approved after three independent review iterations. Compiler
-provenance is ordinal-bound, provider shapes and canonical bytes are fail-closed, provider prepared/attempted state rolls
-back on pre-send mutation/cache failure, report dimensions are bound to an independent compiler-plan fingerprint, and
-manifest-complete paired attribution is a default-on hard gate. Main commits: `87aceab7`, `173f31dc`, `2c30f9f5`; focused
-main-tree verification is 32/32 and the implementation worktree wider regression is 130/130.
+**Phase:** Milestone 8 implementation and Milestone 9 evidence preparation
+**Current milestone:** Provider/entry-point production parity
+**Current task:** independent parity review plus minimal real paired progressive-catalog validation
+**Last action:** Milestone 7.2 and 7.3 mechanism code passed independent hardening reviews. Observe attribution is fail-open
+without losing provider attempt truth; progressive Skill/Tool selection is dependency-atomic and checkpoint-safe; turn and
+artifact economics independently revalidates causal/retrieval receipts and passed a real Docker artifact-read gate. Exact
+Azure remains unsupported across four call shapes. Entry-point semantic receipts and a required capability matrix are now
+implemented, and a frozen cache-adjusted normalized cost policy is bound through evaluation manifests.
 
 ### Task 7.2a: Legacy observe attribution baseline
 
@@ -88,8 +88,8 @@ main-tree verification is 32/32 and the implementation worktree wider regression
 | Task | Status | Notes |
 |---|---|---|
 | 7.1 Provider-bound section attribution | complete | Third review APPROVE; ordinal plan, provider receipt, raw revalidation, paired hard gate |
-| 7.2 Eliminate duplicate/non-resident context | in_progress | Evidence-driven only; preserve semantic equivalence |
-| 7.3 Turn and artifact economics | in_progress | Implementation hardened; paired noisy-workload benefit evidence pending |
+| 7.2 Eliminate duplicate/non-resident context | complete | Observe residency plus dependency-atomic progressive Skill/Tool reviewed |
+| 7.3 Turn and artifact economics | complete | Mechanism approved; real paired noisy-output benefit remains Milestone 9 |
 
 ### Milestone 7 Evidence Audit (2026-09-01)
 - The first provider request in both paired workloads is byte-equivalent after removing `prompt_cache_key`; system/user
