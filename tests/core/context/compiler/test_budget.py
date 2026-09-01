@@ -63,6 +63,7 @@ def _candidate(
     *,
     exact: bool = True,
     atomic_group: AtomicGroupRef | None = None,
+    dependency_item_ids: tuple[str, ...] = (),
     allocation_tier: BudgetAllocationTier | None = None,
 ) -> BudgetCandidate:
     estimate = (
@@ -75,7 +76,50 @@ def _candidate(
         tokens=estimate,
         allocation_tier=allocation_tier or BudgetAllocationTier(0, "default"),
         atomic_group=atomic_group,
+        dependency_item_ids=dependency_item_ids,
     )
+
+
+def test_optional_dependency_closure_is_selected_or_excluded_atomically():
+    skill = _item("skill")
+    shared_tool = _item("tool", kind=ContextKind.TOOL_CATALOG)
+    other_skill = _item("other-skill")
+    candidates = (
+        _candidate(
+            skill, 4,
+            dependency_item_ids=("tool",),
+            allocation_tier=BudgetAllocationTier(0, "skill"),
+        ),
+        _candidate(
+            other_skill, 3,
+            dependency_item_ids=("tool",),
+            allocation_tier=BudgetAllocationTier(0, "skill"),
+        ),
+        _candidate(
+            shared_tool, 6,
+            allocation_tier=BudgetAllocationTier(1, "tool"),
+        ),
+    )
+
+    tight = plan_context_budget(candidates, ContextInputBudget(9, 0, 0, 0, 20))
+    enough = plan_context_budget(candidates, ContextInputBudget(10, 0, 0, 0, 20))
+
+    assert [item.id for item in tight.selected_items] == ["other-skill", "tool"]
+    assert [item.id for item in enough.selected_items] == ["skill", "tool"]
+
+
+def test_required_dependency_closure_fails_closed_when_budget_is_insufficient():
+    skill = _item("required-skill", required=True)
+    tool = _item("required-tool", kind=ContextKind.TOOL_CATALOG)
+
+    with pytest.raises(RequiredContextBudgetExceeded):
+        plan_context_budget(
+            (
+                _candidate(skill, 4, dependency_item_ids=("required-tool",)),
+                _candidate(tool, 6),
+            ),
+            ContextInputBudget(9, 0, 0, 0, 20),
+        )
 
 
 def test_input_budget_uses_all_reserves_without_mutating_output_reserve() -> None:

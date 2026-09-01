@@ -1716,7 +1716,8 @@ class ApplicationContext(AmniContext):
                 "turn_epoch": self.context_lifecycle_state.turn_epoch,
                 "branch_id": self.context_lifecycle_state.branch_id,
                 "checkpoint_revision": self.context_lifecycle_state.checkpoint_revision,
-            }
+            },
+            "progressive_state": self.export_progressive_state(),
         }
 
         # Serialize task_state using safe serialization function
@@ -1747,6 +1748,7 @@ class ApplicationContext(AmniContext):
 
     @classmethod
     def from_dict(cls, data: dict) -> 'ApplicationContext':
+        progressive_restore_attempted = False
         try:
             # Deserialize task_state
             task_state = None
@@ -1779,10 +1781,19 @@ class ApplicationContext(AmniContext):
                 from aworld.core.context.compiler import ContextLifecycleState
 
                 context._context_lifecycle_state = ContextLifecycleState(**lifecycle)
+            progressive_state = data.get("progressive_state")
+            if progressive_state is not None:
+                progressive_restore_attempted = True
+                context.restore_progressive_state(progressive_state)
             return context
 
         except Exception as e:
             logger.error(f"Failed to deserialize ApplicationContext: {e}")
+            if progressive_restore_attempted:
+                # Versioned sticky Skill/Tool state is correctness-critical.
+                # A malformed or tampered snapshot must not silently resume
+                # as an empty catalog in the same task epoch.
+                raise
             # Return a basic ApplicationContext
             return cls(task_state=ApplicationTaskContextState())
 

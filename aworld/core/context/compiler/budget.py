@@ -106,6 +106,7 @@ class BudgetCandidate:
     tokens: TokenEstimate
     allocation_tier: BudgetAllocationTier
     atomic_group: AtomicGroupRef | None = None
+    dependency_item_ids: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.item, ContextItem):
@@ -122,6 +123,13 @@ class BudgetCandidate:
             self.atomic_group, AtomicGroupRef
         ):
             raise TypeError("atomic_group must be an AtomicGroupRef or None")
+        object.__setattr__(self, "dependency_item_ids", tuple(self.dependency_item_ids))
+        if len(set(self.dependency_item_ids)) != len(self.dependency_item_ids):
+            raise ValueError("dependency_item_ids must be unique")
+        if any(not isinstance(value, str) or not value for value in self.dependency_item_ids):
+            raise ValueError("dependency item ids must be non-empty strings")
+        if self.item.id in self.dependency_item_ids:
+            raise ValueError("candidate cannot depend on itself")
 
 
 class ContextBudgetError(ValueError):
@@ -147,6 +155,15 @@ class RequiredContextBudgetExceeded(ContextBudgetError):
         super().__init__(
             f"{self.code}: required={required_tokens}, available={available_tokens}"
         )
+
+
+class RequiredContextDependencyUnavailable(ContextBudgetError):
+    code = "required_context_dependency_unavailable"
+
+    def __init__(self, *, item_id: str, dependency_id: str):
+        self.item_id = item_id
+        self.dependency_id = dependency_id
+        super().__init__(self.code)
 
 
 class ItemTokenLimitExceeded(ContextBudgetError):
@@ -349,6 +366,18 @@ def plan_context_budget(
     item_ids = tuple(candidate.item.id for candidate in values)
     if len(set(item_ids)) != len(item_ids):
         raise ValueError("candidate item ids must be unique")
+    item_id_set = set(item_ids)
+    unknown_dependencies = tuple(
+        (candidate.item.id, dependency_id)
+        for candidate in values
+        for dependency_id in candidate.dependency_item_ids
+        if dependency_id not in item_id_set
+    )
+    if unknown_dependencies:
+        item_id, dependency_id = unknown_dependencies[0]
+        raise ValueError(
+            f"unknown Context dependency: item={item_id}, dependency={dependency_id}"
+        )
     unknown_ids = tuple(
         candidate.item.id for candidate in values if candidate.tokens.value is None
     )
@@ -394,19 +423,67 @@ def plan_context_budget(
             limit=_candidate_limit(offending, budget),
         )
 
+    group_by_candidate_index = {
+        index: group
+        for group in groups
+        for index in group.candidate_indexes
+    }
+    group_by_item_id = {
+        values[index].item.id: group_by_candidate_index[index]
+        for index in range(len(values))
+    }
+    dependencies_by_group = {
+        group.key: {
+            group_by_item_id[dependency_id].key
+            for index in group.candidate_indexes
+            for dependency_id in values[index].dependency_item_ids
+        }
+        for group in groups
+    }
+    group_by_key = {group.key: group for group in groups}
+
+    def dependency_closure(group_key):
+        closure = {group_key}
+        pending = [group_key]
+        while pending:
+            current = pending.pop()
+            for dependency_key in dependencies_by_group[current]:
+                if dependency_key not in closure:
+                    closure.add(dependency_key)
+                    pending.append(dependency_key)
+        return closure
+
     required_groups = tuple(
         group
         for group in groups
         if group.required and not group.item_limit_exceeded
     )
-    required_tokens = sum(group.token_count for group in required_groups)
+    required_group_keys = set()
+    for group in required_groups:
+        closure = dependency_closure(group.key)
+        unavailable = next(
+            (
+                group_by_key[key]
+                for key in closure
+                if group_by_key[key].item_limit_exceeded
+            ),
+            None,
+        )
+        if unavailable is not None:
+            dependent = values[group.candidate_indexes[0]].item.id
+            dependency = values[unavailable.candidate_indexes[0]].item.id
+            raise RequiredContextDependencyUnavailable(
+                item_id=dependent, dependency_id=dependency
+            )
+        required_group_keys.update(closure)
+    required_tokens = sum(group_by_key[key].token_count for key in required_group_keys)
     if required_tokens > budget.available_input_tokens:
         raise RequiredContextBudgetExceeded(
             required_tokens=required_tokens,
             available_tokens=budget.available_input_tokens,
         )
 
-    selected_group_keys = {group.key for group in required_groups}
+    selected_group_keys = set(required_group_keys)
     remaining = budget.available_input_tokens - required_tokens
     domain_first_index: dict[
         tuple[BudgetAllocationTier, tuple[object, ...]], int
@@ -429,15 +506,14 @@ def plan_context_budget(
         ),
     )
     for group in optional_groups:
-        if group.token_count <= remaining:
-            selected_group_keys.add(group.key)
-            remaining -= group.token_count
-
-    group_by_candidate_index = {
-        index: group
-        for group in groups
-        for index in group.candidate_indexes
-    }
+        closure = dependency_closure(group.key)
+        new_keys = closure - selected_group_keys
+        if any(group_by_key[key].item_limit_exceeded for key in new_keys):
+            continue
+        closure_tokens = sum(group_by_key[key].token_count for key in new_keys)
+        if closure_tokens <= remaining:
+            selected_group_keys.update(new_keys)
+            remaining -= closure_tokens
     decisions: list[ResolutionDecision] = []
     selected_items: list[ContextItem] = []
     for index, candidate in enumerate(values):
@@ -523,6 +599,7 @@ __all__ = [
     "ContextInputBudget",
     "ItemTokenLimitExceeded",
     "RequiredContextBudgetExceeded",
+    "RequiredContextDependencyUnavailable",
     "UnknownTokenEstimate",
     "UnversionedTokenEstimator",
     "plan_context_budget",
