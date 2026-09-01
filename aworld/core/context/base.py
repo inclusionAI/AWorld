@@ -854,6 +854,12 @@ class Context:
                                 "activated": activation.activated,
                                 "reason_code": activation.reason_code,
                                 "loaded_tokens": activation.loaded_tokens,
+                                "requested_tool_count": len(
+                                    activation.requested_tools
+                                ),
+                                "unavailable_tool_count": len(
+                                    activation.unavailable_tools
+                                ),
                             }
                             for activation in activations
                         ]
@@ -866,6 +872,9 @@ class Context:
                             "catalog_hash": transition.snapshot.catalog_hash,
                             "added": list(transition.added),
                             "removed": list(transition.removed),
+                            "applied_added": list(transition.applied_added),
+                            "applied_removed": list(transition.applied_removed),
+                            "deferred_added": list(transition.deferred_added),
                             "action": transition.action.value,
                             "cache_break_reason": (
                                 transition.cache_break_reason.value

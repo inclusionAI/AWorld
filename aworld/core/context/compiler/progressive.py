@@ -78,12 +78,16 @@ class SkillActivation:
     reason_code: str
     loaded_tokens: int
     requested_tools: tuple[str, ...] = ()
+    unavailable_tools: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         _identifier("skill_id", self.skill_id)
         object.__setattr__(self, "level", DisclosureLevel(self.level))
         _identifier("reason_code", self.reason_code)
         object.__setattr__(self, "requested_tools", tuple(self.requested_tools))
+        object.__setattr__(
+            self, "unavailable_tools", tuple(self.unavailable_tools)
+        )
         if isinstance(self.loaded_tokens, bool) or not isinstance(
             self.loaded_tokens, int
         ) or self.loaded_tokens < 0:
@@ -223,6 +227,10 @@ class CatalogTransition:
     removed: tuple[str, ...]
     action: CatalogChangeAction
     cache_break_reason: CacheBreakReason | None
+    candidate_snapshot: TaskCatalogSnapshot | None = None
+    applied_added: tuple[str, ...] = ()
+    applied_removed: tuple[str, ...] = ()
+    deferred_added: tuple[str, ...] = ()
 
 
 def compile_minimal_tool_catalog(
@@ -230,21 +238,28 @@ def compile_minimal_tool_catalog(
     *,
     base_tools: Iterable[str],
     skill_requested_tools: Iterable[str],
-    agent_allowlist: Iterable[str],
-    workspace_allowlist: Iterable[str],
-    user_permissions: Iterable[str],
+    agent_allowlist: Iterable[str] | None = None,
+    workspace_allowlist: Iterable[str] | None = None,
+    user_permissions: Iterable[str] | None = None,
     task_epoch: int,
 ) -> TaskCatalogSnapshot:
-    """Intersect permissions; Skill text can request but never grant a Tool."""
+    """Select requests from an already permission-filtered catalog.
+
+    ``entries`` is the runtime permission upper bound.  The optional legacy
+    allowlists can only further restrict that bound; they can never recover an
+    entry that is absent from it.  Selection preserves the permission owner's
+    schema order and never examines task text or Tool descriptions.
+    """
+    values = tuple(entries)
     requested = set(base_tools) | set(skill_requested_tools)
-    allowed = (
-        requested
-        & set(agent_allowlist)
-        & set(workspace_allowlist)
-        & set(user_permissions)
+    allowed = {entry.tool_id for entry in values}
+    for restriction in (agent_allowlist, workspace_allowlist, user_permissions):
+        if restriction is not None:
+            allowed &= set(restriction)
+    selected = tuple(
+        entry for entry in values
+        if entry.tool_id in requested and entry.tool_id in allowed
     )
-    by_id = {entry.tool_id: entry for entry in entries}
-    selected = tuple(by_id[tool_id] for tool_id in sorted(allowed) if tool_id in by_id)
     return TaskCatalogSnapshot.build(task_epoch, selected)
 
 
@@ -259,8 +274,14 @@ def transition_task_catalog(
         previous = None
     previous_ids = {entry.tool_id for entry in previous.entries} if previous else set()
     candidate_ids = {entry.tool_id for entry in candidate.entries}
+    requested_added = candidate_ids - previous_ids
+    requested_removed = previous_ids - candidate_ids
     changed = previous is not None and previous.catalog_hash != candidate.catalog_hash
-    if changed and action is CatalogChangeAction.DEFER_NEXT_EPOCH:
+    if action is CatalogChangeAction.CHILD_CONTEXT:
+        # A child request is evidence for a separately scoped Context.  It
+        # must never mutate the parent task's active catalog.
+        snapshot = previous or TaskCatalogSnapshot.build(candidate.task_epoch, ())
+    elif changed and action is CatalogChangeAction.DEFER_NEXT_EPOCH:
         # Permission/schema contractions are authoritative immediately.  Only
         # newly requested ids are deferred; keeping the previous snapshot here
         # would accidentally preserve a revoked Tool.
@@ -274,12 +295,24 @@ def transition_task_catalog(
         )
     else:
         snapshot = candidate
+    snapshot_ids = {entry.tool_id for entry in snapshot.entries}
+    applied_added = snapshot_ids - previous_ids
+    applied_removed = previous_ids - snapshot_ids
+    actual_changed = (
+        previous is not None and previous.catalog_hash != snapshot.catalog_hash
+    )
     return CatalogTransition(
         snapshot=snapshot,
-        added=tuple(sorted(candidate_ids - previous_ids)),
-        removed=tuple(sorted(previous_ids - candidate_ids)),
+        added=tuple(sorted(requested_added)),
+        removed=tuple(sorted(requested_removed)),
         action=action,
-        cache_break_reason=(CacheBreakReason.TOOL_CATALOG_CHANGE if changed else None),
+        cache_break_reason=(
+            CacheBreakReason.TOOL_CATALOG_CHANGE if actual_changed else None
+        ),
+        candidate_snapshot=candidate,
+        applied_added=tuple(sorted(applied_added)),
+        applied_removed=tuple(sorted(applied_removed)),
+        deferred_added=tuple(sorted(requested_added - applied_added)),
     )
 
 
