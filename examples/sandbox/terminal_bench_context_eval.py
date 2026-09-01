@@ -25,6 +25,12 @@ import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from aworld.evaluations.normalized_cost import NormalizedCostPolicy
+
 
 RUNNER = Path(__file__).with_name("docker_terminal_bench.py")
 
@@ -547,6 +553,7 @@ def main() -> None:
             "verifier and reward",
         ],
         "anti_overfitting": "Variants cannot contain task prompts, names, expected answers, or verifier logic.",
+        "normalized_cost_policy": NormalizedCostPolicy().to_dict(),
         "verifier_mode": args.verifier_mode,
         "created_at_epoch": time.time(),
     }
