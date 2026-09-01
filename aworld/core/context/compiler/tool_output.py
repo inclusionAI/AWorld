@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 import hashlib
+import re
 from .frozen_json import FrozenJSON, freeze_json
 from .reducers import ArtifactReceipt
 from .runtime import estimate_canonical_json_tokens
@@ -56,6 +57,44 @@ class ToolOutputPlan:
 
 
 @dataclass(frozen=True, slots=True)
+class UpstreamToolArtifactReceipt:
+    """Artifact already owned and retrievable by the originating Tool.
+
+    This receipt is deliberately separate from ``ToolOutputRecord.artifact``.
+    The latter binds the exact ActionResult snapshot owned by Context, while an
+    upstream receipt can bind a larger stream (for example stdout) that the Tool
+    bounded before AWorld received the ActionResult.
+    """
+
+    ref: str
+    content_hash: str
+    byte_count: int
+    owner_tool: str
+    retrieval_action: str = "read_output_artifact"
+
+    def __post_init__(self) -> None:
+        for name in ("ref", "owner_tool", "retrieval_action"):
+            value = getattr(self, name)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"{name} must be a non-empty string")
+        if not re.fullmatch(r"sha256:[0-9a-f]{64}", self.content_hash):
+            raise ValueError("content_hash must be a canonical sha256 hash")
+        if isinstance(self.byte_count, bool) or not isinstance(self.byte_count, int):
+            raise TypeError("byte_count must be an integer")
+        if self.byte_count < 0:
+            raise ValueError("byte_count must be non-negative")
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "ref": self.ref,
+            "content_hash": self.content_hash,
+            "byte_count": self.byte_count,
+            "owner_tool": self.owner_tool,
+            "retrieval_action": self.retrieval_action,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class ToolOutputRecord:
     tool_call_id: str
     policy_version: str
@@ -66,6 +105,7 @@ class ToolOutputRecord:
     offloaded_tokens: int
     artifact: ArtifactReceipt | None
     reason_code: str
+    upstream_artifacts: tuple[UpstreamToolArtifactReceipt, ...] = ()
 
 
 def plan_tool_output(
@@ -86,6 +126,7 @@ def bind_tool_output(
     raw_bytes: bytes,
     inline_payload: FrozenJSON,
     artifact: ArtifactReceipt | None = None,
+    upstream_artifacts: tuple[UpstreamToolArtifactReceipt, ...] = (),
 ) -> ToolOutputRecord:
     """Validate owner output; artifact creation remains outside compiler core."""
     if not isinstance(raw_bytes, bytes):
@@ -105,6 +146,14 @@ def bind_tool_output(
     raw_token_estimate = estimate_canonical_json_tokens(
         raw_bytes.decode("utf-8", errors="replace")
     ).value or 0
+    upstream_artifacts = tuple(upstream_artifacts)
+    if any(
+        not isinstance(receipt, UpstreamToolArtifactReceipt)
+        for receipt in upstream_artifacts
+    ):
+        raise TypeError(
+            "upstream_artifacts must contain UpstreamToolArtifactReceipt values"
+        )
     return ToolOutputRecord(
         tool_call_id=plan.tool_call_id,
         policy_version=plan.policy.policy_version,
@@ -115,9 +164,15 @@ def bind_tool_output(
         offloaded_tokens=max(0, raw_token_estimate - inline_tokens),
         artifact=artifact,
         reason_code=(
-            "artifact_offloaded" if artifact is not None
+            "artifact_offloaded_upstream_preserved"
+            if artifact is not None and upstream_artifacts
+            else "artifact_offloaded"
+            if artifact is not None
+            else "upstream_artifact_preserved"
+            if upstream_artifacts
             else "bounded_inline_output"
         ),
+        upstream_artifacts=upstream_artifacts,
     )
 
 
@@ -126,6 +181,7 @@ __all__ = [
     "ToolOutputPlan",
     "ToolOutputPolicy",
     "ToolOutputRecord",
+    "UpstreamToolArtifactReceipt",
     "bind_tool_output",
     "plan_tool_output",
 ]

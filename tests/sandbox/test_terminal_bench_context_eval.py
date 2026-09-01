@@ -116,6 +116,11 @@ def test_llm_call_capture_falls_back_to_live_context_for_blocked_calls():
         "task_response_count": 0,
         "live_context_count": 1,
         "counts_match": False,
+        "task_response_sha256": runner._llm_calls_digest([]),
+        "live_context_sha256": runner._llm_calls_digest(
+            [{"status": "blocked_before_provider"}]
+        ),
+        "snapshots_match": False,
     }
 
 
@@ -138,6 +143,20 @@ def test_provider_bound_gate_uses_lowering_receipt_not_model_capture_stage():
     assert runner._is_provider_bound_call(call) is True
     call["provider_invoked"] = False
     assert runner._is_provider_bound_call(call) is False
+
+
+def test_provider_bound_gate_accepts_provider_owned_off_mode_capture():
+    runner = _load_example("docker_terminal_bench")
+    call = {
+        "provider_invoked": True,
+        "provider_request": {
+            "capture_stage": "provider_prepared",
+            "fidelity": "provider_prepared",
+            "payload": {"model": "test", "messages": []},
+        },
+    }
+
+    assert runner._is_provider_bound_call(call) is True
 
 
 def test_dataset_adapter_extracts_generic_task_archive(tmp_path):
@@ -210,3 +229,26 @@ def test_summary_pairs_reward_with_context_effects():
             "offloaded_artifact_bytes_delta": 500,
         }
     ]
+
+
+def test_python_functions_verifier_mode_is_explicit_and_not_a_variant_field(tmp_path, monkeypatch):
+    harness = _load_example("terminal_bench_context_eval")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "terminal_bench_context_eval.py",
+            "--dataset",
+            str(tmp_path / "dataset.zip"),
+            "--task",
+            "sample",
+            "--output-dir",
+            str(tmp_path / "out"),
+            "--verifier-mode",
+            "python-functions",
+        ],
+    )
+
+    args = harness.parse_args()
+
+    assert args.verifier_mode == "python-functions"

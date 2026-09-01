@@ -14,6 +14,7 @@ from aworld.core.context.compiler import (
     ProviderCandidateEnvelope,
     ProviderLoweringCapability,
     ProviderLoweringReceipt,
+    ProviderRequestSnapshot,
 )
 from aworld.utils.common import nest_dict_counter
 
@@ -163,6 +164,37 @@ class LLMProviderBase(abc.ABC):
             raise CandidateRequestNotEnforceable(
                 "provider_lowering_receipt_failed"
             ) from None
+
+    def commit_provider_request_capture(
+        self,
+        *,
+        context: Context | None,
+        request_id: str,
+        snapshot: ProviderRequestSnapshot,
+    ) -> None:
+        """Bind one provider-owned immutable request snapshot to its LLM call."""
+        if context is None:
+            raise ValueError("provider request capture requires Context")
+        if not isinstance(snapshot, ProviderRequestSnapshot):
+            raise TypeError("snapshot must be a ProviderRequestSnapshot")
+        if snapshot.request_id != request_id:
+            raise ValueError("provider request capture id mismatch")
+        matches = [
+            (index, record)
+            for index, record in enumerate(context.get_llm_calls())
+            if isinstance(record, dict) and record.get("request_id") == request_id
+        ]
+        if len(matches) != 1:
+            raise ValueError("provider request capture correlation is ambiguous")
+        index, record = matches[0]
+        updated = dict(record)
+        updated.update(
+            {
+                "provider_request": snapshot.to_dict(),
+                "provider_invoked": True,
+            }
+        )
+        context.get_llm_calls()[index] = updated
 
     def preprocess_messages(self, messages: List[Dict[str, str]]) -> Any:
         """Preprocess messages, convert OpenAI format messages to specific provider required format.

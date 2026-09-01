@@ -128,6 +128,9 @@ def _assert_lowering_receipt(context: Context, sent: dict[str, Any]) -> None:
     assert record["context_observe_scope"] == "legacy_request_before_rollout"
     assert record["provider_invoked"] is True
     assert record["provider_prepared_request_match"] is None
+    assert record["provider_request"]["payload"] == sent
+    assert record["provider_request"]["capture_stage"] == "provider_prepared"
+    assert record["provider_request"]["fidelity"] == "provider_prepared"
     assert rollout["candidate_status"] == "provider_lowered"
     assert rollout["candidate_applied"] is True
     assert rollout["provider_lowering_ready"] is True
@@ -142,6 +145,29 @@ def _assert_lowering_receipt(context: Context, sent: dict[str, Any]) -> None:
     )
     assert "candidate-secret" not in repr(rollout)
     assert "provider_lowering" in json.dumps(record)
+
+
+def test_openai_off_mode_captures_provider_prepared_request_before_send():
+    provider, sync_calls, _ = _provider()
+    model = LLMModel(custom_provider=provider)
+    model.provider_name = "openai"
+    context = Context(task_id="openai-off-provider-capture")
+
+    model.completion(
+        [{"role": "user", "content": "legacy"}],
+        context=context,
+        response_format={"type": "json_object"},
+    )
+
+    assert len(sync_calls) == 1
+    record = context.get_llm_calls()[0]
+    assert record["provider_request"]["payload"] == sync_calls[0]
+    assert record["provider_request"]["capture_stage"] == "provider_prepared"
+    assert record["provider_request"]["fidelity"] == "provider_prepared"
+    assert record["provider_request"]["content_hash"] == canonical_json_hash(
+        sync_calls[0]
+    )
+    assert record["provider_invoked"] is True
 
 
 @pytest.mark.asyncio
@@ -285,6 +311,9 @@ def test_universal_final_http_enforce_records_serialized_cache_continuity():
     assert len(sent) == 2
     assert all(serialized_body for _, serialized_body in sent)
     first, second = context.get_llm_calls()
+    assert first["request_trace_match"] is True
+    assert second["request_trace_match"] is True
+    assert first["context_observe"]["request"]["capture_stage"] == "model_boundary"
     assert first["context_rollout"]["final_compile"]["enforce"]["ready"]
     assert first["context_rollout"]["provider_lowering"][
         "cache_continuity"

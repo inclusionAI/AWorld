@@ -93,6 +93,14 @@ def _resolve_context_call_id(kwargs: dict[str, Any]) -> str | None:
     # ensuring it is removed before any provider invocation.
     return kwargs.pop(AWORLD_CONTEXT_CALL_ID_KWARG, None) or _AWORLD_CONTEXT_CALL_ID.get()
 
+
+def _optional_runtime_identity(value: Any) -> str | None:
+    """Normalize unset runtime ids before entering sealed trace contracts."""
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip()
+    return normalized or None
+
 # Predefined model names for common providers
 MODEL_NAMES = {
     "anthropic": ["claude-3-5-sonnet-20241022", "claude-3-5-sonnet-20240620", "claude-3-opus-20240229"],
@@ -1356,16 +1364,24 @@ class LLMModel:
                 capture_stage=RequestCaptureStage.MODEL_BOUNDARY,
                 fidelity=ProviderRequestFidelity.MODEL_BOUNDARY,
                 source_identity=f"llm-model-request:{request_id}",
-                task_id=context.task_id,
-                session_id=getattr(context, "session_id", None),
-                trace_id=getattr(context, "trace_id", None),
+                task_id=_optional_runtime_identity(context.task_id),
+                session_id=_optional_runtime_identity(
+                    getattr(context, "session_id", None)
+                ),
+                trace_id=_optional_runtime_identity(
+                    getattr(context, "trace_id", None)
+                ),
             )
             observe_payload = observation.to_redacted_dict()
-        except Exception:
+        except Exception as exc:
             observe_payload = {
                 "status": "error",
                 "error": {"code": "context_observe_failed"},
             }
+            logger.warning(
+                "Context request observation failed; "
+                f"error_type={type(exc).__name__}"
+            )
 
         llm_call = {
             "capture_stage": RequestCaptureStage.MODEL_BOUNDARY.value,
@@ -1388,6 +1404,33 @@ class LLMModel:
             llm_call["context_rollout"] = self._safe_copy(context_rollout)
         if not provider_invoked:
             llm_call["provider_invoked"] = False
+        llm_call["request_trace_match_scope"] = (
+            "aworld.standard.model_boundary.v1"
+        )
+        if observation is not None:
+            try:
+                direct_match = request_trace_match(
+                    observation.request_snapshot,
+                    request,
+                )
+                llm_call["request_trace_match"] = direct_match.exact
+                llm_call["request_trace_mismatch_paths"] = list(
+                    direct_match.mismatch_paths
+                )
+                llm_call["request_trace_mismatch_count"] = (
+                    direct_match.mismatch_count
+                )
+            except Exception:
+                llm_call["request_trace_match"] = None
+                llm_call["request_trace_mismatch_paths"] = None
+                llm_call["request_trace_mismatch_count"] = None
+                llm_call["request_trace_match_error"] = {
+                    "code": "request_trace_match_failed"
+                }
+        else:
+            llm_call["request_trace_match"] = None
+            llm_call["request_trace_mismatch_paths"] = None
+            llm_call["request_trace_mismatch_count"] = None
         llm_calls = context.get_llm_calls()
         if agent_call_id:
             matched = [

@@ -154,9 +154,16 @@ def assess_default_on_readiness(
     trajectory_complete_rate: float,
     rollback_config_hash: str | None,
     hard_gate_failures: Iterable[str] = (),
+    minimum_complete_pairs: int = 10,
 ) -> DefaultOnReadinessReport:
     if isinstance(complete_pairs, bool) or not isinstance(complete_pairs, int) or complete_pairs < 0:
         raise ValueError("complete_pairs must be a non-negative integer")
+    if (
+        isinstance(minimum_complete_pairs, bool)
+        or not isinstance(minimum_complete_pairs, int)
+        or minimum_complete_pairs <= 0
+    ):
+        raise ValueError("minimum_complete_pairs must be positive")
     for name, value in (
         ("request_trace_match_rate", request_trace_match_rate),
         ("trajectory_complete_rate", trajectory_complete_rate),
@@ -182,6 +189,8 @@ def assess_default_on_readiness(
         failures.add("cross_workload_evidence_missing")
     if complete_pairs <= 0:
         failures.add("paired_evidence_missing")
+    elif complete_pairs < minimum_complete_pairs:
+        failures.add("insufficient_paired_evidence")
     if quality_regression:
         failures.add("quality_regression")
     if request_trace_match_rate < 1.0:

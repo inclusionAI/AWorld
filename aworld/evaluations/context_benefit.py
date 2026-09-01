@@ -17,12 +17,29 @@ from aworld.core.context.compiler.frozen_json import (
 
 
 _ALLOWED_VARIANT_FIELDS = {
+    "agent_memory_config",
     "context_compiler",
+    "docker_output_policy",
     "tool_output_policy",
     "artifact_offload",
     "progressive_skills",
     "progressive_tools",
     "completion_contract",
+}
+_ALLOWED_AGENT_MEMORY_FIELDS = {
+    "history_scope",
+    "enable_summary",
+    "summary_rounds",
+    "summary_context_length",
+    "summary_summaried",
+    "tool_result_offload",
+    "tool_action_white_list",
+    "tool_result_length_threshold",
+    "tool_result_preview_chars",
+}
+_ALLOWED_DOCKER_OUTPUT_FIELDS = {
+    "max_inline_output_bytes",
+    "output_head_bytes",
 }
 _ALLOWED_COMPILER_FIELDS = {
     "mode",
@@ -85,6 +102,18 @@ class ContextVariant:
         if output_policy is not None:
             if not isinstance(output_policy, dict) or set(output_policy) - _ALLOWED_TOOL_OUTPUT_FIELDS:
                 raise ValueError("tool_output_policy variant contains unknown fields")
+        agent_memory = settings.get("agent_memory_config")
+        if agent_memory is not None and (
+            not isinstance(agent_memory, dict)
+            or set(agent_memory) - _ALLOWED_AGENT_MEMORY_FIELDS
+        ):
+            raise ValueError("agent_memory_config variant contains non-Context fields")
+        docker_output = settings.get("docker_output_policy")
+        if docker_output is not None and (
+            not isinstance(docker_output, dict)
+            or set(docker_output) - _ALLOWED_DOCKER_OUTPUT_FIELDS
+        ):
+            raise ValueError("docker_output_policy variant contains unknown fields")
         for field in ("artifact_offload", "progressive_skills", "progressive_tools"):
             if field in settings and not isinstance(settings[field], bool):
                 raise TypeError(f"{field} must be a boolean")

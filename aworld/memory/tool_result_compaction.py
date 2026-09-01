@@ -1,4 +1,5 @@
 import json
+import re
 from dataclasses import dataclass
 from typing import Any, Sequence
 
@@ -34,6 +35,28 @@ class ToolResultCompactionResult:
     metadata: dict
 
 
+def has_reversible_tool_output_boundary(metadata: Any) -> bool:
+    """Return whether Context already emitted a checksum-bound artifact receipt."""
+    if not isinstance(metadata, dict):
+        return False
+    receipt = metadata.get("tool_output_policy")
+    if not isinstance(receipt, dict):
+        return False
+    if not isinstance(receipt.get("policy_version"), str):
+        return False
+    reason = receipt.get("reason_code")
+    if not isinstance(reason, str) or "artifact" not in reason:
+        return False
+    primary_ref = receipt.get("artifact_ref")
+    context_ref = receipt.get("context_artifact_ref")
+    if not any(isinstance(ref, str) and ref.strip() for ref in (primary_ref, context_ref)):
+        return False
+    checksum = receipt.get("raw_checksum")
+    return isinstance(checksum, str) and bool(
+        re.fullmatch(r"sha256:[0-9a-f]{64}", checksum)
+    )
+
+
 def compact_tool_result_for_memory(
     content: Any,
     *,
@@ -45,12 +68,26 @@ def compact_tool_result_for_memory(
     token_threshold: int = 30000,
     preview_chars: int = 2000,
     force: bool = False,
+    result_metadata: dict | None = None,
 ) -> ToolResultCompactionResult:
     serialized_content = serialize_tool_result_content(content)
     token_count = num_tokens_from_string(serialized_content) if serialized_content else 0
     line_count = serialized_content.count("\n") + 1 if serialized_content else 0
     tool_action_key = f"{tool_name}:{action_name}" if tool_name or action_name else None
     white_list = list(tool_action_white_list or [])
+
+    if has_reversible_tool_output_boundary(result_metadata):
+        return ToolResultCompactionResult(
+            content=content,
+            applied=False,
+            metadata={
+                "applied": False,
+                "preserved_reversible_boundary": True,
+                "original_token_count": token_count,
+                "original_char_length": len(serialized_content),
+                "original_line_count": line_count,
+            },
+        )
 
     trigger = None
     if enabled:

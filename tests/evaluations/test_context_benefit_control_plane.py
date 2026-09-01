@@ -94,6 +94,15 @@ def test_context_only_manifest_and_paired_benefit_are_deterministic():
     with pytest.raises(ValueError, match="prompts"):
         ContextVariant.build("invalid", {"system_prompt": "benchmark hint"})
 
+    docker_variant = ContextVariant.build(
+        "docker-context",
+        {
+            "agent_memory_config": {"tool_result_offload": True},
+            "docker_output_policy": {"max_inline_output_bytes": 8192},
+        },
+    )
+    assert docker_variant.settings["agent_memory_config"]["tool_result_offload"] is True
+
 
 def test_canary_assignment_falls_back_and_readiness_requires_cross_workload():
     policy = RolloutCohortPolicy(
@@ -155,3 +164,15 @@ def test_canary_assignment_falls_back_and_readiness_requires_cross_workload():
         rollback_config_hash=rollback.bundle_hash,
     )
     assert ready.status is ReadinessStatus.READY
+
+    too_small = assess_default_on_readiness(
+        capabilities=(ready_capability,),
+        workload_kinds=("terminal", "research"),
+        complete_pairs=2,
+        quality_regression=False,
+        request_trace_match_rate=1.0,
+        trajectory_complete_rate=1.0,
+        rollback_config_hash=rollback.bundle_hash,
+    )
+    assert too_small.status is ReadinessStatus.NOT_READY
+    assert "insufficient_paired_evidence" in too_small.gate_failures

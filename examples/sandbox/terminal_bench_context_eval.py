@@ -152,6 +152,15 @@ def parse_args() -> argparse.Namespace:
         help="Pull/use task.toml docker_image instead of building the packaged Dockerfile.",
     )
     parser.add_argument("--keep-containers", action="store_true")
+    parser.add_argument(
+        "--verifier-mode",
+        choices=("packaged", "python-functions"),
+        default="packaged",
+        help=(
+            "packaged runs tests/test.sh; python-functions executes the original zero-argument "
+            "test_* functions without the package install wrapper for constrained local Docker hosts"
+        ),
+    )
     parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args()
 
@@ -200,22 +209,33 @@ def collect_context_metrics(run_dir: Path) -> dict:
         if trajectory_path.exists()
         else []
     )
+    manifest_path = run_dir / "run_manifest.json"
+    manifest = (
+        json.loads(manifest_path.read_text(encoding="utf-8"))
+        if manifest_path.exists()
+        else {}
+    )
+    capture = manifest.get("capture") if isinstance(manifest, dict) else {}
+    continuity = capture.get("llm_call_continuity") if isinstance(capture, dict) else {}
     prompt_tokens = completion_tokens = cache_read_tokens = 0
     provider_request_bytes = trace_match_count = 0
     for call in provider_calls if isinstance(provider_calls, list) else []:
         if not isinstance(call, dict):
             continue
-        request = call.get("request") or {}
+        provider_request = call.get("provider_request") or {}
+        request = provider_request.get("payload") or call.get("request") or {}
         provider_request_bytes += len(
             json.dumps(request, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
         )
         usage = call.get("usage_normalized") or call.get("usage") or {}
         raw_usage = call.get("usage_raw") or usage
+        prompt_details = raw_usage.get("prompt_tokens_details") or {}
         prompt_tokens += int(usage.get("prompt_tokens") or usage.get("input_tokens") or 0)
         completion_tokens += int(usage.get("completion_tokens") or usage.get("output_tokens") or 0)
         cache_read_tokens += int(
             raw_usage.get("cache_hit_tokens")
             or raw_usage.get("cache_read_input_tokens")
+            or prompt_details.get("cached_tokens")
             or 0
         )
         trace_match_count += int(call.get("request_trace_match") is True)
@@ -231,11 +251,30 @@ def collect_context_metrics(run_dir: Path) -> dict:
         "completion_tokens": completion_tokens,
         "cache_read_tokens": cache_read_tokens,
         "request_trace_match_count": trace_match_count,
+        "request_trace_match_rate": (
+            trace_match_count / len(provider_calls)
+            if isinstance(provider_calls, list) and provider_calls
+            else 0.0
+        ),
         "trajectory_items": len(trajectory) if isinstance(trajectory, list) else 0,
         "offloaded_artifact_count": len(artifact_paths),
         "offloaded_artifact_bytes": sum(path.stat().st_size for path in artifact_paths),
         "provider_truth_available": provider_calls_path.exists() and bool(provider_calls),
         "raw_trajectory_available": trajectory_path.exists(),
+        "capture_integrity_available": bool(
+            isinstance(capture, dict)
+            and capture.get("provider_capture_gate_passed") is True
+            and isinstance(continuity, dict)
+            and continuity.get("snapshots_match") is True
+        ),
+        "request_trace_match_available": bool(
+            isinstance(provider_calls, list)
+            and provider_calls
+            and all(
+                isinstance(call, dict) and call.get("request_trace_match") is True
+                for call in provider_calls
+            )
+        ),
     }
 
 
@@ -260,11 +299,23 @@ def summarize_results(results: list[dict], baseline_variant: str) -> dict:
                 bool(result["context_metrics"]["provider_truth_available"])
                 for result in variant_results
             ) / len(variant_results),
+            "capture_integrity_rate": sum(
+                bool(result["context_metrics"].get("capture_integrity_available"))
+                for result in variant_results
+            ) / len(variant_results),
+            "request_trace_match_rate": sum(
+                bool(result["context_metrics"].get("request_trace_match_available"))
+                for result in variant_results
+            ) / len(variant_results),
             "median_provider_request_bytes": statistics.median(
                 result["context_metrics"]["provider_request_bytes"] for result in variant_results
             ),
             "median_prompt_tokens": statistics.median(
                 result["context_metrics"]["prompt_tokens"] for result in variant_results
+            ),
+            "median_cache_read_tokens": statistics.median(
+                result["context_metrics"].get("cache_read_tokens", 0)
+                for result in variant_results
             ),
             "median_offloaded_artifact_bytes": statistics.median(
                 result["context_metrics"]["offloaded_artifact_bytes"] for result in variant_results
@@ -326,6 +377,7 @@ def execute_job(
     output_dir: Path,
     max_steps: int,
     keep_container: bool,
+    verifier_mode: str,
 ) -> dict:
     run_dir = output_dir / "runs" / fixture.name / variant_name / f"repeat-{repetition:02d}"
     verifier_dir = run_dir / "verifier"
@@ -385,14 +437,43 @@ def execute_job(
         (run_dir / "agent.stderr.log").write_text(agent_result.stderr or "", encoding="utf-8")
 
         verifier_timeout = float(fixture.config.get("verifier", {}).get("timeout_sec", 900))
+        if verifier_mode == "packaged":
+            verifier_command = [docker, "exec", container, "/bin/bash", "/tests/test.sh"]
+        else:
+            verifier_program = """
+import importlib.util
+import inspect
+
+spec = importlib.util.spec_from_file_location("terminal_bench_verifier", "/tests/test_outputs.py")
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+tests = [
+    value
+    for name, value in sorted(vars(module).items())
+    if name.startswith("test_") and callable(value)
+]
+if not tests:
+    raise RuntimeError("verifier contains no test_* functions")
+unsupported = [test.__name__ for test in tests if inspect.signature(test).parameters]
+if unsupported:
+    raise RuntimeError("python-functions verifier does not support fixtures: " + ",".join(unsupported))
+for test in tests:
+    test()
+""".strip()
+            verifier_command = [docker, "exec", container, "python3", "-c", verifier_program]
         verifier_result = run_command(
-            [docker, "exec", container, "/bin/bash", "/tests/test.sh"],
+            verifier_command,
             capture_output=True,
             timeout=verifier_timeout,
         )
         (verifier_dir / "stdout.log").write_text(verifier_result.stdout or "", encoding="utf-8")
         (verifier_dir / "stderr.log").write_text(verifier_result.stderr or "", encoding="utf-8")
         reward_path = verifier_dir / "reward.txt"
+        if verifier_mode == "python-functions":
+            reward_path.write_text(
+                "1\n" if verifier_result.returncode == 0 else "0\n",
+                encoding="utf-8",
+            )
         reward = reward_path.read_text(encoding="utf-8").strip() if reward_path.exists() else None
         result = {
             "schema_version": "aworld.context-eval-result/v1",
@@ -401,6 +482,7 @@ def execute_job(
             "repetition": repetition,
             "agent_exit_code": agent_result.returncode,
             "verifier_exit_code": verifier_result.returncode,
+            "verifier_mode": verifier_mode,
             "reward": reward,
             "container_image_id": container_image_id(docker, container),
             "task_archive_sha256": fixture.archive_sha256,
@@ -465,6 +547,7 @@ def main() -> None:
             "verifier and reward",
         ],
         "anti_overfitting": "Variants cannot contain task prompts, names, expected answers, or verifier logic.",
+        "verifier_mode": args.verifier_mode,
         "created_at_epoch": time.time(),
     }
     write_json(output_dir / "experiment_manifest.json", experiment)
@@ -490,6 +573,7 @@ def main() -> None:
                 output_dir=output_dir,
                 max_steps=args.max_steps,
                 keep_container=args.keep_containers,
+                verifier_mode=args.verifier_mode,
             )
         )
     write_json(output_dir / "results.json", results)
