@@ -60,6 +60,7 @@ from aworld.core.context.compiler import (
     compile_context_candidate,
     inspect_final_context,
     build_unknown_attribution_plan,
+    AttributionCollection,
     observe_legacy_provider_request,
     request_trace_match,
     reviewed_provider_lowerings,
@@ -857,6 +858,9 @@ class LLMModel:
                 namespace=agent_id,
                 source_identity=source_identity,
                 result=message_result,
+                request_id_hash=canonical_json_hash({"request_id": request_id}),
+                collection=AttributionCollection.MESSAGES,
+                task_epoch=context.task_epoch,
             )
         )
         context.publish_context_observation(
@@ -865,6 +869,9 @@ class LLMModel:
                 namespace=agent_id,
                 source_identity=source_identity,
                 result=tool_result,
+                request_id_hash=canonical_json_hash({"request_id": request_id}),
+                collection=AttributionCollection.TOOLS,
+                task_epoch=context.task_epoch,
             )
         )
         return values

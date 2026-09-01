@@ -586,6 +586,20 @@ class Context:
         accepts only ``ProviderVerifiedCacheIdentity`` and consumes lifecycle
         invalidations exactly when a provider-owned serialized request exists.
         """
+        from aworld.core.context.compiler.cache import ProviderVerifiedCacheIdentity
+
+        if not isinstance(verified_identity, ProviderVerifiedCacheIdentity):
+            raise TypeError(
+                "verified_identity must be ProviderVerifiedCacheIdentity"
+            )
+        result = self.preview_provider_cache_identity(verified_identity)
+        current = verified_identity.identity
+        self._provider_cache_identity = current
+        self._pending_cache_break_reasons.clear()
+        return result
+
+    def preview_provider_cache_identity(self, verified_identity: Any) -> Dict[str, Any]:
+        """Compute cache continuity without mutating cache/lifecycle state."""
         from aworld.core.context.compiler.cache import (
             ProviderVerifiedCacheIdentity,
             cache_break_reasons,
@@ -613,8 +627,6 @@ class Context:
                 CacheBreakReason.PROVIDER_CACHE_UNKNOWN in pending
             ),
         )
-        self._provider_cache_identity = current
-        self._pending_cache_break_reasons.clear()
         return {
             "status": (
                 "initialized"

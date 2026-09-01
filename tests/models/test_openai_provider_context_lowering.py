@@ -131,7 +131,8 @@ def _assert_lowering_receipt(context: Context, sent: dict[str, Any]) -> None:
     assert record["provider_request"]["payload"] == sent
     assert record["provider_request"]["capture_stage"] == "provider_prepared"
     assert record["provider_request"]["fidelity"] == "provider_prepared"
-    assert rollout["candidate_status"] == "provider_lowered"
+    assert rollout["candidate_status"] == "provider_attempted"
+    assert record["provider_attempt_status"] == "attempted"
     assert rollout["candidate_applied"] is True
     assert rollout["provider_lowering_ready"] is True
     assert receipt["candidate_content_hash"] == rollout["candidate_snapshot"][
@@ -244,6 +245,76 @@ def test_openai_enforce_fails_closed_when_receipt_cannot_be_persisted():
     assert raised.value.reason_code == "provider_lowering_receipt_failed"
     assert sync_calls == []
     assert "private-storage-error" not in str(raised.value)
+
+
+def test_prepared_receipt_mutation_failure_does_not_send_or_mark_invoked():
+    class FailSecondReplacement(list):
+        replacements = 0
+
+        def __setitem__(self, index, value):
+            self.replacements += 1
+            if self.replacements == 2:
+                raise RuntimeError("capture-replacement-failed")
+            return super().__setitem__(index, value)
+
+    class MutationFailureContext(Context):
+        def __init__(self):
+            super().__init__(task_id="atomic-provider-prepared")
+            self.calls = FailSecondReplacement()
+
+        def get_llm_calls(self):
+            return self.calls
+
+    provider, sync_calls, _ = _provider()
+    model = _model(provider)
+    context = MutationFailureContext()
+
+    with pytest.raises(CandidateRequestNotEnforceable) as raised:
+        model.completion(
+            [{"role": "user", "content": "legacy"}], context=context
+        )
+
+    assert raised.value.reason_code == "provider_prepared_attempt_failed"
+    assert sync_calls == []
+    assert context.calls[0]["provider_invoked"] is False
+    assert context.calls[0]["provider_attempt_status"] == "prepared"
+    assert context._provider_cache_identity is None
+
+
+def test_cache_commit_failure_rolls_back_attempt_and_does_not_send():
+    class BrokenCacheContext(Context):
+        def commit_provider_cache_identity(self, verified_identity):
+            self._provider_cache_identity = verified_identity.identity
+            raise RuntimeError("cache-commit-failed")
+
+    provider, _, _ = _provider()
+    sent = []
+
+    class HTTPHandler:
+        def sync_call(self, data, *, serialized_body=None):
+            sent.append(data)
+            return object()
+
+    provider.is_http_provider = True
+    provider.http_provider = HTTPHandler()
+    model = LLMModel(
+        conf=ModelConfig(context_compiler={"mode": "enforce", "universal_final": True}),
+        custom_provider=provider,
+    )
+    model.provider_name = "openai"
+    context = BrokenCacheContext(task_id="atomic-cache-failure")
+
+    with pytest.raises(CandidateRequestNotEnforceable) as raised:
+        model.completion(
+            [{"role": "system", "content": "stable"}, {"role": "user", "content": "go"}],
+            context=context,
+        )
+
+    assert raised.value.reason_code == "provider_prepared_attempt_failed"
+    assert sent == []
+    assert context.get_llm_calls()[0]["provider_invoked"] is False
+    assert context.get_llm_calls()[0]["provider_attempt_status"] == "prepared"
+    assert context._provider_cache_identity is None
 
 
 def test_openai_enforce_requires_explicit_compiler_readiness():
@@ -378,6 +449,67 @@ def test_openai_enforce_rejects_message_reorder_as_attribution_mismatch():
 
     with pytest.raises(CandidateRequestNotEnforceable) as raised:
         model.completion(
+            [{"role": "user", "content": "legacy"}], context=context
+        )
+
+    assert raised.value.reason_code == "provider_attribution_mismatch"
+    assert sync_calls == []
+    assert context.get_llm_calls()[0]["provider_invoked"] is False
+
+
+@pytest.mark.parametrize(
+    ("candidate_tools", "provider_tools_shape"),
+    [(None, "absent"), ([], "array")],
+)
+def test_openai_declares_exact_tools_shape_lowering(
+    candidate_tools, provider_tools_shape
+):
+    provider, sync_calls, _ = _provider()
+    policy = CandidateCompilePolicy(
+        compiler_version="openai-lowering-test-v1",
+        candidate_payload={
+            "messages": [{"role": "user", "content": "shape"}],
+            "tools": candidate_tools,
+            "params": {"temperature": 0.0, "max_tokens": 10, "stop": []},
+        },
+        enforce_ready=True,
+    )
+    model = _model(provider, policy=policy)
+    context = Context(task_id=f"tools-shape-{provider_tools_shape}")
+
+    model.completion([{"role": "user", "content": "legacy"}], context=context)
+
+    assert len(sync_calls) == 1
+    receipt = context.get_llm_calls()[0]["context_rollout"]["provider_lowering"]["attribution"]
+    assert receipt["tools_shape"] == ("null" if candidate_tools is None else "array")
+    assert receipt["provider_tools_shape"] == provider_tools_shape
+    assert receipt["tools_lowering"] == "null_to_absent"
+    assert ("tools" in sync_calls[0]) is (provider_tools_shape == "array")
+
+
+def test_openai_rejects_dropping_an_empty_tools_array_before_send():
+    provider, sync_calls, _ = _provider()
+    policy = CandidateCompilePolicy(
+        compiler_version="openai-lowering-test-v1",
+        candidate_payload={
+            "messages": [{"role": "user", "content": "shape"}],
+            "tools": [],
+            "params": {"temperature": 0.0, "max_tokens": 10, "stop": []},
+        },
+        enforce_ready=True,
+    )
+    original = provider.get_openai_params
+
+    def drop_empty_tools(self, *args, **kwargs):
+        params = original(*args, **kwargs)
+        params.pop("tools", None)
+        return params
+
+    provider.get_openai_params = MethodType(drop_empty_tools, provider)
+    context = Context(task_id="tools-shape-drop")
+
+    with pytest.raises(CandidateRequestNotEnforceable) as raised:
+        _model(provider, policy=policy).completion(
             [{"role": "user", "content": "legacy"}], context=context
         )
 

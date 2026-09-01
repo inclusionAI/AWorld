@@ -44,6 +44,7 @@ from .resolver import ResolutionOccurrence, resolve_context_occurrences
 from .scope import ContextResolutionTarget
 from .attribution import (
     AttributionCollection,
+    AttributionCollectionShape,
     AttributionOwnerCode,
     ContextAttributionPlanEntry,
     LogicalResidency,
@@ -279,11 +280,11 @@ class FinalCompileResult:
     tool_catalog_hash: str
     skill_set_hash: str
     trace: ContextDecisionTrace
-    attribution_plan: ProviderRequestAttributionPlan
     compiler_identity: str
     compiler_version: str
     policy_version: str
     enforce_ready: bool
+    attribution_plan: ProviderRequestAttributionPlan | None = None
     blocker_codes: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
@@ -302,10 +303,11 @@ class FinalCompileResult:
             raise TypeError("stable_partition must be a StablePrefixPartition")
         if not isinstance(self.trace, ContextDecisionTrace):
             raise TypeError("trace must be a ContextDecisionTrace")
-        if not isinstance(self.attribution_plan, ProviderRequestAttributionPlan):
-            raise TypeError("attribution_plan must be a ProviderRequestAttributionPlan")
-        if self.attribution_plan.candidate_content_hash != self.request_snapshot.content_hash:
-            raise ValueError("attribution plan must bind the candidate snapshot")
+        if self.attribution_plan is not None:
+            if not isinstance(self.attribution_plan, ProviderRequestAttributionPlan):
+                raise TypeError("attribution_plan must be a ProviderRequestAttributionPlan or None")
+            if self.attribution_plan.candidate_content_hash != self.request_snapshot.content_hash:
+                raise ValueError("attribution plan must bind the candidate snapshot")
         for name in (
             "tool_catalog_hash",
             "skill_set_hash",
@@ -589,6 +591,13 @@ def compile_final_context(
         ),
         candidate_content_hash=request_snapshot.content_hash,
         entries=tuple(attribution_entries),
+        messages_count=len(messages),
+        tools_shape=(
+            AttributionCollectionShape.ARRAY
+            if compiler_input.tools_present
+            else AttributionCollectionShape.NULL
+        ),
+        tools_count=(len(tools) if compiler_input.tools_present else None),
     )
     budget_decisions = _resolved_decisions(
         original_candidates=eligible_candidates,

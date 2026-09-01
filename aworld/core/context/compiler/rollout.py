@@ -265,7 +265,7 @@ class ProviderCandidateEnvelope:
     compiler_identity: str
     compiler_version: str
     expected_lowering: ProviderLoweringCapability
-    attribution_plan: ProviderRequestAttributionPlan
+    attribution_plan: ProviderRequestAttributionPlan | None = None
     cache_material: ProviderCacheMaterial | None = None
 
     def __post_init__(self) -> None:
@@ -273,14 +273,17 @@ class ProviderCandidateEnvelope:
             raise TypeError("candidate_request must be a ProviderRequestSnapshot")
         if not isinstance(self.expected_lowering, ProviderLoweringCapability):
             raise TypeError("expected_lowering must be a ProviderLoweringCapability")
-        if not isinstance(self.attribution_plan, ProviderRequestAttributionPlan):
-            raise TypeError("attribution_plan must be a ProviderRequestAttributionPlan")
-        if self.attribution_plan.candidate_content_hash != self.candidate_request.content_hash:
-            raise ValueError("attribution plan does not match candidate")
-        if self.attribution_plan.request_id_hash != canonical_json_hash(
-            {"request_id": self.candidate_request.request_id}
-        ):
-            raise ValueError("attribution plan request id does not match candidate")
+        if self.attribution_plan is not None:
+            if not isinstance(self.attribution_plan, ProviderRequestAttributionPlan):
+                raise TypeError("attribution_plan must be a ProviderRequestAttributionPlan or None")
+            if not self.attribution_plan.shape_explicit:
+                raise ValueError("candidate attribution requires explicit collection shape")
+            if self.attribution_plan.candidate_content_hash != self.candidate_request.content_hash:
+                raise ValueError("attribution plan does not match candidate")
+            if self.attribution_plan.request_id_hash != canonical_json_hash(
+                {"request_id": self.candidate_request.request_id}
+            ):
+                raise ValueError("attribution plan request id does not match candidate")
         for name in ("compiler_identity", "compiler_version"):
             _stable_identifier(name, getattr(self, name))
         if self.compiler_identity not in {
@@ -314,7 +317,7 @@ class ProviderLoweringReceipt:
     candidate_content_hash: str
     provider_request: ProviderRequestSnapshot
     lowering: ProviderLoweringCapability
-    attribution: ProviderRequestAttributionReceipt
+    attribution: ProviderRequestAttributionReceipt | None = None
     serialized_prefix_evidence: SerializedPrefixEvidence | None = None
     cache_identity: ProviderVerifiedCacheIdentity | None = None
     logical_stable_prefix_hash: str | None = None
@@ -328,12 +331,13 @@ class ProviderLoweringReceipt:
             raise TypeError("provider_request must be a ProviderRequestSnapshot")
         if not isinstance(self.lowering, ProviderLoweringCapability):
             raise TypeError("lowering must be a ProviderLoweringCapability")
-        if not isinstance(self.attribution, ProviderRequestAttributionReceipt):
-            raise TypeError("attribution must be a ProviderRequestAttributionReceipt")
-        if self.attribution.provider_request_content_hash != self.provider_request.content_hash:
-            raise ValueError("attribution receipt does not match provider request")
-        if self.attribution.canonical_request_checksum != self.provider_request.content_hash:
-            raise ValueError("attribution canonical checksum does not match provider request")
+        if self.attribution is not None:
+            if not isinstance(self.attribution, ProviderRequestAttributionReceipt):
+                raise TypeError("attribution must be a ProviderRequestAttributionReceipt or None")
+            if self.attribution.provider_request_content_hash != self.provider_request.content_hash:
+                raise ValueError("attribution receipt does not match provider request")
+            if self.attribution.canonical_request_checksum != self.provider_request.content_hash:
+                raise ValueError("attribution canonical checksum does not match provider request")
         if self.provider_request.provider_name != self.lowering.provider_name:
             raise ValueError("provider request does not match lowering capability")
         if (
@@ -391,7 +395,9 @@ class ProviderLoweringReceipt:
             raise ValueError("provider lowering capability changed after authorization")
         if provider_request.request_id != envelope.candidate_request.request_id:
             raise ValueError("provider request id does not match candidate")
-        if tuple(entry.plan for entry in attribution.entries) != envelope.attribution_plan.entries:
+        if envelope.attribution_plan is None:
+            raise ValueError("enforce lowering requires candidate attribution")
+        if not attribution.binds_plan(envelope.attribution_plan):
             raise ValueError("provider attribution is not bound to the candidate plan")
         return cls(
             candidate_content_hash=envelope.candidate_request.content_hash,
@@ -418,8 +424,9 @@ class ProviderLoweringReceipt:
                 "capture_stage": self.provider_request.capture_stage.value,
                 "fidelity": self.provider_request.fidelity.value,
             },
-            "attribution": self.attribution.to_redacted_dict(),
         }
+        if self.attribution is not None:
+            payload["attribution"] = self.attribution.to_redacted_dict()
         if self.cache_identity is not None:
             payload["cache_identity"] = self.cache_identity.to_redacted_dict()
             payload["logical_stable_prefix_hash"] = self.logical_stable_prefix_hash
