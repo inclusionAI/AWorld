@@ -71,25 +71,19 @@ from aworld.self_evolve.evaluation import (
     EvaluationBackend,
     EvaluationRequest,
     SkillCandidateOverlayBackend,
-    determine_candidate_confidence,
     evaluate_baseline_and_candidate,
     evaluate_variant_task,
 )
 from aworld.self_evolve.gates import (
     CandidatePackageGate,
     CostLatencyRegressionGate,
-    EvaluationComparabilityGate,
     EvidenceQualityGate,
     EvaluationRuntimeHealthGate,
     ExternalCodeEvolutionGate,
-    GlobalRegressionBenchmarkGate,
-    HeldOutVerificationGate,
-    JudgeOnlySignalGate,
     MalformedCandidateGate,
     NewSkillPromotionGate,
     NoopCandidateGate,
     ProtectedPathGate,
-    RequiredVerificationGate,
     ReplayAdaptationGate,
     ScoreImprovementGate,
     SkillMarkdownGate,
@@ -393,6 +387,12 @@ from aworld.self_evolve.controllers.run_evaluation_admission import (
     CandidateEvaluationAdmissionRequest,
     CandidateEvaluationAdmissionRuntime,
     plan_candidate_evaluation_admission,
+)
+from aworld.self_evolve.controllers.run_evaluation_execution import (
+    CandidateEvaluationExecutionPolicy,
+    CandidateEvaluationExecutionRequest,
+    CandidateEvaluationExecutionRuntime,
+    execute_candidate_evaluation,
 )
 from aworld.self_evolve.controllers.measurement_execution_admission import (
     _candidate_intervention_unobserved,
@@ -8732,27 +8732,13 @@ class SelfEvolveRunner:
         dataset = request.dataset
         candidate = request.candidate
         apply_policy = request.apply_policy
-        target_provenance = request.target_provenance
         target_selection_report = request.target_selection_report
         iteration_number = request.iteration_number
         candidate_number = request.candidate_number
         candidate_count = request.candidate_count
         attempt_key = request.attempt_key
         attempt_tracker = request.attempt_tracker
-        budget_context = request.budget_context
         source_disposition = request.source_disposition
-        baseline_evaluation_cache = request.baseline_evaluation_cache
-        allow_score_tiebreak = request.allow_score_tiebreak
-
-        baseline_summary: EvaluationSummary | None = None
-        candidate_summary: EvaluationSummary | None = None
-        held_out_summary: EvaluationSummary | None = None
-        regression_evidence: RegressionEvidence | None = None
-        challenge_report: ChallengeReport | None = None
-        replay_result: CandidateReplayResult | None = None
-        replay_dataset: SelfEvolveDataset | None = None
-        score_tiebreak_budget_summaries: tuple[EvaluationSummary, ...] = ()
-        fresh_evaluation_completed = False
 
         local_admission = execute_candidate_local_admission(
             request,
@@ -8877,507 +8863,66 @@ class SelfEvolveRunner:
         gate_results = list(evaluation_admission.gate_results)
         if evaluation_admission.terminal_result is not None:
             return evaluation_admission.terminal_result
-        evaluation_dataset = evaluation_admission.evaluation_dataset
-        replay_blocked_verified_apply = (
-            evaluation_admission.replay_blocked_verified_apply
-        )
-        evaluation_budget = evaluation_admission.evaluation_budget
-        judge_budget = evaluation_admission.judge_budget
-        expected_judge_summary_count = (
-            evaluation_admission.expected_judge_summary_count
-        )
-        evaluation_case_count = evaluation_admission.evaluation_case_count
-        if self.evaluation_backend is not None:
-            if not replay_blocked_verified_apply:
-                if attempt_tracker is not None and attempt_key is not None:
-                    attempt_tracker.emit(
-                        attempt_key,
-                        CandidateAttemptStage.EVALUATION,
-                        case_count=evaluation_case_count,
-                        usage=(
-                            _budget_usage_for_attempt_event(evaluation_budget)
-                            if evaluation_budget is not None
-                            else None
-                        ),
-                    )
-                evaluation_telemetry_before = _stage_telemetry_usage_snapshot(
-                    self.execution_telemetry,
-                    "evaluation",
-                )
-                try:
-                    _emit_progress(
-                        self.progress_callback,
-                        "evaluation",
-                        (
-                            "Evaluating baseline and candidate "
-                            f"for iteration {iteration_number}/{self.max_iterations} "
-                            f"candidate {candidate_number}/{candidate_count}"
-                        ),
-                    )
-                    baseline_summary, candidate_summary = await evaluate_baseline_and_candidate(
+        evaluation_execution = await execute_candidate_evaluation(
+            CandidateEvaluationExecutionRequest(
+                evaluation=request,
+                replay=replay_execution,
+                admission=evaluation_admission,
+            ),
+            CandidateEvaluationExecutionPolicy(
+                evaluation_backend=self.evaluation_backend,
+                max_iterations=self.max_iterations,
+                min_score_delta=self.min_score_delta,
+                replay_stability_margin=self.replay_stability_margin,
+                min_eval_cases=self.min_eval_cases,
+                require_resource_evidence=(
+                    isinstance(
                         self.evaluation_backend,
-                        dataset=evaluation_dataset,
-                        candidate=candidate,
-                        dataset_split="validation",
-                        artifact_namespace=run_id,
-                        task_batch_executor=self.task_batch_executor,
-                        max_concurrency=self.concurrency_policy.effective_limit(
-                            "evaluation",
-                            item_count=2,
-                        ),
-                        execution_telemetry=self.execution_telemetry,
-                        baseline_cache=baseline_evaluation_cache,
+                        AWorldTrajectoryEvaluatorBackend,
                     )
-                    if replay_result is not None:
-                        baseline_summary = _summary_with_replay_evidence_metrics(
-                            baseline_summary,
-                            replay_result.baseline,
-                        )
-                        candidate_summary = _summary_with_replay_evidence_metrics(
-                            candidate_summary,
-                            replay_result.candidate,
-                        )
-                    validation_health_gate = (
-                        EvaluationRuntimeHealthGate().evaluate(
-                            (baseline_summary, candidate_summary)
-                        )
+                    or getattr(
+                        self.evaluation_backend,
+                        "resource_accounting_required",
+                        False,
                     )
-                    if not validation_health_gate.passed:
-                        fresh_evaluation_completed = False
-                        gate_results.append(validation_health_gate)
-                    else:
-                        score_gate = ScoreImprovementGate(
-                            min_delta=self.min_score_delta
-                        ).evaluate(
-                            baseline=baseline_summary,
-                            candidate=candidate_summary,
-                        )
-                        pre_tiebreak_evidence_gate = _evidence_quality_gate(
-                            candidate_summary,
-                            baseline=baseline_summary,
-                        )
-                        tiebreak_candidate_repair_required = bool(
-                            pre_tiebreak_evidence_gate is not None
-                            and not pre_tiebreak_evidence_gate.passed
-                            and _gate_has_candidate_owned_repair(
-                                pre_tiebreak_evidence_gate
-                            )
-                        )
-                        if (
-                            _is_verified_apply_policy(apply_policy)
-                            and allow_score_tiebreak
-                            and not tiebreak_candidate_repair_required
-                            and not score_gate.passed
-                            and isinstance(score_gate.details, Mapping)
-                            and score_gate.details.get("tiebreak_eligible") is True
-                        ):
-                            _emit_progress(
-                                self.progress_callback,
-                                "evaluation",
-                                (
-                                    "Running bounded score tie-break for "
-                                    f"candidate {candidate_number}/{candidate_count}"
-                                ),
-                            )
-                            initial_score_gate = score_gate
-                            initial_baseline_summary = baseline_summary
-                            initial_candidate_summary = candidate_summary
-                            (
-                                tiebreak_baseline,
-                                tiebreak_candidate,
-                            ) = await evaluate_baseline_and_candidate(
-                                self.evaluation_backend,
-                                dataset=evaluation_dataset,
-                                candidate=candidate,
-                                dataset_split="validation",
-                                artifact_namespace=(
-                                    f"{run_id}-score-tiebreak-1-"
-                                    f"{candidate.candidate_id}"
-                                ),
-                                task_batch_executor=self.task_batch_executor,
-                                max_concurrency=self.concurrency_policy.effective_limit(
-                                    "evaluation",
-                                    item_count=2,
-                                ),
-                                execution_telemetry=self.execution_telemetry,
-                            )
-                            expected_judge_summary_count += 2
-                            if replay_result is not None:
-                                tiebreak_baseline = (
-                                    _summary_with_replay_evidence_metrics(
-                                        tiebreak_baseline,
-                                        replay_result.baseline,
-                                    )
-                                )
-                                tiebreak_candidate = (
-                                    _summary_with_replay_evidence_metrics(
-                                        tiebreak_candidate,
-                                        replay_result.candidate,
-                                    )
-                                )
-                            tiebreak_health = EvaluationRuntimeHealthGate().evaluate(
-                                (tiebreak_baseline, tiebreak_candidate)
-                            )
-                            if tiebreak_health.passed:
-                                accumulated_baseline = _accumulate_score_evidence(
-                                    initial_baseline_summary,
-                                    tiebreak_baseline,
-                                )
-                                accumulated_candidate = _accumulate_score_evidence(
-                                    initial_candidate_summary,
-                                    tiebreak_candidate,
-                                )
-                                score_gate = ScoreImprovementGate(
-                                    min_delta=self.min_score_delta
-                                ).evaluate(
-                                    baseline=accumulated_baseline,
-                                    candidate=accumulated_candidate,
-                                )
-                                score_gate = replace(
-                                    score_gate,
-                                    details={
-                                        **dict(score_gate.details or {}),
-                                        "tiebreak_round": 1,
-                                        "initial_decision": dict(
-                                            initial_score_gate.details or {}
-                                        ),
-                                        "initial_baseline_execution_id": (
-                                            initial_baseline_summary.metrics.get(
-                                                "evaluation_execution_id"
-                                            )
-                                        ),
-                                        "initial_candidate_execution_id": (
-                                            initial_candidate_summary.metrics.get(
-                                                "evaluation_execution_id"
-                                            )
-                                        ),
-                                    },
-                                )
-                                baseline_summary = accumulated_baseline
-                                candidate_summary = accumulated_candidate
-                                score_tiebreak_budget_summaries = (
-                                    initial_baseline_summary,
-                                    initial_candidate_summary,
-                                )
-                            else:
-                                score_tiebreak_budget_summaries = (
-                                    tiebreak_baseline,
-                                    tiebreak_candidate,
-                                )
-                                gate_results.append(
-                                    replace(
-                                        tiebreak_health,
-                                        gate_name="score_tiebreak_runtime_health",
-                                    )
-                                )
-                        elif (
-                            _is_verified_apply_policy(apply_policy)
-                            and not score_gate.passed
-                            and isinstance(score_gate.details, Mapping)
-                            and score_gate.details.get("tiebreak_eligible") is True
-                        ):
-                            score_gate = replace(
-                                score_gate,
-                                details={
-                                    **dict(score_gate.details),
-                                    "tiebreak_skipped": True,
-                                    "tiebreak_skip_reason": (
-                                        "candidate_repair_required_before_tiebreak"
-                                        if tiebreak_candidate_repair_required
-                                        else "score_tiebreak_candidate_limit_reached"
-                                    ),
-                                },
-                            )
-                        quality_gates: list[GateResult] = [
-                            EvaluationComparabilityGate().evaluate(
-                                baseline=baseline_summary,
-                                candidate=candidate_summary,
-                            ),
-                            score_gate,
-                            CostLatencyRegressionGate(
-                                max_cost_regression_ratio=0.25,
-                                max_latency_regression_ratio=0.5,
-                                require_resource_evidence=(
-                                    isinstance(
-                                        self.evaluation_backend,
-                                        AWorldTrajectoryEvaluatorBackend,
-                                    )
-                                    or getattr(
-                                        self.evaluation_backend,
-                                        "resource_accounting_required",
-                                        False,
-                                    )
-                                    is True
-                                ),
-                            ).evaluate(
-                                baseline=baseline_summary,
-                                candidate=candidate_summary,
-                            ),
-                        ]
-                        replay_stability_gate = _replay_stability_gate(
-                            baseline_summary=baseline_summary,
-                            candidate_summary=candidate_summary,
-                            min_score_delta=self.min_score_delta,
-                            replay_stability_margin=self.replay_stability_margin,
-                            replay_used=replay_dataset is not None,
-                        )
-                        if replay_stability_gate is not None:
-                            quality_gates.append(replay_stability_gate)
-                    if (
-                        validation_health_gate.passed
-                        and _is_verified_apply_policy(apply_policy)
-                    ):
-                        if _can_reuse_single_case_replay_validation(evaluation_dataset):
-                            logger.info(
-                                "self_evolve.evaluator.held_out.skip "
-                                f"run_id={run_id} candidate_id={candidate.candidate_id} "
-                                "reason=single_case_replay_validation_reused"
-                            )
-                            held_out_summary = replace(
-                                candidate_summary,
-                                dataset_split="single_case_replay",
-                                metrics={
-                                    **dict(candidate_summary.metrics),
-                                    "evaluation_evidence_role": (
-                                        "held_out_alias"
-                                    ),
-                                    "evaluation_alias_of_execution_id": (
-                                        candidate_summary.metrics.get(
-                                            "evaluation_execution_id"
-                                        )
-                                    ),
-                                    "evaluation_fresh_execution": False,
-                                    "evaluation_reused": True,
-                                },
-                            )
-                        else:
-                            held_out_summary = await evaluate_variant_task(
-                                self.evaluation_backend,
-                                request=EvaluationRequest(
-                                    variant_id=candidate.candidate_id,
-                                    candidate=candidate,
-                                    dataset=evaluation_dataset,
-                                    dataset_split="held_out",
-                                    artifact_namespace=run_id,
-                                ),
-                                task_batch_executor=self.task_batch_executor,
-                                execution_telemetry=self.execution_telemetry,
-                            )
-                            if replay_result is not None:
-                                held_out_summary = _summary_with_replay_evidence_metrics(
-                                    held_out_summary,
-                                    replay_result.candidate,
-                                )
-                        final_health_gate = EvaluationRuntimeHealthGate().evaluate(
-                            (
-                                baseline_summary,
-                                candidate_summary,
-                                held_out_summary,
-                            )
-                        )
-                        gate_results.append(final_health_gate)
-                        fresh_evaluation_completed = final_health_gate.passed
-                        if final_health_gate.passed:
-                            confidence = determine_candidate_confidence(
-                                dataset=evaluation_dataset,
-                                validation_summary=candidate_summary,
-                                held_out_summary=held_out_summary,
-                                min_eval_cases=self.min_eval_cases,
-                            )
-                            evidence_quality_gates: list[GateResult] = []
-                            candidate_evidence_gate = _evidence_quality_gate(
-                                candidate_summary,
-                                baseline=baseline_summary,
-                            )
-                            if candidate_evidence_gate is not None:
-                                evidence_quality_gates.append(candidate_evidence_gate)
-                            if not _same_evaluation_execution(
-                                candidate_summary,
-                                held_out_summary,
-                            ):
-                                held_out_evidence_gate = _evidence_quality_gate(
-                                    held_out_summary
-                                )
-                                if held_out_evidence_gate is not None:
-                                    evidence_quality_gates.append(
-                                        held_out_evidence_gate
-                                    )
-                            pre_regression_gates = [
-                                *quality_gates,
-                                *evidence_quality_gates,
-                                RequiredVerificationGate().evaluate(
-                                    held_out_summary
-                                ),
-                                HeldOutVerificationGate(
-                                    min_eval_cases=self.min_eval_cases
-                                ).evaluate(confidence),
-                                JudgeOnlySignalGate().evaluate(confidence),
-                            ]
-                            gate_results.extend(pre_regression_gates)
-                            if all(gate.passed for gate in pre_regression_gates):
-                                (
-                                    regression_evidence,
-                                    challenge_report,
-                                    challenger_gate,
-                                ) = (
-                                    await self._evaluate_independent_regression(
-                                        run_id=run_id,
-                                        target=target,
-                                        selection_dataset=dataset,
-                                        candidate=candidate,
-                                        apply_policy=apply_policy,
-                                        budget_context=budget_context,
-                                    )
-                                )
-                                gate_results.append(challenger_gate)
-                                gate_results.append(
-                                    GlobalRegressionBenchmarkGate().evaluate(
-                                        candidate,
-                                        regression_evidence,
-                                    )
-                                )
-                    elif validation_health_gate.passed:
-                        fresh_evaluation_completed = True
-                        gate_results.extend(
-                            [validation_health_gate, *quality_gates]
-                        )
-                except Exception as exc:
-                    gate_results.append(
-                        GateResult(
-                            gate_name="evaluation",
-                            passed=False,
-                            reason="evaluation backend failed",
-                            details={
-                                "failure_class": "infrastructure",
-                                "code": "evaluation_infrastructure_error",
-                                "type": type(exc).__name__,
-                                "reason": str(exc),
-                            },
-                        )
-                    )
-                finally:
-                    if evaluation_budget is not None:
-                        evaluation_telemetry_after = (
-                            _stage_telemetry_usage_snapshot(
-                                self.execution_telemetry,
-                                "evaluation",
-                            )
-                        )
-                        evaluation_usage = _stage_telemetry_usage_delta(
-                            evaluation_telemetry_before,
-                            evaluation_telemetry_after,
-                        )
-                        budget_context.debit(
-                            evaluation_budget,
-                            usage_observation=evaluation_usage.observation,
-                            actual_source=evaluation_usage.source,
-                        )
-                    if judge_budget is not None:
-                        regression_judge_summaries = tuple(
-                            summary
-                            for result in (
-                                regression_evidence.suite_results
-                                if regression_evidence is not None
-                                else ()
-                            )
-                            for summary in (
-                                result.baseline_summary,
-                                result.candidate_summary,
-                            )
-                            if result.fresh_execution
-                        )
-                        judge_tokens, judge_source = _judge_actual_token_usage(
-                            baseline_summary,
-                            candidate_summary,
-                            held_out_summary,
-                            *score_tiebreak_budget_summaries,
-                            *regression_judge_summaries,
-                            expected_summary_count=(
-                                expected_judge_summary_count
-                                + len(regression_judge_summaries)
-                            ),
-                        )
-                        if (
-                            judge_tokens is not None
-                            and judge_source.startswith("known_lower_bound_")
-                        ):
-                            budget_context.debit(
-                                judge_budget,
-                                usage_observation=BudgetUsageObservation(
-                                    known_lower_bound=BudgetUsage(
-                                        tokens=judge_tokens,
-                                    ),
-                                    completeness=(
-                                        BudgetUsageCompleteness.incomplete()
-                                    ),
-                                ),
-                                actual_source=judge_source,
-                            )
-                        else:
-                            budget_context.debit(
-                                judge_budget,
-                                tokens=judge_tokens,
-                                actual_source=judge_source,
-                            )
-        elif (
-            _is_verified_apply_policy(apply_policy)
-            or source_disposition.requires_fresh_evaluation
-        ):
-            gate_results.append(
-                GateResult(
-                    gate_name=(
-                        "evaluator_rerun_evaluation"
-                        if source_disposition.requires_fresh_evaluation
-                        else "auto_verified_evaluation"
-                    ),
-                    passed=False,
-                    reason=(
-                        "stored-evidence evaluator rerun requires evaluation backend"
-                        if source_disposition.requires_fresh_evaluation
-                        else "auto_verified apply policy requires evaluation backend"
-                    ),
-                    details={
-                        "failure_class": "infrastructure",
-                        "code": "evaluation_backend_missing",
-                    },
-                )
-            )
-
-        if (
-            source_disposition.requires_fresh_evaluation
-            and not any(
-                not gate.passed
-                and _gate_is_replay_execution_infrastructure_failure(gate)
-                for gate in gate_results
-            )
-        ):
-            gate_results.append(
-                GateResult(
-                    gate_name="fresh_evaluator_rerun",
-                    passed=(
-                        fresh_evaluation_completed
-                        and baseline_summary is not None
-                        and candidate_summary is not None
-                    ),
-                    reason=(
-                        "fresh baseline and candidate evaluation completed"
-                        if fresh_evaluation_completed
-                        else "fresh baseline and candidate evaluation did not complete"
-                    ),
-                    details={
-                        "source_disposition": source_disposition.to_dict(),
-                        "failure_class": (
-                            None if fresh_evaluation_completed else "infrastructure"
-                        ),
-                        "code": (
-                            None
-                            if fresh_evaluation_completed
-                            else "fresh_evaluation_not_completed"
-                        ),
-                    },
-                )
-            )
-
+                    is True
+                ),
+            ),
+            CandidateEvaluationExecutionRuntime(
+                task_batch_executor=self.task_batch_executor,
+                max_concurrency=self.concurrency_policy.effective_limit(
+                    "evaluation",
+                    item_count=2,
+                ),
+                execution_telemetry=self.execution_telemetry,
+                progress_callback=self.progress_callback,
+                evaluate_pair=evaluate_baseline_and_candidate,
+                evaluate_variant=evaluate_variant_task,
+                merge_replay_evidence=(
+                    _summary_with_replay_evidence_metrics
+                ),
+                evidence_quality_gate=_evidence_quality_gate,
+                accumulate_score_evidence=_accumulate_score_evidence,
+                replay_stability_gate=_replay_stability_gate,
+                same_evaluation_execution=_same_evaluation_execution,
+                judge_actual_token_usage=_judge_actual_token_usage,
+                evaluate_independent_regression=(
+                    self._evaluate_independent_regression
+                ),
+                gate_is_replay_infrastructure_failure=(
+                    _gate_is_replay_execution_infrastructure_failure
+                ),
+            ),
+        )
+        gate_results = list(evaluation_execution.gate_results)
+        baseline_summary = evaluation_execution.baseline_summary
+        candidate_summary = evaluation_execution.candidate_summary
+        held_out_summary = evaluation_execution.held_out_summary
+        regression_evidence = evaluation_execution.regression_evidence
+        challenge_report = evaluation_execution.challenge_report
+        fresh_evaluation_completed = (
+            evaluation_execution.fresh_evaluation_completed
+        )
         if _is_verified_apply_policy(apply_policy):
             gate_results.append(
                 GateResult(
