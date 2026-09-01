@@ -372,6 +372,11 @@ from aworld.self_evolve.feedback_diagnostics import (
     _typed_gate_feedback_metrics,
     _validation_feedback_failure_family,
 )
+from aworld.self_evolve.controllers.run_execution import (
+    CandidateEvaluationRequest,
+    CandidateEvaluationResult,
+    ExplicitTargetRunRequest,
+)
 from aworld.self_evolve.controllers.measurement_execution_admission import (
     _candidate_intervention_unobserved,
     _candidate_intervention_unobserved_failure_event,
@@ -1525,6 +1530,33 @@ def _terminal_candidate_evaluation_result(
         status=status,
     )
     return state, report_item, feedback
+
+
+def _typed_terminal_candidate_evaluation_result(
+    *,
+    candidate: CandidateVariant,
+    iteration_number: int,
+    candidate_number: int,
+    candidate_count: int,
+    gate_results: Iterable[GateResult],
+    status: str = "rejected",
+    replay_result: CandidateReplayResult | None = None,
+    replay_dataset: SelfEvolveDataset | None = None,
+) -> CandidateEvaluationResult:
+    """Adapt the historical terminal tuple to the typed evaluation result."""
+
+    return CandidateEvaluationResult.from_tuple(
+        _terminal_candidate_evaluation_result(
+            candidate=candidate,
+            iteration_number=iteration_number,
+            candidate_number=candidate_number,
+            candidate_count=candidate_count,
+            gate_results=gate_results,
+            status=status,
+            replay_result=replay_result,
+            replay_dataset=replay_dataset,
+        )
+    )
 
 
 def _optimizer_stored_candidate_admission_reason(
@@ -3729,22 +3761,25 @@ class SelfEvolveRunner:
         campaign_cycle: int | None = None,
     ) -> SelfEvolveRunnerResult:
         failure_cleanup = _RunFailureCleanup()
+        request = ExplicitTargetRunRequest(
+            run_id=run_id,
+            target=target,
+            dataset=dataset,
+            trace_packs=trace_packs,
+            apply_policy=apply_policy,
+            target_selection_report=target_selection_report,
+            target_provenance=target_provenance,
+            target_selection_decision=target_selection_decision,
+            campaign_prior_run_ids=campaign_prior_run_ids,
+            campaign_scheduler_checkpoint_run_ids=(
+                campaign_scheduler_checkpoint_run_ids
+            ),
+            campaign_id=campaign_id,
+            campaign_cycle=campaign_cycle,
+        )
         try:
             return await self._run_explicit_target(
-                run_id=run_id,
-                target=target,
-                dataset=dataset,
-                trace_packs=trace_packs,
-                apply_policy=apply_policy,
-                target_selection_report=target_selection_report,
-                target_provenance=target_provenance,
-                target_selection_decision=target_selection_decision,
-                campaign_prior_run_ids=campaign_prior_run_ids,
-                campaign_scheduler_checkpoint_run_ids=(
-                    campaign_scheduler_checkpoint_run_ids
-                ),
-                campaign_id=campaign_id,
-                campaign_cycle=campaign_cycle,
+                request=request,
                 failure_cleanup=failure_cleanup,
             )
         except BaseException:
@@ -3760,20 +3795,24 @@ class SelfEvolveRunner:
     async def _run_explicit_target(
         self,
         *,
-        run_id: str,
-        target: SelfEvolveTarget,
-        dataset: SelfEvolveDataset,
-        trace_packs: tuple[TracePack, ...],
-        apply_policy: str = "proposal",
-        target_selection_report: TargetSelectionReport | None = None,
-        target_provenance: TargetProvenance | None = None,
-        target_selection_decision: TargetSelectionDecision | None = None,
-        campaign_prior_run_ids: tuple[str, ...] | None = None,
-        campaign_scheduler_checkpoint_run_ids: tuple[str, ...] | None = None,
-        campaign_id: str | None = None,
-        campaign_cycle: int | None = None,
+        request: ExplicitTargetRunRequest,
         failure_cleanup: _RunFailureCleanup,
     ) -> SelfEvolveRunnerResult:
+        run_id = request.run_id
+        target = request.target
+        dataset = request.dataset
+        trace_packs = request.trace_packs
+        apply_policy = request.apply_policy
+        target_selection_report = request.target_selection_report
+        target_provenance = request.target_provenance
+        target_selection_decision = request.target_selection_decision
+        campaign_prior_run_ids = request.campaign_prior_run_ids
+        campaign_scheduler_checkpoint_run_ids = (
+            request.campaign_scheduler_checkpoint_run_ids
+        )
+        campaign_id = request.campaign_id
+        campaign_cycle = request.campaign_cycle
+
         self.execution_telemetry = SelfEvolveExecutionTelemetry()
         self._current_run_authoritative_case_observations.clear()
         screening_dataset_fingerprint = _screening_observation_scope_fingerprint(
@@ -6257,48 +6296,55 @@ class SelfEvolveRunner:
                     authoritative_candidate_attempt_ids.add(
                         iteration_candidate.candidate_id
                     )
-                state, report_item, candidate_feedback = await self._evaluate_iteration_candidate(
-                    run_id=run_id,
-                    target=target,
-                    dataset=dataset,
-                    candidate=iteration_candidate,
-                    apply_policy=apply_policy,
-                    target_provenance=target_provenance,
-                    target_provenance_unresolved_reason=(
-                        target_provenance_unresolved_reason
-                    ),
-                    target_selection_report=target_selection_report,
-                    iteration_number=iteration_index + 1,
-                    candidate_number=candidate_index + 1,
-                    candidate_count=len(candidate_population),
-                    rejected_candidate_ids=rejected_candidate_ids,
-                    accepted_candidate_ids=accepted_candidate_ids,
-                    baseline_replay_dir=reusable_baseline_replay_dir,
-                    capability_requirements=replay_preflight.requirements,
-                    attempt_key=attempt_key_by_candidate_id.get(
-                        iteration_candidate.candidate_id
-                    ),
-                    attempt_tracker=attempt_tracker,
-                    budget_context=budget_context,
-                    precomputed_gate_results=local_gate_results_by_candidate.get(
-                        iteration_candidate.candidate_id,
-                        (),
-                    ),
-                    source_disposition=candidate_source_dispositions.get(
-                        iteration_candidate.candidate_id,
-                        CandidateSourceDisposition(),
-                    ),
-                    baseline_evaluation_cache=baseline_evaluation_cache,
-                    allow_score_tiebreak=(
-                        score_tiebreak_candidate_count
-                        < self.max_score_tiebreak_candidates
-                    ),
+                evaluation_result = await self._execute_iteration_candidate(
+                    CandidateEvaluationRequest(
+                        run_id=run_id,
+                        target=target,
+                        dataset=dataset,
+                        candidate=iteration_candidate,
+                        apply_policy=apply_policy,
+                        target_provenance=target_provenance,
+                        target_provenance_unresolved_reason=(
+                            target_provenance_unresolved_reason
+                        ),
+                        target_selection_report=target_selection_report,
+                        iteration_number=iteration_index + 1,
+                        candidate_number=candidate_index + 1,
+                        candidate_count=len(candidate_population),
+                        rejected_candidate_ids=rejected_candidate_ids,
+                        accepted_candidate_ids=accepted_candidate_ids,
+                        baseline_replay_dir=reusable_baseline_replay_dir,
+                        capability_requirements=replay_preflight.requirements,
+                        attempt_key=attempt_key_by_candidate_id.get(
+                            iteration_candidate.candidate_id
+                        ),
+                        attempt_tracker=attempt_tracker,
+                        budget_context=budget_context,
+                        precomputed_gate_results=(
+                            local_gate_results_by_candidate.get(
+                                iteration_candidate.candidate_id,
+                                (),
+                            )
+                        ),
+                        source_disposition=candidate_source_dispositions.get(
+                            iteration_candidate.candidate_id,
+                            CandidateSourceDisposition(),
+                        ),
+                        baseline_evaluation_cache=baseline_evaluation_cache,
+                        allow_score_tiebreak=(
+                            score_tiebreak_candidate_count
+                            < self.max_score_tiebreak_candidates
+                        ),
+                    )
                 )
+                evaluation_state = evaluation_result.state
+                state = evaluation_state.payload
+                report_item = evaluation_result.report_item
+                candidate_feedback = evaluation_result.feedback
                 shared_measurement_invalid = any(
-                    isinstance(gate, GateResult)
-                    and not gate.passed
+                    not gate.passed
                     and _gate_has_typed_shared_measurement_failure(gate)
-                    for gate in state.get("gate_results", ())
+                    for gate in evaluation_state.gate_results
                 )
                 if shared_measurement_invalid:
                     # No candidate observation exists when the shared control
@@ -8648,6 +8694,69 @@ class SelfEvolveRunner:
         baseline_evaluation_cache: dict[str, EvaluationSummary] | None = None,
         allow_score_tiebreak: bool = True,
     ) -> tuple[dict[str, object], dict[str, object], tuple[EvaluationSummary, ...]]:
+        """Compatibility adapter for the historical keyword-only boundary."""
+
+        result = await self._execute_iteration_candidate(
+            CandidateEvaluationRequest(
+                run_id=run_id,
+                target=target,
+                dataset=dataset,
+                candidate=candidate,
+                apply_policy=apply_policy,
+                target_provenance=target_provenance,
+                target_provenance_unresolved_reason=(
+                    target_provenance_unresolved_reason
+                ),
+                target_selection_report=target_selection_report,
+                iteration_number=iteration_number,
+                candidate_number=candidate_number,
+                candidate_count=candidate_count,
+                rejected_candidate_ids=rejected_candidate_ids,
+                accepted_candidate_ids=accepted_candidate_ids,
+                baseline_replay_dir=baseline_replay_dir,
+                capability_requirements=capability_requirements,
+                attempt_key=attempt_key,
+                attempt_tracker=attempt_tracker,
+                budget_context=budget_context,
+                precomputed_gate_results=precomputed_gate_results,
+                source_disposition=source_disposition,
+                baseline_evaluation_cache=baseline_evaluation_cache,
+                allow_score_tiebreak=allow_score_tiebreak,
+            )
+        )
+        return result.as_tuple()
+
+    async def _execute_iteration_candidate(
+        self,
+        request: CandidateEvaluationRequest,
+    ) -> CandidateEvaluationResult:
+        """Execute one candidate through the typed evaluation boundary."""
+
+        run_id = request.run_id
+        target = request.target
+        dataset = request.dataset
+        candidate = request.candidate
+        apply_policy = request.apply_policy
+        target_provenance = request.target_provenance
+        target_provenance_unresolved_reason = (
+            request.target_provenance_unresolved_reason
+        )
+        target_selection_report = request.target_selection_report
+        iteration_number = request.iteration_number
+        candidate_number = request.candidate_number
+        candidate_count = request.candidate_count
+        rejected_candidate_ids = request.rejected_candidate_ids
+        accepted_candidate_ids = request.accepted_candidate_ids
+        baseline_replay_dir = request.baseline_replay_dir
+        capability_requirements = request.capability_requirements
+        attempt_key = request.attempt_key
+        attempt_tracker = request.attempt_tracker
+        budget_context = request.budget_context
+        precomputed_gate_results = request.precomputed_gate_results
+        source_disposition = request.source_disposition
+        baseline_evaluation_cache = request.baseline_evaluation_cache
+        allow_score_tiebreak = request.allow_score_tiebreak
+
         baseline_summary: EvaluationSummary | None = None
         candidate_summary: EvaluationSummary | None = None
         held_out_summary: EvaluationSummary | None = None
@@ -8759,7 +8868,9 @@ class SelfEvolveRunner:
                 feedback=feedback,
                 status="rejected",
             )
-            return state, report_item, feedback
+            return CandidateEvaluationResult.from_tuple(
+                (state, report_item, feedback)
+            )
 
         measurement_experiment: ControlledExperimentSpec | None = None
         if self.measurement_mode is not MeasurementPolicyMode.OFF:
@@ -8871,7 +8982,7 @@ class SelfEvolveRunner:
                     CandidateAttemptStage.NOT_RUN,
                     reason_code="per_attempt_replay_budget_denied",
                 )
-            return _terminal_candidate_evaluation_result(
+            return _typed_terminal_candidate_evaluation_result(
                 candidate=candidate,
                 iteration_number=iteration_number,
                 candidate_number=candidate_number,
@@ -8920,7 +9031,7 @@ class SelfEvolveRunner:
                         CandidateAttemptStage.NOT_RUN,
                         reason_code="replay_budget_denied",
                     )
-                return _terminal_candidate_evaluation_result(
+                return _typed_terminal_candidate_evaluation_result(
                     candidate=candidate,
                     iteration_number=iteration_number,
                     candidate_number=candidate_number,
@@ -9025,7 +9136,7 @@ class SelfEvolveRunner:
                         else "evaluation_support_preflight_missing"
                     ),
                 )
-            return _terminal_candidate_evaluation_result(
+            return _typed_terminal_candidate_evaluation_result(
                 candidate=candidate,
                 iteration_number=iteration_number,
                 candidate_number=candidate_number,
@@ -9211,7 +9322,7 @@ class SelfEvolveRunner:
                         CandidateAttemptStage.REJECTED,
                         reason_code="deterministic_replay_evidence_regressed",
                     )
-                return _terminal_candidate_evaluation_result(
+                return _typed_terminal_candidate_evaluation_result(
                     candidate=candidate,
                     iteration_number=iteration_number,
                     candidate_number=candidate_number,
@@ -9256,7 +9367,7 @@ class SelfEvolveRunner:
                         else "target_behavior_delta_missing"
                     ),
                 )
-            return _terminal_candidate_evaluation_result(
+            return _typed_terminal_candidate_evaluation_result(
                 candidate=candidate,
                 iteration_number=iteration_number,
                 candidate_number=candidate_number,
@@ -9380,7 +9491,7 @@ class SelfEvolveRunner:
                         ),
                         reason_code=f"{denied_stage}_budget_denied",
                     )
-                return _terminal_candidate_evaluation_result(
+                return _typed_terminal_candidate_evaluation_result(
                     candidate=candidate,
                     iteration_number=iteration_number,
                     candidate_number=candidate_number,
@@ -10029,7 +10140,9 @@ class SelfEvolveRunner:
         if measurement_summary is not None:
             state["measurement_summary"] = measurement_summary
             report_item["measurement"] = measurement_summary.to_dict()
-        return state, report_item, feedback
+        return CandidateEvaluationResult.from_tuple(
+            (state, report_item, feedback)
+        )
 
     async def _validate_candidate_capabilities(
         self,
