@@ -2,14 +2,13 @@
 
 ## Current Status
 
-**Phase:** Milestone 8 implementation and Milestone 9 evidence preparation
-**Current milestone:** Provider/entry-point production parity
-**Current task:** independent parity review plus minimal real paired progressive-catalog validation
-**Last action:** Milestone 7.2 and 7.3 mechanism code passed independent hardening reviews. Observe attribution is fail-open
-without losing provider attempt truth; progressive Skill/Tool selection is dependency-atomic and checkpoint-safe; turn and
-artifact economics independently revalidates causal/retrieval receipts and passed a real Docker artifact-read gate. Exact
-Azure remains unsupported across four call shapes. Entry-point semantic receipts and a required capability matrix are now
-implemented, and a frozen cache-adjusted normalized cost policy is bound through evaluation manifests.
+**Phase:** Milestone 9 cross-workload evidence collection
+**Current milestone:** Benefit evidence and operational rollout gates
+**Current task:** expand pre-frozen paired samples without benchmark-specific policy
+**Last action:** provider/entry-point parity, canary control-plane and normalized-cost mechanisms are code-complete. Real
+Terminal and Tool/research observe-baseline pairs now have complete provider attribution, TaskResponse/live continuity,
+request trace and Raw trajectory evidence. A two-pair efficiency path is visible but default-on remains not-ready because
+sample size, real retrieval opportunity, operational canary health and an external rollback bundle are missing.
 
 ### Task 7.2a: Legacy observe attribution baseline
 
@@ -561,3 +560,21 @@ implemented, and a frozen cache-adjusted normalized cost policy is bound through
   failure stage/reason/timeout and a per-run result, so they cannot form a paired benefit claim and later jobs can continue.
   Verifier timeout now has a dedicated regression; malformed partial provider/trajectory/manifest files become typed
   unavailable metrics rather than masking the primary timeout before its incomplete result is persisted.
+
+### 2026-09-01 final observe-baseline validation
+
+- Fixed deterministic Tool-result trust isolation so the owner recomputes the candidate boundary from the exact original
+  ordinal/content hash; altered boundary payloads still fail closed. A real candidate-only `prove-plus-comm` run then
+  reached reward 1 with 5/5 provider calls, request traces and Raw trajectory items, and exact TaskResponse/live continuity.
+- Fixed shared-reference serialization without weakening real cycle detection. Provider lowering and attribution receipts
+  now both remain structured, and old runs can only recover attribution from an independently retained structured lowering
+  receipt, never from string repr or summary fields.
+- Exported Context-owned offload snapshots into the durable run artifact tree and bound reference/content hashes, byte count
+  and relative path into the manifest. Benefit reporting revalidates those files before accepting retrieval economics.
+- Added `legacy-observe` as the attribution baseline while preserving the same model-visible legacy, Tool-output and memory
+  policies as pure legacy. Pure `off` remains a compatibility diagnostic and cannot satisfy paired attribution by itself.
+- Final local evidence is in `progressive-observe-paired-20260901` for Terminal and Tool/research workloads, with the combined
+  report at `context-benefit-progressive-observe-final-20260901.json`. Both pairs preserved reward 1. The frozen normalized-
+  cost deltas are negative and the two-pair bootstrap interval is `[-1,502,400,000, -1,278,000,000]` microunits, which proves
+  only a smoke-level efficiency path. Default-on remains `NOT_READY`: 2/10 pairs, no qualifying retrieval opportunity,
+  missing operational canary health, and no external rollback bundle.

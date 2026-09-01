@@ -200,8 +200,9 @@ Tool output policy, cache identity, lifecycle, delegation, and evaluation consum
 - Complete sync/async/stream/direct/Agent/Amni/CLI/ACP/resume parity matrices and error-path receipts.
 - Verify external runtime/Scheduler projection through artifacts/contracts without modifying mcpgateway or
   lingguang-bench-runtime-dsh.
-- **Status:** in progress; Azure is explicitly unsupported across all call shapes, exact OpenAI parity receipts and required
-  capability-matrix gating are implemented; production entry-point canary evidence remains pending
+- **Status:** mechanism complete; Azure is explicitly unsupported across all call shapes, exact OpenAI parity receipts,
+  lifecycle/trajectory binding and required capability-matrix gating are implemented. Local Amni/async evidence is verified;
+  production entry-point canary evidence remains operationally pending.
 
 ### Milestone 9: Cross-Workload Benefit Evidence
 **Goal:** Reach statistically valid quality or cost benefit evidence without benchmark-specific optimization.
@@ -211,7 +212,8 @@ Tool output policy, cache identity, lifecycle, delegation, and evaluation consum
 - Include 0/0, 0/1, 1/0 and 1/1 outcome classes when naturally present; never select policy after seeing answers.
 - Run real-model variants at least five times where quality variance is measured, randomly interleaved.
 - Add provider billing or a frozen/versioned normalized-cost model; report paired bootstrap confidence intervals.
-- **Status:** pending
+- **Status:** evidence collection in progress; two complete cross-workload observe-baseline pairs have full attribution and a
+  smoke-level normalized-cost efficiency path, but 2/10 pairs, workload breadth and stochastic repeats remain insufficient.
 
 ### Milestone 10: Canary, Default-On, and Legacy Cleanup
 **Goal:** Ship only after all hard gates and one quality-or-cost benefit path pass.
@@ -221,4 +223,5 @@ Tool output policy, cache identity, lifecycle, delegation, and evaluation consum
 - Validate all hard, quality, efficiency, latency, cache and security gates in the Spec.
 - Default-on only for reviewed provider/entry-point capabilities; preserve one stable-version rollback switch.
 - Remove duplicate legacy assembly paths only after parity and rollback acceptance.
-- **Status:** pending
+- **Status:** control-plane mechanism complete; operational 100% shadow, 5% session-sticky enforce, external rollback bundle,
+  canary health and post-gate legacy cleanup remain pending.
