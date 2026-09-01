@@ -147,6 +147,7 @@ class ContextEvaluationManifest:
     interleaving_seed: int
     independent_verifier_id: str
     manifest_hash: str
+    cost_policy_hash: str | None = None
 
     @classmethod
     def build(
@@ -164,6 +165,7 @@ class ContextEvaluationManifest:
         repeats: int,
         interleaving_seed: int,
         independent_verifier_id: str,
+        cost_policy_hash: str | None = None,
     ) -> "ContextEvaluationManifest":
         variant_values = tuple(variants)
         case_values = tuple(case_ids)
@@ -184,6 +186,10 @@ class ContextEvaluationManifest:
                 raise ValueError(f"{name} must be a canonical sha256 hash")
         if not isinstance(repository_snapshot, str) or not repository_snapshot.strip():
             raise ValueError("repository_snapshot must be non-empty")
+        if cost_policy_hash is not None and not re.fullmatch(
+            r"sha256:[0-9a-f]{64}", cost_policy_hash
+        ):
+            raise ValueError("cost_policy_hash must be canonical or None")
         if len(variant_values) < 2:
             raise ValueError("paired evaluation requires at least two variants")
         if len({variant.name for variant in variant_values}) != len(variant_values):
@@ -209,12 +215,15 @@ class ContextEvaluationManifest:
             "interleaving_seed": interleaving_seed,
             "independent_verifier_id": independent_verifier_id,
         }
+        if cost_policy_hash is not None:
+            payload["cost_policy_hash"] = cost_policy_hash
         return cls(
             variants=variant_values,
             case_ids=case_values,
             repeats=repeats,
             interleaving_seed=interleaving_seed,
             manifest_hash=canonical_json_hash(payload),
+            cost_policy_hash=cost_policy_hash,
             **{
                 key: payload[key]
                 for key in (

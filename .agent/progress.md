@@ -526,3 +526,10 @@ implemented, and a frozen cache-adjusted normalized cost policy is bound through
   benchmark reward or Context-benefit claim.
 - Authority, trust, lifetime, stability, source URI, task epoch, and exact token counts remain UNKNOWN unless their owner can
   prove them; role/content heuristics are not acceptable.
+- Independent normalized-cost review hardened benefit evidence to fail closed on missing, contradictory, non-attempted, or
+  impossible per-call usage. Cache truth must agree across normalized/raw provider views and cannot exceed input tokens.
+  Every cost receipt is now versioned and independently recomputed against a policy whose hash is included in the paired
+  evaluation manifest; old float-only artifacts and tampered receipts cannot establish an efficiency benefit.
+- Normalized-cost confidence gates now use exact integer microunits (bounded to JSON's exact integer range); the float value
+  remains display-only. Missing normalized-cost evidence no longer defeats an independently proven quality-improvement
+  path. The full evaluation suite is green at 178 passed, 4 skipped.

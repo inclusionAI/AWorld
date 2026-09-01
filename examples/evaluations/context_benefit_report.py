@@ -47,6 +47,7 @@ from aworld.evaluations.context_benefit import (
 )
 from aworld.evaluations.normalized_cost import (
     NormalizedCostPolicy,
+    NormalizedCostReceipt,
     compute_normalized_cost,
 )
 
@@ -54,7 +55,7 @@ from aworld.evaluations.normalized_cost import (
 _COST_BENEFIT_METRICS = (
     "cost_per_successful_task",
     "provider_billed_cost",
-    "normalized_cost",
+    "normalized_cost_microunits",
 )
 
 _TURN_CAUSES = {
@@ -1117,6 +1118,83 @@ def authoritative_provider_metrics(calls: list[dict]) -> dict[str, int | float]:
     return metrics
 
 
+def authoritative_normalized_usage(
+    calls: list[dict],
+) -> tuple[dict[str, int] | None, str | None]:
+    """Validate complete per-call token truth without coercion or defaulting."""
+    if not calls:
+        return None, "provider_calls_missing"
+
+    def exact_alias(mapping: Any, names: tuple[str, ...]) -> tuple[int | None, bool]:
+        if not isinstance(mapping, dict):
+            return None, False
+        present = [mapping[name] for name in names if name in mapping]
+        if not present:
+            return None, False
+        if any(isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in present):
+            return None, False
+        if len(set(present)) != 1:
+            return None, False
+        return present[0], True
+
+    totals = {"input_tokens": 0, "cache_read_tokens": 0, "output_tokens": 0}
+    for call in calls:
+        if (
+            not isinstance(call, dict)
+            or call.get("status") != "success"
+            or call.get("provider_invoked") is not True
+            or call.get("provider_attempt_status") != "attempted"
+        ):
+            return None, "provider_attempt_truth_incomplete"
+        normalized = call.get("usage_normalized")
+        raw = call.get("usage_raw")
+        input_tokens, input_ok = exact_alias(normalized, ("prompt_tokens", "input_tokens"))
+        output_tokens, output_ok = exact_alias(normalized, ("completion_tokens", "output_tokens"))
+        raw_input, raw_input_ok = exact_alias(raw, ("prompt_tokens", "input_tokens"))
+        raw_output, raw_output_ok = exact_alias(raw, ("completion_tokens", "output_tokens"))
+        if not (input_ok and output_ok and raw_input_ok and raw_output_ok):
+            return None, "provider_usage_missing_or_invalid"
+        if raw_input != input_tokens or raw_output != output_tokens:
+            return None, "provider_usage_conflict"
+        def cache_truth(mapping: dict[str, Any]) -> int | None:
+            prompt_details = mapping.get("prompt_tokens_details")
+            values = [
+                mapping[name]
+                for name in ("cache_hit_tokens", "cache_read_input_tokens")
+                if name in mapping
+            ]
+            if isinstance(prompt_details, dict) and "cached_tokens" in prompt_details:
+                values.append(prompt_details["cached_tokens"])
+            if (
+                not values
+                or any(
+                    isinstance(value, bool) or not isinstance(value, int) or value < 0
+                    for value in values
+                )
+                or len(set(values)) != 1
+            ):
+                return None
+            return values[0]
+
+        normalized_cache = cache_truth(normalized)
+        raw_cache = cache_truth(raw)
+        if normalized_cache is None or raw_cache is None:
+            return None, "provider_cache_usage_missing_or_conflicting"
+        if normalized_cache != raw_cache:
+            return None, "provider_cache_usage_conflicting_views"
+        cache_tokens = normalized_cache
+        if cache_tokens > input_tokens:
+            return None, "provider_cache_usage_exceeds_input"
+        for usage_mapping in (normalized, raw):
+            total_tokens, total_present = exact_alias(usage_mapping, ("total_tokens",))
+            if total_present and total_tokens != input_tokens + output_tokens:
+                return None, "provider_total_usage_conflict"
+        totals["input_tokens"] += input_tokens
+        totals["cache_read_tokens"] += cache_tokens
+        totals["output_tokens"] += output_tokens
+    return totals, None
+
+
 def benefit_evidence(
     summary: Any, *, normalized_cost_policy_ready: bool = False
 ) -> dict[str, Any]:
@@ -1137,7 +1215,7 @@ def benefit_evidence(
     # The quality gate permits at most one percentage point of regression.
     quality_non_regression = reward_lower >= -0.01
     for metric in _COST_BENEFIT_METRICS:
-        if metric == "normalized_cost" and not normalized_cost_policy_ready:
+        if metric == "normalized_cost_microunits" and not normalized_cost_policy_ready:
             continue
         interval = summary.metric_intervals.get(metric)
         if (
@@ -1163,7 +1241,84 @@ def benefit_evidence(
     }
 
 
-def experiment_manifest(experiment: Path, manifest_payload: dict, results: list[dict]) -> ContextEvaluationManifest:
+def normalized_cost_evidence_ready(workload_reports: list[dict[str, Any]]) -> bool:
+    """Revalidate every policy/receipt and its trial-manifest binding."""
+    if not workload_reports:
+        return False
+    policy_hashes: set[str] = set()
+    trial_count = 0
+    try:
+        for report in workload_reports:
+            policy = NormalizedCostPolicy.from_dict(report["normalized_cost_policy"])
+            manifest = report["manifest"]
+            if (
+                not isinstance(manifest, dict)
+                or manifest.get("cost_policy_hash") != policy.policy_hash
+            ):
+                return False
+            manifest_projection = {
+                key: manifest.get(key)
+                for key in (
+                    "experiment_id",
+                    "workload_id",
+                    "workload_kind",
+                    "dataset_checksum",
+                    "repository_snapshot",
+                    "environment_hash",
+                    "inference_profile_hash",
+                    "case_ids",
+                    "repeats",
+                    "interleaving_seed",
+                    "independent_verifier_id",
+                    "cost_policy_hash",
+                )
+            }
+            variants = manifest.get("variants")
+            if not isinstance(variants, list):
+                return False
+            manifest_projection["variants"] = [
+                {"name": variant.get("name"), "settings_hash": variant.get("settings_hash")}
+                for variant in variants
+                if isinstance(variant, dict)
+            ]
+            if (
+                len(manifest_projection["variants"]) != len(variants)
+                or value_hash(manifest_projection) != manifest.get("manifest_hash")
+            ):
+                return False
+            policy_hashes.add(policy.policy_hash)
+            manifest_hash = manifest.get("manifest_hash")
+            for trial in report.get("trials", ()):
+                if (
+                    not isinstance(trial, dict)
+                    or trial.get("manifest_hash") != manifest_hash
+                ):
+                    return False
+                metrics = trial.get("metrics")
+                if not isinstance(metrics, dict):
+                    return False
+                receipt = NormalizedCostReceipt.from_dict(
+                    metrics["normalized_cost_receipt"], policy=policy
+                )
+                if (
+                    metrics.get("normalized_cost_microunits")
+                    != receipt.total_microunits
+                    or metrics.get("normalized_cost") != receipt.normalized_cost
+                ):
+                    return False
+                trial_count += 1
+    except (KeyError, TypeError, ValueError):
+        return False
+    return trial_count > 0 and len(policy_hashes) == 1
+
+
+def experiment_manifest(
+    experiment: Path,
+    manifest_payload: dict,
+    results: list[dict],
+    *,
+    cost_policy_hash: str | None = None,
+) -> ContextEvaluationManifest:
     variants = tuple(
         ContextVariant.build(payload["name"], variant_settings(payload))
         for payload in manifest_payload["variants"]
@@ -1214,6 +1369,7 @@ def experiment_manifest(experiment: Path, manifest_payload: dict, results: list[
         repeats=int(manifest_payload["repeat"]),
         interleaving_seed=int(manifest_payload["seed"]),
         independent_verifier_id=str(verifier_id),
+        cost_policy_hash=cost_policy_hash,
     )
 
 
@@ -1280,16 +1436,24 @@ def trial_from_result(
     provider_metrics = authoritative_provider_metrics(calls)
     numeric_metrics.update(provider_metrics)
     if normalized_cost_policy is not None:
+        usage, usage_reason = authoritative_normalized_usage(calls)
         try:
+            if usage is None:
+                raise ValueError(usage_reason or "normalized usage unavailable")
             normalized = compute_normalized_cost(
                 policy=normalized_cost_policy,
-                input_tokens=int(provider_metrics["prompt_tokens"]),
-                cache_read_tokens=int(provider_metrics["cache_read_tokens"]),
-                output_tokens=int(provider_metrics["completion_tokens"]),
+                input_tokens=usage["input_tokens"],
+                cache_read_tokens=usage["cache_read_tokens"],
+                output_tokens=usage["output_tokens"],
             )
             numeric_metrics["normalized_cost"] = normalized.normalized_cost
+            numeric_metrics["normalized_cost_microunits"] = normalized.total_microunits
+            numeric_metrics["normalized_cost_receipt"] = normalized.to_dict()
         except (TypeError, ValueError):
-            pass
+            numeric_metrics["normalized_cost_status"] = "unavailable"
+            numeric_metrics["normalized_cost_reason"] = (
+                usage_reason or "normalized_cost_computation_failed"
+            )
     raw_trajectory = read_json(run_dir / "raw_trajectory.json", None)
     numeric_metrics["trajectory_items"] = (
         len(raw_trajectory) if isinstance(raw_trajectory, list) else 0
@@ -1349,23 +1513,26 @@ def aggregate(
     all_attribution_pairing: list[dict[str, Any]] = []
     all_economics_runs: list[dict[str, Any]] = []
     workload_kinds = []
-    normalized_cost_policy_hashes: list[str | None] = []
     for experiment in experiments:
         manifest_payload = read_json(experiment / "experiment_manifest.json")
         results = read_json(experiment / "results.json", [])
         if not isinstance(manifest_payload, dict) or not isinstance(results, list):
             raise ValueError(f"Incomplete experiment directory: {experiment}")
-        manifest = experiment_manifest(experiment, manifest_payload, results)
         try:
             normalized_cost_policy = NormalizedCostPolicy.from_dict(
                 manifest_payload["normalized_cost_policy"]
             )
         except (KeyError, TypeError, ValueError):
             normalized_cost_policy = None
-        normalized_cost_policy_hashes.append(
-            normalized_cost_policy.policy_hash
-            if normalized_cost_policy is not None
-            else None
+        manifest = experiment_manifest(
+            experiment,
+            manifest_payload,
+            results,
+            cost_policy_hash=(
+                normalized_cost_policy.policy_hash
+                if normalized_cost_policy is not None
+                else None
+            ),
         )
         trials = []
         gate_rows = []
@@ -1495,16 +1662,9 @@ def aggregate(
     if not all_gates or any(not all(row.values()) for row in all_gates):
         hard_failures.add("trial_hard_gate_failed")
     normalized_cost_policy_ready = bool(
-        normalized_cost_policy_hashes
-        and all(normalized_cost_policy_hashes)
-        and len(set(normalized_cost_policy_hashes)) == 1
+        normalized_cost_evidence_ready(workload_reports)
         and sum(len(report["trials"]) for report in workload_reports)
         == len(all_gates)
-        and all(
-            "normalized_cost" in (trial.get("metrics") or {})
-            for report in workload_reports
-            for trial in report["trials"]
-        )
     )
     benefit = benefit_evidence(
         combined,
@@ -1512,8 +1672,6 @@ def aggregate(
     )
     if not benefit["proven"]:
         hard_failures.add("positive_benefit_not_proven")
-    if not normalized_cost_policy_ready:
-        hard_failures.add("normalized_cost_evidence_incomplete")
     if any(row["summary"]["status"] != "available" for row in all_attribution_runs) or not all_attribution_runs:
         hard_failures.add("provider_attribution_incomplete")
     if any(row["status"] != "available" for row in all_attribution_pairing) or not all_attribution_pairing:

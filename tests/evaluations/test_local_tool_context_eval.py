@@ -114,10 +114,21 @@ def test_benefit_report_consumes_real_artifact_contract_and_stays_not_ready_for_
         provider_payload = {"model": "test", "messages": [{"role": "user", "content": "x"}]}
         provider_call = {
             "provider_invoked": True,
+            "provider_attempt_status": "attempted",
+            "status": "success",
             "request_trace_match": True,
             "usage_normalized": {
                 "prompt_tokens": tokens,
                 "completion_tokens": 1,
+                "total_tokens": tokens + 1,
+                "cache_hit_tokens": 0,
+                "prompt_tokens_details": {"cached_tokens": 0},
+            },
+            "usage_raw": {
+                "prompt_tokens": tokens,
+                "completion_tokens": 1,
+                "total_tokens": tokens + 1,
+                "prompt_tokens_details": {"cached_tokens": 0},
             },
             "provider_request": {
                 "request_id": f"{name}-request",
@@ -180,7 +191,19 @@ def test_benefit_report_consumes_real_artifact_contract_and_stays_not_ready_for_
     assert report["benefit_evidence"]["path"] == "quality"
     assert report["combined_benefit"]["metric_means"]["prompt_tokens"] == -40.0
     assert report["combined_benefit"]["metric_means"]["normalized_cost"] == -40.0
+    assert report["combined_benefit"]["metric_means"]["normalized_cost_microunits"] == -40_000_000.0
     assert report["normalized_cost_policy_ready"] is True
+    tampered = json.loads(json.dumps(report["workloads"]))
+    tampered[0]["trials"][0]["metrics"]["normalized_cost_receipt"][
+        "total_microunits"
+    ] += 1
+    assert reporter.normalized_cost_evidence_ready(tampered) is False
+    legacy_only = json.loads(json.dumps(report["workloads"]))
+    legacy_only[0]["normalized_cost_policy"] = {"status": "unavailable"}
+    for trial in legacy_only[0]["trials"]:
+        trial["metrics"].pop("normalized_cost_receipt", None)
+        trial["metrics"].pop("normalized_cost_microunits", None)
+    assert reporter.normalized_cost_evidence_ready(legacy_only) is False
     assert report["default_on_readiness"]["status"] == "not_ready"
     assert "insufficient_paired_evidence" in report["default_on_readiness"]["gate_failures"]
     assert "cross_workload_evidence_missing" in report["default_on_readiness"]["gate_failures"]
@@ -208,7 +231,7 @@ def test_normalized_cost_efficiency_requires_a_revalidated_policy():
     summary = SimpleNamespace(
         reward_interval=SimpleNamespace(lower=0.0, upper=0.0),
         metric_intervals={
-            "normalized_cost": SimpleNamespace(lower=-10.0, upper=-1.0)
+            "normalized_cost_microunits": SimpleNamespace(lower=-10.0, upper=-1.0)
         },
     )
 
@@ -219,7 +242,82 @@ def test_normalized_cost_efficiency_requires_a_revalidated_policy():
 
     assert unavailable["proven"] is False
     assert available["proven"] is True
-    assert available["cost_metric"] == "normalized_cost"
+    assert available["cost_metric"] == "normalized_cost_microunits"
+
+    old_float_only = SimpleNamespace(
+        reward_interval=SimpleNamespace(lower=0.0, upper=0.0),
+        metric_intervals={
+            "normalized_cost": SimpleNamespace(lower=-10.0, upper=-1.0)
+        },
+    )
+    assert reporter.benefit_evidence(
+        old_float_only, normalized_cost_policy_ready=True
+    )["proven"] is False
+
+
+def test_quality_path_does_not_require_normalized_cost_evidence():
+    reporter = _load_reporter()
+    summary = SimpleNamespace(
+        reward_interval=SimpleNamespace(lower=0.1, upper=0.2),
+        metric_intervals={},
+    )
+
+    evidence = reporter.benefit_evidence(
+        summary, normalized_cost_policy_ready=False
+    )
+
+    assert evidence["proven"] is True
+    assert evidence["path"] == "quality"
+
+
+def test_normalized_usage_fails_closed_on_missing_or_conflicting_truth():
+    reporter = _load_reporter()
+    complete = {
+        "provider_invoked": True,
+        "provider_attempt_status": "attempted",
+        "status": "success",
+        "usage_normalized": {
+            "prompt_tokens": 10,
+            "completion_tokens": 2,
+            "total_tokens": 12,
+            "cache_hit_tokens": 3,
+        },
+        "usage_raw": {
+            "prompt_tokens": 10,
+            "completion_tokens": 2,
+            "total_tokens": 12,
+            "prompt_tokens_details": {"cached_tokens": 3},
+        },
+    }
+    usage, reason = reporter.authoritative_normalized_usage([complete])
+    assert usage == {"input_tokens": 10, "cache_read_tokens": 3, "output_tokens": 2}
+    assert reason is None
+
+    missing = json.loads(json.dumps(complete))
+    del missing["usage_raw"]["prompt_tokens_details"]
+    assert reporter.authoritative_normalized_usage([missing])[0] is None
+
+    conflicting = json.loads(json.dumps(complete))
+    conflicting["usage_raw"]["prompt_tokens"] = 11
+    assert reporter.authoritative_normalized_usage([conflicting]) == (
+        None,
+        "provider_usage_conflict",
+    )
+
+    cache_conflict = json.loads(json.dumps(complete))
+    cache_conflict["usage_raw"]["prompt_tokens_details"]["cached_tokens"] = 4
+    assert reporter.authoritative_normalized_usage([cache_conflict]) == (
+        None,
+        "provider_cache_usage_conflicting_views",
+    )
+
+    cache_exceeds_input = json.loads(json.dumps(complete))
+    cache_exceeds_input["usage_normalized"]["cache_hit_tokens"] = 11
+    cache_exceeds_input["usage_raw"]["prompt_tokens_details"]["cached_tokens"] = 11
+    assert reporter.authoritative_normalized_usage([cache_exceeds_input]) == (
+        None,
+        "provider_cache_usage_exceeds_input",
+    )
 
 
 def _turn_receipt(reporter, kind, cause, identity, parent=None):

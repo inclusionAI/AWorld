@@ -4,6 +4,7 @@ import pytest
 
 from aworld.evaluations.normalized_cost import (
     NormalizedCostPolicy,
+    NormalizedCostReceipt,
     compute_normalized_cost,
 )
 
@@ -35,5 +36,28 @@ def test_normalized_cost_rejects_tampered_policy_and_impossible_usage():
             policy=NormalizedCostPolicy(),
             input_tokens=10,
             cache_read_tokens=11,
+            output_tokens=0,
+        )
+
+
+def test_normalized_cost_receipt_is_independently_revalidated():
+    policy = NormalizedCostPolicy()
+    receipt = compute_normalized_cost(
+        policy=policy, input_tokens=100, cache_read_tokens=25, output_tokens=10
+    )
+    assert NormalizedCostReceipt.from_dict(receipt.to_dict(), policy=policy) == receipt
+
+    tampered = receipt.to_dict()
+    tampered["total_microunits"] += 1
+    with pytest.raises(ValueError, match="receipt mismatch"):
+        NormalizedCostReceipt.from_dict(tampered, policy=policy)
+
+
+def test_normalized_cost_rejects_values_outside_exact_json_integer_range():
+    with pytest.raises(ValueError, match="exact JSON integer"):
+        compute_normalized_cost(
+            policy=NormalizedCostPolicy(),
+            input_tokens=(1 << 53),
+            cache_read_tokens=0,
             output_tokens=0,
         )
