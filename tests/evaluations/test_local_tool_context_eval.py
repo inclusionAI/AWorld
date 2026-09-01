@@ -231,6 +231,35 @@ def test_benefit_report_accepts_only_explicit_cost_metric_for_efficiency_path():
     assert evidence["cost_metric"] == "cost_per_successful_task"
 
 
+def test_benefit_report_reads_frozen_intervals_from_real_summary_contract():
+    from aworld.evaluations.context_benefit import (
+        PairedContextDelta,
+        summarize_context_benefit,
+    )
+
+    reporter = _load_reporter()
+    summary = summarize_context_benefit(
+        (
+            PairedContextDelta(
+                case_id="case",
+                repeat=1,
+                baseline_variant="legacy",
+                candidate_variant="candidate",
+                reward_delta=0.0,
+                metric_deltas={"cost_per_successful_task": -1.0},
+            ),
+        ),
+        bootstrap_samples=100,
+        seed=7,
+    )
+
+    evidence = reporter.benefit_evidence(summary)
+
+    assert evidence["proven"] is True
+    assert evidence["path"] == "efficiency"
+    assert evidence["cost_metric"] == "cost_per_successful_task"
+
+
 def test_normalized_cost_efficiency_requires_a_revalidated_policy():
     reporter = _load_reporter()
     summary = SimpleNamespace(
@@ -496,6 +525,32 @@ def test_turn_artifact_economics_missing_receipts_is_unavailable_not_heuristic()
     assert summary["retrieval"]["opportunity_count"] == 0
 
 
+def test_report_revalidates_manifest_bound_context_artifact_files(tmp_path):
+    reporter = _load_reporter()
+    run = tmp_path / "run"
+    artifact = run / "tool-output-artifacts" / "context.bin"
+    artifact.parent.mkdir(parents=True)
+    artifact.write_bytes(b"artifact")
+    content_hash = "sha256:" + hashlib.sha256(b"artifact").hexdigest()
+    manifest = {
+        "capture": {
+            "context_tool_output_artifacts": [
+                {
+                    "artifact_ref_hash": "sha256:" + "1" * 64,
+                    "content_hash": content_hash,
+                    "byte_count": 8,
+                    "path": "tool-output-artifacts/context.bin",
+                }
+            ]
+        }
+    }
+    (run / "run_manifest.json").write_text(json.dumps(manifest))
+
+    assert reporter.validated_context_artifact_files(run) == [artifact.resolve()]
+    artifact.write_bytes(b"tampered")
+    assert reporter.validated_context_artifact_files(run) == []
+
+
 def _compiler_plan_evidence(
     reporter,
     *,
@@ -598,6 +653,15 @@ def test_benefit_report_aggregates_receipts_and_never_classifies_missing_prompt(
                 },
                 "compiler_attribution_plan": compiler_plan,
                 "provider_lowering": {"candidate_content_hash": candidate_hash, "attribution": receipt},
+                # Older trajectory projection used a global seen-set and
+                # stringified this shared sibling. The independently retained
+                # provider-lowering receipt remains authoritative.
+                "provider_attribution": {
+                    "subject": "candidate_selected",
+                    "subject_content_hash": candidate_hash,
+                    "plan_fingerprint": compiler_plan["plan_fingerprint"],
+                    "attribution": str(receipt),
+                },
             },
         },
         {
