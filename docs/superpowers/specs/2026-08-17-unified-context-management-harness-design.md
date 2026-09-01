@@ -1145,6 +1145,37 @@ token-equivalent，provider 明确报告的 cache-read 为 0.1；它不是货币
 policy 不一致时 normalized cost unavailable，旧 artifact 不会被补算成效率收益。权重在查看 benchmark outcome 前
 冻结，后续只能通过新 version 做 sensitivity comparison，禁止为某个 case 改权重。
 
+2026-09-01 后续真实 rollout 又收敛了四个框架层证据缺口，而没有引入题目特判：
+
+- `EVIDENCE_ONLY` owner sidecar 不再参与 model-request enforce blocker；每次 provider retry 以 `request_id` 保留，
+  TaskResponse 与 live Context 仍须数量和 checksum 完全一致，不能因为 reconciliation 找回记录就放宽 capture gate。
+- Tool result 的低信任隔离允许成为显式 candidate transform，但 owner 必须用原始 ordinal/content hash 重新计算出完全
+  相同的 boundary payload；任意伪造 boundary 继续以 `source_lowering_unproven` fail-closed。修复后的真实
+  `prove-plus-comm` candidate 为 reward 1、5/5 provider calls、5/5 request trace、5 条 Raw trajectory，且
+  TaskResponse/live Context 完全一致。
+- 通用 serializer 现在只把当前递归栈回边视为 cycle；`provider_lowering` 与 `provider_attribution` 共享同一 receipt
+  不会再把第二份误转成字符串。report 对旧 artifact 仅可从同一 provider-lowering record 中独立保留的结构化 receipt
+  恢复，不解析字符串 repr，也不信任 summary。
+- Context-owned offload snapshot 在 run 结束时导出到 `tool-output-artifacts/context-<sha256>.bin`，manifest 绑定
+  artifact-ref hash、content hash、byte count 和相对路径；report 只消费重新验证通过的文件。临时目录中的 URI
+  本身不再足以证明 artifact 可恢复。
+
+paired benefit baseline 由纯 `off` 的 `legacy` 明确拆分为 `legacy-observe`：两者的 model-visible legacy policy、
+Tool output policy 和 memory policy 相同，后者只生成 `legacy_observed` provider receipt。纯 `off` 仍可用于兼容性
+与行为诊断，但不能满足 section-level paired attribution gate。对应真实跨 workload smoke 为：
+
+| Workload | `legacy-observe` | `unified-context-progressive` | Reward delta | Candidate delta |
+|---|---|---|---:|---|
+| `prove-plus-comm` | reward 1；8 calls；18,501 prompt；81,970 request bytes；7,753 completion | reward 1；9 calls；25,057 prompt；103,557 request bytes；4,533 completion | 0 | calls +1；prompt +6,556；request bytes +21,587；completion -3,220 |
+| `noisy-record-recovery` | reward 1；10 calls；39,463 prompt；160,926 request bytes；1,869 completion | reward 1；10 calls；30,940 prompt；127,549 request bytes；1,626 completion | 0 | calls 0；prompt -8,523；request bytes -33,377；completion -243 |
+
+四个 run 的 provider attribution、provider capture、TaskResponse/live continuity、request trace 与 trajectory 均为
+100%；baseline/candidate subject 分别为 `legacy_observed`/`candidate_selected`。冻结 normalized-cost microunit 的
+两条 paired delta 均为负，2-pair bootstrap 区间为 `[-1,502,400,000, -1,278,000,000]`，因此报告可以记录
+smoke-level efficiency path；但 default-on 仍为 `not_ready`：只有 2/10 complete pairs，没有真实 retrieval
+opportunity，且没有 operational canary-health receipt 或外部 rollback bundle。该小样本不得描述为系统性收益，
+仍需预先冻结样本后补 long-history/lifecycle/injection/delegation 等 workload 和随机交错 repeats。
+
 ## Migration Plan
 
 ### Phase 0: Baseline and Observability
@@ -1400,10 +1431,10 @@ Dockerfile 构建镜像、挂载原始 tests、启动容器、调用 AWorld、�
 全部作为 invariant 记录。driver 随机交错 baseline/candidate，并保存 dataset/task/image checksum、
 provider calls、context trace、Raw trajectory、Tool artifacts、独立 reward 和退出状态。
 
-2026-09-01 修复后可归因的 paired smoke 分别保存在
-`artifacts/context-management/local-terminal-bench/paired-trace-fixed-20260901/` 与
-`artifacts/context-management/local-tool-workload/paired-trace-fixed-20260901/`，统一决策报告为
-`artifacts/context-management/context-benefit-paired-trace-fixed-20260901.json`。这些目录是本地验证输出，
+2026-09-01 当前可归因的 observe-baseline paired smoke 分别保存在
+`artifacts/context-management/local-terminal-bench/progressive-observe-paired-20260901/` 与
+`artifacts/context-management/local-tool-workload/progressive-observe-paired-20260901/`，统一决策报告为
+`artifacts/context-management/context-benefit-progressive-observe-final-20260901.json`。这些目录是本地验证输出，
 不要求随源码分发；报告必须从其中的 provider calls、Raw trajectory 与 verifier artifact 重新计算指标，
 不能信任或手工修饰旧 summary。
 
@@ -1413,6 +1444,8 @@ provider calls、context trace、Raw trajectory、Tool artifacts、独立 reward
 - `context_trace.json`：compiler-side observability 及其与 provider request 的 match 状态；
 - `raw_trajectory.json` 与 `logs/trajectory.log`：动作数据面及 legacy 投影；
 - `tool-output-artifacts/`：超限 Tool 原文，inline 只保留有界 head/tail、artifact ref 和 checksum；
+- `run_manifest.capture.context_tool_output_artifacts`：Context-owned snapshot 的 hash/size/path 绑定；未导出或
+  checksum 不一致时 artifact economics unavailable；
 - `verifier/reward.txt`、`result.json`、`run_manifest.json`：独立评分、环境身份和全部 artifact checksum。
 - `results.json`、`summary.json`：将 reward 与 provider request bytes、input/output/cache usage、trace match、
   trajectory items 和 offloaded artifact bytes 按 task/repetition 配对；该汇总只作描述，仍须满足样本量、
