@@ -98,6 +98,38 @@ def test_context_only_manifest_and_paired_benefit_are_deterministic():
     assert first.mean_reward_delta == 1.0
     assert first.metric_means["input_tokens"] == -400.0
 
+    policy_a = ContextEvaluationManifest.build(
+        experiment_id="context-v1",
+        workload_id="workload",
+        workload_kind="tool",
+        dataset_checksum=HASH,
+        repository_snapshot="commit:abc",
+        environment_hash=HASH,
+        inference_profile_hash=HASH,
+        variants=manifest.variants,
+        case_ids=("case",),
+        repeats=1,
+        interleaving_seed=7,
+        independent_verifier_id="verifier-v1",
+        cost_policy_hash="sha256:" + "b" * 64,
+    )
+    policy_b = ContextEvaluationManifest.build(
+        experiment_id="context-v1",
+        workload_id="workload",
+        workload_kind="tool",
+        dataset_checksum=HASH,
+        repository_snapshot="commit:abc",
+        environment_hash=HASH,
+        inference_profile_hash=HASH,
+        variants=manifest.variants,
+        case_ids=("case",),
+        repeats=1,
+        interleaving_seed=7,
+        independent_verifier_id="verifier-v1",
+        cost_policy_hash="sha256:" + "c" * 64,
+    )
+    assert policy_a.manifest_hash != policy_b.manifest_hash
+
     with pytest.raises(ValueError, match="prompts"):
         ContextVariant.build("invalid", {"system_prompt": "benchmark hint"})
 
