@@ -166,6 +166,19 @@ def test_canary_assignment_falls_back_and_readiness_requires_cross_workload():
     )
     assert ready.status is ReadinessStatus.READY
 
+    missing_entry_point = assess_default_on_readiness(
+        capabilities=(ready_capability,),
+        required_capabilities=(("openai", "agent"), ("openai", "cli")),
+        workload_kinds=("terminal", "research"),
+        complete_pairs=10,
+        quality_regression=False,
+        request_trace_match_rate=1.0,
+        trajectory_complete_rate=1.0,
+        rollback_config_hash=rollback.bundle_hash,
+    )
+    assert missing_entry_point.status is ReadinessStatus.NOT_READY
+    assert "capability_matrix_incomplete" in missing_entry_point.gate_failures
+
     too_small = assess_default_on_readiness(
         capabilities=(ready_capability,),
         workload_kinds=("terminal", "research"),
