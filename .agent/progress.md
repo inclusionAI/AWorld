@@ -533,3 +533,17 @@ implemented, and a frozen cache-adjusted normalized cost policy is bound through
 - Normalized-cost confidence gates now use exact integer microunits (bounded to JSON's exact integer range); the float value
   remains display-only. Missing normalized-cost evidence no longer defeats an independently proven quality-improvement
   path. The full evaluation suite is green at 178 passed, 4 skipped.
+- Independent canary review connected health decisions to default-on readiness: missing/hold health now fails closed and a
+  rollback decision propagates `ROLLBACK_REQUIRED`. Healthy continuation requires an executable, self-validating rollback
+  bundle and an explicitly frozen expected canary-policy fingerprint; readiness binds the exact health decision fingerprint.
+  Baseline/enforce attempt sample floors, exact baseline
+  error counts and per-session provider-attempt coverage prevent sparse or contradictory aggregate evidence from passing.
+- Terminal Bench Docker timeout overrides remain global infrastructure policy. The experiment manifest now records each
+  task's effective timeout/source, complete build-context checksum, image reference and resolved immutable image id; paired
+  jobs run that immutable id. Invalid dataset timeouts fail before build, timeout diagnostics are typed without captured
+  Docker output leakage, and failed image resolution is persisted in the manifest. Affected tests are 20 passed; the wider
+  evaluation/sandbox run is 270 passed, 5 skipped with one unrelated mac-ui test still referencing a deleted worktree path.
+- The follow-up rollout-timeout review confirms agent and verifier `TimeoutExpired` results retain `reward=None`, a stable
+  failure stage/reason/timeout and a per-run result, so they cannot form a paired benefit claim and later jobs can continue.
+  Verifier timeout now has a dedicated regression; malformed partial provider/trajectory/manifest files become typed
+  unavailable metrics rather than masking the primary timeout before its incomplete result is persisted.

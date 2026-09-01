@@ -79,6 +79,35 @@ def _trial(manifest, variant: str, reward: float, tokens: int):
     )
 
 
+def _healthy_canary(rollback):
+    return assess_canary_health(
+        policy=CanaryHealthPolicy(
+            policy_version="health-v1",
+            minimum_shadow_calls=1,
+            minimum_enforce_sessions=1,
+            minimum_baseline_provider_attempts=10,
+            minimum_enforce_provider_attempts=10,
+            max_provider_error_rate_delta=0.02,
+        ),
+        evidence=CanaryHealthEvidence(
+            shadow_call_count=10,
+            shadow_request_trace_match_count=10,
+            shadow_provider_attribution_complete_count=10,
+            enforce_session_count=2,
+            enforce_provider_attempt_count=10,
+            enforce_provider_error_count=0,
+            baseline_provider_error_rate=0.0,
+            security_violation_count=0,
+            trajectory_incomplete_count=0,
+            quality_regression=False,
+            baseline_provider_attempt_count=10,
+            baseline_provider_error_count=0,
+            enforce_sessions_with_provider_attempt_count=2,
+        ),
+        rollback_bundle=rollback,
+    )
+
+
 def test_context_only_manifest_and_paired_benefit_are_deterministic():
     manifest = _manifest()
     trials = (
@@ -193,6 +222,7 @@ def test_canary_assignment_falls_back_and_readiness_requires_cross_workload():
     assert not_ready.status is ReadinessStatus.NOT_READY
     assert "cross_workload_evidence_missing" in not_ready.gate_failures
 
+    healthy_canary = _healthy_canary(rollback)
     ready = assess_default_on_readiness(
         capabilities=(ready_capability,),
         workload_kinds=("terminal", "research"),
@@ -201,6 +231,8 @@ def test_canary_assignment_falls_back_and_readiness_requires_cross_workload():
         request_trace_match_rate=1.0,
         trajectory_complete_rate=1.0,
         rollback_config_hash=rollback.bundle_hash,
+        canary_health_decision=healthy_canary,
+        required_canary_policy_fingerprint=healthy_canary.policy_fingerprint,
     )
     assert ready.status is ReadinessStatus.READY
 
@@ -254,6 +286,9 @@ def test_canary_health_distinguishes_hold_continue_and_rollback():
         security_violation_count=0,
         trajectory_incomplete_count=0,
         quality_regression=False,
+        baseline_provider_attempt_count=100,
+        baseline_provider_error_count=1,
+        enforce_sessions_with_provider_attempt_count=0,
     )
     hold = assess_canary_health(
         policy=policy, evidence=hold_evidence, rollback_bundle=rollback
@@ -276,6 +311,9 @@ def test_canary_health_distinguishes_hold_continue_and_rollback():
         security_violation_count=0,
         trajectory_incomplete_count=0,
         quality_regression=False,
+        baseline_provider_attempt_count=100,
+        baseline_provider_error_count=1,
+        enforce_sessions_with_provider_attempt_count=20,
     )
     continued = assess_canary_health(
         policy=policy, evidence=healthy, rollback_bundle=rollback
@@ -301,6 +339,7 @@ def test_canary_health_distinguishes_hold_continue_and_rollback():
         healthy,
         enforce_provider_attempt_count=0,
         enforce_provider_error_count=0,
+        enforce_sessions_with_provider_attempt_count=0,
     )
     held_without_provider_truth = assess_canary_health(
         policy=policy,
@@ -308,6 +347,101 @@ def test_canary_health_distinguishes_hold_continue_and_rollback():
         rollback_bundle=rollback,
     )
     assert held_without_provider_truth.status is CanaryHealthStatus.HOLD
-    assert held_without_provider_truth.reason_codes == (
+    assert set(held_without_provider_truth.reason_codes) == {
         "enforce_provider_attempt_sample_incomplete",
+        "enforce_session_provider_coverage_incomplete",
+    }
+
+    healthy_without_rollback = assess_canary_health(
+        policy=policy,
+        evidence=healthy,
+        rollback_bundle=None,
     )
+    assert healthy_without_rollback.status is CanaryHealthStatus.HOLD
+    assert healthy_without_rollback.reason_codes == ("rollback_bundle_missing",)
+
+    with pytest.raises(ValueError, match="fingerprint mismatch"):
+        replace(continued, status=CanaryHealthStatus.ROLLBACK_REQUIRED)
+
+
+def test_default_on_readiness_consumes_canary_health_and_rollback_binding():
+    rollback = RollbackBundle.build(
+        previous_mode=ContextCompilerMode.SHADOW,
+        previous_config={"mode": "shadow"},
+        provider_capability_hash=canonical_json_hash({"openai": True}),
+    )
+    capability = RolloutCapability(
+        provider="openai",
+        entry_point="agent",
+        provider_lowering=True,
+        request_trace_match=True,
+        lifecycle=True,
+        trajectory_complete=True,
+    )
+    healthy = _healthy_canary(rollback)
+    common = {
+        "capabilities": (capability,),
+        "workload_kinds": ("terminal", "research"),
+        "complete_pairs": 10,
+        "quality_regression": False,
+        "request_trace_match_rate": 1.0,
+        "trajectory_complete_rate": 1.0,
+        "rollback_config_hash": rollback.bundle_hash,
+        "required_canary_policy_fingerprint": healthy.policy_fingerprint,
+    }
+
+    ready = assess_default_on_readiness(
+        **common, canary_health_decision=healthy
+    )
+    assert ready.status is ReadinessStatus.READY
+    assert ready.canary_health_decision_fingerprint == healthy.decision_fingerprint
+    unbound = dict(common)
+    unbound.pop("required_canary_policy_fingerprint")
+    unbound_decision = assess_default_on_readiness(
+        **unbound, canary_health_decision=healthy
+    )
+    assert unbound_decision.status is ReadinessStatus.NOT_READY
+    assert "canary_policy_binding_missing" in unbound_decision.gate_failures
+    missing = assess_default_on_readiness(**common)
+    assert missing.status is ReadinessStatus.NOT_READY
+    assert "canary_health_missing" in missing.gate_failures
+
+    rolled_back = assess_canary_health(
+        policy=CanaryHealthPolicy(
+            policy_version="health-v1",
+            minimum_shadow_calls=1,
+            minimum_enforce_sessions=1,
+            max_provider_error_rate_delta=0.02,
+        ),
+        evidence=replace(
+            CanaryHealthEvidence(
+                shadow_call_count=1,
+                shadow_request_trace_match_count=1,
+                shadow_provider_attribution_complete_count=1,
+                enforce_session_count=1,
+                enforce_provider_attempt_count=1,
+                enforce_provider_error_count=0,
+                baseline_provider_error_rate=0.0,
+                security_violation_count=0,
+                trajectory_incomplete_count=0,
+                quality_regression=False,
+                baseline_provider_attempt_count=1,
+                baseline_provider_error_count=0,
+                enforce_sessions_with_provider_attempt_count=1,
+            ),
+            security_violation_count=1,
+        ),
+        rollback_bundle=rollback,
+    )
+    decision = assess_default_on_readiness(
+        **common, canary_health_decision=rolled_back
+    )
+    assert decision.status is ReadinessStatus.ROLLBACK_REQUIRED
+    assert "canary_rollback_required" in decision.gate_failures
+
+    with pytest.raises(ValueError, match="cannot be enforce"):
+        RollbackBundle.build(
+            previous_mode=ContextCompilerMode.ENFORCE,
+            previous_config={"mode": "enforce"},
+            provider_capability_hash=canonical_json_hash({"openai": True}),
+        )

@@ -1756,7 +1756,10 @@ def aggregate(
         "decision_note": (
             "READY requires complete provider/trajectory gates, at least two workload kinds, "
             "at least ten complete pairs, and either a positive reward confidence lower bound "
-            "or quality non-regression plus a confidence-bounded versioned/billed cost reduction."
+            "or quality non-regression plus a confidence-bounded versioned/billed cost reduction. "
+            "It also requires a healthy canary decision bound to the expected frozen health "
+            "policy and the same executable rollback bundle; this offline report supplies no "
+            "operational canary evidence by itself."
         ),
     }
 
