@@ -23,10 +23,11 @@ from aworld.core.context.compiler import (
     AttributionCollectionShape,
     AttributionOwnerCode,
     AttributionSerialization,
+    ContextLifecycleState,
     ContextKind,
-    ContextCompilerMode,
     RollbackBundle,
     RolloutCapability,
+    VerifiedContextEntrypointParityReceipt,
     assess_default_on_readiness,
     canonical_json_hash,
     FrozenMap,
@@ -37,6 +38,7 @@ from aworld.core.context.compiler import (
     canonical_json_bytes,
     thaw_json,
 )
+from aworld.core.trajectory import TrajectoryBuildResult
 from aworld.evaluations.context_benefit import (
     ContextEvaluationManifest,
     ContextTrialEvidence,
@@ -526,6 +528,104 @@ def normalized_hash(value: str | None, fallback: object) -> str:
         if len(value) == 64:
             return "sha256:" + value
     return value_hash(fallback)
+
+
+def _verified_run_capabilities(
+    run_dir: Path,
+) -> tuple[tuple[RolloutCapability, ...], str | None]:
+    """Rebuild canary capability only from checksum-bound production receipts."""
+    try:
+        manifest = read_json(run_dir / "run_manifest.json", {})
+        checksums = ((manifest.get("capture") or {}).get("checksums") or {})
+        required_files = (
+            "provider_calls.json",
+            "task_response.json",
+            "context_lifecycle.json",
+        )
+        if not isinstance(checksums, dict) or any(
+            name not in checksums for name in required_files
+        ):
+            raise ValueError("canary_receipt_checksum_missing")
+        for name in required_files:
+            path = run_dir / name
+            if not path.is_file() or normalized_hash(
+                checksums[name], {"missing": name}
+            ) != file_hash(path):
+                raise ValueError("canary_receipt_checksum_mismatch")
+
+        calls = read_json(run_dir / "provider_calls.json", None)
+        if (
+            not isinstance(calls, list)
+            or not calls
+            or (manifest.get("capture") or {}).get("provider_call_count")
+            != len(calls)
+        ):
+            raise ValueError("canary_provider_calls_incomplete")
+        verified_calls = tuple(
+            VerifiedContextEntrypointParityReceipt.from_llm_call_record(call)
+            for call in calls
+        )
+
+        lifecycle_payload = read_json(run_dir / "context_lifecycle.json", {})
+        if (
+            not isinstance(lifecycle_payload, dict)
+            or lifecycle_payload.get("schema_version")
+            != "aworld.context.lifecycle-evidence.v1"
+            or lifecycle_payload.get("status") != "available"
+        ):
+            raise ValueError("canary_lifecycle_receipt_unavailable")
+        state_payload = lifecycle_payload.get("state")
+        expected_state_fields = {
+            "session_id_hash",
+            "session_epoch",
+            "task_epoch",
+            "turn_epoch",
+            "branch_id_hash",
+            "checkpoint_revision",
+        }
+        if (
+            not isinstance(state_payload, dict)
+            or set(state_payload) != expected_state_fields
+            or lifecycle_payload.get("state_hash") != value_hash(state_payload)
+            or not _SHA256.fullmatch(str(state_payload.get("session_id_hash", "")))
+            or not _SHA256.fullmatch(str(state_payload.get("branch_id_hash", "")))
+        ):
+            raise ValueError("canary_lifecycle_receipt_invalid")
+        lifecycle_state = ContextLifecycleState(
+            session_id=state_payload["session_id_hash"],
+            session_epoch=state_payload["session_epoch"],
+            task_epoch=state_payload["task_epoch"],
+            turn_epoch=state_payload["turn_epoch"],
+            branch_id="h-" + state_payload["branch_id_hash"].removeprefix("sha256:"),
+            checkpoint_revision=state_payload["checkpoint_revision"],
+        )
+
+        response_payload = read_json(run_dir / "task_response.json", {})
+        trajectory_payload = response_payload.get("trajectory_build_result")
+        if not isinstance(trajectory_payload, dict):
+            raise ValueError("canary_trajectory_receipt_unavailable")
+        trajectory_result = TrajectoryBuildResult.from_dict(trajectory_payload)
+        if (
+            trajectory_result.llm_call_count != len(calls)
+            or any(call.get("task_id") != trajectory_result.task_id for call in calls)
+        ):
+            raise ValueError("canary_trajectory_call_correlation_mismatch")
+        capabilities = tuple(
+            RolloutCapability.from_verified_evidence(
+                entrypoint_receipt=receipt,
+                lifecycle_state=lifecycle_state,
+                trajectory_result=trajectory_result,
+            )
+            for receipt in verified_calls
+        )
+        if any(not capability.enforce_ready for capability in capabilities):
+            raise ValueError("canary_trajectory_receipt_incomplete")
+        return capabilities, None
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        reason = str(exc)
+        if not re.fullmatch(r"[a-z][a-z0-9_]{0,127}", reason):
+            reason = "canary_receipt_revalidation_failed"
+        return (), reason
 
 
 def variant_settings(payload: dict) -> dict:
@@ -1504,6 +1604,8 @@ def aggregate(
     candidate: str,
     bootstrap_samples: int,
     seed: int,
+    required_capabilities: tuple[tuple[str, str, str], ...] = (),
+    rollback_bundle: RollbackBundle | None = None,
 ) -> dict:
     workload_reports = []
     all_deltas = []
@@ -1512,6 +1614,8 @@ def aggregate(
     all_attribution_runs: list[dict[str, Any]] = []
     all_attribution_pairing: list[dict[str, Any]] = []
     all_economics_runs: list[dict[str, Any]] = []
+    raw_rollout_capabilities: list[RolloutCapability] = []
+    capability_evidence_runs: list[dict[str, Any]] = []
     workload_kinds = []
     for experiment in experiments:
         manifest_payload = read_json(experiment / "experiment_manifest.json")
@@ -1564,6 +1668,19 @@ def aggregate(
                     "summary": provider_attribution_summary(valid_calls),
                 })
                 run_dir = run_directory(experiment, result)
+                if result.get("variant") == candidate:
+                    run_capabilities, capability_error = (
+                        _verified_run_capabilities(run_dir)
+                    )
+                    raw_rollout_capabilities.extend(run_capabilities)
+                    capability_evidence_runs.append({
+                        "run": str(run_dir),
+                        "status": (
+                            "available" if capability_error is None else "unavailable"
+                        ),
+                        "reason_code": capability_error,
+                        "verified_call_count": len(run_capabilities),
+                    })
                 artifacts = sorted(
                     path for path in (run_dir / "tool-output-artifacts").glob("*.bin")
                     if path.is_file()
@@ -1698,38 +1815,49 @@ def aggregate(
         )
     ):
         hard_failures.add("turn_artifact_economics_incomplete")
-    rollback = RollbackBundle.build(
-        previous_mode=ContextCompilerMode.SHADOW,
-        previous_config={"mode": "shadow"},
-        provider_capability_hash=value_hash({"openai": "provider-prepared-v1"}),
+    capabilities_by_key: dict[tuple[str, str, str], list[RolloutCapability]] = {}
+    for capability in raw_rollout_capabilities:
+        capabilities_by_key.setdefault(
+            (capability.provider, capability.entry_point, capability.call_shape), []
+        ).append(capability)
+    rollout_capabilities: tuple[RolloutCapability, ...] = tuple(
+        RolloutCapability.combine_verified(capabilities_by_key[key])
+        for key in sorted(capabilities_by_key)
     )
-    capability = RolloutCapability(
-        provider="openai",
-        entry_point="agent",
-        provider_lowering=capture_rate == 1.0,
-        request_trace_match=request_trace_rate == 1.0,
-        lifecycle=True,
-        trajectory_complete=trajectory_rate == 1.0,
+    capability_matrix_hash = value_hash([
+        {
+            "provider": capability.provider,
+            "entry_point": capability.entry_point,
+            "call_shape": capability.call_shape,
+            "evidence_fingerprint": capability.evidence_fingerprint,
+        }
+        for capability in rollout_capabilities
+    ])
+    rollback_valid = bool(
+        rollback_bundle is not None
+        and rollout_capabilities
+        and rollback_bundle.provider_capability_hash == capability_matrix_hash
     )
+    if rollback_bundle is not None and not rollback_valid:
+        hard_failures.add("rollback_capability_mismatch")
+    if (
+        not capability_evidence_runs
+        or any(row["status"] != "available" for row in capability_evidence_runs)
+    ):
+        hard_failures.add("canary_receipt_evidence_incomplete")
     quality_regression = bool(
         combined is not None and combined.reward_interval.upper < 0.0
     )
     readiness = assess_default_on_readiness(
-        capabilities=(capability,),
+        capabilities=rollout_capabilities,
         workload_kinds=workload_kinds,
         complete_pairs=len(all_deltas),
         quality_regression=quality_regression,
         request_trace_match_rate=request_trace_rate,
         trajectory_complete_rate=trajectory_rate,
-        rollback_config_hash=rollback.bundle_hash,
+        rollback_config_hash=(rollback_bundle.bundle_hash if rollback_valid else None),
         hard_gate_failures=hard_failures,
-        required_capabilities=(
-            ("openai", "agent"),
-            ("openai", "amni"),
-            ("openai", "cli"),
-            ("openai", "acp"),
-            ("openai", "resume"),
-        ),
+        required_capabilities=required_capabilities,
     )
     return {
         "schema_version": "aworld.context-benefit-report/v1",
@@ -1751,7 +1879,11 @@ def aggregate(
         "turn_artifact_economics_deltas": paired_turn_artifact_deltas(
             all_economics_runs, baseline=baseline, candidate=candidate
         ),
-        "rollback_bundle": plain(rollback),
+        "rollout_capabilities": [plain(value) for value in rollout_capabilities],
+        "capability_evidence_runs": capability_evidence_runs,
+        "required_capabilities": [list(value) for value in required_capabilities],
+        "capability_matrix_hash": capability_matrix_hash,
+        "rollback_bundle": plain(rollback_bundle) if rollback_valid else None,
         "default_on_readiness": plain(readiness),
         "decision_note": (
             "READY requires complete provider/trajectory gates, at least two workload kinds, "
@@ -1771,14 +1903,44 @@ def main() -> None:
     parser.add_argument("--candidate", default="unified-context-enforce")
     parser.add_argument("--bootstrap-samples", type=int, default=2000)
     parser.add_argument("--seed", type=int, default=20260901)
+    parser.add_argument(
+        "--required-capability",
+        action="append",
+        default=[],
+        metavar="PROVIDER:ENTRY_POINT:CALL_SHAPE",
+        help="Production capability matrix key; repeat for every required path.",
+    )
+    parser.add_argument(
+        "--rollback-bundle",
+        type=Path,
+        help="Externally provisioned rollback bundle bound to the evidence matrix.",
+    )
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
+    required_capabilities = []
+    for raw in args.required_capability:
+        parts = tuple(raw.split(":"))
+        if len(parts) != 3 or any(not part for part in parts):
+            parser.error(
+                "--required-capability must be PROVIDER:ENTRY_POINT:CALL_SHAPE"
+            )
+        required_capabilities.append(parts)
+    rollback_bundle = None
+    if args.rollback_bundle is not None:
+        try:
+            rollback_bundle = RollbackBundle.from_dict(
+                read_json(args.rollback_bundle.resolve())
+            )
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            parser.error(f"invalid --rollback-bundle: {exc}")
     report = aggregate(
         [path.resolve() for path in args.experiment_dir],
         baseline=args.baseline,
         candidate=args.candidate,
         bootstrap_samples=args.bootstrap_samples,
         seed=args.seed,
+        required_capabilities=tuple(required_capabilities),
+        rollback_bundle=rollback_bundle,
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")

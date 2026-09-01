@@ -11,6 +11,7 @@ from aworld.models.model_response import ModelResponse
 from aworld.core.context.base import Context
 from aworld.core.context.compiler import (
     CandidateRequestNotEnforceable,
+    ContextEntrypointParityReceipt,
     ProviderCandidateEnvelope,
     ProviderLoweringCapability,
     ProviderLoweringReceipt,
@@ -149,6 +150,24 @@ class LLMProviderBase(abc.ABC):
                     "provider_request": lowering_evidence["provider_request"],
                     "attribution": lowering_evidence["attribution"],
                 }
+                parity_payload = rollout.get("entrypoint_parity")
+                try:
+                    if not isinstance(parity_payload, dict):
+                        raise ValueError("entrypoint parity receipt missing")
+                    updated_rollout["entrypoint_parity"] = (
+                        ContextEntrypointParityReceipt.from_dict(parity_payload)
+                        .bind_provider_lowering(receipt)
+                        .to_dict()
+                    )
+                except Exception:
+                    # Parity evidence is a rollout/default-on gate, not a
+                    # provider request transform. Keep the selected request
+                    # untouched and make the missing proof explicit.
+                    updated_rollout["entrypoint_parity"] = {
+                        "schema_version": ContextEntrypointParityReceipt.SCHEMA_VERSION,
+                        "status": "unavailable",
+                        "reason_code": "entrypoint_provider_binding_failed",
+                    }
                 updated_rollout.pop("error", None)
                 updated.update({"request": envelope.candidate_request.thaw(), "request_selection": "candidate", "context_observe_scope": "legacy_request_before_rollout", "provider_prepared_request_match": None, "context_rollout": updated_rollout})
             llm_calls[index] = updated

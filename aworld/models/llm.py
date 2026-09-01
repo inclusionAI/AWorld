@@ -43,6 +43,7 @@ from aworld.core.context.compiler import (
     CandidateCompilePolicy,
     CandidateCompilation,
     CandidateRequestNotEnforceable,
+    ContextCallShape,
     ContextCompilerMode,
     ContextEntryPoint,
     ContextEntrypointParityReceipt,
@@ -71,6 +72,10 @@ from aworld.core.context.compiler import (
     request_trace_match,
     reviewed_provider_lowerings,
     select_rollout_request,
+)
+from aworld.core.context.compiler.parity import (
+    _ContextEntrypointClaim,
+    _current_context_entrypoint_claim,
 )
 from aworld.core.model_output_parser import ModelOutputParser, BaseContentParser
 from aworld.utils.common import sync_exec
@@ -480,14 +485,11 @@ class LLMModel:
         return self._context_candidate_policy
 
     @staticmethod
-    def _context_entry_point(context: Context | None) -> ContextEntryPoint:
-        if context is None:
-            return ContextEntryPoint.DIRECT
-        try:
-            value = context.get_state("context_entry_point")
-            return ContextEntryPoint(value) if value is not None else ContextEntryPoint.DIRECT
-        except Exception:
-            return ContextEntryPoint.UNKNOWN
+    def _context_entry_point(context: Context | None) -> _ContextEntrypointClaim:
+        # Mutable Context state is application-owned and therefore cannot
+        # attest an execution boundary. The framework binds a short-lived
+        # typed claim around the actual Agent/CLI/ACP call path instead.
+        return _current_context_entrypoint_claim()
 
     def enforced_tool_output_policy(self):
         """Return the runtime policy only when candidate execution is authoritative."""
@@ -913,6 +915,7 @@ class LLMModel:
         stop: List[str],
         tools: Any,
         model_name: str | None,
+        call_shape: ContextCallShape,
     ) -> List[Dict[str, Any]]:
         """Finalize the model boundary with a correlated fail-closed receipt."""
         try:
@@ -974,6 +977,7 @@ class LLMModel:
         stop: List[str],
         tools: Any,
         model_name: str | None,
+        call_shape: ContextCallShape,
     ) -> tuple[
         dict[str, Any] | None,
         ProviderCandidateEnvelope | None,
@@ -1172,9 +1176,13 @@ class LLMModel:
                 observations=observations,
                 inference_profile=InferenceProfile(
                     provider=self.provider_name,
-                    model=model_name or "unknown-model",
+                    model=(
+                        model_name
+                        or getattr(self.provider, "model_name", None)
+                        or "unknown-model"
+                    ),
                     reasoning_effort=None,
-                    execution_mode="chat_completions",
+                    execution_mode=f"chat_completions.{call_shape.value}",
                     context_limit=context_limit,
                 ),
                 created_at=datetime.now(timezone.utc),
@@ -1291,16 +1299,21 @@ class LLMModel:
                     candidate.final_result
                 )
                 try:
+                    entrypoint_claim = self._context_entry_point(context)
                     metadata["entrypoint_parity"] = (
                         ContextEntrypointParityReceipt.from_final_result(
-                            entry_point=self._context_entry_point(context),
+                            entry_point=entrypoint_claim.entry_point,
+                            label_source=entrypoint_claim.source,
+                            call_shape=call_shape,
                             result=candidate.final_result,
                         ).to_dict()
                     )
                 except Exception:
+                    entrypoint_claim = self._context_entry_point(context)
                     metadata["entrypoint_parity"] = {
                         "schema_version": ContextEntrypointParityReceipt.SCHEMA_VERSION,
-                        "entry_point": self._context_entry_point(context).value,
+                        "entry_point": entrypoint_claim.entry_point.value,
+                        "label_source": entrypoint_claim.source.value,
                         "status": "unavailable",
                         "reason_code": "entrypoint_parity_receipt_failed",
                     }
@@ -1799,6 +1812,7 @@ class LLMModel:
             stop=stop,
             tools=kwargs.get("tools"),
             model_name=kwargs.get("model_name") or kwargs.get("model"),
+            call_shape=ContextCallShape.ASYNC,
         )
         context_rollout, provider_candidate, observed_attribution = self._prepare_context_rollout(
             context=context,
@@ -1811,6 +1825,7 @@ class LLMModel:
             stop=stop,
             tools=kwargs.get("tools"),
             model_name=kwargs.get("model_name") or kwargs.get("model"),
+            call_shape=ContextCallShape.ASYNC,
         )
         self._begin_llm_call_record(
             context=context,
@@ -2025,6 +2040,7 @@ class LLMModel:
             stop=stop,
             tools=kwargs.get("tools"),
             model_name=kwargs.get("model_name") or kwargs.get("model"),
+            call_shape=ContextCallShape.SYNC,
         )
         context_rollout, provider_candidate, observed_attribution = self._prepare_context_rollout(
             context=context,
@@ -2037,6 +2053,7 @@ class LLMModel:
             stop=stop,
             tools=kwargs.get("tools"),
             model_name=kwargs.get("model_name") or kwargs.get("model"),
+            call_shape=ContextCallShape.SYNC,
         )
         self._begin_llm_call_record(
             context=context,
@@ -2211,6 +2228,7 @@ class LLMModel:
             stop=stop,
             tools=kwargs.get("tools"),
             model_name=kwargs.get("model_name") or kwargs.get("model"),
+            call_shape=ContextCallShape.SYNC_STREAM,
         )
         context_rollout, provider_candidate, observed_attribution = self._prepare_context_rollout(
             context=context,
@@ -2223,6 +2241,7 @@ class LLMModel:
             stop=stop,
             tools=kwargs.get("tools"),
             model_name=kwargs.get("model_name") or kwargs.get("model"),
+            call_shape=ContextCallShape.SYNC_STREAM,
         )
         self._begin_llm_call_record(
             context=context,
@@ -2363,6 +2382,7 @@ class LLMModel:
             stop=stop,
             tools=kwargs.get("tools"),
             model_name=kwargs.get("model_name") or kwargs.get("model"),
+            call_shape=ContextCallShape.ASYNC_STREAM,
         )
         context_rollout, provider_candidate, observed_attribution = self._prepare_context_rollout(
             context=context,
@@ -2375,6 +2395,7 @@ class LLMModel:
             stop=stop,
             tools=kwargs.get("tools"),
             model_name=kwargs.get("model_name") or kwargs.get("model"),
+            call_shape=ContextCallShape.ASYNC_STREAM,
         )
         self._begin_llm_call_record(
             context=context,

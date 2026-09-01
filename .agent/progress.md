@@ -212,6 +212,20 @@ implemented, and a frozen cache-adjusted normalized cost policy is bound through
   lingguang-bench-runtime-dsh code changes.
 - Trade-offs accepted: default-on can initially cover only a subset of providers/entry points.
 
+### Milestone 8 independent parity hardening
+- Semantic parity now retains compiler policy, inference profile, the complete input budget, typed authority/scope/trust
+  outcomes, ordered duplicate occurrences, Tool/Skill/cache identities and model-visible provider parameters, while excluding
+  raw request/trace/task/path identity values.
+- Entrypoint evidence is issued only at framework Agent/Amni/CLI/ACP/resume boundaries; mutable Context labels and arbitrary
+  claim-shaped objects cannot attest a production path. Sync/async and streaming call shapes are separate capability keys.
+- Default-on capability is rebuilt from raw provider-prepared call records, checksum-bound lifecycle evidence and the typed
+  trajectory build result. Empty/self-declared matrices, incomplete calls, stale summaries and missing external rollback
+  bundles fail closed.
+- `context_benefit_report.py` no longer synthesizes an Agent capability, lifecycle success or rollback bundle from aggregate
+  rates. The Terminal Bench runner exports a privacy-safe typed lifecycle sidecar so production evidence can be revalidated.
+- Logical cache identity intentionally omits runtime `item_id`, but retains ordered occurrence count, kind, version and content;
+  repeated identical occurrences remain multiplicity-preserving.
+
 ## Current Milestone: Context Models, Adapters, and Observe Mode
 
 ### Task Status

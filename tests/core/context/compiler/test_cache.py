@@ -123,6 +123,26 @@ def test_partition_is_contiguous_and_never_reorders_late_stable_items() -> None:
         )
 
 
+def test_logical_partition_ignores_runtime_ids_but_preserves_occurrences_kind_and_version():
+    first = _item("runtime-a", Stability.STABLE, "same")
+    renamed = replace(first, id="runtime-b")
+    assert (
+        partition_stable_prefix((first,)).stable_prefix_hash
+        == partition_stable_prefix((renamed,)).stable_prefix_hash
+    )
+
+    duplicate = replace(first, id="runtime-c")
+    one = partition_stable_prefix((first,)).stable_prefix_hash
+    two = partition_stable_prefix((first, duplicate)).stable_prefix_hash
+    assert one != two
+    assert two == partition_stable_prefix((duplicate, first)).stable_prefix_hash
+
+    different_kind = replace(first, id="kind", kind=ContextKind.INSTRUCTION)
+    different_version = replace(first, id="version", version="v2")
+    assert partition_stable_prefix((different_kind,)).stable_prefix_hash != one
+    assert partition_stable_prefix((different_version,)).stable_prefix_hash != one
+
+
 def test_serialized_prefix_hashes_exact_bytes_not_logical_json() -> None:
     compact = b'{"a":1,"b":2}'
     spaced = b'{"a": 1, "b": 2}'

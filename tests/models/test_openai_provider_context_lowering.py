@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import datetime, timezone
 from types import MethodType, SimpleNamespace
 from typing import Any
 
@@ -12,9 +13,20 @@ from aworld.core.context.base import Context
 from aworld.core.context.compiler import (
     CandidateCompilePolicy,
     CandidateRequestNotEnforceable,
+    ContextLifecycleState,
     ContextEntrypointParityReceipt,
+    ReadinessStatus,
+    RolloutCapability,
+    VerifiedContextEntrypointParityReceipt,
+    assess_default_on_readiness,
     assess_entrypoint_parity,
     canonical_json_hash,
+)
+from aworld.core.trajectory import (
+    TrajectoryBuildResult,
+    TrajectoryBuildStatus,
+    TrajectoryFidelity,
+    TrajectorySourceKind,
 )
 from aworld.models.llm import LLMModel
 from aworld.models.model_response import LLMResponseError, ModelResponse
@@ -486,6 +498,32 @@ async def test_openai_enforce_lowers_same_candidate_once_across_all_paths():
         )
 
 
+@pytest.mark.asyncio
+async def test_provider_verified_parity_distinguishes_all_call_shapes():
+    provider, _, _ = _provider()
+    model = LLMModel(
+        conf=ModelConfig(
+            context_compiler={"mode": "enforce", "universal_final": True}
+        ),
+        custom_provider=provider,
+    )
+    model.provider_name = "openai"
+    contexts = [Context(task_id=f"shape-{index}") for index in range(4)]
+    messages = [{"role": "user", "content": "same"}]
+
+    await model.acompletion(messages, context=contexts[0])
+    model.completion(messages, context=contexts[1])
+    list(model.stream_completion(messages, context=contexts[2]))
+    [chunk async for chunk in model.astream_completion(messages, context=contexts[3])]
+
+    assert [
+        VerifiedContextEntrypointParityReceipt.from_llm_call_record(
+            context.get_llm_calls()[0]
+        ).receipt.call_shape.value
+        for context in contexts
+    ] == ["async", "sync", "sync_stream", "async_stream"]
+
+
 def test_openai_enforce_fails_closed_when_receipt_cannot_be_persisted():
     class BrokenCaptureContext(Context):
         def get_llm_calls(self):
@@ -656,6 +694,17 @@ def test_universal_final_http_enforce_records_serialized_cache_continuity():
     assert len(sent) == 2
     assert all(serialized_body for _, serialized_body in sent)
     first, second = context.get_llm_calls()
+    verified_first = VerifiedContextEntrypointParityReceipt.from_llm_call_record(
+        first
+    )
+    assert verified_first.receipt.provider_binding is not None
+    assert (
+        verified_first.receipt.provider_binding["serialization"]
+        == "http_serialized_canonical_json"
+    )
+    assert first["provider_request"]["serialized_checksum"] == first[
+        "provider_request"
+    ]["content_hash"]
     assert first["request_trace_match"] is True
     assert second["request_trace_match"] is True
     assert first["context_observe"]["request"]["capture_stage"] == "model_boundary"
@@ -668,8 +717,8 @@ def test_universal_final_http_enforce_records_serialized_cache_continuity():
     ]["status"] == "continued"
 
 
-def test_universal_final_receipt_proves_entrypoint_semantic_parity():
-    provider, sync_calls, _ = _provider()
+def test_entrypoint_label_state_and_stale_raw_provider_receipt_are_rejected():
+    provider, _, _ = _provider()
     model = LLMModel(
         conf=ModelConfig(
             context_compiler={"mode": "enforce", "universal_final": True}
@@ -677,31 +726,132 @@ def test_universal_final_receipt_proves_entrypoint_semantic_parity():
         custom_provider=provider,
     )
     model.provider_name = "openai"
-    entry_points = ("agent", "amni", "cli", "acp", "resume")
-    receipts = []
+    context = Context(task_id="parity-forgery")
+    context.trace_id = ""
+    context.set_state("context_entry_point", "acp")
+    context._aworld_context_entrypoint_claim = object()
 
-    for entry_point in entry_points:
-        context = Context(task_id="parity-task", session_id="parity-session")
-        context.trace_id = ""
-        context.set_state("context_entry_point", entry_point)
-        model.completion(
-            [
-                {"role": "system", "content": "same stable rules"},
-                {"role": "user", "content": "same input"},
-            ],
-            context=context,
-        )
-        payload = context.get_llm_calls()[0]["context_rollout"][
-            "entrypoint_parity"
-        ]
-        receipts.append(ContextEntrypointParityReceipt.from_dict(payload))
-
-    assert len(sync_calls) == len(entry_points)
-    parity = assess_entrypoint_parity(
-        receipts, required_entry_points=entry_points
+    model.completion([{"role": "user", "content": "same"}], context=context)
+    call = context.get_llm_calls()[0]
+    receipt = ContextEntrypointParityReceipt.from_dict(
+        call["context_rollout"]["entrypoint_parity"]
     )
-    assert parity["status"] == "available"
-    assert parity["semantic_fingerprint"] is not None
+    assert receipt.entry_point.value == "direct"
+    assert receipt.label_source.value == "direct_model_boundary"
+
+    forged = json.loads(json.dumps(call))
+    forged["provider_request"]["payload"]["temperature"] = 0.5
+    with pytest.raises(ValueError, match="provider request"):
+        VerifiedContextEntrypointParityReceipt.from_llm_call_record(forged)
+
+    unavailable = assess_entrypoint_parity(
+        (receipt,),
+        required_entry_points=("direct",),
+        require_provider_bound=True,
+    )
+    assert unavailable["status"] == "unavailable"
+    assert unavailable["reason_code"] == "entrypoint_provider_evidence_required"
+
+
+def test_provider_verified_parity_preserves_model_visible_provider_parameters():
+    provider, _, _ = _provider()
+    model = LLMModel(
+        conf=ModelConfig(
+            context_compiler={"mode": "enforce", "universal_final": True}
+        ),
+        custom_provider=provider,
+    )
+    model.provider_name = "openai"
+    contexts = [Context(task_id=f"provider-semantics-{index}") for index in range(2)]
+
+    model.completion(
+        [{"role": "user", "content": "same"}],
+        context=contexts[0],
+        reasoning_effort="low",
+    )
+    model.completion(
+        [{"role": "user", "content": "same"}],
+        context=contexts[1],
+        reasoning_effort="high",
+    )
+    receipts = [
+        VerifiedContextEntrypointParityReceipt.from_llm_call_record(
+            context.get_llm_calls()[0]
+        )
+        for context in contexts
+    ]
+
+    assert (
+        receipts[0].receipt.semantic_fingerprint
+        == receipts[1].receipt.semantic_fingerprint
+    )
+    assert (
+        receipts[0].receipt.provider_binding["provider_request_content_hash"]
+        != receipts[1].receipt.provider_binding["provider_request_content_hash"]
+    )
+    assert receipts[0].evidence_fingerprint != receipts[1].evidence_fingerprint
+
+
+def test_default_on_capability_requires_verified_provider_and_trajectory_evidence():
+    provider, _, _ = _provider()
+    model = LLMModel(
+        conf=ModelConfig(
+            context_compiler={"mode": "enforce", "universal_final": True}
+        ),
+        custom_provider=provider,
+    )
+    model.provider_name = "openai"
+    context = Context(task_id="verified-capability", session_id="session")
+    context.trace_id = ""
+    model.completion([{"role": "user", "content": "same"}], context=context)
+    verified = VerifiedContextEntrypointParityReceipt.from_llm_call_record(
+        context.get_llm_calls()[0]
+    )
+    trajectory = TrajectoryBuildResult(
+        task_id=context.task_id,
+        session_id=context.session_id,
+        trace_id=None,
+        task_epoch=context.task_epoch,
+        status=TrajectoryBuildStatus.COMPLETE,
+        fidelity=TrajectoryFidelity.COMPLETE,
+        reason_code=None,
+        source_kind=TrajectorySourceKind.EVENT_STATE,
+        source_high_watermark=1,
+        scheduled_updates=0,
+        completed_updates=0,
+        failed_updates=0,
+        pending_updates=0,
+        source_agent_messages=1,
+        llm_call_count=1,
+        tool_call_count=0,
+        persisted_items=1,
+        trajectory_ref=None,
+        source_checksum=None,
+        trajectory_checksum="sha256:" + "1" * 64,
+        builder_version="parity-test-v1",
+        created_at=datetime(2026, 9, 1, tzinfo=timezone.utc),
+    )
+    lifecycle = context.context_lifecycle_state
+    assert isinstance(lifecycle, ContextLifecycleState)
+    capability = RolloutCapability.from_verified_evidence(
+        entrypoint_receipt=verified,
+        lifecycle_state=lifecycle,
+        trajectory_result=trajectory,
+    )
+
+    readiness = assess_default_on_readiness(
+        capabilities=(capability,),
+        required_capabilities=(("openai", "direct", "sync"),),
+        workload_kinds=("terminal", "research"),
+        complete_pairs=10,
+        quality_regression=False,
+        request_trace_match_rate=1.0,
+        trajectory_complete_rate=1.0,
+        rollback_config_hash=canonical_json_hash({"rollback": "verified"}),
+    )
+
+    assert capability.enforce_ready is True
+    assert readiness.status is ReadinessStatus.READY
 
 
 def test_openai_enforce_rejects_provider_transform_after_candidate():

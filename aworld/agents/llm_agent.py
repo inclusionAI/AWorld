@@ -19,6 +19,12 @@ from aworld.core.agent.base import BaseAgent, AgentResult, is_agent_by_name, is_
 from aworld.core.common import ActionResult, Observation, ActionModel, Config, TaskItem, TaskStatusValue
 from aworld.core.context.amni.prompt.assembly import DefaultPromptAssemblyProvider
 from aworld.core.context.base import Context
+from aworld.core.context.compiler.parity import (
+    ContextEntryPoint,
+    _ContextEntrypointClaim,
+    _bind_context_entrypoint_claim,
+    _issue_context_entrypoint_claim,
+)
 from aworld.core.context.prompts import StringPromptTemplate
 from aworld.core.event.base import Message, ToolMessage, Constants, AgentMessage, GroupMessage, TopicType, \
     MemoryEventType as MemoryType, MemoryEventMessage, ChunkMessage
@@ -1519,11 +1525,6 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             kwargs["prepared_tools"] = tools
             if context_compiler_mode != "off":
                 try:
-                    if message.context.get_state("context_entry_point") is None:
-                        message.context.set_state(
-                            "context_entry_point",
-                            "amni" if self._is_amni_context(message.context) else "agent",
-                        )
                     from aworld.agents.final_context_adapter import adapt_agent_final_request
                     from aworld.core.context.compiler import ContextObservationSidecar
 
@@ -1575,10 +1576,20 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 kwargs["provider_native_prompt_cache"] = bool(
                     prompt_assembly_observability.get("provider_native_cache")
                 )
-            with bind_llm_context_call_id(llm_call_id):
-                llm_response = await self.invoke_model(
-                    messages, message=message, **kwargs
+            entrypoint_claim = getattr(
+                message.context, "_aworld_context_entrypoint_claim", None
+            )
+            if not isinstance(entrypoint_claim, _ContextEntrypointClaim):
+                entrypoint_claim = _issue_context_entrypoint_claim(
+                    ContextEntryPoint.AMNI
+                    if self._is_amni_context(message.context)
+                    else ContextEntryPoint.AGENT
                 )
+            with _bind_context_entrypoint_claim(entrypoint_claim):
+                with bind_llm_context_call_id(llm_call_id):
+                    llm_response = await self.invoke_model(
+                        messages, message=message, **kwargs
+                    )
             invoke_completed = True
         except asyncio.CancelledError:
             logger.info(f"{self.id()} LLM flow interrupted during invoke_model")

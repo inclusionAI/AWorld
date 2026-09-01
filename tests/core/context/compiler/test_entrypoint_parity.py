@@ -32,14 +32,21 @@ from aworld.core.context.compiler import (
 )
 
 
-def _result(request_id: str = "request-a"):
+def _result(
+    request_id: str = "request-a",
+    *,
+    model: str = "gpt-test",
+    reasoning_effort: str | None = None,
+    max_item_tokens: int = 2048,
+    task_id: str = "task",
+):
     item = ContextItem(
         id="user-occurrence-0",
         kind=ContextKind.USER,
         payload={"role": "user", "content": "same semantic input"},
         task_epoch=1,
         authority=Authority.USER,
-        scope=ContextScope(kinds=(ScopeKind.TASK,), task_id="task"),
+        scope=ContextScope(kinds=(ScopeKind.TASK,), task_id=task_id),
         lifetime=Lifetime.TASK,
         priority=0,
         required=True,
@@ -67,19 +74,21 @@ def _result(request_id: str = "request-a"):
             ),
             inference_profile=InferenceProfile(
                 provider="openai",
-                model="gpt-test",
-                reasoning_effort=None,
+                model=model,
+                reasoning_effort=reasoning_effort,
                 execution_mode="chat_completions",
                 context_limit=4096,
             ),
             created_at=datetime(2026, 9, 1, tzinfo=timezone.utc),
-            task_id="task",
+            task_id=task_id,
             task_epoch=1,
         ),
         policy=FinalCompilePolicy(
             compiler_version="parity-test-v1",
             policy_version="policy-v1",
-            input_budget=ContextInputBudget(4096, 64, 16, 16, 2048),
+            input_budget=ContextInputBudget(
+                4096, 64, 16, 16, max_item_tokens
+            ),
         ),
     )
 
@@ -94,7 +103,10 @@ def test_all_entrypoints_share_one_semantic_fingerprint_despite_request_ids():
     )
     receipts = tuple(
         ContextEntrypointParityReceipt.from_final_result(
-            entry_point=entry, result=_result(f"request-{index}")
+            entry_point=entry,
+            result=_result(
+                f"request-{index}", task_id=f"runtime-task-{index}"
+            ),
         )
         for index, entry in enumerate(entries)
     )
@@ -136,6 +148,31 @@ def test_parity_detects_semantic_change_and_incomplete_evidence():
         "missing": ["cli"],
         "duplicates": [],
     }
+
+
+@pytest.mark.parametrize(
+    "changed",
+    (
+        _result(model="gpt-other"),
+        _result(reasoning_effort="high"),
+        _result(max_item_tokens=1024),
+    ),
+)
+def test_parity_preserves_inference_and_budget_semantics(changed):
+    receipts = (
+        ContextEntrypointParityReceipt.from_final_result(
+            entry_point="agent", result=_result()
+        ),
+        ContextEntrypointParityReceipt.from_final_result(
+            entry_point="cli", result=changed
+        ),
+    )
+
+    status = assess_entrypoint_parity(
+        receipts, required_entry_points=("agent", "cli")
+    )
+
+    assert status["status"] == "mismatch"
 
 
 def test_serialized_parity_receipt_is_independently_revalidated():

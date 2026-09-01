@@ -138,8 +138,11 @@ from .final import (
     compile_final_context,
 )
 from .parity import (
+    ContextCallShape,
     ContextEntryPoint,
+    ContextEntrypointLabelSource,
     ContextEntrypointParityReceipt,
+    VerifiedContextEntrypointParityReceipt,
     assess_entrypoint_parity,
 )
 from .scope import (
@@ -301,9 +304,12 @@ __all__ = [
     "CompletionMode",
     "CompletionStatus",
     "ContextCompilerMode",
+    "ContextCallShape",
     "ContextEmissionKind",
     "ContextEntryPoint",
+    "ContextEntrypointLabelSource",
     "ContextEntrypointParityReceipt",
+    "VerifiedContextEntrypointParityReceipt",
     "ContextDecisionTrace",
     "ContextItem",
     "ContextItemRef",

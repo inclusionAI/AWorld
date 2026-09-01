@@ -202,6 +202,19 @@ def test_canary_assignment_falls_back_and_readiness_requires_cross_workload():
         previous_config={"mode": "shadow"},
         provider_capability_hash=canonical_json_hash({"openai": True}),
     )
+    assert RollbackBundle.from_dict({
+        "previous_mode": rollback.previous_mode.value,
+        "previous_config": {"mode": "shadow"},
+        "provider_capability_hash": rollback.provider_capability_hash,
+        "bundle_hash": rollback.bundle_hash,
+    }) == rollback
+    with pytest.raises(ValueError, match="hash mismatch"):
+        RollbackBundle.from_dict({
+            "previous_mode": rollback.previous_mode.value,
+            "previous_config": {"mode": "off"},
+            "provider_capability_hash": rollback.provider_capability_hash,
+            "bundle_hash": rollback.bundle_hash,
+        })
     ready_capability = RolloutCapability(
         provider="openai",
         entry_point="cli",
@@ -212,6 +225,7 @@ def test_canary_assignment_falls_back_and_readiness_requires_cross_workload():
     )
     not_ready = assess_default_on_readiness(
         capabilities=(ready_capability,),
+        required_capabilities=(("openai", "cli", "sync"),),
         workload_kinds=("terminal",),
         complete_pairs=10,
         quality_regression=False,
@@ -223,8 +237,9 @@ def test_canary_assignment_falls_back_and_readiness_requires_cross_workload():
     assert "cross_workload_evidence_missing" in not_ready.gate_failures
 
     healthy_canary = _healthy_canary(rollback)
-    ready = assess_default_on_readiness(
+    self_declared = assess_default_on_readiness(
         capabilities=(ready_capability,),
+        required_capabilities=(("openai", "cli", "sync"),),
         workload_kinds=("terminal", "research"),
         complete_pairs=10,
         quality_regression=False,
@@ -234,11 +249,27 @@ def test_canary_assignment_falls_back_and_readiness_requires_cross_workload():
         canary_health_decision=healthy_canary,
         required_canary_policy_fingerprint=healthy_canary.policy_fingerprint,
     )
-    assert ready.status is ReadinessStatus.READY
+    assert self_declared.status is ReadinessStatus.NOT_READY
+    assert "capability_matrix_incomplete" in self_declared.gate_failures
+
+    legacy_pair = assess_default_on_readiness(
+        capabilities=(ready_capability,),
+        required_capabilities=(("openai", "cli"),),
+        workload_kinds=("terminal", "research"),
+        complete_pairs=10,
+        quality_regression=False,
+        request_trace_match_rate=1.0,
+        trajectory_complete_rate=1.0,
+        rollback_config_hash=rollback.bundle_hash,
+    )
+    assert "capability_matrix_incomplete" in legacy_pair.gate_failures
 
     missing_entry_point = assess_default_on_readiness(
         capabilities=(ready_capability,),
-        required_capabilities=(("openai", "agent"), ("openai", "cli")),
+        required_capabilities=(
+            ("openai", "agent", "sync"),
+            ("openai", "cli", "sync"),
+        ),
         workload_kinds=("terminal", "research"),
         complete_pairs=10,
         quality_regression=False,
@@ -251,6 +282,7 @@ def test_canary_assignment_falls_back_and_readiness_requires_cross_workload():
 
     too_small = assess_default_on_readiness(
         capabilities=(ready_capability,),
+        required_capabilities=(("openai", "cli", "sync"),),
         workload_kinds=("terminal", "research"),
         complete_pairs=2,
         quality_regression=False,
