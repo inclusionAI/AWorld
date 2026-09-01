@@ -211,9 +211,9 @@ def test_canary_assignment_falls_back_and_readiness_requires_cross_workload():
     with pytest.raises(ValueError, match="hash mismatch"):
         RollbackBundle.from_dict({
             "previous_mode": rollback.previous_mode.value,
-            "previous_config": {"mode": "off"},
+            "previous_config": {"mode": "shadow"},
             "provider_capability_hash": rollback.provider_capability_hash,
-            "bundle_hash": rollback.bundle_hash,
+            "bundle_hash": "sha256:" + "0" * 64,
         })
     ready_capability = RolloutCapability(
         provider="openai",
@@ -396,7 +396,7 @@ def test_canary_health_distinguishes_hold_continue_and_rollback():
         replace(continued, status=CanaryHealthStatus.ROLLBACK_REQUIRED)
 
 
-def test_default_on_readiness_consumes_canary_health_and_rollback_binding():
+def test_default_on_readiness_consumes_canary_health_and_rejects_self_declared_capability():
     rollback = RollbackBundle.build(
         previous_mode=ContextCompilerMode.SHADOW,
         previous_config={"mode": "shadow"},
@@ -422,11 +422,12 @@ def test_default_on_readiness_consumes_canary_health_and_rollback_binding():
         "required_canary_policy_fingerprint": healthy.policy_fingerprint,
     }
 
-    ready = assess_default_on_readiness(
+    self_declared = assess_default_on_readiness(
         **common, canary_health_decision=healthy
     )
-    assert ready.status is ReadinessStatus.READY
-    assert ready.canary_health_decision_fingerprint == healthy.decision_fingerprint
+    assert self_declared.status is ReadinessStatus.NOT_READY
+    assert "capability_matrix_incomplete" in self_declared.gate_failures
+    assert self_declared.canary_health_decision_fingerprint == healthy.decision_fingerprint
     unbound = dict(common)
     unbound.pop("required_canary_policy_fingerprint")
     unbound_decision = assess_default_on_readiness(
