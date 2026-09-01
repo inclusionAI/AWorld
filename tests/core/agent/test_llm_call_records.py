@@ -329,6 +329,81 @@ def test_enforce_compiles_after_assembly_without_replaying_provider_plan():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
+    ("mode", "progressive_tools", "base_tools", "expected_names"),
+    [
+        ("enforce", True, None, ["write", "read"]),
+        ("enforce", True, (), []),
+        ("enforce", True, ("read",), ["read"]),
+        ("enforce", False, ("read",), ["write", "read"]),
+        ("observe", True, ("read",), ["write", "read"]),
+        ("shadow", True, ("read",), ["write", "read"]),
+    ],
+)
+async def test_progressive_catalog_requires_explicit_enforce_opt_in(
+    monkeypatch, mode, progressive_tools, base_tools, expected_names
+):
+    captured = {}
+    schemas = [
+        {"type": "function", "function": {"name": "write"}},
+        {"type": "function", "function": {"name": "read"}},
+    ]
+
+    class CapturingAgent(Agent):
+        async def build_llm_input(self, observation, info=None, message=None, **kwargs):
+            return [{"role": "user", "content": "hello"}]
+
+        async def _filter_tools(self, context=None):
+            return schemas
+
+        async def invoke_model(self, messages=None, message=None, **kwargs):
+            captured["tools"] = kwargs.get("prepared_tools")
+            return ModelResponse(
+                id="resp-progressive-tools",
+                model="fake-model",
+                content="done",
+                usage={"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            )
+
+    agent = CapturingAgent(
+        name="Aworld",
+        conf=AgentConfig(
+            llm_provider="custom",
+            llm_model_name="fake-model",
+            llm_api_key="fake-key",
+        ),
+    )
+    agent._llm = SimpleNamespace(
+        context_compiler_mode=mode,
+        _context_progressive_skills=False,
+        _context_progressive_tools=progressive_tools,
+        _context_progressive_tool_base_tools=base_tools,
+        _context_task_catalog_policy="sticky",
+        _context_artifact_offload=True,
+        enforced_tool_output_policy=None,
+    )
+    async def skip_memory(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(agent, "_add_message_to_memory", skip_memory)
+    context = _build_context("task-progressive-tools")
+    message = Message(
+        category=Constants.AGENT,
+        sender="user",
+        receiver=agent.name(),
+        headers={"context": context},
+    )
+
+    await agent.async_policy(
+        SimpleNamespace(observer="user", from_agent_name=None, context=None),
+        message=message,
+    )
+
+    actual = captured["tools"] or []
+    assert [schema["function"]["name"] for schema in actual] == expected_names
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
     "capture_method",
     ["_record_llm_call_request", "_update_llm_call_observability"],
 )

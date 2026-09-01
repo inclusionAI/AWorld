@@ -321,6 +321,14 @@ class LLMModel:
         self._context_progressive_tools = context_config_value(
             "progressive_tools", True
         )
+        progressive_tool_base_tools = context_config_value(
+            "progressive_tool_base_tools", None
+        )
+        self._context_progressive_tool_base_tools = (
+            None
+            if progressive_tool_base_tools is None
+            else tuple(progressive_tool_base_tools)
+        )
         self._context_task_catalog_policy = context_config_value(
             "task_catalog_policy", "sticky"
         )

@@ -131,6 +131,10 @@ class ContextCompilerRuntimeConfig(BaseConfig):
     scoped_instructions: Literal["workspace_only", "nested"] = "workspace_only"
     progressive_skills: bool = True
     progressive_tools: bool = True
+    # ``None`` preserves the complete permission-filtered catalog.  An
+    # explicitly configured list (including ``[]``) opts into progressive
+    # selection and is combined only with activated Skill Tool requests.
+    progressive_tool_base_tools: Optional[List[str]] = None
     task_catalog_policy: Literal["per_call", "sticky"] = "sticky"
     checkpoint_policy: Literal[
         "explicit", "budget_pressure", "adaptive"

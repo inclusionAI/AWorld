@@ -1280,6 +1280,20 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
 
         raw_messages = await self.build_llm_input(observation, info, message=message, **kwargs)
         tools = await self._filter_tools(message.context)
+        progressive_tool_base_tools = getattr(
+            self.llm, "_context_progressive_tool_base_tools", None
+        )
+        explicit_progressive_catalog = (
+            getattr(self.llm, "_context_progressive_tools", True)
+            and progressive_tool_base_tools is not None
+        )
+        available_tool_ids = tuple(
+            str(function.get("name"))
+            for schema in (tools or ())
+            if isinstance(schema, dict)
+            for function in (schema.get("function", {}),)
+            if isinstance(function, dict) and function.get("name")
+        )
         if (
             getattr(self.llm, "_context_progressive_skills", True)
             and self.skill_configs
@@ -1299,6 +1313,14 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                             self.llm, "_context_task_catalog_policy", "sticky"
                         ) == "sticky"
                     ),
+                    available_tool_ids=available_tool_ids,
+                    tool_identity_mapping=(
+                        getattr(self, "tool_mapping", {}) or {}
+                    ),
+                    require_resolved_tools=(
+                        explicit_progressive_catalog
+                        and context_compiler_mode == "enforce"
+                    ),
                 )
             except Exception:
                 if context_compiler_mode == "enforce":
@@ -1315,6 +1337,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                     CatalogChangeAction,
                     TaskCatalogSnapshot,
                     ToolCatalogEntry,
+                    compile_minimal_tool_catalog,
                     estimate_canonical_json_tokens,
                 )
 
@@ -1336,9 +1359,29 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                             ),
                         )
                     )
-                candidate_catalog = TaskCatalogSnapshot.build(
-                    message.context.task_epoch, entries
-                )
+                if (
+                    explicit_progressive_catalog
+                    and context_compiler_mode == "enforce"
+                ):
+                    activations = message.context.get_skill_activations().get(
+                        self.id(), ()
+                    )
+                    skill_requested_tools = tuple(
+                        tool_id
+                        for activation in activations
+                        if activation.activated
+                        for tool_id in activation.requested_tools
+                    )
+                    candidate_catalog = compile_minimal_tool_catalog(
+                        entries,
+                        base_tools=progressive_tool_base_tools,
+                        skill_requested_tools=skill_requested_tools,
+                        task_epoch=message.context.task_epoch,
+                    )
+                else:
+                    candidate_catalog = TaskCatalogSnapshot.build(
+                        message.context.task_epoch, entries
+                    )
                 transition = message.context.bind_task_tool_catalog(
                     self.id(),
                     candidate_catalog,
@@ -1356,7 +1399,13 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                         else CatalogChangeAction.ACCEPT_CURRENT_EPOCH
                     ),
                 )
-                if transition.snapshot.catalog_hash != candidate_catalog.catalog_hash:
+                if (
+                    explicit_progressive_catalog
+                    and context_compiler_mode == "enforce"
+                ) or (
+                    transition.snapshot.catalog_hash
+                    != candidate_catalog.catalog_hash
+                ):
                     from aworld.core.context.compiler import thaw_json
 
                     tools = [
