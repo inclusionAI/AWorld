@@ -576,7 +576,12 @@ _STATE_SPECS = (
     _StateSpec(
         "campaign_frontier",
         "Typed failure frontier used to decide repair, shared blocker, handoff, or exhaustion.",
-        (("aworld/self_evolve/runner.py", "_typed_repair_frontiers"),),
+        (
+            (
+                "aworld/self_evolve/controllers/run_generation_helpers.py",
+                "_typed_repair_frontiers",
+            ),
+        ),
         (("aworld/self_evolve/budget.py", "StageAwareCandidateScheduler.schedule"),),
         (
             (
