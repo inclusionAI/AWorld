@@ -6,9 +6,18 @@ import json
 import os
 import shutil
 import subprocess
+from types import SimpleNamespace
 import uuid
 
 import pytest
+
+from aworld.core.common import ActionResult
+from aworld.core.context.base import Context as AWorldContext
+from aworld.core.context.compiler import ToolOutputMode, ToolOutputPolicy
+from aworld.core.context.tool_output_runtime import (
+    enforce_tool_output_boundary,
+    prepare_tool_output_plans,
+)
 
 
 pytestmark = [
@@ -69,10 +78,53 @@ async def test_real_docker_tool_capability_matrix(monkeypatch, tmp_path, record_
         tools_checked.append("run_code")
         artifact_ref = result["metadata"]["output_policy"]["stdout"]["artifact_ref"]
         assert artifact_ref
+        aworld_context = AWorldContext(
+            task_id="docker-artifact-boundary",
+            workspace_path=str(tmp_path / "context-workspace"),
+        )
+        aworld_context.configure_tool_output_boundary(
+            ToolOutputPolicy(
+                max_inline_tokens=64,
+                mode=ToolOutputMode.HEAD_TAIL,
+                preserve_fields=("head", "tail", "artifact_ref"),
+                tail_tokens=16,
+                artifact_retention="task",
+                policy_version="aworld-tool-output-v1",
+            )
+        )
+        action = SimpleNamespace(
+            tool_call_id="docker-run-code",
+            tool_name="docker",
+        )
+        action_result = ActionResult(
+            content=json.dumps(result),
+            metadata={},
+            tool_call_id=action.tool_call_id,
+            tool_name="docker",
+            action_name="run_code",
+            success=True,
+        )
+        step_result = (SimpleNamespace(action_result=[action_result]),)
+        plans = prepare_tool_output_plans(aworld_context, (action,))
+        enforce_tool_output_boundary(
+            step_result,
+            (action,),
+            aworld_context,
+            plans,
+        )
+        # Context keeps its own exact ActionResult snapshot, while the primary
+        # model-visible receipt remains owned by the originating Docker Tool.
+        assert action_result.content["artifact_ref"] == artifact_ref
+        assert action_result.metadata["tool_output_policy"]["artifact_ref"] == artifact_ref
+        context_ref = action_result.metadata["tool_output_policy"]["context_artifact_ref"]
+        assert context_ref.startswith("aworld-tool-output://")
+        assert json.loads(
+            aworld_context.read_tool_output_artifact(context_ref).decode("utf-8")
+        ) == result
         artifact_chunk = _payload(
             await server.read_output_artifact(
                 None,
-                artifact_ref,
+                action_result.content["artifact_ref"],
                 offset=0,
                 limit=16,
                 output="text",

@@ -68,6 +68,7 @@ class MemoryItemConvertor:
             enabled=True,
             preview_chars=2000,
             force=bool(tool_result_metadata.get("offload") is True),
+            result_metadata=tool_result_metadata,
         )
         tool_content = compaction.content if compaction.applied else (
             tool_result.content if hasattr(tool_result, "content") else tool_result

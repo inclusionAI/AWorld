@@ -203,6 +203,57 @@ async def test_default_memory_handler_keeps_small_tool_results_unchanged(monkeyp
 
 
 @pytest.mark.asyncio
+async def test_default_memory_handler_preserves_context_artifact_boundary(monkeypatch):
+    fake_memory = _FakeMemory()
+    monkeypatch.setattr(
+        "aworld.runners.handler.memory.MemoryFactory",
+        type("MemoryFactory", (), {"instance": staticmethod(lambda: fake_memory)}),
+    )
+    handler = _build_handler()
+    agent = _FakeAgent(
+        AgentMemoryConfig(
+            tool_result_offload=True,
+            tool_result_length_threshold=20,
+            tool_result_preview_chars=80,
+        )
+    )
+    context = _build_context()
+    bounded = {
+        "artifact_ref": "/tmp/tool-owned.bin",
+        "context_artifact_ref": "aworld-tool-output://" + "b" * 64,
+        "head": "H" * 5000,
+        "tail": "T" * 5000,
+    }
+    metadata = {
+        "tool_output_policy": {
+            "policy_version": "aworld-tool-output-v1",
+            "reason_code": "artifact_offloaded_upstream_preserved",
+            "raw_checksum": "sha256:" + "c" * 64,
+            "artifact_ref": "/tmp/tool-owned.bin",
+            "context_artifact_ref": "aworld-tool-output://" + "b" * 64,
+        }
+    }
+
+    await handler._do_add_tool_result_to_memory(
+        agent,
+        "call-boundary",
+        ActionResult(
+            content=bounded,
+            tool_call_id="call-boundary",
+            tool_name="docker",
+            action_name="run_code",
+            success=True,
+            metadata=metadata,
+        ),
+        context,
+    )
+
+    stored_item, _ = fake_memory.items[0]
+    assert stored_item.content == bounded
+    assert "tool_result_compaction" not in stored_item.metadata["ext_info"]
+
+
+@pytest.mark.asyncio
 async def test_default_memory_handler_skips_duplicate_tool_call_id(monkeypatch):
     fake_memory = _FakeMemory()
     monkeypatch.setattr(

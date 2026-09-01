@@ -6,7 +6,7 @@
 
 ## Status
 
-Proposed
+Implementation candidate; default-on remains gated by paired benefit evidence
 
 ## Summary
 
@@ -198,6 +198,13 @@ Skill 意图匹配可以由模型辅助，但不得突破确定性边界。
 
 每一个注入项都有硬上限。超限内容优先进行可逆 offload：模型看到摘要、头尾片段和 artifact
 引用，完整内容仍可通过受控工具取回。
+
+可逆性必须同时区分 artifact ownership。若来源 Tool/Sandbox 已返回 checksum、byte count、owner Tool 和
+标准 `read_output_artifact` action 绑定的 receipt，Context 不得用自身 URI 覆盖模型可调用的主引用；Context
+可以另存一份精确 ActionResult 快照用于审计，但必须以 `context_artifact_ref` 作为内部 receipt，并保留
+`artifact_retrieval={tool, action, artifact_ref}`。Memory、Amni 和后续 reducer 看到已校验边界后不得再次
+offload。只有 checksum + byte count + owner/action 完整时才接受上游 receipt，不能把任意路径字符串提升为
+retrieval capability。
 
 ### Preserve Prefixes Across Turns
 
@@ -1058,6 +1065,37 @@ call records 时会显式标记 `live_context_fallback` 和 count mismatch，而
 Context 收益或 benchmark 分数结论；但它已证明 final compiler、provider lowering、Tool loop 和 raw trajectory
 capture 能在真实容器任务中连续运行。paired reward、统计门禁和第二类 workload 仍是 default-on 前置条件。
 
+随后完成的 paired smoke 首先暴露出两项控制面缺陷，而不是 Context 收益：TaskResponse copy/merge 会重复首个
+`llm_calls` record；空字符串 `trace_id` 会使 model-boundary observer 失败，但旧聚合器错误地用 provider capture
+完整率代替 `request_trace_match_rate`。实现现已按 `call_id`/`request_id` 稳定身份对 call snapshot 原位 reconcile，
+merge 只消费增量一次；所有 OpenAI off/observe/enforce 路径均在 provider owner 内捕获实际参数；空 optional id
+在进入 sealed trace contract 前归一化；benefit report 逐调用计算真实 trace match。旧 smoke 因 trace 为 `null`
+被正确降级为 partial，不再冒充 complete pair。
+
+修复后使用相同 `glm-5.2`、temperature 0、同 Tool surface 和独立 verifier 重跑了一个 Terminal Bench task 与
+一个非 Terminal Tool/research task，形成 2 个跨 workload complete pair：
+
+| Workload | Legacy | Candidate | Reward delta | Candidate efficiency delta |
+|---|---|---|---:|---|
+| `prove-plus-comm` | reward 1；9 calls；22,878 prompt；100,053 request bytes；4,927 completion | reward 1；8 calls；25,213 prompt；106,363 request bytes；7,890 completion | 0 | calls -1；prompt +2,335；request bytes +6,310；completion +2,963 |
+| `noisy-record-recovery` | reward 1；8 calls；20,163 prompt；87,115 request bytes；676 completion | reward 1；9 calls；34,031 prompt；139,428 request bytes；1,324 completion | 0 | calls +1；prompt +13,868；request bytes +52,313；completion +648 |
+
+四个 run 的 provider-owned capture、TaskResponse/live Context snapshot continuity、model-boundary trace match、Raw
+trajectory 和 trajectory completeness 均为 100%。两组均为双 1 正例，证明机制与质量未在该 smoke 回退，但
+candidate 平均增加 8,101.5 prompt tokens、29,311.5 request bytes 和 1,805.5 completion tokens；增加的 cache-read
+tokens 不能自动解释为成本收益，且没有 provider billing 或冻结版本的 normalized cost。因此统一报告保持
+`not_ready`：只有 2/10 complete pairs，reward CI 下界为 0，也没有受支持的
+`cost_per_successful_task`/`provider_billed_cost`/`normalized_cost` 显著下降证据。该结果不能被描述为 Context
+Management 已产生正收益，下一优化应消除通用固定开销和多余 turn，而不是针对 benchmark 题目调 prompt。
+
+非 Terminal 首轮 candidate 还暴露了 artifact ownership 冲突：DockerSandbox 已将 322,505-byte stdout 保存为
+可由 `docker.read_output_artifact` 读取的 receipt，Context 又把有界 ActionResult offload 为
+`aworld-tool-output://...`，Memory 再次压缩，模型最终把 Context URI 传给 Docker reader 并失败。当前实现保留
+来源 Tool receipt 作为模型主引用，同时以 `context_artifact_ref` 保存精确 ActionResult 快照，并让普通 Memory
+与 Amni 跳过二次 offload。真实 Docker deterministic gate 已强制产生超限输出，验证 Context checksum 恢复与
+Docker reader 读取同一来源 receipt 均成功；candidate-only 模型 smoke 也保持 reward 1，但因模型主动重定向文件
+未触发 artifact，故不把该随机 rollout 当作 receipt 互操作证据。
+
 ## Migration Plan
 
 ### Phase 0: Baseline and Observability
@@ -1106,6 +1144,9 @@ capture 能在真实容器任务中连续运行。paired reward、统计门禁�
 ### Phase 4: Trust, Compaction and Offload
 
 - 统一 history/Tool Result reducer 和 artifact store contract。
+- 区分来源 Tool artifact 与 Context-owned exact snapshot：主 retrieval receipt 必须指向 agent 可调用的
+  owner/action，Context receipt 只用于审计/恢复；普通 Memory、Amni 和 compiler reducer 通过同一 boundary
+  receipt 防止二次 offload。
 - 在 Tool runtime 接入执行前 `ToolOutputPolicy`，为高噪声命令提供 quiet/structured 输出。
 - 将 Tool 的 bounded inline view 与 raw artifact ref 写入 trajectory；在适用任务上灰度 enforce
   `CompletionContract`，分离 agent finished、自检和外部 verifier 状态。
@@ -1138,6 +1179,9 @@ capture 能在真实容器任务中连续运行。paired reward、统计门禁�
 - 确定性测试使用 capture provider；真实模型质量测试每个 variant 至少运行 5 次。
 - 保存 seed、request snapshot、trace、Tool trajectory、最终 artifact 和 scorer 结果。
 - 报告绝对值、相对变化和 paired bootstrap 95% confidence interval，不能只报告平均分。
+- readiness 的收益路径为二选一：reward CI 下界严格大于 0；或 reward 不回退超过 1 个百分点且
+  `cost_per_successful_task`、真实 `provider_billed_cost`、冻结版本 `normalized_cost` 至少一项 CI 上界严格
+  小于 0。raw prompt/cache token 只作分解指标，缺少显式成本模型时不能替代 cost evidence。
 - 实验 manifest 在执行前冻结 dataset/task archive checksum、variant、随机交错顺序、重复次数和 invariant
   contract；variant schema 只接受 Context 与 Tool output policy 字段，拒绝 prompt/answer/verifier 配置。
 - reward 由容器内独立 verifier 产生；TaskResponse success、final answer 和 Agent 自报测试结果不得覆盖它。
@@ -1193,6 +1237,7 @@ capture 能在真实容器任务中连续运行。paired reward、统计门禁�
 - `successful_exit_without_executor_count`
 - `cli_adapter_exit_status_match_rate`
 - `optional_capability_degradation_count_by_reason`
+- `artifact_retrieval_success_rate_by_owner` 和 `artifact_double_offload_count`
 
 ### Test Matrix
 
@@ -1227,6 +1272,7 @@ capture 能在真实容器任务中连续运行。paired reward、统计门禁�
 | TC-PORTABILITY-NATIVE-027 | 在 GLIBC 2.31 容器注入要求 GLIBC 2.33 的 tree-sitter native wheel | CAST capability 标记 unavailable 并记录原因；CAST Tools 与依赖它的 Subagents 被禁用；核心 `Aworld` Agent 仍可加载和执行 terminal task |
 | TC-DIRECT-FAILURE-028 | 分别模拟 target Agent 未注册、source import exception、executor 返回 None | stderr 输出合法 `aworld.run.failure.v1`；stage/error code 可区分；CLI exit 非零；`llm_call_count=0`；不输出 completed summary |
 | TC-HARNESS-STATUS-029 | 用 `aworld-cli ... 2>&1 | tee run.log` 包装 TC-DIRECT-FAILURE-028，并执行 ATIF/export/verifier | adapter 保留 AWorld 非零状态或每段 pipeline status；run 分类为 harness error；error artifact 可读；不生成 placeholder complete trajectory |
+| TC-ARTIFACT-OWNER-030 | Docker Tool 先对 100K stdout 做 head/tail + artifact，随后 Context/Memory/Amni 同时启用 offload | 模型主 receipt 仍为 `docker.read_output_artifact` 可读取的来源引用；Context exact snapshot 使用独立 `context_artifact_ref` 且 checksum 可恢复；Memory/Amni 不再二次 offload；任意无 checksum/byte count 路径不被提升为 capability |
 
 ### Test Tiers
 
@@ -1305,6 +1351,13 @@ Dockerfile 构建镜像、挂载原始 tests、启动容器、调用 AWorld、�
 全部作为 invariant 记录。driver 随机交错 baseline/candidate，并保存 dataset/task/image checksum、
 provider calls、context trace、Raw trajectory、Tool artifacts、独立 reward 和退出状态。
 
+2026-09-01 修复后可归因的 paired smoke 分别保存在
+`artifacts/context-management/local-terminal-bench/paired-trace-fixed-20260901/` 与
+`artifacts/context-management/local-tool-workload/paired-trace-fixed-20260901/`，统一决策报告为
+`artifacts/context-management/context-benefit-paired-trace-fixed-20260901.json`。这些目录是本地验证输出，
+不要求随源码分发；报告必须从其中的 provider calls、Raw trajectory 与 verifier artifact 重新计算指标，
+不能信任或手工修饰旧 summary。
+
 新 run 必须至少产生以下可核对证据：
 
 - `provider_calls.json`：hook 和 adapter 完成后真正 provider-bound 的 messages/tools/params 与 usage；
@@ -1335,7 +1388,8 @@ TC-PORTABILITY-TZ-026、TC-PORTABILITY-NATIVE-027 和 TC-DIRECT-FAILURE-028 由 
 
 真实 Docker capability gate 由 `tests/sandbox/test_docker_sandbox_integration.py` 自动执行 15 项 terminal/
 filesystem Tool matrix；默认跳过，CI/nightly 通过 `AWORLD_RUN_DOCKER_INTEGRATION=1` 开启，并记录 image
-digest 与 Tool matrix。mock 单测只验证配置/错误路径，不能替代该 gate。
+digest 与 Tool matrix。该 gate 的超限 `run_code` 还必须穿过 Context boundary，分别验证 Context-owned exact
+snapshot checksum 和 Docker-owned receipt 的真实分块读取；mock 单测只验证配置/错误路径，不能替代该 gate。
 
 #### Release Canary
 
@@ -1363,7 +1417,10 @@ digest 与 Tool matrix。mock 单测只验证配置/错误路径，不能替代�
 - `cli_adapter_exit_status_match_rate == 100%`
 - benchmark 新生成 run 的 `raw_trajectory_available_rate == 100%`
 - Context 因果实验中 `provider_bound_call_capture_rate == 100%`；历史无 provider 真值的 run 只能作诊断证据
+- `request_trace_match_rate` 必须由逐调用 model-boundary comparison 计算，不得以 provider capture 完整率代替
 - 超限 Tool output 的 `raw_bytes == inline_bytes + offloaded_bytes` 且 artifact checksum 校验率 100%
+- 有来源 Tool receipt 的超限输出 `artifact_retrieval_success_rate_by_owner == 100%` 且
+  `artifact_double_offload_count == 0`
 - `tool_pair_reconstruction_rate == 100%` 和 `taskresponse_trajectory_binding_rate == 100%`
 - benchmark 中 `required_context_recall == 100%`
 - 编译结果确定性测试 100% 通过
@@ -1456,6 +1513,13 @@ impact；对一次性能力优先考虑 child context。paired evaluation 同时
 
 过早 compact 会丢失细节并重建 cache，过晚则让无关内容驻留过多 turn。通过显式 checkpoint、预算压力
 阈值、provider TTL evidence 和 `context_token_turns` 评估时机；不把每 turn 自动摘要作为默认策略。
+
+### Artifact Ownership Collides Across Layers
+
+Sandbox、Context 和 Memory 若各自生成不可互认的 artifact URI，会形成形式上“可逆”、实际 agent 无法读取的
+双重 offload。以来源 Tool 的 checksum-bound owner/action receipt 作为模型主 capability，以 Context receipt
+作为内部 exact snapshot；所有后续层识别同一 boundary marker 并跳过再 offload。跨 owner 读取必须走显式
+adapter，禁止让一个 Sandbox reader 接受任意宿主路径或其他 store URI。
 
 ### Subagent Isolation Costs More Than It Saves
 

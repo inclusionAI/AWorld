@@ -3,6 +3,7 @@ from typing import Dict, Any, Optional
 
 from aworld.core.common import ActionResult
 from aworld.models.utils import num_tokens_from_string
+from aworld.memory.tool_result_compaction import has_reversible_tool_output_boundary
 from aworld.memory.models import MemoryMessage
 from aworld.logs.util import logger
 from ... import ApplicationContext
@@ -61,6 +62,12 @@ class ToolResultOffloadOp(BaseOp):
         if not agent_context_config.tool_result_offload:
             return False
         if isinstance(tool_result, ActionResult):
+            if has_reversible_tool_output_boundary(tool_result.metadata):
+                logger.info(
+                    "Tool result already has a reversible Context boundary; "
+                    "skip Amni re-offload"
+                )
+                return False
             if agent_context_config.tool_action_white_list and isinstance(agent_context_config.tool_action_white_list, list) and f"{tool_result.tool_name}:{tool_result.action_name}" in agent_context_config.tool_action_white_list:
                 logger.info(
                     f"📦 {tool_result.tool_name}:{tool_result.action_name} in CONTEXT_OFFLOAD_TOOL_NAME_WHITE, need compress")

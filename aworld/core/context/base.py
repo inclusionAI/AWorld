@@ -774,6 +774,35 @@ class Context:
     def append_llm_call(self, llm_call: Dict[str, Any]) -> None:
         self.get_llm_calls().append(llm_call)
 
+    @staticmethod
+    def _llm_call_identity(llm_call: Dict[str, Any]) -> tuple[str, str] | None:
+        """Return the strongest task-local identity available for one LLM call."""
+        if not isinstance(llm_call, dict):
+            return None
+        for field in ("call_id", "request_id"):
+            value = llm_call.get(field)
+            if isinstance(value, str) and value:
+                return field, value
+        return None
+
+    def _merge_llm_call(self, llm_call: Dict[str, Any]) -> None:
+        """Reconcile a transported call snapshot without duplicating the call.
+
+        A call can reach the runner root through an intermediate control message
+        before the terminal task message arrives.  The terminal copy is normally
+        more complete, so replace the existing snapshot in place when both carry
+        the same stable identity; otherwise append it as a new call.
+        """
+        incoming = copy.deepcopy(llm_call)
+        identity = self._llm_call_identity(incoming)
+        calls = self.get_llm_calls()
+        if identity is not None:
+            for index, existing in enumerate(calls):
+                if self._llm_call_identity(existing) == identity:
+                    calls[index] = incoming
+                    return
+        calls.append(incoming)
+
     def get_context_inspector(self) -> Dict[str, Any] | None:
         """Return the latest redacted compiler projection for CLI/ACP consumers."""
         for record in reversed(self.get_llm_calls()):
@@ -799,6 +828,9 @@ class Context:
                             "inline_tokens": record.inline_tokens,
                             "offloaded_tokens": record.offloaded_tokens,
                             "artifact_present": record.artifact is not None,
+                            "upstream_artifact_count": len(
+                                record.upstream_artifacts
+                            ),
                         }
                         for record in self.get_tool_output_records()
                     ],
@@ -1052,7 +1084,19 @@ class Context:
             except Exception:
                 new_context._agent_token_id_traj = copy.copy(self._agent_token_id_traj)
 
-        new_context._merge_llm_calls_baseline = len(new_context.get_llm_calls())
+        llm_calls = new_context.get_llm_calls()
+        if preserve_merge_baseline:
+            inherited_baseline = getattr(
+                self,
+                "_merge_llm_calls_baseline",
+                len(llm_calls),
+            )
+            new_context._merge_llm_calls_baseline = max(
+                0,
+                min(inherited_baseline, len(llm_calls)),
+            )
+        else:
+            new_context._merge_llm_calls_baseline = len(llm_calls)
 
         return new_context
 
@@ -1072,7 +1116,8 @@ class Context:
                         if isinstance(child_llm_calls, list):
                             baseline = max(0, min(getattr(other_context, "_merge_llm_calls_baseline", 0), len(child_llm_calls)))
                             for llm_call in child_llm_calls[baseline:]:
-                                self.append_llm_call(copy.deepcopy(llm_call))
+                                self._merge_llm_call(llm_call)
+                            other_context._merge_llm_calls_baseline = len(child_llm_calls)
                 else:
                     # If no local_dict method, directly update all states
                     merged_state = other_context.context_info.to_dict()
@@ -1081,7 +1126,8 @@ class Context:
                     if isinstance(child_llm_calls, list):
                         baseline = max(0, min(getattr(other_context, "_merge_llm_calls_baseline", 0), len(child_llm_calls)))
                         for llm_call in child_llm_calls[baseline:]:
-                            self.append_llm_call(copy.deepcopy(llm_call))
+                            self._merge_llm_call(llm_call)
+                        other_context._merge_llm_calls_baseline = len(child_llm_calls)
             except Exception as e:
                 logger.warning(f"Failed to merge context_info: {e}")
 

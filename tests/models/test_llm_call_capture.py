@@ -373,6 +373,66 @@ def test_merge_context_from_deep_copy_appends_only_new_llm_calls():
     ]
 
 
+def test_preserved_llm_call_merge_baseline_survives_transport_copy():
+    parent = Context(task_id="parent-task")
+    parent.context_info["llm_calls"] = [{"request_id": "parent-call"}]
+
+    child = parent.deep_copy()
+    child.append_llm_call({"request_id": "child-call"})
+
+    transported = child.deep_copy(preserve_merge_baseline=True)
+    parent.merge_context(transported)
+
+    assert parent.context_info.get("llm_calls") == [
+        {"request_id": "parent-call"},
+        {"request_id": "child-call"},
+    ]
+
+
+def test_merge_context_consumes_llm_call_delta_once():
+    parent = Context(task_id="parent-task")
+    child = parent.deep_copy()
+    child.append_llm_call({"request_id": "child-call"})
+
+    parent.merge_context(child)
+    parent.merge_context(child)
+
+    assert parent.context_info.get("llm_calls") == [
+        {"request_id": "child-call"},
+    ]
+
+
+def test_merge_context_reconciles_duplicate_call_with_latest_snapshot():
+    parent = Context(task_id="parent-task")
+    parent.context_info["llm_calls"] = [
+        {
+            "call_id": "stable-call",
+            "request_id": "request-1",
+            "status": "started",
+        }
+    ]
+    child = Context(task_id="parent-task")
+    child.context_info["llm_calls"] = [
+        {
+            "call_id": "stable-call",
+            "request_id": "request-1",
+            "status": "success",
+            "provider_invoked": True,
+        }
+    ]
+
+    parent.merge_context(child)
+
+    assert parent.context_info.get("llm_calls") == [
+        {
+            "call_id": "stable-call",
+            "request_id": "request-1",
+            "status": "success",
+            "provider_invoked": True,
+        }
+    ]
+
+
 def test_stream_completion_appends_one_final_llm_call_record():
     provider = RecordingLLMProvider()
     llm_model = LLMModel(custom_provider=provider)

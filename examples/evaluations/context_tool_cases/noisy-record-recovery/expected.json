@@ -1,0 +1,8 @@
+{
+  "artifact": "result.json",
+  "exact": {
+    "account_id": "acct-7f31c9",
+    "region": "ap-southeast-3",
+    "retention_days": 47
+  }
+}

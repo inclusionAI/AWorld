@@ -198,6 +198,7 @@ from .tool_output import (
     ToolOutputPlan,
     ToolOutputPolicy,
     ToolOutputRecord,
+    UpstreamToolArtifactReceipt,
     bind_tool_output,
     plan_tool_output,
 )
@@ -331,6 +332,7 @@ __all__ = [
     "ToolOutputPlan",
     "ToolOutputPolicy",
     "ToolOutputRecord",
+    "UpstreamToolArtifactReceipt",
     "TRUST_BOUNDARY_VERSION",
     "Trust",
     "TrustIsolationReceipt",

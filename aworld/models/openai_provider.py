@@ -1,4 +1,5 @@
 import json
+import hashlib
 import os
 import socket
 import traceback
@@ -311,16 +312,31 @@ class OpenAIProvider(LLMProviderBase):
                     ) from None
                 raise
 
+        try:
+            provider_request = ProviderRequestSnapshot(
+                request_id=request_kwargs.get("llm_request_id"),
+                provider_name="openai",
+                payload=openai_params,
+                capture_stage=RequestCaptureStage.PROVIDER_PREPARED,
+                fidelity=ProviderRequestFidelity.PROVIDER_PREPARED,
+                serialized_checksum=(
+                    "sha256:" + hashlib.sha256(serialized_body).hexdigest()
+                    if serialized_body is not None
+                    else None
+                ),
+            )
+        except Exception:
+            if envelope is not None:
+                raise CandidateRequestNotEnforceable(
+                    "provider_request_not_snapshotable"
+                ) from None
+            provider_request = None
+
         if envelope is not None:
             capability = self.context_candidate_lowering_capability()
             try:
-                provider_request = ProviderRequestSnapshot(
-                    request_id=envelope.candidate_request.request_id,
-                    provider_name=capability.provider_name,
-                    payload=openai_params,
-                    capture_stage=RequestCaptureStage.PROVIDER_PREPARED,
-                    fidelity=ProviderRequestFidelity.PROVIDER_PREPARED,
-                )
+                if provider_request is None:
+                    raise ValueError("provider request snapshot unavailable")
                 receipt = ProviderLoweringReceipt.from_envelope(
                     envelope=envelope,
                     provider_request=provider_request,
@@ -337,6 +353,22 @@ class OpenAIProvider(LLMProviderBase):
                 envelope=envelope,
                 receipt=receipt,
             )
+        if provider_request is not None:
+            try:
+                self.commit_provider_request_capture(
+                    context=request_kwargs.get("context"),
+                    request_id=provider_request.request_id,
+                    snapshot=provider_request,
+                )
+            except Exception:
+                if envelope is not None:
+                    raise CandidateRequestNotEnforceable(
+                        "provider_request_capture_failed"
+                    ) from None
+                logger.warning(
+                    "OpenAI provider request capture failed before send; "
+                    "continuing because Context enforcement is not active"
+                )
         return _PreparedOpenAIRequest(
             params=openai_params,
             serialized_body=serialized_body,

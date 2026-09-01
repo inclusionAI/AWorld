@@ -14,12 +14,97 @@ from aworld.core.context.compiler import (
     ToolOutputPlan,
     ToolOutputMode,
     ToolOutputRecord,
+    UpstreamToolArtifactReceipt,
     bind_tool_output,
     estimate_canonical_json_tokens,
     freeze_json,
     plan_tool_output,
     thaw_json,
 )
+
+
+def _canonical_sha256(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip().lower()
+    if normalized.startswith("sha256:"):
+        normalized = normalized[7:]
+    if len(normalized) != 64 or any(ch not in "0123456789abcdef" for ch in normalized):
+        return None
+    return f"sha256:{normalized}"
+
+
+def _extract_upstream_artifacts(
+    content: Any,
+    *,
+    owner_tool: str,
+) -> tuple[UpstreamToolArtifactReceipt, ...]:
+    """Discover a Tool-owned artifact contract without trusting ambient metadata.
+
+    Tool servers commonly return JSON through an MCP text block, so this walks
+    both native values and full JSON strings.  A reference is accepted only when
+    it is bound to a byte count and checksum; a path-like string by itself is not
+    enough to become a retrieval capability.
+    """
+
+    found: list[UpstreamToolArtifactReceipt] = []
+    seen_refs: set[str] = set()
+    visited = 0
+
+    def visit(value: Any, depth: int = 0) -> None:
+        nonlocal visited
+        if depth > 12 or visited >= 4096:
+            return
+        visited += 1
+        if isinstance(value, str):
+            stripped = value.strip()
+            if (
+                len(stripped) >= 2
+                and stripped[0] in "[{"
+                and stripped[-1] in "]}"
+            ):
+                try:
+                    visit(json.loads(stripped), depth + 1)
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    pass
+            return
+        if isinstance(value, list):
+            for item in value:
+                visit(item, depth + 1)
+            return
+        if not isinstance(value, dict):
+            return
+
+        ref = value.get("artifact_ref")
+        checksum = _canonical_sha256(
+            value.get("content_sha256")
+            or value.get("content_hash")
+            or value.get("raw_checksum")
+        )
+        byte_count = value.get("raw_bytes", value.get("byte_count"))
+        if (
+            isinstance(ref, str)
+            and ref.strip()
+            and checksum is not None
+            and isinstance(byte_count, int)
+            and not isinstance(byte_count, bool)
+            and byte_count >= 0
+            and ref not in seen_refs
+        ):
+            seen_refs.add(ref)
+            found.append(
+                UpstreamToolArtifactReceipt(
+                    ref=ref,
+                    content_hash=checksum,
+                    byte_count=byte_count,
+                    owner_tool=owner_tool,
+                )
+            )
+        for nested in value.values():
+            visit(nested, depth + 1)
+
+    visit(content)
+    return tuple(found)
 
 
 def _raw_bytes(value: Any) -> bytes:
@@ -106,16 +191,30 @@ def _bounded_inline(
     *,
     original: Any,
     plan: ToolOutputPlan,
-    artifact_ref: str | None,
+    context_artifact_ref: str | None,
+    upstream_artifacts: tuple[UpstreamToolArtifactReceipt, ...],
 ) -> Any:
     max_tokens = plan.policy.max_inline_tokens
     text = raw.decode("utf-8", errors="replace")
     mode = plan.policy.mode
+    upstream = upstream_artifacts[0] if upstream_artifacts else None
+    primary_artifact_ref = upstream.ref if upstream is not None else context_artifact_ref
+    artifact_fields: dict[str, Any] = {"artifact_ref": primary_artifact_ref}
+    if context_artifact_ref and context_artifact_ref != primary_artifact_ref:
+        artifact_fields["context_artifact_ref"] = context_artifact_ref
+    if upstream is not None:
+        artifact_fields["artifact_retrieval"] = {
+            "tool": upstream.owner_tool,
+            "action": upstream.retrieval_action,
+            "artifact_ref": upstream.ref,
+            "content_hash": upstream.content_hash,
+            "byte_count": upstream.byte_count,
+        }
     if mode is ToolOutputMode.ARTIFACT_STREAM:
-        payload: Any = {"artifact_ref": artifact_ref, "byte_count": len(raw)}
+        payload: Any = {**artifact_fields, "byte_count": len(raw)}
     elif mode is ToolOutputMode.QUIET:
         payload = {
-            "artifact_ref": artifact_ref,
+            **artifact_fields,
             "byte_count": len(raw),
             "content_hash": f"sha256:{hashlib.sha256(raw).hexdigest()}",
         }
@@ -126,7 +225,7 @@ def _bounded_inline(
             if key in original
         }
         payload = {
-            "artifact_ref": artifact_ref,
+            **artifact_fields,
             "preserved": preserved,
             "omitted_fields": sorted(set(original) - set(preserved)),
         }
@@ -158,7 +257,7 @@ def _bounded_inline(
             else text[:head_chars] + (text[-tail_chars:] if tail_chars else "")
         )
         payload = {
-            "artifact_ref": artifact_ref,
+            **artifact_fields,
             "head": preview[:head_chars] if omitted else preview,
             "tail": preview[-tail_chars:] if omitted and tail_chars else "",
             "omitted_chars": omitted,
@@ -181,7 +280,11 @@ def _bounded_inline(
             len(payload.get(key, "")) for key in ("head", "tail")
         )
     if (estimate_canonical_json_tokens(payload).value or 0) > max_tokens:
-        payload = {"artifact_ref": artifact_ref}
+        payload = dict(artifact_fields)
+    if (estimate_canonical_json_tokens(payload).value or 0) > max_tokens:
+        payload.pop("context_artifact_ref", None)
+    if (estimate_canonical_json_tokens(payload).value or 0) > max_tokens:
+        payload = {"artifact_ref": primary_artifact_ref}
     return payload
 
 
@@ -204,6 +307,15 @@ def enforce_tool_output_boundary(
         plan = plans[tool_call_id]
         action_result = results[index]
         raw = _raw_bytes(action_result.content)
+        owner_tool = str(
+            getattr(action_result, "tool_name", None)
+            or getattr(action, "tool_name", None)
+            or "unknown"
+        )
+        upstream_artifacts = _extract_upstream_artifacts(
+            action_result.content,
+            owner_tool=owner_tool,
+        )
         raw_tokens = estimate_canonical_json_tokens(
             raw.decode("utf-8", errors="replace")
         ).value or 0
@@ -228,16 +340,25 @@ def enforce_tool_output_boundary(
                 raw,
                 original=action_result.content,
                 plan=plan,
-                artifact_ref=artifact.ref if artifact is not None else None,
+                context_artifact_ref=artifact.ref if artifact is not None else None,
+                upstream_artifacts=upstream_artifacts,
             )
         record = bind_tool_output(
             plan,
             raw_bytes=raw,
             inline_payload=inline,
             artifact=artifact,
+            upstream_artifacts=upstream_artifacts,
         )
         action_result.content = thaw_json(record.inline_payload)
         metadata = dict(getattr(action_result, "metadata", None) or {})
+        primary_artifact_ref = (
+            record.upstream_artifacts[0].ref
+            if record.upstream_artifacts
+            else record.artifact.ref
+            if record.artifact
+            else None
+        )
         metadata["tool_output_policy"] = {
             "policy_version": record.policy_version,
             "reason_code": record.reason_code,
@@ -245,7 +366,11 @@ def enforce_tool_output_boundary(
             "raw_checksum": record.raw_checksum,
             "inline_tokens": record.inline_tokens,
             "offloaded_tokens": record.offloaded_tokens,
-            "artifact_ref": record.artifact.ref if record.artifact else None,
+            "artifact_ref": primary_artifact_ref,
+            "context_artifact_ref": record.artifact.ref if record.artifact else None,
+            "upstream_artifacts": [
+                receipt.to_dict() for receipt in record.upstream_artifacts
+            ],
         }
         action_result.metadata = metadata
         context.record_tool_output(

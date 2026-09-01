@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import json
 from types import SimpleNamespace
 
 from aworld.agents.final_context_adapter import adapt_agent_final_request
@@ -276,6 +277,65 @@ def test_tool_output_boundary_offloads_and_retrieves_raw_bytes(tmp_path):
     record = context.get_tool_output_records()[0]
     assert record.artifact is not None
     assert result.content["artifact_ref"] == record.artifact.ref
+    assert context.read_tool_output_artifact(record.artifact.ref) == raw.encode()
+
+
+def test_tool_output_boundary_preserves_origin_tool_retrieval_receipt(tmp_path):
+    context = Context(task_id="tool-output-upstream", workspace_path=str(tmp_path))
+    context.configure_tool_output_boundary(
+        ToolOutputPolicy(
+            max_inline_tokens=256,
+            mode=ToolOutputMode.HEAD_TAIL,
+            preserve_fields=("head", "tail", "artifact_ref"),
+            tail_tokens=16,
+            artifact_retention="task",
+            policy_version="v1",
+        )
+    )
+    upstream_path = str(tmp_path / "sandbox-output.bin")
+    upstream_digest = "a" * 64
+    raw = json.dumps(
+        {
+            "message": "x" * 5000,
+            "metadata": {
+                "output_policy": {
+                    "stdout": {
+                        "raw_bytes": 5000,
+                        "content_sha256": upstream_digest,
+                        "output_truncated": True,
+                        "artifact_ref": upstream_path,
+                    }
+                }
+            },
+        }
+    )
+    action = SimpleNamespace(tool_call_id="call-upstream", tool_name="docker")
+    result = SimpleNamespace(
+        content=raw,
+        metadata={},
+        tool_name="docker",
+    )
+    step_result = (SimpleNamespace(action_result=[result]),)
+
+    plans = prepare_tool_output_plans(context, (action,))
+    enforce_tool_output_boundary(step_result, (action,), context, plans)
+
+    record = context.get_tool_output_records()[0]
+    assert record.artifact is not None
+    assert len(record.upstream_artifacts) == 1
+    assert record.reason_code == "artifact_offloaded_upstream_preserved"
+    assert result.content["artifact_ref"] == upstream_path
+    assert result.content["context_artifact_ref"] == record.artifact.ref
+    assert result.content["artifact_retrieval"] == {
+        "tool": "docker",
+        "action": "read_output_artifact",
+        "artifact_ref": upstream_path,
+        "content_hash": f"sha256:{upstream_digest}",
+        "byte_count": 5000,
+    }
+    receipt = result.metadata["tool_output_policy"]
+    assert receipt["artifact_ref"] == upstream_path
+    assert receipt["context_artifact_ref"] == record.artifact.ref
     assert context.read_tool_output_artifact(record.artifact.ref) == raw.encode()
 
 

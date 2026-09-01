@@ -49,6 +49,17 @@ def _write_json(path: Path, payload) -> str:
     return _sha256_bytes(encoded)
 
 
+def _llm_calls_digest(calls: list) -> str:
+    encoded = json.dumps(
+        calls,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    ).encode("utf-8")
+    return _sha256_bytes(encoded)
+
+
 def _resolve_llm_call_capture(response, agent) -> tuple[list, str, dict]:
     """Preserve blocked-call evidence when TaskResponse propagation is incomplete."""
     response_calls = list(getattr(response, "llm_calls", None) or [])
@@ -59,6 +70,10 @@ def _resolve_llm_call_capture(response, agent) -> tuple[list, str, dict]:
         "task_response_count": len(response_calls),
         "live_context_count": len(live_calls),
         "counts_match": len(response_calls) == len(live_calls),
+        "task_response_sha256": _llm_calls_digest(response_calls),
+        "live_context_sha256": _llm_calls_digest(live_calls),
+        "snapshots_match": _llm_calls_digest(response_calls)
+        == _llm_calls_digest(live_calls),
     }
     if response_calls:
         return response_calls, "task_response", continuity
@@ -70,6 +85,13 @@ def _resolve_llm_call_capture(response, agent) -> tuple[list, str, dict]:
 def _is_provider_bound_call(call) -> bool:
     if not isinstance(call, dict) or call.get("provider_invoked") is not True:
         return False
+    provider_request = call.get("provider_request") or {}
+    if (
+        provider_request.get("capture_stage") == "provider_prepared"
+        and provider_request.get("fidelity") == "provider_prepared"
+        and isinstance(provider_request.get("payload"), dict)
+    ):
+        return True
     rollout = call.get("context_rollout") or {}
     lowering = rollout.get("provider_lowering") or {}
     provider_request = lowering.get("provider_request") or {}
@@ -276,7 +298,9 @@ async def run(args: argparse.Namespace) -> None:
             call for call in llm_calls
             if _is_provider_bound_call(call)
         ]
-        provider_capture_gate_passed = bool(provider_calls)
+        provider_capture_gate_passed = bool(provider_calls) and bool(
+            llm_capture_continuity["snapshots_match"]
+        )
         checksums = {
             "task_response.json": _write_json(args.output_dir / "task_response.json", response_payload),
             "raw_trajectory.json": _write_json(args.output_dir / "raw_trajectory.json", trajectory_payload),
@@ -350,8 +374,9 @@ async def run(args: argparse.Namespace) -> None:
         )
         if not provider_capture_gate_passed and not args.allow_missing_provider_trace:
             raise RuntimeError(
-                "No provider-bound request snapshots were captured; diagnostic artifacts were "
-                "preserved, but reward cannot be attributed to a context-management variant"
+                "Provider-bound request capture is missing or TaskResponse/live Context continuity "
+                "does not match; diagnostic artifacts were preserved, but reward cannot be "
+                "attributed to a context-management variant"
             )
     finally:
         await sandbox.cleanup()

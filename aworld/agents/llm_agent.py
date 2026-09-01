@@ -2041,6 +2041,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 enabled=True,
                 preview_chars=2000,
                 force=bool(isinstance(result.metadata, dict) and result.metadata.get("offload") is True),
+                result_metadata=result.metadata if isinstance(result.metadata, dict) else None,
             )
             return str(compaction.content if compaction.applied else content)
 
