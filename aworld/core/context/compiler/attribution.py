@@ -141,6 +141,9 @@ class ContextAttributionPlanEntry:
 @dataclass(frozen=True, slots=True)
 class ProviderRequestAttributionPlan:
     SCHEMA_VERSION: ClassVar[str] = "aworld.context.attribution-plan.v1"
+    FINGERPRINT_SCHEMA_VERSION: ClassVar[str] = (
+        "aworld.context.attribution-plan-fingerprint.v1"
+    )
 
     request_id_hash: str
     candidate_content_hash: str
@@ -197,17 +200,29 @@ class ProviderRequestAttributionPlan:
         if sum(entry.collection is AttributionCollection.TOOLS for entry in self.entries) != expected_tools:
             raise ValueError("tool entries must match tools shape/count")
 
-    def to_redacted_dict(self) -> dict[str, Any]:
+    def fingerprint_payload(self) -> dict[str, Any]:
+        """Return the complete raw-free canonical fingerprint projection."""
         return {
-            "schema_version": self.SCHEMA_VERSION,
+            "schema_version": self.FINGERPRINT_SCHEMA_VERSION,
             "request_id_hash": self.request_id_hash,
             "candidate_content_hash": self.candidate_content_hash,
-            "entry_count": len(self.entries),
             "messages_shape": AttributionCollectionShape.ARRAY.value,
             "messages_count": self.messages_count,
             "tools_shape": self.tools_shape.value,
             "tools_count": self.tools_count,
             "entries": [entry.to_redacted_dict() for entry in self.entries],
+        }
+
+    @property
+    def fingerprint(self) -> str:
+        return canonical_json_hash(self.fingerprint_payload())
+
+    def to_redacted_dict(self) -> dict[str, Any]:
+        return {
+            **self.fingerprint_payload(),
+            "schema_version": self.SCHEMA_VERSION,
+            "plan_fingerprint": self.fingerprint,
+            "entry_count": len(self.entries),
         }
 
 
@@ -252,6 +267,7 @@ class ProviderRequestAttributionReceipt:
     tools_count: int | None = None
     provider_tools_shape: AttributionCollectionShape | None = None
     tools_lowering: ProviderToolsLowering | None = None
+    plan_fingerprint: str | None = None
     binding_explicit: bool = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -275,7 +291,10 @@ class ProviderRequestAttributionReceipt:
             raise ValueError("provider attribution binding fields must be atomic")
         object.__setattr__(self, "binding_explicit", explicit)
         if explicit:
-            for name in ("plan_request_id_hash", "candidate_content_hash"):
+            for name in (
+                "plan_request_id_hash",
+                "candidate_content_hash",
+            ):
                 if not isinstance(getattr(self, name), str) or not _SHA256_RE.fullmatch(getattr(self, name)):
                     raise ValueError(f"{name} must be a canonical sha256 hash")
             if isinstance(self.messages_count, bool) or not isinstance(self.messages_count, int) or self.messages_count < 0:
@@ -288,6 +307,10 @@ class ProviderRequestAttributionReceipt:
                     raise ValueError("array tools require a non-negative tools_count")
             elif self.tools_count is not None:
                 raise ValueError("non-array tools cannot have tools_count")
+        if self.plan_fingerprint is not None and (
+            not explicit or not _SHA256_RE.fullmatch(self.plan_fingerprint)
+        ):
+            raise ValueError("plan_fingerprint requires a complete canonical binding")
         if not all(isinstance(value, ProviderRequestAttributionEntry) for value in self.entries):
             raise TypeError("entries must contain ProviderRequestAttributionEntry values")
         for name in (
@@ -332,6 +355,7 @@ class ProviderRequestAttributionReceipt:
                 "tools_count": self.tools_count,
                 "provider_tools_shape": self.provider_tools_shape.value,
                 "tools_lowering": self.tools_lowering.value,
+                "plan_fingerprint": self.plan_fingerprint,
             })
         return payload
 
@@ -345,6 +369,7 @@ class ProviderRequestAttributionReceipt:
             and self.messages_count == plan.messages_count
             and self.tools_shape is plan.tools_shape
             and self.tools_count == plan.tools_count
+            and self.plan_fingerprint == plan.fingerprint
             and tuple(entry.plan for entry in self.entries) == plan.entries
         )
 
@@ -421,6 +446,7 @@ def build_provider_attribution_receipt(
         tools_count=plan.tools_count,
         provider_tools_shape=provider_tools_shape,
         tools_lowering=tools_lowering,
+        plan_fingerprint=plan.fingerprint,
     )
 
 
