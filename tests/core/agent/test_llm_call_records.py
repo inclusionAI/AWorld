@@ -321,6 +321,12 @@ async def test_async_policy_does_not_forward_prompt_cache_kwargs_to_unknown_prov
     assert context.get_llm_calls()[0]["call_id"]
 
 
+def test_enforce_compiles_after_assembly_without_replaying_provider_plan():
+    assert Agent._forward_legacy_prompt_assembly_plan("openai", "off") is True
+    assert Agent._forward_legacy_prompt_assembly_plan("openai", "shadow") is True
+    assert Agent._forward_legacy_prompt_assembly_plan("openai", "enforce") is False
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "capture_method",

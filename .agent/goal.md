@@ -42,6 +42,10 @@ trajectory finalization, and a benchmark-independent evaluation loop.
 - Core policy remains provider-neutral; provider-specific hints belong in lowering adapters.
 - Context/trajectory behavior must be deterministic under fixed inputs and configuration.
 - The benchmark is an interchangeable validation adapter, never the optimization target.
+- Complete one integrated Milestone 3-6 implementation version before running benchmark, wide regression, or benefit
+  validation. During implementation, only syntax/import/static safety checks may run; behavioral test execution is deferred
+  to the integrated validation phase so individual benchmark outcomes cannot steer framework policy case by case.
+  **Integrated code gate reached; validation is now open.**
 
 ## Tech Stack
 
@@ -50,4 +54,3 @@ trajectory finalization, and a benchmark-independent evaluation loop.
 - Pydantic configuration/models
 - pytest, including optional real-Docker integration gates
 - JSON/JSONL artifacts and MCP Tool servers
-

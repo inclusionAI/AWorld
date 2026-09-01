@@ -21,6 +21,10 @@ import aworld
 from aworld.config.conf import ToolConfig, load_config, ConfigDict
 from aworld.core.common import Observation, ActionModel, ActionResult, CallbackItem, CallbackResult, CallbackActionType
 from aworld.core.context.base import Context
+from aworld.core.context.tool_output_runtime import (
+    enforce_tool_output_boundary,
+    prepare_tool_output_plans,
+)
 from aworld.core.event.base import Message, AgentMessage, Constants, MemoryEventMessage, MemoryEventType
 from aworld.core.factory import Factory
 from aworld.core.tool.action import ToolAction
@@ -503,6 +507,7 @@ class Tool(BaseTool[Observation, List[ActionModel]]):
             _apply_hook_headers_to_message(message, pre_hook_events)
 
             self.pre_step(action, **kwargs)
+            tool_output_plans = prepare_tool_output_plans(message.context, action)
             res = self.do_step(action, message=message, **kwargs)
 
             # Execute POST_TOOL_CALL hooks and check for updated_output
@@ -514,6 +519,17 @@ class Tool(BaseTool[Observation, List[ActionModel]]):
             )
 
             _apply_hook_headers_to_message(message, post_hook_events)
+            info = res[4] if len(res) > 4 and isinstance(res[4], dict) else {}
+            ensure_action_results(
+                res[0],
+                action,
+                success=res[1] > 0,
+                default_content=res[0].content,
+                error=info.get("error"),
+            )
+            res = enforce_tool_output_boundary(
+                res, action, message.context, tool_output_plans
+            )
 
             final_res = self.post_step(res, action,message=message, **kwargs)
             if isinstance(final_res, Message):
@@ -787,6 +803,7 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
             _apply_hook_headers_to_message(message, pre_hook_events)
 
             await self.pre_step(action, message=message,**kwargs)
+            tool_output_plans = prepare_tool_output_plans(message.context, action)
             res = await self.do_step(action, message=message, **kwargs)
 
             # Execute POST_TOOL_CALL hooks and check for updated_output
@@ -799,6 +816,17 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
             )
 
             _apply_hook_headers_to_message(message, post_hook_events)
+            info = res[4] if len(res) > 4 and isinstance(res[4], dict) else {}
+            ensure_action_results(
+                res[0],
+                action,
+                success=res[1] > 0,
+                default_content=res[0].content,
+                error=info.get("error"),
+            )
+            res = enforce_tool_output_boundary(
+                res, action, message.context, tool_output_plans
+            )
 
             final_res = await self.post_step(res, action, message=message,**kwargs)
             await self._internal_process(res, action, message, tool_id_mapping=tool_id_mapping, **kwargs)

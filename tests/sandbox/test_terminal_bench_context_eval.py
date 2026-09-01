@@ -55,6 +55,13 @@ def test_variant_contract_accepts_context_policy_only(tmp_path):
                     "tool_result_offload": True,
                     "tool_result_length_threshold": 4096,
                 },
+                "context_compiler": {
+                    "mode": "enforce",
+                    "universal_final": True,
+                    "progressive_tools": True,
+                    "artifact_offload": True,
+                    "completion_contract": "enforce",
+                },
                 "docker_output_policy": {
                     "max_inline_output_bytes": 8192,
                     "output_head_bytes": 4096,
@@ -64,7 +71,73 @@ def test_variant_contract_accepts_context_policy_only(tmp_path):
         encoding="utf-8",
     )
 
-    assert runner._load_variant(variant)["name"] == "candidate"
+    loaded = runner._load_variant(variant)
+    assert loaded["name"] == "candidate"
+    assert loaded["context_compiler"]["mode"] == "enforce"
+
+
+def test_variant_contract_rejects_unknown_context_compiler_fields(tmp_path):
+    runner = _load_example("docker_terminal_bench")
+    variant = tmp_path / "variant.json"
+    variant.write_text(
+        json.dumps(
+            {
+                "name": "task-tuned-compiler",
+                "context_compiler": {"expected_answer": "special answer"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="context_compiler contains unsupported fields"):
+        runner._load_variant(variant)
+
+
+def test_llm_call_capture_falls_back_to_live_context_for_blocked_calls():
+    runner = _load_example("docker_terminal_bench")
+
+    class Response:
+        llm_calls = []
+
+    class LiveContext:
+        def get_llm_calls(self):
+            return [{"status": "blocked_before_provider"}]
+
+    class Agent:
+        context = LiveContext()
+
+    calls, source, continuity = runner._resolve_llm_call_capture(
+        Response(), Agent()
+    )
+
+    assert calls == [{"status": "blocked_before_provider"}]
+    assert source == "live_context_fallback"
+    assert continuity == {
+        "task_response_count": 0,
+        "live_context_count": 1,
+        "counts_match": False,
+    }
+
+
+def test_provider_bound_gate_uses_lowering_receipt_not_model_capture_stage():
+    runner = _load_example("docker_terminal_bench")
+    call = {
+        "capture_stage": "model_boundary",
+        "provider_invoked": True,
+        "context_rollout": {
+            "candidate_applied": True,
+            "provider_lowering": {
+                "provider_request": {
+                    "capture_stage": "provider_prepared",
+                    "fidelity": "provider_prepared",
+                }
+            },
+        },
+    }
+
+    assert runner._is_provider_bound_call(call) is True
+    call["provider_invoked"] = False
+    assert runner._is_provider_bound_call(call) is False
 
 
 def test_dataset_adapter_extracts_generic_task_archive(tmp_path):

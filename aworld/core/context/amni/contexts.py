@@ -276,6 +276,9 @@ class ContextManager(BaseModel):
         session_id = context.session_id
         task_id = context.task_id
 
+        from aworld.core.context.compiler import LifecycleAction
+
+        context.advance_context_lifecycle(LifecycleAction.CHECKPOINT)
         # Use new Context functionality to create complete session state snapshot
         values = context.to_dict()
 
@@ -310,6 +313,9 @@ class ContextManager(BaseModel):
         # Restore Context from checkpoint
         from . import ApplicationContext
         context = ApplicationContext.from_dict(checkpoint.values)
+        from aworld.core.context.compiler import LifecycleAction
+
+        context.advance_context_lifecycle(LifecycleAction.RESUME)
 
         workspace = await workspace_repo.get_session_workspace(session_id=context.session_id)
         context.workspace = workspace

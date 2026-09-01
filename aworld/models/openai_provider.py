@@ -2,6 +2,7 @@ import json
 import os
 import socket
 import traceback
+from dataclasses import dataclass
 from typing import Any, Dict, List, Generator, AsyncGenerator, Tuple, Optional
 
 import httpx
@@ -33,12 +34,29 @@ from aworld.core.context.compiler import (
     ProviderRequestFidelity,
     ProviderRequestSnapshot,
     RequestCaptureStage,
+    SerializedPrefixEvidence,
+    build_cache_identity,
+    canonical_json_bytes,
 )
 from aworld.logs.util import logger, log_llm_record
 from aworld.models.llm_http_handler import LLMHTTPHandler
 from aworld.models.openai_message_sanitizer import sanitize_openai_messages
 from aworld.models.model_response import ModelResponse, LLMResponseError
 from aworld.models.prompt_cache import OpenAIPromptAssemblyLowerer
+
+
+@dataclass(frozen=True, slots=True)
+class _PreparedOpenAIRequest:
+    params: Dict[str, Any]
+    serialized_body: bytes | None = None
+
+
+OPENAI_CONTEXT_LOWERING = ProviderLoweringCapability(
+    provider_name="openai",
+    adapter_identity="aworld.provider.openai.chat_completions",
+    adapter_version="v2",
+    request_projection="openai.chat.completions.params.v1",
+)
 
 
 class OpenAIProvider(LLMProviderBase):
@@ -158,12 +176,13 @@ class OpenAIProvider(LLMProviderBase):
     def context_candidate_lowering_capability(
         self,
     ) -> ProviderLoweringCapability | None:
-        return ProviderLoweringCapability(
-            provider_name="openai",
-            adapter_identity="aworld.provider.openai.chat_completions",
-            adapter_version="v1",
-            request_projection="openai.chat.completions.params.v1",
-        )
+        return OPENAI_CONTEXT_LOWERING
+
+    def context_model_boundary_messages(
+        self, messages: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """Run the reviewed structural normalizer before final compilation."""
+        return sanitize_openai_messages(messages)
 
     def _prepare_chat_completion_request(
         self,
@@ -174,7 +193,7 @@ class OpenAIProvider(LLMProviderBase):
         stop: List[str] | None,
         kwargs: Dict[str, Any],
         stream: bool,
-    ) -> Dict[str, Any]:
+    ) -> _PreparedOpenAIRequest:
         """Lower one immutable candidate and commit its receipt before send."""
         request_kwargs = dict(kwargs) if stream else kwargs
         if stream:
@@ -221,6 +240,10 @@ class OpenAIProvider(LLMProviderBase):
 
         try:
             processed_messages = self.preprocess_messages(messages, **request_kwargs)
+            if envelope is not None and processed_messages != messages:
+                raise CandidateRequestNotEnforceable(
+                    "provider_transform_after_candidate"
+                )
             openai_params = self.get_openai_params(
                 processed_messages,
                 temperature,
@@ -239,6 +262,55 @@ class OpenAIProvider(LLMProviderBase):
         if stream:
             openai_params["stream"] = True
 
+        serialized_body = None
+        serialized_evidence = None
+        cache_identity = None
+        if self.is_http_provider:
+            try:
+                serialized_body = canonical_json_bytes(openai_params)
+                if envelope is not None and envelope.cache_material is not None:
+                    material = envelope.cache_material
+                    messages_bytes = canonical_json_bytes(openai_params["messages"])
+                    message_anchor = b'"messages":' + messages_bytes
+                    anchor_index = serialized_body.find(message_anchor)
+                    if anchor_index < 0:
+                        raise ValueError("serialized messages not found in request")
+                    stable_messages = openai_params["messages"][
+                        : material.stable_message_count
+                    ]
+                    stable_array = canonical_json_bytes(stable_messages)
+                    stable_fragment = stable_array[:-1]
+                    message_value_start = anchor_index + len(b'"messages":')
+                    if not serialized_body.startswith(
+                        stable_fragment, message_value_start
+                    ):
+                        raise ValueError("stable message prefix mismatch")
+                    serialized_prefix = serialized_body[
+                        : message_value_start + len(stable_fragment)
+                    ]
+                    serialized_evidence = SerializedPrefixEvidence.provider_wire(
+                        serialized_prefix=serialized_prefix,
+                        serialized_request=serialized_body,
+                        provider_name="openai",
+                        adapter_identity=capability.adapter_identity,
+                        serialization_version="openai-canonical-json-v1",
+                        request_id=envelope.candidate_request.request_id,
+                    )
+                    cache_identity = build_cache_identity(
+                        inference_profile=material.inference_profile,
+                        policy_version=material.policy_version,
+                        tool_catalog_hash=material.tool_catalog_hash,
+                        skill_set_hash=material.skill_set_hash,
+                        serialized_prefix_evidence=serialized_evidence,
+                        provider_cache_namespace=material.provider_cache_namespace,
+                    )
+            except Exception:
+                if envelope is not None:
+                    raise CandidateRequestNotEnforceable(
+                        "provider_serialization_evidence_failed"
+                    ) from None
+                raise
+
         if envelope is not None:
             capability = self.context_candidate_lowering_capability()
             try:
@@ -253,6 +325,8 @@ class OpenAIProvider(LLMProviderBase):
                     envelope=envelope,
                     provider_request=provider_request,
                     lowering=capability,
+                    serialized_prefix_evidence=serialized_evidence,
+                    cache_identity=cache_identity,
                 )
             except Exception:
                 raise CandidateRequestNotEnforceable(
@@ -263,7 +337,10 @@ class OpenAIProvider(LLMProviderBase):
                 envelope=envelope,
                 receipt=receipt,
             )
-        return openai_params
+        return _PreparedOpenAIRequest(
+            params=openai_params,
+            serialized_body=serialized_body,
+        )
 
     def preprocess_messages(self, messages: List[Dict[str, str]], **kwargs) -> List[Dict[str, str]]:
         """Preprocess messages, use OpenAI format directly.
@@ -459,7 +536,7 @@ class OpenAIProvider(LLMProviderBase):
                 "Sync provider not initialized. Make sure 'sync_enabled' parameter is set to True in initialization.")
 
         try:
-            openai_params = self._prepare_chat_completion_request(
+            prepared_request = self._prepare_chat_completion_request(
                 messages=messages,
                 temperature=temperature,
                 max_tokens=max_tokens,
@@ -467,8 +544,12 @@ class OpenAIProvider(LLMProviderBase):
                 kwargs=kwargs,
                 stream=False,
             )
+            openai_params = prepared_request.params
             if self.is_http_provider:
-                response = self.http_provider.sync_call(openai_params)
+                response = self.http_provider.sync_call(
+                    openai_params,
+                    serialized_body=prepared_request.serialized_body,
+                )
             else:
                 response = self.provider.chat.completions.create(**openai_params)
             logger.debug(f"LLM raw response: {response}")
@@ -524,7 +605,7 @@ class OpenAIProvider(LLMProviderBase):
         }
 
         try:
-            openai_params = self._prepare_chat_completion_request(
+            prepared_request = self._prepare_chat_completion_request(
                 messages=messages,
                 temperature=temperature,
                 max_tokens=max_tokens,
@@ -532,8 +613,12 @@ class OpenAIProvider(LLMProviderBase):
                 kwargs=kwargs,
                 stream=True,
             )
+            openai_params = prepared_request.params
             if self.is_http_provider:
-                response_stream = self.http_provider.sync_stream_call(openai_params)
+                response_stream = self.http_provider.sync_stream_call(
+                    openai_params,
+                    serialized_body=prepared_request.serialized_body,
+                )
             else:
                 response_stream = self.provider.chat.completions.create(**openai_params)
 
@@ -594,7 +679,7 @@ class OpenAIProvider(LLMProviderBase):
         }
 
         try:
-            openai_params = self._prepare_chat_completion_request(
+            prepared_request = self._prepare_chat_completion_request(
                 messages=messages,
                 temperature=temperature,
                 max_tokens=max_tokens,
@@ -602,10 +687,14 @@ class OpenAIProvider(LLMProviderBase):
                 kwargs=kwargs,
                 stream=True,
             )
+            openai_params = prepared_request.params
             logger.debug(f"openai_params: {openai_params}")
 
             if self.is_http_provider:
-                async for chunk in self.http_provider.async_stream_call(openai_params):
+                async for chunk in self.http_provider.async_stream_call(
+                    openai_params,
+                    serialized_body=prepared_request.serialized_body,
+                ):
                     logger.debug(f"LLM raw stream chunk: {chunk}")
                     if not chunk:
                         continue
@@ -675,7 +764,7 @@ class OpenAIProvider(LLMProviderBase):
                 "Async provider not initialized. Make sure 'async_enabled' parameter is set to True in initialization.")
 
         try:
-            openai_params = self._prepare_chat_completion_request(
+            prepared_request = self._prepare_chat_completion_request(
                 messages=messages,
                 temperature=temperature,
                 max_tokens=max_tokens,
@@ -683,9 +772,13 @@ class OpenAIProvider(LLMProviderBase):
                 kwargs=kwargs,
                 stream=False,
             )
+            openai_params = prepared_request.params
             logger.debug(f"openai_params: {json.dumps(openai_params)}")
             if self.is_http_provider:
-                response = await self.http_provider.async_call(openai_params)
+                response = await self.http_provider.async_call(
+                    openai_params,
+                    serialized_body=prepared_request.serialized_body,
+                )
             else:
                 response = await self.async_provider.chat.completions.create(**openai_params)
             logger.debug(f"LLM raw response: {response}")

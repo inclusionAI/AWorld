@@ -227,10 +227,12 @@ def test_openai_enforce_requires_explicit_compiler_readiness():
 def test_openai_http_enforce_binds_the_same_provider_prepared_mapping():
     provider, _, _ = _provider()
     sent: list[dict[str, Any]] = []
+    serialized: list[bytes] = []
 
     class HTTPHandler:
-        def sync_call(self, data):
+        def sync_call(self, data, *, serialized_body=None):
             sent.append(data)
+            serialized.append(serialized_body)
             return object()
 
     provider.is_http_provider = True
@@ -243,8 +245,53 @@ def test_openai_http_enforce_binds_the_same_provider_prepared_mapping():
     )
 
     assert len(sent) == 1
+    assert serialized[0] is not None
     _assert_lowering_receipt(context, sent[0])
     assert context.get_llm_calls()[0]["capture_fidelity"] == "model_boundary"
+
+
+def test_universal_final_http_enforce_records_serialized_cache_continuity():
+    provider, _, _ = _provider()
+    sent: list[tuple[dict[str, Any], bytes]] = []
+
+    class HTTPHandler:
+        def sync_call(self, data, *, serialized_body=None):
+            sent.append((data, serialized_body))
+            return object()
+
+    provider.is_http_provider = True
+    provider.http_provider = HTTPHandler()
+    model = LLMModel(
+        conf=ModelConfig(
+            context_compiler={"mode": "enforce", "universal_final": True}
+        ),
+        custom_provider=provider,
+    )
+    model.provider_name = "openai"
+    context = Context(task_id="universal-http-enforce")
+    # ApplicationContext uses an empty trace id until tracing is configured.
+    # Optional runtime identifiers must normalize before entering the sealed
+    # final compiler contract.
+    context.trace_id = ""
+    system = {"role": "system", "content": "stable rules"}
+
+    model.completion(
+        [system, {"role": "user", "content": "first"}], context=context
+    )
+    model.completion(
+        [system, {"role": "user", "content": "second"}], context=context
+    )
+
+    assert len(sent) == 2
+    assert all(serialized_body for _, serialized_body in sent)
+    first, second = context.get_llm_calls()
+    assert first["context_rollout"]["final_compile"]["enforce"]["ready"]
+    assert first["context_rollout"]["provider_lowering"][
+        "cache_continuity"
+    ]["status"] == "initialized"
+    assert second["context_rollout"]["provider_lowering"][
+        "cache_continuity"
+    ]["status"] == "continued"
 
 
 def test_openai_enforce_rejects_provider_transform_after_candidate():

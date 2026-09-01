@@ -1708,7 +1708,16 @@ class ApplicationContext(AmniContext):
         return new_context
 
     def to_dict(self) -> dict:
-        result = {}
+        result = {
+            "context_lifecycle": {
+                "session_id": self.context_lifecycle_state.session_id,
+                "session_epoch": self.context_lifecycle_state.session_epoch,
+                "task_epoch": self.context_lifecycle_state.task_epoch,
+                "turn_epoch": self.context_lifecycle_state.turn_epoch,
+                "branch_id": self.context_lifecycle_state.branch_id,
+                "checkpoint_revision": self.context_lifecycle_state.checkpoint_revision,
+            }
+        }
 
         # Serialize task_state using safe serialization function
         if self.task_state:
@@ -1764,7 +1773,13 @@ class ApplicationContext(AmniContext):
                     logger.info(f"Workspace info preserved: {workspace_info}")
                     # workspace = WorkSpace.from_local_storages(...) # Need to implement based on specific situation
 
-            return cls(task_state=task_state, workspace=workspace)
+            context = cls(task_state=task_state, workspace=workspace)
+            lifecycle = data.get("context_lifecycle")
+            if isinstance(lifecycle, dict):
+                from aworld.core.context.compiler import ContextLifecycleState
+
+                context._context_lifecycle_state = ContextLifecycleState(**lifecycle)
+            return context
 
         except Exception as e:
             logger.error(f"Failed to deserialize ApplicationContext: {e}")

@@ -485,6 +485,13 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             return self.conf.llm_provider
         return "openai"
 
+    def _context_compiler_mode_value(self) -> str:
+        """Read optional compiler capability without assuming an LLMModel."""
+        llm = getattr(self, "llm", None)
+        mode = getattr(llm, "context_compiler_mode", None)
+        value = getattr(mode, "value", mode)
+        return value if value in {"observe", "shadow", "enforce"} else "off"
+
     def _get_agent_context_cache_config(self, context: Any):
         if context is None or not hasattr(context, "get_agent_context_config"):
             return None
@@ -549,6 +556,15 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             provider_name,
             request_kwargs,
             stable_prefix_hash=stable_prefix_hash,
+        )
+
+    @staticmethod
+    def _forward_legacy_prompt_assembly_plan(
+        provider_name: str, context_compiler_mode: str
+    ) -> bool:
+        return (
+            context_compiler_mode != "enforce"
+            and supports_provider_native_prompt_cache(provider_name)
         )
 
     def _build_prompt_assembly_state(
@@ -1229,6 +1245,32 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         logger.info(f"Agent{type(self)}#{self.id()}: async_policy start")
         # temporary state context
         self.context = message.context
+        context_compiler_mode = self._context_compiler_mode_value()
+        # A turn boundary expires single-call/turn sidecars before new owner
+        # observations are collected for this request.
+        if context_compiler_mode != "off":
+            try:
+                from aworld.core.context.compiler import LifecycleAction
+
+                message.context.advance_context_lifecycle(LifecycleAction.NEXT_TURN)
+            except Exception as exc:
+                logger.warning(
+                    "Context turn lifecycle transition failed; "
+                    f"error_type={type(exc).__name__}"
+                )
+            tool_output_policy_factory = getattr(
+                self.llm, "enforced_tool_output_policy", None
+            )
+            message.context.configure_tool_output_boundary(
+                (
+                    tool_output_policy_factory()
+                    if callable(tool_output_policy_factory)
+                    else None
+                ),
+                artifact_offload=getattr(
+                    self.llm, "_context_artifact_offload", True
+                ),
+            )
 
         # Get current step information for trace recording
         source_span = trace.get_current_span()
@@ -1238,8 +1280,96 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
 
         raw_messages = await self.build_llm_input(observation, info, message=message, **kwargs)
         tools = await self._filter_tools(message.context)
+        if (
+            getattr(self.llm, "_context_progressive_skills", True)
+            and self.skill_configs
+            and context_compiler_mode != "off"
+        ):
+            from aworld.skills.progressive_context import (
+                publish_progressive_skill_context,
+            )
+
+            try:
+                publish_progressive_skill_context(
+                    context=message.context,
+                    agent_id=self.id(),
+                    skill_configs=self.skill_configs,
+                    sticky=(
+                        getattr(
+                            self.llm, "_context_task_catalog_policy", "sticky"
+                        ) == "sticky"
+                    ),
+                )
+            except Exception:
+                if context_compiler_mode == "enforce":
+                    raise
+                logger.warning(
+                    "Progressive Skill publication failed in non-enforce mode; "
+                    f"traceback={traceback.format_exc()}"
+                )
         if not tools:
             tools = None
+        elif context_compiler_mode != "off":
+            try:
+                from aworld.core.context.compiler import (
+                    CatalogChangeAction,
+                    TaskCatalogSnapshot,
+                    ToolCatalogEntry,
+                    estimate_canonical_json_tokens,
+                )
+
+                entries = []
+                for index, schema in enumerate(tools):
+                    function = schema.get("function", {}) if isinstance(schema, dict) else {}
+                    tool_id = (
+                        function.get("name") if isinstance(function, dict) else None
+                    ) or (schema.get("name") if isinstance(schema, dict) else None)
+                    tool_id = tool_id or f"tool-{index}"
+                    entries.append(
+                        ToolCatalogEntry(
+                            tool_id=tool_id,
+                            schema=schema,
+                            schema_version="agent-tool-schema-v1",
+                            source="agent-final-catalog",
+                            estimated_tokens=(
+                                estimate_canonical_json_tokens(schema).value or 0
+                            ),
+                        )
+                    )
+                candidate_catalog = TaskCatalogSnapshot.build(
+                    message.context.task_epoch, entries
+                )
+                transition = message.context.bind_task_tool_catalog(
+                    self.id(),
+                    candidate_catalog,
+                    action=(
+                        CatalogChangeAction.DEFER_NEXT_EPOCH
+                        if (
+                            getattr(self.llm, "_context_progressive_tools", True)
+                            and context_compiler_mode == "enforce"
+                            and getattr(
+                                self.llm,
+                                "_context_task_catalog_policy",
+                                "sticky",
+                            ) == "sticky"
+                        )
+                        else CatalogChangeAction.ACCEPT_CURRENT_EPOCH
+                    ),
+                )
+                if transition.snapshot.catalog_hash != candidate_catalog.catalog_hash:
+                    from aworld.core.context.compiler import thaw_json
+
+                    tools = [
+                        thaw_json(entry.schema)
+                        for entry in transition.snapshot.entries
+                    ]
+            except Exception as exc:
+                if context_compiler_mode == "enforce":
+                    raise
+                logger.warning(
+                    "Task Tool Catalog tracking failed; "
+                    f"error_type={type(exc).__name__}"
+                )
         prompt_assembly_plan, messages, prompt_assembly_observability = self._build_prompt_assembly_state(
             context=message.context,
             messages=raw_messages,
@@ -1287,8 +1417,52 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             }
             kwargs["response_parse_args"] = response_parse_args
             kwargs["prepared_tools"] = tools
+            if context_compiler_mode != "off":
+                try:
+                    from aworld.agents.final_context_adapter import adapt_agent_final_request
+                    from aworld.core.context.compiler import ContextObservationSidecar
+
+                    source_identity = (
+                        f"agent-final://{self.id()}/task-{message.context.task_id}/"
+                        f"epoch-{message.context.task_epoch}"
+                    )
+                    message_result, tool_result = adapt_agent_final_request(
+                        messages=messages,
+                        tools=tools or (),
+                        source_identity=source_identity,
+                        task_id=message.context.task_id,
+                        task_epoch=message.context.task_epoch,
+                        agent_id=self.id(),
+                        amni_folded_system=self._is_amni_context(message.context),
+                    )
+                    message.context.publish_context_observation(
+                        ContextObservationSidecar.from_adapter_result(
+                            owner="agent.final_messages",
+                            namespace=self.id(),
+                            source_identity=source_identity,
+                            result=message_result,
+                        )
+                    )
+                    message.context.publish_context_observation(
+                        ContextObservationSidecar.from_adapter_result(
+                            owner="agent.final_tool_catalog",
+                            namespace=self.id(),
+                            source_identity=source_identity,
+                            result=tool_result,
+                        )
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Agent final Context publication failed; "
+                        f"error_type={type(exc).__name__}"
+                    )
             provider_name = prompt_assembly_observability.get("provider_name") or self._current_provider_name()
-            if supports_provider_native_prompt_cache(provider_name):
+            # The universal final compiler snapshots the already assembled
+            # messages.  Replaying the legacy assembly plan in the provider
+            # would be a second post-compile transform and must not occur.
+            if self._forward_legacy_prompt_assembly_plan(
+                provider_name, context_compiler_mode
+            ):
                 kwargs["prompt_assembly_plan"] = prompt_assembly_plan
                 kwargs["provider_native_prompt_cache"] = bool(
                     prompt_assembly_observability.get("provider_native_cache")

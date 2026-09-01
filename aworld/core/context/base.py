@@ -13,6 +13,31 @@ from aworld.checkpoint.inmemory import InMemoryCheckpointRepository
 from aworld.config import ConfigDict, AgentMemoryConfig
 from aworld.core.context.context_state import ContextState
 from aworld.core.context.compiler.sidecar import ContextObservationSidecar
+from aworld.core.context.compiler.lifecycle import (
+    ContextLifecycleEvent,
+    ContextLifecycleState,
+    LifecycleAction,
+    transition_context_lifecycle,
+)
+from aworld.core.context.compiler.completion import (
+    ArtifactEvidence,
+    CompletionAssessment,
+    CompletionContract,
+    CompletionMode,
+    ExternalVerifierEvidence,
+    ImmutableInputEvidence,
+    SelfCheckEvidence,
+    assess_completion,
+)
+from aworld.core.context.compiler.progressive import (
+    CatalogChangeAction,
+    CatalogTransition,
+    TaskCatalogSnapshot,
+    SkillActivation,
+    transition_task_catalog,
+)
+from aworld.core.context.compiler.reducers import ReductionReceipt
+from aworld.core.context.compiler.tool_output import ToolOutputPolicy, ToolOutputRecord
 from aworld.core.context.session import Session
 from aworld.logs.util import logger
 from aworld.core.trajectory_update_registry import TrajectoryUpdateOutcome, TrajectoryUpdateRegistry
@@ -188,6 +213,45 @@ class Context:
         self._context_observations: Dict[
             tuple[str, str], ContextObservationSidecar
         ] = {}
+        lifecycle_session_id = (
+            session.session_id if session is not None and session.session_id else "unbound"
+        )
+        self._context_lifecycle_state = ContextLifecycleState(
+            session_id=lifecycle_session_id,
+            task_epoch=kwargs.get("task_epoch", 0),
+        )
+        self._context_lifecycle_events: List[ContextLifecycleEvent] = []
+        self._completion_contract: CompletionContract | None = None
+        self._completion_mode = CompletionMode.OFF
+        self._completion_artifact_evidence: List[ArtifactEvidence] = []
+        self._completion_immutable_input_evidence: List[ImmutableInputEvidence] = []
+        self._completion_self_checks: List[SelfCheckEvidence] = []
+        self._completion_final_evidence_codes: set[str] = set()
+        self._completion_external_verifier: ExternalVerifierEvidence | None = None
+        self._completion_repair_attempt = 0
+        self._completion_assessment: CompletionAssessment | None = None
+        self._task_tool_catalogs: Dict[str, TaskCatalogSnapshot] = {}
+        self._tool_catalog_transitions: List[CatalogTransition] = []
+        self._task_skill_sets: Dict[str, tuple[str, ...]] = {}
+        self._skill_activations: Dict[str, tuple[SkillActivation, ...]] = {}
+        self._context_reduction_receipts: Dict[str, ReductionReceipt] = {}
+        # Delegation depth belongs to the isolated execution Context.  It is
+        # never inferred from transcript text and is advanced only by the
+        # structured SubagentManager boundary.
+        self._delegation_depth = 0
+        self._tool_output_policy: ToolOutputPolicy | None = None
+        self._tool_output_artifact_offload = True
+        self._tool_output_records: Dict[str, ToolOutputRecord] = {}
+        self._tool_output_artifact_paths: Dict[str, str] = {}
+        # Provider cache identity is runtime evidence, never checkpoint payload.
+        # It may be carried across an in-process task reset so the next exact
+        # provider serialization can explain why the prefix cache changed.
+        self._provider_cache_identity = kwargs.get(
+            "provider_cache_identity"
+        )
+        self._pending_cache_break_reasons = set(
+            kwargs.get("pending_cache_break_reasons", ())
+        )
 
     @property
     def start_time(self) -> float:
@@ -197,6 +261,31 @@ class Context:
         self._token_usage = nest_dict_counter(self._token_usage, usage)
 
     def reset(self, **kwargs):
+        previous_state = getattr(self, "_context_lifecycle_state", None)
+        next_task_epoch = (
+            previous_state.task_epoch + 1
+            if isinstance(previous_state, ContextLifecycleState)
+            else 0
+        )
+        kwargs.setdefault("task_epoch", next_task_epoch)
+        kwargs.setdefault("session", getattr(self, "_session", None))
+        kwargs.setdefault("workspace_path", getattr(self, "_workspace_path", None))
+        kwargs.setdefault(
+            "checkpoint_repository", getattr(self, "_checkpoint_repository", None)
+        )
+        kwargs.setdefault(
+            "provider_cache_identity",
+            getattr(self, "_provider_cache_identity", None),
+        )
+        pending_cache_break_reasons = set(
+            getattr(self, "_pending_cache_break_reasons", ())
+        )
+        from aworld.core.context.compiler.models import CacheBreakReason
+
+        pending_cache_break_reasons.add(CacheBreakReason.TASK_RESET)
+        kwargs.setdefault(
+            "pending_cache_break_reasons", pending_cache_break_reasons
+        )
         self._init(**kwargs)
 
     def set_task(self, task: 'Task'):
@@ -237,11 +326,329 @@ class Context:
     @task_id.setter
     def task_id(self, task_id):
         if task_id is not None:
-            self._fence_context_observations_for_task_transition(
-                current_task_id=getattr(self, "_task_id", None),
-                next_task_id=task_id,
+            changed = (
+                getattr(self, "_task_id", None) is not None
+                and self._task_id != task_id
             )
+            if changed:
+                self.advance_context_lifecycle(LifecycleAction.NEW_TASK)
             self._task_id = task_id
+
+    @property
+    def task_epoch(self) -> int:
+        return self._context_lifecycle_state.task_epoch
+
+    @property
+    def context_lifecycle_state(self) -> ContextLifecycleState:
+        return self._context_lifecycle_state
+
+    def get_context_lifecycle_events(self) -> tuple[ContextLifecycleEvent, ...]:
+        return tuple(self._context_lifecycle_events)
+
+    def configure_completion_contract(
+        self, contract: CompletionContract | None, *, mode: CompletionMode = CompletionMode.OFF
+    ) -> None:
+        if contract is not None and not isinstance(contract, CompletionContract):
+            raise TypeError("contract must be CompletionContract or None")
+        self._completion_contract = contract
+        self._completion_mode = CompletionMode(mode)
+        self._completion_artifact_evidence = []
+        self._completion_immutable_input_evidence = []
+        self._completion_self_checks = []
+        self._completion_final_evidence_codes = set()
+        self._completion_external_verifier = None
+        self._completion_repair_attempt = 0
+        self._completion_assessment = None
+
+    def configure_tool_output_boundary(
+        self,
+        policy: ToolOutputPolicy | None,
+        *,
+        artifact_offload: bool = True,
+    ) -> None:
+        if policy is not None and not isinstance(policy, ToolOutputPolicy):
+            raise TypeError("policy must be a ToolOutputPolicy or None")
+        if not isinstance(artifact_offload, bool):
+            raise TypeError("artifact_offload must be a boolean")
+        self._tool_output_policy = policy
+        self._tool_output_artifact_offload = artifact_offload
+
+    def record_tool_output(
+        self,
+        record: ToolOutputRecord,
+        *,
+        artifact_path: str | None,
+    ) -> None:
+        if not isinstance(record, ToolOutputRecord):
+            raise TypeError("record must be a ToolOutputRecord")
+        existing = self._tool_output_records.get(record.tool_call_id)
+        if existing is not None and existing != record:
+            raise ValueError("conflicting Tool output record for tool_call_id")
+        self._tool_output_records[record.tool_call_id] = record
+        if record.artifact is not None:
+            if not artifact_path:
+                raise ValueError("artifact Tool output requires a local path")
+            self._tool_output_artifact_paths[record.artifact.ref] = artifact_path
+
+    def get_tool_output_records(self) -> tuple[ToolOutputRecord, ...]:
+        return tuple(self._tool_output_records.values())
+
+    def read_tool_output_artifact(self, artifact_ref: str) -> bytes:
+        path = self._tool_output_artifact_paths.get(artifact_ref)
+        if path is None:
+            raise KeyError("unknown Tool output artifact ref")
+        record = next(
+            (
+                value
+                for value in self._tool_output_records.values()
+                if value.artifact is not None and value.artifact.ref == artifact_ref
+            ),
+            None,
+        )
+        if record is None or record.artifact is None:
+            raise KeyError("Tool output artifact receipt is unavailable")
+        with open(path, "rb") as stream:
+            payload = stream.read()
+        actual = f"sha256:{hashlib.sha256(payload).hexdigest()}"
+        if actual != record.artifact.content_hash:
+            raise ValueError("Tool output artifact checksum mismatch")
+        return payload
+
+    def record_completion_artifact(self, evidence: ArtifactEvidence) -> None:
+        if not isinstance(evidence, ArtifactEvidence):
+            raise TypeError("evidence must be ArtifactEvidence")
+        self._completion_artifact_evidence.append(evidence)
+
+    def record_completion_self_check(self, evidence: SelfCheckEvidence) -> None:
+        if not isinstance(evidence, SelfCheckEvidence):
+            raise TypeError("evidence must be SelfCheckEvidence")
+        self._completion_self_checks.append(evidence)
+
+    def record_completion_immutable_input(
+        self, evidence: ImmutableInputEvidence
+    ) -> None:
+        if not isinstance(evidence, ImmutableInputEvidence):
+            raise TypeError("evidence must be ImmutableInputEvidence")
+        self._completion_immutable_input_evidence.append(evidence)
+
+    def record_completion_final_evidence(self, code: str) -> None:
+        if not isinstance(code, str) or not code.strip():
+            raise ValueError("completion evidence code must be non-empty")
+        self._completion_final_evidence_codes.add(code)
+
+    def record_external_verifier(
+        self, evidence: ExternalVerifierEvidence
+    ) -> None:
+        if not isinstance(evidence, ExternalVerifierEvidence):
+            raise TypeError("evidence must be ExternalVerifierEvidence")
+        self._completion_external_verifier = evidence
+
+    def assess_completion_contract(
+        self, *, agent_claimed_finished: bool
+    ) -> CompletionAssessment | None:
+        if self._completion_contract is None:
+            return None
+        assessment = assess_completion(
+            self._completion_contract,
+            mode=self._completion_mode,
+            artifact_evidence=self._completion_artifact_evidence,
+            immutable_input_evidence=self._completion_immutable_input_evidence,
+            self_checks=self._completion_self_checks,
+            final_evidence_codes=self._completion_final_evidence_codes,
+            agent_claimed_finished=agent_claimed_finished,
+            repair_attempt=self._completion_repair_attempt,
+            external_verifier=self._completion_external_verifier,
+        )
+        self._completion_assessment = assessment
+        return assessment
+
+    def bind_task_tool_catalog(
+        self,
+        namespace: str,
+        candidate: TaskCatalogSnapshot,
+        *,
+        action: CatalogChangeAction = CatalogChangeAction.ACCEPT_CURRENT_EPOCH,
+    ) -> CatalogTransition:
+        if candidate.task_epoch != self.task_epoch:
+            raise ValueError("Tool Catalog task epoch does not match Context")
+        previous = self._task_tool_catalogs.get(namespace)
+        transition = transition_task_catalog(previous, candidate, action=action)
+        self._task_tool_catalogs[namespace] = transition.snapshot
+        self._tool_catalog_transitions.append(transition)
+        return transition
+
+    def bind_task_skill_set(
+        self,
+        namespace: str,
+        requested_skill_ids: tuple[str, ...],
+        *,
+        sticky: bool,
+    ) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        requested = tuple(dict.fromkeys(requested_skill_ids))
+        previous = self._task_skill_sets.get(namespace)
+        if previous is None or not sticky:
+            active = requested
+            deferred = ()
+        else:
+            previous_ids = set(previous)
+            # Contractions apply immediately; additions wait for a new epoch.
+            active = tuple(value for value in requested if value in previous_ids)
+            deferred = tuple(value for value in requested if value not in previous_ids)
+        self._task_skill_sets[namespace] = active
+        return active, deferred
+
+    def record_skill_activations(
+        self, namespace: str, activations: tuple[SkillActivation, ...]
+    ) -> None:
+        values = tuple(activations)
+        if not all(isinstance(value, SkillActivation) for value in values):
+            raise TypeError("activations must contain SkillActivation values")
+        self._skill_activations[namespace] = values
+
+    def get_skill_activations(self) -> dict[str, tuple[SkillActivation, ...]]:
+        return dict(self._skill_activations)
+
+    def publish_context_reduction(self, receipt: ReductionReceipt) -> None:
+        """Publish one owner-created, hash-bound reducer/offload receipt."""
+        if not isinstance(receipt, ReductionReceipt):
+            raise TypeError("receipt must be a ReductionReceipt")
+        existing = self._context_reduction_receipts.get(receipt.item_id)
+        if existing is not None and existing != receipt:
+            raise ValueError("Context item already has a different reduction receipt")
+        self._context_reduction_receipts[receipt.item_id] = receipt
+
+    def get_context_reduction_receipts(self) -> tuple[ReductionReceipt, ...]:
+        return tuple(self._context_reduction_receipts.values())
+
+    def advance_context_lifecycle(
+        self,
+        action: LifecycleAction,
+        *,
+        branch_id: str | None = None,
+        source_offset: str | int | None = None,
+    ) -> ContextLifecycleEvent:
+        items = tuple(
+            item
+            for sidecar in self.get_context_observations()
+            for item in sidecar.result.items
+        )
+        event = transition_context_lifecycle(
+            self._context_lifecycle_state,
+            action,
+            items=items,
+            branch_id=branch_id,
+            source_offset=source_offset,
+        )
+        self._context_lifecycle_state = event.current
+        self._context_lifecycle_events.append(event)
+        if event.cache_break_reason is not None:
+            self._pending_cache_break_reasons.add(event.cache_break_reason)
+        if action in {
+            LifecycleAction.NEW_TASK,
+            LifecycleAction.NEXT_TURN,
+            LifecycleAction.BACKGROUND,
+            LifecycleAction.CHECKPOINT,
+            LifecycleAction.REWIND,
+            LifecycleAction.RESUME,
+        }:
+            retained_ids = {
+                decision.item_id
+                for decision in event.item_decisions
+                if decision.retained
+            }
+            self._context_observations = {
+                key: sidecar
+                for key, sidecar in self._context_observations.items()
+                if all(item.id in retained_ids for item in sidecar.result.items)
+            }
+            self._context_reduction_receipts = {}
+        if action in {LifecycleAction.NEW_TASK, LifecycleAction.BACKGROUND}:
+            self._completion_artifact_evidence = []
+            self._completion_immutable_input_evidence = []
+            self._completion_self_checks = []
+            self._completion_final_evidence_codes = set()
+            self._completion_external_verifier = None
+            self._completion_repair_attempt = 0
+            self._completion_assessment = None
+            self._task_tool_catalogs = {}
+            self._tool_catalog_transitions = []
+            self._task_skill_sets = {}
+            self._skill_activations = {}
+            self._context_reduction_receipts = {}
+            self._tool_output_records = {}
+            self._tool_output_artifact_paths = {}
+        return event
+
+    def commit_provider_cache_identity(self, verified_identity: Any) -> Dict[str, Any]:
+        """Commit exact provider-wire cache evidence and explain continuity.
+
+        Logical prefix hashes are intentionally insufficient here.  This API
+        accepts only ``ProviderVerifiedCacheIdentity`` and consumes lifecycle
+        invalidations exactly when a provider-owned serialized request exists.
+        """
+        from aworld.core.context.compiler.cache import (
+            ProviderVerifiedCacheIdentity,
+            cache_break_reasons,
+        )
+        from aworld.core.context.compiler.models import CacheBreakReason
+
+        if not isinstance(verified_identity, ProviderVerifiedCacheIdentity):
+            raise TypeError(
+                "verified_identity must be ProviderVerifiedCacheIdentity"
+            )
+        current = verified_identity.identity
+        previous = self._provider_cache_identity
+        pending = set(self._pending_cache_break_reasons)
+        reasons = cache_break_reasons(
+            previous,
+            current,
+            history_compaction=(
+                CacheBreakReason.HISTORY_COMPACTION in pending
+            ),
+            task_reset=CacheBreakReason.TASK_RESET in pending,
+            resume_cache_expired=(
+                CacheBreakReason.RESUME_CACHE_EXPIRED in pending
+            ),
+            provider_cache_unknown=(
+                CacheBreakReason.PROVIDER_CACHE_UNKNOWN in pending
+            ),
+        )
+        self._provider_cache_identity = current
+        self._pending_cache_break_reasons.clear()
+        return {
+            "status": (
+                "initialized"
+                if previous is None
+                else "continued" if not reasons else "broken"
+            ),
+            "previous_present": previous is not None,
+            "break_reasons": [reason.value for reason in reasons],
+        }
+
+    def prepare_delegated_child(self, *, delegation_depth: int) -> None:
+        """Remove ambient parent runtime state before applying a Context Pack."""
+        if isinstance(delegation_depth, bool) or not isinstance(
+            delegation_depth, int
+        ) or delegation_depth <= 0:
+            raise ValueError("delegation_depth must be a positive integer")
+        self._delegation_depth = delegation_depth
+        self.context_info = ContextState()
+        self.trajectories = OrderedDict()
+        self._token_usage = {
+            "completion_tokens": 0,
+            "prompt_tokens": 0,
+            "total_tokens": 0,
+        }
+        self._merge_token_baseline = copy.deepcopy(self._token_usage)
+        self._merge_llm_calls_baseline = 0
+        self.configure_completion_contract(None, mode=CompletionMode.OFF)
+        self._task_tool_catalogs = {}
+        self._tool_catalog_transitions = []
+        self._task_skill_sets = {}
+        self._skill_activations = {}
+        self._context_reduction_receipts = {}
+        self._tool_output_records = {}
+        self._tool_output_artifact_paths = {}
 
     def _fence_context_observations_for_task_transition(
         self,
@@ -277,6 +684,21 @@ class Context:
     @session.setter
     def session(self, session: Session):
         self._session = session
+        state = getattr(self, "_context_lifecycle_state", None)
+        if (
+            isinstance(state, ContextLifecycleState)
+            and state.session_id == "unbound"
+            and session is not None
+            and session.session_id
+        ):
+            self._context_lifecycle_state = ContextLifecycleState(
+                session_id=session.session_id,
+                session_epoch=state.session_epoch,
+                task_epoch=state.task_epoch,
+                turn_epoch=state.turn_epoch,
+                branch_id=state.branch_id,
+                checkpoint_revision=state.checkpoint_revision,
+            )
 
     @property
     def swarm(self):
@@ -352,6 +774,67 @@ class Context:
     def append_llm_call(self, llm_call: Dict[str, Any]) -> None:
         self.get_llm_calls().append(llm_call)
 
+    def get_context_inspector(self) -> Dict[str, Any] | None:
+        """Return the latest redacted compiler projection for CLI/ACP consumers."""
+        for record in reversed(self.get_llm_calls()):
+            rollout = record.get("context_rollout") if isinstance(record, dict) else None
+            projection = rollout.get("final_compile") if isinstance(rollout, dict) else None
+            if isinstance(projection, dict):
+                inspector = copy.deepcopy(projection)
+                lowering = rollout.get("provider_lowering")
+                if isinstance(lowering, dict):
+                    inspector["provider_lowering"] = copy.deepcopy(lowering)
+                inspector["runtime"] = {
+                    "tool_outputs": [
+                        {
+                            "tool_call_id_hash": (
+                                "sha256:"
+                                + hashlib.sha256(
+                                    record.tool_call_id.encode("utf-8")
+                                ).hexdigest()
+                            ),
+                            "policy_version": record.policy_version,
+                            "reason_code": record.reason_code,
+                            "raw_byte_count": record.raw_byte_count,
+                            "inline_tokens": record.inline_tokens,
+                            "offloaded_tokens": record.offloaded_tokens,
+                            "artifact_present": record.artifact is not None,
+                        }
+                        for record in self.get_tool_output_records()
+                    ],
+                    "skill_activations": {
+                        namespace: [
+                            {
+                                "skill_id": activation.skill_id,
+                                "level": activation.level.value,
+                                "activated": activation.activated,
+                                "reason_code": activation.reason_code,
+                                "loaded_tokens": activation.loaded_tokens,
+                            }
+                            for activation in activations
+                        ]
+                        for namespace, activations in sorted(
+                            self._skill_activations.items()
+                        )
+                    },
+                    "tool_catalog_transitions": [
+                        {
+                            "catalog_hash": transition.snapshot.catalog_hash,
+                            "added": list(transition.added),
+                            "removed": list(transition.removed),
+                            "action": transition.action.value,
+                            "cache_break_reason": (
+                                transition.cache_break_reason.value
+                                if transition.cache_break_reason is not None
+                                else None
+                            ),
+                        }
+                        for transition in self._tool_catalog_transitions
+                    ],
+                }
+                return inspector
+        return None
+
     def publish_context_observation(
         self, sidecar: ContextObservationSidecar
     ) -> None:
@@ -377,6 +860,42 @@ class Context:
             if (owner is None or sidecar.owner == owner)
             and (namespace is None or sidecar.namespace == namespace)
         )
+
+    def refresh_nested_instruction_observation(
+        self, *, active_path: str | None = None
+    ) -> ContextObservationSidecar | None:
+        """Load nested instruction files at their filesystem owner boundary."""
+        if not self.workspace_path:
+            return None
+        from aworld.core.context.compiler import (
+            AdapterResult,
+            Authority,
+            ContextObservationSidecar,
+        )
+        from aworld.core.context.instructions import ScopedInstructionLoader
+
+        result = ScopedInstructionLoader().load(
+            workspace=self.workspace_path,
+            active_path=active_path or self.workspace_path,
+            task_epoch=self.task_epoch,
+        )
+        # Root/workspace layers remain owned by the compatibility prompt path.
+        # This bridge publishes only newly supported nested-directory layers,
+        # avoiding a duplicate copy of legacy AWORLD.md content.
+        nested_items = tuple(
+            item for item in result.items if item.authority is Authority.DIRECTORY
+        )
+        sidecar = ContextObservationSidecar.from_adapter_result(
+            owner="workspace.nested_instructions",
+            namespace=str(self.workspace_path),
+            source_identity=f"workspace-instructions:{self.workspace_path}",
+            result=AdapterResult(
+                items=nested_items,
+                diagnostics=result.diagnostics,
+            ),
+        )
+        self.publish_context_observation(sidecar)
+        return sidecar
 
     async def build_sub_context(self, sub_task_content: Any, sub_task_id: str = None, **kwargs):
         # Create a new Context instance without calling __init__ to avoid singleton issues
@@ -416,6 +935,8 @@ class Context:
         new_context._task_id = self._task_id
         new_context._trace_id = self._trace_id
         new_context._start = self._start
+        new_context._workspace_path = self._workspace_path
+        new_context._checkpoint_repository = self._checkpoint_repository
         # Session - shallow copy to maintain reference
         new_context._session = self._session
 
@@ -427,6 +948,47 @@ class Context:
         new_context._trajectory_update_registry = self._trajectory_update_registry
         new_context._context_observations = dict(
             getattr(self, "_context_observations", {})
+        )
+        new_context._context_lifecycle_state = self._context_lifecycle_state
+        new_context._context_lifecycle_events = list(
+            getattr(self, "_context_lifecycle_events", ())
+        )
+        new_context._completion_contract = self._completion_contract
+        new_context._completion_mode = self._completion_mode
+        new_context._completion_artifact_evidence = list(
+            self._completion_artifact_evidence
+        )
+        new_context._completion_immutable_input_evidence = list(
+            self._completion_immutable_input_evidence
+        )
+        new_context._completion_self_checks = list(self._completion_self_checks)
+        new_context._completion_final_evidence_codes = set(
+            self._completion_final_evidence_codes
+        )
+        new_context._completion_external_verifier = self._completion_external_verifier
+        new_context._completion_repair_attempt = self._completion_repair_attempt
+        new_context._completion_assessment = self._completion_assessment
+        new_context._task_tool_catalogs = dict(self._task_tool_catalogs)
+        new_context._tool_catalog_transitions = list(self._tool_catalog_transitions)
+        new_context._task_skill_sets = dict(self._task_skill_sets)
+        new_context._skill_activations = dict(self._skill_activations)
+        new_context._context_reduction_receipts = dict(
+            self._context_reduction_receipts
+        )
+        new_context._delegation_depth = getattr(self, "_delegation_depth", 0)
+        new_context._tool_output_policy = self._tool_output_policy
+        new_context._tool_output_artifact_offload = (
+            self._tool_output_artifact_offload
+        )
+        new_context._tool_output_records = dict(self._tool_output_records)
+        new_context._tool_output_artifact_paths = dict(
+            self._tool_output_artifact_paths
+        )
+        new_context._provider_cache_identity = getattr(
+            self, "_provider_cache_identity", None
+        )
+        new_context._pending_cache_break_reasons = set(
+            getattr(self, "_pending_cache_break_reasons", ())
         )
 
         # Deep copy complex state objects
@@ -588,6 +1150,38 @@ class Context:
             self.context_info.set('last_merge_info', merge_info)
         except Exception as e:
             logger.warning(f"Failed to record merge info: {e}")
+
+    def merge_delegation_context(
+        self,
+        other_context: 'Context',
+        *,
+        delegation_record: Dict[str, Any],
+    ) -> None:
+        """Merge child accounting/evidence without importing its mutable state."""
+        child_tokens = copy.deepcopy(getattr(other_context, '_token_usage', {}) or {})
+        baseline_tokens = copy.deepcopy(
+            getattr(other_context, '_merge_token_baseline', {}) or {}
+        )
+        net_tokens = nest_dict_diff(child_tokens, baseline_tokens)
+        if net_tokens:
+            self.add_token(net_tokens)
+        baseline = max(
+            0,
+            min(
+                getattr(other_context, "_merge_llm_calls_baseline", 0),
+                len(other_context.get_llm_calls()),
+            ),
+        )
+        for llm_call in other_context.get_llm_calls()[baseline:]:
+            attributed = copy.deepcopy(llm_call)
+            attributed["delegation"] = copy.deepcopy(delegation_record)
+            self.append_llm_call(attributed)
+        records = self.context_info.get("delegation_records")
+        if not isinstance(records, list):
+            records = []
+        records.append(copy.deepcopy(delegation_record))
+        self.context_info["delegation_records"] = records
+        other_context._merge_token_baseline = child_tokens
 
     def save_action_trajectory(self,
                                step,
@@ -968,6 +1562,14 @@ class Context:
             'user': self._user,
             'task_id': self._task_id,
             'trace_id': self._trace_id,
+            'context_lifecycle': {
+                'session_id': self._context_lifecycle_state.session_id,
+                'session_epoch': self._context_lifecycle_state.session_epoch,
+                'task_epoch': self._context_lifecycle_state.task_epoch,
+                'turn_epoch': self._context_lifecycle_state.turn_epoch,
+                'branch_id': self._context_lifecycle_state.branch_id,
+                'checkpoint_revision': self._context_lifecycle_state.checkpoint_revision,
+            },
 
             # Timestamp for checkpoint creation
             'checkpoint_created_at': datetime.now().isoformat(),
@@ -1003,6 +1605,11 @@ class Context:
         if one has been set via `context.checkpoint_repository = repo`.
         """
         from aworld.checkpoint import create_checkpoint, VersionUtils
+
+        # A checkpoint is a logical context rewrite/cache boundary even when
+        # the repository later reports a persistence failure. Record that
+        # transition before freezing the values so the revision is restorable.
+        self.advance_context_lifecycle(LifecycleAction.CHECKPOINT)
 
         # Extract checkpoint values
         checkpoint_values = self._create_checkpoint_values()

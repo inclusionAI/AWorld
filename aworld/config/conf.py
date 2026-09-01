@@ -120,6 +120,28 @@ class ContextCacheConfig(BaseConfig):
 class ContextCompilerRuntimeConfig(BaseConfig):
     mode: Literal["off", "observe", "shadow", "enforce"] = "off"
     compiler_version: str = "v1"
+    policy_version: str = "v1"
+    universal_final: bool = True
+    context_limit: Optional[int] = None
+    reserved_output_tokens: int = 4096
+    provider_protocol_reserve: int = 256
+    safety_margin_tokens: int = 512
+    max_item_tokens: int = 10000
+    require_proven_semantics_for_enforce: bool = True
+    scoped_instructions: Literal["workspace_only", "nested"] = "workspace_only"
+    progressive_skills: bool = True
+    progressive_tools: bool = True
+    task_catalog_policy: Literal["per_call", "sticky"] = "sticky"
+    checkpoint_policy: Literal[
+        "explicit", "budget_pressure", "adaptive"
+    ] = "explicit"
+    default_tool_output_inline_tokens: int = Field(default=4096, gt=0)
+    artifact_offload: bool = True
+    context_inspector: bool = True
+    trace_level: Literal["none", "summary", "decisions", "full_redacted"] = (
+        "decisions"
+    )
+    completion_contract: Literal["off", "observe", "enforce"] = "off"
 
 
 class ModelConfig(BaseConfig):
