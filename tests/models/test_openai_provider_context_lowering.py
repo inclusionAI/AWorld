@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from types import MethodType, SimpleNamespace
 from typing import Any
@@ -14,7 +15,7 @@ from aworld.core.context.compiler import (
     canonical_json_hash,
 )
 from aworld.models.llm import LLMModel
-from aworld.models.model_response import ModelResponse
+from aworld.models.model_response import LLMResponseError, ModelResponse
 from aworld.models.openai_provider import OpenAIProvider
 
 
@@ -237,6 +238,102 @@ def test_openai_observe_capture_failure_is_fail_open_and_sends_once():
     assert len(sync_calls) == 1
 
 
+def test_openai_observe_attribution_commit_failure_degrades_to_attempt_truth():
+    class FailFirstReplacement(list):
+        def __init__(self):
+            super().__init__()
+            self.failed = False
+
+        def __setitem__(self, index, value):
+            if not self.failed:
+                self.failed = True
+                raise RuntimeError("observe-commit-failed")
+            return super().__setitem__(index, value)
+
+    class RecoverableContext(Context):
+        def __init__(self):
+            super().__init__(task_id="observe-commit-fail-open")
+            self.calls = FailFirstReplacement()
+
+        def get_llm_calls(self):
+            return self.calls
+
+    provider, sync_calls, _ = _provider()
+    context = RecoverableContext()
+
+    _observe_model(provider).completion(
+        [{"role": "user", "content": "legacy"}], context=context
+    )
+
+    assert len(sync_calls) == 1
+    record = context.calls[0]
+    assert record["provider_invoked"] is True
+    assert record["provider_attempt_status"] == "attempted"
+    assert record["provider_request"]["payload"] == sync_calls[0]
+    assert record["context_rollout"]["provider_attribution"] == {
+        **record["context_rollout"]["provider_attribution"],
+        "status": "unavailable",
+        "reason_code": "provider_attribution_storage_failed",
+    }
+
+
+@pytest.mark.asyncio
+async def test_openai_observe_opaque_sdk_params_match_off_once_sync_and_async():
+    opaque = object()
+    off_provider, off_sync, off_async = _provider()
+    observed_provider, observed_sync, observed_async = _provider()
+    off = LLMModel(custom_provider=off_provider)
+    off.provider_name = "openai"
+    observed = _observe_model(observed_provider)
+    messages = [{"role": "user", "content": "same"}]
+
+    off.completion(messages, context=Context(task_id="opaque-off-sync"), response_format=opaque)
+    observed_sync_context = Context(task_id="opaque-observe-sync")
+    observed.completion(messages, context=observed_sync_context, response_format=opaque)
+    await off.acompletion(messages, context=Context(task_id="opaque-off-async"), response_format=opaque)
+    observed_async_context = Context(task_id="opaque-observe-async")
+    await observed.acompletion(messages, context=observed_async_context, response_format=opaque)
+
+    assert off_sync == observed_sync
+    assert off_async == observed_async
+    assert len(observed_sync) == len(observed_async) == 1
+    for sent in (*observed_sync, *observed_async):
+        assert sent["response_format"] is opaque
+        assert all(not key.startswith("_aworld_") for key in sent)
+        assert "context" not in sent
+    for context in (observed_sync_context, observed_async_context):
+        record = context.get_llm_calls()[0]
+        assert record["provider_invoked"] is True
+        assert record["provider_attempt_status"] == "attempted"
+        assert record["context_rollout"]["provider_attribution"]["status"] == "unavailable"
+
+
+@pytest.mark.asyncio
+async def test_openai_observe_stream_close_preserves_attempt_truth_sync_and_async():
+    provider, sync_calls, async_calls = _provider()
+    model = _observe_model(provider)
+    sync_context = Context(task_id="observe-sync-close")
+    stream = model.stream_completion(
+        [{"role": "user", "content": "stream"}], context=sync_context
+    )
+    next(stream)
+    stream.close()
+
+    async_context = Context(task_id="observe-async-close")
+    astream = model.astream_completion(
+        [{"role": "user", "content": "stream"}], context=async_context
+    )
+    await anext(astream)
+    await astream.aclose()
+
+    assert len(sync_calls) == len(async_calls) == 1
+    for context in (sync_context, async_context):
+        record = context.get_llm_calls()[0]
+        assert record["provider_invoked"] is True
+        assert record["provider_attempt_status"] == "attempted"
+        assert record["status"] == "cancelled"
+
+
 def test_openai_observe_provider_transform_is_unavailable_but_still_sends_once():
     provider, sync_calls, _ = _provider()
     provider.preprocess_messages = MethodType(
@@ -280,6 +377,62 @@ def test_openai_http_observe_binds_serialized_provider_payload():
     assert evidence["status"] == "available"
     assert evidence["attribution"]["serialization"] == "http_serialized_canonical_json"
     assert record["provider_request"]["serialized_checksum"] == canonical_json_hash(sent[0][0])
+
+
+@pytest.mark.asyncio
+async def test_openai_async_http_observe_binds_transport_owned_bytes_once():
+    provider, _, _ = _provider()
+    sent = []
+
+    class HTTPHandler:
+        async def async_call(self, data, *, serialized_body=None):
+            sent.append((data, serialized_body))
+            return object()
+
+    provider.is_http_provider = True
+    provider.http_provider = HTTPHandler()
+    context = Context(task_id="observe-http-async")
+
+    await _observe_model(provider).acompletion(
+        [{"role": "user", "content": "legacy"}], context=context
+    )
+
+    assert len(sent) == 1
+    assert sent[0][1] is not None
+    evidence = context.get_llm_calls()[0]["context_rollout"]["provider_attribution"]
+    assert evidence["status"] == "available"
+    assert evidence["attribution"]["serialization"] == "http_serialized_canonical_json"
+
+
+@pytest.mark.asyncio
+async def test_openai_observe_provider_error_and_cancel_keep_attempt_truth():
+    provider, sync_calls, async_calls = _provider()
+
+    def sync_error(**kwargs):
+        sync_calls.append(kwargs)
+        raise RuntimeError("provider-error")
+
+    async def async_cancel(**kwargs):
+        async_calls.append(kwargs)
+        raise asyncio.CancelledError()
+
+    provider.provider.chat.completions.create = sync_error
+    provider.async_provider.chat.completions.create = async_cancel
+    model = _observe_model(provider)
+    sync_context = Context(task_id="observe-provider-error")
+    with pytest.raises(LLMResponseError):
+        model.completion([{"role": "user", "content": "go"}], context=sync_context)
+    async_context = Context(task_id="observe-provider-cancel")
+    with pytest.raises(asyncio.CancelledError):
+        await model.acompletion([{"role": "user", "content": "go"}], context=async_context)
+
+    assert len(sync_calls) == len(async_calls) == 1
+    assert sync_context.get_llm_calls()[0]["provider_invoked"] is True
+    assert sync_context.get_llm_calls()[0]["provider_attempt_status"] == "attempted"
+    assert sync_context.get_llm_calls()[0]["status"] == "failed"
+    assert async_context.get_llm_calls()[0]["provider_invoked"] is True
+    assert async_context.get_llm_calls()[0]["provider_attempt_status"] == "attempted"
+    assert async_context.get_llm_calls()[0]["status"] == "cancelled"
 
 
 @pytest.mark.asyncio

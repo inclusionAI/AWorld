@@ -26,6 +26,7 @@ from .models import InferenceProfile
 from .cache import ProviderVerifiedCacheIdentity, SerializedPrefixEvidence
 from .scope import ContextResolutionTarget
 from .attribution import (
+    ProviderAttributionSubject,
     ProviderRequestAttributionPlan,
     ProviderRequestAttributionReceipt,
 )
@@ -67,11 +68,6 @@ AWORLD_PROVIDER_CANDIDATE_KWARG = "_aworld_provider_candidate_envelope"
 AWORLD_PROVIDER_OBSERVED_ATTRIBUTION_KWARG = (
     "_aworld_provider_observed_attribution_envelope"
 )
-
-
-class ProviderAttributionSubject(str, Enum):
-    LEGACY_OBSERVED = "legacy_observed"
-    CANDIDATE_SELECTED = "candidate_selected"
 
 
 def _stable_identifier(name: str, value: str) -> None:
@@ -286,6 +282,8 @@ class ProviderCandidateEnvelope:
                 raise TypeError("attribution_plan must be a ProviderRequestAttributionPlan or None")
             if not self.attribution_plan.shape_explicit:
                 raise ValueError("candidate attribution requires explicit collection shape")
+            if self.attribution_plan.subject is not ProviderAttributionSubject.CANDIDATE_SELECTED:
+                raise ValueError("candidate attribution subject is not bound to the plan")
             if self.attribution_plan.candidate_content_hash != self.candidate_request.content_hash:
                 raise ValueError("attribution plan does not match candidate")
             if self.attribution_plan.request_id_hash != canonical_json_hash(
@@ -336,6 +334,8 @@ class ProviderObservedAttributionEnvelope:
         object.__setattr__(self, "subject", ProviderAttributionSubject(self.subject))
         if self.subject is not ProviderAttributionSubject.LEGACY_OBSERVED:
             raise ValueError("observed attribution envelope requires legacy_observed")
+        if self.attribution_plan.subject is not self.subject:
+            raise ValueError("observed attribution subject is not bound to the plan")
         if not isinstance(self.observed_request, ProviderRequestSnapshot):
             raise TypeError("observed_request must be a ProviderRequestSnapshot")
         if not isinstance(self.attribution_plan, ProviderRequestAttributionPlan):

@@ -366,7 +366,7 @@ _PLAN_ENTRY_FIELDS = {
 _PLAN_FIELDS = {
     "schema_version", "plan_fingerprint", "entry_count", "request_id_hash",
     "candidate_content_hash", "messages_shape", "messages_count",
-    "tools_shape", "tools_count", "entries",
+    "tools_shape", "tools_count", "entries", "subject",
 }
 
 
@@ -435,7 +435,8 @@ def validated_compiler_attribution_plan(
     tools_shape = plan.get("tools_shape")
     tools_count = plan.get("tools_count")
     if (
-        plan.get("schema_version") != "aworld.context.attribution-plan.v1"
+        plan.get("schema_version") != "aworld.context.attribution-plan.v2"
+        or plan.get("subject") != subject
         or plan.get("messages_shape") != "array"
         or isinstance(messages_count, bool)
         or not isinstance(messages_count, int)
@@ -455,9 +456,10 @@ def validated_compiler_attribution_plan(
     request_hash = value_hash({"request_id": call.get("request_id")})
     subject_hash = subject_snapshot.get("content_hash")
     projection = {
-        "schema_version": "aworld.context.attribution-plan-fingerprint.v1",
+        "schema_version": "aworld.context.attribution-plan-fingerprint.v2",
         "request_id_hash": plan.get("request_id_hash"),
         "candidate_content_hash": plan.get("candidate_content_hash"),
+        "subject": plan.get("subject"),
         "messages_shape": plan.get("messages_shape"),
         "messages_count": messages_count,
         "tools_shape": tools_shape,
@@ -505,6 +507,13 @@ def provider_attribution_summary(calls: list[dict]) -> dict[str, Any]:
         receipt = evidence.get("attribution")
         if not isinstance(receipt, dict):
             continue
+        if (
+            call.get("provider_invoked") is not True
+            or call.get("provider_attempt_status") != "attempted"
+            or call.get("status") != "success"
+        ):
+            invalid += 1
+            continue
         if subject not in {"legacy_observed", "candidate_selected"}:
             invalid += 1
             continue
@@ -513,7 +522,8 @@ def provider_attribution_summary(calls: list[dict]) -> dict[str, Any]:
         if (
             compiler_plan is None
             or receipt.get("plan_fingerprint") != compiler_plan.get("plan_fingerprint")
-            or receipt.get("schema_version") != "aworld.context.provider-attribution.v1"
+            or receipt.get("schema_version") != "aworld.context.provider-attribution.v2"
+            or receipt.get("subject") != subject
             or receipt.get("status") != "available"
             or receipt.get("serialization") not in {value.value for value in AttributionSerialization}
             or not isinstance(provider_payload, dict)
@@ -684,6 +694,25 @@ def provider_attribution_summary(calls: list[dict]) -> dict[str, Any]:
                 bucket[code] = bucket.get(code, 0) + value_bytes
     unavailable = len(calls) - available - invalid
     complete = bool(calls) and available == len(calls) and invalid == 0
+    subject = next(iter(subjects)) if len(subjects) == 1 and complete else None
+    dimension_resolution = {
+        "owner": (
+            "legacy_model_boundary_owner_v1"
+            if subject == "legacy_observed"
+            else "compiler_owner_v1"
+            if subject == "candidate_selected"
+            else "unavailable"
+        ),
+        "kind": "provider_occurrence_kind_v1" if complete else "unavailable",
+        "source_kind": "provider_occurrence_source_v1" if complete else "unavailable",
+        "residency": (
+            "legacy_unknown_residency_v1"
+            if subject == "legacy_observed"
+            else "compiler_logical_residency_v1"
+            if subject == "candidate_selected"
+            else "unavailable"
+        ),
+    }
     return {
         "status": "available" if complete else "unavailable",
         "provider_call_count": len(calls),
@@ -695,11 +724,12 @@ def provider_attribution_summary(calls: list[dict]) -> dict[str, Any]:
         "attributed_value_bytes": attributed,
         "provider_envelope_and_params": overhead,
         "total_canonical_bytes": total,
-        "subject": next(iter(subjects)) if len(subjects) == 1 and complete else None,
+        "subject": subject,
         "subject_counts": dict(sorted(subjects.items())),
         "by_dimension": {
             name: dict(sorted(values.items())) for name, values in dimensions.items()
         },
+        "dimension_resolution": dimension_resolution,
         "fallback": "none",
         "reason": None if complete else "provider_attribution_incomplete",
     }
@@ -732,13 +762,28 @@ def paired_attribution_deltas(
         else:
             status, reason = "available", None
             dimension_delta = {}
+            dimension_status = {}
             for dimension in ("owner", "kind", "source_kind", "residency"):
+                before_resolution = base["summary"].get("dimension_resolution", {}).get(dimension)
+                after_resolution = cand["summary"].get("dimension_resolution", {}).get(dimension)
+                if before_resolution != after_resolution:
+                    dimension_delta[dimension] = None
+                    dimension_status[dimension] = {
+                        "status": "unsupported",
+                        "reason": "resolution_mismatch",
+                        "baseline_resolution": before_resolution,
+                        "candidate_resolution": after_resolution,
+                    }
+                    continue
                 before = base["summary"]["by_dimension"][dimension]
                 after = cand["summary"]["by_dimension"][dimension]
                 dimension_delta[dimension] = {
                     code: after.get(code, 0) - before.get(code, 0)
                     for code in sorted(set(before) | set(after))
                 }
+                dimension_status[dimension] = {"status": "available", "reason": None}
+        if status != "available":
+            dimension_status = None
         deltas.append({
             "experiment": experiment,
             "case_id": case_id,
@@ -749,7 +794,14 @@ def paired_attribution_deltas(
             "candidate_run": cand["run"] if cand is not None else None,
             "status": status,
             "reason": reason,
+            "total_canonical_bytes_delta": (
+                cand["summary"].get("total_canonical_bytes", 0)
+                - base["summary"].get("total_canonical_bytes", 0)
+                if status == "available"
+                else None
+            ),
             "by_dimension_delta": dimension_delta,
+            "dimension_status": dimension_status,
         })
     return deltas
 

@@ -23,6 +23,7 @@ from .attribution import (
     AttributionOwnerCode,
     ContextAttributionPlanEntry,
     LogicalResidency,
+    ProviderAttributionSubject,
     ProviderRequestAttributionPlan,
 )
 from .models import (
@@ -222,6 +223,7 @@ def build_observed_model_boundary_attribution_plan(
             else AttributionCollectionShape.ARRAY
         ),
         tools_count=(None if tools is None else len(tools)),
+        subject=ProviderAttributionSubject.LEGACY_OBSERVED,
     )
 
 

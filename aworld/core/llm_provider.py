@@ -262,6 +262,74 @@ class LLMProviderBase(abc.ABC):
         })
         llm_calls[index] = updated
 
+    def commit_provider_observation_unavailable(
+        self,
+        *,
+        context: Context | None,
+        request_id: str,
+        envelope: ProviderObservedAttributionEnvelope,
+        reason_code: str,
+        snapshot: ProviderRequestSnapshot | None = None,
+    ) -> bool:
+        """Best-effort observe evidence; never authorizes or blocks provider I/O."""
+        try:
+            if context is None or not isinstance(envelope, ProviderObservedAttributionEnvelope):
+                return False
+            llm_calls = context.get_llm_calls()
+            matches = [
+                (index, record)
+                for index, record in enumerate(llm_calls)
+                if isinstance(record, dict) and record.get("request_id") == request_id
+            ]
+            if len(matches) != 1:
+                return False
+            index, record = matches[0]
+            rollout = record.get("context_rollout")
+            if not isinstance(rollout, dict) or rollout.get("mode") != "observe":
+                return False
+            updated_rollout = dict(rollout)
+            updated_rollout["provider_attribution"] = {
+                "subject": envelope.subject.value,
+                "subject_content_hash": envelope.observed_request.content_hash,
+                "plan_fingerprint": envelope.attribution_plan.fingerprint,
+                "status": "unavailable",
+                "reason_code": reason_code,
+            }
+            updated = dict(record)
+            updated.update({
+                "provider_invoked": False,
+                "provider_attempt_status": "prepared",
+                "context_rollout": updated_rollout,
+            })
+            if snapshot is not None:
+                updated["provider_request"] = snapshot.to_dict()
+            llm_calls[index] = updated
+            return True
+        except Exception:
+            return False
+
+    def mark_provider_attempted_fail_open(
+        self, *, context: Context | None, request_id: str | None
+    ) -> None:
+        """Record attempt truth where possible without making observe correctness-critical."""
+        try:
+            if context is None or request_id is None:
+                return
+            llm_calls = context.get_llm_calls()
+            matches = [
+                (index, record)
+                for index, record in enumerate(llm_calls)
+                if isinstance(record, dict) and record.get("request_id") == request_id
+            ]
+            if len(matches) != 1:
+                return
+            index, record = matches[0]
+            updated = dict(record)
+            updated.update({"provider_invoked": True, "provider_attempt_status": "attempted"})
+            llm_calls[index] = updated
+        except Exception:
+            return
+
     def commit_provider_request_capture(
         self,
         *,

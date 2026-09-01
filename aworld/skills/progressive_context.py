@@ -10,13 +10,11 @@ from aworld.core.context.compiler import (
     Authority,
     ContextItem,
     ContextKind,
-    ContextEmissionIntent,
     ContextObservationSidecar,
     ContextScope,
     ContextSource,
     DisclosureLevel,
     Lifetime,
-    ModelResidency,
     ScopeKind,
     SkillDescriptor,
     SkillIndexEntry,
@@ -230,8 +228,6 @@ def publish_progressive_skill_context(
             namespace=agent_id,
             source_identity=f"progressive-skills:{agent_id}:{context.task_epoch}",
             result=AdapterResult(items=tuple(items), diagnostics=()),
-            model_residency=ModelResidency.NOT_RESIDENT,
-            emission_intent=ContextEmissionIntent.MESSAGE,
         )
     )
     context.record_skill_activations(agent_id, activations)

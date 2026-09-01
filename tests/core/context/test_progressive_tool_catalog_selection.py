@@ -7,6 +7,8 @@ from aworld.core.context.base import Context
 from aworld.core.context.compiler import (
     CacheBreakReason,
     CatalogChangeAction,
+    ContextEmissionIntent,
+    ModelResidency,
     TaskCatalogSnapshot,
     ToolCatalogEntry,
     compile_minimal_tool_catalog,
@@ -133,6 +135,10 @@ def test_skill_required_tool_resolves_only_through_exact_permission_mapping():
     assert activation.activated is True
     assert activation.requested_tools == ("bash",)
     assert activation.unavailable_tools == ()
+    sidecar = context.get_context_observations()[-1]
+    assert sidecar.owner == "skills.progressive"
+    assert sidecar.model_residency is ModelResidency.UNKNOWN
+    assert sidecar.emission_intent is ContextEmissionIntent.EVIDENCE_ONLY
 
 
 def test_skill_required_tool_cannot_recover_permission_filtered_tool():
