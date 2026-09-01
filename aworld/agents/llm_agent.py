@@ -1506,11 +1506,14 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                         f"error_type={type(exc).__name__}"
                     )
             provider_name = prompt_assembly_observability.get("provider_name") or self._current_provider_name()
+            configured_provider = getattr(
+                getattr(self.conf, "llm_config", None), "llm_provider", None
+            ) or getattr(self.conf, "llm_provider", None)
             # The universal final compiler snapshots the already assembled
             # messages.  Replaying the legacy assembly plan in the provider
             # would be a second post-compile transform and must not occur.
             if self._forward_legacy_prompt_assembly_plan(
-                provider_name, context_compiler_mode
+                configured_provider or provider_name, context_compiler_mode
             ):
                 kwargs["prompt_assembly_plan"] = prompt_assembly_plan
                 kwargs["provider_native_prompt_cache"] = bool(
