@@ -12,6 +12,7 @@ from aworld.self_evolve.controllers.run_execution import (
 from aworld.self_evolve.controllers.run_state import (
     ExplicitRunStateAccumulator,
     GenerationFrontierState,
+    VerificationFunnelRequest,
 )
 from aworld.self_evolve.optimizers.base import (
     CandidateGenerationOutcome,
@@ -436,6 +437,51 @@ def test_generation_slots_and_repair_releases_share_one_counter() -> None:
     assert frontier.stop_reason() == (
         "repair_capacity_reserved_without_typed_frontier"
     )
+
+
+def test_verification_funnel_projects_accumulator_state() -> None:
+    accumulator = ExplicitRunStateAccumulator(
+        authoritative_candidate_count=1,
+        authoritative_candidate_attempt_count=2,
+        authoritative_candidate_ids={"candidate-1"},
+        authoritative_candidate_attempt_ids={"candidate-1", "candidate-2"},
+        prerequisite_candidate_ids=["candidate-3", "candidate-3"],
+        score_tiebreak_candidate_count=1,
+    )
+    accumulator.generation.record_effective_candidate(
+        "candidate-1",
+        consumes_slot=True,
+    )
+    accumulator.generation.verification_frontier_exhausted = True
+
+    report = accumulator.verification_funnel_report(
+        VerificationFunnelRequest(
+            screening_max_cases=3,
+            repair_iteration_horizon=8,
+            candidate_generation_batch_count=2,
+            max_generated_candidates=4,
+            repair_reserved_slot_count=1,
+            unique_generated_candidate_count=2,
+            policy_filtered_candidate_count=1,
+            max_authoritative_candidates=2,
+            max_score_tiebreak_candidates=1,
+            authoritative_case_observations={
+                "case-1": {"status": "passed"}
+            },
+        )
+    )
+
+    assert report["generated_candidate_slot_count"] == 1
+    assert report["authoritative_candidate_count"] == 1
+    assert report["authoritative_candidate_attempt_ids"] == [
+        "candidate-1",
+        "candidate-2",
+    ]
+    assert report["prerequisite_candidate_ids"] == ["candidate-3"]
+    assert report["frontier_exhausted"] is True
+    assert report["authoritative_case_observations"] == {
+        "case-1": {"status": "passed"}
+    }
 
 
 def test_run_state_controller_does_not_import_runner() -> None:
