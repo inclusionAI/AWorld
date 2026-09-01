@@ -1519,13 +1519,19 @@ class LLMModel:
             "context_observe": observe_payload,
             "attempt": 1,
         }
-        turn_receipt = context.record_model_turn(request_id, messages)
-        llm_call["turn_economics"] = turn_receipt.to_redacted_dict()
-        consumed_retrievals = context.artifact_retrievals_for_request(request_id)
-        if consumed_retrievals:
-            llm_call["artifact_retrieval_consumption"] = [
-                receipt.to_redacted_dict() for receipt in consumed_retrievals
-            ]
+        try:
+            turn_receipt = context.record_model_turn(request_id, messages)
+            llm_call["turn_economics"] = turn_receipt.to_redacted_dict()
+            consumed_retrievals = context.artifact_retrievals_for_request(request_id)
+            if consumed_retrievals:
+                llm_call["artifact_retrieval_consumption"] = [
+                    receipt.to_redacted_dict() for receipt in consumed_retrievals
+                ]
+        except Exception:
+            llm_call["turn_economics"] = {
+                "status": "unavailable",
+                "reason_code": "turn_economics_record_failed",
+            }
         if context_rollout is not None:
             llm_call["context_rollout"] = self._safe_copy(context_rollout)
         if not provider_invoked:
@@ -1682,9 +1688,15 @@ class LLMModel:
                 )
                 response_message = getattr(response, "message", None)
                 if isinstance(response_message, dict):
-                    context.register_model_tool_choices(
-                        request_id, response_message.get("tool_calls")
-                    )
+                    try:
+                        context.register_model_tool_choices(
+                            request_id, response_message.get("tool_calls")
+                        )
+                    except Exception:
+                        updated["turn_economics_tool_origin"] = {
+                            "status": "unavailable",
+                            "reason_code": "tool_origin_record_failed",
+                        }
             llm_calls[index] = updated
             return
 

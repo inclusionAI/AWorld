@@ -135,6 +135,12 @@ def test_generic_noisy_output_offload_retrieval_and_next_model_consumption(tmp_p
     copied = context.deep_copy()
     assert copied.get_turn_economics_receipts() == context.get_turn_economics_receipts()
     assert copied.get_artifact_retrieval_receipts() == context.get_artifact_retrieval_receipts()
+    copied.advance_context_lifecycle(LifecycleAction.CHECKPOINT)
+    assert copied.get_turn_economics_receipts() == context.get_turn_economics_receipts()
+    assert copied.get_artifact_retrieval_receipts() == context.get_artifact_retrieval_receipts()
+    copied.advance_context_lifecycle(LifecycleAction.RESUME)
+    assert copied.get_turn_economics_receipts() == context.get_turn_economics_receipts()
+    assert copied.get_artifact_retrieval_receipts() == context.get_artifact_retrieval_receipts()
     copied.advance_context_lifecycle(LifecycleAction.NEW_TASK)
     assert copied.get_turn_economics_receipts() == ()
     assert copied.get_artifact_retrieval_receipts() == ()
@@ -184,11 +190,15 @@ def test_retrieval_wrong_ref_checksum_and_range_fail_closed(tmp_path):
         "total_bytes": len(noise), "complete": False,
         "content_sha256": digest, "chunk_sha256": "sha256:" + "0" * 64,
     })
-    with pytest.raises(ValueError, match="artifact_retrieval_chunk_mismatch"):
-        enforce_tool_output_boundary(
-            (Value(action_result=[result]),), (action,), context,
-            prepare_tool_output_plans(context, (action,)),
-        )
+    enforce_tool_output_boundary(
+        (Value(action_result=[result]),), (action,), context,
+        prepare_tool_output_plans(context, (action,)),
+    )
+    assert result.metadata["artifact_retrieval"] == {
+        **result.metadata["artifact_retrieval"],
+        "status": "unavailable",
+        "reason_code": "artifact_retrieval_receipt_failed",
+    }
 
     range_action = Value(
         tool_call_id="bad-range", tool_name="generic_stream",
@@ -201,11 +211,39 @@ def test_retrieval_wrong_ref_checksum_and_range_fail_closed(tmp_path):
         "total_bytes": len(noise), "complete": False,
         "content_sha256": digest, "chunk_sha256": valid_chunk_hash,
     })
-    with pytest.raises(ValueError, match="retrieval range"):
-        enforce_tool_output_boundary(
-            (Value(action_result=[range_result]),), (range_action,), context,
-            prepare_tool_output_plans(context, (range_action,)),
-        )
+    enforce_tool_output_boundary(
+        (Value(action_result=[range_result]),), (range_action,), context,
+        prepare_tool_output_plans(context, (range_action,)),
+    )
+    assert range_result.metadata["artifact_retrieval"]["status"] == "unavailable"
+
+
+def test_context_economics_record_failure_never_changes_tool_result(tmp_path, monkeypatch):
+    context = Context(task_id="receipt-fail-open", workspace_path=str(tmp_path))
+    original = {"answer": "tool-result"}
+    action = Value(tool_call_id="call", tool_name="tool", action_name="run", params={})
+    result = Value(content=original, metadata={})
+    monkeypatch.setattr(
+        context, "record_tool_turn", lambda tool_call_id: (_ for _ in ()).throw(RuntimeError("storage"))
+    )
+
+    enforce_tool_output_boundary(
+        (Value(action_result=[result]),), (action,), context,
+        prepare_tool_output_plans(context, (action,)),
+    )
+
+    assert result.content is original
+    assert result.metadata["turn_economics"] == {
+        "status": "unavailable",
+        "reason_code": "turn_economics_record_failed",
+    }
+
+
+def test_duplicate_turn_receipt_is_rejected_as_replay():
+    context = Context(task_id="replay")
+    context.record_model_turn("request", [])
+    with pytest.raises(ValueError, match="turn receipt replay"):
+        context.record_model_turn("request", [])
 
 
 def test_turn_contract_is_redacted_and_capabilities_are_explicit():

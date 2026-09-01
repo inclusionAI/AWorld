@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import json
 import re
@@ -101,7 +102,7 @@ def _valid_turn_receipt(value: Any, *, expected_kind: str) -> bool:
     )
 
 
-def _valid_retrieval_receipt(value: Any) -> bool:
+def _valid_retrieval_receipt(value: Any, *, action_content: Any = None) -> bool:
     if not isinstance(value, dict) or value.get("schema_version") != "aworld.context.artifact-retrieval-receipt.v1":
         return False
     ints = ("artifact_byte_count", "offset", "limit", "returned_offset", "next_offset", "returned_byte_count")
@@ -138,13 +139,106 @@ def _valid_retrieval_receipt(value: Any) -> bool:
     consumed = value.get("consumed")
     next_request = value.get("next_request_id_hash")
     consumed_hash = value.get("consumed_content_hash")
-    return bool(
+    structurally_valid = bool(
         isinstance(consumed, bool)
         and consumed == (next_request is not None)
         and (next_request is None or _SHA256.fullmatch(str(next_request)))
         and (consumed_hash is None or _SHA256.fullmatch(str(consumed_hash)))
         and ((next_request is None) == (consumed_hash is None))
+        and (consumed_hash is None or consumed_hash == value.get("result_content_hash"))
     )
+    if not structurally_valid or action_content is None:
+        return structurally_valid
+    content = action_content
+    if isinstance(content, str):
+        try:
+            content = json.loads(content)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return False
+    if not isinstance(content, dict):
+        return False
+    chunk_value = content.get("content")
+    try:
+        chunk = (
+            base64.b64decode(chunk_value, validate=True)
+            if content.get("type") == "base64" and isinstance(chunk_value, str)
+            else chunk_value.encode("utf-8")
+            if content.get("type", "text") == "text" and isinstance(chunk_value, str)
+            else None
+        )
+    except (TypeError, ValueError):
+        return False
+    if chunk is None:
+        return False
+    return bool(
+        value_hash(action_content) == value.get("result_content_hash")
+        and content.get("artifact_ref") is not None
+        and content.get("offset") == value.get("returned_offset")
+        and content.get("next_offset") == value.get("next_offset")
+        and content.get("returned_bytes") == len(chunk) == value.get("returned_byte_count")
+        and content.get("total_bytes") == value.get("artifact_byte_count")
+        and str(content.get("content_sha256", "")).removeprefix("sha256:")
+        == str(value.get("source_content_hash", "")).removeprefix("sha256:")
+        and "sha256:" + hashlib.sha256(chunk).hexdigest() == value.get("chunk_checksum")
+    )
+
+
+def _valid_output_ownership(value: Any) -> bool:
+    if not isinstance(value, dict):
+        return False
+    upstream = value.get("upstream_artifacts") or []
+    if not isinstance(upstream, list) or not all(
+        isinstance(item, dict)
+        and isinstance(item.get("ref"), str)
+        and bool(item["ref"])
+        and _SHA256.fullmatch(str(item.get("content_hash", "")))
+        and isinstance(item.get("byte_count"), int)
+        and not isinstance(item.get("byte_count"), bool)
+        and item["byte_count"] >= 0
+        and isinstance(item.get("owner_tool"), str)
+        and bool(item["owner_tool"])
+        and isinstance(item.get("retrieval_action"), str)
+        and bool(item["retrieval_action"])
+        for item in upstream
+    ):
+        return False
+    if len({item["ref"] for item in upstream}) != len(upstream):
+        return False
+    context_ref = value.get("context_artifact_ref")
+    role = value.get("context_artifact_role")
+    if bool(context_ref) != (role in {"primary", "audit_snapshot"}):
+        return False
+    if upstream and role == "audit_snapshot":
+        return value.get("artifact_ref") == upstream[0]["ref"] and context_ref != value.get("artifact_ref")
+    if upstream and role == "primary":
+        return value.get("artifact_ref") == context_ref
+    return value.get("artifact_ref") == (context_ref if context_ref else value.get("artifact_ref"))
+
+
+def _raw_action_bytes(value: Any) -> bytes:
+    if isinstance(value, bytes):
+        return value
+    if isinstance(value, str):
+        return value.encode("utf-8")
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    ).encode("utf-8")
+
+
+def _content_object(value: Any) -> dict[str, Any] | None:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            decoded = json.loads(value)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return None
+        return decoded if isinstance(decoded, dict) else None
+    return None
 
 
 def turn_artifact_economics_summary(
@@ -158,13 +252,29 @@ def turn_artifact_economics_summary(
     model_valid = bool(calls) and all(
         _valid_turn_receipt(item, expected_kind="model")
         and item.get("cause") != "unavailable"
-        for item in model_receipts
+        and isinstance(call.get("request_id"), str)
+        and item.get("request_id_hash") == value_hash({"request_id": call["request_id"]})
+        for call, item in zip(calls, model_receipts)
     ) and len({item["turn_id_hash"] for item in model_receipts}) == len(model_receipts)
-    tool_valid = trajectory_available and all(
+    tool_valid = trajectory_available and bool(tool_receipts) and all(
         _valid_turn_receipt(item, expected_kind="tool")
         and item.get("cause") != "unavailable"
-        for item in tool_receipts
+        and isinstance(result.get("tool_call_id"), str)
+        and item.get("tool_call_id_hash") == value_hash({"tool_call_id": result["tool_call_id"]})
+        for result, item in zip(action_results, tool_receipts)
     ) and len({item["turn_id_hash"] for item in tool_receipts}) == len(tool_receipts)
+    if model_valid and tool_valid:
+        model_turns = {item["turn_id_hash"] for item in model_receipts}
+        tool_turns = {item["turn_id_hash"] for item in tool_receipts}
+        parent_integrity = all(
+            item.get("parent_turn_id_hash") is None
+            or item["parent_turn_id_hash"] in tool_turns
+            for item in model_receipts
+        ) and all(
+            item.get("parent_turn_id_hash") in model_turns
+            for item in tool_receipts
+        )
+        model_valid = tool_valid = parent_integrity
     causes = {cause: {"model": 0, "tool": 0} for cause in sorted(_TURN_CAUSES)}
     if model_valid and tool_valid:
         for receipt in model_receipts:
@@ -173,32 +283,98 @@ def turn_artifact_economics_summary(
             causes[receipt["cause"]]["tool"] += 1
 
     output_receipts = [((result.get("metadata") or {}).get("tool_output_policy")) for result in action_results]
-    output_valid = trajectory_available and all(
+    artifact_files = list(artifact_files)
+    artifact_by_checksum = {
+        "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest(): path
+        for path in artifact_files
+    }
+    output_valid = trajectory_available and bool(output_receipts) and all(
         isinstance(item, dict)
         and isinstance(item.get("raw_byte_count"), int)
         and not isinstance(item.get("raw_byte_count"), bool)
         and isinstance(item.get("inline_tokens"), int)
         and isinstance(item.get("offloaded_tokens"), int)
         and _SHA256.fullmatch(str(item.get("raw_checksum", "")))
-        for item in output_receipts
+        and _valid_output_ownership(item)
+        and (
+            not item.get("context_artifact_ref")
+            or (
+                item.get("raw_checksum") in artifact_by_checksum
+                and artifact_by_checksum[item["raw_checksum"]].stat().st_size
+                == item.get("raw_byte_count")
+            )
+        )
+        and (
+            bool(item.get("context_artifact_ref"))
+            or (
+                len(_raw_action_bytes(result.get("content"))) == item.get("raw_byte_count")
+                and "sha256:" + hashlib.sha256(
+                    _raw_action_bytes(result.get("content"))
+                ).hexdigest() == item.get("raw_checksum")
+            )
+        )
+        for result, item in zip(action_results, output_receipts)
     )
     retrieval_tool_receipts = [
         (result.get("metadata") or {}).get("artifact_retrieval")
         for result in action_results
         if (result.get("metadata") or {}).get("artifact_retrieval") is not None
     ]
-    consumption_receipts = [
-        item
+    consumption_pairs = [
+        (call, item)
         for call in calls
         for item in (call.get("artifact_retrieval_consumption") or [])
     ]
-    retrieval_valid = trajectory_available and all(_valid_retrieval_receipt(item) for item in retrieval_tool_receipts + consumption_receipts)
-    tool_by_plan = {item["plan_fingerprint"]: item for item in retrieval_tool_receipts if _valid_retrieval_receipt(item)}
+    consumption_receipts = [item for _, item in consumption_pairs]
+    retrieval_pairs = [
+        (result, (result.get("metadata") or {}).get("artifact_retrieval"))
+        for result in action_results
+        if (result.get("metadata") or {}).get("artifact_retrieval") is not None
+    ]
+    retrieval_valid = trajectory_available and bool(retrieval_pairs) and bool(consumption_receipts) and all(
+        _valid_retrieval_receipt(item, action_content=result.get("content"))
+        and item.get("owner_code") == value_hash({"owner_tool": result.get("tool_name")})
+        and item.get("action_code") == value_hash({"retrieval_action": result.get("action_name")})
+        and item.get("consumer_tool_call_id_hash")
+        == value_hash({"tool_call_id": result.get("tool_call_id")})
+        and _content_object(result.get("content")) is not None
+        and item.get("artifact_ref_hash")
+        == value_hash({"artifact_ref": _content_object(result.get("content")).get("artifact_ref")})
+        for result, item in retrieval_pairs
+    ) and all(
+        _valid_retrieval_receipt(item)
+        and isinstance(call.get("request_id"), str)
+        and item.get("next_request_id_hash")
+        == value_hash({"request_id": call["request_id"]})
+        for call, item in consumption_pairs
+    )
+    tool_by_plan = {
+        item["plan_fingerprint"]: item
+        for result, item in retrieval_pairs
+        if _valid_retrieval_receipt(item, action_content=result.get("content"))
+        and item.get("owner_code") == value_hash({"owner_tool": result.get("tool_name")})
+        and item.get("action_code") == value_hash({"retrieval_action": result.get("action_name")})
+        and item.get("consumer_tool_call_id_hash")
+        == value_hash({"tool_call_id": result.get("tool_call_id")})
+        and _content_object(result.get("content")) is not None
+        and item.get("artifact_ref_hash")
+        == value_hash({"artifact_ref": _content_object(result.get("content")).get("artifact_ref")})
+    }
     consumed_by_plan = {item["plan_fingerprint"]: item for item in consumption_receipts if _valid_retrieval_receipt(item)}
     consumption_bound = all(
         fingerprint in tool_by_plan
         and item.get("consumed") is True
         and item.get("result_content_hash") == tool_by_plan[fingerprint].get("result_content_hash")
+        and {
+            key: value
+            for key, value in item.items()
+            if key not in {"next_request_id_hash", "consumed_content_hash", "consumed"}
+        }
+        == {
+            key: value
+            for key, value in tool_by_plan[fingerprint].items()
+            if key not in {"next_request_id_hash", "consumed_content_hash", "consumed"}
+        }
         for fingerprint, item in consumed_by_plan.items()
     )
     retrieval_valid = (
@@ -206,8 +382,8 @@ def turn_artifact_economics_summary(
         and consumption_bound
         and len(tool_by_plan) == len(retrieval_tool_receipts)
         and len(consumed_by_plan) == len(consumption_receipts)
+        and set(tool_by_plan) == set(consumed_by_plan)
     )
-    artifact_files = list(artifact_files)
     return {
         "schema_version": "aworld.context.turn-artifact-economics-summary.v1",
         "turn_causes": {
@@ -221,17 +397,40 @@ def turn_artifact_economics_summary(
             "raw_bytes": sum(item["raw_byte_count"] for item in output_receipts) if output_valid else None,
             "inline_tokens": sum(item["inline_tokens"] for item in output_receipts) if output_valid else None,
             "offloaded_tokens": sum(item["offloaded_tokens"] for item in output_receipts) if output_valid else None,
-            "double_offload_count": sum(bool(item.get("context_artifact_ref") and item.get("upstream_artifacts")) for item in output_receipts) if output_valid else None,
+            "double_offload_count": sum(
+                bool(
+                    item.get("context_artifact_role") == "primary"
+                    and item.get("context_artifact_ref")
+                    and item.get("upstream_artifacts")
+                )
+                for item in output_receipts
+            ) if output_valid else None,
+            "audit_snapshot_count": sum(
+                item.get("context_artifact_role") == "audit_snapshot"
+                for item in output_receipts
+            ) if output_valid else None,
         },
         "artifacts": {
             "persisted_count": len(artifact_files),
             "persisted_bytes": sum(path.stat().st_size for path in artifact_files),
         },
         "retrieval": {
-            "status": "available" if retrieval_valid else "unavailable",
-            "retrieval_count": len(tool_by_plan) if retrieval_valid else None,
-            "retrieved_bytes": sum(item["returned_byte_count"] for item in tool_by_plan.values()) if retrieval_valid else None,
-            "consumed_count": len(consumed_by_plan) if retrieval_valid else None,
+            "status": (
+                "available"
+                if retrieval_valid
+                else "not_applicable"
+                if not retrieval_pairs and not consumption_receipts
+                else "unavailable"
+            ),
+            "opportunity_count": len(retrieval_pairs),
+            "retrieval_count": len(tool_by_plan) if retrieval_valid else 0 if not retrieval_pairs else None,
+            "retrieved_bytes": sum(item["returned_byte_count"] for item in tool_by_plan.values()) if retrieval_valid else 0 if not retrieval_pairs else None,
+            "consumed_count": len(consumed_by_plan) if retrieval_valid else 0 if not retrieval_pairs else None,
+            "consumption_coverage": (
+                len(consumed_by_plan) / len(retrieval_pairs)
+                if retrieval_pairs
+                else 0.0
+            ),
         },
     }
 
@@ -252,7 +451,11 @@ def paired_turn_artifact_deltas(
             and all(
                 summary[section]["status"] == "available"
                 for summary in (left, right)
-                for section in ("turn_causes", "tool_outputs", "retrieval")
+                for section in ("turn_causes", "tool_outputs")
+            )
+            and (
+                all(summary["retrieval"]["status"] == "available" for summary in (left, right))
+                or all(summary["retrieval"]["status"] == "not_applicable" for summary in (left, right))
             )
         )
         row: dict[str, Any] = {
@@ -267,8 +470,8 @@ def paired_turn_artifact_deltas(
                 "inline_tool_output_tokens": right["tool_outputs"]["inline_tokens"] - left["tool_outputs"]["inline_tokens"],
                 "offloaded_tool_output_tokens": right["tool_outputs"]["offloaded_tokens"] - left["tool_outputs"]["offloaded_tokens"],
                 "double_offload_count": right["tool_outputs"]["double_offload_count"] - left["tool_outputs"]["double_offload_count"],
-                "retrieved_bytes": right["retrieval"]["retrieved_bytes"] - left["retrieval"]["retrieved_bytes"],
-                "artifact_consumed_count": right["retrieval"]["consumed_count"] - left["retrieval"]["consumed_count"],
+                "retrieved_bytes": (right["retrieval"]["retrieved_bytes"] or 0) - (left["retrieval"]["retrieved_bytes"] or 0),
+                "artifact_consumed_count": (right["retrieval"]["consumed_count"] or 0) - (left["retrieval"]["consumed_count"] or 0),
                 "turn_causes": {
                     cause: {
                         kind: right["turn_causes"]["counts"][cause][kind] - left["turn_causes"]["counts"][cause][kind]
@@ -1260,7 +1463,19 @@ def aggregate(
         or any(
             row["summary"]["turn_causes"]["status"] != "available"
             or row["summary"]["tool_outputs"]["status"] != "available"
-            or row["summary"]["retrieval"]["status"] != "available"
+            or row["summary"]["retrieval"]["status"] == "unavailable"
+            for row in all_economics_runs
+        )
+        or sum(
+            row["summary"]["retrieval"]["opportunity_count"]
+            for row in all_economics_runs
+        ) <= 0
+        or sum(
+            row["summary"]["retrieval"]["consumed_count"] or 0
+            for row in all_economics_runs
+        )
+        != sum(
+            row["summary"]["retrieval"]["opportunity_count"]
             for row in all_economics_runs
         )
     ):

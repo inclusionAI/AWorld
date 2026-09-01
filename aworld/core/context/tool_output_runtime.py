@@ -234,23 +234,32 @@ def _record_turn_and_retrieval(
 ) -> None:
     if context is None:
         return
-    turn = context.record_tool_turn(action.tool_call_id)
-    metadata = dict(getattr(action_result, "metadata", None) or {})
-    metadata["turn_economics"] = turn.to_redacted_dict()
+    try:
+        metadata = dict(getattr(action_result, "metadata", None) or {})
+    except Exception:
+        metadata = {}
+    try:
+        turn = context.record_tool_turn(action.tool_call_id)
+        metadata["turn_economics"] = turn.to_redacted_dict()
+    except Exception:
+        metadata["turn_economics"] = {
+            "status": "unavailable",
+            "reason_code": "turn_economics_record_failed",
+        }
     plan = getattr(context, "_artifact_retrieval_plans", {}).get(action.tool_call_id)
     if plan is not None:
-        fields = retrieval_fields or _retrieval_result_fields(action_result.content)
-        if fields is None:
-            raise ValueError("artifact_retrieval_receipt_missing")
-        source_hash = _canonical_sha256(fields.get("content_sha256"))
-        chunk_hash = _canonical_sha256(fields.get("chunk_sha256"))
-        if source_hash is None or chunk_hash is None:
-            raise ValueError("artifact_retrieval_checksum_missing")
-        if fields.get("artifact_ref") != plan.artifact_ref or fields.get("total_bytes") != plan.artifact_byte_count:
-            raise ValueError("artifact_retrieval_source_mismatch")
-        content = fields.get("content")
-        content_type = fields.get("type", "text")
         try:
+            fields = retrieval_fields or _retrieval_result_fields(action_result.content)
+            if fields is None:
+                raise ValueError("artifact_retrieval_receipt_missing")
+            source_hash = _canonical_sha256(fields.get("content_sha256"))
+            chunk_hash = _canonical_sha256(fields.get("chunk_sha256"))
+            if source_hash is None or chunk_hash is None:
+                raise ValueError("artifact_retrieval_checksum_missing")
+            if fields.get("artifact_ref") != plan.artifact_ref or fields.get("total_bytes") != plan.artifact_byte_count:
+                raise ValueError("artifact_retrieval_source_mismatch")
+            content = fields.get("content")
+            content_type = fields.get("type", "text")
             chunk = (
                 base64.b64decode(content, validate=True)
                 if content_type == "base64" and isinstance(content, str)
@@ -258,25 +267,29 @@ def _record_turn_and_retrieval(
                 if content_type == "text" and isinstance(content, str)
                 else None
             )
-        except (ValueError, TypeError) as exc:
-            raise ValueError("artifact_retrieval_chunk_invalid") from exc
-        if chunk is None:
-            raise ValueError("artifact_retrieval_chunk_missing")
-        actual_chunk_hash = f"sha256:{hashlib.sha256(chunk).hexdigest()}"
-        if len(chunk) != fields.get("returned_bytes") or actual_chunk_hash != chunk_hash:
-            raise ValueError("artifact_retrieval_chunk_mismatch")
-        receipt = ArtifactRetrievalReceipt(
-            plan=plan,
-            returned_offset=fields.get("offset"),
-            next_offset=fields.get("next_offset"),
-            returned_byte_count=fields.get("returned_bytes"),
-            chunk_checksum=chunk_hash,
-            source_content_hash=source_hash,
-            result_content_hash=canonical_json_hash(action_result.content),
-            complete=fields.get("complete"),
-        )
-        context.record_artifact_retrieval(action.tool_call_id, receipt)
-        metadata["artifact_retrieval"] = receipt.to_redacted_dict()
+            if chunk is None:
+                raise ValueError("artifact_retrieval_chunk_missing")
+            actual_chunk_hash = f"sha256:{hashlib.sha256(chunk).hexdigest()}"
+            if len(chunk) != fields.get("returned_bytes") or actual_chunk_hash != chunk_hash:
+                raise ValueError("artifact_retrieval_chunk_mismatch")
+            receipt = ArtifactRetrievalReceipt(
+                plan=plan,
+                returned_offset=fields.get("offset"),
+                next_offset=fields.get("next_offset"),
+                returned_byte_count=fields.get("returned_bytes"),
+                chunk_checksum=chunk_hash,
+                source_content_hash=source_hash,
+                result_content_hash=canonical_json_hash(action_result.content),
+                complete=fields.get("complete"),
+            )
+            context.record_artifact_retrieval(action.tool_call_id, receipt)
+            metadata["artifact_retrieval"] = receipt.to_redacted_dict()
+        except Exception:
+            metadata["artifact_retrieval"] = {
+                "status": "unavailable",
+                "reason_code": "artifact_retrieval_receipt_failed",
+                "plan_fingerprint": plan.fingerprint,
+            }
     action_result.metadata = metadata
 
 
@@ -287,6 +300,35 @@ def _artifact_root(context) -> Path:
     session = str(getattr(context, "session_id", "unbound"))
     namespace = hashlib.sha256(session.encode("utf-8")).hexdigest()[:20]
     return Path(tempfile.gettempdir()) / "aworld-tool-output" / namespace
+
+
+def _observe_unbounded_tool_output(action: Any, action_result: Any) -> None:
+    """Attach byte economics in legacy/off mode without changing Tool content."""
+    raw = _raw_bytes(action_result.content)
+    owner_tool = str(
+        getattr(action_result, "tool_name", None)
+        or getattr(action, "tool_name", None)
+        or "unknown"
+    )
+    upstream = _extract_upstream_artifacts(
+        action_result.content, owner_tool=owner_tool
+    )
+    metadata = dict(getattr(action_result, "metadata", None) or {})
+    metadata["tool_output_policy"] = {
+        "policy_version": "off-v1",
+        "reason_code": "unbounded_inline_output_observed",
+        "raw_byte_count": len(raw),
+        "raw_checksum": f"sha256:{hashlib.sha256(raw).hexdigest()}",
+        "inline_tokens": estimate_canonical_json_tokens(
+            raw.decode("utf-8", errors="replace")
+        ).value or 0,
+        "offloaded_tokens": 0,
+        "artifact_ref": upstream[0].ref if upstream else None,
+        "context_artifact_ref": None,
+        "context_artifact_role": None,
+        "upstream_artifacts": [receipt.to_dict() for receipt in upstream],
+    }
+    action_result.metadata = metadata
 
 
 def _persist_artifact(context, raw: bytes) -> tuple[ArtifactReceipt, Path]:
@@ -442,6 +484,18 @@ def enforce_tool_output_boundary(
         action_result = results[index]
         retrieval_fields = _retrieval_result_fields(action_result.content)
         if tool_call_id not in plans:
+            try:
+                _observe_unbounded_tool_output(action, action_result)
+            except Exception:
+                try:
+                    metadata = dict(getattr(action_result, "metadata", None) or {})
+                except Exception:
+                    metadata = {}
+                metadata["tool_output_policy"] = {
+                    "status": "unavailable",
+                    "reason_code": "tool_output_observation_failed",
+                }
+                action_result.metadata = metadata
             _record_turn_and_retrieval(
                 context, action, action_result, retrieval_fields=retrieval_fields
             )
@@ -509,15 +563,30 @@ def enforce_tool_output_boundary(
             "offloaded_tokens": record.offloaded_tokens,
             "artifact_ref": primary_artifact_ref,
             "context_artifact_ref": record.artifact.ref if record.artifact else None,
+            "context_artifact_role": (
+                "audit_snapshot"
+                if record.artifact is not None and record.upstream_artifacts
+                else "primary"
+                if record.artifact is not None
+                else None
+            ),
             "upstream_artifacts": [
                 receipt.to_dict() for receipt in record.upstream_artifacts
             ],
         }
         action_result.metadata = metadata
-        context.record_tool_output(
-            record,
-            artifact_path=str(artifact_path) if artifact_path is not None else None,
-        )
+        try:
+            context.record_tool_output(
+                record,
+                artifact_path=str(artifact_path) if artifact_path is not None else None,
+            )
+        except Exception:
+            metadata = dict(action_result.metadata)
+            metadata["tool_output_record"] = {
+                "status": "unavailable",
+                "reason_code": "tool_output_record_failed",
+            }
+            action_result.metadata = metadata
         _record_turn_and_retrieval(
             context, action, action_result, retrieval_fields=retrieval_fields
         )
