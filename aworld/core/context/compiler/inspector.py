@@ -37,6 +37,7 @@ def inspect_final_context(result: FinalCompileResult) -> dict[str, Any]:
             **summarize_attribution_plan(result.attribution_plan.entries),
             "request_id_hash": result.attribution_plan.request_id_hash,
             "candidate_content_hash": result.attribution_plan.candidate_content_hash,
+            "plan_fingerprint": result.attribution_plan.fingerprint,
             "entries": [
                 entry.to_redacted_dict()
                 for entry in result.attribution_plan.entries

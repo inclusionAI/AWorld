@@ -139,8 +139,12 @@ def test_final_plan_preserves_duplicate_occurrences_and_actual_residency():
         LogicalResidency.DYNAMIC,
     ]
     assert "rules" not in repr(result.attribution_plan.to_redacted_dict())
+    assert result.attribution_plan.fingerprint == canonical_json_hash(
+        result.attribution_plan.fingerprint_payload()
+    )
     inspected = inspect_final_context(result)
     assert inspected["attribution"]["entry_count"] == 3
+    assert inspected["attribution"]["plan_fingerprint"] == result.attribution_plan.fingerprint
     assert "rules" not in repr(inspected["attribution"])
 
 

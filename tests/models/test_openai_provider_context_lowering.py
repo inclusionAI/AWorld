@@ -145,7 +145,10 @@ def _assert_lowering_receipt(context: Context, sent: dict[str, Any]) -> None:
         "aworld.provider.openai.chat_completions"
     )
     attribution = receipt["attribution"]
+    compiler_plan = rollout["compiler_attribution_plan"]
     assert attribution["status"] == "available"
+    assert attribution["plan_fingerprint"] == compiler_plan["plan_fingerprint"]
+    assert rollout["candidate_snapshot"]["attribution_plan_fingerprint"] == compiler_plan["plan_fingerprint"]
     assert attribution["byte_conservation"] is True
     assert (
         attribution["attributed_value_bytes"]

@@ -1158,6 +1158,13 @@ class LLMModel:
                 or snapshot.fidelity is not ProviderRequestFidelity.MODEL_BOUNDARY
             ):
                 raise ValueError("candidate boundary mismatch")
+            attribution_plan = (
+                candidate.final_result.attribution_plan
+                if candidate.final_result is not None
+                else build_unknown_attribution_plan(snapshot)
+            )
+            if attribution_plan is None:
+                raise ValueError("candidate attribution plan unavailable")
             selection = select_rollout_request(
                 mode=ContextCompilerMode.SHADOW,
                 legacy_request=legacy_request,
@@ -1181,7 +1188,9 @@ class LLMModel:
                     "content_hash": snapshot.content_hash,
                     "capture_stage": snapshot.capture_stage.value,
                     "fidelity": snapshot.fidelity.value,
+                    "attribution_plan_fingerprint": attribution_plan.fingerprint,
                 },
+                "compiler_attribution_plan": attribution_plan.to_redacted_dict(),
                 "comparison": (
                     selection.comparison.to_dict()
                     if selection.comparison else None
@@ -1268,11 +1277,7 @@ class LLMModel:
                     compiler_identity=candidate.compiler_identity,
                     compiler_version=candidate.compiler_version,
                     expected_lowering=capability,
-                    attribution_plan=(
-                        candidate.final_result.attribution_plan
-                        if candidate.final_result is not None
-                        else build_unknown_attribution_plan(snapshot)
-                    ),
+                    attribution_plan=attribution_plan,
                     cache_material=cache_material,
                 )
             except Exception:

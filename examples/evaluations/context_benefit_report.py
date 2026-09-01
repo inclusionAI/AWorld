@@ -129,6 +129,114 @@ def provider_snapshot_integrity(calls: list[dict]) -> bool:
     return True
 
 
+_PLAN_ENTRY_FIELDS = {
+    "item_identity_hash", "owner_code", "kind", "source_kind", "stability",
+    "collection", "ordinal", "content_hash", "token_estimate", "residency",
+}
+_PLAN_FIELDS = {
+    "schema_version", "plan_fingerprint", "entry_count", "request_id_hash",
+    "candidate_content_hash", "messages_shape", "messages_count",
+    "tools_shape", "tools_count", "entries",
+}
+
+
+def validated_compiler_attribution_plan(call: dict) -> dict[str, Any] | None:
+    """Validate the independent compiler evidence and canonical fingerprint."""
+    rollout = call.get("context_rollout") or {}
+    plan = rollout.get("compiler_attribution_plan")
+    candidate = rollout.get("candidate_snapshot") or {}
+    if not isinstance(plan, dict) or set(plan) != _PLAN_FIELDS:
+        return None
+    entries = plan.get("entries")
+    if not isinstance(entries, list) or plan.get("entry_count") != len(entries):
+        return None
+    allowed = {
+        "owner_code": {value.value for value in AttributionOwnerCode},
+        "kind": {value.value for value in ContextKind},
+        "source_kind": {value.value for value in SourceKind},
+        "stability": {value.value for value in Stability},
+        "collection": {value.value for value in AttributionCollection},
+        "residency": {value.value for value in LogicalResidency},
+    }
+    positions = []
+    for entry in entries:
+        if not isinstance(entry, dict) or set(entry) != _PLAN_ENTRY_FIELDS:
+            return None
+        token_estimate = entry.get("token_estimate")
+        if (
+            any(entry.get(field) not in values for field, values in allowed.items())
+            or not re.fullmatch(r"sha256:[0-9a-f]{64}", str(entry.get("item_identity_hash", "")))
+            or not re.fullmatch(r"sha256:[0-9a-f]{64}", str(entry.get("content_hash", "")))
+            or not isinstance(token_estimate, dict)
+            or set(token_estimate) != {"value", "estimator", "exact"}
+            or isinstance(token_estimate.get("value"), bool)
+            or not isinstance(token_estimate.get("value"), int)
+            or token_estimate.get("value") < 0
+            or not isinstance(token_estimate.get("estimator"), str)
+            or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", token_estimate["estimator"])
+            or not isinstance(token_estimate.get("exact"), bool)
+            or isinstance(entry.get("ordinal"), bool)
+            or not isinstance(entry.get("ordinal"), int)
+            or entry.get("ordinal") < 0
+        ):
+            return None
+        positions.append((entry["collection"], entry["ordinal"]))
+    messages_count = plan.get("messages_count")
+    tools_shape = plan.get("tools_shape")
+    tools_count = plan.get("tools_count")
+    if (
+        plan.get("schema_version") != "aworld.context.attribution-plan.v1"
+        or plan.get("messages_shape") != "array"
+        or isinstance(messages_count, bool)
+        or not isinstance(messages_count, int)
+        or messages_count < 0
+        or tools_shape not in {"null", "array"}
+        or (tools_shape == "null" and tools_count is not None)
+        or (
+            tools_shape == "array"
+            and (isinstance(tools_count, bool) or not isinstance(tools_count, int) or tools_count < 0)
+        )
+    ):
+        return None
+    expected_positions = [
+        *(("messages", ordinal) for ordinal in range(messages_count)),
+        *(("tools", ordinal) for ordinal in range(tools_count or 0)),
+    ]
+    request_hash = value_hash({"request_id": call.get("request_id")})
+    candidate_hash = candidate.get("content_hash")
+    projection = {
+        "schema_version": "aworld.context.attribution-plan-fingerprint.v1",
+        "request_id_hash": plan.get("request_id_hash"),
+        "candidate_content_hash": plan.get("candidate_content_hash"),
+        "messages_shape": plan.get("messages_shape"),
+        "messages_count": messages_count,
+        "tools_shape": tools_shape,
+        "tools_count": tools_count,
+        "entries": entries,
+    }
+    if (
+        positions != expected_positions
+        or plan.get("request_id_hash") != request_hash
+        or plan.get("candidate_content_hash") != candidate_hash
+        or plan.get("plan_fingerprint") != value_hash(projection)
+        or candidate.get("attribution_plan_fingerprint") != plan.get("plan_fingerprint")
+    ):
+        return None
+    final_compile = rollout.get("final_compile")
+    if final_compile is not None:
+        if not isinstance(final_compile, dict):
+            return None
+        final_attribution = final_compile.get("attribution")
+        if not isinstance(final_attribution, dict) or (
+            final_attribution.get("plan_fingerprint") != plan.get("plan_fingerprint")
+            or final_attribution.get("request_id_hash") != plan.get("request_id_hash")
+            or final_attribution.get("candidate_content_hash") != candidate_hash
+            or final_attribution.get("entries") != entries
+        ):
+            return None
+    return plan
+
+
 def provider_attribution_summary(calls: list[dict]) -> dict[str, Any]:
     """Aggregate only provider receipts; prompt text is never classified."""
     dimensions = {name: {} for name in ("owner", "kind", "source_kind", "residency")}
@@ -147,9 +255,12 @@ def provider_attribution_summary(calls: list[dict]) -> dict[str, Any]:
         )
         if not isinstance(receipt, dict):
             continue
+        compiler_plan = validated_compiler_attribution_plan(call)
         entries = receipt.get("entries")
         if (
-            receipt.get("schema_version") != "aworld.context.provider-attribution.v1"
+            compiler_plan is None
+            or receipt.get("plan_fingerprint") != compiler_plan.get("plan_fingerprint")
+            or receipt.get("schema_version") != "aworld.context.provider-attribution.v1"
             or receipt.get("status") != "available"
             or receipt.get("serialization") not in {value.value for value in AttributionSerialization}
             or not isinstance(provider_payload, dict)
@@ -157,6 +268,14 @@ def provider_attribution_summary(calls: list[dict]) -> dict[str, Any]:
             or not all(
             isinstance(entry, dict) for entry in entries
             )
+        ):
+            invalid += 1
+            continue
+        plan_entries = compiler_plan["entries"]
+        if len(entries) != len(plan_entries) or any(
+            set(entry) != _PLAN_ENTRY_FIELDS | {"canonical_value_bytes"}
+            or {key: entry.get(key) for key in _PLAN_ENTRY_FIELDS} != plan_entry
+            for entry, plan_entry in zip(entries, plan_entries)
         ):
             invalid += 1
             continue
@@ -367,6 +486,50 @@ def paired_attribution_deltas(
             "by_dimension_delta": dimension_delta,
         })
     return deltas
+
+
+def provider_attribution_pairing_status(
+    rows: list[dict[str, Any]],
+    *,
+    experiment: str,
+    case_ids: tuple[str, ...],
+    repeats: int,
+    baseline: str,
+    candidate: str,
+) -> dict[str, Any]:
+    """Compare observed attribution runs with the manifest cartesian product."""
+    expected = {
+        (experiment, case_id, repeat, variant)
+        for case_id in case_ids
+        for repeat in range(1, repeats + 1)
+        for variant in (baseline, candidate)
+    }
+    actual_list = [
+        (row["experiment"], row["case_id"], row["repeat"], row["variant"])
+        for row in rows
+    ]
+    actual = set(actual_list)
+    deltas = paired_attribution_deltas(
+        rows, baseline=baseline, candidate=candidate
+    )
+    complete = (
+        len(actual_list) == len(actual)
+        and actual == expected
+        and len(deltas) == len(case_ids) * repeats
+        and all(delta["status"] == "available" for delta in deltas)
+    )
+    return {
+        "status": "available" if complete else "unavailable",
+        "expected_run_count": len(expected),
+        "actual_run_count": len(actual_list),
+        "unique_actual_run_count": len(actual),
+        "missing_run_count": len(expected - actual),
+        "unexpected_run_count": len(actual - expected),
+        "duplicate_run_count": len(actual_list) - len(actual),
+        "available_pair_count": sum(delta["status"] == "available" for delta in deltas),
+        "expected_pair_count": len(case_ids) * repeats,
+        "reason": None if complete else "provider_attribution_pairing_incomplete",
+    }
 
 
 def authoritative_provider_metrics(calls: list[dict]) -> dict[str, int | float]:
@@ -627,6 +790,7 @@ def aggregate(
     all_gates = []
     all_calls: list[dict] = []
     all_attribution_runs: list[dict[str, Any]] = []
+    all_attribution_pairing: list[dict[str, Any]] = []
     workload_kinds = []
     for experiment in experiments:
         manifest_payload = read_json(experiment / "experiment_manifest.json")
@@ -671,6 +835,14 @@ def aggregate(
             if deltas
             else None
         )
+        attribution_pairing = provider_attribution_pairing_status(
+            attribution_runs,
+            experiment=str(experiment),
+            case_ids=manifest.case_ids,
+            repeats=manifest.repeats,
+            baseline=baseline,
+            candidate=candidate,
+        )
         workload_reports.append(
             {
                 "experiment": str(experiment),
@@ -682,12 +854,14 @@ def aggregate(
                 "provider_attribution_deltas": paired_attribution_deltas(
                     attribution_runs, baseline=baseline, candidate=candidate
                 ),
+                "provider_attribution_pairing": attribution_pairing,
             }
         )
         all_deltas.extend(deltas)
         all_gates.extend(gate_rows)
         all_calls.extend(experiment_calls)
         all_attribution_runs.extend(attribution_runs)
+        all_attribution_pairing.append(attribution_pairing)
         workload_kinds.append(manifest.workload_kind)
     combined = (
         summarize_context_benefit(
@@ -723,6 +897,8 @@ def aggregate(
         hard_failures.add("positive_benefit_not_proven")
     if any(row["summary"]["status"] != "available" for row in all_attribution_runs) or not all_attribution_runs:
         hard_failures.add("provider_attribution_incomplete")
+    if any(row["status"] != "available" for row in all_attribution_pairing) or not all_attribution_pairing:
+        hard_failures.add("provider_attribution_pairing_incomplete")
     rollback = RollbackBundle.build(
         previous_mode=ContextCompilerMode.SHADOW,
         previous_config={"mode": "shadow"},
@@ -763,6 +939,7 @@ def aggregate(
         "provider_attribution_deltas": paired_attribution_deltas(
             all_attribution_runs, baseline=baseline, candidate=candidate
         ),
+        "provider_attribution_pairing": all_attribution_pairing,
         "rollback_bundle": plain(rollback),
         "default_on_readiness": plain(readiness),
         "decision_note": (

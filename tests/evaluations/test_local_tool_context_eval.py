@@ -180,6 +180,7 @@ def test_benefit_report_consumes_real_artifact_contract_and_stays_not_ready_for_
     assert report["default_on_readiness"]["status"] == "not_ready"
     assert "insufficient_paired_evidence" in report["default_on_readiness"]["gate_failures"]
     assert "cross_workload_evidence_missing" in report["default_on_readiness"]["gate_failures"]
+    assert "provider_attribution_pairing_incomplete" in report["default_on_readiness"]["gate_failures"]
 
 
 def test_benefit_report_accepts_only_explicit_cost_metric_for_efficiency_path():
@@ -196,6 +197,38 @@ def test_benefit_report_accepts_only_explicit_cost_metric_for_efficiency_path():
     assert evidence["proven"] is True
     assert evidence["path"] == "efficiency"
     assert evidence["cost_metric"] == "cost_per_successful_task"
+
+
+def _compiler_plan_evidence(
+    reporter,
+    *,
+    request_id,
+    candidate_hash,
+    receipt_entries,
+    messages_count,
+    tools_shape="null",
+    tools_count=None,
+):
+    entries = [
+        {key: value for key, value in entry.items() if key != "canonical_value_bytes"}
+        for entry in receipt_entries
+    ]
+    projection = {
+        "schema_version": "aworld.context.attribution-plan-fingerprint.v1",
+        "request_id_hash": reporter.value_hash({"request_id": request_id}),
+        "candidate_content_hash": candidate_hash,
+        "messages_shape": "array",
+        "messages_count": messages_count,
+        "tools_shape": tools_shape,
+        "tools_count": tools_count,
+        "entries": entries,
+    }
+    return {
+        **projection,
+        "schema_version": "aworld.context.attribution-plan.v1",
+        "plan_fingerprint": reporter.value_hash(projection),
+        "entry_count": len(entries),
+    }
 
 
 def test_benefit_report_aggregates_receipts_and_never_classifies_missing_prompt():
@@ -239,6 +272,14 @@ def test_benefit_report_aggregates_receipts_and_never_classifies_missing_prompt(
             }
         ],
     }
+    compiler_plan = _compiler_plan_evidence(
+        reporter,
+        request_id="r1",
+        candidate_hash=candidate_hash,
+        receipt_entries=receipt["entries"],
+        messages_count=1,
+    )
+    receipt["plan_fingerprint"] = compiler_plan["plan_fingerprint"]
     calls = [
         {
             "request_id": "r1",
@@ -248,7 +289,11 @@ def test_benefit_report_aggregates_receipts_and_never_classifies_missing_prompt(
                 "content_hash": reporter.value_hash(payload),
             },
             "context_rollout": {
-                "candidate_snapshot": {"content_hash": candidate_hash},
+                "candidate_snapshot": {
+                    "content_hash": candidate_hash,
+                    "attribution_plan_fingerprint": compiler_plan["plan_fingerprint"],
+                },
+                "compiler_attribution_plan": compiler_plan,
                 "provider_lowering": {"candidate_content_hash": candidate_hash, "attribution": receipt},
             },
         },
@@ -285,7 +330,7 @@ def test_benefit_report_marks_all_missing_attribution_unavailable():
     assert summary["by_dimension"]["owner"] == {}
 
 
-def test_benefit_report_rejects_forged_receipt_against_raw_provider_payload():
+def test_benefit_report_rejects_legal_owner_tamper_against_compiler_plan():
     reporter = _load_reporter()
     payload = {"messages": [{"role": "user", "content": "actual"}], "model": "gpt"}
     forged = {
@@ -308,7 +353,7 @@ def test_benefit_report_rejects_forged_receipt_against_raw_provider_payload():
         "entry_count": 1,
         "entries": [{
             "item_identity_hash": "sha256:" + "b" * 64,
-            "owner_code": "leak-secret-owner",
+            "owner_code": "progressive_skill",
             "kind": "user",
             "source_kind": "agent",
             "stability": "turn_dynamic",
@@ -320,6 +365,16 @@ def test_benefit_report_rejects_forged_receipt_against_raw_provider_payload():
             "canonical_value_bytes": 1,
         }],
     }
+    compiler_entry = dict(forged["entries"][0])
+    compiler_entry["owner_code"] = "model_final_messages"
+    compiler_plan = _compiler_plan_evidence(
+        reporter,
+        request_id="r1",
+        candidate_hash="sha256:" + "a" * 64,
+        receipt_entries=[compiler_entry],
+        messages_count=1,
+    )
+    forged["plan_fingerprint"] = compiler_plan["plan_fingerprint"]
     calls = [{
         "request_id": "r1",
         "provider_request": {
@@ -330,7 +385,11 @@ def test_benefit_report_rejects_forged_receipt_against_raw_provider_payload():
             "fidelity": "provider_prepared",
         },
         "context_rollout": {
-            "candidate_snapshot": {"content_hash": "sha256:" + "a" * 64},
+            "candidate_snapshot": {
+                "content_hash": "sha256:" + "a" * 64,
+                "attribution_plan_fingerprint": compiler_plan["plan_fingerprint"],
+            },
+            "compiler_attribution_plan": compiler_plan,
             "provider_lowering": {
                 "candidate_content_hash": "sha256:" + "a" * 64,
                 "attribution": forged,
@@ -343,7 +402,7 @@ def test_benefit_report_rejects_forged_receipt_against_raw_provider_payload():
     assert summary["status"] == "unavailable"
     assert summary["invalid_receipt_count"] == 1
     assert summary["byte_conservation"] is False
-    assert "leak-secret-owner" not in repr(summary)
+    assert "progressive_skill" not in repr(summary)
 
 
 def test_provider_attribution_deltas_are_run_bound_and_unsupported_without_baseline():
@@ -373,3 +432,68 @@ def test_provider_attribution_deltas_are_run_bound_and_unsupported_without_basel
     assert deltas[1]["status"] == "unsupported"
     assert deltas[1]["reason"] == "paired_variant_missing"
     assert deltas[1]["baseline_run"] is None
+
+
+def test_attribution_pairing_gate_detects_manifest_run_missing_after_ten_pairs():
+    reporter = _load_reporter()
+    summary = {
+        "status": "available",
+        "by_dimension": {
+            "owner": {}, "kind": {}, "source_kind": {}, "residency": {},
+        },
+    }
+    case_ids = tuple(f"case-{index}" for index in range(11))
+    rows = []
+    for case_id in case_ids:
+        rows.append({
+            "experiment": "exp", "run": f"{case_id}/legacy", "case_id": case_id,
+            "repeat": 1, "variant": "legacy", "summary": summary,
+        })
+        if case_id != "case-10":
+            rows.append({
+                "experiment": "exp", "run": f"{case_id}/candidate", "case_id": case_id,
+                "repeat": 1, "variant": "candidate", "summary": summary,
+            })
+
+    status = reporter.provider_attribution_pairing_status(
+        rows,
+        experiment="exp",
+        case_ids=case_ids,
+        repeats=1,
+        baseline="legacy",
+        candidate="candidate",
+    )
+
+    assert status["status"] == "unavailable"
+    assert status["available_pair_count"] == 10
+    assert status["expected_pair_count"] == 11
+    assert status["missing_run_count"] == 1
+    assert status["reason"] == "provider_attribution_pairing_incomplete"
+
+
+def test_attribution_pairing_gate_detects_duplicate_run():
+    reporter = _load_reporter()
+    summary = {
+        "status": "available",
+        "by_dimension": {
+            "owner": {}, "kind": {}, "source_kind": {}, "residency": {},
+        },
+    }
+    rows = [
+        {"experiment": "exp", "run": "legacy", "case_id": "case", "repeat": 1, "variant": "legacy", "summary": summary},
+        {"experiment": "exp", "run": "candidate", "case_id": "case", "repeat": 1, "variant": "candidate", "summary": summary},
+        {"experiment": "exp", "run": "candidate-duplicate", "case_id": "case", "repeat": 1, "variant": "candidate", "summary": summary},
+    ]
+
+    status = reporter.provider_attribution_pairing_status(
+        rows,
+        experiment="exp",
+        case_ids=("case",),
+        repeats=1,
+        baseline="legacy",
+        candidate="candidate",
+    )
+
+    assert status["status"] == "unavailable"
+    assert status["duplicate_run_count"] == 1
+    assert status["reason"] == "provider_attribution_pairing_incomplete"
