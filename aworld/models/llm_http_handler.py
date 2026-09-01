@@ -87,6 +87,7 @@ class LLMHTTPHandler:
         stream: bool = False,
         headers: Optional[Dict[str, str]] = None,
         request_body_type: str = "json",
+        serialized_body: bytes | None = None,
     ) -> Union[Dict[str, Any], Generator[Dict[str, Any], None, None]]:
         """Make a synchronous HTTP request.
 
@@ -117,7 +118,13 @@ class LLMHTTPHandler:
             "timeout": self.timeout,
         }
         if request_body_type == "multipart":
+            if serialized_body is not None:
+                raise ValueError("serialized_body is only valid for JSON requests")
             request_kwargs["files"] = self._encode_multipart_fields(data)
+        elif serialized_body is not None:
+            if not isinstance(serialized_body, bytes):
+                raise TypeError("serialized_body must be bytes or None")
+            request_kwargs["data"] = serialized_body
         else:
             request_kwargs["json"] = data
 
@@ -174,6 +181,7 @@ class LLMHTTPHandler:
         data: Dict[str, Any],
         headers: Optional[Dict[str, str]] = None,
         request_body_type: str = "json",
+        serialized_body: bytes | None = None,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """Make an asynchronous streaming HTTP request.
 
@@ -213,10 +221,15 @@ class LLMHTTPHandler:
         # Create session with proper timeout and connector
         session = aiohttp.ClientSession(timeout=timeout, connector=connector)
         try:
+            body_kwargs = (
+                {"data": serialized_body}
+                if serialized_body is not None
+                else {"json": data}
+            )
             response = await session.post(
                 url,
                 headers=request_headers,
-                json=data,
+                **body_kwargs,
             )
             response.raise_for_status()
 
@@ -258,6 +271,7 @@ class LLMHTTPHandler:
         data: Dict[str, Any],
         headers: Optional[Dict[str, str]] = None,
         request_body_type: str = "json",
+        serialized_body: bytes | None = None,
     ) -> Dict[str, Any]:
         """Make an asynchronous non-streaming HTTP request.
 
@@ -285,8 +299,14 @@ class LLMHTTPHandler:
             "timeout": self.timeout,
         }
         if request_body_type == "multipart":
+            if serialized_body is not None:
+                raise ValueError("serialized_body is only valid for JSON requests")
             request_headers.pop("Content-Type", None)
             request_kwargs["data"] = self._build_aiohttp_form_data(data)
+        elif serialized_body is not None:
+            if not isinstance(serialized_body, bytes):
+                raise TypeError("serialized_body must be bytes or None")
+            request_kwargs["data"] = serialized_body
         else:
             request_kwargs["json"] = data
 
@@ -380,6 +400,7 @@ class LLMHTTPHandler:
         endpoint: str = None,
         headers: Optional[Dict[str, str]] = None,
         request_body_type: str = "json",
+        serialized_body: bytes | None = None,
     ) -> Dict[str, Any]:
         """Make a synchronous completion request.
 
@@ -402,6 +423,7 @@ class LLMHTTPHandler:
                     data,
                     headers=headers,
                     request_body_type=request_body_type,
+                    serialized_body=serialized_body,
                 )
                 return response
             except Exception as e:
@@ -422,6 +444,7 @@ class LLMHTTPHandler:
         endpoint: str = None,
         headers: Optional[Dict[str, str]] = None,
         request_body_type: str = "json",
+        serialized_body: bytes | None = None,
     ) -> Dict[str, Any]:
         """Make an asynchronous completion request.
 
@@ -446,6 +469,7 @@ class LLMHTTPHandler:
                     data,
                     headers=headers,
                     request_body_type=request_body_type,
+                    serialized_body=serialized_body,
                 )
                 return response
             except (aiohttp.ClientError, asyncio.TimeoutError) as e:
@@ -465,6 +489,7 @@ class LLMHTTPHandler:
         data: Dict[str, Any],
         endpoint: str = None,
         headers: Optional[Dict[str, str]] = None,
+        serialized_body: bytes | None = None,
     ) -> Generator[Dict[str, Any], None, None]:
         """Make a synchronous streaming completion request.
 
@@ -474,13 +499,17 @@ class LLMHTTPHandler:
         Yields:
             Response chunks.
         """
-        data["stream"] = True
+        if data.get("stream") is not True:
+            raise ValueError("stream request must be finalized before HTTP serialization")
         logger.info(f"sync_stream_call request data: {data}")
         retries = 0
 
         while retries < self.max_retries:
             try:
-                for chunk in self._make_request(endpoint or "chat/completions", data, stream=True, headers=headers):
+                for chunk in self._make_request(
+                    endpoint or "chat/completions", data, stream=True,
+                    headers=headers, serialized_body=serialized_body,
+                ):
                     yield chunk
                 return  # Exit after completing stream processing
             except Exception as e:
@@ -498,6 +527,7 @@ class LLMHTTPHandler:
         data: Dict[str, Any],
         endpoint: str = None,
         headers: Optional[Dict[str, str]] = None,
+        serialized_body: bytes | None = None,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """Make an asynchronous streaming completion request.
 
@@ -508,7 +538,8 @@ class LLMHTTPHandler:
             Response chunks.
         """
         import aiohttp
-        data["stream"] = True
+        if data.get("stream") is not True:
+            raise ValueError("stream request must be finalized before HTTP serialization")
         logger.info(f"async_stream_call request data: {data}")
 
         retries = 0
@@ -516,7 +547,10 @@ class LLMHTTPHandler:
 
         while retries < self.max_retries:
             try:
-                async for chunk in self._make_async_request_stream(endpoint or "chat/completions", data, headers=headers):
+                async for chunk in self._make_async_request_stream(
+                    endpoint or "chat/completions", data, headers=headers,
+                    serialized_body=serialized_body,
+                ):
                     yield chunk
                 return  # Exit after completing stream processing
             except (aiohttp.ClientError, aiohttp.ClientPayloadError, asyncio.TimeoutError) as e:

@@ -75,37 +75,84 @@ Tool output policy, cache identity, lifecycle, delegation, and evaluation consum
 **Goal:** Enforce one immutable final compilation boundary with budgets and cache identity.
 **Depends on:** Milestone 2.
 
-**Status:** in progress
+**Status:** complete for the reviewed OpenAI enforce slice
 
-- First integration task: emit Amni neuron occurrences at the real pre-fold owner boundary into a read-only sidecar; do not
-  change folding, sorting, prompt content, Tool execution, or provider requests.
+#### Task 3.1: Universal final compile contract and deterministic reducers
+- **Status:** complete
+- Add a provider-neutral `FinalCompileInput/Policy/Result` that consumes finalized owner occurrences, exact messages/Tools,
+  versioned token estimates, inference profile and lifecycle epoch.
+- Apply scope/trust resolution, atomic budget planning and explicit reducers/offload refs without runtime capabilities.
+- Produce one immutable selected request, decision trace, cache identity evidence and typed non-enforceable reasons.
 
-- Budget allocation, required-item handling, Tool pair invariants, reducers/offload decisions.
-- Canonical serialization, logical/serialized prefix hashes, CacheIdentity and CacheBreakReason.
-- `off`, `observe`, `shadow`, and `enforce`; shadow performs no additional external actions.
-- Integrate normal Agent/model boundary first, then Amni/CLI/ACP parity.
+#### Task 3.2: Runtime final-boundary integration
+- **Status:** complete
+- Move normal Agent prompt transforms, Steering and Tool catalog observation before the final compile call.
+- Publish memory/Amni/CLI owner sidecars into the same task-epoch input and reject stale sidecars.
+- Keep `off` byte-compatible, `observe/shadow` side-effect-free and `enforce` fail-closed.
+
+#### Task 3.3: Provider lowering and canonical serialization
+- **Status:** complete for the declared OpenAI SDK/HTTP slice; unsupported providers remain capability-blocked by design
+- Add a registry of reviewed provider adapters, canonical serialized evidence for controlled HTTP paths, cache-prefix receipts,
+  and exact candidate/provider request correlation. Azure/other providers remain blocked until implemented.
+
+#### Task 3.4: Entry-point parity
+- **Status:** complete through the shared LLM boundary; entry-point-specific metadata remains outside compiler semantics
+- Route normal Agent, Amni, CLI and ACP through the same final compiler contract without modifying external repositories.
+- Preserve entry-point-only metadata while making request/budget/trace semantics equivalent.
 
 ### Milestone 4: Scoped Instructions, Progressive Disclosure, and Lifecycle
 **Goal:** Resolve nested instructions/Skills/Tools deterministically and prevent cross-task leakage.
 **Depends on:** Milestone 3.
 
-- Hierarchical scope/path matching and conflict explanation.
-- Skill descriptor/content split and task-sticky minimal Tool catalog.
-- Task/session/turn epoch transitions, reset/checkpoint/rewind/resume semantics.
-- Prompt-injection/trust tests and Context inspector read model.
+#### Task 4.1: Hierarchical scope and trust resolver
+- **Status:** complete
+- Nested/path scope matching, authority conflict explanation, untrusted external-content isolation and deterministic ordering.
+
+#### Task 4.2: Progressive Skills and Tool catalog
+- **Status:** complete
+- Index -> descriptor -> content Skill activation, task-epoch-sticky minimal Tool catalog and explicit cache-impact decisions.
+
+#### Task 4.3: Lifecycle state machine
+- **Status:** complete
+- Versioned session/task/turn epochs and reset/checkpoint/rewind/resume transitions with stale-sidecar/cache invalidation.
+
+#### Task 4.4: Context inspector
+- **Status:** complete
+- One read-only redacted projection for CLI/ACP/debug consumers; no duplicate compilation/statistics implementation.
 
 ### Milestone 5: Structured Delegation and Completion Contracts
 **Goal:** Make subagent Context propagation and task completion explicit and bounded.
 **Depends on:** Milestone 3.
 
-- DelegationSpec, Context Pack, InferenceProfile, budget/deadline/cancel propagation, output schema and merge policy.
-- CompletionContract observe/enforce modes based only on deterministic artifact/test requirements.
-- Main/child cost and Context attribution.
+#### Task 5.1: Delegation and Context Pack contracts
+- **Status:** complete
+- Frozen `DelegationSpec`, least-authority Context Pack, inference/budget/deadline/cancel propagation and bounded child result.
+
+#### Task 5.2: Child lifecycle and merge
+- **Status:** complete
+- Recursion/deadline/cancellation state machine, deterministic merge policy and main/child cost/context attribution.
+
+#### Task 5.3: Completion Contract
+- **Status:** complete
+- Observe/enforce deterministic artifact/test requirements while keeping Agent completion, self-check and external verifier
+  as separate evidence sources.
 
 ### Milestone 6: Evaluation, Canary, and Default-On Readiness
 **Goal:** Prove generalized framework benefit and safely enable enforcement.
 **Depends on:** Milestones 1-5.
 
-- Fixed cross-workload corpus, paired repeats, confidence intervals, cost model, hard gates.
-- Terminal Bench plus at least one research/delegation/tool-heavy non-Terminal workload.
-- Release shadow/canary, rollback bundle, entry-point parity, compatibility cleanup plan.
+#### Task 6.1: Integrated evaluation contract
+- **Status:** complete
+- Freeze Context-only variant manifests, request/trajectory/artifact provenance, paired repeats, hard gates and confidence
+  interval inputs without embedding benchmark answers or verifier policy.
+
+#### Task 6.2: Canary and rollback control plane
+- **Status:** complete
+- Session-sticky rollout cohorts, provider/entry-point capability gates, rollback bundle and default-on readiness report.
+
+#### Task 6.3: Deferred integrated validation
+- **Status:** in progress
+- Only after Tasks 3.1-6.2 are code-complete: run unit/integration suites, local Docker Terminal Bench subset and at least
+  one non-Terminal Tool/research/delegation workload; repair defects, then evaluate generalized Context benefit.
+- Local Docker execution/capture smoke is complete for one real Terminal Bench task; paired reward aggregation and the
+  independent second workload remain pending before any benefit/default-on decision.

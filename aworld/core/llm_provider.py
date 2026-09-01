@@ -120,12 +120,27 @@ class LLMProviderBase(abc.ABC):
             ):
                 raise ValueError("persisted candidate evidence does not match envelope")
 
+            lowering_evidence = receipt.to_redacted_dict()
+            if receipt.cache_identity is None:
+                lowering_evidence["cache_continuity"] = {
+                    "status": "unavailable",
+                    "previous_present": False,
+                    "break_reasons": [],
+                    "reason_code": "provider_wire_prefix_evidence_unavailable",
+                }
+            else:
+                lowering_evidence["cache_continuity"] = (
+                    context.commit_provider_cache_identity(
+                        receipt.cache_identity
+                    )
+                )
+
             updated_rollout = dict(rollout)
             updated_rollout.update({
                 "candidate_status": "provider_lowered",
                 "candidate_applied": True,
                 "provider_lowering_ready": True,
-                "provider_lowering": receipt.to_redacted_dict(),
+                "provider_lowering": lowering_evidence,
             })
             updated_rollout.pop("error", None)
             updated = dict(record)

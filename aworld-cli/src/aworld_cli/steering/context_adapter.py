@@ -189,4 +189,75 @@ def adapt_steering_inputs(
     )
 
 
-__all__ = ["SteeringInputContextAdapter", "adapt_steering_inputs"]
+class AppliedSteeringContextAdapter:
+    """Owner proof for the exact user messages appended by the CLI hook."""
+
+    def adapt(
+        self,
+        occurrences: Sequence[SteeringInput],
+        *,
+        source_identity: str,
+        task_epoch: int,
+        session_id: str,
+        task_id: str,
+    ) -> AdapterResult:
+        _validate_input(
+            occurrences, source_identity, session_id, task_id, task_epoch
+        )
+        scope = _explicit_scope(session_id=session_id, task_id=task_id)
+        return AdapterResult(
+            items=tuple(
+                ContextItem(
+                    id=f"{source_identity}:applied:{index}",
+                    kind=ContextKind.STEERING,
+                    payload={"role": "user", "content": item.text},
+                    task_epoch=task_epoch,
+                    authority=Authority.USER,
+                    scope=scope,
+                    lifetime=Lifetime.SINGLE_CALL,
+                    priority=item.sequence,
+                    required=True,
+                    trust=Trust.USER_CONTROLLED,
+                    stability=Stability.TURN_DYNAMIC,
+                    token_limit=None,
+                    reducer=None,
+                    source=ContextSource(
+                        kind=SourceKind.STEERING,
+                        uri=source_identity,
+                        version="cli-steering-applied-v1",
+                        ref={"sequence": item.sequence, "created_at": item.created_at},
+                    ),
+                    version="v1",
+                    activation_reason="cli_steering_drained_before_final_compile",
+                    created_at=_created_at(item.created_at),
+                    occurrence=index,
+                )
+                for index, item in enumerate(occurrences)
+            ),
+            diagnostics=(),
+        )
+
+
+def adapt_applied_steering(
+    occurrences: Sequence[SteeringInput],
+    *,
+    source_identity: str,
+    task_epoch: int,
+    session_id: str,
+    task_id: str,
+) -> AdapterResult:
+    return AppliedSteeringContextAdapter().adapt(
+        occurrences,
+        source_identity=source_identity,
+        task_epoch=task_epoch,
+        session_id=session_id,
+        task_id=task_id,
+    )
+
+
+__all__ = [
+    "AppliedSteeringContextAdapter",
+    "SteeringInputContextAdapter",
+    "adapt_applied_steering",
+    "adapt_steering_inputs",
+]

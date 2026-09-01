@@ -17,6 +17,7 @@ from aworld.runners.handler.base import DefaultHandler
 from aworld.runners.hook.hook_factory import HookFactory
 from aworld.runners.hook.hooks import HookPoint
 from aworld.utils.serialized_util import to_serializable
+from aworld.core.context.compiler import CompletionMode, CompletionStatus
 
 if TYPE_CHECKING:
     from aworld.runners.event_runner import TaskEventRunner
@@ -114,14 +115,32 @@ class DefaultTaskHandler(TaskHandler):
             async for event in self.run_hooks(message, HookPoint.FINISHED):
                 yield event
 
-            status = "running" if message.headers.get("step_interrupt", False) else "finished"
+            completion = self.runner.context.assess_completion_contract(
+                agent_claimed_finished=True
+            )
+            completion_blocked = (
+                completion is not None
+                and completion.mode is CompletionMode.ENFORCE
+                and completion.status is not CompletionStatus.SATISFIED
+            )
+            status = (
+                TaskStatusValue.FAILED
+                if completion_blocked
+                else "running" if message.headers.get("step_interrupt", False)
+                else "finished"
+            )
             self.runner._task_response = TaskResponse(answer=message.payload,
-                                                      success=True,
+                                                      success=not completion_blocked,
                                                       context=message.context,
                                                       id=self.runner.task.id,
                                                       time_cost=(time.time() - self.runner.start_time),
                                                       usage=self.runner.context.token_usage,
-                                                      status=status)
+                                                      status=status,
+                                                      msg=(
+                                                          "completion_contract_unsatisfied:"
+                                                          + ",".join(completion.reason_codes)
+                                                          if completion_blocked else None
+                                                      ))
 
             logger.info(f"{task_flag} task {self.runner.task.id} receive finished message.")
 

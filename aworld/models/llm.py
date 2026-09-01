@@ -6,6 +6,7 @@ import traceback
 import copy
 from contextlib import contextmanager
 from contextvars import ContextVar
+from datetime import datetime, timezone
 from typing import (
     List,
     Dict,
@@ -21,7 +22,11 @@ from aworld.logs.util import logger, log_llm_record
 
 from aworld.core.llm_provider import LLMProviderBase
 from aworld.core.video_gen_provider import VideoGenProviderBase
-from aworld.models.openai_provider import OpenAIProvider, AzureOpenAIProvider
+from aworld.models.openai_provider import (
+    OPENAI_CONTEXT_LOWERING,
+    OpenAIProvider,
+    AzureOpenAIProvider,
+)
 from aworld.models.anthropic_provider import AnthropicProvider
 from aworld.models.ant_provider import AntProvider
 from aworld.models.together_video_provider import TogetherVideoProvider
@@ -38,17 +43,25 @@ from aworld.core.context.compiler import (
     CandidateCompilation,
     CandidateRequestNotEnforceable,
     ContextCompilerMode,
+    ContextObservationSidecar,
+    ContextInputBudget,
+    ContextResolutionTarget,
+    FinalCompilePolicy,
     FRAMEWORK_COMPILER_IDENTITY,
+    InferenceProfile,
     ProviderRequestSnapshot,
     ProviderCandidateEnvelope,
+    ProviderCacheMaterial,
     ProviderLoweringCapability,
     ProviderRequestFidelity,
     RequestCaptureStage,
     RolloutContractError,
     canonical_json_hash,
     compile_context_candidate,
+    inspect_final_context,
     observe_legacy_provider_request,
     request_trace_match,
+    reviewed_provider_lowerings,
     select_rollout_request,
 )
 from aworld.core.model_output_parser import ModelOutputParser, BaseContentParser
@@ -58,6 +71,10 @@ from aworld.utils.common import sync_exec
 AWORLD_CONTEXT_CALL_ID_KWARG = "_aworld_context_call_id"
 _AWORLD_CONTEXT_CALL_ID: ContextVar[str | None] = ContextVar(
     "aworld_context_call_id", default=None
+)
+
+reviewed_provider_lowerings.register(
+    OpenAIProvider, OPENAI_CONTEXT_LOWERING
 )
 
 
@@ -273,10 +290,65 @@ class LLMModel:
             if isinstance(runtime_config, dict)
             else getattr(runtime_config, "compiler_version", "v1")
         )
+        def context_config_value(name: str, default: Any) -> Any:
+            if isinstance(runtime_config, dict):
+                return runtime_config.get(name, default)
+            return getattr(runtime_config, name, default)
+
         resolved_compiler_mode = ContextCompilerMode(runtime_mode)
+        self._context_scoped_instructions = context_config_value(
+            "scoped_instructions", "workspace_only"
+        )
+        self._context_default_tool_output_inline_tokens = context_config_value(
+            "default_tool_output_inline_tokens", 4096
+        )
+        self._context_artifact_offload = context_config_value(
+            "artifact_offload", True
+        )
+        self._context_progressive_skills = context_config_value(
+            "progressive_skills", True
+        )
+        self._context_progressive_tools = context_config_value(
+            "progressive_tools", True
+        )
+        self._context_task_catalog_policy = context_config_value(
+            "task_catalog_policy", "sticky"
+        )
         if candidate_policy is None:
+            final_policy = None
+            if context_config_value("universal_final", True):
+                configured_context_limit = context_config_value(
+                    "context_limit", None
+                )
+                if configured_context_limit is None:
+                    configured_context_limit = (
+                        getattr(conf, "max_model_len", None) or 128000
+                    )
+                final_policy = FinalCompilePolicy(
+                    compiler_version=compiler_version,
+                    policy_version=context_config_value("policy_version", "v1"),
+                    input_budget=ContextInputBudget(
+                        context_limit=configured_context_limit,
+                        reserved_output_tokens=context_config_value(
+                            "reserved_output_tokens", 4096
+                        ),
+                        provider_protocol_reserve=context_config_value(
+                            "provider_protocol_reserve", 256
+                        ),
+                        safety_margin_tokens=context_config_value(
+                            "safety_margin_tokens", 512
+                        ),
+                        max_item_tokens=context_config_value(
+                            "max_item_tokens", 10000
+                        ),
+                    ),
+                    require_proven_semantics_for_enforce=context_config_value(
+                        "require_proven_semantics_for_enforce", True
+                    ),
+                )
             candidate_policy = CandidateCompilePolicy(
-                compiler_version=compiler_version
+                compiler_version=compiler_version,
+                final_policy=final_policy,
             )
         self.configure_context_compiler(
             mode=resolved_compiler_mode,
@@ -382,6 +454,22 @@ class LLMModel:
     def context_candidate_policy(self) -> CandidateCompilePolicy:
         """Expose the frozen policy without allowing ambient replacement."""
         return self._context_candidate_policy
+
+    def enforced_tool_output_policy(self):
+        """Return the runtime policy only when candidate execution is authoritative."""
+        if self.context_compiler_mode is not ContextCompilerMode.ENFORCE:
+            return None
+        from aworld.core.context.compiler import ToolOutputMode, ToolOutputPolicy
+
+        limit = self._context_default_tool_output_inline_tokens
+        return ToolOutputPolicy(
+            max_inline_tokens=limit,
+            mode=ToolOutputMode.HEAD_TAIL,
+            preserve_fields=("head", "tail", "artifact_ref", "raw_checksum"),
+            tail_tokens=max(0, limit // 4),
+            artifact_retention="task",
+            policy_version="aworld-tool-output-v1",
+        )
 
     def _identify_provider(self, provider: str = None, base_url: str = None, model_name: str = None) -> str:
         """Identify the provider for the given configuration.
@@ -650,6 +738,189 @@ class LLMModel:
             },
         }
 
+    async def _apply_before_llm_hooks(
+        self,
+        *,
+        context: Context | None,
+        request_id: str,
+        messages: List[Dict[str, str]],
+        temperature: float,
+        max_tokens: int | None,
+    ) -> List[Dict[str, str]]:
+        """Apply the shared final pre-compile hook chain for every call shape."""
+        if context is None:
+            return messages
+        from aworld.runners.hook.hooks import HookPoint
+        from aworld.runners.hook.utils import run_hooks
+
+        current_messages = messages
+        payload = {
+            "event": "before_llm_call",
+            "model_name": self.provider.model_name,
+            "provider_name": self.provider_name,
+            "messages": current_messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "request_id": request_id,
+            "timestamp": time.time(),
+        }
+        async for hook_event in run_hooks(
+            context=context,
+            hook_point=HookPoint.BEFORE_LLM_CALL,
+            hook_from="llm_model",
+            payload=payload,
+            workspace_path=getattr(context, "workspace_path", None),
+        ):
+            updated_input = (
+                hook_event.headers.get("updated_input")
+                if hook_event is not None and hasattr(hook_event, "headers")
+                else None
+            )
+            if isinstance(updated_input, list):
+                current_messages = updated_input
+            elif isinstance(updated_input, dict) and isinstance(
+                updated_input.get("messages"), list
+            ):
+                current_messages = updated_input["messages"]
+        return current_messages
+
+    @staticmethod
+    def _context_agent_identity(context: Context | None) -> str | None:
+        if context is None:
+            return None
+        agent_info = getattr(context, "agent_info", None)
+        value = (
+            agent_info.get("current_agent_id")
+            if isinstance(agent_info, dict)
+            else getattr(agent_info, "current_agent_id", None)
+        )
+        if not value:
+            value = context.get_state("current_agent_id")
+        return str(value) if value else f"task-agent-{context.task_id}"
+
+    def _finalize_context_messages(
+        self,
+        *,
+        context: Context | None,
+        request_id: str,
+        messages: List[Dict[str, Any]],
+        tools: Any,
+    ) -> List[Dict[str, Any]]:
+        """Apply reviewed provider normalization and publish the exact boundary."""
+        values = messages
+        if self.context_compiler_mode is not ContextCompilerMode.OFF:
+            normalizer = getattr(
+                self.provider, "context_model_boundary_messages", None
+            )
+            if callable(normalizer):
+                values = normalizer(messages)
+                if not isinstance(values, list):
+                    raise TypeError(
+                        "provider model-boundary normalizer must return a list"
+                    )
+        if context is None or self.context_compiler_mode is ContextCompilerMode.OFF:
+            return values
+        from aworld.agents.final_context_adapter import adapt_agent_final_request
+
+        agent_id = self._context_agent_identity(context)
+        source_identity = (
+            f"model-final://{agent_id}/task-{context.task_id}/"
+            f"epoch-{context.task_epoch}/request-{request_id}"
+        )
+        try:
+            from aworld.core.context.amni import AmniContext
+
+            amni_folded_system = isinstance(context, AmniContext)
+        except ImportError:
+            amni_folded_system = False
+        message_result, tool_result = adapt_agent_final_request(
+            messages=values,
+            tools=tools or (),
+            source_identity=source_identity,
+            task_id=context.task_id,
+            task_epoch=context.task_epoch,
+            agent_id=agent_id,
+            amni_folded_system=amni_folded_system,
+        )
+        context.publish_context_observation(
+            ContextObservationSidecar.from_adapter_result(
+                owner="model.final_messages",
+                namespace=agent_id,
+                source_identity=source_identity,
+                result=message_result,
+            )
+        )
+        context.publish_context_observation(
+            ContextObservationSidecar.from_adapter_result(
+                owner="model.final_tool_catalog",
+                namespace=agent_id,
+                source_identity=source_identity,
+                result=tool_result,
+            )
+        )
+        return values
+
+    def _finalize_context_messages_for_rollout(
+        self,
+        *,
+        context: Context | None,
+        request_id: str,
+        agent_call_id: str | None,
+        started_at: float,
+        messages: List[Dict[str, Any]],
+        temperature: float,
+        max_tokens: int,
+        stop: List[str],
+        tools: Any,
+        model_name: str | None,
+    ) -> List[Dict[str, Any]]:
+        """Finalize the model boundary with a correlated fail-closed receipt."""
+        try:
+            return self._finalize_context_messages(
+                context=context,
+                request_id=request_id,
+                messages=messages,
+                tools=tools,
+            )
+        except Exception as exc:
+            if self.context_compiler_mode is not ContextCompilerMode.ENFORCE:
+                logger.warning(
+                    "Context model-boundary finalization failed; continuing "
+                    f"without enforcement; error_type={type(exc).__name__}"
+                )
+                return messages
+            rollout = {
+                "mode": ContextCompilerMode.ENFORCE.value,
+                "candidate_status": "blocked",
+                "candidate_applied": False,
+                "provider_lowering_ready": False,
+                "error": {"code": "model_boundary_finalize_failed"},
+            }
+            self._begin_llm_call_record(
+                context=context,
+                request_id=request_id,
+                agent_call_id=agent_call_id,
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                stop=stop,
+                started_at=started_at,
+                tools=tools,
+                model_name=model_name,
+                context_rollout=rollout,
+                provider_invoked=False,
+            )
+            self._finish_llm_call_record(
+                context=context,
+                request_id=request_id,
+                status="blocked_before_provider",
+                finished_at=time.time(),
+                error_code="model_boundary_finalize_failed",
+            )
+            raise CandidateRequestNotEnforceable(
+                "model_boundary_finalize_failed"
+            ) from None
+
     def _prepare_context_rollout(
         self,
         *,
@@ -755,6 +1026,20 @@ class LLMModel:
             )
 
         try:
+            resolved_active_path = (
+                context.get_state("active_path", context.workspace_path)
+                if context is not None
+                else None
+            )
+            if resolved_active_path is not None:
+                resolved_active_path = str(resolved_active_path)
+            if (
+                context is not None
+                and self._context_scoped_instructions == "nested"
+            ):
+                context.refresh_nested_instruction_observation(
+                    active_path=resolved_active_path
+                )
             legacy_request = ProviderRequestSnapshot(
                 request_id=request_id,
                 provider_name=self.provider_name,
@@ -771,9 +1056,61 @@ class LLMModel:
             observations = (
                 context.get_context_observations() if context is not None else ()
             )
+            task_epoch = context.task_epoch if context is not None else None
+            agent_id = self._context_agent_identity(context)
+            workspace_path = (
+                context.workspace_path if context is not None else None
+            )
+            context_limit = (
+                policy.final_policy.input_budget.context_limit
+                if policy.final_policy is not None
+                else None
+            )
             compiler_input = CandidateCompileInput(
                 legacy_request=legacy_request,
                 observations=observations,
+                inference_profile=InferenceProfile(
+                    provider=self.provider_name,
+                    model=model_name or "unknown-model",
+                    reasoning_effort=None,
+                    execution_mode="chat_completions",
+                    context_limit=context_limit,
+                ),
+                created_at=datetime.now(timezone.utc),
+                task_id=context.task_id if context is not None else None,
+                session_id=context.session_id if context is not None else None,
+                trace_id=(context.trace_id or None) if context is not None else None,
+                task_epoch=task_epoch,
+                resolution_target=(
+                    ContextResolutionTarget(
+                        workspace_id=workspace_path,
+                        directory=(resolved_active_path or workspace_path),
+                        active_paths=(
+                            (resolved_active_path,)
+                            if resolved_active_path
+                            else ((workspace_path,) if workspace_path else ())
+                        ),
+                        session_id=context.session_id,
+                        task_id=context.task_id,
+                        turn_id=(
+                            context.current_step_id()
+                            or f"turn-{context.context_lifecycle_state.turn_epoch}"
+                        ),
+                        agent_id=agent_id,
+                        child_task_id=context.task_id,
+                        task_epoch=task_epoch,
+                    )
+                    if context is not None
+                    else None
+                ),
+                reducer_replacements=(
+                    tuple(
+                        receipt.to_replacement()
+                        for receipt in context.get_context_reduction_receipts()
+                    )
+                    if context is not None
+                    else ()
+                ),
             )
         except Exception:
             if mode is ContextCompilerMode.ENFORCE:
@@ -838,7 +1175,16 @@ class LLMModel:
                     for code in candidate.diagnostic_codes
                 ],
             }
-        except Exception:
+            if candidate.final_result is not None:
+                metadata["final_compile"] = inspect_final_context(
+                    candidate.final_result
+                )
+        except Exception as exc:
+            logger.error(
+                "Context candidate compilation failed before provider lowering; "
+                f"error_type={type(exc).__name__}; "
+                f"error_fingerprint={canonical_json_hash({'type': type(exc).__name__, 'detail': str(exc)})}"
+            )
             if mode is ContextCompilerMode.ENFORCE:
                 block(
                     CandidateRequestNotEnforceable("compiler_failed"),
@@ -864,16 +1210,10 @@ class LLMModel:
                     ),
                     blocked,
                 )
-            try:
-                capability = self.provider.context_candidate_lowering_capability()
-            except Exception:
-                capability = None
-            if (
-                self.provider_name != "openai"
-                or type(self.provider) is not OpenAIProvider
-                or type(capability) is not ProviderLoweringCapability
-                or capability.provider_name != self.provider_name
-            ):
+            capability = reviewed_provider_lowerings.resolve(
+                self.provider, self.provider_name
+            )
+            if type(capability) is not ProviderLoweringCapability:
                 blocked = dict(metadata)
                 blocked["candidate_status"] = "blocked"
                 blocked["error"] = {"code": "provider_lowering_required"}
@@ -884,11 +1224,35 @@ class LLMModel:
                     blocked,
                 )
             try:
+                cache_material = None
+                if candidate.final_result is not None:
+                    request_messages = snapshot.payload["messages"]
+                    stable_items = candidate.final_result.stable_partition.stable_items
+                    stable_message_count = len(stable_items)
+                    if (
+                        isinstance(request_messages, tuple)
+                        and stable_message_count <= len(request_messages)
+                        and all(
+                            item.payload == request_messages[index]
+                            for index, item in enumerate(stable_items)
+                        )
+                    ):
+                        cache_material = ProviderCacheMaterial(
+                            inference_profile=compiler_input.inference_profile,
+                            policy_version=candidate.final_result.policy_version,
+                            tool_catalog_hash=candidate.final_result.tool_catalog_hash,
+                            skill_set_hash=candidate.final_result.skill_set_hash,
+                            logical_stable_prefix_hash=(
+                                candidate.final_result.stable_partition.stable_prefix_hash
+                            ),
+                            stable_message_count=stable_message_count,
+                        )
                 envelope = ProviderCandidateEnvelope(
                     candidate_request=snapshot,
                     compiler_identity=candidate.compiler_identity,
                     compiler_version=candidate.compiler_version,
                     expected_lowering=capability,
+                    cache_material=cache_material,
                 )
             except Exception:
                 blocked = dict(metadata)
@@ -967,11 +1331,12 @@ class LLMModel:
         if context is None:
             return
 
+        agent_info = context.agent_info
         agent_id = (
-            getattr(context.agent_info, "current_agent_id", None)
-            if context.agent_info
-            else None
-        )
+            agent_info.get("current_agent_id")
+            if isinstance(agent_info, dict)
+            else getattr(agent_info, "current_agent_id", None)
+        ) if agent_info else None
         request = self._model_boundary_request(
             messages=messages,
             temperature=temperature,
@@ -1225,49 +1590,30 @@ class LLMModel:
         kwargs["llm_request_id"] = request_id
         log_llm_record("INPUT", self.provider.model_name, messages, log_params, context_trace_id)
 
-        # Hooks V2: 触发 BEFORE_LLM_CALL hook 并消费 updated_input
         if context:
             try:
-                from aworld.runners.hook.hooks import HookPoint
-                from aworld.runners.hook.utils import run_hooks
-
-                before_llm_call_payload = {
-                    'event': 'before_llm_call',
-                    'model_name': self.provider.model_name,
-                    'provider_name': self.provider_name,
-                    'messages': messages,
-                    'temperature': temperature,
-                    'max_tokens': max_tokens,
-                    'request_id': request_id,
-                    'timestamp': time.time()
-                }
-
-                before_hook_events = []
-                async for hook_event in run_hooks(
+                messages = await self._apply_before_llm_hooks(
                     context=context,
-                    hook_point=HookPoint.BEFORE_LLM_CALL,
-                    hook_from='llm_model',
-                    payload=before_llm_call_payload,
-                    workspace_path=getattr(context, 'workspace_path', None)
-                ):
-                    before_hook_events.append(hook_event)
+                    request_id=request_id,
+                    messages=messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                )
+            except Exception as exc:
+                logger.warning(f"BEFORE_LLM_CALL hook execution failed: {exc}")
 
-                # Apply updated_input from hooks if present (chain all modifications)
-                for hook_event in before_hook_events:
-                    if hook_event and hasattr(hook_event, 'headers'):
-                        updated_input = hook_event.headers.get('updated_input')
-                        if updated_input:
-                            # Update messages with modified input
-                            if isinstance(updated_input, list):
-                                messages = updated_input
-                                logger.info(f"BEFORE_LLM_CALL hook modified messages")
-                            elif isinstance(updated_input, dict) and 'messages' in updated_input:
-                                messages = updated_input['messages']
-                                logger.info(f"BEFORE_LLM_CALL hook modified messages")
-                            # Continue to next hook to allow chaining
-            except Exception as e:
-                logger.warning(f"BEFORE_LLM_CALL hook execution failed: {e}")
-
+        messages = self._finalize_context_messages_for_rollout(
+            context=context,
+            request_id=request_id,
+            agent_call_id=agent_call_id,
+            started_at=start_ms,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            stop=stop,
+            tools=kwargs.get("tools"),
+            model_name=kwargs.get("model_name") or kwargs.get("model"),
+        )
         context_rollout, provider_candidate = self._prepare_context_rollout(
             context=context,
             request_id=request_id,
@@ -1467,53 +1813,31 @@ class LLMModel:
         kwargs["llm_request_id"] = request_id
         log_llm_record("INPUT", self.provider.model_name, messages, log_params, context_trace_id)
 
-        # Hooks V2: 触发 BEFORE_LLM_CALL hook (同步版本)
         if context:
             try:
-                from aworld.runners.hook.hooks import HookPoint
-                from aworld.runners.hook.utils import run_hooks
+                messages = sync_exec(
+                    self._apply_before_llm_hooks,
+                    context=context,
+                    request_id=request_id,
+                    messages=messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                )
+            except Exception as exc:
+                logger.warning(f"BEFORE_LLM_CALL hook execution failed: {exc}")
 
-                before_llm_call_payload = {
-                    'event': 'before_llm_call',
-                    'model_name': self.provider.model_name,
-                    'provider_name': self.provider_name,
-                    'messages': messages,
-                    'temperature': temperature,
-                    'max_tokens': max_tokens,
-                    'request_id': request_id,
-                    'timestamp': time.time()
-                }
-
-                # 同步执行 async hooks 并消费 updated_input
-                async def _run_before_hooks():
-                    nonlocal messages
-                    before_hook_events = []
-                    async for hook_event in run_hooks(
-                        context=context,
-                        hook_point=HookPoint.BEFORE_LLM_CALL,
-                        hook_from='llm_model',
-                        payload=before_llm_call_payload,
-                        workspace_path=getattr(context, 'workspace_path', None)
-                    ):
-                        before_hook_events.append(hook_event)
-
-                    # Apply updated_input from hooks if present (chain all modifications)
-                    for hook_event in before_hook_events:
-                        if hook_event and hasattr(hook_event, 'headers'):
-                            updated_input = hook_event.headers.get('updated_input')
-                            if updated_input:
-                                # Update messages with modified input
-                                if isinstance(updated_input, list):
-                                    messages = updated_input
-                                    logger.info(f"BEFORE_LLM_CALL hook modified messages (sync)")
-                                elif isinstance(updated_input, dict) and 'messages' in updated_input:
-                                    messages = updated_input['messages']
-                                    logger.info(f"BEFORE_LLM_CALL hook modified messages (sync)")
-
-                sync_exec(_run_before_hooks)
-            except Exception as e:
-                logger.warning(f"BEFORE_LLM_CALL hook execution failed: {e}")
-
+        messages = self._finalize_context_messages_for_rollout(
+            context=context,
+            request_id=request_id,
+            agent_call_id=agent_call_id,
+            started_at=start_ms,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            stop=stop,
+            tools=kwargs.get("tools"),
+            model_name=kwargs.get("model_name") or kwargs.get("model"),
+        )
         context_rollout, provider_candidate = self._prepare_context_rollout(
             context=context,
             request_id=request_id,
@@ -1669,10 +1993,35 @@ class LLMModel:
         log_llm_record("INPUT", self.provider.model_name, messages, log_params, context_trace_id)
         stream_started_at = start_ms
 
+        if context:
+            try:
+                messages = sync_exec(
+                    self._apply_before_llm_hooks,
+                    context=context,
+                    request_id=request_id,
+                    messages=messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                )
+            except Exception as exc:
+                logger.warning(f"BEFORE_LLM_CALL hook execution failed: {exc}")
+
         final_chunk = None
         record_chunk = None
         terminal_status = "success"
         terminal_error = None
+        messages = self._finalize_context_messages_for_rollout(
+            context=context,
+            request_id=request_id,
+            agent_call_id=agent_call_id,
+            started_at=stream_started_at,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            stop=stop,
+            tools=kwargs.get("tools"),
+            model_name=kwargs.get("model_name") or kwargs.get("model"),
+        )
         context_rollout, provider_candidate = self._prepare_context_rollout(
             context=context,
             request_id=request_id,
@@ -1795,10 +2144,34 @@ class LLMModel:
         kwargs["llm_request_id"] = request_id
         log_llm_record("INPUT", self.provider.model_name, messages, log_params, context_trace_id)
         stream_started_at = start_ms
+
+        if context:
+            try:
+                messages = await self._apply_before_llm_hooks(
+                    context=context,
+                    request_id=request_id,
+                    messages=messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                )
+            except Exception as exc:
+                logger.warning(f"BEFORE_LLM_CALL hook execution failed: {exc}")
         final_chunk = None
         record_chunk = None
         terminal_status = "success"
         terminal_error = None
+        messages = self._finalize_context_messages_for_rollout(
+            context=context,
+            request_id=request_id,
+            agent_call_id=agent_call_id,
+            started_at=stream_started_at,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            stop=stop,
+            tools=kwargs.get("tools"),
+            model_name=kwargs.get("model_name") or kwargs.get("model"),
+        )
         context_rollout, provider_candidate = self._prepare_context_rollout(
             context=context,
             request_id=request_id,

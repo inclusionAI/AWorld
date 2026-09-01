@@ -2,13 +2,15 @@
 
 ## Current Status
 
-**Phase:** Milestone 3
-**Current milestone:** Universal Final Compiler and Rollout Modes
-**Current task:** Complete the first provider-owned immutable lowering slice
-**Last action:** Added an exact-type-gated OpenAI lowering adapter. Enforce now hands one frozen candidate envelope to the
-provider, freezes the final Chat Completions params, persists a candidate-bound redacted receipt, and sends the same
-provider-prepared structure through SDK/HTTP; receipt or lowering failure blocks before the external call. Focused compiler,
-OpenAI, trajectory, model-boundary, Agent, and hook regression is 108 passed.
+**Phase:** Milestone 6 integrated validation
+**Current milestone:** Evaluation, Canary, and Default-On Readiness
+**Current task:** Task 6.3 — cross-workload validation and benefit attribution
+**Last action:** Completed the integrated Milestone 3-6 code version, then opened the deferred validation gate. Focused
+universal-final/provider/cache/scope/progressive/offload/delegation/completion/evaluation/canary and adjacent runtime suites
+are green at 170 tests. A broader selected run reached 258/260 before both defects were fixed and individually rerun. The
+full repository run reached 1,154 passes before interruption in slow gateway tests; its remaining failures include local
+global-AWORLD.md contamination and unrelated command/cache tests, while the one change-related off-mode regression was
+fixed and rerun.
 
 ## Completed Foundations
 
@@ -317,5 +319,17 @@ OpenAI, trajectory, model-boundary, Agent, and hook regression is 108 passed.
 - Local final review kept the raw/capture fidelity boundaries distinct, labeled the legacy observer as pre-rollout baseline,
   verified that private envelopes never reach SDK/HTTP params, and reran the focused compiler/OpenAI/trajectory/Agent/hook
   suite at 108 passed. No reviewed issue remains open in this slice.
+- Integrated Milestones 3-6 validation is open. Focused scope/progressive/offload/delegation/completion/evaluation/canary,
+  OpenAI lowering, HTTP serialization, Amni, runner trajectory and Docker adapter regression reached 170 passed before
+  real-workload smoke; subsequent integration fixes have dedicated regressions and the latest affected set is 31 passed.
+- Real local Docker `prove-plus-comm` validation exposed five framework integration defects and fixed them without task-
+  specific policy: blank optional trace-id normalization, known low-trust Amni folded system semantics, no legacy prompt-
+  plan replay after final compilation, atomic latest Tool-turn tiering, and append-first diagnostic capture with live-Context
+  fallback/provider-lowering receipt recognition.
+- The repaired unified-context-enforce rollout completed with TaskResponse success, eight raw trajectory items, eight
+  successful provider calls and eight provider-prepared receipts. TaskResponse carried zero call records while the live
+  Context carried eight, and the manifest now records that continuity mismatch instead of dropping evidence. The local
+  Docker daemon exited before independent verifier/result aggregation, so this is an execution/capture proof only, not a
+  benchmark reward or Context-benefit claim.
 - Authority, trust, lifetime, stability, source URI, task epoch, and exact token counts remain UNKNOWN unless their owner can
   prove them; role/content heuristics are not acceptable.

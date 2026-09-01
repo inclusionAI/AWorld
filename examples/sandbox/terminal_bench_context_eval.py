@@ -125,6 +125,7 @@ def load_variant(path: Path | None) -> tuple[str, Path | None, dict]:
             "schema_version": "aworld.context-eval-variant/v1",
             "name": "baseline",
             "agent_memory_config": {},
+            "context_compiler": {},
             "docker_output_policy": {},
         }
         return "baseline", None, payload
@@ -160,8 +161,10 @@ def docker_image_for_task(fixture: TaskFixture, docker: str, use_declared_image:
     if use_declared_image:
         if not declared:
             raise ValueError(f"Task {fixture.name} has no declared docker_image")
-        pull = run_command([docker, "pull", declared], capture_output=True)
-        require_success(pull, f"pull image for {fixture.name}")
+        inspect = run_command([docker, "image", "inspect", declared], capture_output=True)
+        if inspect.returncode != 0:
+            pull = run_command([docker, "pull", declared], capture_output=True)
+            require_success(pull, f"pull image for {fixture.name}")
         return declared
 
     dockerfile_sha = sha256_file(fixture.environment / "Dockerfile")[:16]

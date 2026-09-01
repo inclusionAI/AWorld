@@ -131,8 +131,15 @@ async def test_shadow_compiles_once_per_path_and_executes_only_legacy(monkeypatc
 
     assert len(async_chunks) == 1
     assert counters == {"compiler": 4, "tool": 0, "artifact_offload": 0}
-    assert inputs[0].observations == (sidecar,)
-    assert all(not item.observations for item in inputs[1:])
+    assert inputs[0].observations[0] == sidecar
+    assert {
+        item.owner for item in inputs[0].observations[1:]
+    } == {"model.final_messages", "model.final_tool_catalog"}
+    assert all(
+        {sidecar.owner for sidecar in item.observations}
+        == {"model.final_messages", "model.final_tool_catalog"}
+        for item in inputs[1:]
+    )
     assert [kind for kind, _, _ in provider.calls] == [
         "acompletion", "completion", "stream_completion", "astream_completion"
     ]

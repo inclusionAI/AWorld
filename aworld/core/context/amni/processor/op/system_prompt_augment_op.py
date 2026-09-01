@@ -21,6 +21,7 @@ from ...prompt.neurons import (
     adapt_neuron_outputs,
 )
 from aworld.core.context.compiler import ContextObservationSidecar
+from aworld.agents.final_context_adapter import adapt_amni_folded_system_message
 from ...prompt.prompt_ext import ContextPromptTemplate
 from ...retrieval.reranker import RerankResult
 from ...retrieval.reranker.factory import RerankerFactory
@@ -260,6 +261,7 @@ class SystemPromptAugmentOp(BaseOp):
             result = adapt_neuron_outputs(
                 occurrences,
                 source_identity=source_identity,
+                task_epoch=getattr(context, "task_epoch", None),
             )
             publisher(
                 ContextObservationSidecar.from_adapter_result(
@@ -373,6 +375,31 @@ class SystemPromptAugmentOp(BaseOp):
         formatted_system_prompt = await ContextPromptTemplate(template=appended_prompt).async_format(
             context=context,
             task=user_query)
+        try:
+            source_identity = (
+                f"amni-folded://{agent_id}/task-{context.task_id}/"
+                f"epoch-{context.task_epoch}"
+            )
+            context.publish_context_observation(
+                ContextObservationSidecar.from_adapter_result(
+                    owner="amni.folded_system",
+                    namespace=agent_id,
+                    source_identity=source_identity,
+                    result=adapt_amni_folded_system_message(
+                        content=formatted_system_prompt,
+                        source_identity=source_identity,
+                        task_id=context.task_id,
+                        task_epoch=context.task_epoch,
+                        agent_id=agent_id,
+                        dynamic=bool(augment_prompts),
+                    ),
+                )
+            )
+        except Exception as exc:
+            logger.warning(
+                "Amni folded-system Context publication failed; "
+                f"error_type={type(exc).__name__}"
+            )
         # If not exist history, add new system message
         system_message = await self._build_system_message(
             context=context,
@@ -422,7 +449,64 @@ class SystemPromptAugmentOp(BaseOp):
 
         # Check history
         histories = self._memory.get_last_n(0, filters=filters)
-        return histories and len(histories) > 0
+        exists = bool(histories and len(histories) > 0)
+        if not exists:
+            return False
+
+        # Observation sidecars are deliberately not checkpointed.  Revalidate
+        # the exact folded system message from restored structured memory so an
+        # enforce rollout does not either trust opaque transcript text or fail
+        # merely because runtime-only evidence was correctly discarded.
+        has_folded_observation = any(
+            sidecar.owner in {
+                "amni.folded_system",
+                "amni.restored_folded_system",
+            }
+            and sidecar.namespace == agent_id
+            for sidecar in context.get_context_observations()
+        )
+        if not has_folded_observation:
+            restored_system = next(
+                (
+                    item
+                    for item in reversed(list(histories))
+                    if isinstance(item, MemorySystemMessage)
+                    and item.agent_id == agent_id
+                    and isinstance(item.content, str)
+                    and item.content
+                ),
+                None,
+            )
+            if restored_system is not None:
+                try:
+                    source_identity = (
+                        f"amni-restored-folded://{agent_id}/"
+                        f"task-{context.task_id}/epoch-{context.task_epoch}/"
+                        f"memory-{restored_system.id}"
+                    )
+                    context.publish_context_observation(
+                        ContextObservationSidecar.from_adapter_result(
+                            owner="amni.restored_folded_system",
+                            namespace=agent_id,
+                            source_identity=source_identity,
+                            result=adapt_amni_folded_system_message(
+                                content=restored_system.content,
+                                source_identity=source_identity,
+                                task_id=context.task_id,
+                                task_epoch=context.task_epoch,
+                                agent_id=agent_id,
+                                # Restored content may contain retrieval/memory
+                                # values, so it is conservatively dynamic.
+                                dynamic=True,
+                            ),
+                        )
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Amni restored folded-system revalidation failed; "
+                        f"error_type={type(exc).__name__}"
+                    )
+        return True
 
     async def _build_system_message(self,
                                     context: ApplicationContext,

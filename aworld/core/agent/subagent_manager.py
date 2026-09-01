@@ -28,6 +28,18 @@ from typing import Dict, List, Literal, Optional
 
 from aworld.logs.util import logger
 from aworld.utils.skill_loader import extract_front_matter
+from aworld.core.context.compiler import (
+    AdapterResult,
+    ChildResult,
+    ChildStatus,
+    ChildUsage,
+    ContextObservationSidecar,
+    ContextPack,
+    DelegationSpec,
+    freeze_json,
+    merge_child_result,
+    validate_delegation_output,
+)
 
 
 @dataclass
@@ -393,7 +405,7 @@ class SubagentManager:
 
         return prompt
 
-    async def spawn(self, name: str, directive: str, task_type: str = 'normal', **kwargs) -> str:
+    async def spawn(self, name: str, directive: str, task_type: str = 'normal', **kwargs) -> str | ChildResult:
         """
         Execute a subagent to handle a subtask (core orchestration method).
 
@@ -453,6 +465,13 @@ class SubagentManager:
         # Prefer an explicit context passed by the caller (e.g. tool execution),
         # then fall back to the current agent's contextvar-based execution context.
         current_context = kwargs.pop('context', None) or kwargs.pop('parent_context', None)
+        delegation_spec = kwargs.pop('delegation_spec', None)
+        if delegation_spec is not None and not isinstance(
+            delegation_spec, DelegationSpec
+        ):
+            raise TypeError("delegation_spec must be a DelegationSpec or None")
+        if delegation_spec is not None and directive != delegation_spec.objective:
+            raise ValueError("directive must match DelegationSpec.objective")
         if current_context is None:
             current_context = BaseAgent._get_current_context()
         if current_context is None:
@@ -470,6 +489,47 @@ class SubagentManager:
             sub_task_id=sub_task_id,
             task_type=task_type
         )
+
+        context_pack = None
+        if delegation_spec is not None:
+            child_depth = kwargs.pop(
+                "child_depth",
+                getattr(current_context, "_delegation_depth", 0) + 1,
+            )
+            if child_depth > delegation_spec.max_depth:
+                return ChildResult(
+                    status=ChildStatus.DEPTH_EXCEEDED,
+                    answer=None,
+                    evidence=(),
+                    artifacts=(),
+                    context_delta=(),
+                    usage=ChildUsage(input_tokens=0, output_tokens=0, turns=0),
+                    reason_code="delegation_depth_exceeded",
+                )
+            available_items = tuple(
+                item
+                for sidecar in current_context.get_context_observations()
+                for item in sidecar.result.items
+            )
+            sub_context.prepare_delegated_child(delegation_depth=child_depth)
+            context_pack = ContextPack.build(
+                spec=delegation_spec,
+                available_items=available_items,
+                parent_allowed_tools=self.agent.tool_names,
+                child_declared_tools=subagent_info.tools,
+                parent_task_epoch=current_context.task_epoch,
+                child_depth=child_depth,
+                child_task_id=sub_task_id,
+                child_task_epoch=sub_context.task_epoch,
+            )
+            sub_context.publish_context_observation(
+                ContextObservationSidecar.from_adapter_result(
+                    owner="delegation.context_pack",
+                    namespace=sub_task_id,
+                    source_identity=f"context-pack:{context_pack.pack_hash}",
+                    result=AdapterResult(items=context_pack.items, diagnostics=()),
+                )
+            )
 
         logger.debug(
             f"SubagentManager.spawn: Created sub_context {sub_task_id} "
@@ -493,6 +553,11 @@ class SubagentManager:
                     subagent_tools=subagent_info.tools,
                     disallowed=disallowed_tools
                 )
+                if context_pack is not None:
+                    filtered_tools = [
+                        tool for tool in filtered_tools
+                        if tool in context_pack.allowed_tools
+                    ]
 
                 # Clone agent to avoid state pollution
                 cloned_agent = self._clone_agent_instance(original_agent, filtered_tools)
@@ -509,6 +574,11 @@ class SubagentManager:
                     info=subagent_info,
                     **kwargs
                 )
+                if context_pack is not None:
+                    cloned_agent.tool_names = [
+                        tool for tool in cloned_agent.tool_names
+                        if tool in context_pack.allowed_tools
+                    ]
 
                 logger.debug(
                     f"SubagentManager.spawn: Created temp agent '{name}' from agent.md"
@@ -517,6 +587,21 @@ class SubagentManager:
                 raise ValueError(
                     f"Unknown subagent source: {subagent_info.source}"
                 )
+
+            if delegation_spec is not None:
+                if hasattr(cloned_agent, "conf"):
+                    cloned_agent.conf.max_steps = min(
+                        getattr(cloned_agent.conf, "max_steps", delegation_spec.max_turns),
+                        delegation_spec.max_turns,
+                    )
+                    cloned_agent.conf.max_input_tokens = min(
+                        getattr(
+                            cloned_agent.conf,
+                            "max_input_tokens",
+                            delegation_spec.token_budget,
+                        ),
+                        delegation_spec.token_budget,
+                    )
 
             # Step 5: Execute subagent with sub_context
             # Create a Task with the sub_context
@@ -528,7 +613,14 @@ class SubagentManager:
             )
 
             # Execute via Runners
-            result_dict = await Runners.run_task(task)
+            run = Runners.run_task(task)
+            if delegation_spec is not None and delegation_spec.deadline is not None:
+                remaining = delegation_spec.deadline.timestamp() - time.time()
+                if remaining <= 0:
+                    raise asyncio.TimeoutError("delegation deadline elapsed")
+                result_dict = await asyncio.wait_for(run, timeout=remaining)
+            else:
+                result_dict = await run
             task_response = result_dict.get(task.id)
 
             # Extract result string
@@ -537,7 +629,81 @@ class SubagentManager:
 
                 # Step 6: Merge sub_context back to parent context
                 # This merges token usage, kv_store, and other state
-                current_context.merge_sub_context(sub_context)
+                if delegation_spec is not None:
+                    try:
+                        frozen_answer = freeze_json(task_response.answer)
+                    except TypeError:
+                        frozen_answer = freeze_json(result_str)
+                    child_usage = ChildUsage(
+                        input_tokens=int(sub_context.token_usage.get("prompt_tokens", 0)),
+                        output_tokens=int(sub_context.token_usage.get("completion_tokens", 0)),
+                        turns=len(sub_context.get_llm_calls()),
+                    )
+                    budget_exceeded = (
+                        child_usage.input_tokens + child_usage.output_tokens
+                        > delegation_spec.token_budget
+                        or child_usage.output_tokens
+                        > delegation_spec.max_output_tokens
+                    )
+                    schema_validated = (
+                        not budget_exceeded
+                        and validate_delegation_output(
+                            frozen_answer,
+                            delegation_spec.expected_output_schema,
+                        )
+                    )
+                    child_result = ChildResult(
+                        status=(
+                            ChildStatus.BUDGET_EXCEEDED
+                            if budget_exceeded
+                            else (
+                                ChildStatus.SUCCEEDED
+                                if schema_validated
+                                else ChildStatus.PARTIAL
+                            )
+                        ),
+                        answer=(frozen_answer if schema_validated else None),
+                        evidence=(),
+                        artifacts=tuple(
+                            value for value in (
+                                getattr(task_response, "trajectory_ref", None),
+                            ) if value
+                        ),
+                        context_delta=(),
+                        usage=child_usage,
+                        reason_code=(
+                            "delegation_budget_exceeded"
+                            if budget_exceeded
+                            else (
+                                None
+                                if schema_validated
+                                else "delegation_output_schema_invalid"
+                            )
+                        ),
+                        schema_validated=schema_validated,
+                    )
+                    merged_result = merge_child_result(
+                        delegation_spec, child_result
+                    )
+                    current_context.merge_delegation_context(
+                        sub_context,
+                        delegation_record={
+                            "context_pack_hash": context_pack.pack_hash,
+                            "child_task_id": sub_task_id,
+                            "status": child_result.status.value,
+                            "input_tokens": child_result.usage.input_tokens,
+                            "output_tokens": child_result.usage.output_tokens,
+                            "schema_validated": merged_result.schema_validated,
+                            "merged_context_delta_ids": [
+                                item.id for item in merged_result.context_delta
+                            ],
+                            "rejected_context_delta_ids": list(
+                                merged_result.rejected_delta_ids
+                            ),
+                        },
+                    )
+                else:
+                    current_context.merge_sub_context(sub_context)
 
                 elapsed = time.time() - start_time
                 logger.info(
@@ -545,7 +711,7 @@ class SubagentManager:
                     f"in {elapsed:.2f}s, result length: {len(result_str)}"
                 )
 
-                return result_str
+                return child_result if delegation_spec is not None else result_str
             else:
                 # Execution failed
                 error_msg = task_response.msg if task_response else "Unknown error"
@@ -556,10 +722,57 @@ class SubagentManager:
                 )
 
                 # Still merge context to capture token usage
+                if delegation_spec is not None:
+                    child_result = ChildResult(
+                        status=ChildStatus.FAILED,
+                        answer=None,
+                        evidence=(),
+                        artifacts=(),
+                        context_delta=(),
+                        usage=ChildUsage(
+                            input_tokens=int(sub_context.token_usage.get("prompt_tokens", 0)),
+                            output_tokens=int(sub_context.token_usage.get("completion_tokens", 0)),
+                            turns=len(sub_context.get_llm_calls()),
+                        ),
+                        reason_code="child_execution_failed",
+                    )
+                    current_context.merge_delegation_context(
+                        sub_context,
+                        delegation_record={
+                            "context_pack_hash": context_pack.pack_hash,
+                            "child_task_id": sub_task_id,
+                            "status": child_result.status.value,
+                        },
+                    )
+                    return child_result
                 current_context.merge_sub_context(sub_context)
 
                 return f"[Error] Subagent '{name}' failed: {error_msg}"
 
+        except asyncio.CancelledError:
+            if delegation_spec is not None:
+                child_result = ChildResult(
+                    status=ChildStatus.CANCELLED,
+                    answer=None,
+                    evidence=(),
+                    artifacts=(),
+                    context_delta=(),
+                    usage=ChildUsage(
+                        input_tokens=int(sub_context.token_usage.get("prompt_tokens", 0)),
+                        output_tokens=int(sub_context.token_usage.get("completion_tokens", 0)),
+                        turns=len(sub_context.get_llm_calls()),
+                    ),
+                    reason_code="parent_cancelled",
+                )
+                current_context.merge_delegation_context(
+                    sub_context,
+                    delegation_record={
+                        "context_pack_hash": context_pack.pack_hash,
+                        "child_task_id": sub_task_id,
+                        "status": child_result.status.value,
+                    },
+                )
+            raise
         except Exception as e:
             elapsed = time.time() - start_time
             logger.exception(
@@ -569,13 +782,47 @@ class SubagentManager:
 
             # Attempt to merge context even on exception
             try:
-                current_context.merge_sub_context(sub_context)
+                if delegation_spec is not None:
+                    status = (
+                        ChildStatus.DEADLINE_EXCEEDED
+                        if isinstance(e, asyncio.TimeoutError)
+                        else ChildStatus.FAILED
+                    )
+                    child_result = ChildResult(
+                        status=status,
+                        answer=None,
+                        evidence=(),
+                        artifacts=(),
+                        context_delta=(),
+                        usage=ChildUsage(
+                            input_tokens=int(sub_context.token_usage.get("prompt_tokens", 0)),
+                            output_tokens=int(sub_context.token_usage.get("completion_tokens", 0)),
+                            turns=len(sub_context.get_llm_calls()),
+                        ),
+                        reason_code=(
+                            "deadline_exceeded"
+                            if status is ChildStatus.DEADLINE_EXCEEDED
+                            else "child_exception"
+                        ),
+                    )
+                    current_context.merge_delegation_context(
+                        sub_context,
+                        delegation_record={
+                            "context_pack_hash": context_pack.pack_hash,
+                            "child_task_id": sub_task_id,
+                            "status": child_result.status.value,
+                        },
+                    )
+                else:
+                    current_context.merge_sub_context(sub_context)
             except Exception as merge_error:
                 logger.error(
                     f"SubagentManager.spawn: Failed to merge sub_context "
                     f"after exception: {merge_error}"
                 )
 
+            if delegation_spec is not None:
+                return child_result
             return f"[Exception] Subagent '{name}' crashed: {str(e)}"
 
     def _filter_tools(

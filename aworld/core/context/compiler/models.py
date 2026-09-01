@@ -119,6 +119,7 @@ class ResolutionReason(str, Enum):
     LOWER_AUTHORITY_CONFLICT = "lower_authority_conflict"
     NOT_ACTIVATED = "not_activated"
     BUDGET_COMPACTED = "budget_compacted"
+    BUDGET_OFFLOADED = "budget_offloaded"
     BUDGET_INCLUDED = "budget_included"
     BUDGET_EXCLUDED = "budget_excluded"
     ATOMIC_GROUP_REQUIRED = "atomic_group_required"

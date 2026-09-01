@@ -49,16 +49,54 @@ def _write_json(path: Path, payload) -> str:
     return _sha256_bytes(encoded)
 
 
+def _resolve_llm_call_capture(response, agent) -> tuple[list, str, dict]:
+    """Preserve blocked-call evidence when TaskResponse propagation is incomplete."""
+    response_calls = list(getattr(response, "llm_calls", None) or [])
+    live_context = getattr(agent, "context", None)
+    live_getter = getattr(live_context, "get_llm_calls", None)
+    live_calls = list(live_getter() or []) if callable(live_getter) else []
+    continuity = {
+        "task_response_count": len(response_calls),
+        "live_context_count": len(live_calls),
+        "counts_match": len(response_calls) == len(live_calls),
+    }
+    if response_calls:
+        return response_calls, "task_response", continuity
+    if live_calls:
+        return live_calls, "live_context_fallback", continuity
+    return [], "unavailable", continuity
+
+
+def _is_provider_bound_call(call) -> bool:
+    if not isinstance(call, dict) or call.get("provider_invoked") is not True:
+        return False
+    rollout = call.get("context_rollout") or {}
+    lowering = rollout.get("provider_lowering") or {}
+    provider_request = lowering.get("provider_request") or {}
+    return (
+        rollout.get("candidate_applied") is True
+        and provider_request.get("capture_stage") == "provider_prepared"
+        and provider_request.get("fidelity") == "provider_prepared"
+    )
+
+
 def _load_variant(path: Path | None) -> dict:
     if path is None:
         return {
             "schema_version": "aworld.context-eval-variant/v1",
             "name": "baseline",
             "agent_memory_config": {},
+            "context_compiler": {},
             "docker_output_policy": {},
         }
     payload = json.loads(path.read_text(encoding="utf-8"))
-    allowed = {"schema_version", "name", "agent_memory_config", "docker_output_policy"}
+    allowed = {
+        "schema_version",
+        "name",
+        "agent_memory_config",
+        "context_compiler",
+        "docker_output_policy",
+    }
     unexpected = sorted(set(payload) - allowed)
     if unexpected:
         raise ValueError(
@@ -68,6 +106,7 @@ def _load_variant(path: Path | None) -> dict:
     if not payload.get("name"):
         raise ValueError("variant config requires a non-empty name")
     payload.setdefault("agent_memory_config", {})
+    payload.setdefault("context_compiler", {})
     payload.setdefault("docker_output_policy", {})
     allowed_memory_fields = {
         "history_scope",
@@ -85,6 +124,36 @@ def _load_variant(path: Path | None) -> dict:
         raise ValueError(
             "Variant agent_memory_config contains non-evaluation fields: "
             + ", ".join(unexpected_memory)
+        )
+    allowed_compiler_fields = {
+        "mode",
+        "compiler_version",
+        "policy_version",
+        "universal_final",
+        "context_limit",
+        "reserved_output_tokens",
+        "provider_protocol_reserve",
+        "safety_margin_tokens",
+        "max_item_tokens",
+        "require_proven_semantics_for_enforce",
+        "scoped_instructions",
+        "progressive_skills",
+        "progressive_tools",
+        "task_catalog_policy",
+        "checkpoint_policy",
+        "default_tool_output_inline_tokens",
+        "artifact_offload",
+        "context_inspector",
+        "trace_level",
+        "completion_contract",
+    }
+    unexpected_compiler = sorted(
+        set(payload["context_compiler"]) - allowed_compiler_fields
+    )
+    if unexpected_compiler:
+        raise ValueError(
+            "Variant context_compiler contains unsupported fields: "
+            + ", ".join(unexpected_compiler)
         )
     allowed_output_fields = {"max_inline_output_bytes", "output_head_bytes"}
     unexpected_output = sorted(set(payload["docker_output_policy"]) - allowed_output_fields)
@@ -190,6 +259,7 @@ async def run(args: argparse.Namespace) -> None:
                 max_steps=args.max_steps,
                 use_vision=False,
                 memory_config=AgentMemoryConfig(**variant["agent_memory_config"]),
+                context_compiler=variant["context_compiler"],
             ),
             sandbox=sandbox,
             feedback_tool_result=True,
@@ -198,30 +268,35 @@ async def run(args: argparse.Namespace) -> None:
         response = await Runners.run(instruction, agent=agent)
         response_payload = to_serializable(response.to_dict())
         trajectory_payload = to_serializable(response.trajectory)
-        llm_calls = to_serializable(response.llm_calls or [])
+        captured_llm_calls, llm_capture_source, llm_capture_continuity = (
+            _resolve_llm_call_capture(response, agent)
+        )
+        llm_calls = to_serializable(captured_llm_calls)
         provider_calls = [
             call for call in llm_calls
-            if isinstance(call, dict) and call.get("capture_stage") == "provider_bound"
+            if _is_provider_bound_call(call)
         ]
-        if not provider_calls and not args.allow_missing_provider_trace:
-            raise RuntimeError(
-                "No provider-bound request snapshots were captured; reward cannot be attributed "
-                "to a context-management variant"
-            )
+        provider_capture_gate_passed = bool(provider_calls)
         checksums = {
             "task_response.json": _write_json(args.output_dir / "task_response.json", response_payload),
             "raw_trajectory.json": _write_json(args.output_dir / "raw_trajectory.json", trajectory_payload),
+            "llm_calls.json": _write_json(args.output_dir / "llm_calls.json", llm_calls),
             "provider_calls.json": _write_json(args.output_dir / "provider_calls.json", provider_calls),
             "context_trace.json": _write_json(
                 args.output_dir / "context_trace.json",
                 [
                     {
                         "request_id": call.get("request_id"),
+                        "status": call.get("status"),
+                        "error_code": call.get("error_code"),
+                        "provider_invoked": call.get("provider_invoked"),
                         "request_trace_match": call.get("request_trace_match"),
                         "assembly_observability": call.get("assembly_observability"),
                         "request_metrics": call.get("request_metrics"),
+                        "context_rollout": call.get("context_rollout"),
                     }
-                    for call in provider_calls
+                    for call in llm_calls
+                    if isinstance(call, dict)
                 ],
             ),
         }
@@ -249,6 +324,10 @@ async def run(args: argparse.Namespace) -> None:
             },
             "capture": {
                 "provider_call_count": len(provider_calls),
+                "llm_call_count": len(llm_calls),
+                "llm_call_source": llm_capture_source,
+                "llm_call_continuity": llm_capture_continuity,
+                "provider_capture_gate_passed": provider_capture_gate_passed,
                 "trajectory_items": len(response.trajectory or []),
                 "checksums": checksums,
             },
@@ -269,6 +348,11 @@ async def run(args: argparse.Namespace) -> None:
                 ensure_ascii=False,
             )
         )
+        if not provider_capture_gate_passed and not args.allow_missing_provider_trace:
+            raise RuntimeError(
+                "No provider-bound request snapshots were captured; diagnostic artifacts were "
+                "preserved, but reward cannot be attributed to a context-management variant"
+            )
     finally:
         await sandbox.cleanup()
 

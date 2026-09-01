@@ -1010,6 +1010,54 @@ context_compiler:
 因此仍保持 fail-closed。该门禁证明“candidate 确实成为 provider 请求”，但不单独证明 Context 优化有收益；
 收益仍必须通过固定 provider/model/environment 的 paired benchmark 和 independent verifier 归因。
 
+### Integrated Implementation Status (2026-09-01)
+
+Milestone 3-6 已形成一个可整体验证的代码版本，当前状态不是“默认开启”，而是“核心控制面完成、进入
+跨 workload 收益验证”：
+
+- universal final compiler 已统一消费 final messages、Tool Catalog、Steering、Amni folded system、memory、
+  scoped instructions 和 progressive Skill sidecar；四种 LLM 调用形态共享同一 model boundary。`off` 不创建
+  新 lifecycle/catalog/sidecar 状态，`observe/shadow` 不授权外部动作，`enforce` 在 finalize、compile、provider
+  lowering 或 receipt 失败时记录 `blocked_before_provider`。
+- 内置 OpenAI Chat Completions 已拥有 SDK 的 `PROVIDER_PREPARED` 结构回执和 HTTP canonical serialized bytes；
+  verified cache identity 只从 provider-wire prefix 建立，并记录 `initialized/continued/broken` 与完整
+  `CacheBreakReason`。Azure、自定义 provider 和未审查的发送边界继续由 capability registry fail-closed，不能
+  通过自报 capability 绕过。
+- nested/path/global instruction loader、trust isolation、task-epoch lifecycle、checkpoint/rewind/resume、
+  progressive Skill、task-sticky minimal Tool Catalog 和 redacted Context Inspector 已接入共享 Context/LLM 路径。
+  Amni resume 不持久化 runtime sidecar，而是从结构化 system memory 重新验证 exact folded message。
+- Tool runtime 在结果进入 model、memory 和 trajectory 前执行预声明 `ToolOutputPolicy`；超限结果写入权限受限、
+  content-addressed、checksum 可验证的 artifact，Context 仅保留 bounded inline receipt，禁用 offload 时超限
+  请求 fail-closed，不产生不可逆的静默截断。
+- `DelegationSpec`、least-authority `ContextPack`、depth/deadline/cancel/budget、父侧 schema revalidation、bounded
+  `ChildResult` 和显式 merge policy 已接入 SubagentManager；`CompletionContract` 在 runner FINISHED 边界分别
+  判断 agent claim、artifact/immutable input/self-check/final evidence 与 external verifier。
+- Context-only paired manifest、complete trajectory gate、deterministic bootstrap interval、session-sticky canary、
+  provider/entry-point capability matrix、rollback bundle 和 default-on readiness report 已实现。任何默认开启仍需
+  Terminal Bench 与至少一个非 Terminal workload 的 paired evidence，不能由单题 reward 或逻辑 prefix hash 决定。
+
+实现完成后才打开 behavioral validation gate。初始 focused regression 为 170/170，通过范围覆盖 compiler、
+OpenAI lowering、HTTP serialized cache continuity、scope/progressive/offload/delegation/completion/evaluation/canary、
+Amni、runner trajectory 和本地 Terminal Bench driver contract。全仓回归曾运行到 1,154 passed 后因慢速 gateway
+测试长时间无输出而中止；其中发现的本次相关 off-mode compatibility 问题已修复并定向回归，宿主全局
+`~/.aworld/AWORLD.md` 污染 fixture 等非本 spec 失败不作为收益结论。下一验证阶段仍需运行真实本地 Docker
+小样本与第二类 workload，生成 paired request/trace/raw trajectory/reward evidence 后才能判断 Context Management
+是否带来系统性能力收益。
+
+真实本地 Docker smoke 随后以固定 `glm-5.2/openai-compatible`、temperature 0、标准
+`prove-plus-comm` 镜像运行 unified-context-enforce。它系统性暴露并修复了五个非 benchmark 特定的集成缺陷：
+空 optional trace id 未规范化、Amni folded system 的 trust 语义不一致、final compile 后重放 legacy prompt
+assembly plan、Tool turn atomic group 跨 allocation tier，以及 TaskResponse/provider-stage 过滤导致 blocked/provider
+receipt 证据丢失。适配器现在总是先落盘 `task_response.json`、真实 `raw_trajectory.json`、全部 `llm_calls`、
+provider-lowering receipts、redacted context trace 和 checksum manifest，再执行归因 hard gate；TaskResponse 丢失
+call records 时会显式标记 `live_context_fallback` 和 count mismatch，而不会伪装为完整 capture。
+
+修复后的单题完整 rollout 产生 8 个 trajectory items、8/8 成功 provider-lowered calls 和 8 个
+`PROVIDER_PREPARED` receipts，TaskResponse success 为 true；运行日志记录 25,925 tokens，其中 provider usage 报告
+19,456 cached tokens。该次本机 Docker daemon 在独立 verifier/result 汇总前退出，因此没有 reward，不能作为
+Context 收益或 benchmark 分数结论；但它已证明 final compiler、provider lowering、Tool loop 和 raw trajectory
+capture 能在真实容器任务中连续运行。paired reward、统计门禁和第二类 workload 仍是 default-on 前置条件。
+
 ## Migration Plan
 
 ### Phase 0: Baseline and Observability
