@@ -14,6 +14,8 @@ from aworld.core.context.compiler import (
     ProviderCandidateEnvelope,
     ProviderLoweringCapability,
     ProviderLoweringReceipt,
+    ProviderObservedAttributionEnvelope,
+    ProviderObservedAttributionReceipt,
     ProviderRequestSnapshot,
 )
 from aworld.utils.common import nest_dict_counter
@@ -136,6 +138,17 @@ class LLMProviderBase(abc.ABC):
                 )
                 updated_rollout = dict(rollout)
                 updated_rollout.update({"candidate_status": "provider_prepared", "candidate_applied": True, "provider_lowering_ready": True, "provider_lowering": lowering_evidence})
+                updated_rollout["provider_attribution"] = {
+                    "subject": "candidate_selected",
+                    "subject_content_hash": envelope.candidate_request.content_hash,
+                    "plan_fingerprint": envelope.attribution_plan.fingerprint,
+                    "status": "available",
+                    "adapter_identity": receipt.lowering.adapter_identity,
+                    "adapter_version": receipt.lowering.adapter_version,
+                    "request_projection": receipt.lowering.request_projection,
+                    "provider_request": lowering_evidence["provider_request"],
+                    "attribution": lowering_evidence["attribution"],
+                }
                 updated_rollout.pop("error", None)
                 updated.update({"request": envelope.candidate_request.thaw(), "request_selection": "candidate", "context_observe_scope": "legacy_request_before_rollout", "provider_prepared_request_match": None, "context_rollout": updated_rollout})
             llm_calls[index] = updated
@@ -183,6 +196,71 @@ class LLMProviderBase(abc.ABC):
                 raise
         except Exception:
             raise CandidateRequestNotEnforceable("provider_prepared_attempt_failed") from None
+
+    def commit_provider_observed_attribution(
+        self,
+        *,
+        context: Context | None,
+        request_id: str,
+        snapshot: ProviderRequestSnapshot,
+        envelope: ProviderObservedAttributionEnvelope,
+        receipt: ProviderObservedAttributionReceipt | None,
+        reason_code: str | None = None,
+    ) -> None:
+        """Persist observe-only provider attribution without authorizing mutation."""
+        if context is None:
+            raise ValueError("observed attribution requires Context")
+        if not isinstance(snapshot, ProviderRequestSnapshot) or snapshot.request_id != request_id:
+            raise TypeError("invalid observed provider snapshot")
+        if not isinstance(envelope, ProviderObservedAttributionEnvelope):
+            raise TypeError("invalid observed attribution envelope")
+        if (receipt is None) == (reason_code is None):
+            raise ValueError("observed attribution requires receipt xor reason")
+        if receipt is not None and (
+            not isinstance(receipt, ProviderObservedAttributionReceipt)
+            or receipt.envelope != envelope
+            or receipt.provider_request != snapshot
+        ):
+            raise ValueError("observed attribution receipt mismatch")
+        llm_calls = context.get_llm_calls()
+        matches = [
+            (index, record)
+            for index, record in enumerate(llm_calls)
+            if isinstance(record, dict) and record.get("request_id") == request_id
+        ]
+        if len(matches) != 1:
+            raise ValueError("observed attribution correlation is ambiguous")
+        index, record = matches[0]
+        rollout = record.get("context_rollout")
+        if not isinstance(rollout, dict) or rollout.get("mode") != "observe":
+            raise ValueError("observed attribution requires an observe record")
+        observed = rollout.get("observed_snapshot")
+        if (
+            not isinstance(observed, dict)
+            or observed.get("content_hash") != envelope.observed_request.content_hash
+        ):
+            raise ValueError("persisted observed request does not match envelope")
+        evidence = (
+            {**receipt.to_redacted_dict(), "status": "available"}
+            if receipt is not None
+            else {
+                "subject": envelope.subject.value,
+                "subject_content_hash": envelope.observed_request.content_hash,
+                "plan_fingerprint": envelope.attribution_plan.fingerprint,
+                "status": "unavailable",
+                "reason_code": reason_code,
+            }
+        )
+        updated_rollout = dict(rollout)
+        updated_rollout["provider_attribution"] = evidence
+        updated = dict(record)
+        updated.update({
+            "provider_request": snapshot.to_dict(),
+            "provider_invoked": False,
+            "provider_attempt_status": "prepared",
+            "context_rollout": updated_rollout,
+        })
+        llm_calls[index] = updated
 
     def commit_provider_request_capture(
         self,

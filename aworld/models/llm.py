@@ -38,6 +38,7 @@ from aworld.models.model_response import ModelResponse
 from aworld.core.context.base import Context
 from aworld.core.context.compiler import (
     AWORLD_PROVIDER_CANDIDATE_KWARG,
+    AWORLD_PROVIDER_OBSERVED_ATTRIBUTION_KWARG,
     CandidateCompileInput,
     CandidateCompilePolicy,
     CandidateCompilation,
@@ -51,6 +52,8 @@ from aworld.core.context.compiler import (
     InferenceProfile,
     ProviderRequestSnapshot,
     ProviderCandidateEnvelope,
+    ProviderAttributionSubject,
+    ProviderObservedAttributionEnvelope,
     ProviderCacheMaterial,
     ProviderLoweringCapability,
     ProviderRequestFidelity,
@@ -60,6 +63,7 @@ from aworld.core.context.compiler import (
     compile_context_candidate,
     inspect_final_context,
     build_unknown_attribution_plan,
+    build_observed_model_boundary_attribution_plan,
     AttributionCollection,
     observe_legacy_provider_request,
     request_trace_match,
@@ -958,7 +962,11 @@ class LLMModel:
         stop: List[str],
         tools: Any,
         model_name: str | None,
-    ) -> tuple[dict[str, Any] | None, ProviderCandidateEnvelope | None]:
+    ) -> tuple[
+        dict[str, Any] | None,
+        ProviderCandidateEnvelope | None,
+        ProviderObservedAttributionEnvelope | None,
+    ]:
         """Prepare redacted rollout metadata without invoking external actions.
 
         The current model boundary is structurally faithful but not a
@@ -970,18 +978,74 @@ class LLMModel:
         if mode is ContextCompilerMode.OFF:
             # Keep the default path byte-for-byte compatible at the model
             # boundary: no candidate snapshot, comparison, or record field.
-            return None, None
+            return None, None, None
         if mode is ContextCompilerMode.OBSERVE:
-            # Existing context_observe capture below remains authoritative.
-            # Observe never asks the candidate compiler to do work.
-            return {
+            metadata = {
                 "mode": mode.value,
                 "candidate_status": "not_requested",
                 "candidate_applied": False,
                 "external_actions_authorized": False,
                 "external_action_count_observed": None,
                 "comparison": None,
-            }, None
+            }
+            try:
+                capability = reviewed_provider_lowerings.resolve(
+                    self.provider, self.provider_name
+                )
+                if type(capability) is not ProviderLoweringCapability:
+                    metadata["provider_attribution"] = {
+                        "subject": ProviderAttributionSubject.LEGACY_OBSERVED.value,
+                        "status": "unsupported",
+                        "reason_code": "provider_attribution_adapter_unavailable",
+                    }
+                    return metadata, None, None
+                observed_request = ProviderRequestSnapshot(
+                    request_id=request_id,
+                    provider_name=self.provider_name,
+                    payload=self._model_boundary_request(
+                        messages=messages,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                        stop=stop,
+                        tools=tools,
+                    ),
+                    capture_stage=RequestCaptureStage.MODEL_BOUNDARY,
+                    fidelity=ProviderRequestFidelity.MODEL_BOUNDARY,
+                )
+                plan = build_observed_model_boundary_attribution_plan(
+                    observed_request=observed_request,
+                    observations=(
+                        context.get_context_observations() if context is not None else ()
+                    ),
+                    task_epoch=(context.task_epoch if context is not None else None),
+                )
+                envelope = ProviderObservedAttributionEnvelope(
+                    observed_request=observed_request,
+                    attribution_plan=plan,
+                    expected_lowering=capability,
+                )
+                metadata.update({
+                    "observed_snapshot": {
+                        "content_hash": observed_request.content_hash,
+                        "capture_stage": observed_request.capture_stage.value,
+                        "fidelity": observed_request.fidelity.value,
+                        "attribution_plan_fingerprint": plan.fingerprint,
+                    },
+                    "compiler_attribution_plan": plan.to_redacted_dict(),
+                    "provider_attribution": {
+                        "subject": ProviderAttributionSubject.LEGACY_OBSERVED.value,
+                        "subject_content_hash": observed_request.content_hash,
+                        "status": "awaiting_receipt",
+                    },
+                })
+                return metadata, None, envelope
+            except Exception:
+                metadata["provider_attribution"] = {
+                    "subject": ProviderAttributionSubject.LEGACY_OBSERVED.value,
+                    "status": "unavailable",
+                    "reason_code": "observed_attribution_plan_failed",
+                }
+                return metadata, None, None
 
         compile_started = time.perf_counter()
         policy = getattr(self, "_context_candidate_policy", None)
@@ -1046,6 +1110,7 @@ class LLMModel:
                 fail_metadata(
                     status="failed", error_code="invalid_compiler_policy"
                 ),
+                None,
                 None,
             )
 
@@ -1149,6 +1214,7 @@ class LLMModel:
                     status="failed", error_code="candidate_input_failed"
                 ),
                 None,
+                None,
             )
 
         try:
@@ -1230,6 +1296,7 @@ class LLMModel:
                     status="failed", error_code="candidate_compilation_failed"
                 ),
                 None,
+                None,
             )
 
         if mode is ContextCompilerMode.ENFORCE:
@@ -1309,8 +1376,8 @@ class LLMModel:
                     "status": "awaiting_receipt",
                 },
             })
-            return prepared, envelope
-        return metadata, None
+            return prepared, envelope, None
+        return metadata, None, None
 
     def _mark_context_rollout_blocked(
         self,
@@ -1683,7 +1750,7 @@ class LLMModel:
             tools=kwargs.get("tools"),
             model_name=kwargs.get("model_name") or kwargs.get("model"),
         )
-        context_rollout, provider_candidate = self._prepare_context_rollout(
+        context_rollout, provider_candidate, observed_attribution = self._prepare_context_rollout(
             context=context,
             request_id=request_id,
             agent_call_id=agent_call_id,
@@ -1711,6 +1778,8 @@ class LLMModel:
         )
         if provider_candidate is not None:
             kwargs[AWORLD_PROVIDER_CANDIDATE_KWARG] = provider_candidate
+        if observed_attribution is not None:
+            kwargs[AWORLD_PROVIDER_OBSERVED_ATTRIBUTION_KWARG] = observed_attribution
         try:
             resp = await self.provider.acompletion(
                 messages=messages,
@@ -1907,7 +1976,7 @@ class LLMModel:
             tools=kwargs.get("tools"),
             model_name=kwargs.get("model_name") or kwargs.get("model"),
         )
-        context_rollout, provider_candidate = self._prepare_context_rollout(
+        context_rollout, provider_candidate, observed_attribution = self._prepare_context_rollout(
             context=context,
             request_id=request_id,
             agent_call_id=agent_call_id,
@@ -1935,6 +2004,8 @@ class LLMModel:
         )
         if provider_candidate is not None:
             kwargs[AWORLD_PROVIDER_CANDIDATE_KWARG] = provider_candidate
+        if observed_attribution is not None:
+            kwargs[AWORLD_PROVIDER_OBSERVED_ATTRIBUTION_KWARG] = observed_attribution
         try:
             resp = self.provider.completion(
                 messages=messages,
@@ -2091,7 +2162,7 @@ class LLMModel:
             tools=kwargs.get("tools"),
             model_name=kwargs.get("model_name") or kwargs.get("model"),
         )
-        context_rollout, provider_candidate = self._prepare_context_rollout(
+        context_rollout, provider_candidate, observed_attribution = self._prepare_context_rollout(
             context=context,
             request_id=request_id,
             agent_call_id=agent_call_id,
@@ -2119,6 +2190,8 @@ class LLMModel:
         )
         if provider_candidate is not None:
             kwargs[AWORLD_PROVIDER_CANDIDATE_KWARG] = provider_candidate
+        if observed_attribution is not None:
+            kwargs[AWORLD_PROVIDER_OBSERVED_ATTRIBUTION_KWARG] = observed_attribution
         try:
             for chunk in self.provider.stream_completion(
                 messages=messages,
@@ -2241,7 +2314,7 @@ class LLMModel:
             tools=kwargs.get("tools"),
             model_name=kwargs.get("model_name") or kwargs.get("model"),
         )
-        context_rollout, provider_candidate = self._prepare_context_rollout(
+        context_rollout, provider_candidate, observed_attribution = self._prepare_context_rollout(
             context=context,
             request_id=request_id,
             agent_call_id=agent_call_id,
@@ -2269,6 +2342,8 @@ class LLMModel:
         )
         if provider_candidate is not None:
             kwargs[AWORLD_PROVIDER_CANDIDATE_KWARG] = provider_candidate
+        if observed_attribution is not None:
+            kwargs[AWORLD_PROVIDER_OBSERVED_ATTRIBUTION_KWARG] = observed_attribution
         try:
             async for chunk in self.provider.astream_completion(
                     messages=messages,

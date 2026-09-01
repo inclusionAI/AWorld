@@ -416,10 +416,12 @@ def test_provider_attribution_deltas_are_run_bound_and_unsupported_without_basel
             "residency": {"dynamic": 10},
         },
     }
+    legacy_available = {**available, "subject": "legacy_observed"}
+    candidate_available = {**available, "subject": "candidate_selected"}
     rows = [
-        {"experiment": "exp-a", "run": "legacy-run", "case_id": "case", "repeat": 0, "variant": "legacy", "summary": available},
-        {"experiment": "exp-a", "run": "candidate-run", "case_id": "case", "repeat": 0, "variant": "candidate", "summary": available},
-        {"experiment": "exp-b", "run": "candidate-only", "case_id": "case", "repeat": 0, "variant": "candidate", "summary": available},
+        {"experiment": "exp-a", "run": "legacy-run", "case_id": "case", "repeat": 0, "variant": "legacy", "summary": legacy_available},
+        {"experiment": "exp-a", "run": "candidate-run", "case_id": "case", "repeat": 0, "variant": "candidate", "summary": candidate_available},
+        {"experiment": "exp-b", "run": "candidate-only", "case_id": "case", "repeat": 0, "variant": "candidate", "summary": candidate_available},
     ]
 
     deltas = reporter.paired_attribution_deltas(
@@ -434,6 +436,25 @@ def test_provider_attribution_deltas_are_run_bound_and_unsupported_without_basel
     assert deltas[1]["baseline_run"] is None
 
 
+def test_provider_attribution_delta_rejects_subject_mismatch():
+    reporter = _load_reporter()
+    dimensions = {
+        "owner": {}, "kind": {}, "source_kind": {}, "residency": {},
+    }
+    wrong = {"status": "available", "subject": "candidate_selected", "by_dimension": dimensions}
+    rows = [
+        {"experiment": "exp", "run": "legacy", "case_id": "case", "repeat": 1, "variant": "legacy", "summary": wrong},
+        {"experiment": "exp", "run": "candidate", "case_id": "case", "repeat": 1, "variant": "candidate", "summary": wrong},
+    ]
+
+    delta = reporter.paired_attribution_deltas(
+        rows, baseline="legacy", candidate="candidate"
+    )[0]
+
+    assert delta["status"] == "unsupported"
+    assert delta["reason"] == "paired_attribution_subject_mismatch"
+
+
 def test_attribution_pairing_gate_detects_manifest_run_missing_after_ten_pairs():
     reporter = _load_reporter()
     summary = {
@@ -442,17 +463,19 @@ def test_attribution_pairing_gate_detects_manifest_run_missing_after_ten_pairs()
             "owner": {}, "kind": {}, "source_kind": {}, "residency": {},
         },
     }
+    legacy_summary = {**summary, "subject": "legacy_observed"}
+    candidate_summary = {**summary, "subject": "candidate_selected"}
     case_ids = tuple(f"case-{index}" for index in range(11))
     rows = []
     for case_id in case_ids:
         rows.append({
             "experiment": "exp", "run": f"{case_id}/legacy", "case_id": case_id,
-            "repeat": 1, "variant": "legacy", "summary": summary,
+            "repeat": 1, "variant": "legacy", "summary": legacy_summary,
         })
         if case_id != "case-10":
             rows.append({
                 "experiment": "exp", "run": f"{case_id}/candidate", "case_id": case_id,
-                "repeat": 1, "variant": "candidate", "summary": summary,
+                "repeat": 1, "variant": "candidate", "summary": candidate_summary,
             })
 
     status = reporter.provider_attribution_pairing_status(
@@ -479,10 +502,12 @@ def test_attribution_pairing_gate_detects_duplicate_run():
             "owner": {}, "kind": {}, "source_kind": {}, "residency": {},
         },
     }
+    legacy_summary = {**summary, "subject": "legacy_observed"}
+    candidate_summary = {**summary, "subject": "candidate_selected"}
     rows = [
-        {"experiment": "exp", "run": "legacy", "case_id": "case", "repeat": 1, "variant": "legacy", "summary": summary},
-        {"experiment": "exp", "run": "candidate", "case_id": "case", "repeat": 1, "variant": "candidate", "summary": summary},
-        {"experiment": "exp", "run": "candidate-duplicate", "case_id": "case", "repeat": 1, "variant": "candidate", "summary": summary},
+        {"experiment": "exp", "run": "legacy", "case_id": "case", "repeat": 1, "variant": "legacy", "summary": legacy_summary},
+        {"experiment": "exp", "run": "candidate", "case_id": "case", "repeat": 1, "variant": "candidate", "summary": candidate_summary},
+        {"experiment": "exp", "run": "candidate-duplicate", "case_id": "case", "repeat": 1, "variant": "candidate", "summary": candidate_summary},
     ]
 
     status = reporter.provider_attribution_pairing_status(

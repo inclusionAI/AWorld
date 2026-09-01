@@ -11,6 +11,21 @@ back on pre-send mutation/cache failure, report dimensions are bound to an indep
 manifest-complete paired attribution is a default-on hard gate. Main commits: `87aceab7`, `173f31dc`, `2c30f9f5`; focused
 main-tree verification is 32/32 and the implementation worktree wider regression is 130/130.
 
+### Task 7.2a: Legacy observe attribution baseline
+
+**Status:** complete in the implementation branch
+
+- Added a frozen `legacy_observed` provider attribution envelope and receipt. Observe derives its plan by request-bound
+  message/Tool ordinals, never invokes candidate compilation, never replaces the legacy request, and degrades attribution
+  failures without adding a second provider call. Off mode creates no attribution state.
+- Exact reviewed OpenAI lowering now binds the observed plan to the actual SDK-prepared or controlled HTTP serialized
+  payload. Candidate evidence is also dual-written to the provider-neutral attribution sibling for compatible reporting.
+- Paired attribution reporting independently revalidates subject, provider raw payload, plan fingerprint, canonical bytes,
+  and manifest completeness before computing section deltas.
+- Added explicit sidecar residency/emission intent. Unspecified sidecars are evidence-only, preventing accidental duplicate
+  model-visible insertion; intentional non-resident instruction/context-pack owners opt in structurally.
+- Affected compiler, provider, reporting, progressive Skill, and delegation suites pass (177 tests).
+
 ## Completed Foundations
 
 - Built-in Agent portability, optional native capability degradation, and direct-run typed failure/non-zero semantics.

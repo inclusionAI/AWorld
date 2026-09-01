@@ -20,6 +20,7 @@ from aworld.core.context.compiler import (
     ContextInputBudget,
     ContextItem,
     ContextKind,
+    ContextEmissionIntent,
     ContextObservationSidecar,
     ContextScope,
     ContextSource,
@@ -29,6 +30,7 @@ from aworld.core.context.compiler import (
     InferenceProfile,
     Lifetime,
     LogicalResidency,
+    ModelResidency,
     ProviderAttributionMismatch,
     ProviderCacheMaterial,
     ProviderCandidateEnvelope,
@@ -44,6 +46,7 @@ from aworld.core.context.compiler import (
     TokenEstimate,
     Trust,
     build_provider_attribution_receipt,
+    build_observed_model_boundary_attribution_plan,
     build_cache_identity,
     build_unknown_attribution_plan,
     canonical_json_bytes,
@@ -225,6 +228,100 @@ def test_runtime_binds_only_current_model_collection_ordinal_not_hash():
     assert blocked.enforce_ready is False
     assert "source_lowering_unproven" in blocked.blocker_codes
     assert blocked.attribution_plan.entries[0].owner_code is AttributionOwnerCode.UNKNOWN
+
+
+def test_observed_plan_binds_duplicate_occurrences_and_marks_missing_owner_unknown():
+    messages = ({"role": "user", "content": "same"},) * 2
+    legacy = ProviderRequestSnapshot(
+        request_id="observed-duplicates",
+        provider_name="openai",
+        payload={"messages": messages, "tools": None, "params": {}},
+        capture_stage=RequestCaptureStage.MODEL_BOUNDARY,
+        fidelity=ProviderRequestFidelity.MODEL_BOUNDARY,
+    )
+    message_result, _ = adapt_agent_final_request(
+        messages=messages,
+        tools=(),
+        source_identity="model-final://agent/task-task/epoch-1/request-observed-duplicates",
+        task_id="task",
+        task_epoch=1,
+        agent_id="agent",
+        amni_folded_system=False,
+    )
+    sidecar = ContextObservationSidecar.from_adapter_result(
+        owner="model.final_messages",
+        namespace="agent",
+        source_identity="opaque",
+        result=message_result,
+        request_id_hash=canonical_json_hash({"request_id": "observed-duplicates"}),
+        collection=AttributionCollection.MESSAGES,
+        task_epoch=1,
+    )
+
+    bound = build_observed_model_boundary_attribution_plan(
+        observed_request=legacy, observations=(sidecar,), task_epoch=1
+    )
+    missing = build_observed_model_boundary_attribution_plan(
+        observed_request=legacy, observations=(), task_epoch=1
+    )
+
+    assert [entry.ordinal for entry in bound.entries] == [0, 1]
+    assert [entry.owner_code for entry in bound.entries] == [
+        AttributionOwnerCode.MODEL_FINAL_MESSAGES,
+        AttributionOwnerCode.MODEL_FINAL_MESSAGES,
+    ]
+    assert all(entry.residency is LogicalResidency.UNKNOWN for entry in bound.entries)
+    assert all(entry.owner_code is AttributionOwnerCode.UNKNOWN for entry in missing.entries)
+
+
+def test_additional_sidecar_requires_typed_not_resident_message_intent():
+    payload = {"role": "system", "content": "same instruction"}
+    legacy = ProviderRequestSnapshot(
+        request_id="residency",
+        provider_name="openai",
+        payload={"messages": (payload,), "tools": None, "params": {}},
+        capture_stage=RequestCaptureStage.MODEL_BOUNDARY,
+        fidelity=ProviderRequestFidelity.MODEL_BOUNDARY,
+    )
+    instruction = _item(
+        "instruction",
+        payload,
+        kind=ContextKind.INSTRUCTION,
+        stability=Stability.STABLE,
+        occurrence=0,
+    )
+    default_sidecar = ContextObservationSidecar.from_adapter_result(
+        owner="workspace.nested_instructions",
+        namespace="workspace",
+        source_identity="workspace",
+        result=AdapterResult(items=(instruction,), diagnostics=()),
+    )
+    explicit_sidecar = ContextObservationSidecar.from_adapter_result(
+        owner="workspace.nested_instructions",
+        namespace="workspace",
+        source_identity="workspace",
+        result=AdapterResult(items=(instruction,), diagnostics=()),
+        model_residency=ModelResidency.NOT_RESIDENT,
+        emission_intent=ContextEmissionIntent.MESSAGE,
+    )
+
+    default_result = compile_model_boundary_context(
+        legacy_request=legacy,
+        observations=(default_sidecar,),
+        inference_profile=_profile(), policy=_policy(),
+        created_at=datetime.now(timezone.utc), task_id="task",
+        session_id=None, trace_id=None, task_epoch=1,
+    )
+    explicit_result = compile_model_boundary_context(
+        legacy_request=legacy,
+        observations=(explicit_sidecar,),
+        inference_profile=_profile(), policy=_policy(),
+        created_at=datetime.now(timezone.utc), task_id="task",
+        session_id=None, trace_id=None, task_epoch=1,
+    )
+
+    assert len(default_result.request_snapshot.payload["messages"]) == 1
+    assert len(explicit_result.request_snapshot.payload["messages"]) == 2
 
 
 @pytest.mark.parametrize("tools", [None, []])

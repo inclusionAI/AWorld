@@ -28,8 +28,11 @@ from aworld.config.conf import ClientType
 from aworld.core.llm_provider import LLMProviderBase
 from aworld.core.context.compiler import (
     AWORLD_PROVIDER_CANDIDATE_KWARG,
+    AWORLD_PROVIDER_OBSERVED_ATTRIBUTION_KWARG,
     CandidateRequestNotEnforceable,
     ProviderCandidateEnvelope,
+    ProviderObservedAttributionEnvelope,
+    ProviderObservedAttributionReceipt,
     ProviderAttributionMismatch,
     ProviderToolsLowering,
     AttributionSerialization,
@@ -57,6 +60,8 @@ class _PreparedOpenAIRequest:
     context: Any = None
     request_id: str | None = None
     cache_identity: Any = None
+    attempt_tracking_ready: bool = False
+    attempt_tracking_fail_open: bool = False
 
 
 OPENAI_CONTEXT_LOWERING = ProviderLoweringCapability(
@@ -207,6 +212,35 @@ class OpenAIProvider(LLMProviderBase):
         if stream:
             request_kwargs["stream"] = True
         envelope = request_kwargs.pop(AWORLD_PROVIDER_CANDIDATE_KWARG, None)
+        observed_envelope = request_kwargs.pop(
+            AWORLD_PROVIDER_OBSERVED_ATTRIBUTION_KWARG, None
+        )
+        observed_reason = None
+        if envelope is not None and observed_envelope is not None:
+            raise CandidateRequestNotEnforceable("provider_lowering_contract_invalid")
+        if observed_envelope is not None:
+            try:
+                if not isinstance(
+                    observed_envelope, ProviderObservedAttributionEnvelope
+                ):
+                    raise TypeError("invalid observed attribution envelope")
+                capability = self.context_candidate_lowering_capability()
+                if capability != observed_envelope.expected_lowering:
+                    raise ValueError("observed attribution adapter mismatch")
+                observed_payload = observed_envelope.observed_request.thaw()
+                current_payload = {
+                    "messages": messages,
+                    "tools": request_kwargs.get("tools"),
+                    "params": {
+                        "temperature": temperature,
+                        "max_tokens": max_tokens,
+                        "stop": stop,
+                    },
+                }
+                if observed_payload != current_payload:
+                    raise ValueError("observed request changed before provider")
+            except Exception:
+                observed_reason = "observed_model_boundary_mismatch"
         if envelope is not None:
             if not isinstance(envelope, ProviderCandidateEnvelope):
                 raise CandidateRequestNotEnforceable(
@@ -272,7 +306,7 @@ class OpenAIProvider(LLMProviderBase):
 
         canonical_body = (
             canonical_json_bytes(openai_params)
-            if envelope is not None or self.is_http_provider
+            if envelope is not None or observed_envelope is not None or self.is_http_provider
             else None
         )
         serialized_body = None
@@ -386,15 +420,54 @@ class OpenAIProvider(LLMProviderBase):
                 raise CandidateRequestNotEnforceable(
                     "provider_request_not_snapshotable"
                 ) from None
+        observed_receipt = None
+        if (
+            observed_envelope is not None
+            and provider_request is not None
+            and observed_reason is None
+        ):
+            try:
+                capability = self.context_candidate_lowering_capability()
+                observed_attribution = build_provider_attribution_receipt(
+                    plan=observed_envelope.attribution_plan,
+                    provider_request=openai_params,
+                    serialization=(
+                        AttributionSerialization.HTTP_SERIALIZED_CANONICAL_JSON
+                        if serialized_body is not None
+                        else AttributionSerialization.PROVIDER_PREPARED_CANONICAL_JSON
+                    ),
+                    canonical_request_body=serialized_body,
+                    tools_lowering=ProviderToolsLowering.NULL_TO_ABSENT,
+                )
+                observed_receipt = ProviderObservedAttributionReceipt(
+                    envelope=observed_envelope,
+                    provider_request=provider_request,
+                    lowering=capability,
+                    attribution=observed_attribution,
+                )
+            except Exception:
+                observed_reason = "provider_attribution_mismatch"
+        attempt_tracking_ready = False
         if provider_request is not None:
             try:
-                self.commit_provider_prepared_attempt(
-                    context=request_kwargs.get("context"),
-                    request_id=provider_request.request_id,
-                    snapshot=provider_request,
-                    envelope=envelope,
-                    receipt=(receipt if envelope is not None else None),
-                )
+                if observed_envelope is not None:
+                    self.commit_provider_observed_attribution(
+                        context=request_kwargs.get("context"),
+                        request_id=provider_request.request_id,
+                        snapshot=provider_request,
+                        envelope=observed_envelope,
+                        receipt=observed_receipt,
+                        reason_code=(observed_reason if observed_receipt is None else None),
+                    )
+                else:
+                    self.commit_provider_prepared_attempt(
+                        context=request_kwargs.get("context"),
+                        request_id=provider_request.request_id,
+                        snapshot=provider_request,
+                        envelope=envelope,
+                        receipt=(receipt if envelope is not None else None),
+                    )
+                attempt_tracking_ready = True
             except Exception:
                 if envelope is not None:
                     raise
@@ -405,10 +478,14 @@ class OpenAIProvider(LLMProviderBase):
             context=request_kwargs.get("context"),
             request_id=(provider_request.request_id if provider_request is not None else None),
             cache_identity=(receipt.cache_identity if envelope is not None else None),
+            attempt_tracking_ready=attempt_tracking_ready,
+            attempt_tracking_fail_open=(observed_envelope is not None),
         )
 
     def _mark_prepared_attempt(self, prepared: _PreparedOpenAIRequest) -> None:
         if prepared.context is None or prepared.request_id is None:
+            return
+        if not prepared.attempt_tracking_ready and prepared.attempt_tracking_fail_open:
             return
         self.mark_provider_attempted(
             context=prepared.context,

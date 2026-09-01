@@ -33,9 +33,11 @@ from aworld.core.context.compiler import (
     ChildResult,
     ChildStatus,
     ChildUsage,
+    ContextEmissionIntent,
     ContextObservationSidecar,
     ContextPack,
     DelegationSpec,
+    ModelResidency,
     freeze_json,
     merge_child_result,
     validate_delegation_output,
@@ -528,6 +530,8 @@ class SubagentManager:
                     namespace=sub_task_id,
                     source_identity=f"context-pack:{context_pack.pack_hash}",
                     result=AdapterResult(items=context_pack.items, diagnostics=()),
+                    model_residency=ModelResidency.NOT_RESIDENT,
+                    emission_intent=ContextEmissionIntent.MESSAGE,
                 )
             )
 

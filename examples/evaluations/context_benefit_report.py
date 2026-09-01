@@ -140,11 +140,31 @@ _PLAN_FIELDS = {
 }
 
 
-def validated_compiler_attribution_plan(call: dict) -> dict[str, Any] | None:
+def _provider_attribution_evidence(rollout: dict) -> dict[str, Any] | None:
+    evidence = rollout.get("provider_attribution")
+    if isinstance(evidence, dict):
+        return evidence
+    lowering = rollout.get("provider_lowering")
+    if isinstance(lowering, dict) and isinstance(lowering.get("attribution"), dict):
+        candidate = rollout.get("candidate_snapshot") or {}
+        return {
+            **lowering,
+            "subject": "candidate_selected",
+            "subject_content_hash": candidate.get("content_hash"),
+            "plan_fingerprint": lowering["attribution"].get("plan_fingerprint"),
+        }
+    return None
+
+
+def validated_compiler_attribution_plan(
+    call: dict, *, subject: str
+) -> dict[str, Any] | None:
     """Validate the independent compiler evidence and canonical fingerprint."""
     rollout = call.get("context_rollout") or {}
     plan = rollout.get("compiler_attribution_plan")
-    candidate = rollout.get("candidate_snapshot") or {}
+    subject_snapshot = rollout.get(
+        "observed_snapshot" if subject == "legacy_observed" else "candidate_snapshot"
+    ) or {}
     if not isinstance(plan, dict) or set(plan) != _PLAN_FIELDS:
         return None
     entries = plan.get("entries")
@@ -203,7 +223,7 @@ def validated_compiler_attribution_plan(call: dict) -> dict[str, Any] | None:
         *(("tools", ordinal) for ordinal in range(tools_count or 0)),
     ]
     request_hash = value_hash({"request_id": call.get("request_id")})
-    candidate_hash = candidate.get("content_hash")
+    subject_hash = subject_snapshot.get("content_hash")
     projection = {
         "schema_version": "aworld.context.attribution-plan-fingerprint.v1",
         "request_id_hash": plan.get("request_id_hash"),
@@ -217,9 +237,9 @@ def validated_compiler_attribution_plan(call: dict) -> dict[str, Any] | None:
     if (
         positions != expected_positions
         or plan.get("request_id_hash") != request_hash
-        or plan.get("candidate_content_hash") != candidate_hash
+        or plan.get("candidate_content_hash") != subject_hash
         or plan.get("plan_fingerprint") != value_hash(projection)
-        or candidate.get("attribution_plan_fingerprint") != plan.get("plan_fingerprint")
+        or subject_snapshot.get("attribution_plan_fingerprint") != plan.get("plan_fingerprint")
     ):
         return None
     final_compile = rollout.get("final_compile")
@@ -230,7 +250,7 @@ def validated_compiler_attribution_plan(call: dict) -> dict[str, Any] | None:
         if not isinstance(final_attribution, dict) or (
             final_attribution.get("plan_fingerprint") != plan.get("plan_fingerprint")
             or final_attribution.get("request_id_hash") != plan.get("request_id_hash")
-            or final_attribution.get("candidate_content_hash") != candidate_hash
+            or final_attribution.get("candidate_content_hash") != subject_hash
             or final_attribution.get("entries") != entries
         ):
             return None
@@ -245,17 +265,20 @@ def provider_attribution_summary(calls: list[dict]) -> dict[str, Any]:
     attributed = 0
     overhead = 0
     total = 0
+    subjects: dict[str, int] = {}
     for call in calls:
         provider_snapshot = call.get("provider_request") or {}
         provider_payload = provider_snapshot.get("payload")
         rollout = call.get("context_rollout") or {}
-        lowering = rollout.get("provider_lowering") or {}
-        receipt = (
-            lowering.get("attribution")
-        )
+        evidence = _provider_attribution_evidence(rollout) or {}
+        subject = evidence.get("subject")
+        receipt = evidence.get("attribution")
         if not isinstance(receipt, dict):
             continue
-        compiler_plan = validated_compiler_attribution_plan(call)
+        if subject not in {"legacy_observed", "candidate_selected"}:
+            invalid += 1
+            continue
+        compiler_plan = validated_compiler_attribution_plan(call, subject=subject)
         entries = receipt.get("entries")
         if (
             compiler_plan is None
@@ -281,7 +304,10 @@ def provider_attribution_summary(calls: list[dict]) -> dict[str, Any]:
             continue
         canonical_body = canonical_json_bytes(provider_payload)
         canonical_hash = value_hash(provider_payload)
-        candidate_hash = ((rollout.get("candidate_snapshot") or {}).get("content_hash"))
+        subject_snapshot = rollout.get(
+            "observed_snapshot" if subject == "legacy_observed" else "candidate_snapshot"
+        ) or {}
+        subject_hash = subject_snapshot.get("content_hash")
         if (
             provider_snapshot.get("request_id") != call.get("request_id")
             or provider_snapshot.get("content_hash") != canonical_hash
@@ -289,8 +315,9 @@ def provider_attribution_summary(calls: list[dict]) -> dict[str, Any]:
             or receipt.get("canonical_request_checksum") != canonical_hash
             or receipt.get("total_canonical_bytes") != len(canonical_body)
             or receipt.get("plan_request_id_hash") != value_hash({"request_id": call.get("request_id")})
-            or receipt.get("candidate_content_hash") != candidate_hash
-            or lowering.get("candidate_content_hash") != candidate_hash
+            or receipt.get("candidate_content_hash") != subject_hash
+            or evidence.get("subject_content_hash") != subject_hash
+            or evidence.get("plan_fingerprint") != compiler_plan.get("plan_fingerprint")
         ):
             invalid += 1
             continue
@@ -410,6 +437,7 @@ def provider_attribution_summary(calls: list[dict]) -> dict[str, Any]:
             invalid += 1
             continue
         available += 1
+        subjects[subject] = subjects.get(subject, 0) + 1
         attributed += receipt_attributed
         overhead += receipt_overhead
         total += receipt_total
@@ -437,6 +465,8 @@ def provider_attribution_summary(calls: list[dict]) -> dict[str, Any]:
         "attributed_value_bytes": attributed,
         "provider_envelope_and_params": overhead,
         "total_canonical_bytes": total,
+        "subject": next(iter(subjects)) if len(subjects) == 1 and complete else None,
+        "subject_counts": dict(sorted(subjects.items())),
         "by_dimension": {
             name: dict(sorted(values.items())) for name, values in dimensions.items()
         },
@@ -462,6 +492,12 @@ def paired_attribution_deltas(
             dimension_delta = None
         elif base["summary"]["status"] != "available" or cand["summary"]["status"] != "available":
             status, reason = "unsupported", "baseline_or_candidate_attribution_unavailable"
+            dimension_delta = None
+        elif (
+            base["summary"].get("subject") != "legacy_observed"
+            or cand["summary"].get("subject") != "candidate_selected"
+        ):
+            status, reason = "unsupported", "paired_attribution_subject_mismatch"
             dimension_delta = None
         else:
             status, reason = "available", None

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import Enum
 import re
 from typing import Any, ClassVar
 
@@ -10,6 +11,17 @@ from .adapters import AdapterResult
 from .frozen_json import canonical_json_hash
 from .models import ContextItemRef
 from .attribution import AttributionCollection
+
+
+class ModelResidency(str, Enum):
+    UNKNOWN = "unknown"
+    RESIDENT = "resident"
+    NOT_RESIDENT = "not_resident"
+
+
+class ContextEmissionIntent(str, Enum):
+    EVIDENCE_ONLY = "evidence_only"
+    MESSAGE = "message"
 
 
 def _non_empty(name: str, value: str) -> None:
@@ -36,6 +48,8 @@ class ContextObservationSidecar:
     request_id_hash: str | None = None
     collection: AttributionCollection | None = None
     task_epoch: int | None = None
+    model_residency: ModelResidency = ModelResidency.UNKNOWN
+    emission_intent: ContextEmissionIntent = ContextEmissionIntent.EVIDENCE_ONLY
 
     def __post_init__(self) -> None:
         for name in ("owner", "namespace", "source_identity"):
@@ -52,6 +66,13 @@ class ContextObservationSidecar:
             isinstance(self.task_epoch, bool) or not isinstance(self.task_epoch, int) or self.task_epoch < 0
         ):
             raise ValueError("task_epoch must be non-negative or None")
+        object.__setattr__(self, "model_residency", ModelResidency(self.model_residency))
+        object.__setattr__(self, "emission_intent", ContextEmissionIntent(self.emission_intent))
+        if (
+            self.emission_intent is ContextEmissionIntent.MESSAGE
+            and self.model_residency is not ModelResidency.NOT_RESIDENT
+        ):
+            raise ValueError("message emission requires explicit not_resident evidence")
 
     @classmethod
     def from_adapter_result(
@@ -64,6 +85,8 @@ class ContextObservationSidecar:
         request_id_hash: str | None = None,
         collection: AttributionCollection | None = None,
         task_epoch: int | None = None,
+        model_residency: ModelResidency = ModelResidency.UNKNOWN,
+        emission_intent: ContextEmissionIntent = ContextEmissionIntent.EVIDENCE_ONLY,
     ) -> "ContextObservationSidecar":
         return cls(
             owner=owner,
@@ -73,6 +96,8 @@ class ContextObservationSidecar:
             request_id_hash=request_id_hash,
             collection=collection,
             task_epoch=task_epoch,
+            model_residency=model_residency,
+            emission_intent=emission_intent,
         )
 
     @staticmethod
@@ -87,6 +112,8 @@ class ContextObservationSidecar:
         return {
             "schema_version": self.SCHEMA_VERSION,
             "owner": self.owner,
+            "model_residency": self.model_residency.value,
+            "emission_intent": self.emission_intent.value,
             "request_binding": (
                 {
                     "request_id_hash": self.request_id_hash,
@@ -113,4 +140,8 @@ class ContextObservationSidecar:
         }
 
 
-__all__ = ["ContextObservationSidecar"]
+__all__ = [
+    "ContextEmissionIntent",
+    "ContextObservationSidecar",
+    "ModelResidency",
+]

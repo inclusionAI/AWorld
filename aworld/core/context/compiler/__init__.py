@@ -71,7 +71,11 @@ from .observe import (
     request_trace_match,
 )
 from .trace import ContextDecisionTrace
-from .sidecar import ContextObservationSidecar
+from .sidecar import (
+    ContextEmissionIntent,
+    ContextObservationSidecar,
+    ModelResidency,
+)
 from .budget import (
     AtomicGroupRef,
     BudgetAllocationTier,
@@ -98,6 +102,7 @@ from .cache import (
 )
 from .rollout import (
     AWORLD_PROVIDER_CANDIDATE_KWARG,
+    AWORLD_PROVIDER_OBSERVED_ATTRIBUTION_KWARG,
     CandidateCompileInput,
     CandidateCompilePolicy,
     CandidateCompilation,
@@ -108,6 +113,9 @@ from .rollout import (
     ContextRolloutSelection,
     FRAMEWORK_COMPILER_IDENTITY,
     ProviderCandidateEnvelope,
+    ProviderAttributionSubject,
+    ProviderObservedAttributionEnvelope,
+    ProviderObservedAttributionReceipt,
     ProviderCacheMaterial,
     ProviderLoweringCapability,
     ProviderLoweringReceipt,
@@ -202,7 +210,11 @@ from .canary import (
     assign_rollout_mode,
 )
 from .inspector import inspect_final_context
-from .runtime import compile_model_boundary_context, estimate_canonical_json_tokens
+from .runtime import (
+    build_observed_model_boundary_attribution_plan,
+    compile_model_boundary_context,
+    estimate_canonical_json_tokens,
+)
 from .trust import (
     TRUST_BOUNDARY_VERSION,
     TrustIsolationReceipt,
@@ -226,6 +238,7 @@ from .provider_registry import (
 
 __all__ = [
     "AWORLD_PROVIDER_CANDIDATE_KWARG",
+    "AWORLD_PROVIDER_OBSERVED_ATTRIBUTION_KWARG",
     "AdapterDiagnostic",
     "AdapterDiagnosticSeverity",
     "AdapterResult",
@@ -310,6 +323,9 @@ __all__ = [
     "ProviderAttributionMismatch",
     "ProviderToolsLowering",
     "ProviderCandidateEnvelope",
+    "ProviderAttributionSubject",
+    "ProviderObservedAttributionEnvelope",
+    "ProviderObservedAttributionReceipt",
     "ProviderCacheMaterial",
     "ProviderLoweringCapability",
     "ProviderLoweringReceipt",
@@ -319,6 +335,8 @@ __all__ = [
     "ProviderRequestAttributionPlan",
     "ProviderRequestAttributionReceipt",
     "OccurrenceContextAdapter",
+    "ContextEmissionIntent",
+    "ModelResidency",
     "RequestCaptureStage",
     "RequestTraceMatch",
     "ReviewedProviderAdapter",
@@ -372,6 +390,7 @@ __all__ = [
     "assess_default_on_readiness",
     "assign_rollout_mode",
     "build_cache_identity",
+    "build_observed_model_boundary_attribution_plan",
     "build_provider_attribution_receipt",
     "build_unknown_attribution_plan",
     "bind_tool_output",
