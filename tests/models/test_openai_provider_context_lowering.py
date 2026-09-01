@@ -11,13 +11,17 @@ import pytest
 from aworld.config import ModelConfig
 from aworld.core.context.base import Context
 from aworld.core.context.compiler import (
+    CanaryHealthEvidence,
+    CanaryHealthPolicy,
     CandidateCompilePolicy,
     CandidateRequestNotEnforceable,
     ContextLifecycleState,
     ContextEntrypointParityReceipt,
     ReadinessStatus,
+    RollbackBundle,
     RolloutCapability,
     VerifiedContextEntrypointParityReceipt,
+    assess_canary_health,
     assess_default_on_readiness,
     assess_entrypoint_parity,
     canonical_json_hash,
@@ -838,6 +842,40 @@ def test_default_on_capability_requires_verified_provider_and_trajectory_evidenc
         lifecycle_state=lifecycle,
         trajectory_result=trajectory,
     )
+    rollback = RollbackBundle.build(
+        previous_mode="shadow",
+        previous_config={"mode": "shadow"},
+        provider_capability_hash=canonical_json_hash(
+            {"capability": capability.evidence_fingerprint}
+        ),
+    )
+    canary_policy = CanaryHealthPolicy(
+        policy_version="health-v1",
+        minimum_shadow_calls=1,
+        minimum_enforce_sessions=1,
+        minimum_baseline_provider_attempts=1,
+        minimum_enforce_provider_attempts=1,
+        max_provider_error_rate_delta=0.0,
+    )
+    canary = assess_canary_health(
+        policy=canary_policy,
+        evidence=CanaryHealthEvidence(
+            shadow_call_count=1,
+            shadow_request_trace_match_count=1,
+            shadow_provider_attribution_complete_count=1,
+            enforce_session_count=1,
+            enforce_provider_attempt_count=1,
+            enforce_provider_error_count=0,
+            baseline_provider_error_rate=0.0,
+            security_violation_count=0,
+            trajectory_incomplete_count=0,
+            quality_regression=False,
+            baseline_provider_attempt_count=1,
+            baseline_provider_error_count=0,
+            enforce_sessions_with_provider_attempt_count=1,
+        ),
+        rollback_bundle=rollback,
+    )
 
     readiness = assess_default_on_readiness(
         capabilities=(capability,),
@@ -847,7 +885,9 @@ def test_default_on_capability_requires_verified_provider_and_trajectory_evidenc
         quality_regression=False,
         request_trace_match_rate=1.0,
         trajectory_complete_rate=1.0,
-        rollback_config_hash=canonical_json_hash({"rollback": "verified"}),
+        rollback_config_hash=rollback.bundle_hash,
+        canary_health_decision=canary,
+        required_canary_policy_fingerprint=canary.policy_fingerprint,
     )
 
     assert capability.enforce_ready is True
