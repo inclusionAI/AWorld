@@ -517,6 +517,44 @@ def file_hash(path: Path) -> str:
     return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def validated_context_artifact_files(run_dir: Path) -> list[Path]:
+    """Resolve only Context artifacts explicitly bound into the run manifest."""
+    manifest = read_json(run_dir / "run_manifest.json", {})
+    entries = ((manifest.get("capture") or {}).get(
+        "context_tool_output_artifacts"
+    ))
+    if not isinstance(entries, list):
+        return []
+    root = run_dir.resolve()
+    resolved: list[Path] = []
+    seen_paths: set[Path] = set()
+    for entry in entries:
+        if (
+            not isinstance(entry, dict)
+            or set(entry)
+            != {"artifact_ref_hash", "content_hash", "byte_count", "path"}
+            or not _SHA256.fullmatch(str(entry.get("artifact_ref_hash", "")))
+            or not _SHA256.fullmatch(str(entry.get("content_hash", "")))
+            or isinstance(entry.get("byte_count"), bool)
+            or not isinstance(entry.get("byte_count"), int)
+            or entry["byte_count"] < 0
+            or not isinstance(entry.get("path"), str)
+        ):
+            return []
+        path = (run_dir / entry["path"]).resolve()
+        if (
+            not path.is_relative_to(root)
+            or path in seen_paths
+            or not path.is_file()
+            or path.stat().st_size != entry["byte_count"]
+            or file_hash(path) != entry["content_hash"]
+        ):
+            return []
+        seen_paths.add(path)
+        resolved.append(path)
+    return sorted(resolved)
+
+
 def value_hash(value: object) -> str:
     return canonical_json_hash(value)
 
@@ -680,17 +718,35 @@ _PLAN_FIELDS = {
 
 def _provider_attribution_evidence(rollout: dict) -> dict[str, Any] | None:
     evidence = rollout.get("provider_attribution")
-    if isinstance(evidence, dict):
-        return evidence
     lowering = rollout.get("provider_lowering")
     if isinstance(lowering, dict) and isinstance(lowering.get("attribution"), dict):
         candidate = rollout.get("candidate_snapshot") or {}
-        return {
+        derived = {
             **lowering,
             "subject": "candidate_selected",
             "subject_content_hash": candidate.get("content_hash"),
             "plan_fingerprint": lowering["attribution"].get("plan_fingerprint"),
         }
+        if isinstance(evidence, dict):
+            expected = {
+                "subject": derived["subject"],
+                "subject_content_hash": derived["subject_content_hash"],
+                "plan_fingerprint": derived["plan_fingerprint"],
+            }
+            if any(
+                evidence.get(key) is not None and evidence.get(key) != value
+                for key, value in expected.items()
+            ):
+                # Preserve the conflicting sibling so validation fails closed.
+                return evidence
+            derived.update({
+                key: value
+                for key, value in evidence.items()
+                if key not in {"provider_request", "attribution"}
+            })
+        return derived
+    if isinstance(evidence, dict):
+        return evidence
     return None
 
 
@@ -1299,13 +1355,18 @@ def benefit_evidence(
     summary: Any, *, normalized_cost_policy_ready: bool = False
 ) -> dict[str, Any]:
     """Accept quality gain or quality-safe, explicitly costed efficiency gain."""
+    def interval_bound(interval: Any, name: str) -> float:
+        if isinstance(interval, (dict, FrozenMap)):
+            return float(interval[name])
+        return float(getattr(interval, name))
+
     if summary is None:
         return {
             "proven": False,
             "path": None,
             "reason": "paired_summary_missing",
         }
-    reward_lower = float(summary.reward_interval.lower)
+    reward_lower = interval_bound(summary.reward_interval, "lower")
     if reward_lower > 0.0:
         return {
             "proven": True,
@@ -1321,7 +1382,7 @@ def benefit_evidence(
         if (
             quality_non_regression
             and interval is not None
-            and float(interval.upper) < 0.0
+            and interval_bound(interval, "upper") < 0.0
         ):
             return {
                 "proven": True,
@@ -1681,10 +1742,7 @@ def aggregate(
                         "reason_code": capability_error,
                         "verified_call_count": len(run_capabilities),
                     })
-                artifacts = sorted(
-                    path for path in (run_dir / "tool-output-artifacts").glob("*.bin")
-                    if path.is_file()
-                )
+                artifacts = validated_context_artifact_files(run_dir)
                 economics_runs.append({
                     "experiment": str(experiment),
                     "run": str(run_dir),

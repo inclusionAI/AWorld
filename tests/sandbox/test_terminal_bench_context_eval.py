@@ -80,6 +80,25 @@ def test_variant_contract_accepts_context_policy_only(tmp_path):
     assert loaded["context_compiler"]["mode"] == "enforce"
 
 
+def test_legacy_observe_baseline_preserves_legacy_policy_and_adds_evidence_only():
+    runner = _load_example("docker_terminal_bench")
+    loaded = runner._load_variant(
+        ROOT
+        / "examples"
+        / "sandbox"
+        / "context_eval_variants"
+        / "legacy-observe.json"
+    )
+
+    assert loaded["name"] == "legacy-observe"
+    assert loaded["agent_memory_config"] == {"tool_result_offload": False}
+    assert loaded["context_compiler"] == {"mode": "observe"}
+    assert loaded["docker_output_policy"] == {
+        "max_inline_output_bytes": 1048576,
+        "output_head_bytes": 524288,
+    }
+
+
 def test_variant_contract_rejects_unknown_context_compiler_fields(tmp_path):
     runner = _load_example("docker_terminal_bench")
     variant = tmp_path / "variant.json"
@@ -95,6 +114,69 @@ def test_variant_contract_rejects_unknown_context_compiler_fields(tmp_path):
 
     with pytest.raises(ValueError, match="context_compiler contains unsupported fields"):
         runner._load_variant(variant)
+
+
+def test_context_tool_output_artifacts_are_exported_with_manifest_evidence(tmp_path):
+    runner = _load_example("docker_terminal_bench")
+    data = b"full context-owned output"
+    digest = runner._sha256_bytes(data)
+    ref = f"aworld-tool-output://{digest}"
+
+    class ArtifactContext:
+        def get_tool_output_records(self):
+            return (
+                SimpleNamespace(
+                    artifact=SimpleNamespace(
+                        ref=ref,
+                        content_hash=f"sha256:{digest}",
+                        byte_count=len(data),
+                    )
+                ),
+            )
+
+        def read_tool_output_artifact(self, artifact_ref):
+            assert artifact_ref == ref
+            return data
+
+    evidence = runner._export_context_tool_output_artifacts(
+        SimpleNamespace(context=ArtifactContext()), tmp_path
+    )
+
+    assert evidence == [
+        {
+            "artifact_ref_hash": (
+                "sha256:" + runner._sha256_bytes(ref.encode("utf-8"))
+            ),
+            "content_hash": f"sha256:{digest}",
+            "byte_count": len(data),
+            "path": f"tool-output-artifacts/context-{digest}.bin",
+        }
+    ]
+    assert (tmp_path / evidence[0]["path"]).read_bytes() == data
+
+
+def test_context_tool_output_artifact_export_rejects_receipt_mismatch(tmp_path):
+    runner = _load_example("docker_terminal_bench")
+
+    class BrokenContext:
+        def get_tool_output_records(self):
+            return (
+                SimpleNamespace(
+                    artifact=SimpleNamespace(
+                        ref="aworld-tool-output://broken",
+                        content_hash="sha256:" + "0" * 64,
+                        byte_count=3,
+                    )
+                ),
+            )
+
+        def read_tool_output_artifact(self, artifact_ref):
+            return b"actual"
+
+    with pytest.raises(RuntimeError, match="artifact_mismatch"):
+        runner._export_context_tool_output_artifacts(
+            SimpleNamespace(context=BrokenContext()), tmp_path
+        )
 
 
 def test_llm_call_capture_falls_back_to_live_context_for_blocked_calls():

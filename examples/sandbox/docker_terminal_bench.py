@@ -89,6 +89,37 @@ def _context_lifecycle_evidence(agent) -> dict:
     }
 
 
+def _export_context_tool_output_artifacts(agent, output_dir: Path) -> list[dict]:
+    """Persist checksum-bound Context artifacts beside the raw trajectory."""
+    context = getattr(agent, "context", None)
+    if context is None:
+        return []
+    records = context.get_tool_output_records()
+    destination = output_dir / "tool-output-artifacts"
+    exported: dict[str, dict] = {}
+    for record in records:
+        artifact = getattr(record, "artifact", None)
+        if artifact is None or artifact.ref in exported:
+            continue
+        data = context.read_tool_output_artifact(artifact.ref)
+        digest = _sha256_bytes(data)
+        content_hash = f"sha256:{digest}"
+        if artifact.content_hash != content_hash or artifact.byte_count != len(data):
+            raise RuntimeError("context_tool_output_artifact_mismatch")
+        destination.mkdir(parents=True, exist_ok=True)
+        target = destination / f"context-{digest}.bin"
+        if target.exists() and target.read_bytes() != data:
+            raise RuntimeError("context_tool_output_artifact_export_collision")
+        target.write_bytes(data)
+        exported[artifact.ref] = {
+            "artifact_ref_hash": f"sha256:{_sha256_bytes(artifact.ref.encode('utf-8'))}",
+            "content_hash": content_hash,
+            "byte_count": len(data),
+            "path": str(target.relative_to(output_dir)),
+        }
+    return [exported[key] for key in sorted(exported)]
+
+
 def _resolve_llm_call_capture(response, agent) -> tuple[list, str, dict]:
     """Preserve blocked-call evidence when TaskResponse propagation is incomplete."""
     response_calls = list(getattr(response, "llm_calls", None) or [])
@@ -364,6 +395,9 @@ async def run(args: argparse.Namespace) -> None:
             llm_capture_continuity["snapshots_match"]
         )
         lifecycle_evidence = _context_lifecycle_evidence(agent)
+        context_artifacts = _export_context_tool_output_artifacts(
+            agent, args.output_dir
+        )
         checksums = {
             "task_response.json": _write_json(args.output_dir / "task_response.json", response_payload),
             "raw_trajectory.json": _write_json(args.output_dir / "raw_trajectory.json", trajectory_payload),
@@ -419,6 +453,7 @@ async def run(args: argparse.Namespace) -> None:
                 "llm_call_continuity": llm_capture_continuity,
                 "provider_capture_gate_passed": provider_capture_gate_passed,
                 "trajectory_items": len(response.trajectory or []),
+                "context_tool_output_artifacts": context_artifacts,
                 "checksums": checksums,
             },
             "started_at_epoch": started_at,
