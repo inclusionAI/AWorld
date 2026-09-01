@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import traceback
+from types import MethodType
 from typing import Any
 
 import pytest
@@ -21,6 +22,7 @@ from aworld.core.context.compiler import (
 from aworld.core.llm_provider import LLMProviderBase
 from aworld.models.llm import LLMModel
 from aworld.models.model_response import ModelResponse
+from aworld.models.openai_provider import AzureOpenAIProvider
 
 
 class CountingProvider(LLMProviderBase):
@@ -87,6 +89,36 @@ def _model(*, mode, provider, policy=None) -> LLMModel:
         custom_provider=provider,
         context_candidate_policy=policy,
     )
+
+
+def _azure_without_transport() -> tuple[AzureOpenAIProvider, list[str]]:
+    """Build the exact built-in type without credentials or a real transport."""
+    provider = object.__new__(AzureOpenAIProvider)
+    provider.model_name = "azure-test"
+    provider.kwargs = {}
+    calls: list[str] = []
+
+    async def acompletion(self, messages, **kwargs):
+        calls.append("acompletion")
+        return CountingProvider._response("acompletion")
+
+    def completion(self, messages, **kwargs):
+        calls.append("completion")
+        return CountingProvider._response("completion")
+
+    def stream_completion(self, messages, **kwargs):
+        calls.append("stream_completion")
+        yield CountingProvider._response("stream_completion")
+
+    async def astream_completion(self, messages, **kwargs):
+        calls.append("astream_completion")
+        yield CountingProvider._response("astream_completion")
+
+    provider.acompletion = MethodType(acompletion, provider)
+    provider.completion = MethodType(completion, provider)
+    provider.stream_completion = MethodType(stream_completion, provider)
+    provider.astream_completion = MethodType(astream_completion, provider)
+    return provider, calls
 
 
 def _count_framework_compiles(monkeypatch, counters, *, fail=False):
@@ -312,3 +344,67 @@ def test_custom_provider_cannot_self_authorize_enforce_lowering():
     assert raised.value.reason_code == "provider_lowering_required"
     assert provider.calls == []
     assert context.get_llm_calls()[0]["provider_invoked"] is False
+
+
+@pytest.mark.asyncio
+async def test_exact_azure_provider_is_blocked_before_all_enforce_send_paths():
+    provider, calls = _azure_without_transport()
+    model = _model(mode="enforce", provider=provider, policy=_candidate_policy())
+    model.provider_name = "azure_openai"
+    contexts = [Context(task_id=f"azure-blocked-{index}") for index in range(4)]
+    messages = [{"role": "user", "content": "legacy"}]
+
+    with pytest.raises(CandidateRequestNotEnforceable, match="provider_lowering_required"):
+        await model.acompletion(messages, context=contexts[0])
+    with pytest.raises(CandidateRequestNotEnforceable, match="provider_lowering_required"):
+        model.completion(messages, context=contexts[1])
+    with pytest.raises(CandidateRequestNotEnforceable, match="provider_lowering_required"):
+        list(model.stream_completion(messages, context=contexts[2]))
+    with pytest.raises(CandidateRequestNotEnforceable, match="provider_lowering_required"):
+        [chunk async for chunk in model.astream_completion(messages, context=contexts[3])]
+
+    assert calls == []
+    for context in contexts:
+        record = context.get_llm_calls()[0]
+        assert record["status"] == "blocked_before_provider"
+        assert record["provider_invoked"] is False
+        assert record["context_rollout"]["provider_lowering_ready"] is False
+        assert record["context_rollout"]["error"] == {
+            "code": "provider_lowering_required"
+        }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["off", "observe"])
+async def test_exact_azure_provider_preserves_legacy_request_outside_enforce(mode):
+    provider, calls = _azure_without_transport()
+    model = _model(mode=mode, provider=provider, policy=_candidate_policy())
+    model.provider_name = "azure_openai"
+    contexts = [Context(task_id=f"azure-{mode}-{index}") for index in range(4)]
+    messages = [{"role": "user", "content": "legacy"}]
+
+    await model.acompletion(messages, context=contexts[0])
+    model.completion(messages, context=contexts[1])
+    list(model.stream_completion(messages, context=contexts[2]))
+    [chunk async for chunk in model.astream_completion(messages, context=contexts[3])]
+
+    assert calls == [
+        "acompletion", "completion", "stream_completion", "astream_completion"
+    ]
+    for context in contexts:
+        record = context.get_llm_calls()[0]
+        assert record["status"] == "success"
+        # Legacy-compatible records omit the field when the provider was
+        # invoked; only a blocked/not-yet-attempted call writes ``False``.
+        assert record.get("provider_invoked", True) is True
+        assert record["request"]["messages"] == messages
+        if mode == "off":
+            assert "context_rollout" not in record
+        else:
+            rollout = record["context_rollout"]
+            assert rollout["candidate_status"] == "not_requested"
+            assert rollout["provider_attribution"] == {
+                "subject": "legacy_observed",
+                "status": "unsupported",
+                "reason_code": "provider_attribution_adapter_unavailable",
+            }
