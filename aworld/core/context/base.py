@@ -1084,7 +1084,10 @@ class Context:
         """Return the strongest task-local identity available for one LLM call."""
         if not isinstance(llm_call, dict):
             return None
-        for field in ("call_id", "request_id"):
+        # One agent call may produce multiple provider attempts. request_id is
+        # therefore the unique attempt identity; call_id is only the precursor
+        # identity before a provider attempt has been allocated.
+        for field in ("request_id", "call_id"):
             value = llm_call.get(field)
             if isinstance(value, str) and value:
                 return field, value
@@ -1104,6 +1107,25 @@ class Context:
         if identity is not None:
             for index, existing in enumerate(calls):
                 if self._llm_call_identity(existing) == identity:
+                    calls[index] = incoming
+                    return
+        incoming_request_id = incoming.get("request_id")
+        incoming_call_id = incoming.get("call_id")
+        if (
+            isinstance(incoming_request_id, str)
+            and incoming_request_id
+            and isinstance(incoming_call_id, str)
+            and incoming_call_id
+        ):
+            # Reconcile the first bound provider attempt with its earlier
+            # unbound agent-call placeholder. Bound retries with new request
+            # ids remain distinct records.
+            for index, existing in enumerate(calls):
+                if (
+                    isinstance(existing, dict)
+                    and not existing.get("request_id")
+                    and existing.get("call_id") == incoming_call_id
+                ):
                     calls[index] = incoming
                     return
         calls.append(incoming)

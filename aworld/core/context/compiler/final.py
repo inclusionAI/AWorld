@@ -447,6 +447,12 @@ def _semantic_blockers(
 ) -> tuple[str, ...]:
     blockers: set[str] = set()
     for candidate in candidates:
+        # Audit-only owner evidence is deliberately not emitted into the
+        # provider request. Unknown residency/lowering metadata must remain
+        # visible in the trace, but cannot make an otherwise exact emitted
+        # request non-enforceable.
+        if candidate.emission is ContextEmissionKind.EVIDENCE_ONLY:
+            continue
         item = candidate.item
         if require_proven and not candidate.semantics_proven:
             blockers.add("context_semantics_unproven")
@@ -512,6 +518,9 @@ def compile_final_context(
                 allowed=candidate.allowed,
                 conflict_domain=candidate.conflict_domain,
                 semantics_proven=candidate.semantics_proven,
+                affects_request=(
+                    candidate.emission is not ContextEmissionKind.EVIDENCE_ONLY
+                ),
             )
             for candidate in compiler_input.candidates
         ),

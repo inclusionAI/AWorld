@@ -485,6 +485,41 @@ def test_merge_context_reconciles_duplicate_call_with_latest_snapshot():
     ]
 
 
+def test_merge_context_preserves_distinct_provider_retry_attempts():
+    parent = Context(task_id="parent-task")
+    parent.context_info["llm_calls"] = [
+        {"call_id": "stable-call", "request_id": "request-1", "status": "failed"}
+    ]
+    child = Context(task_id="parent-task")
+    child.context_info["llm_calls"] = [
+        {"call_id": "stable-call", "request_id": "request-2", "status": "success"}
+    ]
+
+    parent.merge_context(child)
+
+    assert [call["request_id"] for call in parent.get_llm_calls()] == [
+        "request-1",
+        "request-2",
+    ]
+
+
+def test_merge_context_reconciles_first_bound_attempt_with_unbound_placeholder():
+    parent = Context(task_id="parent-task")
+    parent.context_info["llm_calls"] = [
+        {"call_id": "stable-call", "status": "started"}
+    ]
+    child = Context(task_id="parent-task")
+    child.context_info["llm_calls"] = [
+        {"call_id": "stable-call", "request_id": "request-1", "status": "success"}
+    ]
+
+    parent.merge_context(child)
+
+    assert parent.get_llm_calls() == [
+        {"call_id": "stable-call", "request_id": "request-1", "status": "success"}
+    ]
+
+
 def test_stream_completion_appends_one_final_llm_call_record():
     provider = RecordingLLMProvider()
     llm_model = LLMModel(custom_provider=provider)

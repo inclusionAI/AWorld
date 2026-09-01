@@ -43,6 +43,7 @@ class ResolutionOccurrence:
     allowed: bool = True
     conflict_domain: str | None = None
     semantics_proven: bool = False
+    affects_request: bool = True
 
     def __post_init__(self) -> None:
         if not isinstance(self.item, ContextItem):
@@ -54,6 +55,8 @@ class ResolutionOccurrence:
             or not self.conflict_domain.strip()
         ):
             raise ValueError("conflict_domain must be a non-empty string or None")
+        if not isinstance(self.affects_request, bool):
+            raise TypeError("affects_request must be boolean")
 
 
 @dataclass(frozen=True, slots=True)
@@ -142,6 +145,8 @@ def resolve_context_occurrences(
     )
     for occurrence in values:
         if occurrence.item.id not in included:
+            continue
+        if not occurrence.affects_request:
             continue
         if not occurrence.semantics_proven:
             blockers.add("context_semantics_unproven")
