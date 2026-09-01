@@ -11,6 +11,11 @@ from aworld.self_evolve.controllers.run_execution import (
 )
 from aworld.self_evolve.controllers.run_state import (
     ExplicitRunStateAccumulator,
+    GenerationFrontierState,
+)
+from aworld.self_evolve.optimizers.base import (
+    CandidateGenerationOutcome,
+    CandidateGenerationOutcomeKind,
 )
 from aworld.self_evolve.types import (
     CandidateVariant,
@@ -282,6 +287,155 @@ def test_selection_projects_typed_evidence_and_fresh_rerun_policy() -> None:
     assert fresh_rerun is not None
     assert fresh_rerun.selected_candidate is None
     assert fresh_rerun.candidate_summary is ordinary.candidate_summary
+
+
+def test_generation_frontier_tracks_repeated_policy_and_materialization() -> None:
+    frontier = GenerationFrontierState()
+    outcome = CandidateGenerationOutcome(
+        candidate_index=0,
+        kind=CandidateGenerationOutcomeKind.POLICY_FILTERED,
+        policy_id="scope-policy",
+        enforcement="hard",
+        repairable=True,
+    )
+
+    assert frontier.record_policy_filter_stall(
+        signature="policy-signature",
+        outcomes=(outcome,),
+        fully_filtered=True,
+        max_consecutive_stalls=2,
+    ) is False
+    assert frontier.record_policy_filter_stall(
+        signature="policy-signature",
+        outcomes=(outcome,),
+        fully_filtered=True,
+        max_consecutive_stalls=2,
+    ) is True
+    assert frontier.last_policy_filter_outcomes == (outcome,)
+
+    assert frontier.record_materialization_stall(
+        signature="materialization-signature",
+        full_population_failed=True,
+        max_consecutive_stalls=2,
+    ) is False
+    assert frontier.record_materialization_stall(
+        signature="materialization-signature",
+        full_population_failed=True,
+        max_consecutive_stalls=2,
+    ) is True
+    assert frontier.stop_reason() == "materialization_frontier_repeated"
+
+
+def test_generation_retry_and_duplicate_stalls_reset_atomically() -> None:
+    frontier = GenerationFrontierState()
+
+    assert frontier.claim_infrastructure_retry(
+        retryable=True,
+        max_retries=2,
+    ) is True
+    assert frontier.record_duplicate_population(
+        all_candidates_previously_attempted=True,
+        max_consecutive_stalls=2,
+    ) is False
+    frontier.last_policy_filter_signature = "policy"
+    frontier.consecutive_policy_filter_stalls = 1
+
+    frontier.reset_candidate_progress_stalls()
+
+    assert frontier.infrastructure_retries == 0
+    assert frontier.duplicate_population_stalls == 0
+    assert frontier.consecutive_policy_filter_stalls == 0
+    assert frontier.last_policy_filter_signature is None
+
+
+def test_conformance_counterexamples_move_between_pending_and_resolved() -> None:
+    frontier = GenerationFrontierState()
+
+    first_repeated = frontier.record_conformance_counterexamples(
+        observed={"counterexample-a", "counterexample-b"},
+        by_stage={
+            "candidate_screening": {
+                "counterexample-a",
+                "counterexample-b",
+            }
+        },
+    )
+    second_repeated = frontier.record_conformance_counterexamples(
+        observed={"counterexample-b", "counterexample-c"},
+        by_stage={"candidate_repair_conformance": {"counterexample-c"}},
+    )
+
+    assert first_repeated == set()
+    assert second_repeated == {"counterexample-b"}
+    assert frontier.pending_conformance_counterexamples == {
+        "counterexample-b",
+        "counterexample-c",
+    }
+    assert frontier.resolved_conformance_counterexamples == {
+        "counterexample-a"
+    }
+    assert frontier.conformance_counterexamples_by_stage == {
+        "candidate_screening": {
+            "counterexample-a",
+            "counterexample-b",
+        },
+        "candidate_repair_conformance": {"counterexample-c"},
+    }
+
+
+def test_conformance_strategy_transition_detects_unmaterialized_switch() -> None:
+    frontier = GenerationFrontierState()
+
+    initial = frontier.observe_conformance_strategies(
+        signatures=("contract-a",),
+        topology_by_signature={"contract-a": ("topology-1",)},
+        max_switch_attempts=2,
+    )
+    materialized = frontier.observe_conformance_strategies(
+        signatures=("contract-a",),
+        topology_by_signature={"contract-a": ("topology-2",)},
+        max_switch_attempts=2,
+    )
+    repeated = frontier.observe_conformance_strategies(
+        signatures=("contract-a",),
+        topology_by_signature={"contract-a": ("topology-2",)},
+        max_switch_attempts=2,
+    )
+
+    assert initial.new_switch_requests == ("contract-a",)
+    assert initial.prior_topology_fingerprints == ("topology-1",)
+    assert materialized.materialized_switches == ("contract-a",)
+    assert materialized.frontier_exhausted is False
+    assert repeated.unmaterialized_switches == ("contract-a",)
+    assert repeated.frontier_exhausted is True
+    assert frontier.conformance_strategy_switch_not_materialized is True
+    assert frontier.stop_reason() == (
+        "conformance_strategy_switch_not_materialized"
+    )
+
+
+def test_generation_slots_and_repair_releases_share_one_counter() -> None:
+    frontier = GenerationFrontierState()
+
+    assert frontier.begin_generation_slots(2) == 1
+    frontier.record_effective_candidate("candidate-1", consumes_slot=True)
+    frontier.record_effective_candidate("candidate-2", consumes_slot=True)
+    frontier.release_effective_candidates(
+        {"candidate-1"},
+        same_slot_repair=True,
+    )
+
+    assert frontier.candidate_generation_attempt_slot_count == 2
+    assert frontier.effective_generated_candidate_ids == {"candidate-2"}
+    assert frontier.generated_candidate_slot_count == 1
+    assert frontier.conformance_same_slot_repair_count == 1
+
+    frontier.exhaust_generation_limit(max_generated_candidates=2)
+    assert frontier.frontier_exhausted is True
+    assert frontier.repair_capacity_reserved is True
+    assert frontier.stop_reason() == (
+        "repair_capacity_reserved_without_typed_frontier"
+    )
 
 
 def test_run_state_controller_does_not_import_runner() -> None:
