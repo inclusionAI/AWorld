@@ -1,14 +1,20 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
 from aworld.core.context.compiler import (
+    CanaryHealthEvidence,
+    CanaryHealthPolicy,
+    CanaryHealthStatus,
     ContextCompilerMode,
     ReadinessStatus,
     RollbackBundle,
     RolloutCapability,
     RolloutCohortPolicy,
     assess_default_on_readiness,
+    assess_canary_health,
     assign_rollout_mode,
     canonical_json_hash,
 )
@@ -190,3 +196,86 @@ def test_canary_assignment_falls_back_and_readiness_requires_cross_workload():
     )
     assert too_small.status is ReadinessStatus.NOT_READY
     assert "insufficient_paired_evidence" in too_small.gate_failures
+
+
+def test_canary_health_distinguishes_hold_continue_and_rollback():
+    policy = CanaryHealthPolicy(
+        policy_version="health-v1",
+        minimum_shadow_calls=100,
+        minimum_enforce_sessions=20,
+        max_provider_error_rate_delta=0.02,
+    )
+    rollback = RollbackBundle.build(
+        previous_mode=ContextCompilerMode.SHADOW,
+        previous_config={"mode": "shadow"},
+        provider_capability_hash=canonical_json_hash({"openai": True}),
+    )
+
+    hold_evidence = CanaryHealthEvidence(
+        shadow_call_count=10,
+        shadow_request_trace_match_count=10,
+        shadow_provider_attribution_complete_count=10,
+        enforce_session_count=0,
+        enforce_provider_attempt_count=0,
+        enforce_provider_error_count=0,
+        baseline_provider_error_rate=0.01,
+        security_violation_count=0,
+        trajectory_incomplete_count=0,
+        quality_regression=False,
+    )
+    hold = assess_canary_health(
+        policy=policy, evidence=hold_evidence, rollback_bundle=rollback
+    )
+    assert hold.status is CanaryHealthStatus.HOLD
+    assert set(hold.reason_codes) == {
+        "shadow_sample_incomplete",
+        "enforce_sample_incomplete",
+        "enforce_provider_attempt_sample_incomplete",
+    }
+
+    healthy = CanaryHealthEvidence(
+        shadow_call_count=100,
+        shadow_request_trace_match_count=100,
+        shadow_provider_attribution_complete_count=100,
+        enforce_session_count=20,
+        enforce_provider_attempt_count=100,
+        enforce_provider_error_count=2,
+        baseline_provider_error_rate=0.01,
+        security_violation_count=0,
+        trajectory_incomplete_count=0,
+        quality_regression=False,
+    )
+    continued = assess_canary_health(
+        policy=policy, evidence=healthy, rollback_bundle=rollback
+    )
+    assert continued.status is CanaryHealthStatus.CONTINUE
+    assert continued.reason_codes == ()
+
+    unhealthy = replace(
+        healthy,
+        security_violation_count=1,
+        trajectory_incomplete_count=1,
+    )
+    rolled_back = assess_canary_health(
+        policy=policy, evidence=unhealthy, rollback_bundle=rollback
+    )
+    assert rolled_back.status is CanaryHealthStatus.ROLLBACK_REQUIRED
+    assert rolled_back.rollback_bundle_hash == rollback.bundle_hash
+    assert set(rolled_back.reason_codes) == {
+        "security_violation", "trajectory_fidelity_incomplete"
+    }
+
+    no_provider_truth = replace(
+        healthy,
+        enforce_provider_attempt_count=0,
+        enforce_provider_error_count=0,
+    )
+    held_without_provider_truth = assess_canary_health(
+        policy=policy,
+        evidence=no_provider_truth,
+        rollback_bundle=rollback,
+    )
+    assert held_without_provider_truth.status is CanaryHealthStatus.HOLD
+    assert held_without_provider_truth.reason_codes == (
+        "enforce_provider_attempt_sample_incomplete",
+    )
