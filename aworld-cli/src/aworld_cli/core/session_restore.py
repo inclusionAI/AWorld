@@ -63,6 +63,7 @@ def restore_session_to_executor(
         )
 
     executor_instance.session_id = record.session_id
+    executor_instance._aworld_cli_resumed = True
     try:
         transcript = CliSessionTranscript(root=session_store.root)
         replay = transcript.build_replay(record.session_id)

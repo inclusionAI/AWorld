@@ -12,6 +12,8 @@ from aworld.core.context.base import Context
 from aworld.core.context.compiler import (
     CandidateCompilePolicy,
     CandidateRequestNotEnforceable,
+    ContextEntrypointParityReceipt,
+    assess_entrypoint_parity,
     canonical_json_hash,
 )
 from aworld.models.llm import LLMModel
@@ -664,6 +666,42 @@ def test_universal_final_http_enforce_records_serialized_cache_continuity():
     assert second["context_rollout"]["provider_lowering"][
         "cache_continuity"
     ]["status"] == "continued"
+
+
+def test_universal_final_receipt_proves_entrypoint_semantic_parity():
+    provider, sync_calls, _ = _provider()
+    model = LLMModel(
+        conf=ModelConfig(
+            context_compiler={"mode": "enforce", "universal_final": True}
+        ),
+        custom_provider=provider,
+    )
+    model.provider_name = "openai"
+    entry_points = ("agent", "amni", "cli", "acp", "resume")
+    receipts = []
+
+    for entry_point in entry_points:
+        context = Context(task_id="parity-task", session_id="parity-session")
+        context.trace_id = ""
+        context.set_state("context_entry_point", entry_point)
+        model.completion(
+            [
+                {"role": "system", "content": "same stable rules"},
+                {"role": "user", "content": "same input"},
+            ],
+            context=context,
+        )
+        payload = context.get_llm_calls()[0]["context_rollout"][
+            "entrypoint_parity"
+        ]
+        receipts.append(ContextEntrypointParityReceipt.from_dict(payload))
+
+    assert len(sync_calls) == len(entry_points)
+    parity = assess_entrypoint_parity(
+        receipts, required_entry_points=entry_points
+    )
+    assert parity["status"] == "available"
+    assert parity["semantic_fingerprint"] is not None
 
 
 def test_openai_enforce_rejects_provider_transform_after_candidate():
