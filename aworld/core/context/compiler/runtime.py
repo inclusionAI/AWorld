@@ -39,6 +39,7 @@ from .sidecar import (
     ContextObservationSidecar,
     ModelResidency,
 )
+from .trust import verifies_trust_isolation
 
 
 _TOKEN_ESTIMATOR = "aworld-canonical-json-byte4-v1"
@@ -119,20 +120,27 @@ def _atomic_group(item: ContextItem) -> AtomicGroupRef | None:
 def _bind_final_collection(
     fallback_items: tuple[ContextItem, ...],
     sidecar: ContextObservationSidecar | None,
+    *,
+    allow_trust_isolation: bool = False,
 ) -> tuple[tuple[ContextItem, ...], bool]:
-    """Bind by ordinal and then validate the value hash at that ordinal."""
+    """Bind by ordinal and prove the exact value or deterministic isolation."""
     if sidecar is None or len(sidecar.result.items) != len(fallback_items):
         return fallback_items, False
     bound: list[ContextItem] = []
     for ordinal, fallback in enumerate(fallback_items):
         item = sidecar.result.items[ordinal]
         ref = item.source.ref
+        exact_payload = item.content_hash == fallback.content_hash
+        isolated_payload = (
+            allow_trust_isolation
+            and verifies_trust_isolation(item, original_item=fallback)
+        )
         if (
             item.occurrence != ordinal
             or not isinstance(ref, FrozenMap)
             or ref.get("occurrence") != ordinal
             or ref.get("model_final_boundary") is not True
-            or item.content_hash != fallback.content_hash
+            or not (exact_payload or isolated_payload)
         ):
             return fallback_items, False
         bound.append(item)
@@ -286,6 +294,7 @@ def compile_model_boundary_context(
             collection=AttributionCollection.MESSAGES,
             task_epoch=task_epoch,
         ),
+        allow_trust_isolation=True,
     )
     tool_items, tools_bound = _bind_final_collection(
         fallback_tool_items,

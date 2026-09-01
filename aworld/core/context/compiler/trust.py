@@ -87,9 +87,46 @@ def isolate_untrusted_context_item(item: ContextItem) -> TrustIsolationReceipt:
     )
 
 
+def verifies_trust_isolation(
+    isolated_item: ContextItem,
+    *,
+    original_item: ContextItem,
+) -> bool:
+    """Verify an owner-produced boundary against the exact original payload.
+
+    The owner sidecar is allowed to carry the deterministic trust-boundary
+    transform that the candidate compiler will emit.  Its provenance claim is
+    not sufficient by itself: recomputing the transform must reproduce the
+    isolated payload byte-for-byte from the observed ordinal.
+    """
+    if (
+        isolated_item.trust not in {Trust.EXTERNAL_UNTRUSTED, Trust.TOOL_UNTRUSTED}
+        or not has_trust_boundary(isolated_item)
+        or isolated_item.occurrence != original_item.occurrence
+    ):
+        return False
+    ref = isolated_item.source.ref
+    if not isinstance(ref, FrozenMap):
+        return False
+    original_hash = original_item.content_hash or ""
+    if ref.get("original_content_hash") != original_hash:
+        return False
+    unisolated = replace(
+        isolated_item,
+        payload=original_item.payload,
+        content_hash=None,
+    )
+    recomputed = isolate_untrusted_context_item(unisolated)
+    return (
+        recomputed.original_content_hash == original_hash
+        and recomputed.isolated_item.payload == isolated_item.payload
+    )
+
+
 __all__ = [
     "TRUST_BOUNDARY_VERSION",
     "TrustIsolationReceipt",
     "has_trust_boundary",
     "isolate_untrusted_context_item",
+    "verifies_trust_isolation",
 ]

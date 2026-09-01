@@ -721,6 +721,40 @@ def test_universal_final_http_enforce_records_serialized_cache_continuity():
     ]["status"] == "continued"
 
 
+def test_universal_final_enforce_lowers_verified_tool_result_boundary():
+    provider, sent, _ = _provider()
+    model = LLMModel(
+        conf=ModelConfig(
+            context_compiler={"mode": "enforce", "universal_final": True}
+        ),
+        custom_provider=provider,
+    )
+    model.provider_name = "openai"
+    context = Context(task_id="universal-tool-result")
+    context.trace_id = ""
+
+    model.completion(
+        [
+            {"role": "system", "content": "stable rules"},
+            {"role": "user", "content": "inspect"},
+            {"role": "assistant", "content": [], "tool_calls": []},
+            {
+                "role": "tool",
+                "tool_call_id": "call-1",
+                "content": [{"type": "text", "text": "untrusted output"}],
+            },
+        ],
+        context=context,
+    )
+
+    assert len(sent) == 1
+    emitted = sent[0]["messages"][3]["content"][0]["text"]
+    assert "<aworld-untrusted-data" in emitted
+    call = context.get_llm_calls()[0]
+    assert call["context_rollout"]["final_compile"]["enforce"]["ready"] is True
+    assert call["request_trace_match"] is True
+
+
 def test_entrypoint_label_state_and_stale_raw_provider_receipt_are_rejected():
     provider, _, _ = _provider()
     model = LLMModel(

@@ -283,6 +283,99 @@ def test_runtime_binds_only_current_model_collection_ordinal_not_hash():
     assert blocked.attribution_plan.entries[0].owner_code is AttributionOwnerCode.UNKNOWN
 
 
+def test_runtime_verifies_and_emits_deterministic_tool_result_isolation():
+    request_id = "isolated-tool-result"
+    messages = (
+        {"role": "user", "content": "inspect"},
+        {"role": "assistant", "content": "", "tool_calls": []},
+        {
+            "role": "tool",
+            "tool_call_id": "call-1",
+            "content": [{"type": "text", "text": "untrusted output"}],
+        },
+    )
+    message_result, _ = adapt_agent_final_request(
+        messages=messages,
+        tools=(),
+        source_identity=(
+            "model-final://agent/task-task/epoch-1/"
+            f"request-{request_id}"
+        ),
+        task_id="task",
+        task_epoch=1,
+        agent_id="agent",
+        amni_folded_system=False,
+    )
+    sidecar = ContextObservationSidecar.from_adapter_result(
+        owner="model.final_messages",
+        namespace="agent",
+        source_identity="messages",
+        result=message_result,
+        request_id_hash=canonical_json_hash({"request_id": request_id}),
+        collection=AttributionCollection.MESSAGES,
+        task_epoch=1,
+    )
+    legacy = ProviderRequestSnapshot(
+        request_id=request_id,
+        provider_name="openai",
+        payload={"messages": messages, "tools": None, "params": {}},
+        capture_stage=RequestCaptureStage.MODEL_BOUNDARY,
+        fidelity=ProviderRequestFidelity.MODEL_BOUNDARY,
+    )
+
+    compiled = compile_model_boundary_context(
+        legacy_request=legacy,
+        observations=(sidecar,),
+        inference_profile=_profile(),
+        policy=_policy(),
+        created_at=datetime.now(timezone.utc),
+        task_id="task",
+        session_id=None,
+        trace_id=None,
+        task_epoch=1,
+    )
+
+    assert compiled.enforce_ready is True
+    emitted_tool = compiled.request_snapshot.payload["messages"][2]
+    assert emitted_tool != messages[2]
+    assert "<aworld-untrusted-data" in emitted_tool["content"][0]["text"]
+
+    tampered_tool = replace(
+        message_result.items[2],
+        payload={
+            "role": "tool",
+            "tool_call_id": "call-1",
+            "content": [{"type": "text", "text": "forged boundary"}],
+        },
+        content_hash=None,
+    )
+    tampered_sidecar = ContextObservationSidecar.from_adapter_result(
+        owner="model.final_messages",
+        namespace="agent",
+        source_identity="messages",
+        result=AdapterResult(
+            items=(*message_result.items[:2], tampered_tool), diagnostics=()
+        ),
+        request_id_hash=canonical_json_hash({"request_id": request_id}),
+        collection=AttributionCollection.MESSAGES,
+        task_epoch=1,
+    )
+    blocked = compile_model_boundary_context(
+        legacy_request=legacy,
+        observations=(tampered_sidecar,),
+        inference_profile=_profile(),
+        policy=_policy(),
+        created_at=datetime.now(timezone.utc),
+        task_id="task",
+        session_id=None,
+        trace_id=None,
+        task_epoch=1,
+    )
+
+    assert blocked.enforce_ready is False
+    assert "source_lowering_unproven" in blocked.blocker_codes
+
+
 def test_observed_plan_binds_duplicate_occurrences_and_marks_missing_owner_unknown():
     messages = ({"role": "user", "content": "same"},) * 2
     legacy = ProviderRequestSnapshot(
