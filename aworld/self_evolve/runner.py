@@ -394,6 +394,12 @@ from aworld.self_evolve.controllers.run_evaluation_execution import (
     CandidateEvaluationExecutionRuntime,
     execute_candidate_evaluation,
 )
+from aworld.self_evolve.controllers.run_evaluation_finalization import (
+    CandidateEvaluationFinalizationPolicy,
+    CandidateEvaluationFinalizationRequest,
+    CandidateEvaluationFinalizationRuntime,
+    finalize_candidate_evaluation,
+)
 from aworld.self_evolve.controllers.measurement_execution_admission import (
     _candidate_intervention_unobserved,
     _candidate_intervention_unobserved_failure_event,
@@ -8731,14 +8737,7 @@ class SelfEvolveRunner:
         target = request.target
         dataset = request.dataset
         candidate = request.candidate
-        apply_policy = request.apply_policy
-        target_selection_report = request.target_selection_report
-        iteration_number = request.iteration_number
-        candidate_number = request.candidate_number
         candidate_count = request.candidate_count
-        attempt_key = request.attempt_key
-        attempt_tracker = request.attempt_tracker
-        source_disposition = request.source_disposition
 
         local_admission = execute_candidate_local_admission(
             request,
@@ -8834,11 +8833,8 @@ class SelfEvolveRunner:
                 feedback_builder=_iteration_validation_feedback,
             ),
         )
-        gate_results = list(replay_execution.gate_results)
         if replay_execution.terminal_result is not None:
             return replay_execution.terminal_result
-        replay_result = replay_execution.replay_result
-        replay_dataset = replay_execution.replay_dataset
         evaluation_admission = plan_candidate_evaluation_admission(
             CandidateEvaluationAdmissionRequest(
                 evaluation=request,
@@ -8860,7 +8856,6 @@ class SelfEvolveRunner:
                 feedback_builder=_iteration_validation_feedback,
             ),
         )
-        gate_results = list(evaluation_admission.gate_results)
         if evaluation_admission.terminal_result is not None:
             return evaluation_admission.terminal_result
         evaluation_execution = await execute_candidate_evaluation(
@@ -8914,168 +8909,24 @@ class SelfEvolveRunner:
                 ),
             ),
         )
-        gate_results = list(evaluation_execution.gate_results)
-        baseline_summary = evaluation_execution.baseline_summary
-        candidate_summary = evaluation_execution.candidate_summary
-        held_out_summary = evaluation_execution.held_out_summary
-        regression_evidence = evaluation_execution.regression_evidence
-        challenge_report = evaluation_execution.challenge_report
-        fresh_evaluation_completed = (
-            evaluation_execution.fresh_evaluation_completed
-        )
-        if _is_verified_apply_policy(apply_policy):
-            gate_results.append(
-                GateResult(
-                    gate_name="auto_apply_target_type",
-                    passed=target.identity.target_type in self.auto_apply_target_types,
-                    reason=(
-                        "target type is allowlisted for auto apply"
-                        if target.identity.target_type in self.auto_apply_target_types
-                        else "target type is not allowlisted for auto apply"
-                    ),
-                    details={
-                        "target_type": target.identity.target_type,
-                        "auto_apply_target_types": list(self.auto_apply_target_types),
-                    },
-                )
-            )
-
-        measurement_summary: MeasurementSummary | None = None
-        candidate_prerequisite_blocked = (
-            _gate_results_have_candidate_prerequisite_failure(gate_results)
-        )
-        if measurement_experiment is not None and not candidate_prerequisite_blocked:
-            try:
-                measurement_summary = self._materialize_candidate_measurement(
-                    experiment=measurement_experiment,
-                    materialization_run_id=run_id,
-                    candidate=candidate,
-                    dataset=dataset,
-                    replay_result=replay_result,
-                    replay_dataset=replay_dataset,
-                    baseline_summary=baseline_summary,
-                    candidate_summary=candidate_summary,
-                    candidate_count=candidate_count,
-                    authoritative_candidate_count=1,
-                    target_selection_report=target_selection_report,
-                )
-                if self.measurement_mode is MeasurementPolicyMode.REQUIRED:
-                    gate_results.append(
-                        _measurement_promotion_gate(measurement_summary)
-                    )
-            except (OSError, TypeError, ValueError) as exc:
-                if self.measurement_mode is MeasurementPolicyMode.REQUIRED:
-                    gate_results.append(
-                        GateResult(
-                            gate_name="trusted_improvement_measurement",
-                            passed=False,
-                            reason="controlled measurement could not be finalized",
-                            details={
-                                "failure_class": "measurement",
-                                "code": "measurement_materialization_failed",
-                                "type": type(exc).__name__,
-                                "reason": str(exc),
-                            },
-                        )
-                    )
-
-        gate_results = [
-            _with_typed_gate_failure_event(gate)
-            for gate in gate_results
-        ]
-        failed_gates = [gate for gate in gate_results if not gate.passed]
-        proposal_blocked = any(
-            isinstance(gate.details, Mapping)
-            and gate.details.get("failure_class") in {"infrastructure", "budget"}
-            for gate in failed_gates
-        )
-        status = (
-            "accepted"
-            if (
-                (
-                    source_disposition.requires_fresh_evaluation
-                    and fresh_evaluation_completed
-                    and not failed_gates
-                )
-                or (
-                    not source_disposition.requires_fresh_evaluation
-                    and not _is_verified_apply_policy(apply_policy)
-                    and not proposal_blocked
-                )
-                or (_is_verified_apply_policy(apply_policy) and not failed_gates)
-            )
-            else "rejected"
-        )
-        if (
-            attempt_tracker is not None
-            and attempt_key is not None
-            and not attempt_tracker.terminal(attempt_key)
-        ):
-            infrastructure_failure = any(
-                not gate.passed
-                and isinstance(gate.details, Mapping)
-                and gate.details.get("failure_class") == "infrastructure"
-                for gate in gate_results
-            )
-            attempt_tracker.emit(
-                attempt_key,
-                (
-                    CandidateAttemptStage.SELECTED
-                    if status == "accepted"
-                    else (
-                        CandidateAttemptStage.BLOCKED
-                        if infrastructure_failure
-                        else CandidateAttemptStage.REJECTED
-                    )
+        return finalize_candidate_evaluation(
+            CandidateEvaluationFinalizationRequest(
+                evaluation=request,
+                replay=replay_execution,
+                execution=evaluation_execution,
+                measurement_experiment=measurement_experiment,
+            ),
+            CandidateEvaluationFinalizationPolicy(
+                measurement_mode=self.measurement_mode,
+                auto_apply_target_types=self.auto_apply_target_types,
+            ),
+            CandidateEvaluationFinalizationRuntime(
+                materialize_measurement=(
+                    self._materialize_candidate_measurement
                 ),
-                reason_code=(
-                    "candidate_selected"
-                    if status == "accepted"
-                    else (
-                        "candidate_evaluation_blocked"
-                        if infrastructure_failure
-                        else "candidate_evaluation_rejected"
-                    )
-                ),
-            )
-        report_item = _iteration_report_item(
-            iteration_number=iteration_number,
-            candidate_number=candidate_number,
-            candidate_count=candidate_count,
-            candidate=candidate,
-            status=status,
-            baseline_summary=baseline_summary,
-            candidate_summary=candidate_summary,
-            held_out_summary=held_out_summary,
-            failed_gates=failed_gates,
-            regression_evidence=regression_evidence,
-            challenge_report=challenge_report,
-        )
-        feedback = _iteration_validation_feedback(
-            candidate=candidate,
-            baseline_summary=baseline_summary,
-            candidate_summary=candidate_summary,
-            held_out_summary=held_out_summary,
-            failed_gates=failed_gates,
-        )
-        state = _iteration_state(
-            candidate=candidate,
-            baseline_summary=baseline_summary,
-            candidate_summary=candidate_summary,
-            held_out_summary=held_out_summary,
-            replay_result=replay_result,
-            replay_dataset=replay_dataset,
-            gate_results=gate_results,
-            feedback=feedback,
-            status=status,
-            regression_evidence=regression_evidence,
-            challenge_report=challenge_report,
-        )
-        if measurement_summary is not None:
-            state["measurement_summary"] = measurement_summary
-            report_item["measurement"] = measurement_summary.to_dict()
-        return CandidateEvaluationResult.from_tuple(
-            (state, report_item, feedback)
+                typed_gate_failure=_with_typed_gate_failure_event,
+                feedback_builder=_iteration_validation_feedback,
+            ),
         )
 
     async def _validate_candidate_capabilities(
