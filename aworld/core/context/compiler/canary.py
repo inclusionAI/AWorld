@@ -154,6 +154,7 @@ def assess_default_on_readiness(
     trajectory_complete_rate: float,
     rollback_config_hash: str | None,
     hard_gate_failures: Iterable[str] = (),
+    required_capabilities: Iterable[tuple[str, str]] = (),
     minimum_complete_pairs: int = 10,
 ) -> DefaultOnReadinessReport:
     if isinstance(complete_pairs, bool) or not isinstance(complete_pairs, int) or complete_pairs < 0:
@@ -182,8 +183,30 @@ def assess_default_on_readiness(
     ):
         raise ValueError("hard gate failures must be stable reason codes")
     capability_values = tuple(capabilities)
+    capability_keys = [(value.provider, value.entry_point) for value in capability_values]
+    if len(set(capability_keys)) != len(capability_keys):
+        raise ValueError("capabilities must be unique by provider and entry point")
+    required_capability_keys = tuple(required_capabilities)
+    if any(
+        not isinstance(value, tuple)
+        or len(value) != 2
+        or not all(isinstance(item, str) and item for item in value)
+        for value in required_capability_keys
+    ):
+        raise ValueError("required_capabilities must contain provider/entry-point pairs")
+    if len(set(required_capability_keys)) != len(required_capability_keys):
+        raise ValueError("required_capabilities must be unique")
     kinds = tuple(sorted(set(workload_kinds)))
-    if not capability_values or any(not value.enforce_ready for value in capability_values):
+    capability_by_key = dict(zip(capability_keys, capability_values))
+    if (
+        not capability_values
+        or any(not value.enforce_ready for value in capability_values)
+        or any(
+            key not in capability_by_key
+            or not capability_by_key[key].enforce_ready
+            for key in required_capability_keys
+        )
+    ):
         failures.add("capability_matrix_incomplete")
     if len(kinds) < 2:
         failures.add("cross_workload_evidence_missing")
