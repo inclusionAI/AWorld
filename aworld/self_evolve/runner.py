@@ -230,6 +230,83 @@ from aworld.self_evolve.controllers.generation import (
     CandidateGenerationController,
     candidate_generation_request_derived_tokens as _candidate_generation_request_derived_tokens,
 )
+from aworld.self_evolve.controllers.run_generation_execution import (
+    GenerationExecutionDisposition,
+    GenerationExecutionPolicy,
+    GenerationExecutionRequest,
+    GenerationExecutionRuntime,
+    GenerationExecutionState,
+    execute_generation_iteration,
+)
+from aworld.self_evolve.controllers.run_generation_helpers import (
+    _MAX_CONSECUTIVE_DUPLICATE_POPULATION_STALLS,
+    _MAX_CONSECUTIVE_MATERIALIZATION_STALLS,
+    _MAX_CONSECUTIVE_POLICY_FILTER_STALLS,
+    _SEMANTIC_DEDUP_IDENTITY_VERSION,
+    _VERIFICATION_CONTRACT_VERSION,
+    _SemanticLessonFingerprint,
+    _causal_event_drives_repair_frontier,
+    _candidate_attempt_placeholder,
+    _candidate_generation_actual_usage,
+    _candidate_materialization_failure_events,
+    _candidate_materialization_failure_event,
+    _candidate_materialization_failures,
+    _candidate_materialization_stall_signature,
+    _candidate_policy_filter_event,
+    _candidate_policy_filter_signature,
+    _candidate_population_rank_key,
+    _candidate_mutation_rank,
+    _candidate_strategy_records,
+    _canonicalize_verified_prerequisite_files,
+    _is_semantic_lesson_duplicate,
+    _known_duplicate_candidate_count,
+    _lineage_semantic_lesson_fingerprints,
+    _nonnegative_int_or_default,
+    _optimizer_stored_candidate_admission_reason,
+    _rank_candidate_population,
+    _retryable_candidate_generation_failure,
+    _scheduler_state_with_mutation_families,
+    _sequence_length,
+    _semantic_lesson_duplicate_count,
+    _semantic_lesson_duplicate_feedback,
+    _positive_int_or_default,
+    _string_list,
+    _typed_repair_frontiers,
+    _verification_contract_fingerprint as _generation_verification_contract_fingerprint,
+    _verified_prerequisite_files,
+    _with_versioned_semantic_lineage,
+)
+from aworld.self_evolve.controllers.run_iteration_execution import (
+    IterationExecutionPolicy,
+    IterationExecutionRequest,
+    IterationExecutionRuntime,
+    execute_iteration_lifecycle,
+)
+from aworld.self_evolve.controllers.run_iteration_helpers import (
+    _authoritative_attempt_consumed,
+    _baseline_comparison_feedback_metrics,
+    _bounded_repair_candidate_target_content,
+    _candidate_conformance_counterexample_ids,
+    _candidate_conformance_counterexample_stages,
+    _candidate_conformance_failure_signatures,
+    _candidate_conformance_repair_topologies,
+    _candidate_conformance_stall_signature,
+    _candidate_conformance_strategy_switch_feedback,
+    _candidate_gate_results,
+    _candidate_repair_conformance_contracts,
+    _candidate_screening_repair_failures,
+    _candidate_screening_repair_feedback,
+    _candidate_validation_shared_failure_gate,
+    _candidate_validation_stopped_by_shared_infrastructure,
+    _feedback_failure_reference,
+    _gate_is_replay_execution_infrastructure_failure,
+    _infrastructure_prevented_comparable_evaluation,
+    _iteration_validation_feedback,
+    _record_authoritative_replay_observations,
+    _repair_candidate_package_feedback,
+    _repair_contract_fingerprint,
+    _source_control_flow_shape,
+)
 from aworld.self_evolve.cli_ingestion import (
     _IngestionMappingModelProvider,
     _IngestionSemanticModelProvider,
@@ -813,20 +890,17 @@ def _partial_replay_evaluator_dataset(
 
 
 _MAX_PROGRESS_REPAIR_EXTENSION_ITERATIONS = 6
-_MAX_CONSECUTIVE_DUPLICATE_POPULATION_STALLS = 1
-_MAX_CONSECUTIVE_POLICY_FILTER_STALLS = 2
-_MAX_CONSECUTIVE_MATERIALIZATION_STALLS = 2
 _MAX_CONFORMANCE_STRATEGY_SWITCH_ATTEMPTS = 2
-_SEMANTIC_DEDUP_IDENTITY_VERSION = "aworld.self_evolve.semantic_dedup.v2"
-_VERIFICATION_CONTRACT_VERSION = "aworld.self_evolve.verification_contract.v2"
 _SAFE_VERIFIED_TARGET_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 
 
-@dataclass(frozen=True)
-class _SemanticLessonFingerprint:
-    semantic_package_fingerprint: str
-    lesson_set_fingerprint: str
-    verification_contract_fingerprint: str
+def _verification_contract_fingerprint(**kwargs: object) -> str:
+    """Compatibility seam for verification contract version upgrades."""
+
+    return _generation_verification_contract_fingerprint(
+        **kwargs,
+        verification_contract_version=_VERIFICATION_CONTRACT_VERSION,
+    )
 
 
 @dataclass
@@ -870,10 +944,7 @@ class _RunBudgetContext:
         remaining = self.ledger.remaining()
         return bool(
             (remaining.tokens is None or usage.tokens <= remaining.tokens)
-            and (
-                remaining.cost_usd is None
-                or usage.cost_usd <= remaining.cost_usd
-            )
+            and (remaining.cost_usd is None or usage.cost_usd <= remaining.cost_usd)
             and (
                 remaining.wall_seconds is None
                 or usage.wall_seconds <= remaining.wall_seconds
@@ -895,10 +966,7 @@ class _RunBudgetContext:
         remaining = self.ledger.remaining()
         return bool(
             (remaining.tokens is None or required.tokens <= remaining.tokens)
-            and (
-                remaining.cost_usd is None
-                or required.cost_usd <= remaining.cost_usd
-            )
+            and (remaining.cost_usd is None or required.cost_usd <= remaining.cost_usd)
             and (
                 remaining.wall_seconds is None
                 or required.wall_seconds <= remaining.wall_seconds
@@ -921,10 +989,7 @@ class _RunBudgetContext:
             backend_proven_zero=backend_proven_zero,
         )
         if request_derived_tokens is not None:
-            if (
-                isinstance(request_derived_tokens, bool)
-                or request_derived_tokens < 0
-            ):
+            if isinstance(request_derived_tokens, bool) or request_derived_tokens < 0:
                 raise ValueError("request_derived_tokens must be non-negative")
             observed_estimate = estimate.source in {
                 BudgetEstimateSource.OBSERVED_ROBUST,
@@ -952,9 +1017,7 @@ class _RunBudgetContext:
                 ),
                 backend_proven_zero=False,
             )
-        decision = self.ledger.reserve(
-            estimate
-        )
+        decision = self.ledger.reserve(estimate)
         self.decisions.append(decision.to_dict())
         return decision
 
@@ -980,9 +1043,7 @@ class _RunBudgetContext:
             known_lower_bound=BudgetUsage(
                 tokens=0 if tokens is None else tokens,
                 cost_usd=Decimal("0") if cost_usd is None else cost_usd,
-                wall_seconds=(
-                    Decimal("0") if wall_seconds is None else wall_seconds
-                ),
+                wall_seconds=(Decimal("0") if wall_seconds is None else wall_seconds),
             ),
             completeness=BudgetUsageCompleteness(
                 tokens=tokens is not None,
@@ -995,24 +1056,18 @@ class _RunBudgetContext:
             observation.known_lower_bound,
             actual_completeness=observation.completeness,
         )
-        self.debits.append(
-            {**result.to_dict(), "actual_source": actual_source}
-        )
+        self.debits.append({**result.to_dict(), "actual_source": actual_source})
 
     def release(self, decision: BudgetDecision, *, reason_code: str) -> None:
         if not decision.allowed or decision.reservation_id is None:
             return
         reservation = self.ledger.release(decision.reservation_id)
-        self.releases.append(
-            {**reservation.to_dict(), "reason_code": reason_code}
-        )
+        self.releases.append({**reservation.to_dict(), "reason_code": reason_code})
 
     def release_all(self, *, reason_code: str) -> None:
         for reservation in tuple(self.ledger.outstanding_reservations):
             released = self.ledger.release(reservation.reservation_id)
-            self.releases.append(
-                {**released.to_dict(), "reason_code": reason_code}
-            )
+            self.releases.append({**released.to_dict(), "reason_code": reason_code})
 
     def release_all_best_effort(self, *, reason_code: str) -> None:
         """Release every surviving reservation without masking a run exception."""
@@ -1022,9 +1077,7 @@ class _RunBudgetContext:
                 released = self.ledger.release(reservation.reservation_id)
             except BaseException:
                 continue
-            self.releases.append(
-                {**released.to_dict(), "reason_code": reason_code}
-            )
+            self.releases.append({**released.to_dict(), "reason_code": reason_code})
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -1043,9 +1096,7 @@ def _remaining_measurement_budget(
     return MeasurementUsage(
         tokens=remaining.tokens,
         cost_usd=(
-            float(remaining.cost_usd)
-            if remaining.cost_usd is not None
-            else None
+            float(remaining.cost_usd) if remaining.cost_usd is not None else None
         ),
         wall_seconds=(
             float(remaining.wall_seconds)
@@ -1227,10 +1278,7 @@ def _configured_budget_usage(
     """Resolve a complete configured estimate without confusing zero with unknown."""
 
     if (
-        (
-            token_ceiling is not None
-            and tokens is None
-        )
+        (token_ceiling is not None and tokens is None)
         or (cost_usd is None and cost_ceiling is not None)
         or (wall_seconds is None and wall_ceiling is not None)
     ):
@@ -1239,60 +1287,13 @@ def _configured_budget_usage(
         tokens=0 if tokens is None else tokens,
         cost_usd=(Decimal("0") if cost_usd is None else Decimal(str(cost_usd))),
         wall_seconds=(
-            Decimal("0")
-            if wall_seconds is None
-            else Decimal(str(wall_seconds))
+            Decimal("0") if wall_seconds is None else Decimal(str(wall_seconds))
         ),
     )
     # A wholly zero configured estimate still requires an explicit backend
     # proof. A mixed estimate (for example local conformance: zero model
     # tokens/cost but bounded wall time) is complete and safe to reserve.
     return None if usage == BudgetUsage() else usage
-
-
-def _candidate_attempt_placeholder(iteration: int, slot: int) -> str:
-    return f"candidate-placeholder-{iteration + 1}-{slot + 1}"
-
-
-def _candidate_generation_actual_usage(
-    telemetry: object,
-) -> tuple[int | None, Decimal | None, str]:
-    """Read raw generation telemetry without double-counting token aliases."""
-
-    if not isinstance(telemetry, Mapping):
-        return None, None, "reserved_fallback_missing_telemetry"
-    token_telemetry = telemetry.get("token_usage")
-    if not isinstance(token_telemetry, Mapping):
-        token_telemetry = telemetry
-    tokens: int | None = None
-    source = "reserved_fallback_missing_tokens"
-    total = token_telemetry.get("total_tokens")
-    if isinstance(total, int) and not isinstance(total, bool) and total >= 0:
-        tokens = total
-        source = "telemetry_total_tokens"
-    else:
-        for input_key, output_key, pair_source in (
-            ("input_tokens", "output_tokens", "telemetry_input_output_tokens"),
-            ("prompt_tokens", "completion_tokens", "telemetry_prompt_completion_tokens"),
-        ):
-            input_tokens = token_telemetry.get(input_key)
-            output_tokens = token_telemetry.get(output_key)
-            if all(
-                isinstance(value, int)
-                and not isinstance(value, bool)
-                and value >= 0
-                for value in (input_tokens, output_tokens)
-            ):
-                tokens = int(input_tokens) + int(output_tokens)
-                source = pair_source
-                break
-    wall = None
-    for key in ("wall_seconds", "elapsed_seconds", "execution_seconds"):
-        wall = _decimal_metric(telemetry.get(key))
-        if wall is not None:
-            source += f"+telemetry_{key}"
-            break
-    return tokens, wall, source
 
 
 def _judge_actual_token_usage(
@@ -1310,23 +1311,27 @@ def _judge_actual_token_usage(
         and summary.dataset_split != "single_case_replay"
         and summary.metrics.get("evaluation_fresh_execution") is not False
     )
-    expected = len(executed) if expected_summary_count is None else expected_summary_count
+    expected = (
+        len(executed) if expected_summary_count is None else expected_summary_count
+    )
     if isinstance(expected, bool) or expected < 0:
         raise ValueError("expected_summary_count must be non-negative")
     complete = len(executed) == expected
     for summary in executed:
         metrics = summary.metrics
         raw_total = metrics.get("judge_total_tokens")
-        if isinstance(raw_total, int) and not isinstance(raw_total, bool) and raw_total >= 0:
+        if (
+            isinstance(raw_total, int)
+            and not isinstance(raw_total, bool)
+            and raw_total >= 0
+        ):
             total += raw_total
             sources.add("judge_total_tokens")
             continue
         raw_input = metrics.get("judge_input_tokens_total")
         raw_output = metrics.get("judge_output_tokens_total")
         if all(
-            isinstance(value, int)
-            and not isinstance(value, bool)
-            and value >= 0
+            isinstance(value, int) and not isinstance(value, bool) and value >= 0
             for value in (raw_input, raw_output)
         ):
             total += int(raw_input) + int(raw_output)
@@ -1361,16 +1366,14 @@ def _unique_evaluation_summaries(
     seen: set[str] = set()
     for index, summary in enumerate(summaries):
         metrics = summary.metrics
-        execution_id = (
-            metrics.get("evaluation_alias_of_execution_id")
-            or metrics.get("evaluation_execution_id")
+        execution_id = metrics.get("evaluation_alias_of_execution_id") or metrics.get(
+            "evaluation_execution_id"
         )
         if not isinstance(execution_id, str) or not execution_id:
             if summary.dataset_split == "single_case_replay":
                 continue
             execution_id = (
-                f"legacy:{index}:{summary.variant_id}:"
-                f"{summary.dataset_split}"
+                f"legacy:{index}:{summary.variant_id}:{summary.dataset_split}"
             )
         if execution_id in seen:
             continue
@@ -1384,148 +1387,13 @@ def _same_evaluation_execution(
     second: EvaluationSummary,
 ) -> bool:
     def execution_id(summary: EvaluationSummary) -> object:
-        return (
-            summary.metrics.get("evaluation_alias_of_execution_id")
-            or summary.metrics.get("evaluation_execution_id")
-        )
+        return summary.metrics.get(
+            "evaluation_alias_of_execution_id"
+        ) or summary.metrics.get("evaluation_execution_id")
 
     first_id = execution_id(first)
     second_id = execution_id(second)
     return isinstance(first_id, str) and bool(first_id) and first_id == second_id
-
-
-def _typed_repair_frontiers(
-    feedback: Iterable[EvaluationSummary],
-) -> tuple[RepairFrontier, ...]:
-    """Build scheduler input solely from typed causal failure envelopes."""
-
-    frontiers: dict[str, RepairFrontier] = {}
-    for summary in feedback:
-        raw_events = summary.metrics.get("causal_failure_events")
-        event_payloads = (
-            raw_events if isinstance(raw_events, (list, tuple)) else ()
-        )
-        for payload in event_payloads:
-            if not isinstance(payload, Mapping):
-                continue
-            try:
-                event = _typed_causal_feedback_event(payload)
-            except (TypeError, ValueError):
-                continue
-            if not _causal_event_drives_repair_frontier(
-                code=event.code,
-                category=event.category,
-            ):
-                continue
-            frontier = RepairFrontier(
-                semantic_key=event.semantic_key,
-                progress=max(
-                    event.occurrence_count,
-                    event.affected_member_count,
-                    event.distinct_source_count,
-                ),
-                owner=event.owner,
-                scope=event.scope,
-                repairable=event.repairable,
-            )
-            previous = frontiers.get(frontier.semantic_key)
-            if previous is None or frontier.progress > previous.progress:
-                frontiers[frontier.semantic_key] = frontier
-        # Lesson memory intentionally stores a bounded scalar projection of a
-        # causal aggregate instead of duplicating its full envelope.  Restore
-        # the scheduler frontier from that typed projection so Campaign
-        # continuation does not lose the exact repair signal that justified a
-        # fresh-cycle budget.  Only causal_failure_memory lessons are eligible;
-        # free-form lessons remain generation context, not scheduler control.
-        if (
-            event_payloads
-            or summary.metrics.get("lesson_type") != "causal_failure_memory"
-        ):
-            continue
-        semantic_key = summary.metrics.get("causal_semantic_key")
-        causal_code = summary.metrics.get("causal_code")
-        causal_category = summary.metrics.get("causal_category")
-        raw_owner = summary.metrics.get("causal_owner")
-        raw_scope = summary.metrics.get("causal_scope")
-        repairable = summary.metrics.get("repairable")
-        if (
-            not isinstance(semantic_key, str)
-            or not semantic_key
-            or not isinstance(repairable, bool)
-            or not _causal_event_drives_repair_frontier(
-                code=(str(causal_code) if causal_code is not None else ""),
-                category=(
-                    str(causal_category)
-                    if causal_category is not None
-                    else ""
-                ),
-            )
-        ):
-            continue
-        try:
-            owner = FailureOwner(str(raw_owner))
-            scope = FailureScope(str(raw_scope))
-        except ValueError:
-            continue
-        frontier = RepairFrontier(
-            semantic_key=semantic_key,
-            progress=max(
-                _positive_int_or_default(
-                    summary.metrics.get("occurrence_count"), default=1
-                ),
-                _nonnegative_int_or_default(
-                    summary.metrics.get("distinct_source_count"), default=0
-                ),
-                len(_string_list(summary.metrics.get("affected_case_ids"))),
-            ),
-            owner=owner,
-            scope=scope,
-            repairable=repairable,
-        )
-        previous = frontiers.get(frontier.semantic_key)
-        if previous is None or frontier.progress > previous.progress:
-            frontiers[frontier.semantic_key] = frontier
-    # Preserve causal feedback order. The scheduler uses the most recently
-    # discovered eligible frontier as the tie-breaker, rather than an opaque
-    # semantic-hash ordering.
-    return tuple(frontiers.values())
-
-
-def _causal_event_drives_repair_frontier(*, code: str, category: str) -> bool:
-    """Keep propagation and verification summaries out of repair scheduling.
-
-    These events describe why downstream work did not run or why evidence could
-    not be consumed.  Their affected-member counts are useful diagnostics, but
-    treating them as physical repair progress lets one failed member masquerade
-    as progress across every subsequently blocked member.
-    """
-
-    return bool(
-        category != "authoritative_early_stop"
-        and code
-        not in {
-            "authoritative_candidate_frontier_unreachable",
-            "replay_confidence",
-        }
-    )
-
-
-def _feedback_failure_reference(
-    summary: EvaluationSummary,
-) -> tuple[str | None, str | None]:
-    raw_events = summary.metrics.get("causal_failure_events")
-    if not isinstance(raw_events, (list, tuple)):
-        return None, None
-    for payload in raw_events:
-        if not isinstance(payload, Mapping):
-            continue
-        try:
-            event = _typed_causal_feedback_event(payload)
-        except (TypeError, ValueError):
-            continue
-        occurrence_id = event.occurrence_ids[0] if event.occurrence_ids else None
-        return occurrence_id, event.semantic_key
-    return None, None
 
 
 @dataclass(frozen=True)
@@ -1582,23 +1450,6 @@ def _typed_terminal_candidate_evaluation_result(
         replay_result=replay_result,
         replay_dataset=replay_dataset,
     )
-
-
-def _optimizer_stored_candidate_admission_reason(
-    optimizer: CandidateOptimizer,
-) -> str | None:
-    declaration = getattr(
-        optimizer,
-        "stored_candidate_admission_reason",
-        None,
-    )
-    if not callable(declaration):
-        return None
-    try:
-        reason = declaration()
-    except (TypeError, ValueError):
-        return None
-    return reason if isinstance(reason, str) and reason.strip() else None
 
 
 def _backend_proves_zero_budget_usage(
@@ -1661,9 +1512,7 @@ def _execution_usage_report(
                 if result.fresh_execution
             )
         judge_summaries.extend(
-            summary
-            for summary in summaries
-            if isinstance(summary, EvaluationSummary)
+            summary for summary in summaries if isinstance(summary, EvaluationSummary)
         )
     for summary in _unique_evaluation_summaries(judge_summaries):
         attempts = summary.metrics.get("judge_attempt_count")
@@ -1687,15 +1536,11 @@ def _execution_usage_report(
             ),
         },
         "evaluation_usage": {
-            "scheduled_tasks": _non_negative_int(
-                evaluation_stage.get("item_count")
-            ),
+            "scheduled_tasks": _non_negative_int(evaluation_stage.get("item_count")),
             "judge_attempt_count": judge_attempt_count,
         },
         "candidate_generation_usage": {
-            "scheduled_slots": _non_negative_int(
-                candidate_stage.get("item_count")
-            ),
+            "scheduled_slots": _non_negative_int(candidate_stage.get("item_count")),
         },
     }
 
@@ -1705,9 +1550,10 @@ _SCREENING_CONTROL_HARNESS_ID = "aworld.self_evolve.screening_harness.v2"
 
 
 def _screening_control_harness_fingerprint() -> str:
-    return "sha256:" + hashlib.sha256(
-        _SCREENING_CONTROL_HARNESS_ID.encode("utf-8")
-    ).hexdigest()
+    return (
+        "sha256:"
+        + hashlib.sha256(_SCREENING_CONTROL_HARNESS_ID.encode("utf-8")).hexdigest()
+    )
 
 
 def _accumulate_score_evidence(
@@ -1728,9 +1574,7 @@ def _accumulate_score_evidence(
         and initial_plan == additional_plan
     )
     initial_samples = _finite_score_samples(initial_metrics.get("score_samples"))
-    additional_samples = _finite_score_samples(
-        additional_metrics.get("score_samples")
-    )
+    additional_samples = _finite_score_samples(additional_metrics.get("score_samples"))
     if not compatible or not initial_samples or not additional_samples:
         additional_metrics["score_evidence_accumulation"] = {
             "status": "incompatible",
@@ -1851,407 +1695,6 @@ def _status_without_selected_candidate(
     return SelfEvolveRunStatus.REJECTED
 
 
-def _candidate_materialization_failures(
-    diagnostics: Mapping[str, object],
-) -> tuple[dict[str, object], ...]:
-    raw_failures = diagnostics.get("candidate_materialization_failures")
-    if not isinstance(raw_failures, (list, tuple)):
-        return ()
-    failures: list[dict[str, object]] = []
-    for item in raw_failures[:16]:
-        if not isinstance(item, Mapping):
-            continue
-        code = normalize_candidate_materialization_code(
-            item.get("code")
-        ).value
-        representation = normalize_candidate_representation(
-            item.get("representation")
-        ).value
-        field_path = normalize_candidate_failure_field(
-            item.get("field_path")
-        ).value
-        raw_stage = str(item.get("stage") or "").strip()
-        failure = {
-            "code": code,
-            "stage": (
-                raw_stage
-                if raw_stage
-                in {
-                    "candidate_generation",
-                    "candidate_protocol",
-                    "candidate_semantic_validation",
-                }
-                else "candidate_generation"
-            ),
-            "failure_class": "candidate",
-            "repairable": item.get("repairable") is not False,
-            "candidate_index": _non_negative_int(item.get("candidate_index")),
-            "representation": representation,
-            "field_path": field_path,
-            "reason": sanitize_text(item.get("reason"), max_chars=240),
-        }
-        contract_fingerprint = normalize_candidate_contract_fingerprint(
-            item.get("contract_fingerprint")
-        )
-        if contract_fingerprint is not None:
-            failure["contract_fingerprint"] = contract_fingerprint
-        raw_details = item.get("details")
-        if isinstance(raw_details, Mapping):
-            public_details = public_diagnostic_projection(raw_details)
-            if isinstance(public_details, Mapping):
-                failure["details"] = dict(public_details)
-        raw_allowed_ids = item.get("allowed_improvement_signal_ids")
-        if isinstance(raw_allowed_ids, (list, tuple)):
-            failure["allowed_improvement_signal_ids"] = [
-                sanitize_text(value, max_chars=512)
-                for value in raw_allowed_ids[:256]
-                if isinstance(value, str) and value
-            ]
-        failures.append(failure)
-    return tuple(failures)
-
-
-def _candidate_materialization_stall_signature(
-    failures: Iterable[Mapping[str, object]],
-) -> str | None:
-    """Identify repeated typed generation failures without candidate identity."""
-
-    shapes: list[dict[str, object]] = []
-    for failure in failures:
-        details = failure.get("details")
-        typed_values = [
-            (key, value)
-            for key, value in _failure_signature_values(details)
-            if key
-            in {
-                "code",
-                "failure_fingerprint",
-                "proof_fingerprint",
-                "stage",
-            }
-        ]
-        shapes.append(
-            {
-                "code": failure.get("code"),
-                "stage": failure.get("stage"),
-                "representation": failure.get("representation"),
-                "field_path": failure.get("field_path"),
-                "contract_fingerprint": failure.get("contract_fingerprint"),
-                "typed_values": typed_values,
-            }
-        )
-    if not shapes:
-        return None
-    return hashlib.sha256(
-        json.dumps(
-            sorted(shapes, key=lambda item: json.dumps(item, sort_keys=True)),
-            ensure_ascii=True,
-            separators=(",", ":"),
-            sort_keys=True,
-            default=str,
-        ).encode("utf-8")
-    ).hexdigest()
-
-
-def _candidate_conformance_stall_signature(
-    failures: Iterable[tuple[CandidateVariant, GateResult]],
-) -> str | None:
-    """Group repeated typed conformance failures independently of candidate ids."""
-
-    signatures = _candidate_conformance_failure_signatures(failures)
-    if not signatures:
-        return None
-    encoded = json.dumps(
-        list(signatures),
-        ensure_ascii=True,
-        separators=(",", ":"),
-        sort_keys=True,
-    ).encode("utf-8")
-    return "sha256:" + hashlib.sha256(encoded).hexdigest()
-
-
-def _candidate_conformance_failure_signatures(
-    failures: Iterable[tuple[CandidateVariant, GateResult]],
-) -> tuple[str, ...]:
-    """Return atomic typed failure identities for progress-aware retries.
-
-    Batch composition is not repair progress.  Tracking one hash for a whole
-    population lets the same failure receive another strategy switch whenever a
-    sibling failure appears or disappears.  Atomic identities bound retries per
-    actual failed contract instead.
-    """
-
-    shapes: dict[str, dict[str, object]] = {}
-    for _, gate in failures:
-        if gate.gate_name != "candidate_repair_conformance":
-            continue
-        details = gate.details
-        if not isinstance(details, Mapping):
-            continue
-        failure_fingerprint = details.get("failure_fingerprint")
-        shape = {
-            "code": details.get("code"),
-            "capability_error_code": details.get("capability_error_code"),
-            "stage": details.get("stage"),
-            "failure_fingerprint": failure_fingerprint,
-            "contract_fingerprint": _repair_contract_fingerprint(
-                details
-            ),
-        }
-        if any(value is not None for value in shape.values()):
-            identity = json.dumps(
-                shape,
-                ensure_ascii=True,
-                separators=(",", ":"),
-                sort_keys=True,
-                default=str,
-            )
-            shapes[identity] = shape
-    if not shapes:
-        return ()
-    return tuple(
-        "sha256:"
-        + hashlib.sha256(
-            json.dumps(
-                shapes[key],
-                ensure_ascii=True,
-                separators=(",", ":"),
-                sort_keys=True,
-                default=str,
-            ).encode("utf-8")
-        ).hexdigest()
-        for key in sorted(shapes)
-    )
-
-
-def _candidate_conformance_counterexample_ids(
-    failures: Iterable[tuple[CandidateVariant, GateResult]],
-) -> set[str]:
-    """Return executable counterexample identities still failing this batch."""
-
-    identities: set[str] = set()
-    for _, gate in failures:
-        details = gate.details
-        if not isinstance(details, Mapping):
-            continue
-        raw_contracts = details.get("counterexample_contracts")
-        if not isinstance(raw_contracts, (list, tuple)):
-            continue
-        for contract in raw_contracts:
-            if not isinstance(contract, Mapping):
-                continue
-            identity = contract.get("counterexample_id")
-            if isinstance(identity, str) and identity:
-                identities.add(identity)
-    return identities
-
-
-def _candidate_conformance_counterexample_stages(
-    failures: Iterable[tuple[CandidateVariant, GateResult]],
-) -> dict[str, set[str]]:
-    """Group typed conformance counterexamples by the stage that discovered them."""
-
-    stages: dict[str, set[str]] = {}
-    for _, gate in failures:
-        details = gate.details
-        if not isinstance(details, Mapping):
-            continue
-        raw_contracts = details.get("counterexample_contracts")
-        if not isinstance(raw_contracts, (list, tuple)):
-            continue
-        for contract in raw_contracts:
-            if not isinstance(contract, Mapping):
-                continue
-            identity = contract.get("counterexample_id")
-            schema = str(contract.get("schema_version") or "")
-            if not isinstance(identity, str) or not identity:
-                continue
-            if schema == "aworld.self_evolve.schema_counterexample.v1":
-                stage = "capability_parse_schema"
-            elif schema == "aworld.self_evolve.fixture_probe_counterexample.v1":
-                stage = "compiled_probe_conformance"
-            else:
-                stage = "candidate_conformance"
-            stages.setdefault(stage, set()).add(identity)
-    return stages
-
-
-def _candidate_conformance_repair_topologies(
-    failures: Iterable[tuple[CandidateVariant, GateResult]],
-) -> dict[str, tuple[str, ...]]:
-    """Describe actual repair topology per typed failure identity.
-
-    Candidate-family labels are intent, not evidence of a structural switch.
-    This fingerprint records the authorized owners, edited package paths, and
-    source control/data-flow shape while deliberately ignoring identifiers and
-    literal values.
-    """
-
-    topologies: dict[str, set[str]] = {}
-    for candidate, gate in failures:
-        signatures = _candidate_conformance_failure_signatures(
-            ((candidate, gate),)
-        )
-        if not signatures:
-            continue
-        details = gate.details if isinstance(gate.details, Mapping) else {}
-        raw_contract = details.get("repair_conformance")
-        contract = raw_contract if isinstance(raw_contract, Mapping) else {}
-        owner_paths = sorted(
-            str(path)
-            for path in tuple(contract.get("required_branch_paths") or ())
-            if isinstance(path, str) and path
-        )
-        edited_files: list[dict[str, object]] = []
-        for item in sorted(candidate.files, key=lambda value: value.path):
-            if owner_paths and item.path not in owner_paths:
-                continue
-            source_shape: object | None = None
-            if item.operation == "upsert" and isinstance(item.content, str):
-                source_shape = _source_control_flow_shape(
-                    item.path,
-                    item.content,
-                )
-            edited_files.append(
-                {
-                    "path": item.path,
-                    "operation": item.operation,
-                    "source_shape": source_shape,
-                }
-            )
-        raw_counterexamples = details.get("counterexample_contracts")
-        output_witnesses = sorted(
-            (
-                str(item.get("counterexample_id") or ""),
-                str(item.get("actual_type") or ""),
-                str(item.get("actual_fingerprint") or ""),
-            )
-            for item in (
-                raw_counterexamples
-                if isinstance(raw_counterexamples, (list, tuple))
-                else ()
-            )
-            if isinstance(item, Mapping)
-            and isinstance(item.get("counterexample_id"), str)
-            and isinstance(item.get("actual_fingerprint"), str)
-        )
-        proof_witnesses = sorted(
-            str(item)
-            for item in tuple(details.get("proof_fingerprints") or ())
-            if isinstance(item, str) and item
-        )
-        payload = {
-            "owner_paths": owner_paths,
-            # A typed counterexample is an executable output witness. Source
-            # refactors do not constitute a strategy switch while the selected
-            # subject retains the same type and content fingerprint.
-            "counterexample_output_witnesses": output_witnesses,
-            "source_behavior_proof_witnesses": proof_witnesses,
-            **(
-                {}
-                if output_witnesses or proof_witnesses
-                else {
-                    "edited_files": edited_files,
-                    "structural_authorization": (
-                        candidate.structural_edit_intent.authorization
-                        if candidate.structural_edit_intent is not None
-                        else None
-                    ),
-                }
-            ),
-        }
-        fingerprint = "sha256:" + hashlib.sha256(
-            json.dumps(
-                payload,
-                ensure_ascii=True,
-                separators=(",", ":"),
-                sort_keys=True,
-                default=str,
-            ).encode("utf-8")
-        ).hexdigest()
-        for signature in signatures:
-            topologies.setdefault(signature, set()).add(fingerprint)
-    return {
-        signature: tuple(sorted(values))
-        for signature, values in sorted(topologies.items())
-    }
-
-
-def _source_control_flow_shape(path: str, source: str) -> object:
-    """Return a bounded, value-free source topology for switch accounting."""
-
-    if Path(path).suffix.casefold() != ".py":
-        headings = [
-            len(line) - len(line.lstrip("#"))
-            for line in source.splitlines()
-            if line.startswith("#")
-        ]
-        return {"kind": "text", "heading_depths": headings[:128]}
-    try:
-        tree = ast.parse(source)
-    except SyntaxError:
-        return {"kind": "python_invalid"}
-    node_counts = Counter(type(node).__name__ for node in ast.walk(tree))
-    edges = Counter(
-        (type(parent).__name__, type(child).__name__)
-        for parent in ast.walk(tree)
-        for child in ast.iter_child_nodes(parent)
-    )
-    return {
-        "kind": "python_ast",
-        "nodes": sorted(node_counts.items()),
-        "edges": [
-            [parent, child, count]
-            for (parent, child), count in sorted(edges.items())
-        ],
-    }
-
-
-def _candidate_conformance_strategy_switch_feedback(
-    *,
-    signature: str,
-    prior_topology_fingerprints: Sequence[str] = (),
-) -> EvaluationSummary:
-    event = ReplayFailureEvent(
-        code="candidate_conformance_strategy_switch_required",
-        owner=FailureOwner.CANDIDATE,
-        stage=FailureStage.CAPABILITY_PREFLIGHT,
-        scope=FailureScope.CANDIDATE,
-        repairable=True,
-        category="repair_conformance",
-        summary="typed conformance failure requires a structural strategy switch",
-        contract_fingerprint=signature,
-    ).to_dict()
-    return EvaluationSummary(
-        variant_id=(
-            "candidate-conformance-strategy-switch-"
-            f"{signature.removeprefix('sha256:')[:16]}"
-        ),
-        dataset_split="validation",
-        metrics={
-            "failed_gates": ["candidate_repair_conformance"],
-            "candidate_status": "repair_strategy_switch",
-            "failure_class": "candidate",
-            "repairable": True,
-            "candidate_validation_diagnostics": [
-                {
-                    "code": "candidate_conformance_strategy_switch_required",
-                    "stage": "repair_conformance",
-                    "failure_fingerprint": signature,
-                    "required_action": (
-                        "change the failing data-flow or control-flow topology"
-                    ),
-                    "prior_topology_fingerprints": list(
-                        prior_topology_fingerprints
-                    ),
-                }
-            ],
-            "failure_event": event,
-            "causal_failure_events": [event],
-        },
-    )
-
-
 def _repair_conformance_validation_surface_changed(
     current: RepairConformanceContract,
     evolved: Mapping[str, object],
@@ -2294,59 +1737,6 @@ def _repair_conformance_validation_surface_changed(
     return surface(current) != surface(evolved_contract)
 
 
-def _candidate_materialization_failure_event(
-    failure: Mapping[str, object],
-) -> dict[str, object]:
-    code = normalize_candidate_materialization_code(
-        failure.get("code")
-    ).value
-    field_path = normalize_candidate_failure_field(
-        failure.get("field_path")
-    ).value
-    representation = normalize_candidate_representation(
-        failure.get("representation")
-    ).value
-    contract_fingerprint = normalize_candidate_contract_fingerprint(
-        failure.get("contract_fingerprint")
-    )
-    event = ReplayFailureEvent(
-        code=code,
-        owner=FailureOwner.CANDIDATE,
-        stage=FailureStage.CANDIDATE_GENERATION,
-        scope=FailureScope.CANDIDATE,
-        repairable=failure.get("repairable") is not False,
-        category="candidate_generation",
-        summary="candidate package could not be materialized",
-        diagnostics={
-            "field_path": field_path,
-            "representation": representation,
-        },
-        requirement_id=candidate_materialization_requirement_id(
-            representation=representation,
-            field_path=field_path,
-        ),
-        contract_fingerprint=(
-            contract_fingerprint
-        ),
-    )
-    return event.to_dict()
-
-
-def _candidate_materialization_failure_events(
-    failures: Iterable[Mapping[str, object]],
-) -> tuple[dict[str, object], ...]:
-    events: list[dict[str, object]] = []
-    seen_semantic_keys: set[str] = set()
-    for failure in failures:
-        event = _candidate_materialization_failure_event(failure)
-        semantic_key = str(event["semantic_key"])
-        if semantic_key in seen_semantic_keys:
-            continue
-        seen_semantic_keys.add(semantic_key)
-        events.append(event)
-    return tuple(events)
-
-
 def _candidate_generation_failure_events(
     optimizer_diagnostics: Iterable[Mapping[str, object]],
 ) -> tuple[dict[str, object], ...]:
@@ -2386,8 +1776,10 @@ def _candidate_protocol_failure_events(
             continue
         if outcome.kind is not CandidateGenerationOutcomeKind.PROTOCOL_INVALID:
             continue
-        code = outcome.reason_codes[0] if outcome.reason_codes else (
-            "candidate_protocol_invalid"
+        code = (
+            outcome.reason_codes[0]
+            if outcome.reason_codes
+            else ("candidate_protocol_invalid")
         )
         event = ReplayFailureEvent(
             code=code,
@@ -2430,56 +1822,11 @@ def _candidate_policy_filter_outcomes(
     return tuple(outcomes)
 
 
-def _candidate_policy_filter_event(
-    outcome: CandidateGenerationOutcome,
-) -> dict[str, object]:
-    constraint_identity = json.dumps(
-        {
-            "policy_id": outcome.policy_id,
-            "constraint_ids": list(outcome.constraint_ids),
-            "enforcement": outcome.enforcement,
-        },
-        sort_keys=True,
-        separators=(",", ":"),
-    )
-    event = ReplayFailureEvent(
-        code="candidate_generation_policy_filtered",
-        owner=FailureOwner.CANDIDATE,
-        stage=FailureStage.CANDIDATE_GENERATION,
-        scope=FailureScope.CANDIDATE,
-        repairable=outcome.repairable,
-        category="candidate_generation_policy",
-        summary="candidate violated a deterministic generation policy",
-        diagnostics={
-            "policy_id": outcome.policy_id,
-            "enforcement": outcome.enforcement,
-            "reason_codes": list(outcome.reason_codes),
-            "constraint_ids": list(outcome.constraint_ids),
-            "active_frontier_key": outcome.active_frontier_key,
-            "affected_case_ids": list(outcome.affected_case_ids),
-            "candidate_fingerprint": outcome.candidate_fingerprint,
-            "semantic_fingerprint": outcome.semantic_fingerprint,
-            "strategy_id": outcome.strategy_id,
-        },
-        requirement_id=(
-            "candidate-policy:sha256:"
-            + hashlib.sha256(constraint_identity.encode("utf-8")).hexdigest()
-        ),
-    )
-    return event.to_dict()
-
-
 def _candidate_policy_frontier_stalled_event(
     outcomes: Sequence[CandidateGenerationOutcome],
 ) -> dict[str, object]:
     policy_ids = tuple(
-        sorted(
-            {
-                str(outcome.policy_id)
-                for outcome in outcomes
-                if outcome.policy_id
-            }
-        )
+        sorted({str(outcome.policy_id) for outcome in outcomes if outcome.policy_id})
     )
     constraint_ids = tuple(
         sorted(
@@ -2525,81 +1872,11 @@ def _candidate_policy_filter_events(
     return tuple(events)
 
 
-def _candidate_policy_filter_signature(
-    outcomes: Sequence[CandidateGenerationOutcome],
-) -> str | None:
-    policy_outcomes = [
-        outcome
-        for outcome in outcomes
-        if outcome.kind is CandidateGenerationOutcomeKind.POLICY_FILTERED
-    ]
-    if not policy_outcomes:
-        return None
-    payload = sorted(
-        {
-            (
-                str(outcome.policy_id),
-                str(outcome.enforcement),
-                tuple(sorted(outcome.reason_codes)),
-                tuple(sorted(outcome.constraint_ids)),
-                tuple(sorted(outcome.affected_case_ids)),
-            )
-            for outcome in policy_outcomes
-        }
-    )
-    return "candidate-policy-filter:sha256:" + hashlib.sha256(
-        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode(
-            "utf-8"
-        )
-    ).hexdigest()
-
-
 def _candidate_generation_failure_event(
     optimizer_diagnostics: Iterable[Mapping[str, object]],
 ) -> dict[str, object] | None:
     events = _candidate_generation_failure_events(optimizer_diagnostics)
     return events[0] if events else None
-
-
-def _retryable_candidate_generation_failure(
-    failure: Mapping[str, object],
-) -> bool:
-    error_type = str(failure.get("error_type") or "").strip().casefold()
-    stage = str(failure.get("stage") or "").strip().casefold()
-    if stage not in {"model_provider", "model_response"}:
-        return False
-    return error_type in {
-        "apiconnectionerror",
-        "apitimeouterror",
-        "connectionerror",
-        "llmresponseerror",
-        "ratelimiterror",
-        "timeouterror",
-    }
-
-
-def _infrastructure_prevented_comparable_evaluation(
-    failed_gates: Iterable[GateResult],
-    *,
-    baseline_summary: EvaluationSummary | None,
-    candidate_summary: EvaluationSummary | None,
-) -> bool:
-    # Failed evaluator calls are represented by synthetic summaries so the
-    # report remains structurally complete. Their presence does not mean the
-    # baseline/candidate pair was actually comparable.
-    del baseline_summary, candidate_summary
-    gates = tuple(failed_gates)
-    has_infrastructure_failure = any(
-        isinstance(gate.details, Mapping)
-        and gate.details.get("failure_class") == "infrastructure"
-        for gate in gates
-    )
-    has_candidate_owned_failure = any(
-        not isinstance(gate.details, Mapping)
-        or gate.details.get("failure_class") != "infrastructure"
-        for gate in gates
-    )
-    return has_infrastructure_failure and not has_candidate_owned_failure
 
 
 def _replay_adaptation_exception_details(
@@ -2618,9 +1895,7 @@ def _replay_adaptation_exception_details(
             "required_manifest_contract": {
                 "schema_version": REPLAY_CAPABILITY_SCHEMA_VERSION,
                 "protocol": REPLAY_CAPABILITY_PROTOCOL_VERSION,
-                "handles_values": list(
-                    REPLAY_CAPABILITY_SUPPORTED_REQUIREMENT_KINDS
-                ),
+                "handles_values": list(REPLAY_CAPABILITY_SUPPORTED_REQUIREMENT_KINDS),
                 "entrypoint_role": (
                     "relative compiler entrypoint that writes output/result.json"
                 ),
@@ -2713,20 +1988,6 @@ def _replay_adaptation_exception_details(
     }
 
 
-def _repair_contract_fingerprint(
-    details: Mapping[str, object],
-) -> str | None:
-    """Resolve the typed constraint identity from a gate or its projection."""
-
-    direct = _schema_field_contract_fingerprint(details)
-    if direct is not None:
-        return direct
-    projected = details.get("repair_conformance")
-    if isinstance(projected, Mapping):
-        return _schema_field_contract_fingerprint(projected)
-    return None
-
-
 def _repair_contract_fingerprints(
     details: Mapping[str, object],
 ) -> tuple[str, ...]:
@@ -2772,8 +2033,7 @@ def _terminal_cause(
             "failure_class": "infrastructure",
             "stage": "candidate_generation",
             "code": str(
-                failure.get("code")
-                or "candidate_generation_infrastructure_error"
+                failure.get("code") or "candidate_generation_infrastructure_error"
             ),
             "retryable": _retryable_candidate_generation_failure(failure),
         }
@@ -2810,9 +2070,9 @@ def _terminal_cause(
 def _retryable_infrastructure_details(details: Mapping[str, object]) -> bool:
     if details.get("retryable") is True or details.get("repairable") is True:
         return True
-    error_type = str(
-        details.get("error_type") or details.get("type") or ""
-    ).strip().casefold()
+    error_type = (
+        str(details.get("error_type") or details.get("type") or "").strip().casefold()
+    )
     return error_type in {
         "apiconnectionerror",
         "apitimeouterror",
@@ -2891,9 +2151,7 @@ def _rejection_attribution(
         attribution["capability_error_code"] = capability_error_code
     if scheduler_decisions:
         terminal_decision = scheduler_decisions[-1]
-        scheduler_reason_code = str(
-            terminal_decision.get("reason_code") or "unknown"
-        )
+        scheduler_reason_code = str(terminal_decision.get("reason_code") or "unknown")
         attribution["scheduler_reason_code"] = scheduler_reason_code
         attribution["scheduler_stop"] = terminal_decision.get("stop") is True
         if (
@@ -2988,9 +2246,7 @@ def _campaign_failure_attribution(
             continue
         candidate = state.get("candidate")
         candidate_id = (
-            candidate.candidate_id
-            if isinstance(candidate, CandidateVariant)
-            else None
+            candidate.candidate_id if isinstance(candidate, CandidateVariant) else None
         )
         raw_gates = state.get("gate_results")
         if not isinstance(raw_gates, (list, tuple)):
@@ -3031,9 +2287,7 @@ def _campaign_failure_attribution(
                 {
                     "primary_gate": gate.gate_name,
                     "code": code,
-                    "failure_class": str(
-                        details.get("failure_class") or "candidate"
-                    ),
+                    "failure_class": str(details.get("failure_class") or "candidate"),
                     "primary_reason": sanitize_text(gate.reason, max_chars=400),
                     "occurrence_count": 0,
                     "candidate_ids": set(),
@@ -3043,9 +2297,7 @@ def _campaign_failure_attribution(
                     "failure_stage": details.get("failure_stage"),
                     "repairable": details.get("repairable"),
                     "next_action": details.get("next_action"),
-                    "diagnostic_refs": set(
-                        _attribution_diagnostic_refs(details)
-                    ),
+                    "diagnostic_refs": set(_attribution_diagnostic_refs(details)),
                 },
             )
             refs = group.get("diagnostic_refs")
@@ -3137,17 +2389,12 @@ def _resolved_conformance_contract_fingerprints(
     for report in validation_reports:
         conformance = report.get("conformance")
         attempts = (
-            conformance.get("attempts")
-            if isinstance(conformance, Mapping)
-            else None
+            conformance.get("attempts") if isinstance(conformance, Mapping) else None
         )
         if not isinstance(attempts, (list, tuple)):
             continue
         for attempt in attempts:
-            if (
-                not isinstance(attempt, Mapping)
-                or attempt.get("passed") is not True
-            ):
+            if not isinstance(attempt, Mapping) or attempt.get("passed") is not True:
                 continue
             details = attempt.get("details")
             if not isinstance(details, Mapping):
@@ -3187,8 +2434,12 @@ class SelfEvolveRunner:
         ),
         candidate_generation_output_tokens_per_unit: int = 16_000,
         candidate_generation_model_name: str = "gpt-4o",
-        candidate_generation_cost_usd_per_unit: float | Decimal | None = Decimal("0.05"),
-        candidate_generation_wall_seconds_per_unit: float | Decimal | None = Decimal("120"),
+        candidate_generation_cost_usd_per_unit: float | Decimal | None = Decimal(
+            "0.05"
+        ),
+        candidate_generation_wall_seconds_per_unit: float | Decimal | None = Decimal(
+            "120"
+        ),
         candidate_screening_tokens_per_unit: int | None = 4_096,
         candidate_screening_cost_usd_per_unit: float | Decimal | None = Decimal("0.05"),
         candidate_screening_wall_seconds_per_unit: float | Decimal | None = (
@@ -3204,7 +2455,8 @@ class SelfEvolveRunner:
         auto_apply_target_types: tuple[str, ...] = ("skill",),
         allow_generated_target_mutation: bool = False,
         allow_external_target_mutation: bool = False,
-        inferred_new_skill_policy: InferredNewSkillPolicy | str = InferredNewSkillPolicy.AUTO_VERIFIED,
+        inferred_new_skill_policy: InferredNewSkillPolicy
+        | str = InferredNewSkillPolicy.AUTO_VERIFIED,
         replay_enabled: bool = False,
         candidate_replay_backend: CandidateReplayBackend | None = None,
         regression_replay_backend: CandidateReplayBackend | None = None,
@@ -3250,8 +2502,10 @@ class SelfEvolveRunner:
         self.regression_suites = tuple(regression_suites)
         self.challenger_enabled = challenger_enabled
         self.challenger_backend = (
-            challenger_backend or DeterministicInvariantChallenger()
-        ) if challenger_enabled else None
+            (challenger_backend or DeterministicInvariantChallenger())
+            if challenger_enabled
+            else None
+        )
         if (
             isinstance(challenger_max_cases, bool)
             or not 0 < challenger_max_cases <= MAX_CHALLENGE_CASES
@@ -3289,9 +2543,7 @@ class SelfEvolveRunner:
             candidate_generation_model_name.strip()
         ):
             raise ValueError("candidate_generation_model_name must be non-empty")
-        self.candidate_generation_model_name = (
-            candidate_generation_model_name.strip()
-        )
+        self.candidate_generation_model_name = candidate_generation_model_name.strip()
         self._generation_controller = CandidateGenerationController(
             output_tokens_per_candidate=(
                 self.candidate_generation_output_tokens_per_unit
@@ -3303,9 +2555,7 @@ class SelfEvolveRunner:
             total_run_token_budget is None and max_run_tokens is not None
         )
         self.total_run_token_budget = (
-            max_run_tokens
-            if legacy_total_budget_mapping
-            else total_run_token_budget
+            max_run_tokens if legacy_total_budget_mapping else total_run_token_budget
         )
         legacy_per_attempt_budget_mapping = (
             per_attempt_replay_token_limit is None and max_run_tokens is not None
@@ -3316,9 +2566,7 @@ class SelfEvolveRunner:
             else per_attempt_replay_token_limit
         )
         self.max_run_cost_usd = (
-            Decimal(str(max_run_cost_usd))
-            if max_run_cost_usd is not None
-            else None
+            Decimal(str(max_run_cost_usd)) if max_run_cost_usd is not None else None
         )
         self.max_run_wall_seconds = (
             Decimal(str(max_run_wall_seconds))
@@ -3405,9 +2653,7 @@ class SelfEvolveRunner:
             else replay_wall_seconds_per_unit
         )
         evaluation_tokens_per_unit = (
-            2_048
-            if evaluation_tokens_per_unit is None
-            else evaluation_tokens_per_unit
+            2_048 if evaluation_tokens_per_unit is None else evaluation_tokens_per_unit
         )
         evaluation_cost_usd_per_unit = (
             Decimal("0.02")
@@ -3419,12 +2665,8 @@ class SelfEvolveRunner:
             if evaluation_wall_seconds_per_unit is None
             else evaluation_wall_seconds_per_unit
         )
-        self.candidate_generation_tokens_per_unit = (
-            candidate_generation_tokens_per_unit
-        )
-        self.candidate_screening_tokens_per_unit = (
-            candidate_screening_tokens_per_unit
-        )
+        self.candidate_generation_tokens_per_unit = candidate_generation_tokens_per_unit
+        self.candidate_screening_tokens_per_unit = candidate_screening_tokens_per_unit
         self.replay_tokens_per_unit = replay_tokens_per_unit
         self.evaluation_tokens_per_unit = evaluation_tokens_per_unit
         self._budget_cold_start_by_stage = {
@@ -3515,9 +2757,7 @@ class SelfEvolveRunner:
             raise ValueError("replay_total_timeout_seconds must be positive")
         self.replay_total_timeout_seconds = replay_total_timeout_seconds
         self.replay_resume_dir = (
-            str(Path(replay_resume_dir))
-            if replay_resume_dir is not None
-            else None
+            str(Path(replay_resume_dir)) if replay_resume_dir is not None else None
         )
         self.measurement_resume_run_id = (
             str(measurement_resume_run_id).strip()
@@ -3559,20 +2799,14 @@ class SelfEvolveRunner:
             raise ValueError("measurement_minimum_effect must be finite")
         self.measurement_confidence_level = float(measurement_confidence_level)
         if not 0 < self.measurement_confidence_level < 1:
-            raise ValueError(
-                "measurement_confidence_level must be between 0 and 1"
-            )
+            raise ValueError("measurement_confidence_level must be between 0 and 1")
         if measurement_min_independent_cases <= 0:
-            raise ValueError(
-                "measurement_min_independent_cases must be positive"
-            )
+            raise ValueError("measurement_min_independent_cases must be positive")
         if not 200 <= measurement_bootstrap_samples <= 100_000:
             raise ValueError(
                 "measurement_bootstrap_samples must be between 200 and 100000"
             )
-        self.measurement_min_independent_cases = (
-            measurement_min_independent_cases
-        )
+        self.measurement_min_independent_cases = measurement_min_independent_cases
         self.measurement_bootstrap_samples = measurement_bootstrap_samples
         self.measurement_early_stop_policy = MeasurementEarlyStopPolicy(
             zero_yield_patience=measurement_zero_yield_patience,
@@ -3585,9 +2819,7 @@ class SelfEvolveRunner:
         self._screening_measurement_experiments: dict[
             tuple[str, str, str], ControlledExperimentSpec
         ] = {}
-        self._measurement_summaries: dict[
-            tuple[str, str], MeasurementSummary
-        ] = {}
+        self._measurement_summaries: dict[tuple[str, str], MeasurementSummary] = {}
         self._measurement_controller = CandidateMeasurementController(
             store=self.store,
             primary_metric=self.measurement_primary_metric,
@@ -3614,15 +2846,11 @@ class SelfEvolveRunner:
                     scheduler=stable_measurement_fingerprint(
                         {
                             "kind": "StageAwareCandidateScheduler",
-                            "max_generated_candidates": (
-                                self.max_generated_candidates
-                            ),
+                            "max_generated_candidates": (self.max_generated_candidates),
                             "max_authoritative_candidates": (
                                 self.max_full_evaluation_candidates
                             ),
-                            "replay_candidate_limit": (
-                                self.replay_candidate_limit
-                            ),
+                            "replay_candidate_limit": (self.replay_candidate_limit),
                         }
                     ),
                     evaluator=stable_measurement_fingerprint(
@@ -3647,58 +2875,44 @@ class SelfEvolveRunner:
                 resume_run_id=self.measurement_resume_run_id,
                 replay_resume_dir=self.replay_resume_dir,
                 replay_enabled=self.replay_enabled,
-                replay_backend_available=(
-                    self.candidate_replay_backend is not None
-                ),
-                baseline_replay_repetitions=(
-                    self.baseline_replay_repetitions
-                ),
-                candidate_replay_repetitions=(
-                    self.candidate_replay_repetitions
-                ),
-                replay_repetitions_explicit=(
-                    self.replay_repetitions_explicit
-                ),
+                replay_backend_available=(self.candidate_replay_backend is not None),
+                baseline_replay_repetitions=(self.baseline_replay_repetitions),
+                candidate_replay_repetitions=(self.candidate_replay_repetitions),
+                replay_repetitions_explicit=(self.replay_repetitions_explicit),
                 judge_repetitions=self.judge_repetitions,
-                evaluation_backend_available=(
-                    self.evaluation_backend is not None
-                ),
-                minimum_independent_cases=(
-                    self.measurement_min_independent_cases
-                ),
+                evaluation_backend_available=(self.evaluation_backend is not None),
+                minimum_independent_cases=(self.measurement_min_independent_cases),
                 primary_metric=self.measurement_primary_metric,
                 minimum_effect=self.measurement_minimum_effect,
                 confidence_level=self.measurement_confidence_level,
                 bootstrap_samples=self.measurement_bootstrap_samples,
                 early_stop_policy=self.measurement_early_stop_policy,
                 total_run_token_budget=self.total_run_token_budget,
-                per_attempt_replay_token_limit=(
-                    self.per_attempt_replay_token_limit
-                ),
+                per_attempt_replay_token_limit=(self.per_attempt_replay_token_limit),
                 max_run_cost_usd=self.max_run_cost_usd,
                 max_run_wall_seconds=self.max_run_wall_seconds,
                 replay_timeout_seconds=self.replay_timeout_seconds,
             ),
         )
-        self._authoritative_measurement_controller = (
-            AuthoritativeMeasurementController(
-                store=self.store,
-                config=AuthoritativeMeasurementConfig(
-                    mode=self.measurement_mode,
-                    resume_run_id=self.measurement_resume_run_id,
-                    campaign_wall_deadline_seconds=(
-                        float(self.replay_total_timeout_seconds)
-                        if self.replay_total_timeout_seconds is not None
-                        else None
-                    ),
+        self._authoritative_measurement_controller = AuthoritativeMeasurementController(
+            store=self.store,
+            config=AuthoritativeMeasurementConfig(
+                mode=self.measurement_mode,
+                resume_run_id=self.measurement_resume_run_id,
+                campaign_wall_deadline_seconds=(
+                    float(self.replay_total_timeout_seconds)
+                    if self.replay_total_timeout_seconds is not None
+                    else None
                 ),
-            )
+            ),
         )
         self.replay_agent = replay_agent
         self.runtime_registry_refresher = runtime_registry_refresher
         self.runtime_skill_activator = runtime_skill_activator
         self.progress_callback = progress_callback
-        self.skip_duplicate_rejected_candidate_gate = skip_duplicate_rejected_candidate_gate
+        self.skip_duplicate_rejected_candidate_gate = (
+            skip_duplicate_rejected_candidate_gate
+        )
         self.replay_adaptation_compiler = (
             replay_adaptation_compiler or ReplayAdaptationCompiler()
         )
@@ -3707,39 +2921,32 @@ class SelfEvolveRunner:
             task_batch_executor or DeterministicTaskBatchExecutor()
         )
         self.execution_telemetry = SelfEvolveExecutionTelemetry()
-        self._paired_replay_execution_controller = (
-            PairedReplayExecutionController(
-                store=self.store,
-                config=PairedReplayExecutionConfig(
-                    replay_enabled=self.replay_enabled,
-                    replay_backend=self.candidate_replay_backend,
-                    replay_agent=self.replay_agent,
-                    baseline_repetitions=self.baseline_replay_repetitions,
-                    candidate_repetitions=self.candidate_replay_repetitions,
-                    repetitions_explicit=self.replay_repetitions_explicit,
-                    minimum_independent_cases=(
-                        self.measurement_min_independent_cases
-                    ),
-                    timeout_seconds=self.replay_timeout_seconds,
-                    total_timeout_seconds=self.replay_total_timeout_seconds,
-                    max_steps=self.replay_max_steps,
-                    max_tokens=self.per_attempt_replay_token_limit,
-                    resume_replay_dir=self.replay_resume_dir,
-                    invalid_control_patience=(
-                        self.measurement_early_stop_policy
-                        .invalid_control_patience
-                    ),
-                    measurement_mode=self.measurement_mode,
+        self._paired_replay_execution_controller = PairedReplayExecutionController(
+            store=self.store,
+            config=PairedReplayExecutionConfig(
+                replay_enabled=self.replay_enabled,
+                replay_backend=self.candidate_replay_backend,
+                replay_agent=self.replay_agent,
+                baseline_repetitions=self.baseline_replay_repetitions,
+                candidate_repetitions=self.candidate_replay_repetitions,
+                repetitions_explicit=self.replay_repetitions_explicit,
+                minimum_independent_cases=(self.measurement_min_independent_cases),
+                timeout_seconds=self.replay_timeout_seconds,
+                total_timeout_seconds=self.replay_total_timeout_seconds,
+                max_steps=self.replay_max_steps,
+                max_tokens=self.per_attempt_replay_token_limit,
+                resume_replay_dir=self.replay_resume_dir,
+                invalid_control_patience=(
+                    self.measurement_early_stop_policy.invalid_control_patience
                 ),
-            )
+                measurement_mode=self.measurement_mode,
+            ),
         )
         self._replay_adaptation_cache: dict[
             tuple[str, str, str],
             tuple[ReplayAdaptationBundle | None, GateResult],
         ] = {}
-        self._replay_dataset_preflight_cache: dict[
-            str, ReplayPreflightReport
-        ] = {}
+        self._replay_dataset_preflight_cache: dict[str, ReplayPreflightReport] = {}
         self._run_environment_fingerprints: dict[str, str] = {}
         # Screening is a comparative ranking plane.  Keep bounded empirical
         # observations so later batches in the same campaign do not repeatedly
@@ -3754,17 +2961,13 @@ class SelfEvolveRunner:
         self._candidate_screening_control_observations: dict[
             str, dict[str, object]
         ] = {}
-        self._candidate_screening_observation_dataset_fingerprint: str | None = (
-            None
-        )
+        self._candidate_screening_observation_dataset_fingerprint: str | None = None
         self._candidate_screening_loaded_run_ids: set[str] = set()
         # A control that fails before candidate execution is a run-level
         # framework observation. Keep it quarantined across optimizer batches
         # and candidate variants so one unstable task cannot consume the same
         # physical baseline horizon repeatedly within a run.
-        self._candidate_screening_run_invalid_control_case_ids: dict[
-            str, set[str]
-        ] = {}
+        self._candidate_screening_run_invalid_control_case_ids: dict[str, set[str]] = {}
         self._current_run_authoritative_case_observations: dict[
             str, dict[str, int]
         ] = {}
@@ -3859,9 +3062,7 @@ class SelfEvolveRunner:
             store=self.store,
             prior_run_ids=tuple(campaign_prior_run_ids or ()),
             loaded_run_ids=self._candidate_screening_loaded_run_ids,
-            control_observations=(
-                self._candidate_screening_control_observations
-            ),
+            control_observations=(self._candidate_screening_control_observations),
             harness_fingerprint=_screening_control_harness_fingerprint(),
         )
         _restore_historical_screening_lifecycle_observations(
@@ -3870,9 +3071,7 @@ class SelfEvolveRunner:
             target=target.identity,
             dataset=dataset,
             current_run_id=run_id,
-            control_observations=(
-                self._candidate_screening_control_observations
-            ),
+            control_observations=(self._candidate_screening_control_observations),
             loaded_run_ids=self._candidate_screening_loaded_run_ids,
             harness_fingerprint=_screening_control_harness_fingerprint(),
         )
@@ -3938,18 +3137,14 @@ class SelfEvolveRunner:
                 units=self.ingestion_model_call_count,
             )
             if not ingestion_budget.allowed:
-                raise ValueError(
-                    "dataset ingestion model usage exceeds the run budget"
-                )
+                raise ValueError("dataset ingestion model usage exceeds the run budget")
             budget_context.debit(
                 ingestion_budget,
                 usage_observation=BudgetUsageObservation(
                     known_lower_bound=BudgetUsage(),
                     completeness=BudgetUsageCompleteness.incomplete(),
                 ),
-                actual_source=(
-                    "reserved_fallback_pre_run_ingestion_model_usage"
-                ),
+                actual_source=("reserved_fallback_pre_run_ingestion_model_usage"),
             )
         scheduler = StageAwareCandidateScheduler(
             exploration_population=_candidate_generation_limit(
@@ -4044,9 +3239,7 @@ class SelfEvolveRunner:
                     target.identity,
                     selection_origin=selection_origin,
                     inventory_provenance=(
-                        inventory_entries[0].provenance
-                        if inventory_entries
-                        else None
+                        inventory_entries[0].provenance if inventory_entries else None
                     ),
                     workspace_root=self.store.workspace_root,
                 )
@@ -4054,8 +3247,7 @@ class SelfEvolveRunner:
         authoritative_resolution = provenance_resolution
         if (
             supplied_decision is not None
-            and supplied_decision.provenance_resolution
-            != authoritative_resolution
+            and supplied_decision.provenance_resolution != authoritative_resolution
         ):
             provenance_resolution = TargetProvenanceResolution(
                 status=TargetProvenanceStatus.UNRESOLVED,
@@ -4083,9 +3275,7 @@ class SelfEvolveRunner:
                 )
 
         target_provenance = (
-            provenance_resolution.provenance
-            if provenance_resolution.resolved
-            else None
+            provenance_resolution.provenance if provenance_resolution.resolved else None
         )
         target_provenance_unresolved_reason = (
             None if provenance_resolution.resolved else provenance_resolution.reason
@@ -4116,13 +3306,12 @@ class SelfEvolveRunner:
         _emit_progress(
             self.progress_callback,
             "trajectory_set_loading",
-            (
-                "Loaded self-evolve trajectory set "
-                f"with {len(dataset.cases)} case(s)"
-            ),
+            (f"Loaded self-evolve trajectory set with {len(dataset.cases)} case(s)"),
         )
 
-        run = SelfEvolveRun(run_id=run_id, target=target.identity, status=SelfEvolveRunStatus.RUNNING)
+        run = SelfEvolveRun(
+            run_id=run_id, target=target.identity, status=SelfEvolveRunStatus.RUNNING
+        )
         self.store.create_run(run)
         self.store.write_screening_control_preflight(
             run_id,
@@ -4171,7 +3360,9 @@ class SelfEvolveRunner:
             max_repeated_gate_failures=1,
         )
         stopping_result = stopping_gate.evaluate(
-            StoppingConditionState(iteration=0, pending_duplicate=self.pending_duplicate)
+            StoppingConditionState(
+                iteration=0, pending_duplicate=self.pending_duplicate
+            )
         )
         if not stopping_result.passed:
             report = {
@@ -4309,12 +3500,8 @@ class SelfEvolveRunner:
             "judge_repetitions": self.judge_repetitions,
             "candidate_screening_max_cases": self.candidate_screening_max_cases,
             "max_generated_candidates": self.max_generated_candidates,
-            "max_full_evaluation_candidates": (
-                self.max_full_evaluation_candidates
-            ),
-            "max_score_tiebreak_candidates": (
-                self.max_score_tiebreak_candidates
-            ),
+            "max_full_evaluation_candidates": (self.max_full_evaluation_candidates),
+            "max_score_tiebreak_candidates": (self.max_score_tiebreak_candidates),
             "replay_enabled": self.replay_enabled,
             "baseline_replay_repetitions": self.baseline_replay_repetitions,
             "candidate_replay_repetitions": self.candidate_replay_repetitions,
@@ -4324,9 +3511,7 @@ class SelfEvolveRunner:
             "measurement_mode": self.measurement_mode.value,
             "measurement_primary_metric": self.measurement_primary_metric,
             "measurement_minimum_effect": self.measurement_minimum_effect,
-            "measurement_confidence_level": (
-                self.measurement_confidence_level
-            ),
+            "measurement_confidence_level": (self.measurement_confidence_level),
             "measurement_min_independent_cases": (
                 self.measurement_min_independent_cases
             ),
@@ -4361,9 +3546,7 @@ class SelfEvolveRunner:
             validation_feedback=validation_feedback,
             iteration_reports=iteration_reports,
             iteration_states=iteration_states,
-            current_run_attempted_candidate_ids=(
-                current_run_attempted_candidate_ids
-            ),
+            current_run_attempted_candidate_ids=(current_run_attempted_candidate_ids),
             rejected_candidate_ids=rejected_candidate_ids,
             accepted_candidate_ids=accepted_candidate_ids,
             baseline_preflight_blocked=baseline_preflight_blocked,
@@ -4381,20 +3564,14 @@ class SelfEvolveRunner:
             apply_policy=apply_policy,
             repetitions_explicit=self.replay_repetitions_explicit,
             replay_case_count=estimated_replay_case_count,
-            measurement_min_independent_cases=(
-                self.measurement_min_independent_cases
-            ),
+            measurement_min_independent_cases=(self.measurement_min_independent_cases),
             baseline_repetitions=self.baseline_replay_repetitions,
             candidate_repetitions=self.candidate_replay_repetitions,
         )
         estimated_replay_units = (
             estimated_replay_case_count
-            * (
-                estimated_baseline_repetitions
-                + estimated_candidate_repetitions
-            )
-            if self.replay_enabled
-            and self.candidate_replay_backend is not None
+            * (estimated_baseline_repetitions + estimated_candidate_repetitions)
+            if self.replay_enabled and self.candidate_replay_backend is not None
             else 0
         )
         estimated_evaluation_case_count = max(
@@ -4406,8 +3583,7 @@ class SelfEvolveRunner:
         )
         estimated_regression_units = (
             sum(
-                max(1, len(suite.dataset.cases)) * 2
-                for suite in self.regression_suites
+                max(1, len(suite.dataset.cases)) * 2 for suite in self.regression_suites
             )
             if _is_verified_apply_policy(apply_policy)
             else 0
@@ -4456,1949 +3632,131 @@ class SelfEvolveRunner:
                 )
             return tuple(items)
 
-        for iteration_index in range(iteration_budget):
-            if run_state.baseline_preflight_blocked:
-                break
-            if iteration_index >= self.max_iterations:
-                repair_family = _next_progress_repair_extension_family(
-                    validation_feedback,
-                    consumed_families=run_state.generation.progress_repair_families,
-                )
-                if repair_family is None:
-                    break
-                run_state.generation.progress_repair_families.add(repair_family)
-            cumulative_feedback = (*prior_feedback, *validation_feedback)
-            repair_frontiers = _typed_repair_frontiers(cumulative_feedback)
-            focused_available = budget_context.can_fit_workflow(
-                repair_workflow_budget_items(
-                    iteration=iteration_index + 1,
-                    candidate_count=1,
-                )
-            )
-            diverse_available = budget_context.can_fit_workflow(
-                repair_workflow_budget_items(
-                    iteration=iteration_index + 1,
-                    candidate_count=2,
-                )
-            )
-            scheduler_state_before_decision = scheduler_state
-            scheduler_decision = scheduler.schedule(
-                state=scheduler_state,
-                frontiers=repair_frontiers,
-                focused_budget_available=focused_available,
-                diverse_budget_available=diverse_available,
-                untyped_feedback_present=(
-                    bool(cumulative_feedback) and not repair_frontiers
-                ),
-            )
-            stored_admission_reason = (
-                _optimizer_stored_candidate_admission_reason(self.optimizer)
-                if iteration_index == 0
-                else None
-            )
-            if stored_admission_reason is not None:
-                # A stored candidate blocked by an invalid control is already
-                # the output of candidate selection.  It belongs to the
-                # measurement lane, not to mutation-frontier scheduling.  The
-                # normal scheduler may correctly see no candidate-owned repair
-                # feedback and return no slots; overriding that result here is
-                # what actually admits the immutable candidate to fresh replay.
-                scheduler_decision = SchedulerDecision(
-                    reason_code=stored_admission_reason,
-                    slots=(
-                        ScheduledCandidateSlot(
-                            slot=0,
-                            role=ScheduledSlotRole.BOUNDED_EXPLORATION,
-                        ),
-                    ),
-                    stop=False,
-                    state=scheduler_state,
-                )
-            scheduler_state = scheduler_decision.state
-            requested_generation_slot_count = len(scheduler_decision.slots)
-            scheduled_slots = scheduler_decision.slots
-            if (
-                len(scheduled_slots) > 1
-                and scheduled_slots[0].role is ScheduledSlotRole.FOCUSED_REPAIR
-                and scheduled_slots[0].semantic_key
-                not in scheduler_state_before_decision.frontier_progress
-                and _feedback_has_candidate_repair_conformance(
-                    cumulative_feedback
-                )
-            ):
-                # A newly discovered typed contract is an unvalidated lease.
-                # First prove one focused repair against it; only a subsequent
-                # schedule may spend diversity budget. Otherwise a deeper
-                # contract discovered by the first sibling makes every other
-                # freshly generated sibling stale before it can run.
-                scheduled_slots = scheduled_slots[:1]
-                run_state.generation.serialized_new_contract_repair_count += 1
-                scheduler_decision = replace(
-                    scheduler_decision,
-                    reason_code="focused_repair_serialized_new_contract",
-                    slots=tuple(scheduled_slots),
-                )
-            if _is_verified_apply_policy(apply_policy) and scheduled_slots:
-                effective_generation_limit = self.max_generated_candidates
-                if not repair_frontiers:
-                    effective_generation_limit = max(
-                        1,
-                        self.max_generated_candidates
-                        - repair_reserved_slot_count,
-                    )
-                remaining_generation_slots = max(
-                    0,
-                    effective_generation_limit
-                    - run_state.generation.generated_candidate_slot_count,
-                )
-                remaining_authoritative_slots = max(
-                    0,
-                    self.max_full_evaluation_candidates
-                    - run_state.authoritative_candidate_count,
-                )
-                if remaining_generation_slots == 0:
-                    run_state.generation.exhaust_generation_limit(
-                        max_generated_candidates=(
-                            self.max_generated_candidates
-                        )
-                    )
-                    _emit_progress(
-                        self.progress_callback,
-                        "candidate_generation",
-                        (
-                            "Stopped candidate generation: "
-                            + (
-                                "downstream repair capacity remains reserved "
-                                if run_state.generation.repair_capacity_reserved
-                                else "generated candidate slot limit reached "
-                            )
-                            + f"({run_state.generation.generated_candidate_slot_count}/"
-                            f"{self.max_generated_candidates}); repair horizon "
-                            f"{iteration_index + 1}/{iteration_budget} was not "
-                            "a required iteration count"
-                        ),
-                    )
-                    scheduled_slots = ()
-                elif remaining_authoritative_slots == 0:
-                    run_state.generation.verification_frontier_exhausted = True
-                    scheduled_slots = ()
-                else:
-                    screening_can_rank = bool(
-                        self.replay_enabled
-                        and self.candidate_replay_backend is not None
-                        and _candidate_screening_dataset(
-                            dataset,
-                            capability_requirements=replay_preflight.requirements,
-                            max_cases=self.candidate_screening_max_cases,
-                        )
-                        is not None
-                    )
-                    useful_oversubscription = 1 if screening_can_rank else 0
-                    admitted_slot_count = min(
-                        len(scheduled_slots),
-                        remaining_generation_slots,
-                        remaining_authoritative_slots
-                        + useful_oversubscription,
-                    )
-                    scheduled_slots = scheduled_slots[:admitted_slot_count]
-            scheduler_decision = replace(
-                scheduler_decision,
-                slots=tuple(scheduled_slots),
-            )
-            scheduler_decisions.append(
-                {
-                    "iteration": iteration_index + 1,
-                    **scheduler_decision.to_dict(),
-                    "requested_slot_count": requested_generation_slot_count,
-                    "admitted_slot_count": len(scheduled_slots),
-                }
-            )
-            if scheduler_decision.stop or not scheduler_decision.slots:
-                break
-            generation_slot_count = len(scheduler_decision.slots)
-            if stored_admission_reason is not None:
-                _emit_progress(
-                    self.progress_callback,
-                    "measurement_resume",
-                    (
-                        "Restoring the immutable measurement-pending candidate; "
-                        "mutation generation and candidate slot charging are "
-                        "skipped"
-                    ),
-                )
-            else:
-                first_generation_attempt_slot = (
-                    run_state.generation.begin_generation_slots(
-                        generation_slot_count
-                    )
-                )
-                last_generation_attempt_slot = (
-                    run_state.generation.candidate_generation_attempt_slot_count
-                )
-                _emit_progress(
-                    self.progress_callback,
-                    "candidate_generation",
-                    (
-                        f"Generating candidate batch {iteration_index + 1}; "
-                        f"candidate attempt slots {first_generation_attempt_slot}-"
-                        f"{last_generation_attempt_slot}; "
-                        "effective candidate slots "
-                        f"{run_state.generation.generated_candidate_slot_count}/"
-                        f"{self.max_generated_candidates}; repair horizon "
-                        f"{iteration_index + 1}/{iteration_budget}"
-                        if _is_verified_apply_policy(apply_policy)
-                        else (
-                            "Generating candidate iteration "
-                            f"{iteration_index + 1}/{iteration_budget}"
-                        )
-                    ),
-                )
-            iteration_lesson_records = generation_lesson_records
-            if validation_feedback:
-                iteration_lesson_records = extract_lesson_records(
-                    (*prior_feedback, *validation_feedback),
-                    target_scope={
-                        "target_type": target.identity.target_type,
-                        "target_id": target.identity.target_id,
-                    },
-                    trace_packs=trace_packs,
-                )
-            handbook_signals = [
-                lesson.lesson_type for lesson in iteration_lesson_records
-            ]
-            for summary in validation_feedback:
-                failed_gate_names = summary.metrics.get("failed_gates", ())
-                if isinstance(failed_gate_names, str):
-                    handbook_signals.append(failed_gate_names)
-                elif isinstance(failed_gate_names, (list, tuple)):
-                    handbook_signals.extend(
-                        item
-                        for item in failed_gate_names
-                        if isinstance(item, str)
-                    )
-            try:
-                handbook_slice = load_handbook_slice_for_target(
-                    self.store.workspace_root,
-                    target_path=target.identity.path,
-                    behavior_signals=tuple(handbook_signals),
-                )
-            except Exception as exc:
-                gate_results.append(
-                    GateResult(
-                        gate_name="handbook_locator_integrity",
-                        passed=False,
-                        reason="self-evolve handbook index could not be refreshed",
-                        details={
-                            "failure_class": "infrastructure",
-                            "failure_owner": FailureOwner.FRAMEWORK.value,
-                            "failure_scope": FailureScope.SHARED_RUN.value,
-                            "repairable": False,
-                            "code": "handbook_index_failed",
-                            "type": type(exc).__name__,
-                            "reason": sanitize_text(str(exc), max_chars=240),
-                        },
-                    )
-                )
-                break
-            if handbook_slice is not None:
-                handbook_payload = handbook_slice.to_prompt_dict()
-                latest_handbook_slice = handbook_payload
-                self.store.write_handbook_slice(
-                    run_id,
-                    iteration_index + 1,
-                    handbook_payload,
-                )
-                if not handbook_slice.mutation_allowed:
-                    gate_results.append(
-                        GateResult(
-                            gate_name="handbook_locator_integrity",
-                            passed=False,
-                            reason=(
-                                "self-evolve handbook froze unresolved target locators"
-                            ),
-                            details={
-                                "failure_class": "infrastructure",
-                                "failure_owner": FailureOwner.FRAMEWORK.value,
-                                "failure_scope": FailureScope.SHARED_RUN.value,
-                                "repairable": False,
-                                "code": "handbook_locator_frozen",
-                                "snapshot_fingerprint": (
-                                    handbook_slice.snapshot_fingerprint
-                                ),
-                                "frozen_locator_ids": list(
-                                    handbook_slice.frozen_locator_ids
-                                ),
-                            },
-                        )
-                    )
-                    break
-            else:
-                handbook_payload = None
-            optimizer_request = OptimizerRequest.from_dataset(
-                target=target.identity,
-                current_content=target.load_current_content(),
-                target_fingerprint=target.fingerprint_current_content(),
-                trace_packs=trace_packs,
-                validation_feedback=validation_feedback,
-                prior_feedback=prior_feedback,
-                lesson_records=iteration_lesson_records,
-                dataset=dataset,
-                max_candidates=generation_slot_count,
-                replay_requirements=replay_preflight.requirements,
-                target_package_inventory=target_package_inventory,
-                target_package_sources=target_package_sources,
-                handbook_slice=handbook_payload,
-                consumed_mutation_families=tuple(
-                    sorted(
-                        {
-                            family
-                            for slot in scheduler_decision.slots
-                            if slot.semantic_key is not None
-                            for family in scheduler_state.frontier_mutation_families.get(
-                                slot.semantic_key,
-                                (),
-                            )
-                        }
-                    )
-                ),
-                active_repair_frontier_keys=tuple(
-                    slot.semantic_key for slot in scheduler_decision.slots
-                ),
-                skill_evolution_contract=(
-                    self.skill_evolution_contract.prompt_projection()
-                    if self.skill_evolution_contract is not None
-                    else None
-                ),
-            )
-            optimizer_request = replace(
-                optimizer_request,
-                evolution_context=compile_evolution_context(optimizer_request),
-            )
-            request_derived_generation_tokens = (
-                self._generation_controller.request_derived_tokens(
-                    self.optimizer,
-                    optimizer_request,
-                )
-                if stored_admission_reason is None
-                else None
-            )
-            generation_budget = budget_context.reserve(
-                BudgetStage.CANDIDATE_GENERATION,
-                f"iteration-{iteration_index + 1}-generation",
-                units=generation_slot_count,
-                backend_proven_zero=(
-                    True if stored_admission_reason is not None else None
-                ),
-                request_derived_tokens=request_derived_generation_tokens,
-            )
-            if not generation_budget.allowed:
-                for slot in scheduler_decision.slots:
-                    placeholder = _candidate_attempt_placeholder(
-                        iteration_index,
-                        slot.slot,
-                    )
-                    key = attempt_tracker.start(
-                        iteration=iteration_index,
-                        slot=slot.slot,
-                        candidate_id=placeholder,
-                    )
-                    attempt_tracker.emit(
-                        key,
-                        CandidateAttemptStage.NOT_RUN,
-                        reason_code="generation_budget_denied",
-                    )
-                break
-            try:
-                optimizer_result = await self.optimizer.propose(optimizer_request)
-            except Exception as exc:
-                # The optimizer call crossed the execution boundary. With no
-                # trustworthy partial telemetry, conservatively debit the
-                # complete reservation instead of treating the work as unused.
-                budget_context.debit(
-                    generation_budget,
-                    actual_source="reserved_fallback_candidate_generation_exception",
-                )
-                for slot in scheduler_decision.slots:
-                    placeholder = _candidate_attempt_placeholder(
-                        iteration_index,
-                        slot.slot,
-                    )
-                    key = attempt_tracker.start(
-                        iteration=iteration_index,
-                        slot=slot.slot,
-                        candidate_id=placeholder,
-                    )
-                    attempt_tracker.emit(
-                        key,
-                        CandidateAttemptStage.BLOCKED,
-                        reason_code="candidate_generation_infrastructure_failed",
-                    )
-                optimizer_diagnostics.append(
-                    {
-                        "iteration": iteration_index + 1,
-                        "candidate_ids": [],
-                        "diagnostics": {
-                            "candidate_generation_failure": {
-                                "code": "candidate_generation_infrastructure_error",
-                                "error_type": type(exc).__name__,
-                                "stage": "optimizer",
-                            }
-                        },
-                    }
-                )
-                run_state.infrastructure_blocked = True
-                break
-            if (
-                optimizer_result.source_disposition.kind
-                is CandidateSourceKind.GENERATED
-            ):
-                optimizer_result = replace(
-                    optimizer_result,
-                    candidates=tuple(
-                        replace(
-                            candidate,
-                            target_fingerprint=(
-                                optimizer_request.target_fingerprint
-                            ),
-                        )
-                        for candidate in optimizer_result.candidates
-                    ),
-                )
-            optimizer_result = _with_versioned_semantic_lineage(
-                optimizer_result,
-                target_fingerprint=optimizer_request.target_fingerprint,
-                replay_preflight_fingerprint=replay_preflight.fingerprint,
-                apply_policy=apply_policy,
-                verification_settings=verification_settings,
-            )
-            generation_outcomes = tuple(optimizer_result.generation_outcomes)
-            if stored_admission_reason is None:
-                run_state.generation.raw_generation_attempt_count += (
-                    sum(
-                        outcome.kind
-                        is not CandidateGenerationOutcomeKind.INFRASTRUCTURE_FAILED
-                        for outcome in generation_outcomes
-                    )
-                    if generation_outcomes
-                    else len(optimizer_result.candidates)
-                )
-            population_execution = optimizer_result.diagnostics.get(
-                "candidate_population_execution"
-            )
-            if isinstance(population_execution, Mapping):
-                self.execution_telemetry.record(
-                    "candidate_generation",
-                    population_execution,
-                )
-            generation_tokens, generation_wall, generation_source = (
-                _candidate_generation_actual_usage(population_execution)
-            )
-            budget_context.debit(
-                generation_budget,
-                tokens=generation_tokens,
-                wall_seconds=generation_wall,
-                actual_source=generation_source,
-            )
-            source_disposition = optimizer_result.source_disposition
-            bypass_historical_deduplication = (
-                source_disposition.bypass_historical_deduplication
-            )
-            fresh_evaluation_required = (
-                fresh_evaluation_required
-                or source_disposition.requires_fresh_evaluation
-            )
-            filtered_known_duplicates = (
-                0
-                if bypass_historical_deduplication
-                else _known_duplicate_candidate_count(
-                    optimizer_result.candidates,
-                    rejected_candidate_ids=rejected_candidate_ids,
-                    accepted_candidate_ids=accepted_candidate_ids,
-                )
-            )
-            current_lineage_fingerprints = _lineage_semantic_lesson_fingerprints(
-                optimizer_result.lineage
-            )
-            filtered_semantic_lesson_duplicates = (
-                0
-                if bypass_historical_deduplication
-                else _semantic_lesson_duplicate_count(
-                    optimizer_result.candidates,
-                    lineage_fingerprints=current_lineage_fingerprints,
-                    rejected_semantic_lesson_fingerprints=(
-                        rejected_semantic_lesson_fingerprints
-                    ),
-                )
-            )
-            candidate_protocol_overflow_count = max(
-                0,
-                len(optimizer_result.candidates) - generation_slot_count,
-            )
-            iteration_optimizer_diagnostics = {
-                **dict(optimizer_result.diagnostics),
-                "candidate_generation_outcomes": [
-                    outcome.to_dict() for outcome in generation_outcomes
-                ],
-                "filtered_known_duplicate_candidates": filtered_known_duplicates,
-                "filtered_semantic_lesson_duplicate_candidates": (
-                    filtered_semantic_lesson_duplicates
-                ),
-            }
-            generated = (
-                ()
-                if candidate_protocol_overflow_count
-                else tuple(optimizer_result.candidates)
-            )
-            prerequisite_fidelity_gates: dict[str, GateResult] = {}
-            canonicalized_prerequisite_file_count = 0
-            canonicalized_generated: list[CandidateVariant] = []
-            for candidate in generated:
-                (
-                    canonical_candidate,
-                    fidelity_gate,
-                    canonicalized_count,
-                ) = _canonicalize_verified_prerequisite_files(
-                    candidate,
-                    cumulative_feedback,
-                )
-                canonicalized_generated.append(canonical_candidate)
-                canonicalized_prerequisite_file_count += canonicalized_count
-                if fidelity_gate is not None:
-                    prerequisite_fidelity_gates[
-                        canonical_candidate.candidate_id
-                    ] = fidelity_gate
-            generated = tuple(canonicalized_generated)
-            if canonicalized_prerequisite_file_count:
-                iteration_optimizer_diagnostics[
-                    "canonicalized_verified_prerequisite_file_count"
-                ] = canonicalized_prerequisite_file_count
-            if candidate_protocol_overflow_count:
-                iteration_optimizer_diagnostics[
-                    "candidate_protocol_overflow_count"
-                ] = candidate_protocol_overflow_count
-                iteration_optimizer_diagnostics[
-                    "candidate_protocol_error"
-                ] = {
-                    "code": "candidate_population_exceeds_scheduled_slots",
-                    "scheduled_slot_count": generation_slot_count,
-                    "returned_candidate_count": len(optimizer_result.candidates),
-                }
-            optimizer_diagnostics.append(
-                {
-                    "iteration": iteration_index + 1,
-                    "candidate_ids": [
-                        candidate.candidate_id for candidate in optimizer_result.candidates
-                    ],
-                    "diagnostics": public_diagnostic_projection(
-                        iteration_optimizer_diagnostics
-                    ),
-                }
-            )
-            scheduler_state = _scheduler_state_with_mutation_families(
-                scheduler_state,
-                decision=scheduler_decision,
-                optimizer_diagnostics=optimizer_result.diagnostics,
-            )
-            unique_generated: list[CandidateVariant] = []
-            unique_candidate_ids: set[str] = set()
-            generation_duplicate_feedback: list[EvaluationSummary] = []
-            generation_usage = _budget_usage_for_attempt_event(
-                generation_budget,
-                tokens=generation_tokens,
-                wall_seconds=generation_wall,
-            )
-            invalid_slots_remaining = _non_negative_int(
-                optimizer_result.diagnostics.get(
-                    "candidate_protocol_invalid_count"
-                )
-            )
-            if candidate_protocol_overflow_count:
-                invalid_slots_remaining = generation_slot_count
-            outcomes_by_slot = {
-                outcome.candidate_index: outcome
-                for outcome in generation_outcomes
-                if outcome.candidate_index < generation_slot_count
-            }
-            candidates_by_id = {
-                candidate.candidate_id: candidate for candidate in generated
-            }
-            legacy_candidates = iter(
-                candidate
-                for candidate in generated
-                if candidate.candidate_id
-                not in {
-                    outcome.candidate_id
-                    for outcome in generation_outcomes
-                    if outcome.candidate_id is not None
-                }
-            )
-            for slot_index in range(generation_slot_count):
-                generation_outcome = outcomes_by_slot.get(slot_index)
-                generated_candidate = (
-                    candidates_by_id.get(generation_outcome.candidate_id)
-                    if generation_outcome is not None
-                    and generation_outcome.kind
-                    is CandidateGenerationOutcomeKind.ADMITTED
-                    and generation_outcome.candidate_id is not None
-                    else None
-                )
-                if generated_candidate is None and generation_outcome is None:
-                    generated_candidate = next(legacy_candidates, None)
-                if generated_candidate is None:
-                    placeholder = (
-                        generation_outcome.candidate_id
-                        if generation_outcome is not None
-                        and generation_outcome.candidate_id is not None
-                        else _candidate_attempt_placeholder(
-                            iteration_index,
-                            slot_index,
-                        )
-                    )
-                    key = attempt_tracker.start(
-                        iteration=iteration_index,
-                        slot=slot_index,
-                        candidate_id=placeholder,
-                        usage=(generation_usage if slot_index == 0 else None),
-                    )
-                    if (
-                        generation_outcome is not None
-                        and generation_outcome.kind
-                        is CandidateGenerationOutcomeKind.POLICY_FILTERED
-                    ):
-                        attempt_tracker.emit(
-                            key,
-                            CandidateAttemptStage.POLICY_FILTERED,
-                        )
-                        attempt_tracker.emit(
-                            key,
-                            CandidateAttemptStage.NOT_RUN,
-                            reason_code="candidate_policy_filtered",
-                        )
-                        continue
-                    if candidate_protocol_overflow_count:
-                        reason_code = "candidate_population_exceeds_scheduled_slots"
-                    elif generation_outcome is not None:
-                        reason_code = generation_outcome.kind.value
-                    elif invalid_slots_remaining:
-                        invalid_slots_remaining -= 1
-                        reason_code = "candidate_protocol_invalid"
-                    elif isinstance(
-                        optimizer_result.diagnostics.get(
-                            "candidate_generation_failure"
-                        ),
-                        Mapping,
-                    ):
-                        reason_code = "candidate_generation_infrastructure_failed"
-                    else:
-                        reason_code = "candidate_generation_no_output"
-                    attempt_tracker.emit(
-                        key,
-                        (
-                            CandidateAttemptStage.BLOCKED
-                            if reason_code.endswith("infrastructure_failed")
-                            else CandidateAttemptStage.NOT_RUN
-                        ),
-                        reason_code=reason_code,
-                    )
-                    continue
+        generation_execution_state = GenerationExecutionState(
+            scheduler_state=scheduler_state,
+            validation_feedback=validation_feedback,
+            fresh_evaluation_required=fresh_evaluation_required,
+            latest_handbook_slice=latest_handbook_slice,
+            all_candidates=all_candidates,
+            candidate_source_dispositions=candidate_source_dispositions,
+            optimizer_diagnostics=optimizer_diagnostics,
+            optimizer_lineage_paths=optimizer_lineage_paths,
+            optimizer_lineage_paths_by_candidate=(optimizer_lineage_paths_by_candidate),
+            scheduler_decisions=scheduler_decisions,
+            iteration_reports=iteration_reports,
+            iteration_states=iteration_states,
+            gate_results=gate_results,
+            canonical_candidate_id_by_package=(canonical_candidate_id_by_package),
+            package_fingerprint_by_candidate_id=(package_fingerprint_by_candidate_id),
+            current_run_candidate_id_by_package=(current_run_candidate_id_by_package),
+            current_run_package_fingerprint_by_candidate_id=(
+                current_run_package_fingerprint_by_candidate_id
+            ),
+            current_run_candidate_id_by_semantic_package=(
+                current_run_candidate_id_by_semantic_package
+            ),
+            attempt_key_by_candidate_id=attempt_key_by_candidate_id,
+        )
+        generation_execution_policy = GenerationExecutionPolicy(
+            max_iterations=self.max_iterations,
+            max_generated_candidates=self.max_generated_candidates,
+            max_full_evaluation_candidates=(self.max_full_evaluation_candidates),
+            replay_candidate_limit=self.replay_candidate_limit,
+            replay_enabled=self.replay_enabled,
+            candidate_screening_max_cases=self.candidate_screening_max_cases,
+        )
+        generation_execution_runtime = GenerationExecutionRuntime(
+            store=self.store,
+            optimizer=self.optimizer,
+            generation_controller=self._generation_controller,
+            execution_telemetry=self.execution_telemetry,
+            scheduler=scheduler,
+            budget_context=budget_context,
+            attempt_tracker=attempt_tracker,
+            repair_workflow_budget_items=repair_workflow_budget_items,
+            progress_callback=self.progress_callback,
+            skill_evolution_contract=self.skill_evolution_contract,
+            candidate_replay_backend=self.candidate_replay_backend,
+            verification_contract_fingerprint=(_verification_contract_fingerprint),
+        )
 
-                package_fingerprint = candidate_package_fingerprint(
-                    generated_candidate
-                )
-                semantic_package_fingerprint = (
-                    candidate_semantic_package_fingerprint(generated_candidate)
-                )
-                canonical_id = (
-                    current_run_candidate_id_by_package.get(package_fingerprint)
-                    if bypass_historical_deduplication
-                    else canonical_candidate_id_by_package.get(package_fingerprint)
-                )
-                semantic_duplicate_id = (
-                    current_run_candidate_id_by_semantic_package.get(
-                        semantic_package_fingerprint
-                    )
-                )
-                prior_candidate_duplicate = (
-                    not bypass_historical_deduplication
-                    and (
-                        generated_candidate.candidate_id in rejected_candidate_ids
-                        or generated_candidate.candidate_id in accepted_candidate_ids
-                    )
-                )
-                semantic_lesson_duplicate = (
-                    not bypass_historical_deduplication
-                    and _is_semantic_lesson_duplicate(
-                        generated_candidate.candidate_id,
-                        lineage_fingerprints=current_lineage_fingerprints,
-                        rejected_semantic_lesson_fingerprints=(
-                            rejected_semantic_lesson_fingerprints
-                        ),
-                    )
-                )
-                candidate_id_collision = (
-                    generated_candidate.candidate_id
-                    in (
-                        current_run_package_fingerprint_by_candidate_id
-                        if bypass_historical_deduplication
-                        else package_fingerprint_by_candidate_id
-                    )
-                    and (
-                        current_run_package_fingerprint_by_candidate_id
-                        if bypass_historical_deduplication
-                        else package_fingerprint_by_candidate_id
-                    )[
-                        generated_candidate.candidate_id
-                    ]
-                    != package_fingerprint
-                )
-                lifecycle_candidate_id = (
-                    canonical_id
-                    if canonical_id is not None
-                    else (
-                        semantic_duplicate_id
-                        if semantic_duplicate_id is not None
-                        else generated_candidate.candidate_id
-                    )
-                )
-                key = attempt_tracker.start(
-                    iteration=iteration_index,
-                    slot=slot_index,
-                    candidate_id=lifecycle_candidate_id,
-                    usage=(generation_usage if slot_index == 0 else None),
-                )
-                if (
-                    canonical_id is not None
-                    or semantic_duplicate_id is not None
-                    or candidate_id_collision
-                    or prior_candidate_duplicate
-                    or semantic_lesson_duplicate
-                ):
-                    attempt_tracker.emit(
-                        key,
-                        CandidateAttemptStage.DUPLICATE_FILTERED,
-                    )
-                    attempt_tracker.emit(
-                        key,
-                        CandidateAttemptStage.NOT_RUN,
-                        reason_code=(
-                            "candidate_id_collision"
-                            if candidate_id_collision
-                            else (
-                                "duplicate_prior_candidate"
-                                if prior_candidate_duplicate
-                                else (
-                                    "duplicate_semantic_lesson"
-                                    if semantic_lesson_duplicate
-                                    else (
-                                        "duplicate_candidate_semantics"
-                                        if semantic_duplicate_id is not None
-                                        else "duplicate_candidate_package"
-                                    )
-                                )
-                            )
-                        ),
-                    )
-                    if prior_candidate_duplicate:
-                        duplicate_gate_name = (
-                            "duplicate_accepted_candidate"
-                            if generated_candidate.candidate_id
-                            in accepted_candidate_ids
-                            else "duplicate_rejected_candidate"
-                        )
-                        duplicate_feedback = EvaluationSummary(
-                            variant_id=generated_candidate.candidate_id,
-                            dataset_split="validation",
-                            metrics={
-                                "failed_gates": [duplicate_gate_name],
-                                "candidate_status": "rejected",
-                                "failure_class": "candidate",
-                                "repairable": True,
-                            },
-                        )
-                        duplicate_gate = GateResult(
-                            gate_name=duplicate_gate_name,
-                            passed=False,
-                            reason="candidate repeats a prior terminal candidate",
-                            details={
-                                "candidate_id": generated_candidate.candidate_id,
-                                "failure_class": "candidate",
-                                "code": "duplicate_prior_candidate",
-                            },
-                        )
-                        generation_duplicate_feedback.append(duplicate_feedback)
-                        iteration_states.append(
-                            _iteration_state(
-                                candidate=generated_candidate,
-                                baseline_summary=None,
-                                candidate_summary=None,
-                                held_out_summary=None,
-                                replay_result=None,
-                                replay_dataset=None,
-                                gate_results=(duplicate_gate,),
-                                feedback=(duplicate_feedback,),
-                                status="rejected",
-                            )
-                        )
-                    elif semantic_lesson_duplicate:
-                        semantic_fingerprint = current_lineage_fingerprints.get(
-                            generated_candidate.candidate_id
-                        )
-                        if semantic_fingerprint is not None:
-                            (
-                                run_state.generation
-                                .semantic_lesson_duplicate_attempt_count
-                            ) += 1
-                            generation_duplicate_feedback.append(
-                                _semantic_lesson_duplicate_feedback(
-                                    generated_candidate,
-                                    fingerprint=semantic_fingerprint,
-                                )
-                            )
-                    continue
-                canonical_candidate_id_by_package[package_fingerprint] = (
-                    generated_candidate.candidate_id
-                )
-                package_fingerprint_by_candidate_id[
-                    generated_candidate.candidate_id
-                ] = package_fingerprint
-                current_run_candidate_id_by_package[package_fingerprint] = (
-                    generated_candidate.candidate_id
-                )
-                current_run_candidate_id_by_semantic_package[
-                    semantic_package_fingerprint
-                ] = generated_candidate.candidate_id
-                current_run_package_fingerprint_by_candidate_id[
-                    generated_candidate.candidate_id
-                ] = package_fingerprint
-                attempt_tracker.emit(key, CandidateAttemptStage.UNIQUE)
-                attempt_key_by_candidate_id[
-                    generated_candidate.candidate_id
-                ] = key
-                unique_generated.append(generated_candidate)
-                unique_candidate_ids.add(generated_candidate.candidate_id)
-                run_state.generation.record_effective_candidate(
-                    generated_candidate.candidate_id,
-                    consumes_slot=stored_admission_reason is None,
-                )
-                all_candidates.append(generated_candidate)
-                candidate_source_dispositions[
-                    generated_candidate.candidate_id
-                ] = source_disposition
-                target.preserve_proposal(
-                    self.store,
-                    run_id,
-                    generated_candidate,
-                )
-            for lineage in optimizer_result.lineage:
-                if (
-                    lineage.candidate_id not in unique_candidate_ids
-                    or lineage.candidate_id
-                    in optimizer_lineage_paths_by_candidate
-                ):
-                    continue
-                lineage_path = self.store.write_optimizer_lineage(run_id, lineage)
-                optimizer_lineage_paths.append(str(lineage_path))
-                optimizer_lineage_paths_by_candidate[lineage.candidate_id] = str(
-                    lineage_path
-                )
-
-            if generation_duplicate_feedback:
-                validation_feedback = _merge_validation_feedback(
-                    validation_feedback,
-                    tuple(generation_duplicate_feedback),
-                )
-                iteration_reports.extend(
-                    {
-                        "iteration": iteration_index + 1,
-                        "candidate_id": item.variant_id,
-                        "status": "rejected",
-                        "failed_gates": list(item.metrics["failed_gates"]),
-                    }
-                    for item in generation_duplicate_feedback
-                )
-
-            ranked_candidate_population = _rank_candidate_population(
-                tuple(
-                    candidate
-                    for candidate in unique_generated
-                    if bypass_historical_deduplication
-                    or (
-                        candidate.candidate_id not in rejected_candidate_ids
-                        and candidate.candidate_id not in accepted_candidate_ids
-                        and not _is_semantic_lesson_duplicate(
-                            candidate.candidate_id,
-                            lineage_fingerprints=current_lineage_fingerprints,
-                            rejected_semantic_lesson_fingerprints=(
-                                rejected_semantic_lesson_fingerprints
-                            ),
-                        )
-                    )
-                ),
-                optimizer_diagnostics=optimizer_result.diagnostics,
-                current_content=target.load_current_content(),
-            )
-            candidate_population = ranked_candidate_population[
-                : max(1, self.replay_candidate_limit)
-            ]
-            ranked_below_replay_frontier = ranked_candidate_population[
-                max(1, self.replay_candidate_limit) :
-            ]
-            for deferred_candidate in ranked_below_replay_frontier:
-                deferred_key = attempt_key_by_candidate_id.get(
-                    deferred_candidate.candidate_id
-                )
-                if (
-                    deferred_key is not None
-                    and not attempt_tracker.terminal(deferred_key)
-                ):
-                    attempt_tracker.emit(
-                        deferred_key,
-                        CandidateAttemptStage.NOT_RUN,
-                        reason_code="ranked_below_replay_frontier",
-                    )
-                iteration_reports.append(
-                    {
-                        "iteration": iteration_index + 1,
-                        "candidate_id": deferred_candidate.candidate_id,
-                        "status": "not_run",
-                        "failed_gates": [],
-                        "lifecycle_stage": "not_run",
-                        "reason_code": "ranked_below_replay_frontier",
-                    }
-                )
-            _emit_progress(
-                self.progress_callback,
-                "population_generation",
-                (
-                    "Prepared candidate population "
-                    f"({len(candidate_population)} replay candidate(s), "
-                    f"{len(optimizer_result.candidates)} generated)"
-                ),
-            )
-            if not candidate_population:
-                policy_filter_outcomes = tuple(
-                    outcome
-                    for outcome in generation_outcomes
-                    if outcome.kind
-                    is CandidateGenerationOutcomeKind.POLICY_FILTERED
-                )
-                if policy_filter_outcomes:
-                    policy_events = tuple(
-                        _candidate_policy_filter_event(outcome)
-                        for outcome in policy_filter_outcomes
-                    )
-                    validation_feedback = _merge_validation_feedback(
-                        validation_feedback,
-                        (
-                            EvaluationSummary(
-                                variant_id=(
-                                    "candidate-policy-filter-"
-                                    f"{iteration_index + 1}"
-                                ),
-                                dataset_split="validation",
-                                metrics={
-                                    "failed_gates": [
-                                        "candidate_generation_policy"
-                                    ],
-                                    "candidate_status": "rejected",
-                                    "failure_class": "candidate",
-                                    "repairable": True,
-                                    "candidate_policy_filter_count": len(
-                                        policy_filter_outcomes
-                                    ),
-                                    "candidate_validation_diagnostics": [
-                                        {
-                                            "code": (
-                                                "candidate_generation_policy_filtered"
-                                            ),
-                                            "stage": "candidate_generation",
-                                            "failure_class": "candidate",
-                                            "repairable": True,
-                                            "policy_id": outcome.policy_id,
-                                            "enforcement": outcome.enforcement,
-                                            "reason_codes": list(
-                                                outcome.reason_codes
-                                            ),
-                                            "constraint_ids": list(
-                                                outcome.constraint_ids
-                                            ),
-                                            "active_frontier_key": (
-                                                outcome.active_frontier_key
-                                            ),
-                                            "affected_case_ids": list(
-                                                outcome.affected_case_ids
-                                            ),
-                                        }
-                                        for outcome in policy_filter_outcomes
-                                    ],
-                                    "causal_failure_events": list(policy_events),
-                                },
-                            ),
-                        ),
-                    )
-                    iteration_reports.append(
-                        {
-                            "iteration": iteration_index + 1,
-                            "candidate_id": None,
-                            "status": "policy_filtered",
-                            "failed_gates": [
-                                "candidate_generation_policy"
-                            ],
-                            "filtered_candidate_count": len(
-                                policy_filter_outcomes
-                            ),
-                        }
-                    )
-                    signature = _candidate_policy_filter_signature(
-                        policy_filter_outcomes
-                    )
-                    fully_filtered = (
-                        len(policy_filter_outcomes) == generation_slot_count
-                    )
-                    if run_state.generation.record_policy_filter_stall(
-                        signature=signature,
-                        outcomes=policy_filter_outcomes,
-                        fully_filtered=fully_filtered,
-                        max_consecutive_stalls=(
-                            _MAX_CONSECUTIVE_POLICY_FILTER_STALLS
-                        ),
-                    ):
-                        break
-                    if fully_filtered:
-                        continue
-                generation_failure = optimizer_result.diagnostics.get(
-                    "candidate_generation_failure"
-                )
-                if isinstance(generation_failure, Mapping):
-                    iteration_reports.append(
-                        {
-                            "iteration": iteration_index + 1,
-                            "candidate_id": None,
-                            "status": "infrastructure_failed",
-                            "failed_gates": ["candidate_generation"],
-                        }
-                    )
-                    if run_state.generation.claim_infrastructure_retry(
-                        retryable=_retryable_candidate_generation_failure(
-                            generation_failure
-                        ),
-                        max_retries=2,
-                    ):
-                        continue
-                    break
-                protocol_invalid_count = _non_negative_int(
-                    optimizer_result.diagnostics.get(
-                        "candidate_protocol_invalid_count"
-                    )
-                ) + candidate_protocol_overflow_count
-                materialization_failures = _candidate_materialization_failures(
-                    optimizer_result.diagnostics
-                )
-                materialization_invalid_count = len(
-                    materialization_failures
-                )
-                if protocol_invalid_count or materialization_invalid_count:
-                    protocol_outcomes = tuple(
-                        outcome
-                        for outcome in generation_outcomes
-                        if outcome.kind
-                        is CandidateGenerationOutcomeKind.PROTOCOL_INVALID
-                    )
-                    unattributed_protocol_failures = max(
-                        0,
-                        protocol_invalid_count - len(protocol_outcomes),
-                    )
-                    generation_failure_repairable = bool(
-                        any(
-                            failure.get("repairable") is not False
-                            for failure in materialization_failures
-                        )
-                        or any(
-                            outcome.repairable for outcome in protocol_outcomes
-                        )
-                        or unattributed_protocol_failures
-                    )
-                    causal_failure_events = (
-                        _candidate_materialization_failure_events(
-                            materialization_failures
-                        )
-                    )
-                    failed_gate = (
-                        "candidate_materialization"
-                        if materialization_invalid_count
-                        else "candidate_protocol"
-                    )
-                    validation_feedback = _merge_validation_feedback(
-                        validation_feedback,
-                        (
-                            EvaluationSummary(
-                                variant_id=(
-                                    "candidate-generation-"
-                                    f"{iteration_index + 1}"
-                                ),
-                                dataset_split="validation",
-                                metrics={
-                                    "failed_gates": [failed_gate],
-                                    "candidate_status": "rejected",
-                                    "failure_class": "candidate",
-                                    "repairable": generation_failure_repairable,
-                                    "candidate_protocol_invalid_count": (
-                                        protocol_invalid_count
-                                    ),
-                                    "candidate_protocol_overflow_count": (
-                                        candidate_protocol_overflow_count
-                                    ),
-                                    "candidate_materialization_invalid_count": (
-                                        materialization_invalid_count
-                                    ),
-                                    "candidate_validation_diagnostics": list(
-                                        materialization_failures
-                                    ),
-                                    "causal_failure_events": list(
-                                        causal_failure_events
-                                    ),
-                                },
-                            ),
-                        ),
-                    )
-                    iteration_reports.append(
-                        {
-                            "iteration": iteration_index + 1,
-                            "candidate_id": None,
-                            "status": (
-                                "materialization_invalid"
-                                if materialization_invalid_count
-                                else "protocol_invalid"
-                            ),
-                            "failed_gates": [failed_gate],
-                        }
-                    )
-                    if not generation_failure_repairable:
-                        run_state.generation.protocol_frontier_exhausted = True
-                        break
-                    full_population_failed = (
-                        materialization_invalid_count
-                        >= max(1, generation_slot_count)
-                    )
-                    materialization_signature = (
-                        (
-                            _candidate_materialization_stall_signature(
-                                materialization_failures
-                            )
-                        )
-                        if full_population_failed
-                        else None
-                    )
-                    if run_state.generation.record_materialization_stall(
-                        signature=materialization_signature,
-                        full_population_failed=full_population_failed,
-                        max_consecutive_stalls=(
-                            _MAX_CONSECUTIVE_MATERIALIZATION_STALLS
-                        ),
-                    ):
-                        break
-                    continue
-                if generation_duplicate_feedback:
-                    continue
-                skipped_feedback: list[EvaluationSummary] = []
-                skipped_duplicates = [
-                    candidate
-                    for candidate in unique_generated
-                    if candidate.candidate_id in rejected_candidate_ids
-                    or candidate.candidate_id in accepted_candidate_ids
-                ]
-                for candidate_index, skipped_candidate in enumerate(
-                    skipped_duplicates[: max(1, self.replay_candidate_limit)]
-                ):
-                    skipped_key = attempt_key_by_candidate_id.get(
-                        skipped_candidate.candidate_id
-                    )
-                    if skipped_key is not None:
-                        attempt_tracker.emit(
-                            skipped_key,
-                            CandidateAttemptStage.REJECTED,
-                            reason_code="duplicate_prior_candidate",
-                        )
-                    duplicate_gates: list[GateResult] = []
-                    accepted_gate = _duplicate_accepted_candidate_gate(
-                        skipped_candidate,
-                        accepted_candidate_ids=accepted_candidate_ids,
-                        apply_policy=apply_policy,
-                    )
-                    if accepted_gate is not None:
-                        duplicate_gates.append(accepted_gate)
-                    rejected_gate = _duplicate_rejected_candidate_gate(
-                        skipped_candidate,
-                        rejected_candidate_ids=rejected_candidate_ids,
-                        apply_policy=apply_policy,
-                    )
-                    if rejected_gate is not None:
-                        duplicate_gates.append(rejected_gate)
-                    failed_duplicate_gates = [
-                        gate for gate in duplicate_gates if not gate.passed
-                    ]
-                    duplicate_feedback = EvaluationSummary(
-                        variant_id=skipped_candidate.candidate_id,
-                        metrics={
-                            "failed_gates": [
-                                gate.gate_name for gate in failed_duplicate_gates
-                            ],
-                            "candidate_status": "rejected",
-                        },
-                        dataset_split="validation",
-                    )
-                    iteration_reports.append(
-                        _iteration_report_item(
-                            iteration_number=iteration_index + 1,
-                            candidate_number=candidate_index + 1,
-                            candidate_count=len(skipped_duplicates),
-                            candidate=skipped_candidate,
-                            status="rejected",
-                            baseline_summary=None,
-                            candidate_summary=None,
-                            held_out_summary=None,
-                            failed_gates=failed_duplicate_gates,
-                        )
-                    )
-                    iteration_states.append(
-                        _iteration_state(
-                            candidate=skipped_candidate,
-                            baseline_summary=None,
-                            candidate_summary=None,
-                            held_out_summary=None,
-                            replay_result=None,
-                            replay_dataset=None,
-                            gate_results=duplicate_gates,
-                            feedback=(duplicate_feedback,),
-                            status="rejected",
-                        )
-                    )
-                    skipped_feedback.append(duplicate_feedback)
-                if skipped_feedback:
-                    validation_feedback = _merge_validation_feedback(
-                        validation_feedback,
-                        tuple(skipped_feedback),
-                    )
-                    if run_state.generation.record_duplicate_population(
-                        all_candidates_previously_attempted=all(
-                            candidate.candidate_id
-                            in current_run_attempted_candidate_ids
-                            for candidate in skipped_duplicates
-                        ),
-                        max_consecutive_stalls=(
-                            _MAX_CONSECUTIVE_DUPLICATE_POPULATION_STALLS
-                        ),
-                    ):
-                        break
-                    continue
-                iteration_reports.append(
-                    {
-                        "iteration": iteration_index + 1,
-                        "candidate_id": None,
-                        "status": "no_candidate",
-                        "failed_gates": [],
-                    }
-                )
-                continue
-
-            run_state.generation.reset_candidate_progress_stalls()
-
-            local_gate_results_by_candidate: dict[str, tuple[GateResult, ...]] = {}
-            locally_valid_candidates: list[CandidateVariant] = []
-            local_gate_feedback: list[EvaluationSummary] = []
-            current_content = target.load_current_content()
-            for candidate in candidate_population:
-                attempt_key = attempt_key_by_candidate_id.get(
-                    candidate.candidate_id
-                )
-                raw_local_results = _candidate_gate_results(
-                    candidate,
-                    current_content=current_content,
-                    workspace_root=self.store.workspace_root,
-                    max_chars=_DEFAULT_CANDIDATE_CONTENT_MAX_CHARS,
-                    target_provenance=target_provenance,
-                    target_provenance_unresolved_reason=(
-                        target_provenance_unresolved_reason
-                    ),
-                    allow_generated_target_mutation=(
-                        self.allow_generated_target_mutation
-                    ),
-                    allow_external_target_mutation=(
-                        self.allow_external_target_mutation
-                    ),
-                    target_intent=self._active_target_intent,
-                    inferred_new_skill_policy=self.inferred_new_skill_policy,
-                    apply_policy=apply_policy,
-                )
-                prerequisite_fidelity_gate = prerequisite_fidelity_gates.get(
-                    candidate.candidate_id
-                )
-                if prerequisite_fidelity_gate is not None:
-                    raw_local_results = (
-                        *raw_local_results,
-                        prerequisite_fidelity_gate,
-                    )
-                local_results = tuple(
-                    _with_typed_gate_failure_event(gate)
-                    for gate in raw_local_results
-                )
-                local_gate_results_by_candidate[candidate.candidate_id] = local_results
-                if attempt_key is None:
-                    continue
-                attempt_tracker.emit(attempt_key, CandidateAttemptStage.LOCAL_GATES)
-                failed_local = tuple(
-                    gate
-                    for gate in local_results
-                    if not gate.passed
-                    and not (
-                        apply_policy == "proposal"
-                        and gate.gate_name == "trust_provenance"
-                    )
-                )
-                if not failed_local:
-                    locally_valid_candidates.append(candidate)
-                    continue
-                local_feedback_metrics = _typed_gate_feedback_metrics(
-                    failed_local
-                )
-                local_feedback_metrics.update(
-                    {
-                        "failed_gates": [
-                            gate.gate_name for gate in failed_local
-                        ],
-                        "candidate_status": "rejected",
-                        "failure_class": "candidate",
-                        "repairable": True,
-                    }
-                )
-                local_feedback = EvaluationSummary(
-                    variant_id=candidate.candidate_id,
-                    dataset_split="validation",
-                    metrics=local_feedback_metrics,
-                )
-                local_gate_feedback.append(local_feedback)
-                iteration_states.append(
-                    _iteration_state(
-                        candidate=candidate,
-                        baseline_summary=None,
-                        candidate_summary=None,
-                        held_out_summary=None,
-                        replay_result=None,
-                        replay_dataset=None,
-                        gate_results=local_results,
-                        feedback=(local_feedback,),
-                        status="rejected",
-                    )
-                )
-                attempt_tracker.emit(
-                    attempt_key,
-                    CandidateAttemptStage.REJECTED,
-                    reason_code="local_gate_rejected",
-                )
-            if local_gate_feedback:
-                validation_feedback = _merge_validation_feedback(
-                    validation_feedback,
-                    tuple(local_gate_feedback),
-                )
-                rejected_candidate_ids.update(
-                    item.variant_id for item in local_gate_feedback
-                )
-                iteration_reports.extend(
-                    {
-                        "iteration": iteration_index + 1,
-                        "candidate_id": item.variant_id,
-                        "status": "local_gate_rejected",
-                        "failed_gates": list(item.metrics.get("failed_gates", [])),
-                    }
-                    for item in local_gate_feedback
-                )
-            candidate_population = tuple(locally_valid_candidates)
-            screening_candidates = candidate_population
-            if not candidate_population:
-                continue
-            if self.measurement_mode is not MeasurementPolicyMode.OFF:
-                for planned_candidate in candidate_population:
-                    try:
-                        self._plan_candidate_measurement(
-                            run_id=run_id,
-                            target=target,
-                            dataset=dataset,
-                            candidate=planned_candidate,
-                            candidate_count=len(candidate_population),
-                        )
-                    except (OSError, TypeError, ValueError):
-                        # Required mode fails closed when the candidate reaches
-                        # authoritative evaluation. Shadow/advisory collection
-                        # must not perturb the existing funnel.
-                        continue
-            repair_conformance_contracts = (
-                _candidate_repair_conformance_contracts(
-                    optimizer_result
-                )
-            )
-            stored_candidate_admission_reason = (
-                _optimizer_stored_candidate_admission_reason(self.optimizer)
-            )
-            candidate_population, screening_report = await self._screen_candidate_population(
+        iteration_execution = await execute_iteration_lifecycle(
+            IterationExecutionRequest(
                 run_id=run_id,
                 target=target,
                 dataset=dataset,
-                candidates=candidate_population,
+                trace_packs=trace_packs,
                 apply_policy=apply_policy,
-                capability_requirements=replay_preflight.requirements,
-                repair_conformance_contracts=repair_conformance_contracts,
+                target_provenance=target_provenance,
+                target_provenance_unresolved_reason=(
+                    target_provenance_unresolved_reason
+                ),
+                target_selection_report=target_selection_report,
+                prior_feedback=prior_feedback,
+                generation_lesson_records=generation_lesson_records,
+                rejected_candidate_ids=rejected_candidate_ids,
+                accepted_candidate_ids=accepted_candidate_ids,
+                current_run_attempted_candidate_ids=(
+                    current_run_attempted_candidate_ids
+                ),
+                rejected_semantic_lesson_fingerprints=(
+                    rejected_semantic_lesson_fingerprints
+                ),
+                repair_reserved_slot_count=repair_reserved_slot_count,
+                replay_preflight=replay_preflight,
+                target_package_inventory=target_package_inventory,
+                target_package_sources=target_package_sources,
+                verification_settings=verification_settings,
+                estimated_baseline_repetitions=(estimated_baseline_repetitions),
+                iteration_budget=iteration_budget,
+                run_state=run_state,
                 attempt_tracker=attempt_tracker,
-                attempt_keys=attempt_key_by_candidate_id,
                 budget_context=budget_context,
-                require_single_candidate_screening=(
-                    _feedback_requires_counterexample_screening(
-                        (*prior_feedback, *validation_feedback)
-                    )
+                generation_execution_policy=generation_execution_policy,
+                generation_execution_runtime=generation_execution_runtime,
+                generation_execution_state=generation_execution_state,
+                population_screening_reports=population_screening_reports,
+            ),
+            IterationExecutionRuntime(
+                store=self.store,
+                optimizer=self.optimizer,
+                candidate_replay_backend=self.candidate_replay_backend,
+                progress_callback=self.progress_callback,
+                _plan_candidate_measurement=self._plan_candidate_measurement,
+                _screen_candidate_population=(self._screen_candidate_population),
+                _prepare_replay_adaptation=self._prepare_replay_adaptation,
+                _execute_iteration_candidate=(self._execute_iteration_candidate),
+                _baseline_reuse_provenance=self._baseline_reuse_provenance,
+                _candidate_screening_case_observations=(
+                    self._candidate_screening_case_observations
                 ),
-                stored_measurement_resume=(
-                    stored_candidate_admission_reason
-                    == "stored_candidate_measurement_resume"
+                _candidate_screening_control_observations=(
+                    self._candidate_screening_control_observations
                 ),
-            )
-            if screening_report is not None:
-                population_screening_reports.append(screening_report)
-                raw_superseded = screening_report.get(
-                    "superseded_candidate_ids"
-                )
-                if isinstance(raw_superseded, (list, tuple)):
-                    run_state.generation.release_effective_candidates(
-                        {
-                            str(item)
-                            for item in raw_superseded
-                            if str(item)
-                        }
-                    )
-            if _candidate_validation_stopped_by_shared_infrastructure(
-                screening_report
-            ):
-                run_state.infrastructure_blocked = True
-                framework_invalidated_ids = {
-                    candidate.candidate_id for candidate in screening_candidates
-                }
-                run_state.generation.release_effective_candidates(
-                    framework_invalidated_ids
-                )
-                if isinstance(screening_report, dict):
-                    screening_report["framework_invalidated_candidate_ids"] = (
-                        sorted(framework_invalidated_ids)
-                    )
-                    screening_report["effective_candidate_slot_count"] = (
-                        run_state.generation.generated_candidate_slot_count
-                    )
-                    for stage_name in ("conformance", "screening"):
-                        stage_report = screening_report.get(stage_name)
-                        if (
-                            isinstance(stage_report, dict)
-                            and stage_report.get(
-                                "stopped_by_shared_infrastructure"
-                            )
-                            is True
-                        ):
-                            stage_report[
-                                "framework_invalidated_candidate_ids"
-                            ] = sorted(framework_invalidated_ids)
-                            stage_report["effective_candidate_slot_count"] = (
-                                run_state.generation.generated_candidate_slot_count
-                            )
-                shared_validation_gate = _candidate_validation_shared_failure_gate(
-                    screening_report
-                )
-                for blocked_candidate in screening_candidates:
-                    blocked_key = attempt_key_by_candidate_id.get(
-                        blocked_candidate.candidate_id
-                    )
-                    if (
-                        blocked_key is not None
-                        and not attempt_tracker.terminal(blocked_key)
-                    ):
-                        attempt_tracker.emit(
-                            blocked_key,
-                            CandidateAttemptStage.BLOCKED,
-                            reason_code=(
-                                "candidate_validation_shared_infrastructure_blocked"
-                            ),
-                        )
-                break
-            screening_failures = _candidate_screening_repair_failures(
-                screening_candidates,
-                screening_report,
-            )
-            screening_feedback = _candidate_screening_repair_feedback(
-                screening_candidates,
-                screening_report,
-            )
-            if screening_feedback:
-                validation_feedback = _merge_validation_feedback(
-                    validation_feedback,
-                    screening_feedback,
-                )
-                rejected_candidate_ids.update(
-                    item.variant_id for item in screening_feedback
-                )
-                current_run_attempted_candidate_ids.update(
-                    item.variant_id for item in screening_feedback
-                )
-                iteration_reports.extend(
-                    {
-                        "iteration": iteration_index + 1,
-                        "candidate_id": item.variant_id,
-                        "status": "screening_rejected",
-                        "failed_gates": list(
-                            item.metrics.get("failed_gates", [])
-                        ),
-                    }
-                    for item in screening_feedback
-                )
-                for item in screening_feedback:
-                    screened_key = attempt_key_by_candidate_id.get(
-                        item.variant_id
-                    )
-                    if (
-                        screened_key is not None
-                        and not attempt_tracker.terminal(screened_key)
-                    ):
-                        failure_event_id, semantic_key = (
-                            _feedback_failure_reference(item)
-                        )
-                        attempt_tracker.emit(
-                            screened_key,
-                            CandidateAttemptStage.REJECTED,
-                            reason_code="candidate_validation_rejected",
-                            failure_event_id=failure_event_id,
-                            semantic_failure_key=semantic_key,
-                        )
-                feedback_by_candidate = {
-                    item.variant_id: item for item in screening_feedback
-                }
-                for failed_candidate, failed_gate in screening_failures:
-                    candidate_feedback = feedback_by_candidate.get(
-                        failed_candidate.candidate_id
-                    )
-                    iteration_states.append(
-                        _iteration_state(
-                            candidate=failed_candidate,
-                            baseline_summary=None,
-                            candidate_summary=None,
-                            held_out_summary=None,
-                            replay_result=None,
-                            replay_dataset=None,
-                            gate_results=[failed_gate],
-                            feedback=(
-                                (candidate_feedback,)
-                                if candidate_feedback is not None
-                                else ()
-                            ),
-                            status="rejected",
-                        )
-                        )
-            same_slot_conformance_repair_ids = {
-                failed_candidate.candidate_id
-                for failed_candidate, failed_gate in screening_failures
-                if failed_gate.gate_name == "candidate_repair_conformance"
-                and isinstance(failed_gate.details, Mapping)
-                and failed_gate.details.get("failure_class") == "candidate"
-                and failed_gate.details.get("repairable") is True
-            }
-            if same_slot_conformance_repair_ids:
-                # A conformance rejection is feedback for the slot that
-                # produced it, not a completed candidate strategy. Release the
-                # effective slot immediately; the next generation batch is the
-                # bounded same-slot repair attempt and receives this batch's
-                # executable counterexamples through validation_feedback.
-                run_state.generation.release_effective_candidates(
-                    same_slot_conformance_repair_ids,
-                    same_slot_repair=True,
-                )
-                if isinstance(screening_report, dict):
-                    screening_report["same_slot_conformance_repair_ids"] = sorted(
-                        same_slot_conformance_repair_ids
-                    )
-                    screening_report["effective_candidate_slot_count"] = (
-                        run_state.generation.generated_candidate_slot_count
-                    )
-            conformance_failure_signatures = (
-                _candidate_conformance_failure_signatures(screening_failures)
-                if screening_feedback
-                and not candidate_population
-                and not (
-                    isinstance(screening_report, Mapping)
-                    and screening_report.get("superseding_contract_identity")
-                )
-                else ()
-            )
-            observed_conformance_counterexamples = (
-                _candidate_conformance_counterexample_ids(
-                    screening_failures
-                )
-            )
-            repeated_conformance_counterexamples = (
-                run_state.generation.record_conformance_counterexamples(
-                    observed=set(observed_conformance_counterexamples),
-                    by_stage=_candidate_conformance_counterexample_stages(
-                        screening_failures
-                    ),
-                )
-            )
-            released_repeated_contract_candidate_ids: set[str] = set()
-            if repeated_conformance_counterexamples:
-                for failed_candidate, failed_gate in screening_failures:
-                    candidate_counterexamples = (
-                        _candidate_conformance_counterexample_ids(
-                            ((failed_candidate, failed_gate),)
-                        )
-                    )
-                    if not (
-                        candidate_counterexamples
-                        & repeated_conformance_counterexamples
-                    ):
-                        continue
-                    released_repeated_contract_candidate_ids.add(
-                        failed_candidate.candidate_id
-                    )
-                run_state.generation.release_effective_candidates(
-                    released_repeated_contract_candidate_ids,
-                    repeated_contract_replacement=True,
-                )
-                if screening_report is not None:
-                    screening_report[
-                        "repeated_contract_replacement_candidate_ids"
-                    ] = sorted(released_repeated_contract_candidate_ids)
-                    screening_report[
-                        "repeated_counterexample_ids"
-                    ] = sorted(repeated_conformance_counterexamples)
-            if conformance_failure_signatures:
-                topology_by_signature = (
-                    _candidate_conformance_repair_topologies(
-                        screening_failures
-                    )
-                )
-                strategy_transition = (
-                    run_state.generation.observe_conformance_strategies(
-                        signatures=tuple(conformance_failure_signatures),
-                        topology_by_signature=topology_by_signature,
-                        max_switch_attempts=(
-                            _MAX_CONFORMANCE_STRATEGY_SWITCH_ATTEMPTS
-                        ),
-                    )
-                )
-                if strategy_transition.frontier_exhausted:
-                    _emit_progress(
-                        self.progress_callback,
-                        "candidate_conformance",
-                        (
-                            "Stopped candidate generation: the requested "
-                            "structural strategy switch did not change the "
-                            "authorized owner/edit topology"
-                            if strategy_transition.unmaterialized_switches
-                            else (
-                                "Stopped candidate generation: the same typed "
-                                "conformance counterexample remained after the "
-                                "allowed structural strategy switches"
-                            )
-                        ),
-                    )
-                else:
-                    switch_signature = _candidate_conformance_stall_signature(
-                        screening_failures
-                    )
-                    assert switch_signature is not None
-                    validation_feedback = _merge_validation_feedback(
-                        validation_feedback,
-                        (
-                            _candidate_conformance_strategy_switch_feedback(
-                                signature=switch_signature,
-                                prior_topology_fingerprints=(
-                                    strategy_transition.prior_topology_fingerprints
-                                ),
-                            ),
-                        ),
-                    )
-                    _emit_progress(
-                        self.progress_callback,
-                        "candidate_conformance",
-                        (
-                            "Typed conformance failure captured; requesting "
-                            "a structural strategy switch bound to the original "
-                            "executable counterexample contract"
-                        ),
-                    )
-            if screening_feedback and not candidate_population:
-                if run_state.generation.conformance_frontier_exhausted:
-                    break
-                continue
-
-            accepted_in_iteration = False
-            reusable_baseline_replay_dir: str | None = None
-            if (
-                self.replay_enabled
-                and target.identity.target_type == "skill"
-                and self.candidate_replay_backend is not None
-                and not isinstance(
-                    self.candidate_replay_backend,
-                    CandidateReplayEvidenceReuseBackend,
-                )
-            ):
-                replay_adaptation, replay_adaptation_gate = (
-                    self._prepare_replay_adaptation(
-                        run_id=run_id,
-                        dataset=dataset,
-                        emit_progress=False,
-                    )
-                )
-                if replay_adaptation_gate.passed and replay_adaptation is not None:
-                    reusable_baseline_replay_dir = _find_reusable_baseline_replay_dir(
-                        store=self.store,
-                        run_id=run_id,
-                        target=target.identity,
-                        dataset=dataset,
-                        baseline_repetitions=estimated_baseline_repetitions,
-                        baseline_skill_fingerprint=target.fingerprint_current_content(),
-                        dataset_fingerprint=replay_dataset_fingerprint(dataset),
-                        adaptation_fingerprint=(
-                            replay_adaptation.adaptation_fingerprint
-                        ),
-                        workspace_seed_fingerprint=(
-                            replay_adaptation.workspace_seed_fingerprint
-                        ),
-                    )
-            for candidate_index, iteration_candidate in enumerate(candidate_population):
-                iteration_mutation = classify_candidate_mutation(
-                    iteration_candidate,
-                    current_content=target.load_current_content(),
-                )
-                counts_toward_authoritative = (
-                    iteration_mutation.kind
-                    is not CandidateMutationKind.EVALUATION_SUPPORT
-                )
-                if (
-                    _is_verified_apply_policy(apply_policy)
-                    and counts_toward_authoritative
-                    and run_state.authoritative_candidate_count
-                    >= self.max_full_evaluation_candidates
-                ):
-                    run_state.generation.verification_frontier_exhausted = True
-                    deferred_key = attempt_key_by_candidate_id.get(
-                        iteration_candidate.candidate_id
-                    )
-                    if (
-                        deferred_key is not None
-                        and not attempt_tracker.terminal(deferred_key)
-                    ):
-                        attempt_tracker.emit(
-                            deferred_key,
-                            CandidateAttemptStage.NOT_RUN,
-                            reason_code="authoritative_frontier_limit_reached",
-                        )
-                    iteration_reports.append(
-                        {
-                            "iteration": iteration_index + 1,
-                            "candidate_id": iteration_candidate.candidate_id,
-                            "status": "not_run",
-                            "failed_gates": [],
-                            "lifecycle_stage": "not_run",
-                            "reason_code": "authoritative_frontier_limit_reached",
-                        }
-                    )
-                    break
-                if counts_toward_authoritative:
-                    run_state.begin_authoritative_candidate(
-                        iteration_candidate.candidate_id,
-                        counts_toward_authoritative=True,
-                    )
-                evaluation_result = await self._execute_iteration_candidate(
-                    CandidateEvaluationRequest(
-                        run_id=run_id,
-                        target=target,
-                        dataset=dataset,
-                        candidate=iteration_candidate,
-                        apply_policy=apply_policy,
-                        target_provenance=target_provenance,
-                        target_provenance_unresolved_reason=(
-                            target_provenance_unresolved_reason
-                        ),
-                        target_selection_report=target_selection_report,
-                        iteration_number=iteration_index + 1,
-                        candidate_number=candidate_index + 1,
-                        candidate_count=len(candidate_population),
-                        rejected_candidate_ids=rejected_candidate_ids,
-                        accepted_candidate_ids=accepted_candidate_ids,
-                        baseline_replay_dir=reusable_baseline_replay_dir,
-                        capability_requirements=replay_preflight.requirements,
-                        attempt_key=attempt_key_by_candidate_id.get(
-                            iteration_candidate.candidate_id
-                        ),
-                        attempt_tracker=attempt_tracker,
-                        budget_context=budget_context,
-                        precomputed_gate_results=(
-                            local_gate_results_by_candidate.get(
-                                iteration_candidate.candidate_id,
-                                (),
-                            )
-                        ),
-                        source_disposition=candidate_source_dispositions.get(
-                            iteration_candidate.candidate_id,
-                            CandidateSourceDisposition(),
-                        ),
-                        baseline_evaluation_cache=(
-                            run_state.baseline_evaluation_cache
-                        ),
-                        allow_score_tiebreak=(
-                            run_state.score_tiebreak_candidate_count
-                            < self.max_score_tiebreak_candidates
-                        ),
-                    )
-                )
-                report_item = evaluation_result.report_item
-                evaluated_attempt_key = attempt_key_by_candidate_id.get(
-                    iteration_candidate.candidate_id
-                )
-                if (
-                    evaluated_attempt_key is not None
-                    and attempt_tracker.has_stage(
-                        evaluated_attempt_key,
-                        CandidateAttemptStage.PAIRED_REPLAY_STARTED,
-                        CandidateAttemptStage.PAIRED_REPLAY_COMPLETED,
-                        CandidateAttemptStage.PAIRED_REPLAY_COMPARABLE,
-                    )
-                ):
-                    report_item["lifecycle_stage"] = "authoritative_replay"
-                elif evaluated_attempt_key is not None:
-                    report_item["lifecycle_stage"] = attempt_tracker.last_stage(
-                        evaluated_attempt_key
-                    ).value
-                run_state.validation_feedback = validation_feedback
-                candidate_record = run_state.record_candidate_evaluation(
-                    candidate_id=iteration_candidate.candidate_id,
-                    result=evaluation_result,
-                    counts_toward_authoritative=(
-                        counts_toward_authoritative
-                    ),
-                    merge_feedback=_merge_validation_feedback,
-                    shared_measurement_failure=(
-                        _gate_has_typed_shared_measurement_failure
-                    ),
-                    authoritative_attempt_consumed=(
-                        _authoritative_attempt_consumed
-                    ),
-                )
-                validation_feedback = run_state.validation_feedback
-                state = candidate_record.state
-                state_measurement = candidate_record.measurement_summary
-                if (
-                    self.measurement_mode
-                    in {MeasurementPolicyMode.ADVISORY, MeasurementPolicyMode.REQUIRED}
-                    and isinstance(state_measurement, MeasurementSummary)
-                ):
-                    measurement_authority_run_id = next(
-                        (
-                            experiment.run_id
-                            for experiment in self._measurement_experiments.values()
-                            if experiment.experiment_id
-                            == state_measurement.experiment_id
-                        ),
-                        run_id,
-                    )
-                    attribution = self.store.read_measurement_attribution_report(
-                        measurement_authority_run_id,
-                        state_measurement.experiment_id,
-                    )
-                    run_state.measurement_attributions.append(attribution)
-                    stop_record = evaluate_measurement_stopping(
-                        run_state.measurement_attributions,
-                        policy=self.measurement_early_stop_policy,
-                        unused_budget=_remaining_measurement_budget(budget_context),
-                    )
-                    updated_attribution = replace(
-                        attribution,
-                        stopping=stop_record,
-                    )
-                    self.store.write_measurement_attribution_report(
-                        updated_attribution
-                    )
-                    updated_summary = updated_attribution.summary(
-                        attribution_report_path=(
-                            self.store.measurement_attribution_ref(
-                                measurement_authority_run_id,
-                                state_measurement.experiment_id,
-                            )
-                        )
-                    )
-                    state["measurement_summary"] = updated_summary
-                    self._measurement_summaries[
-                        (run_id, iteration_candidate.candidate_id)
-                    ] = updated_summary
-                    if stop_record.triggered:
-                        run_state.measurement_frontier_stopped = True
-                        report_item["measurement_stop"] = stop_record.to_dict()
-                replay_state = candidate_record.replay_result
-                if replay_state is not None:
-                    _record_authoritative_replay_observations(
-                        self._candidate_screening_case_observations,
-                        dataset=dataset,
-                        replay_result=replay_state,
-                        run_observations=(
-                            self._current_run_authoritative_case_observations
-                        ),
-                        control_observations=(
-                            self._candidate_screening_control_observations
-                        ),
-                    )
-                    if _replay_result_has_reusable_baseline(
-                        dataset=dataset,
-                        replay_result=replay_state,
-                    ):
-                        reusable_baseline_replay_dir = (
-                            _baseline_replay_artifact_dir(replay_state)
-                        )
-                refreshed_baseline_dir = _find_reusable_baseline_replay_dir(
-                    store=self.store,
-                    run_id=run_id,
-                    target=target.identity,
-                    dataset=dataset,
-                    baseline_repetitions=estimated_baseline_repetitions,
-                    **self._baseline_reuse_provenance(
-                        run_id=run_id,
-                        target=target,
-                        dataset=dataset,
-                    ),
-                )
-                if refreshed_baseline_dir is not None:
-                    reusable_baseline_replay_dir = refreshed_baseline_dir
-                loop_decision = run_state.finalize_candidate_record(
-                    candidate_record,
-                    shared_replay_failure_blocks_population=(
-                        _shared_replay_failure_blocks_population
-                    ),
-                    infrastructure_prevented_comparable_evaluation=(
-                        _infrastructure_prevented_comparable_evaluation
-                    ),
-                )
-                accepted_in_iteration = loop_decision.accepted
-                if loop_decision.should_stop:
-                    break
-            if (
-                _is_verified_apply_policy(apply_policy)
-                and not accepted_in_iteration
-                and run_state.authoritative_candidate_count
-                >= self.max_full_evaluation_candidates
-            ):
-                run_state.generation.verification_frontier_exhausted = True
-            if (
-                accepted_in_iteration
-                or run_state.baseline_preflight_blocked
-                or run_state.infrastructure_blocked
-                or run_state.generation.verification_frontier_exhausted
-                or run_state.measurement_frontier_stopped
-            ):
-                break
-        attempt_tracker.finalize_open(
-            reason_code="run_terminated_before_candidate"
+                _current_run_authoritative_case_observations=(
+                    self._current_run_authoritative_case_observations
+                ),
+                _measurement_experiments=self._measurement_experiments,
+                _measurement_summaries=self._measurement_summaries,
+            ),
+            IterationExecutionPolicy(
+                allow_external_target_mutation=(self.allow_external_target_mutation),
+                allow_generated_target_mutation=(self.allow_generated_target_mutation),
+                inferred_new_skill_policy=self.inferred_new_skill_policy,
+                max_full_evaluation_candidates=(self.max_full_evaluation_candidates),
+                max_score_tiebreak_candidates=(self.max_score_tiebreak_candidates),
+                measurement_early_stop_policy=(self.measurement_early_stop_policy),
+                measurement_mode=self.measurement_mode,
+                replay_enabled=self.replay_enabled,
+                _active_target_intent=self._active_target_intent,
+            ),
         )
+        validation_feedback = iteration_execution.validation_feedback
+        fresh_evaluation_required = iteration_execution.fresh_evaluation_required
+        latest_handbook_slice = iteration_execution.latest_handbook_slice
+        scheduler_state = iteration_execution.scheduler_state
+        shared_validation_gate = iteration_execution.shared_validation_gate
+        attempt_tracker.finalize_open(reason_code="run_terminated_before_candidate")
         budget_context.release_all(reason_code="run_terminal_cleanup")
         selected_projection = (
             None
@@ -6409,9 +3767,7 @@ class SelfEvolveRunner:
             )
         )
         selected_state = (
-            selected_projection.state
-            if selected_projection is not None
-            else None
+            selected_projection.state if selected_projection is not None else None
         )
         if shared_validation_gate is not None:
             gate_results.append(shared_validation_gate)
@@ -6439,9 +3795,7 @@ class SelfEvolveRunner:
                     ),
                 )
                 if run_state.generation.policy_frontier_exhausted
-                else _candidate_generation_failure_events(
-                    optimizer_diagnostics
-                )
+                else _candidate_generation_failure_events(optimizer_diagnostics)
             )
             candidate_generation_failure_event = (
                 candidate_generation_failure_events[0]
@@ -6457,9 +3811,9 @@ class SelfEvolveRunner:
                     run_state.generation.raw_generation_attempt_count
                 )
             if run_state.generation.policy_frontier_exhausted:
-                candidate_generation_details[
-                    "generation_policy_frontier_exhausted"
-                ] = True
+                candidate_generation_details["generation_policy_frontier_exhausted"] = (
+                    True
+                )
             if run_state.generation.materialization_frontier_exhausted:
                 candidate_generation_details[
                     "generation_materialization_frontier_exhausted"
@@ -6522,12 +3876,9 @@ class SelfEvolveRunner:
                             "generation_attempt_count": (
                                 run_state.generation.raw_generation_attempt_count
                             ),
-                            "canonical_unique_candidate_count": len(
-                                all_candidates
-                            ),
+                            "canonical_unique_candidate_count": len(all_candidates),
                             "semantic_lesson_duplicate_attempt_count": (
-                                run_state.generation
-                                .semantic_lesson_duplicate_attempt_count
+                                run_state.generation.semantic_lesson_duplicate_attempt_count
                             ),
                             "semantic_identity_version": (
                                 _SEMANTIC_DEDUP_IDENTITY_VERSION
@@ -6564,9 +3915,7 @@ class SelfEvolveRunner:
             terminal_selection.candidate_prerequisite_blocked
         )
         repair_focus_candidate = terminal_selection.repair_focus_candidate
-        reported_selected_candidate = (
-            terminal_selection.reported_selected_candidate
-        )
+        reported_selected_candidate = terminal_selection.reported_selected_candidate
         measurement_prerequisite_blocked = (
             terminal_selection.measurement_prerequisite_blocked
         )
@@ -6625,43 +3974,31 @@ class SelfEvolveRunner:
                                     ),
                                     candidate_count=max(1, len(all_candidates)),
                                     authoritative_candidate_count=1,
-                                    target_selection_report=(
-                                        target_selection_report
-                                    ),
+                                    target_selection_report=(target_selection_report),
                                 )
                             )
-                            selected_state["measurement_summary"] = (
-                                measurement_summary
-                            )
+                            selected_state["measurement_summary"] = measurement_summary
                             if (
-                                self.measurement_mode
-                                is MeasurementPolicyMode.REQUIRED
+                                self.measurement_mode is MeasurementPolicyMode.REQUIRED
                                 and not any(
-                                    gate.gate_name
-                                    == "trusted_improvement_measurement"
+                                    gate.gate_name == "trusted_improvement_measurement"
                                     for gate in gate_results
                                 )
                             ):
                                 gate_results.append(
-                                    _measurement_promotion_gate(
-                                        measurement_summary
-                                    )
+                                    _measurement_promotion_gate(measurement_summary)
                                 )
                         except (OSError, TypeError, ValueError):
                             if (
-                                self.measurement_mode
-                                is MeasurementPolicyMode.REQUIRED
+                                self.measurement_mode is MeasurementPolicyMode.REQUIRED
                                 and not any(
-                                    gate.gate_name
-                                    == "trusted_improvement_measurement"
+                                    gate.gate_name == "trusted_improvement_measurement"
                                     for gate in gate_results
                                 )
                             ):
                                 gate_results.append(
                                     GateResult(
-                                        gate_name=(
-                                            "trusted_improvement_measurement"
-                                        ),
+                                        gate_name=("trusted_improvement_measurement"),
                                         passed=False,
                                         reason=(
                                             "controlled measurement could not "
@@ -6735,10 +4072,7 @@ class SelfEvolveRunner:
                 pass
 
         skill_evolution_progress: dict[str, object] | None = None
-        if (
-            self.skill_evolution_contract is not None
-            and replay_result is not None
-        ):
+        if self.skill_evolution_contract is not None and replay_result is not None:
             intervention_observed = any(
                 gate.gate_name == "candidate_replay"
                 and isinstance(gate.details, Mapping)
@@ -6750,9 +4084,7 @@ class SelfEvolveRunner:
                 replay_result,
                 candidate_intervention_observed=intervention_observed,
             )
-            coverage_satisfied = (
-                skill_evolution_progress["coverage_satisfied"] is True
-            )
+            coverage_satisfied = skill_evolution_progress["coverage_satisfied"] is True
             gate_results.append(
                 GateResult(
                     gate_name="skill_evolution_contract",
@@ -6764,15 +4096,9 @@ class SelfEvolveRunner:
                     ),
                     details={
                         **skill_evolution_progress,
-                        "failure_class": (
-                            None if coverage_satisfied else "candidate"
-                        ),
-                        "failure_owner": (
-                            None if coverage_satisfied else "candidate"
-                        ),
-                        "failure_scope": (
-                            None if coverage_satisfied else "candidate"
-                        ),
+                        "failure_class": (None if coverage_satisfied else "candidate"),
+                        "failure_owner": (None if coverage_satisfied else "candidate"),
+                        "failure_scope": (None if coverage_satisfied else "candidate"),
                         "repairable": not coverage_satisfied,
                         "code": (
                             "skill_contract_coverage_satisfied"
@@ -6785,8 +4111,7 @@ class SelfEvolveRunner:
 
         post_apply: dict[str, object] | None = None
         inferred_draft_creation = (
-            self._active_target_intent
-            == TargetMutationIntent.INFERRED_DRAFT_CREATION
+            self._active_target_intent == TargetMutationIntent.INFERRED_DRAFT_CREATION
         )
         promotion_plan = plan_terminal_promotion(
             TerminalPromotionRequest(
@@ -6807,9 +4132,7 @@ class SelfEvolveRunner:
                 infrastructure_prevented_comparable_evaluation=(
                     _infrastructure_prevented_comparable_evaluation
                 ),
-                status_without_selected_candidate=(
-                    _status_without_selected_candidate
-                ),
+                status_without_selected_candidate=(_status_without_selected_candidate),
             ),
         )
         final_status = promotion_plan.final_status
@@ -6909,9 +4232,7 @@ class SelfEvolveRunner:
             _persist_lineage_lifecycle(
                 optimizer_lineage_paths_by_candidate,
                 iteration_states=iteration_states,
-                attempt_events=self.store.read_all_candidate_attempt_events(
-                    run_id
-                ),
+                attempt_events=self.store.read_all_candidate_attempt_events(run_id),
                 selected_candidate_id=(
                     reported_selected_candidate.candidate_id
                     if reported_selected_candidate is not None
@@ -6930,9 +4251,7 @@ class SelfEvolveRunner:
                 "path": target.identity.path,
             },
             "apply_policy": apply_policy,
-            "candidate_ids": [
-                candidate.candidate_id for candidate in all_candidates
-            ],
+            "candidate_ids": [candidate.candidate_id for candidate in all_candidates],
             "selected_candidate_id": (
                 reported_selected_candidate.candidate_id
                 if reported_selected_candidate is not None
@@ -6987,9 +4306,7 @@ class SelfEvolveRunner:
                 else None
             ),
             "challenge_report": (
-                challenge_report.to_dict()
-                if challenge_report is not None
-                else None
+                challenge_report.to_dict() if challenge_report is not None else None
             ),
             "composition_prerequisites": [
                 {
@@ -6999,17 +4316,13 @@ class SelfEvolveRunner:
                     "inherit_candidate_package": True,
                     "evidence": "all_applicable_prerequisite_gates_passed",
                 }
-                for candidate_id in dict.fromkeys(
-                    run_state.prerequisite_candidate_ids
-                )
+                for candidate_id in dict.fromkeys(run_state.prerequisite_candidate_ids)
             ],
             "verification_funnel": run_state.verification_funnel_report(
                 VerificationFunnelRequest(
                     screening_max_cases=self.candidate_screening_max_cases,
                     repair_iteration_horizon=iteration_budget,
-                    candidate_generation_batch_count=len(
-                        optimizer_diagnostics
-                    ),
+                    candidate_generation_batch_count=len(optimizer_diagnostics),
                     max_generated_candidates=self.max_generated_candidates,
                     repair_reserved_slot_count=repair_reserved_slot_count,
                     unique_generated_candidate_count=len(all_candidates),
@@ -7019,12 +4332,8 @@ class SelfEvolveRunner:
                             optimizer_diagnostics
                         )
                     ),
-                    max_authoritative_candidates=(
-                        self.max_full_evaluation_candidates
-                    ),
-                    max_score_tiebreak_candidates=(
-                        self.max_score_tiebreak_candidates
-                    ),
+                    max_authoritative_candidates=(self.max_full_evaluation_candidates),
+                    max_score_tiebreak_candidates=(self.max_score_tiebreak_candidates),
                     authoritative_case_observations=(
                         self._current_run_authoritative_case_observations
                     ),
@@ -7051,11 +4360,7 @@ class SelfEvolveRunner:
                 suite.spec.to_dict()
                 for suite in (
                     *self.regression_suites,
-                    *(
-                        challenge_report.suites
-                        if challenge_report is not None
-                        else ()
-                    ),
+                    *(challenge_report.suites if challenge_report is not None else ()),
                 )
             ],
         }
@@ -7063,17 +4368,11 @@ class SelfEvolveRunner:
             MeasurementReportRequest(
                 summary=measurement_summary,
                 mode=self.measurement_mode,
-                candidate_prerequisite_blocked=(
-                    candidate_prerequisite_blocked
-                ),
-                measurement_prerequisite_blocked=(
-                    measurement_prerequisite_blocked
-                ),
+                candidate_prerequisite_blocked=(candidate_prerequisite_blocked),
+                measurement_prerequisite_blocked=(measurement_prerequisite_blocked),
                 gate_results=tuple(gate_results),
             ),
-            candidate_prerequisite_failure=(
-                _gate_has_candidate_prerequisite_failure
-            ),
+            candidate_prerequisite_failure=(_gate_has_candidate_prerequisite_failure),
             measurement_materialization_blocked=(
                 _gate_blocks_measurement_materialization
             ),
@@ -7097,9 +4396,7 @@ class SelfEvolveRunner:
                 optimizer_diagnostics=tuple(optimizer_diagnostics),
                 gate_results=tuple(gate_results),
                 scheduler_decisions=tuple(scheduler_decisions),
-                population_screening_reports=tuple(
-                    population_screening_reports
-                ),
+                population_screening_reports=tuple(population_screening_reports),
                 iteration_states=tuple(iteration_states),
                 iteration_reports=tuple(iteration_reports),
                 generation_stop_reason=generation_stop_reason,
@@ -7118,12 +4415,8 @@ class SelfEvolveRunner:
                 replay_dataset=replay_dataset,
                 skill_evolution_progress=skill_evolution_progress,
                 trace_packs=tuple(trace_packs),
-                candidate_source_dispositions=(
-                    candidate_source_dispositions
-                ),
-                deprecated_config_mappings=(
-                    self.deprecated_config_mappings
-                ),
+                candidate_source_dispositions=(candidate_source_dispositions),
+                deprecated_config_mappings=(self.deprecated_config_mappings),
                 previous_artifact_retention=startup_artifact_retention,
             ),
             runtime=TerminalFinalizationRuntime(
@@ -7133,22 +4426,16 @@ class SelfEvolveRunner:
                 resolved_contract_fingerprints=(
                     _resolved_conformance_contract_fingerprints
                 ),
-                campaign_failure_attribution=(
-                    _campaign_failure_attribution
-                ),
+                campaign_failure_attribution=(_campaign_failure_attribution),
                 trajectory_set_report=_trajectory_set_report,
                 population_report=_population_report,
                 no_op_report=_no_op_report,
                 replay_report=_replay_report,
                 replay_artifact_path=_replay_artifact_path,
-                campaign_measurement_outcome=(
-                    _campaign_measurement_outcome_for_replay
-                ),
+                campaign_measurement_outcome=(_campaign_measurement_outcome_for_replay),
                 replay_capability_report=_replay_capability_report,
                 evaluator_report_paths=_evaluator_report_paths,
-                acceptance_confidence_report=(
-                    _acceptance_confidence_report
-                ),
+                acceptance_confidence_report=(_acceptance_confidence_report),
                 finalize_run_report=_finalize_run_report,
             ),
         )
@@ -7173,9 +4460,8 @@ class SelfEvolveRunner:
         candidates: tuple[CandidateVariant, ...],
         apply_policy: str,
         capability_requirements: tuple[ReplayCapabilityRequirement, ...] = (),
-        repair_conformance_contracts: Mapping[
-            str, RepairConformanceContract
-        ] | None = None,
+        repair_conformance_contracts: Mapping[str, RepairConformanceContract]
+        | None = None,
         attempt_tracker: _CandidateAttemptTracker | None = None,
         attempt_keys: Mapping[str, CandidateAttemptKey] | None = None,
         budget_context: _RunBudgetContext | None = None,
@@ -7189,15 +4475,11 @@ class SelfEvolveRunner:
             candidates=candidates,
             apply_policy=apply_policy,
             capability_requirements=capability_requirements,
-            repair_conformance_contracts=(
-                repair_conformance_contracts or {}
-            ),
+            repair_conformance_contracts=(repair_conformance_contracts or {}),
             attempt_tracker=attempt_tracker,
             attempt_keys=attempt_keys,
             budget_context=budget_context,
-            require_single_candidate_screening=(
-                require_single_candidate_screening
-            ),
+            require_single_candidate_screening=(require_single_candidate_screening),
             stored_measurement_resume=stored_measurement_resume,
         )
         result = await self._screening_controller.screen_population(
@@ -7208,43 +4490,27 @@ class SelfEvolveRunner:
                 execution_telemetry=self.execution_telemetry,
                 replay_enabled=self.replay_enabled,
                 replay_backend=self.candidate_replay_backend,
-                candidate_screening_max_cases=(
-                    self.candidate_screening_max_cases
-                ),
+                candidate_screening_max_cases=(self.candidate_screening_max_cases),
                 replay_max_steps=self.replay_max_steps,
                 replay_timeout_seconds=self.replay_timeout_seconds,
-                baseline_replay_repetitions=(
-                    self.baseline_replay_repetitions
-                ),
-                candidate_replay_repetitions=(
-                    self.candidate_replay_repetitions
-                ),
+                baseline_replay_repetitions=(self.baseline_replay_repetitions),
+                candidate_replay_repetitions=(self.candidate_replay_repetitions),
                 progress_callback=self.progress_callback,
-                case_observations=(
-                    self._candidate_screening_case_observations
-                ),
-                control_observations=(
-                    self._candidate_screening_control_observations
-                ),
+                case_observations=(self._candidate_screening_case_observations),
+                control_observations=(self._candidate_screening_control_observations),
                 invalid_control_case_ids_by_run=(
                     self._candidate_screening_run_invalid_control_case_ids
                 ),
-                measurement_experiments=(
-                    self._screening_measurement_experiments
-                ),
+                measurement_experiments=(self._screening_measurement_experiments),
                 validate_conformance_population=(
                     self._validate_candidate_repair_conformance_population
                 ),
                 plan_measurement=self._plan_candidate_measurement,
                 prepare_adaptation=self._prepare_replay_adaptation,
                 replay_candidate=self._replay_selected_candidate,
-                baseline_reuse_provenance=(
-                    self._baseline_reuse_provenance
-                ),
+                baseline_reuse_provenance=(self._baseline_reuse_provenance),
                 policy=self._screening_controller,
-                control_qualification_identity=(
-                    _control_qualification_identity
-                ),
+                control_qualification_identity=(_control_qualification_identity),
             ),
         )
         return result.candidates, result.report
@@ -7368,15 +4634,11 @@ class SelfEvolveRunner:
                     else None
                 )
                 shape_count = max(
-                    len(probe_groups)
-                    if isinstance(probe_groups, (list, tuple))
-                    else 0,
+                    len(probe_groups) if isinstance(probe_groups, (list, tuple)) else 0,
                     len(counterexample_contracts)
                     if isinstance(counterexample_contracts, (list, tuple))
                     else 0,
-                    len(violations)
-                    if isinstance(violations, (list, tuple))
-                    else 0,
+                    len(violations) if isinstance(violations, (list, tuple)) else 0,
                 )
                 if gate_code == "conformance_budget_denied":
                     attempt_tracker.emit(
@@ -7461,9 +4723,7 @@ class SelfEvolveRunner:
                 "passed_candidate_ids": [
                     candidate.candidate_id for candidate in passed_candidates
                 ],
-                "stopped_by_shared_infrastructure": (
-                    stopped_by_shared_infrastructure
-                ),
+                "stopped_by_shared_infrastructure": (stopped_by_shared_infrastructure),
                 "superseded_candidate_ids": superseded_candidate_ids,
                 "superseding_contract_identity": superseding_contract_identity,
                 "attempts": attempts,
@@ -7512,15 +4772,9 @@ class SelfEvolveRunner:
             # This compilation is performed against the candidate overlay.
             # It is candidate-owned unless the adaptation layer explicitly
             # supplies a native shared-run infrastructure/framework event.
-            declared_owner = str(
-                adaptation_details.get("failure_owner") or ""
-            )
-            declared_scope = str(
-                adaptation_details.get("failure_scope") or ""
-            )
-            declared_source = str(
-                adaptation_details.get("failure_source") or ""
-            )
+            declared_owner = str(adaptation_details.get("failure_owner") or "")
+            declared_scope = str(adaptation_details.get("failure_scope") or "")
+            declared_source = str(adaptation_details.get("failure_source") or "")
             proven_shared = bool(
                 declared_owner
                 in {
@@ -7555,10 +4809,7 @@ class SelfEvolveRunner:
                     },
                 )
             failure_event = ReplayFailureEvent(
-                code=(
-                    capability_error_code
-                    or "repair_capability_compile_failed"
-                ),
+                code=(capability_error_code or "repair_capability_compile_failed"),
                 owner=(
                     FailureOwner.CANDIDATE
                     if candidate_owned
@@ -7616,9 +4867,7 @@ class SelfEvolveRunner:
         probe_conformance = evaluate_compiled_probe_conformance(
             capability.services,
             contract,
-            fixture_leaf_values=replay_capability_fixture_leaf_values(
-                capability
-            ),
+            fixture_leaf_values=replay_capability_fixture_leaf_values(capability),
             fixture_response_leaf_values=(
                 replay_capability_fixture_response_leaf_values(capability)
             ),
@@ -7754,9 +5003,7 @@ class SelfEvolveRunner:
                     capability_id=capability.capability_id,
                     requirement_id=(
                         None
-                        if typed_error_details.get(
-                            "runtime_artifact_constraints"
-                        )
+                        if typed_error_details.get("runtime_artifact_constraints")
                         else group.requirement_id
                     ),
                     contract_fingerprint=(
@@ -7980,9 +5227,7 @@ class SelfEvolveRunner:
                 if isinstance(item.get("baseline_metrics"), Mapping)
                 else {}
             )
-            baseline_score = _finite_measurement_metric(
-                baseline_metrics.get("score")
-            )
+            baseline_score = _finite_measurement_metric(baseline_metrics.get("score"))
             if baseline_score is not None:
                 baseline_scores.append(baseline_score)
             held_out_metrics = (
@@ -8008,15 +5253,15 @@ class SelfEvolveRunner:
                     candidate_id=candidate.candidate_id,
                     score=score,
                     passed=status == "accepted",
-                    valid=status not in {
+                    valid=status
+                    not in {
                         "local_gate_rejected",
                         "screening_rejected",
                         "not_run",
                     },
                     authoritative=(
                         item.get("baseline_metrics") is not None
-                        or item.get("lifecycle_stage")
-                        == "authoritative_replay"
+                        or item.get("lifecycle_stage") == "authoritative_replay"
                     ),
                     tokens=tokens,
                     wall_seconds=wall_seconds,
@@ -8038,8 +5283,7 @@ class SelfEvolveRunner:
             ),
             wall_time_budget_points=(
                 _budget_curve_points(wall_total)
-                if results
-                and all(item.wall_seconds is not None for item in results)
+                if results and all(item.wall_seconds is not None for item in results)
                 else ()
             ),
             selection_protocol="generation_order_authoritative_funnel",
@@ -8078,8 +5322,7 @@ class SelfEvolveRunner:
             ),
             wall_seconds=(
                 wall_total
-                if results
-                and all(item.wall_seconds is not None for item in results)
+                if results and all(item.wall_seconds is not None for item in results)
                 else None
             ),
             candidate_opportunities=len(results),
@@ -8194,12 +5437,8 @@ class SelfEvolveRunner:
             CandidateLocalAdmissionPolicy(
                 workspace_root=self.store.workspace_root,
                 max_candidate_chars=_DEFAULT_CANDIDATE_CONTENT_MAX_CHARS,
-                allow_generated_target_mutation=(
-                    self.allow_generated_target_mutation
-                ),
-                allow_external_target_mutation=(
-                    self.allow_external_target_mutation
-                ),
+                allow_generated_target_mutation=(self.allow_generated_target_mutation),
+                allow_external_target_mutation=(self.allow_external_target_mutation),
                 target_intent=self._active_target_intent,
                 inferred_new_skill_policy=self.inferred_new_skill_policy,
                 skip_duplicate_rejected_candidate_gate=(
@@ -8251,9 +5490,7 @@ class SelfEvolveRunner:
                 candidate_repetitions=self.candidate_replay_repetitions,
                 judge_repetitions=self.judge_repetitions,
                 replay_candidate_limit=self.replay_candidate_limit,
-                per_attempt_replay_token_limit=(
-                    self.per_attempt_replay_token_limit
-                ),
+                per_attempt_replay_token_limit=(self.per_attempt_replay_token_limit),
                 replay_tokens_per_unit=self.replay_tokens_per_unit,
             ),
             CandidateReplayAdmissionRuntime(
@@ -8276,9 +5513,7 @@ class SelfEvolveRunner:
                 replay_candidate=self._replay_selected_candidate,
                 execution_telemetry=self.execution_telemetry,
                 replay_confidence_gate=_replay_confidence_gate,
-                replay_evaluator_admission_gate=(
-                    _replay_evaluator_admission_gate
-                ),
+                replay_evaluator_admission_gate=(_replay_evaluator_admission_gate),
                 typed_gate_failure=_with_typed_gate_failure_event,
                 feedback_builder=_iteration_validation_feedback,
             ),
@@ -8295,8 +5530,7 @@ class SelfEvolveRunner:
                 evaluation_backend=self.evaluation_backend,
                 judge_repetitions=self.judge_repetitions,
                 regression_suite_case_counts=tuple(
-                    len(suite.dataset.cases)
-                    for suite in self.regression_suites
+                    len(suite.dataset.cases) for suite in self.regression_suites
                 ),
                 challenger_enabled=self.challenger_enabled,
                 challenger_max_cases=self.challenger_max_cases,
@@ -8343,17 +5577,13 @@ class SelfEvolveRunner:
                 progress_callback=self.progress_callback,
                 evaluate_pair=evaluate_baseline_and_candidate,
                 evaluate_variant=evaluate_variant_task,
-                merge_replay_evidence=(
-                    _summary_with_replay_evidence_metrics
-                ),
+                merge_replay_evidence=(_summary_with_replay_evidence_metrics),
                 evidence_quality_gate=_evidence_quality_gate,
                 accumulate_score_evidence=_accumulate_score_evidence,
                 replay_stability_gate=_replay_stability_gate,
                 same_evaluation_execution=_same_evaluation_execution,
                 judge_actual_token_usage=_judge_actual_token_usage,
-                evaluate_independent_regression=(
-                    self._evaluate_independent_regression
-                ),
+                evaluate_independent_regression=(self._evaluate_independent_regression),
                 gate_is_replay_infrastructure_failure=(
                     _gate_is_replay_execution_infrastructure_failure
                 ),
@@ -8371,9 +5601,7 @@ class SelfEvolveRunner:
                 auto_apply_target_types=self.auto_apply_target_types,
             ),
             CandidateEvaluationFinalizationRuntime(
-                materialize_measurement=(
-                    self._materialize_candidate_measurement
-                ),
+                materialize_measurement=(self._materialize_candidate_measurement),
                 typed_gate_failure=_with_typed_gate_failure_event,
                 feedback_builder=_iteration_validation_feedback,
             ),
@@ -8388,11 +5616,7 @@ class SelfEvolveRunner:
         candidate: CandidateVariant,
         requirements: tuple[ReplayCapabilityRequirement, ...],
     ) -> list[GateResult]:
-        if (
-            not self.replay_enabled
-            or not requirements
-            or target.identity.path is None
-        ):
+        if not self.replay_enabled or not requirements or target.identity.path is None:
             return []
         framework_adaptation, framework_gate = self._prepare_replay_adaptation(
             run_id=run_id,
@@ -8439,15 +5663,9 @@ class SelfEvolveRunner:
                     ),
                     details={
                         "capability_type": result.capability_type,
-                        "code": (
-                            diagnostics[0].get("code")
-                            if diagnostics
-                            else None
-                        ),
+                        "code": (diagnostics[0].get("code") if diagnostics else None),
                         "failure_class": (
-                            diagnostics[0]["failure_class"]
-                            if diagnostics
-                            else None
+                            diagnostics[0]["failure_class"] if diagnostics else None
                         ),
                         "repairable": (
                             all(bool(item.get("repairable")) for item in diagnostics)
@@ -8498,13 +5716,10 @@ class SelfEvolveRunner:
                     FailureOwner.FRAMEWORK.value,
                 }
                 and details.get("failure_scope") == FailureScope.SHARED_RUN.value
-                and details.get("failure_source")
-                == FailureEventSource.NATIVE.value
+                and details.get("failure_source") == FailureEventSource.NATIVE.value
             )
             owner = (
-                FailureOwner.INFRASTRUCTURE
-                if proven_shared
-                else FailureOwner.CANDIDATE
+                FailureOwner.INFRASTRUCTURE if proven_shared else FailureOwner.CANDIDATE
             )
             event = ReplayFailureEvent(
                 code=str(
@@ -8515,9 +5730,7 @@ class SelfEvolveRunner:
                 owner=owner,
                 stage=FailureStage.CAPABILITY_COMPILE,
                 scope=(
-                    FailureScope.SHARED_RUN
-                    if proven_shared
-                    else FailureScope.CANDIDATE
+                    FailureScope.SHARED_RUN if proven_shared else FailureScope.CANDIDATE
                 ),
                 repairable=not proven_shared,
                 category="candidate_capability_preflight",
@@ -8589,9 +5802,7 @@ class SelfEvolveRunner:
                 exc,
                 replay_capability=capability,
             )
-            candidate_owned = (
-                failure_details.get("outcome") == "candidate_failure"
-            )
+            candidate_owned = failure_details.get("outcome") == "candidate_failure"
             repairable = failure_details.get("repairable") is True
             diagnostic_details = dict(
                 failure_details.get("diagnostics")
@@ -8708,9 +5919,7 @@ class SelfEvolveRunner:
                 f"candidate-discovery-error:{requested_package_fingerprint}"
             )
         elif capability is not None:
-            capability_cache_key = (
-                f"replay-capability:{discovered_package_fingerprint}"
-            )
+            capability_cache_key = f"replay-capability:{discovered_package_fingerprint}"
         elif capability_skill_root is not None:
             capability_cache_key = "candidate-without-replay-capability"
         else:
@@ -8736,18 +5945,14 @@ class SelfEvolveRunner:
             if discovery_error is not None:
                 raise discovery_error
             preflight_cache_key = replay_dataset_fingerprint(replayable_dataset)
-            preflight = self._replay_dataset_preflight_cache.get(
-                preflight_cache_key
-            )
+            preflight = self._replay_dataset_preflight_cache.get(preflight_cache_key)
             preflight_cache_hit = preflight is not None
             if preflight is None:
                 preflight = self.replay_adaptation_compiler.preflight(
                     dataset=replayable_dataset,
                     workspace_root=self.store.workspace_root,
                 )
-                self._replay_dataset_preflight_cache[preflight_cache_key] = (
-                    preflight
-                )
+                self._replay_dataset_preflight_cache[preflight_cache_key] = preflight
             if (
                 preflight.requirements
                 and capability is None
@@ -8803,7 +6008,9 @@ class SelfEvolveRunner:
                 for case in replayable_dataset.cases:
                     if case.context_snapshot is None:
                         continue
-                    snapshot_path = context_root / f"{_safe_artifact_name(case.case_id)}.json"
+                    snapshot_path = (
+                        context_root / f"{_safe_artifact_name(case.case_id)}.json"
+                    )
                     snapshot_path.write_text(
                         json.dumps(
                             asdict(case.context_snapshot),
@@ -8841,8 +6048,7 @@ class SelfEvolveRunner:
                     requirements=preflight.requirements,
                     context_snapshots=context_snapshots,
                     task_inputs={
-                        case.case_id: case.input
-                        for case in replayable_dataset.cases
+                        case.case_id: case.input for case in replayable_dataset.cases
                     },
                     capability_root=capability.skill_root,
                     capability_package_fingerprint=capability.package_fingerprint,
@@ -8867,8 +6073,8 @@ class SelfEvolveRunner:
                 additional_adapters=additional_adapters,
                 replay_capability=frozen_capability,
             )
-            expected_environment_fingerprint = (
-                self._run_environment_fingerprints.get(run_id)
+            expected_environment_fingerprint = self._run_environment_fingerprints.get(
+                run_id
             )
             if expected_environment_fingerprint is None:
                 self._run_environment_fingerprints[run_id] = (
@@ -9006,11 +6212,14 @@ class SelfEvolveRunner:
         target_adapter: SelfEvolveTarget | None = None,
         experiment: ControlledExperimentSpec | None = None,
         measurement_stage: str = "authoritative",
-    ) -> tuple[
-        MeasurementPlanV2,
-        IsolationDecision,
-        EvidencePolicyProfileV2,
-    ] | None:
+    ) -> (
+        tuple[
+            MeasurementPlanV2,
+            IsolationDecision,
+            EvidencePolicyProfileV2,
+        ]
+        | None
+    ):
         result = self._authoritative_measurement_controller.compile(
             AuthoritativeMeasurementRequest(
                 run_id=run_id,
@@ -9059,7 +6268,9 @@ class SelfEvolveRunner:
         replay_backend: CandidateReplayBackend | None = None,
         measurement_experiment: ControlledExperimentSpec | None = None,
         measurement_stage: str = "authoritative",
-    ) -> tuple[CandidateReplayResult | None, SelfEvolveDataset | None, GateResult | None]:
+    ) -> tuple[
+        CandidateReplayResult | None, SelfEvolveDataset | None, GateResult | None
+    ]:
         result = await self._paired_replay_execution_controller.execute(
             PairedReplayExecutionRequest(
                 run_id=run_id,
@@ -9093,12 +6304,8 @@ class SelfEvolveRunner:
                 measurement_experiments=self._measurement_experiments,
                 prepare_replay_adaptation=self._prepare_replay_adaptation,
                 baseline_reuse_provenance=self._baseline_reuse_provenance,
-                compile_measurement_plan=(
-                    self._compile_authoritative_measurement_plan
-                ),
-                load_measurement_resume_request=(
-                    self._load_measurement_resume_request
-                ),
+                compile_measurement_plan=(self._compile_authoritative_measurement_plan),
+                load_measurement_resume_request=(self._load_measurement_resume_request),
             ),
         )
         return result.as_tuple()
@@ -9151,10 +6358,7 @@ class SelfEvolveRunner:
             replay_budget: BudgetDecision | None = None
             replay_started = False
             try:
-                if (
-                    self.replay_enabled
-                    and candidate.target.target_type == "skill"
-                ):
+                if self.replay_enabled and candidate.target.target_type == "skill":
                     if isinstance(
                         self.regression_replay_backend,
                         CandidateReplayEvidenceReuseBackend,
@@ -9209,29 +6413,27 @@ class SelfEvolveRunner:
                         if stage == "replay_started":
                             replay_started = True
 
-                    _, paired_dataset, replay_gate = (
-                        await self._replay_selected_candidate(
-                            run_id=run_id,
-                            target=target,
-                            dataset=suite.dataset,
-                            selected_candidate=candidate,
-                            apply_policy=apply_policy,
-                            baseline_replay_dir=None,
-                            progress_stage="regression_replay",
-                            artifact_namespace=(
-                                f"regression/{suite.spec.suite_id}"
-                            ),
-                            lifecycle_callback=regression_replay_lifecycle,
-                            replay_backend=self.regression_replay_backend,
-                        )
+                    (
+                        _,
+                        paired_dataset,
+                        replay_gate,
+                    ) = await self._replay_selected_candidate(
+                        run_id=run_id,
+                        target=target,
+                        dataset=suite.dataset,
+                        selected_candidate=candidate,
+                        apply_policy=apply_policy,
+                        baseline_replay_dir=None,
+                        progress_stage="regression_replay",
+                        artifact_namespace=(f"regression/{suite.spec.suite_id}"),
+                        lifecycle_callback=regression_replay_lifecycle,
+                        replay_backend=self.regression_replay_backend,
                     )
                     if replay_budget is not None:
                         if replay_started:
-                            replay_telemetry_after = (
-                                _stage_telemetry_usage_snapshot(
-                                    self.execution_telemetry,
-                                    "replay",
-                                )
+                            replay_telemetry_after = _stage_telemetry_usage_snapshot(
+                                self.execution_telemetry,
+                                "replay",
                             )
                             replay_usage = _stage_telemetry_usage_delta(
                                 replay_telemetry_before,
@@ -9258,22 +6460,21 @@ class SelfEvolveRunner:
                         )
                     regression_dataset = paired_dataset
 
-                baseline_summary, candidate_summary = (
-                    await evaluate_baseline_and_candidate(
-                        self.regression_backend,
-                        dataset=regression_dataset,
-                        candidate=candidate,
-                        dataset_split="regression",
-                        artifact_namespace=(
-                            f"{run_id}-regression-{suite.spec.suite_id}"
-                        ),
-                        task_batch_executor=self.task_batch_executor,
-                        max_concurrency=self.concurrency_policy.effective_limit(
-                            "evaluation",
-                            item_count=2,
-                        ),
-                        execution_telemetry=self.execution_telemetry,
-                    )
+                (
+                    baseline_summary,
+                    candidate_summary,
+                ) = await evaluate_baseline_and_candidate(
+                    self.regression_backend,
+                    dataset=regression_dataset,
+                    candidate=candidate,
+                    dataset_split="regression",
+                    artifact_namespace=(f"{run_id}-regression-{suite.spec.suite_id}"),
+                    task_batch_executor=self.task_batch_executor,
+                    max_concurrency=self.concurrency_policy.effective_limit(
+                        "evaluation",
+                        item_count=2,
+                    ),
+                    execution_telemetry=self.execution_telemetry,
                 )
                 fresh_execution = True
                 suite_gates.extend(
@@ -9297,11 +6498,9 @@ class SelfEvolveRunner:
             except Exception as exc:
                 if replay_budget is not None and replay_budget.allowed:
                     if replay_started:
-                        replay_telemetry_after = (
-                            _stage_telemetry_usage_snapshot(
-                                self.execution_telemetry,
-                                "replay",
-                            )
+                        replay_telemetry_after = _stage_telemetry_usage_snapshot(
+                            self.execution_telemetry,
+                            "replay",
                         )
                         replay_usage = _stage_telemetry_usage_delta(
                             replay_telemetry_before,
@@ -9367,18 +6566,10 @@ class SelfEvolveRunner:
 
         evidence = RegressionEvidence(
             candidate_id=candidate.candidate_id,
-            selection_dataset_fingerprint=replay_dataset_fingerprint(
-                selection_dataset
-            ),
-            selection_case_fingerprints=dataset_case_fingerprints(
-                selection_dataset
-            ),
-            selection_backend_id=evaluation_backend_identity(
-                self.evaluation_backend
-            ),
-            regression_backend_id=evaluation_backend_identity(
-                self.regression_backend
-            ),
+            selection_dataset_fingerprint=replay_dataset_fingerprint(selection_dataset),
+            selection_case_fingerprints=dataset_case_fingerprints(selection_dataset),
+            selection_backend_id=evaluation_backend_identity(self.evaluation_backend),
+            regression_backend_id=evaluation_backend_identity(self.regression_backend),
             suite_results=tuple(suite_results),
         )
         self.store.write_regression_evidence(run_id, evidence)
@@ -9435,12 +6626,9 @@ class SelfEvolveRunner:
             )
 
         challenge_budget: BudgetDecision | None = None
-        if (
-            budget_context is not None
-            and not _backend_proves_zero_budget_usage(
-                self.challenger_backend,
-                BudgetStage.CHALLENGER,
-            )
+        if budget_context is not None and not _backend_proves_zero_budget_usage(
+            self.challenger_backend,
+            BudgetStage.CHALLENGER,
         ):
             challenge_budget = budget_context.reserve(
                 BudgetStage.CHALLENGER,
@@ -9483,9 +6671,7 @@ class SelfEvolveRunner:
             )
             batch = await self.challenger_backend.propose(request)
             if not isinstance(batch, ChallengeProposalBatch):
-                raise TypeError(
-                    "challenger backend must return ChallengeProposalBatch"
-                )
+                raise TypeError("challenger backend must return ChallengeProposalBatch")
             report = admit_challenge_proposals(
                 batch,
                 candidate=candidate,
@@ -9498,9 +6684,7 @@ class SelfEvolveRunner:
                 report,
             )
             rejected = [
-                admission
-                for admission in report.admissions
-                if not admission.admitted
+                admission for admission in report.admissions if not admission.admitted
             ]
             return report, GateResult(
                 gate_name="challenger_admission",
@@ -9622,8 +6806,7 @@ class SelfEvolveRunner:
             }
         if (
             not evaluated_target_fingerprint
-            or apply_target_fingerprint
-            != evaluated_target_fingerprint
+            or apply_target_fingerprint != evaluated_target_fingerprint
         ):
             return {
                 "status": "rejected",
@@ -9635,12 +6818,8 @@ class SelfEvolveRunner:
                     "failure_owner": "framework",
                     "failure_scope": "shared_run",
                     "repairable": False,
-                    "evaluated_target_fingerprint": (
-                        evaluated_target_fingerprint
-                    ),
-                    "apply_target_fingerprint": (
-                        apply_target_fingerprint
-                    ),
+                    "evaluated_target_fingerprint": (evaluated_target_fingerprint),
+                    "apply_target_fingerprint": (apply_target_fingerprint),
                 },
                 "dataset_split": "post_apply",
                 "backup_path": None,
@@ -9676,15 +6855,15 @@ class SelfEvolveRunner:
                 "release_normalization",
                 "Normalizing verified skill content before apply",
             )
-            normalized_content, normalization_metrics = normalize_verified_skill_release(
-                candidate.content,
-                run_id=run_id,
-                candidate_id=candidate.candidate_id,
-                original_content=original_content,
-                structural_edit_intent=(
-                    candidate.structural_edit_intent
-                ),
-                require_exact_deletion_intent=True,
+            normalized_content, normalization_metrics = (
+                normalize_verified_skill_release(
+                    candidate.content,
+                    run_id=run_id,
+                    candidate_id=candidate.candidate_id,
+                    original_content=original_content,
+                    structural_edit_intent=(candidate.structural_edit_intent),
+                    require_exact_deletion_intent=True,
+                )
             )
             normalization_metrics = _with_release_lesson_mapping(
                 normalization_metrics,
@@ -9716,9 +6895,7 @@ class SelfEvolveRunner:
                 content=normalized_content,
             )
         try:
-            latest_target_fingerprint = (
-                target.fingerprint_current_content()
-            )
+            latest_target_fingerprint = target.fingerprint_current_content()
         except Exception as exc:
             latest_target_fingerprint = None
             fingerprint_error_type = type(exc).__name__
@@ -9733,12 +6910,8 @@ class SelfEvolveRunner:
                 "failure_owner": "framework",
                 "failure_scope": "shared_run",
                 "repairable": False,
-                "evaluated_target_fingerprint": (
-                    evaluated_target_fingerprint
-                ),
-                "apply_target_fingerprint": (
-                    latest_target_fingerprint
-                ),
+                "evaluated_target_fingerprint": (evaluated_target_fingerprint),
+                "apply_target_fingerprint": (latest_target_fingerprint),
                 "fingerprint_error_type": fingerprint_error_type,
                 **dict(normalization_metrics),
             }
@@ -9756,23 +6929,17 @@ class SelfEvolveRunner:
                 "release_state": "rejected",
             }
         try:
-            if (
-                applied_candidate.target.target_type == "skill"
-                and hasattr(target, "apply_candidate_variant")
+            if applied_candidate.target.target_type == "skill" and hasattr(
+                target, "apply_candidate_variant"
             ):
                 target.apply_candidate_variant(
                     applied_candidate,
                     expected_package_fingerprint=expected_package_fingerprint,
                     verified_content=candidate.content,
-                    expected_target_fingerprint=(
-                        evaluated_target_fingerprint
-                    ),
+                    expected_target_fingerprint=(evaluated_target_fingerprint),
                 )
             else:
-                if (
-                    target.fingerprint_current_content()
-                    != evaluated_target_fingerprint
-                ):
+                if target.fingerprint_current_content() != evaluated_target_fingerprint:
                     raise TargetSnapshotStaleError(
                         "target snapshot changed before candidate mutation"
                     )
@@ -9786,9 +6953,7 @@ class SelfEvolveRunner:
                 "failure_owner": "framework",
                 "failure_scope": "shared_run",
                 "repairable": False,
-                "evaluated_target_fingerprint": (
-                    evaluated_target_fingerprint
-                ),
+                "evaluated_target_fingerprint": (evaluated_target_fingerprint),
             }
             self.store.update_apply_journal(
                 journal_path,
@@ -9827,9 +6992,7 @@ class SelfEvolveRunner:
             if inspect.isawaitable(summary):
                 summary = await summary
             if not isinstance(summary, EvaluationSummary):
-                raise ValueError(
-                    "post_apply_evaluator must return EvaluationSummary"
-                )
+                raise ValueError("post_apply_evaluator must return EvaluationSummary")
         except Exception as exc:
             target.rollback()
             self.store.update_apply_journal(
@@ -10037,9 +7200,7 @@ class SelfEvolveRunner:
             }
 
         isolated_registry_root = self.store.run_path(run_id) / "verified_targets"
-        isolated_package_root = (
-            isolated_registry_root / target.identity.target_id
-        )
+        isolated_package_root = isolated_registry_root / target.identity.target_id
         isolated_skill_path = isolated_package_root / "SKILL.md"
         if isolated_package_root.exists() or isolated_package_root.is_symlink():
             return {
@@ -10059,9 +7220,7 @@ class SelfEvolveRunner:
             }
 
         source_skill_path = (
-            Path(target.identity.path).resolve()
-            if target.identity.path
-            else None
+            Path(target.identity.path).resolve() if target.identity.path else None
         )
         try:
             isolated_registry_root.mkdir(parents=True, exist_ok=True)
@@ -10249,7 +7408,8 @@ def optimize_from_cli_request(
     iterations: int | None = None,
     apply_policy: str = "proposal",
     infer_target: bool = False,
-    inferred_new_skill_policy: InferredNewSkillPolicy | str = InferredNewSkillPolicy.AUTO_VERIFIED,
+    inferred_new_skill_policy: InferredNewSkillPolicy
+    | str = InferredNewSkillPolicy.AUTO_VERIFIED,
     evaluation_backend: EvaluationBackend | None = None,
     regression_backend: EvaluationBackend | None = None,
     regression_benchmarks: Iterable[str] = (),
@@ -10432,10 +7592,13 @@ def _target_package_sources(
 
 
 def _safe_artifact_name(value: str) -> str:
-    readable = "".join(
-        character if character.isalnum() or character in {"-", "_"} else "-"
-        for character in value
-    ).strip("-")[:48] or "case"
+    readable = (
+        "".join(
+            character if character.isalnum() or character in {"-", "_"} else "-"
+            for character in value
+        ).strip("-")[:48]
+        or "case"
+    )
     suffix = hashlib.sha256(value.encode("utf-8")).hexdigest()[:10]
     return f"{readable}-{suffix}"
 
@@ -10528,9 +7691,7 @@ def _replay_report(replay_result: CandidateReplayResult) -> dict[str, object]:
             "baseline_skill_fingerprint": (
                 replay_result.request.baseline_skill_fingerprint
             ),
-            "adaptation_fingerprint": (
-                replay_result.request.adaptation_fingerprint
-            ),
+            "adaptation_fingerprint": (replay_result.request.adaptation_fingerprint),
             "support_fingerprint": replay_result.request.support_fingerprint,
             "timeout_envelope_fingerprint": (
                 replay_result.request.timeout_envelope_fingerprint
@@ -10626,9 +7787,7 @@ def _replay_capability_report(
     return {
         "source": "candidate",
         "capability_id": capability.capability_id,
-        "capability_package_fingerprint": (
-            capability.capability_package_fingerprint
-        ),
+        "capability_package_fingerprint": (capability.capability_package_fingerprint),
         "request_fingerprint": capability.request_fingerprint,
         "frozen_capability_fingerprint": capability.fingerprint,
         "deterministic": capability.deterministic,
@@ -10676,7 +7835,13 @@ def _reusable_baseline_case_count(
                 Path(stored_dir),
                 base_variant_id="baseline",
             )
-        except (FileNotFoundError, TypeError, ValueError, json.JSONDecodeError, OSError):
+        except (
+            FileNotFoundError,
+            TypeError,
+            ValueError,
+            json.JSONDecodeError,
+            OSError,
+        ):
             continue
         if _baseline_replay_is_reusable(
             baseline,
@@ -10697,7 +7862,9 @@ def _legacy_member_baseline_replay_dir(
     if not members_root.exists():
         return None
     reusable_by_case: dict[str, Path] = {}
-    for member_dir in sorted(members_root.iterdir(), key=lambda path: path.stat().st_mtime, reverse=True):
+    for member_dir in sorted(
+        members_root.iterdir(), key=lambda path: path.stat().st_mtime, reverse=True
+    ):
         if not member_dir.is_dir():
             continue
         request_path = member_dir / "request.json"
@@ -10830,53 +7997,13 @@ def _load_prior_scheduler_state(
             )
             if isinstance(decisions, list) and decisions:
                 latest = decisions[-1]
-                raw_state = (
-                    latest.get("state")
-                    if isinstance(latest, Mapping)
-                    else None
-                )
+                raw_state = latest.get("state") if isinstance(latest, Mapping) else None
         if isinstance(raw_state, Mapping):
             try:
                 return SchedulerState.from_dict(raw_state)
             except (TypeError, ValueError):
                 continue
     return SchedulerState()
-
-
-def _scheduler_state_with_mutation_families(
-    state: SchedulerState,
-    *,
-    decision: SchedulerDecision,
-    optimizer_diagnostics: Mapping[str, object],
-) -> SchedulerState:
-    focused_keys = tuple(
-        dict.fromkeys(
-            slot.semantic_key
-            for slot in decision.slots
-            if slot.semantic_key is not None
-        )
-    )
-    raw_strategies = optimizer_diagnostics.get("candidate_strategies")
-    if not focused_keys or not isinstance(raw_strategies, (list, tuple)):
-        return state
-    families = {
-        str(strategy.get("candidate_family"))
-        for strategy in raw_strategies
-        if isinstance(strategy, Mapping)
-        and isinstance(strategy.get("candidate_family"), str)
-        and str(strategy.get("candidate_family")).strip()
-    }
-    if not families:
-        return state
-    family_map = {
-        key: tuple(values)
-        for key, values in state.frontier_mutation_families.items()
-    }
-    for semantic_key in focused_keys:
-        family_map[semantic_key] = tuple(
-            sorted({*family_map.get(semantic_key, ()), *families})
-        )
-    return replace(state, frontier_mutation_families=family_map)
 
 
 def _repair_frontier_state_report(
@@ -10995,10 +8122,10 @@ def _repair_frontier_state_report(
                         ),
                     )
                 ),
-                "regression_count": _non_negative_int(
-                    previous.get("regression_count")
-                )
-                + (1 if status == "regressed" and previous_status != "regressed" else 0),
+                "regression_count": _non_negative_int(previous.get("regression_count"))
+                + (
+                    1 if status == "regressed" and previous_status != "regressed" else 0
+                ),
             }
         )
     return {
@@ -11116,9 +8243,7 @@ def _load_prior_rejected_semantic_lesson_fingerprints(
             identity_version = lineage.get("semantic_identity_version")
             semantic_package = lineage.get("semantic_package_fingerprint")
             lesson_set = lineage.get("lesson_set_fingerprint")
-            verification_contract = lineage.get(
-                "verification_contract_fingerprint"
-            )
+            verification_contract = lineage.get("verification_contract_fingerprint")
             # Legacy two-field lineage remains importable for audit and lesson
             # extraction, but it cannot prove that candidate-owned files or the
             # active verifier contract are equivalent and therefore cannot hard
@@ -11136,9 +8261,7 @@ def _load_prior_rejected_semantic_lesson_fingerprints(
                     _SemanticLessonFingerprint(
                         semantic_package_fingerprint=semantic_package,
                         lesson_set_fingerprint=lesson_set,
-                        verification_contract_fingerprint=(
-                            verification_contract
-                        ),
+                        verification_contract_fingerprint=(verification_contract),
                     )
                 )
                 if len(fingerprints) >= limit:
@@ -11347,8 +8470,7 @@ def _persist_lineage_lifecycle(
             key=lambda event: (event.key.iteration, event.key.slot, event.sequence),
         )
         payload["screened"] = any(
-            event.stage is CandidateAttemptStage.SCREENING
-            for event in candidate_events
+            event.stage is CandidateAttemptStage.SCREENING for event in candidate_events
         )
         if state is None:
             terminal_event = next(
@@ -11541,19 +8663,14 @@ def _feedback_from_report(
             legacy_accepted_report = (
                 report.get("apply_policy") is None and not post_apply
             )
-            metrics["publication_completed"] = (
-                legacy_accepted_report
-                or (
-                    report.get("apply_policy") == "auto_verified"
-                    and post_apply.get("status") == "accepted"
-                    and post_apply.get("release_state") == "verified"
-                    and post_apply.get("published") is not False
-                )
+            metrics["publication_completed"] = legacy_accepted_report or (
+                report.get("apply_policy") == "auto_verified"
+                and post_apply.get("status") == "accepted"
+                and post_apply.get("release_state") == "verified"
+                and post_apply.get("published") is not False
             )
             metrics["historical_apply_policy"] = report.get("apply_policy")
-            metrics["historical_release_state"] = post_apply.get(
-                "release_state"
-            )
+            metrics["historical_release_state"] = post_apply.get("release_state")
             metrics["run_id"] = report.get("run_id")
             metrics["report_path"] = str(report_path)
             items.append(
@@ -11731,9 +8848,7 @@ def _selected_candidate_judge_metrics(
         metrics = dict(selected_metrics)
         failed_gates = iteration.get("failed_gates")
         if isinstance(failed_gates, list):
-            metrics["failed_gates"] = [
-                str(gate) for gate in failed_gates if str(gate)
-            ]
+            metrics["failed_gates"] = [str(gate) for gate in failed_gates if str(gate)]
         return metrics, selected_split
     return {}, None
 
@@ -11790,9 +8905,7 @@ def _historical_failure_artifact_excerpts(
                 continue
             excerpts.append(
                 {
-                    "path": sanitize_path_ref(
-                        path.relative_to(run_root).as_posix()
-                    ),
+                    "path": sanitize_path_ref(path.relative_to(run_root).as_posix()),
                     "tail": excerpt,
                 }
             )
@@ -11922,9 +9035,7 @@ def _stored_repair_candidate_package(
         return None
 
     raw_content = payload.get("content")
-    has_target_content = isinstance(raw_content, str) and bool(
-        raw_content.strip()
-    )
+    has_target_content = isinstance(raw_content, str) and bool(raw_content.strip())
     bounded_target_content = (
         _bounded_repair_candidate_target_content(
             raw_content,
@@ -12003,7 +9114,9 @@ def _lesson_feedback_from_report(
         if not isinstance(lesson_id, str) or not lesson_id:
             continue
         lesson_metrics = payload.get("metrics")
-        metrics: dict[str, Any] = dict(lesson_metrics) if isinstance(lesson_metrics, Mapping) else {}
+        metrics: dict[str, Any] = (
+            dict(lesson_metrics) if isinstance(lesson_metrics, Mapping) else {}
+        )
         metrics.update(
             {
                 "lesson_id": lesson_id,
@@ -12044,18 +9157,6 @@ def _lesson_feedback_from_report(
     return tuple(items)
 
 
-def _positive_int_or_default(value: Any, *, default: int) -> int:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return default
-    return max(1, int(value))
-
-
-def _nonnegative_int_or_default(value: Any, *, default: int) -> int:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return default
-    return max(0, int(value))
-
-
 def _lessons_path_from_report(
     report: Mapping[str, Any],
     *,
@@ -12068,7 +9169,11 @@ def _lessons_path_from_report(
         path_value = lessons.get("path")
         if isinstance(path_value, str) and path_value:
             raw_path = path_value
-    candidate_path = Path(raw_path) if raw_path is not None else run_root / "lessons" / "lessons.jsonl"
+    candidate_path = (
+        Path(raw_path)
+        if raw_path is not None
+        else run_root / "lessons" / "lessons.jsonl"
+    )
     if not candidate_path.is_absolute():
         candidate_path = run_root / candidate_path
     try:
@@ -12093,12 +9198,6 @@ def _bounded_text(value: Any, *, max_chars: int) -> str:
     if len(text) <= max_chars:
         return text
     return text[: max_chars - 3].rstrip() + "..."
-
-
-def _string_list(value: Any) -> list[str]:
-    if not isinstance(value, list):
-        return []
-    return [str(item) for item in value if item]
 
 
 def _historical_feedback_metrics(iteration: Mapping[str, Any]) -> dict[str, Any]:
@@ -12135,23 +9234,24 @@ def _historical_feedback_metrics(iteration: Mapping[str, Any]) -> dict[str, Any]
 def _retryable_infrastructure_rejection(metrics: Mapping[str, Any]) -> bool:
     if _has_missing_model_profile_judge_failure(metrics):
         return True
-    failed_gates = {
-        str(gate)
-        for gate in metrics.get("failed_gates", ())
-        if str(gate)
-    }
-    return bool(failed_gates) and failed_gates <= {
-        "candidate_replay",
-        "replay_confidence",
-    } and not any(
-        key in metrics
-        for key in (
-            "score",
-            "candidate_score",
-            "evaluator_gate_passed",
-            "judge_attempt_count",
-            "A1_groundedness",
-            "A2_completeness",
+    failed_gates = {str(gate) for gate in metrics.get("failed_gates", ()) if str(gate)}
+    return (
+        bool(failed_gates)
+        and failed_gates
+        <= {
+            "candidate_replay",
+            "replay_confidence",
+        }
+        and not any(
+            key in metrics
+            for key in (
+                "score",
+                "candidate_score",
+                "evaluator_gate_passed",
+                "judge_attempt_count",
+                "A1_groundedness",
+                "A2_completeness",
+            )
         )
     )
 
@@ -12159,11 +9259,7 @@ def _retryable_infrastructure_rejection(metrics: Mapping[str, Any]) -> bool:
 def _non_authoritative_candidate_rejection(metrics: Mapping[str, Any]) -> bool:
     if _retryable_infrastructure_rejection(metrics):
         return True
-    failed_gates = {
-        str(gate)
-        for gate in metrics.get("failed_gates", ())
-        if str(gate)
-    }
+    failed_gates = {str(gate) for gate in metrics.get("failed_gates", ()) if str(gate)}
     return failed_gates == {"duplicate_rejected_candidate"}
 
 
@@ -12299,16 +9395,6 @@ def _conformance_gate_blocks_population(gate: GateResult) -> bool:
     return _gate_has_typed_shared_infrastructure_failure(gate)
 
 
-def _gate_is_replay_execution_infrastructure_failure(gate: GateResult) -> bool:
-    details = gate.details
-    return bool(
-        gate.gate_name == "candidate_replay"
-        and isinstance(details, Mapping)
-        and details.get("code") == "candidate_replay_infrastructure_error"
-        and _gate_has_typed_shared_infrastructure_failure(gate)
-    )
-
-
 def _gate_blocks_measurement_materialization(gate: GateResult) -> bool:
     """Prevent derived statistical gates from hiding an execution blocker."""
 
@@ -12316,160 +9402,6 @@ def _gate_blocks_measurement_materialization(gate: GateResult) -> bool:
         _gate_has_typed_shared_measurement_failure(gate)
         or _gate_is_replay_execution_infrastructure_failure(gate)
     )
-
-
-def _authoritative_attempt_consumed(
-    state: Mapping[str, object],
-) -> bool:
-    """Return whether an authoritative reservation produced candidate evidence.
-
-    Framework-owned failures before candidate execution are resumable
-    measurement work, not candidate opportunities. Candidate-owned gate
-    failures do consume the opportunity because they are an authoritative
-    conclusion about that candidate package.
-    """
-
-    gates = state.get("gate_results")
-    if isinstance(gates, (list, tuple)) and any(
-        isinstance(gate, GateResult)
-        and not gate.passed
-        and (
-            _gate_has_typed_shared_measurement_failure(gate)
-            or _gate_is_replay_execution_infrastructure_failure(gate)
-        )
-        for gate in gates
-    ):
-        return False
-
-    replay_result = state.get("replay_result")
-    if isinstance(replay_result, CandidateReplayResult):
-        members = replay_result.member_results
-        if members is None:
-            if replay_result.candidate.executed:
-                return True
-        elif any(member.candidate.executed for member in members):
-            return True
-    if any(
-        state.get(key) is not None
-        for key in ("candidate_summary", "held_out_summary")
-    ):
-        return True
-    if isinstance(gates, (list, tuple)):
-        for gate in gates:
-            if (
-                isinstance(gate, GateResult)
-                and not gate.passed
-                and isinstance(gate.details, Mapping)
-                and (
-                    gate.details.get("failure_owner")
-                    == FailureOwner.CANDIDATE.value
-                    or gate.details.get("failure_class") == "candidate"
-                )
-            ):
-                return True
-    return state.get("status") == "accepted"
-
-
-def _candidate_validation_stopped_by_shared_infrastructure(
-    report: Mapping[str, object] | None,
-) -> bool:
-    if not isinstance(report, Mapping):
-        return False
-    return any(
-        isinstance(stage_report, Mapping)
-        and (
-            stage_report.get("stopped_by_shared_infrastructure") is True
-            or stage_report.get("stopped_by_shared_measurement") is True
-            or stage_report.get("stopped_by_shared_validation") is True
-        )
-        for stage_report in (report.get("conformance"), report.get("screening"))
-    )
-
-
-def _candidate_validation_shared_failure_gate(
-    report: Mapping[str, object] | None,
-) -> GateResult:
-    """Preserve the typed shared blocker instead of emitting no-candidate."""
-
-    if isinstance(report, Mapping):
-        for stage_name, gate_name in (
-            ("conformance", "candidate_repair_conformance"),
-            ("screening", "candidate_replay"),
-        ):
-            stage_report = report.get(stage_name)
-            attempts = (
-                stage_report.get("attempts")
-                if isinstance(stage_report, Mapping)
-                else None
-            )
-            if not isinstance(attempts, list):
-                continue
-            for attempt in attempts:
-                if not isinstance(attempt, Mapping):
-                    continue
-                details = attempt.get("details")
-                gate = GateResult(
-                    gate_name=(
-                        str(attempt.get("gate_name"))
-                        if isinstance(attempt.get("gate_name"), str)
-                        and attempt.get("gate_name")
-                        else gate_name
-                    ),
-                    passed=False,
-                    reason=str(
-                        attempt.get("reason")
-                        or "candidate validation was blocked by a shared framework failure"
-                    ),
-                    details=(
-                        dict(details) if isinstance(details, Mapping) else None
-                    ),
-                )
-                if (
-                    _gate_has_typed_shared_infrastructure_failure(gate)
-                    or _gate_has_typed_shared_measurement_failure(gate)
-                ):
-                    return gate
-
-    failure_event = ReplayFailureEvent(
-        code="candidate_validation_shared_blocked",
-        owner=FailureOwner.FRAMEWORK,
-        stage=FailureStage.ADAPTATION,
-        scope=FailureScope.SHARED_RUN,
-        repairable=False,
-        category="candidate_validation",
-        summary="candidate validation stopped on a shared framework blocker",
-    )
-    payload = failure_event.to_dict()
-    return GateResult(
-        gate_name="candidate_validation",
-        passed=False,
-        reason="candidate validation stopped on a shared framework blocker",
-        details={
-            "failure_class": "framework",
-            "failure_owner": "framework",
-            "failure_scope": "shared_run",
-            "repairable": False,
-            "code": failure_event.code,
-            "failure_event": payload,
-            "causal_failure_events": [payload],
-        },
-    )
-
-
-def _candidate_repair_conformance_contracts(
-    optimizer_result: OptimizerResult,
-) -> dict[str, RepairConformanceContract]:
-    """Read exact contracts only from the optimizer's ephemeral channel."""
-
-    candidate_ids = {candidate.candidate_id for candidate in optimizer_result.candidates}
-    return {
-        candidate_id: contract
-        for candidate_id, contract in optimizer_result.private_context.items()
-        if candidate_id in candidate_ids
-        and isinstance(contract, RepairConformanceContract)
-        and contract.focus_candidate_id
-        and contract.required_branch_paths
-    }
 
 
 def _failed_probe_typed_feedback(
@@ -12538,9 +9470,7 @@ def _failed_probe_typed_feedback(
                 counterexample_contracts[counterexample_id] = value
                 projected_counterexamples.append(value)
             if projected_counterexamples:
-                diagnostic["counterexample_contracts"] = (
-                    projected_counterexamples
-                )
+                diagnostic["counterexample_contracts"] = projected_counterexamples
         raw_runtime_constraints = result.get("runtime_response_constraints")
         if isinstance(raw_runtime_constraints, (list, tuple)):
             projected_runtime_constraints: list[dict[str, object]] = []
@@ -12583,9 +9513,7 @@ def _failed_probe_typed_feedback(
                 runtime_artifact_constraints[identity] = value
                 projected_runtime_artifacts.append(value)
             if projected_runtime_artifacts:
-                diagnostic["runtime_artifact_constraints"] = (
-                    projected_runtime_artifacts
-                )
+                diagnostic["runtime_artifact_constraints"] = projected_runtime_artifacts
         diagnostics.append(diagnostic)
     feedback: dict[str, object] = {"diagnostics": diagnostics[:32]}
     if constraints:
@@ -12599,8 +9527,7 @@ def _failed_probe_typed_feedback(
         )
     if counterexample_contracts:
         feedback["counterexample_contracts"] = [
-            counterexample_contracts[key]
-            for key in sorted(counterexample_contracts)
+            counterexample_contracts[key] for key in sorted(counterexample_contracts)
         ]
     if runtime_response_constraints:
         feedback["runtime_response_constraints"] = [
@@ -12613,9 +9540,7 @@ def _failed_probe_typed_feedback(
             for key in sorted(runtime_artifact_constraints)
         ]
     if runtime_response_observations:
-        feedback["runtime_response_observations"] = (
-            runtime_response_observations[:32]
-        )
+        feedback["runtime_response_observations"] = runtime_response_observations[:32]
     return feedback
 
 
@@ -12701,9 +9626,7 @@ def _repair_conformance_failure_diagnostics(
                     handle.seek(0, 2)
                     size = handle.tell()
                     handle.seek(max(0, size - 4_096))
-                    tail = handle.read(4_096).decode(
-                        "utf-8", errors="replace"
-                    )
+                    tail = handle.read(4_096).decode("utf-8", errors="replace")
             except OSError:
                 continue
             bounded_tail = sanitize_text(tail, max_chars=4_000).strip()
@@ -12720,65 +9643,6 @@ def _repair_conformance_failure_diagnostics(
     if trace_excerpts:
         diagnostics["replay_service_protocol_traces"] = trace_excerpts
     return diagnostics
-
-
-def _candidate_screening_repair_feedback(
-    candidates: Iterable[CandidateVariant],
-    report: Mapping[str, object] | None,
-) -> tuple[EvaluationSummary, ...]:
-    failures = _candidate_screening_repair_failures(candidates, report)
-    feedback: list[EvaluationSummary] = []
-    for candidate, gate in failures:
-        feedback.extend(
-            _iteration_validation_feedback(
-                candidate=candidate,
-                baseline_summary=None,
-                candidate_summary=None,
-                held_out_summary=None,
-                failed_gates=[gate],
-            )
-        )
-    return tuple(feedback)
-
-
-def _candidate_screening_repair_failures(
-    candidates: Iterable[CandidateVariant],
-    report: Mapping[str, object] | None,
-) -> tuple[tuple[CandidateVariant, GateResult], ...]:
-    if not isinstance(report, Mapping):
-        return ()
-    attempts = report.get("attempts")
-    if not isinstance(attempts, list):
-        return ()
-    candidates_by_id = {
-        candidate.candidate_id: candidate for candidate in candidates
-    }
-    failures: list[tuple[CandidateVariant, GateResult]] = []
-    for attempt in attempts:
-        if not isinstance(attempt, Mapping):
-            continue
-        if not _screening_attempt_requires_candidate_repair(attempt):
-            continue
-        candidate_id = attempt.get("candidate_id")
-        candidate = candidates_by_id.get(str(candidate_id))
-        if candidate is None:
-            continue
-        details = attempt.get("details")
-        gate = GateResult(
-            gate_name=(
-                "candidate_repair_conformance"
-                if attempt.get("stage") == "conformance"
-                else "candidate_replay"
-            ),
-            passed=False,
-            reason=str(
-                attempt.get("reason")
-                or "screening replay requires candidate capability repair"
-            ),
-            details=(dict(details) if isinstance(details, Mapping) else None),
-        )
-        failures.append((candidate, gate))
-    return tuple(failures)
 
 
 def _replay_adaptation_details(
@@ -12860,9 +9724,7 @@ def _environment_fingerprint_drift_gate(
     return GateResult(
         gate_name="replay_environment_health",
         passed=False,
-        reason=(
-            "replay environment fingerprint changed during the active run"
-        ),
+        reason=("replay environment fingerprint changed during the active run"),
         details={
             "failure_class": FailureOwner.INFRASTRUCTURE.value,
             "failure_owner": FailureOwner.INFRASTRUCTURE.value,
@@ -12918,7 +9780,8 @@ def _replay_confidence_gate(
     )
     invalid_control = any(
         event.owner is FailureOwner.FRAMEWORK
-        and event.code in {
+        and event.code
+        in {
             "authoritative_replay_invalid_control",
             "trusted_measurement_invalid_control_frontier",
         }
@@ -13034,9 +9897,7 @@ def _replay_confidence_gate(
         candidate_variants = tuple(
             member.candidate for member in normalized.members
         ) or (replay_result.candidate,)
-        system_failures = _system_owned_repetition_failures(
-            *candidate_variants
-        )
+        system_failures = _system_owned_repetition_failures(*candidate_variants)
         if system_failures:
             failure_owner = (
                 FailureOwner.INFRASTRUCTURE
@@ -13076,9 +9937,7 @@ def _replay_confidence_gate(
                     "failure_class": failure_owner.value,
                     "failure_owner": failure_owner.value,
                     "failure_scope": failure_scope.value,
-                    "repairable": any(
-                        event.repairable for event in system_failures
-                    ),
+                    "repairable": any(event.repairable for event in system_failures),
                     "failure_event": event_payloads[0],
                     "causal_failure_events": event_payloads,
                 },
@@ -13090,7 +9949,9 @@ def _replay_confidence_gate(
             details={
                 **base_details,
                 "candidate_repetition_count": int(candidate_repetitions),
-                "candidate_successful_repetition_count": int(candidate_successful_repetitions),
+                "candidate_successful_repetition_count": int(
+                    candidate_successful_repetitions
+                ),
                 "candidate_failed_repetition_count": (
                     int(candidate_failed_repetitions)
                     if isinstance(candidate_failed_repetitions, (int, float))
@@ -13144,273 +10005,10 @@ def _replay_stability_gate(
     )
 
 
-def _iteration_validation_feedback(
-    *,
-    candidate: CandidateVariant,
-    baseline_summary: EvaluationSummary | None,
-    candidate_summary: EvaluationSummary | None,
-    held_out_summary: EvaluationSummary | None,
-    failed_gates: list[GateResult],
-) -> tuple[EvaluationSummary, ...]:
-    if any(
-        _gate_has_typed_shared_measurement_failure(gate)
-        for gate in failed_gates
-    ):
-        # An invalid shared experiment has no candidate label.  Preserve the
-        # gate in the run report, but never turn it into optimizer feedback or
-        # lesson memory.
-        return ()
-    feedback: list[EvaluationSummary] = []
-    typed_gate_metrics = _typed_gate_feedback_metrics(failed_gates)
-    typed_candidate_status = next(
-        (
-            str(gate.details["candidate_status"])
-            for gate in failed_gates
-            if isinstance(gate.details, Mapping)
-            and isinstance(gate.details.get("candidate_status"), str)
-        ),
-        None,
-    )
-    if typed_candidate_status is not None:
-        typed_gate_metrics["candidate_status"] = typed_candidate_status
-    repair_candidate_package = _repair_candidate_package_feedback(
-        candidate,
-        failed_gates=failed_gates,
-    )
-    if repair_candidate_package is not None:
-        typed_gate_metrics["repair_candidate_package"] = repair_candidate_package
-        # This helper is called only from the full candidate evaluation path.
-        # Mark its repair frontier explicitly so bounded representative screening
-        # or historical task-rollout feedback cannot outrank a later failure
-        # discovered across the authoritative dataset.
-        typed_gate_metrics["authoritative_replay_failure"] = (
-            typed_candidate_status != "prerequisite"
-        )
-    comparison_metrics = _baseline_comparison_feedback_metrics(
-        baseline_summary=baseline_summary,
-        candidate_summary=candidate_summary,
-    )
-    if candidate_summary is not None:
-        feedback.append(
-            EvaluationSummary(
-                variant_id=candidate_summary.variant_id,
-                metrics={
-                    **dict(candidate_summary.metrics),
-                    **comparison_metrics,
-                    **typed_gate_metrics,
-                    "failed_gates": [gate.gate_name for gate in failed_gates],
-                },
-                dataset_split=candidate_summary.dataset_split,
-            )
-        )
-    if held_out_summary is not None:
-        feedback.append(
-            EvaluationSummary(
-                variant_id=held_out_summary.variant_id,
-                metrics={
-                    **dict(held_out_summary.metrics),
-                    **typed_gate_metrics,
-                    "failed_gates": [gate.gate_name for gate in failed_gates],
-                },
-                dataset_split=held_out_summary.dataset_split,
-            )
-        )
-    if feedback:
-        return tuple(feedback)
-    return (
-        EvaluationSummary(
-            variant_id=candidate.candidate_id,
-            metrics={
-                **comparison_metrics,
-                **typed_gate_metrics,
-                "failed_gates": [gate.gate_name for gate in failed_gates],
-                "candidate_status": (
-                    typed_candidate_status
-                    or ("rejected" if failed_gates else "accepted")
-                ),
-            },
-            dataset_split="validation",
-        ),
-    )
-
-
-
-
 _MAX_REPAIR_CANDIDATE_PACKAGE_CHARS = 64_000
 _MAX_REPAIR_CANDIDATE_FILE_CHARS = 32_000
 _MAX_MIXED_REPAIR_TARGET_CHARS = 32_000
 _MAX_HISTORICAL_REPAIR_CANDIDATES = 8
-
-
-def _bounded_repair_candidate_target_content(
-    content: str,
-    *,
-    has_files: bool,
-) -> str:
-    """Keep the judge-scored target delta intact whenever it fits the budget."""
-
-    limit = (
-        _MAX_MIXED_REPAIR_TARGET_CHARS
-        if has_files
-        else _MAX_REPAIR_CANDIDATE_PACKAGE_CHARS
-    )
-    return sanitize_source_text(content, max_chars=limit)
-
-
-def _repair_candidate_package_feedback(
-    candidate: CandidateVariant,
-    *,
-    failed_gates: Iterable[GateResult],
-) -> dict[str, object] | None:
-    failed_gate_items = tuple(gate for gate in failed_gates if not gate.passed)
-    if not any(
-        _gate_has_candidate_owned_repair(gate)
-        for gate in failed_gate_items
-    ):
-        return None
-    target_content = _bounded_repair_candidate_target_content(
-        candidate.content,
-        has_files=bool(candidate.files),
-    )
-    remaining_chars = _MAX_REPAIR_CANDIDATE_PACKAGE_CHARS
-    remaining_chars -= len(target_content)
-    files: list[dict[str, object]] = []
-    for item in candidate.files[:8]:
-        file_payload: dict[str, object] = {
-            "path": sanitize_text(item.path, max_chars=240),
-            "operation": sanitize_text(item.operation, max_chars=40),
-            "executable": item.executable,
-        }
-        if item.content is not None and remaining_chars > 0:
-            content_limit = min(
-                remaining_chars,
-                _MAX_REPAIR_CANDIDATE_FILE_CHARS,
-            )
-            content = sanitize_source_text(
-                item.content,
-                max_chars=content_limit,
-                preserve_format=True,
-            )
-            file_payload["content"] = content
-            remaining_chars -= len(content)
-        files.append(file_payload)
-    return {
-        "candidate_id": sanitize_text(candidate.candidate_id, max_chars=160),
-        "rationale": sanitize_text(candidate.rationale, max_chars=1_000),
-        "content": target_content,
-        "files": files,
-    }
-
-
-def _canonicalize_verified_prerequisite_files(
-    candidate: CandidateVariant,
-    feedback_items: Iterable[EvaluationSummary],
-) -> tuple[CandidateVariant, GateResult | None, int]:
-    """Freeze a verified support surface while composing target behavior.
-
-    Formatting-only transport differences are restored to the exact verified
-    package so replay evidence remains reusable. Material support changes are
-    rejected unless a later typed failure opens a non-prerequisite repair
-    frontier for those files.
-    """
-
-    expected_files = _verified_prerequisite_files(candidate, feedback_items)
-    if expected_files is None:
-        return candidate, None, 0
-    actual_files = validate_candidate_files(candidate.files)
-    expected_by_path = {item.path: item for item in expected_files}
-    actual_by_path = {item.path: item for item in actual_files}
-    changed_paths = sorted(set(expected_by_path) ^ set(actual_by_path))
-    for path in sorted(set(expected_by_path) & set(actual_by_path)):
-        if candidate_file_semantic_fingerprint(
-            expected_by_path[path]
-        ) != candidate_file_semantic_fingerprint(actual_by_path[path]):
-            changed_paths.append(path)
-    if changed_paths:
-        event = ReplayFailureEvent(
-            code="verified_prerequisite_support_mutation",
-            owner=FailureOwner.CANDIDATE,
-            stage=FailureStage.CANDIDATE_GENERATION,
-            scope=FailureScope.CANDIDATE,
-            repairable=True,
-            category="candidate_composition",
-            summary=(
-                "target-behavior composition changed a verified support surface"
-            ),
-            diagnostics={
-                "changed_file_count": len(changed_paths),
-                "changed_paths": changed_paths[:16],
-            },
-        )
-        return (
-            candidate,
-            GateResult(
-                gate_name="verified_prerequisite_fidelity",
-                passed=False,
-                reason=(
-                    "target-behavior composition must preserve verified "
-                    "candidate-owned support files"
-                ),
-                details={
-                    "failure_class": "candidate",
-                    "failure_owner": FailureOwner.CANDIDATE.value,
-                    "failure_scope": FailureScope.CANDIDATE.value,
-                    "repairable": True,
-                    "code": event.code,
-                    "changed_paths": changed_paths[:16],
-                    "failure_event": event.to_dict(),
-                    "causal_failure_events": [event.to_dict()],
-                },
-            ),
-            0,
-        )
-    canonicalized_count = sum(
-        expected_by_path[path] != actual_by_path[path]
-        for path in expected_by_path
-    )
-    if not canonicalized_count and actual_files == expected_files:
-        return candidate, None, 0
-    return replace(candidate, files=expected_files), None, canonicalized_count
-
-
-def _verified_prerequisite_files(
-    candidate: CandidateVariant,
-    feedback_items: Iterable[EvaluationSummary],
-) -> tuple[CandidateFileDelta, ...] | None:
-    parent_ids = set(candidate.parent_candidate_ids)
-    if not parent_ids:
-        return None
-    for feedback in reversed(tuple(feedback_items)):
-        metrics = feedback.metrics
-        if metrics.get("candidate_status") != "prerequisite":
-            continue
-        package = metrics.get("repair_candidate_package")
-        if not isinstance(package, Mapping):
-            continue
-        candidate_id = package.get("candidate_id")
-        if not isinstance(candidate_id, str) or candidate_id not in parent_ids:
-            continue
-        raw_files = package.get("files")
-        if not isinstance(raw_files, list):
-            continue
-        try:
-            return validate_candidate_files(
-                CandidateFileDelta(
-                    path=str(item.get("path") or ""),
-                    operation=str(item.get("operation") or "upsert"),
-                    content=(
-                        item.get("content")
-                        if isinstance(item.get("content"), str)
-                        else None
-                    ),
-                    executable=item.get("executable") is True,
-                )
-                for item in raw_files
-                if isinstance(item, Mapping)
-            )
-        except ValueError:
-            return None
-    return None
 
 
 def _finite_measurement_metric(value: object) -> float | None:
@@ -13477,7 +10075,12 @@ def _trajectory_set_report(dataset: SelfEvolveDataset) -> dict[str, object] | No
             role = member.get("role")
             if isinstance(role, str) and role:
                 member_roles[role] = member_roles.get(role, 0) + 1
-    if not has_trajectory_set_source and not prior_case_ids and not set_ids and not auto_grouping:
+    if (
+        not has_trajectory_set_source
+        and not prior_case_ids
+        and not set_ids
+        and not auto_grouping
+    ):
         return None
     report: dict[str, object] = {
         "source_kind": source.get("kind"),
@@ -13515,7 +10118,9 @@ def _population_report(
     ]
     report: dict[str, object] = {
         "generated_candidate_count": len(all_candidates),
-        "generated_candidate_ids": [candidate.candidate_id for candidate in all_candidates],
+        "generated_candidate_ids": [
+            candidate.candidate_id for candidate in all_candidates
+        ],
         "replayed_candidate_count": len(replayed_candidate_ids),
         "replayed_candidate_ids": replayed_candidate_ids,
         "replay_candidate_limit": replay_candidate_limit,
@@ -13562,16 +10167,12 @@ def _population_report(
             report["screening"] = latest_validation
         if len(screening_reports) > 1:
             conformance_iterations = [
-                _candidate_validation_report_for_persistence(
-                    item["conformance"]
-                )
+                _candidate_validation_report_for_persistence(item["conformance"])
                 for item in screening_reports
                 if isinstance(item.get("conformance"), Mapping)
             ]
             task_screening_iterations = [
-                _candidate_validation_report_for_persistence(
-                    item["screening"]
-                )
+                _candidate_validation_report_for_persistence(item["screening"])
                 for item in screening_reports
                 if isinstance(item.get("screening"), Mapping)
             ]
@@ -13609,21 +10210,16 @@ def _population_report(
             for axis, count in raw_counts.items():
                 if not isinstance(axis, str):
                     continue
-                termination_axis_counts[axis] = (
-                    termination_axis_counts.get(axis, 0)
-                    + _non_negative_int(count)
-                )
+                termination_axis_counts[axis] = termination_axis_counts.get(
+                    axis, 0
+                ) + _non_negative_int(count)
         report["screening_execution"] = {
             "physical_pair_execution_count": sum(
-                _non_negative_int(
-                    screening.get("physical_pair_execution_count")
-                )
+                _non_negative_int(screening.get("physical_pair_execution_count"))
                 for screening in screening_stage_reports
             ),
             "wall_seconds": sum(
-                _non_negative_screening_float(
-                    screening.get("screening_wall_seconds")
-                )
+                _non_negative_screening_float(screening.get("screening_wall_seconds"))
                 for screening in screening_stage_reports
             ),
             "right_censored_batch_count": sum(
@@ -13696,9 +10292,7 @@ def _population_report(
                 "terminal_attempt_count": aggregate.terminal_attempt_count,
                 "replayed_candidate_count": aggregate.paired_replay_started_count,
                 "replayed_candidate_ids": replayed_candidate_ids,
-                "paired_replay_started_count": (
-                    aggregate.paired_replay_started_count
-                ),
+                "paired_replay_started_count": (aggregate.paired_replay_started_count),
                 "paired_replay_completed_count": (
                     aggregate.paired_replay_completed_count
                 ),
@@ -13707,8 +10301,7 @@ def _population_report(
                 ),
                 "non_replayed_candidate_count": max(
                     0,
-                    aggregate.unique_candidate_count
-                    - len(set(replayed_candidate_ids)),
+                    aggregate.unique_candidate_count - len(set(replayed_candidate_ids)),
                 ),
             }
         )
@@ -13763,14 +10356,17 @@ def _screening_observation_scope_fingerprint(
         "baseline_skill_fingerprint": target.fingerprint_current_content(),
         "harness_fingerprint": _screening_control_harness_fingerprint(),
     }
-    return "sha256:" + hashlib.sha256(
-        json.dumps(
-            payload,
-            ensure_ascii=True,
-            separators=(",", ":"),
-            sort_keys=True,
-        ).encode("utf-8")
-    ).hexdigest()
+    return (
+        "sha256:"
+        + hashlib.sha256(
+            json.dumps(
+                payload,
+                ensure_ascii=True,
+                separators=(",", ":"),
+                sort_keys=True,
+            ).encode("utf-8")
+        ).hexdigest()
+    )
 
 
 def _restore_campaign_screening_case_observations(
@@ -13815,9 +10411,7 @@ def _restore_campaign_screening_case_observations(
                     "passed_count",
                     "authoritative_failure_count",
                 ):
-                    count = _non_negative_int(
-                        raw_observation.get(field_name)
-                    )
+                    count = _non_negative_int(raw_observation.get(field_name))
                     if count <= 0:
                         continue
                     current[field_name] = (
@@ -13827,15 +10421,9 @@ def _restore_campaign_screening_case_observations(
                     observations.pop(case_id, None)
         population = report.get("population")
         screening = (
-            population.get("screening")
-            if isinstance(population, Mapping)
-            else None
+            population.get("screening") if isinstance(population, Mapping) else None
         )
-        attempts = (
-            screening.get("attempts")
-            if isinstance(screening, Mapping)
-            else None
-        )
+        attempts = screening.get("attempts") if isinstance(screening, Mapping) else None
         if isinstance(attempts, (list, tuple)):
             for attempt in attempts:
                 if not isinstance(attempt, Mapping):
@@ -13864,14 +10452,10 @@ def _restore_campaign_screening_case_observations(
                     )
                     if not case_ids:
                         continue
-                    raw_identities = control_attempt.get(
-                        "control_identities"
-                    )
+                    raw_identities = control_attempt.get("control_identities")
                     identities = (
                         tuple(
-                            item
-                            for item in raw_identities
-                            if isinstance(item, Mapping)
+                            item for item in raw_identities if isinstance(item, Mapping)
                         )
                         if isinstance(raw_identities, (list, tuple))
                         else (
@@ -13889,9 +10473,7 @@ def _restore_campaign_screening_case_observations(
                                 control_observations,
                                 identity=identity,
                                 attempt={
-                                    "passed": (
-                                        control_attempt.get("passed") is True
-                                    ),
+                                    "passed": (control_attempt.get("passed") is True),
                                     "wall_seconds": (
                                         _non_negative_screening_float(
                                             control_attempt.get("wall_seconds")
@@ -13919,16 +10501,12 @@ def _restore_campaign_screening_case_observations(
                         current["attempt_count"] = (
                             _non_negative_int(current.get("attempt_count")) + 1
                         )
-                        current["invalid_control_count"] = (
-                            _non_negative_int(
-                                current.get("invalid_control_count")
-                            )
-                            + int(control_attempt.get("invalid_control") is True)
-                        )
-                        current["passed_count"] = (
-                            _non_negative_int(current.get("passed_count"))
-                            + int(control_attempt.get("passed") is True)
-                        )
+                        current["invalid_control_count"] = _non_negative_int(
+                            current.get("invalid_control_count")
+                        ) + int(control_attempt.get("invalid_control") is True)
+                        current["passed_count"] = _non_negative_int(
+                            current.get("passed_count")
+                        ) + int(control_attempt.get("passed") is True)
                         wall_seconds = _non_negative_screening_float(
                             control_attempt.get("wall_seconds")
                         ) / max(1, len(case_ids))
@@ -13982,24 +10560,19 @@ def _restore_historical_screening_lifecycle_observations(
             harness_fingerprint,
         ):
             continue
-        restored_authoritative = (
-            _restore_authoritative_member_lifecycle_observations(
-                observations,
-                control_observations=control_observations,
-                run_dir=run_dir,
-                eligible_case_ids=eligible_case_ids,
-            )
+        restored_authoritative = _restore_authoritative_member_lifecycle_observations(
+            observations,
+            control_observations=control_observations,
+            run_dir=run_dir,
+            eligible_case_ids=eligible_case_ids,
         )
         if control_observations is not None:
             health = report.get("support_specific_control_health")
             raw_health_observations = (
-                health.get("observations")
-                if isinstance(health, Mapping)
-                else None
+                health.get("observations") if isinstance(health, Mapping) else None
             )
-            if (
-                not restored_authoritative
-                and isinstance(raw_health_observations, (list, tuple))
+            if not restored_authoritative and isinstance(
+                raw_health_observations, (list, tuple)
             ):
                 for raw_observation in raw_health_observations[:128]:
                     if not isinstance(raw_observation, Mapping):
@@ -14019,10 +10592,7 @@ def _restore_historical_screening_lifecycle_observations(
         if not screening_root.is_dir() or screening_root.is_symlink():
             continue
         for case_dir in screening_root.iterdir():
-            if (
-                not case_dir.is_dir()
-                or case_dir.is_symlink()
-            ):
+            if not case_dir.is_dir() or case_dir.is_symlink():
                 continue
             replay_root = case_dir / "replay"
             if not replay_root.is_dir() or replay_root.is_symlink():
@@ -14066,16 +10636,12 @@ def _restore_historical_screening_lifecycle_observations(
                 )
                 if control_observations is not None:
                     identity = (
-                        _control_qualification_identity_from_request(
-                            stored_request
-                        )
+                        _control_qualification_identity_from_request(stored_request)
                         if stored_request is not None
                         else None
                     )
                     if identity is not None:
-                        fingerprint = identity.get(
-                            "control_identity_fingerprint"
-                        )
+                        fingerprint = identity.get("control_identity_fingerprint")
                         if fingerprint not in control_observations:
                             _merge_support_specific_lifecycle_observation(
                                 control_observations,
@@ -14174,17 +10740,16 @@ def _merge_screening_variant_lifecycle_observation(
     timeout_key = f"{phase}_timeout_count"
     wall_key = f"{phase}_total_wall_seconds"
     observation[attempt_key] = _non_negative_int(observation.get(attempt_key)) + 1
-    observation[success_key] = (
-        _non_negative_int(observation.get(success_key))
-        + int(status == ReplayExecutionStatus.SUCCEEDED.value)
+    observation[success_key] = _non_negative_int(observation.get(success_key)) + int(
+        status == ReplayExecutionStatus.SUCCEEDED.value
     )
     failure = lifecycle.get("failure")
     phase_timeout = bool(
         isinstance(failure, Mapping)
         and failure.get("code") == "replay_member_phase_timeout"
     )
-    observation[timeout_key] = (
-        _non_negative_int(observation.get(timeout_key)) + int(phase_timeout)
+    observation[timeout_key] = _non_negative_int(observation.get(timeout_key)) + int(
+        phase_timeout
     )
     metrics_path = variant_dir / "aggregate_metrics.json"
     try:
@@ -14339,18 +10904,14 @@ def _screening_control_preflight(
         "unknown_case_ids": unknown,
         "candidate_generation_allowed": generation_allowed,
         "advisory_only": generation_allowed,
-        "advisory_role": (
-            "candidate_control_ordering" if generation_allowed else None
-        ),
+        "advisory_role": ("candidate_control_ordering" if generation_allowed else None),
         "failure_class": None if generation_allowed else "framework",
         "failure_owner": None if generation_allowed else "framework",
         "failure_scope": None if generation_allowed else "shared_run",
         "repairable": not generation_allowed,
         "code": None if generation_allowed else "baseline_controls_infeasible",
         "next_action": (
-            None
-            if generation_allowed
-            else "repair_or_build_shared_replay_harness"
+            None if generation_allowed else "repair_or_build_shared_replay_harness"
         ),
         "support_specific_qualification_required": True,
         "source": "same_harness_historical_baseline_lifecycle",
@@ -14366,219 +10927,6 @@ def _screening_control_preflight(
     }
 
 
-def _record_authoritative_replay_observations(
-    observations: dict[str, dict[str, float | int]],
-    *,
-    dataset: SelfEvolveDataset,
-    replay_result: CandidateReplayResult,
-    run_observations: dict[str, dict[str, int]] | None = None,
-    control_observations: dict[str, dict[str, object]] | None = None,
-) -> None:
-    """Prioritize bounded counterexample cases in later screening panels."""
-
-    normalized = normalize_replay_members(
-        dataset=dataset,
-        replay_result=replay_result,
-    )
-    for member in normalized.members:
-        if not member.baseline.executed:
-            continue
-        invalid_control = _baseline_invalid_for_measurement(member.baseline)
-        comparable_pair = _replay_member_pair_is_comparable(
-            member.case,
-            member.baseline,
-            member.candidate,
-        )
-        candidate_failure = bool(
-            member.candidate.status is ReplayExecutionStatus.FAILED
-            and _repairable_capability_failure(member.candidate.failure)
-        )
-        if control_observations is not None:
-            control_identity = _control_qualification_identity_from_request(
-                member.request
-            )
-            if control_identity is not None:
-                _record_support_specific_control_observation(
-                    control_observations,
-                    identity=control_identity,
-                    attempt={
-                        "passed": comparable_pair,
-                        "wall_seconds": (
-                            _non_negative_screening_float(
-                                member.baseline.metrics.get("latency_ms")
-                            )
-                            / 1000.0
-                        ),
-                        "details": {
-                            "baseline_status": member.baseline.status.value,
-                            "candidate_status": member.candidate.status.value,
-                            "baseline_failure": (
-                                member.baseline.failure.compatibility_dict()
-                                if isinstance(
-                                    member.baseline.failure,
-                                    ReplayFailureEvent,
-                                )
-                                else member.baseline.failure
-                            ),
-                            "candidate_failure": (
-                                member.candidate.failure.compatibility_dict()
-                                if isinstance(
-                                    member.candidate.failure,
-                                    ReplayFailureEvent,
-                                )
-                                else member.candidate.failure
-                            ),
-                        },
-                    },
-                )
-        for destination in (
-            observations,
-            *((run_observations,) if run_observations is not None else ()),
-        ):
-            current = destination.setdefault(member.case_id, {})
-            current["attempt_count"] = (
-                _non_negative_int(current.get("attempt_count")) + 1
-            )
-            if invalid_control or "invalid_control_count" in current:
-                current["invalid_control_count"] = (
-                    _non_negative_int(current.get("invalid_control_count"))
-                    + int(invalid_control)
-                )
-            if comparable_pair or "passed_count" in current:
-                current["passed_count"] = (
-                    _non_negative_int(current.get("passed_count"))
-                    + int(comparable_pair)
-                )
-            if candidate_failure or "authoritative_failure_count" in current:
-                current["authoritative_failure_count"] = (
-                    _non_negative_int(
-                        current.get("authoritative_failure_count")
-                    )
-                    + int(candidate_failure)
-                )
-
-
-def _candidate_strategy_records(
-    optimizer_diagnostics: list[dict[str, object]] | tuple[dict[str, object], ...],
-) -> list[dict[str, object]]:
-    records: list[dict[str, object]] = []
-    for item in optimizer_diagnostics:
-        diagnostics = item.get("diagnostics")
-        if not isinstance(diagnostics, Mapping):
-            continue
-        strategies = diagnostics.get("candidate_strategies")
-        if not isinstance(strategies, list):
-            continue
-        for strategy in strategies:
-            if isinstance(strategy, Mapping) and isinstance(strategy.get("candidate_id"), str):
-                records.append(dict(strategy))
-    return records
-
-
-def _rank_candidate_population(
-    candidates: tuple[CandidateVariant, ...],
-    *,
-    optimizer_diagnostics: Mapping[str, object],
-    current_content: str,
-) -> tuple[CandidateVariant, ...]:
-    if len(candidates) <= 1:
-        return candidates
-    strategy_by_candidate = {
-        str(record.get("candidate_id")): record
-        for record in _candidate_strategy_records(
-            ({"diagnostics": optimizer_diagnostics},)
-        )
-        if isinstance(record.get("candidate_id"), str)
-    }
-    if not strategy_by_candidate:
-        return tuple(
-            candidate
-            for _, candidate in sorted(
-                enumerate(candidates),
-                key=lambda item: (
-                    _candidate_mutation_rank(
-                        item[1],
-                        current_content=current_content,
-                    ),
-                    item[0],
-                ),
-            )
-        )
-    return tuple(
-        sorted(
-            candidates,
-            key=lambda candidate: _candidate_population_rank_key(
-                candidate,
-                strategy=strategy_by_candidate.get(candidate.candidate_id) or {},
-                current_content=current_content,
-            ),
-        )
-    )
-
-
-def _candidate_population_rank_key(
-    candidate: CandidateVariant,
-    *,
-    strategy: Mapping[str, object],
-    current_content: str,
-) -> tuple[int, int, int, int, int, int, str]:
-    mutation_rank = _candidate_mutation_rank(
-        candidate,
-        current_content=current_content,
-    )
-    priority_rank = {"high": 0, "medium": 1, "low": 2}.get(
-        str(strategy.get("replay_priority") or "low"),
-        2,
-    )
-    policy_assessment = strategy.get("policy_assessment")
-    policy_risk_rank = (
-        1
-        if isinstance(policy_assessment, Mapping)
-        and policy_assessment.get("enforcement") == "heuristic"
-        else 0
-    )
-    addressed_count = _sequence_length(strategy.get("addressed_lessons"))
-    preserve_count = _sequence_length(strategy.get("preserved_success_behaviors"))
-    char_growth = max(0, len(candidate.content) - len(current_content))
-    line_growth = max(
-        0,
-        len(candidate.content.splitlines()) - len(current_content.splitlines()),
-    )
-    # Prefer candidates that explicitly address lessons and preserve successful
-    # behavior, then keep replay cost bounded by favoring smaller deltas.
-    return (
-        policy_risk_rank,
-        mutation_rank,
-        priority_rank,
-        -addressed_count,
-        -preserve_count,
-        char_growth + (line_growth * 80),
-        candidate.candidate_id,
-    )
-
-
-def _candidate_mutation_rank(
-    candidate: CandidateVariant,
-    *,
-    current_content: str,
-) -> int:
-    mutation = classify_candidate_mutation(
-        candidate,
-        current_content=current_content,
-    )
-    if mutation.target_behavior_changed:
-        return 0
-    if mutation.kind is CandidateMutationKind.EVALUATION_SUPPORT:
-        return 1
-    return 2
-
-
-def _sequence_length(value: object) -> int:
-    if isinstance(value, (list, tuple)):
-        return len(value)
-    return 0
-
-
 def _no_op_report(
     gate_results: list[GateResult],
     iteration_reports: list[dict[str, object]],
@@ -14588,11 +10936,7 @@ def _no_op_report(
         None,
     )
     no_candidate_iteration = next(
-        (
-            item
-            for item in iteration_reports
-            if item.get("status") == "no_candidate"
-        ),
+        (item for item in iteration_reports if item.get("status") == "no_candidate"),
         None,
     )
     if no_candidate_gate is None and no_candidate_iteration is None:
@@ -14605,21 +10949,25 @@ def _no_op_report(
             else "optimizer did not produce a candidate"
         ),
         "iterations": [
-            item
-            for item in iteration_reports
-            if item.get("status") == "no_candidate"
+            item for item in iteration_reports if item.get("status") == "no_candidate"
         ],
     }
 
 
-def _acceptance_confidence_report(gate_results: list[GateResult]) -> dict[str, object] | None:
+def _acceptance_confidence_report(
+    gate_results: list[GateResult],
+) -> dict[str, object] | None:
     for gate in gate_results:
-        if gate.gate_name != "held_out_verification" or not isinstance(gate.details, Mapping):
+        if gate.gate_name != "held_out_verification" or not isinstance(
+            gate.details, Mapping
+        ):
             continue
         details = gate.details
         verification_mode = details.get("verification_mode")
         verification_split = details.get("verification_split")
-        if not isinstance(verification_mode, str) and isinstance(verification_split, str):
+        if not isinstance(verification_mode, str) and isinstance(
+            verification_split, str
+        ):
             verification_mode = verification_split
         if not isinstance(verification_mode, str):
             verification_mode = "unknown"
@@ -14634,38 +10982,6 @@ def _acceptance_confidence_report(gate_results: list[GateResult]) -> dict[str, o
             "passed": gate.passed,
         }
     return None
-
-
-def _baseline_comparison_feedback_metrics(
-    *,
-    baseline_summary: EvaluationSummary | None,
-    candidate_summary: EvaluationSummary | None,
-) -> dict[str, float]:
-    if baseline_summary is None or candidate_summary is None:
-        return {}
-    comparison: dict[str, float] = {}
-    for metric_key in (
-        "score",
-        "A1_groundedness",
-        "A2_completeness",
-        "A3_relevance",
-        "A4_readability",
-        "B1_tool_use",
-        "B2_efficiency",
-        "B3_compliance",
-        "B4_robustness",
-        "evidence_block_count",
-        "evidence_incomplete",
-        "latency_ms",
-    ):
-        baseline_value = _metric_number(baseline_summary.metrics, metric_key)
-        candidate_value = _metric_number(candidate_summary.metrics, metric_key)
-        if baseline_value is None or candidate_value is None:
-            continue
-        comparison[f"baseline_{metric_key}"] = baseline_value
-        comparison[f"candidate_{metric_key}"] = candidate_value
-        comparison[f"{metric_key}_delta"] = candidate_value - baseline_value
-    return comparison
 
 
 def _select_iteration_state(
@@ -14692,11 +11008,7 @@ def _iteration_candidate_score(
         if candidate_score is not None:
             score = candidate_score
     gate_results = state.get("gate_results")
-    gates = (
-        tuple(gate_results)
-        if isinstance(gate_results, (list, tuple))
-        else ()
-    )
+    gates = tuple(gate_results) if isinstance(gate_results, (list, tuple)) else ()
     failed_count = sum(
         1 for gate in gates if isinstance(gate, GateResult) and not gate.passed
     )
@@ -14708,26 +11020,19 @@ def _iteration_candidate_score(
         for gate in gates
         if isinstance(gate, GateResult) and not gate.passed
     }
-    gate_names = {
-        gate.gate_name for gate in gates if isinstance(gate, GateResult)
-    }
-    substantive_evaluation = failed_gate_names != {
-        "duplicate_rejected_candidate"
-    }
+    gate_names = {gate.gate_name for gate in gates if isinstance(gate, GateResult)}
+    substantive_evaluation = failed_gate_names != {"duplicate_rejected_candidate"}
     reached_evaluation = isinstance(summary, EvaluationSummary)
     reached_replay = (
         state.get("replay_result") is not None
         or bool(gate_names & {"candidate_replay", "replay_confidence"})
         or reached_evaluation
     )
-    adaptation_compiled = (
-        reached_replay
-        or any(
-            isinstance(gate, GateResult)
-            and gate.gate_name == "replay_adaptation"
-            and gate.passed
-            for gate in gates
-        )
+    adaptation_compiled = reached_replay or any(
+        isinstance(gate, GateResult)
+        and gate.gate_name == "replay_adaptation"
+        and gate.passed
+        for gate in gates
     )
     progress_rank = (
         3
@@ -14802,275 +11107,3 @@ def _candidate_generation_limit(
     replay_candidate_limit: int,
 ) -> int:
     return max(1, replay_candidate_limit)
-
-
-def _known_duplicate_candidate_count(
-    candidates: tuple[CandidateVariant, ...],
-    *,
-    rejected_candidate_ids: set[str],
-    accepted_candidate_ids: set[str],
-) -> int:
-    return sum(
-        1
-        for candidate in candidates
-        if candidate.candidate_id in rejected_candidate_ids
-        or candidate.candidate_id in accepted_candidate_ids
-    )
-
-
-def _verification_contract_fingerprint(
-    *,
-    target_fingerprint: str,
-    replay_preflight_fingerprint: str,
-    apply_policy: str,
-    verification_settings: Mapping[str, object],
-    repair_contract: RepairConformanceContract | None,
-) -> str:
-    payload = {
-        "schema_version": _VERIFICATION_CONTRACT_VERSION,
-        "recovery_trace_schema_version": RECOVERY_TRACE_SCHEMA_VERSION,
-        "target_fingerprint": target_fingerprint,
-        "replay_preflight_fingerprint": replay_preflight_fingerprint,
-        "apply_policy": apply_policy,
-        "verification_settings": dict(verification_settings),
-        "repair_conformance": (
-            repair_contract.to_public_dict()
-            if repair_contract is not None
-            else None
-        ),
-    }
-    encoded = json.dumps(
-        payload,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-        default=str,
-    ).encode("utf-8")
-    return "sha256:" + hashlib.sha256(encoded).hexdigest()
-
-
-def _with_versioned_semantic_lineage(
-    optimizer_result: OptimizerResult,
-    *,
-    target_fingerprint: str,
-    replay_preflight_fingerprint: str,
-    apply_policy: str,
-    verification_settings: Mapping[str, object],
-) -> OptimizerResult:
-    """Attach the complete, versioned identity used for historical filtering."""
-
-    candidates = {
-        candidate.candidate_id: candidate
-        for candidate in optimizer_result.candidates
-    }
-    contracts = {
-        candidate_id: contract
-        for candidate_id, contract in optimizer_result.private_context.items()
-        if isinstance(contract, RepairConformanceContract)
-    }
-    enriched: list[OptimizerLineage] = []
-    for lineage in optimizer_result.lineage:
-        candidate = candidates.get(lineage.candidate_id)
-        if candidate is None:
-            enriched.append(lineage)
-            continue
-        semantic_content = (
-            lineage.semantic_fingerprint
-            or candidate_content_semantic_fingerprint(candidate.content)
-        )
-        enriched.append(
-            replace(
-                lineage,
-                semantic_fingerprint=semantic_content,
-                semantic_identity_version=_SEMANTIC_DEDUP_IDENTITY_VERSION,
-                semantic_package_fingerprint=(
-                    candidate_semantic_package_fingerprint(
-                        candidate,
-                        content_semantic_fingerprint=semantic_content,
-                    )
-                ),
-                verification_contract_fingerprint=(
-                    _verification_contract_fingerprint(
-                        target_fingerprint=target_fingerprint,
-                        replay_preflight_fingerprint=(
-                            replay_preflight_fingerprint
-                        ),
-                        apply_policy=apply_policy,
-                        verification_settings=verification_settings,
-                        repair_contract=contracts.get(lineage.candidate_id),
-                    )
-                ),
-            )
-        )
-    return replace(optimizer_result, lineage=tuple(enriched))
-
-
-def _lineage_semantic_lesson_fingerprints(
-    lineage_items: tuple[OptimizerLineage, ...],
-) -> dict[str, _SemanticLessonFingerprint]:
-    fingerprints: dict[str, _SemanticLessonFingerprint] = {}
-    for lineage in lineage_items:
-        if (
-            lineage.semantic_identity_version
-            == _SEMANTIC_DEDUP_IDENTITY_VERSION
-            and lineage.semantic_package_fingerprint
-            and lineage.lesson_set_fingerprint
-            and lineage.verification_contract_fingerprint
-        ):
-            fingerprints[lineage.candidate_id] = _SemanticLessonFingerprint(
-                semantic_package_fingerprint=(
-                    lineage.semantic_package_fingerprint
-                ),
-                lesson_set_fingerprint=lineage.lesson_set_fingerprint,
-                verification_contract_fingerprint=(
-                    lineage.verification_contract_fingerprint
-                ),
-            )
-    return fingerprints
-
-
-def _semantic_lesson_duplicate_count(
-    candidates: tuple[CandidateVariant, ...],
-    *,
-    lineage_fingerprints: Mapping[str, _SemanticLessonFingerprint],
-    rejected_semantic_lesson_fingerprints: set[_SemanticLessonFingerprint],
-) -> int:
-    return sum(
-        1
-        for candidate in candidates
-        if _is_semantic_lesson_duplicate(
-            candidate.candidate_id,
-            lineage_fingerprints=lineage_fingerprints,
-            rejected_semantic_lesson_fingerprints=rejected_semantic_lesson_fingerprints,
-        )
-    )
-
-
-def _is_semantic_lesson_duplicate(
-    candidate_id: str,
-    *,
-    lineage_fingerprints: Mapping[str, _SemanticLessonFingerprint],
-    rejected_semantic_lesson_fingerprints: set[_SemanticLessonFingerprint],
-) -> bool:
-    fingerprint = lineage_fingerprints.get(candidate_id)
-    return fingerprint is not None and fingerprint in rejected_semantic_lesson_fingerprints
-
-
-def _semantic_lesson_duplicate_feedback(
-    candidate: CandidateVariant,
-    *,
-    fingerprint: _SemanticLessonFingerprint,
-) -> EvaluationSummary:
-    event = ReplayFailureEvent(
-        code="duplicate_semantic_lesson",
-        owner=FailureOwner.CANDIDATE,
-        stage=FailureStage.ADAPTATION,
-        scope=FailureScope.CANDIDATE,
-        repairable=True,
-        category="candidate_generation_dedup",
-        summary=(
-            "candidate repeats a historically rejected complete semantic package "
-            "under the same lesson set and verification contract"
-        ),
-        contract_fingerprint=fingerprint.verification_contract_fingerprint,
-        diagnostics={
-            "semantic_identity_version": _SEMANTIC_DEDUP_IDENTITY_VERSION,
-            "semantic_package_fingerprint": (
-                fingerprint.semantic_package_fingerprint
-            ),
-            "lesson_set_fingerprint": fingerprint.lesson_set_fingerprint,
-            "required_delta": (
-                "change target behavior or candidate-owned files materially; "
-                "renaming, reformatting, or repeating the same package is insufficient"
-            ),
-        },
-    )
-    event_payload = event.to_dict()
-    return EvaluationSummary(
-        variant_id=candidate.candidate_id,
-        dataset_split="validation",
-        metrics={
-            "failed_gates": ["duplicate_semantic_lesson"],
-            "candidate_status": "rejected",
-            "failure_class": "candidate",
-            "failure_owner": FailureOwner.CANDIDATE.value,
-            "failure_scope": FailureScope.CANDIDATE.value,
-            "repairable": True,
-            "code": "duplicate_semantic_lesson",
-            "semantic_identity_version": _SEMANTIC_DEDUP_IDENTITY_VERSION,
-            "semantic_package_fingerprint": (
-                fingerprint.semantic_package_fingerprint
-            ),
-            "lesson_set_fingerprint": fingerprint.lesson_set_fingerprint,
-            "verification_contract_fingerprint": (
-                fingerprint.verification_contract_fingerprint
-            ),
-            "required_behaviors": [
-                "produce a materially different complete candidate package"
-            ],
-            "failure_event": event_payload,
-            "causal_failure_events": [event_payload],
-        },
-    )
-
-
-def _candidate_gate_results(
-    candidate: CandidateVariant,
-    *,
-    current_content: str,
-    workspace_root: str | Path,
-    max_chars: int,
-    target_provenance: TargetProvenance | None,
-    target_provenance_unresolved_reason: str | None = None,
-    allow_generated_target_mutation: bool = False,
-    allow_external_target_mutation: bool = False,
-    target_intent: TargetMutationIntent | str | None = None,
-    inferred_new_skill_policy: InferredNewSkillPolicy | str = InferredNewSkillPolicy.AUTO_VERIFIED,
-    apply_policy: str = "proposal",
-) -> list[GateResult]:
-    token_limit_result = TokenLimitGate(max_chars=max_chars).evaluate(
-        candidate
-    )
-    results = [
-        NoopCandidateGate().evaluate(current_content=current_content, candidate=candidate),
-        MalformedCandidateGate().evaluate(candidate),
-        CandidatePackageGate().evaluate(candidate),
-        token_limit_result,
-        ProtectedPathGate(workspace_root=workspace_root).evaluate(candidate),
-        ExternalCodeEvolutionGate().evaluate(candidate),
-    ]
-    if (
-        candidate.target.target_type == "skill"
-        and token_limit_result.passed
-    ):
-        results.append(SkillMarkdownGate().evaluate(candidate))
-        results.append(
-            SkillReleaseFidelityGate().evaluate(
-                candidate,
-                current_content=current_content,
-                require_exact_deletion_intent=(
-                    _is_verified_apply_policy(apply_policy)
-                ),
-            )
-        )
-    results.append(
-        TrustProvenanceGate(
-            allow_generated=allow_generated_target_mutation,
-            allow_external=allow_external_target_mutation,
-        ).evaluate(
-            target_provenance,
-            unresolved_reason=target_provenance_unresolved_reason,
-            target_intent=target_intent,
-        )
-    )
-    results.append(
-        NewSkillPromotionGate().evaluate(
-            candidate,
-            target_intent=target_intent,
-            policy=inferred_new_skill_policy,
-            apply_policy=apply_policy,
-            workspace_root=workspace_root,
-            provenance=target_provenance,
-        )
-    )
-    return results
