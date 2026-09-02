@@ -19,6 +19,7 @@ from aworld.core.context.tool_output_runtime import (
     enforce_tool_output_boundary,
     prepare_tool_output_plans,
 )
+from aworld.sandbox import DockerSandbox
 
 
 pytestmark = [
@@ -32,6 +33,61 @@ pytestmark = [
 
 def _payload(content):
     return json.loads(content.text)
+
+
+@pytest.mark.asyncio
+async def test_real_docker_failed_mutation_is_rolled_back(tmp_path):
+    docker = shutil.which("docker")
+    if not docker:
+        pytest.skip("Docker executable is unavailable")
+    container = f"aworld-docker-rollback-{uuid.uuid4().hex[:10]}"
+    started = subprocess.run(
+        [docker, "run", "-d", "--rm", "--name", container, "-w", "/workspace", "alpine:3.20", "sleep", "infinity"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if started.returncode != 0:
+        pytest.skip(f"unable to start alpine: {started.stderr.strip()}")
+    sandbox = None
+    try:
+        subprocess.run(
+            [docker, "exec", container, "sh", "-c", "printf original > protected.txt"],
+            check=True,
+        )
+        sandbox = DockerSandbox(
+            container=container,
+            workdir="/workspace",
+            allowed_directories=["/workspace"],
+            destructive_checkpoint=True,
+            tracked_artifact_paths=["/workspace"],
+            checkpoint_directory=str(tmp_path / "checkpoints"),
+            reuse=False,
+        )
+        results = await sandbox.call_tool(
+            [
+                {
+                    "tool_name": "docker",
+                    "action_name": "run_code",
+                    "params": {"code": "rm -f protected.txt; exit 7", "output_format": "json"},
+                }
+            ]
+        )
+        restored = subprocess.run(
+            [docker, "exec", container, "cat", "/workspace/protected.txt"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        assert restored.stdout == "original"
+        receipt = results[0].metadata["context_management"]
+        assert receipt["rollback_performed"] is True
+        assert receipt["artifact_changed"] is False
+        assert not list((tmp_path / "checkpoints").glob("*.tar"))
+    finally:
+        if sandbox is not None:
+            await sandbox.cleanup()
+        subprocess.run([docker, "rm", "-f", container], capture_output=True)
 
 
 @pytest.mark.asyncio

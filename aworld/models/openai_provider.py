@@ -175,6 +175,9 @@ class OpenAIProvider(LLMProviderBase):
         Returns:
             Async OpenAI provider instance.
         """
+        # Async-only configurations do not call ``_init_provider``. Keep this
+        # transport invariant initialized on both construction paths.
+        self.is_http_provider = False
         # Get API key
         api_key = self.api_key
         if not api_key:

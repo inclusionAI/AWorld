@@ -93,6 +93,156 @@ def _context_lifecycle_evidence(agent) -> dict:
     }
 
 
+def _completion_contract_evidence(agent) -> dict:
+    context = getattr(agent, "context", None)
+    assessment = getattr(context, "_completion_assessment", None)
+    contract = getattr(context, "completion_contract", None)
+    if contract is None:
+        return {
+            "schema_version": "aworld.completion-contract-evidence/v1",
+            "status": "not_configured",
+        }
+    return {
+        "schema_version": "aworld.completion-contract-evidence/v1",
+        "status": "assessed" if assessment is not None else "configured",
+        "mode": str(getattr(context, "completion_mode", "off").value),
+        "required_artifact_count": len(contract.required_artifacts),
+        "validation_command_ids": [
+            command.command_id for command in contract.validation_commands
+        ],
+        "required_final_evidence": list(contract.required_final_evidence),
+        "assessment": (
+            {
+                "status": assessment.status.value,
+                "reason_codes": list(assessment.reason_codes),
+                "repair_attempt": assessment.repair_attempt,
+            }
+            if assessment is not None
+            else None
+        ),
+    }
+
+
+async def _configure_benchmark_completion_contract(
+    agent,
+    sandbox,
+    variant: dict,
+    *,
+    required_artifacts: tuple[str, ...] = (),
+    completion_env_names: tuple[str, ...] = (),
+) -> None:
+    """Construct a task-independent contract from the mounted verifier boundary."""
+    mode = str(variant.get("context_compiler", {}).get("completion_contract", "off"))
+    if mode == "off":
+        return
+    from aworld.core.context.compiler import (
+        ArtifactEvidence,
+        ArtifactRequirement,
+        CompletionContract,
+        CompletionMode,
+        SelfCheckEvidence,
+        ValidationCommand,
+        canonical_json_hash,
+    )
+    from datetime import datetime, timezone
+
+    validator_path = None
+    for candidate in ("/verifier/test.sh", "/tests/test.sh"):
+        inspected = await sandbox.run_validation(
+            ("test", "-f", candidate),
+            cwd="/",
+            timeout=10,
+        )
+        if inspected.returncode == 0:
+            validator_path = candidate
+            break
+    commands = (
+        (
+            ValidationCommand(
+                command_id="packaged-verifier",
+                argv=("/bin/bash", validator_path),
+                cwd=sandbox.container_workdir,
+                timeout_seconds=900,
+            ),
+        )
+        if validator_path is not None
+        else ()
+    )
+    if not commands:
+        raise RuntimeError(
+            "completion_contract requires a mounted /tests/test.sh or /verifier/test.sh"
+        )
+    artifact_requirements = tuple(
+        ArtifactRequirement(
+            requirement_id=f"task-artifact-{index:03d}",
+            path=path,
+        )
+        for index, path in enumerate(required_artifacts, start=1)
+    )
+    contract = CompletionContract(
+        required_artifacts=artifact_requirements,
+        immutable_inputs=(),
+        validation_commands=commands,
+        max_evidence_age_seconds=900,
+        required_final_evidence=("agent_final_response",),
+        max_repairs=1,
+    )
+
+    async def resolve(context, configured_contract) -> None:
+        for requirement in configured_contract.required_artifacts:
+            result = await sandbox.run_validation(
+                ("test", "-e", requirement.path),
+                timeout=30,
+            )
+            context.record_completion_artifact(
+                ArtifactEvidence(
+                    requirement_id=requirement.requirement_id,
+                    exists=result.returncode == 0,
+                    content_hash=None,
+                    media_type=None,
+                    observed_at=datetime.now(timezone.utc),
+                )
+            )
+        for command in configured_contract.validation_commands:
+            timed_out = False
+            try:
+                result = await sandbox.run_validation(
+                    command.argv,
+                    cwd=command.cwd,
+                    timeout=command.timeout_seconds,
+                    env_names=completion_env_names,
+                )
+            except subprocess.TimeoutExpired as exc:
+                timed_out = True
+                result = subprocess.CompletedProcess(
+                    exc.cmd,
+                    124,
+                    stdout=exc.stdout or "",
+                    stderr=exc.stderr or "",
+                )
+            context.record_completion_self_check(
+                SelfCheckEvidence(
+                    command_id=command.command_id,
+                    exit_code=result.returncode,
+                    output_hash=canonical_json_hash(
+                        {
+                            "return_code": result.returncode,
+                            "timed_out": timed_out,
+                            "stdout": result.stdout,
+                            "stderr": result.stderr,
+                        }
+                    ),
+                    observed_at=datetime.now(timezone.utc),
+                )
+            )
+
+    agent.configure_completion_contract(
+        contract,
+        mode=CompletionMode(mode),
+        evidence_resolver=resolve,
+    )
+
+
 def _export_context_tool_output_artifacts(agent, output_dir: Path) -> list[dict]:
     """Persist checksum-bound Context artifacts beside the raw trajectory."""
     context = getattr(agent, "context", None)
@@ -263,6 +413,7 @@ def _load_variant(path: Path | None) -> dict:
         "progressive_tool_unmanaged_policy",
         "task_catalog_policy",
         "checkpoint_policy",
+        "destructive_sandbox_checkpoint",
         "default_tool_output_inline_tokens",
         "artifact_offload",
         "context_inspector",
@@ -393,6 +544,7 @@ def parse_args() -> argparse.Namespace:
         help="Allowed absolute container path; may be specified more than once.",
     )
     parser.add_argument("--max-steps", type=int, default=10)
+    parser.add_argument("--model-seed", type=int)
     parser.add_argument(
         "--variant-config",
         type=Path,
@@ -428,10 +580,22 @@ def parse_args() -> argparse.Namespace:
             "as benchmark quality or Reward evidence."
         ),
     )
+    parser.add_argument(
+        "--required-artifact",
+        action="append",
+        default=[],
+        help="Task-declared artifact path to include in the runtime completion contract.",
+    )
+    parser.add_argument(
+        "--completion-env",
+        action="append",
+        default=[],
+        help="Name of an inherited environment variable needed by the validator.",
+    )
     return parser.parse_args()
 
 
-async def run(args: argparse.Namespace) -> None:
+async def run(args: argparse.Namespace) -> int:
     started_at = time.time()
     args.output_dir.mkdir(parents=True, exist_ok=True)
     log_dir = args.output_dir / "logs"
@@ -494,6 +658,11 @@ async def run(args: argparse.Namespace) -> None:
         output_head_bytes=output_policy.get("output_head_bytes"),
         artifact_directory=str((args.output_dir / "tool-output-artifacts").resolve()),
         mcp_config=external_mcp_config,
+        destructive_checkpoint=bool(
+            variant["context_compiler"].get("destructive_sandbox_checkpoint", False)
+        ),
+        tracked_artifact_paths=(args.required_artifact or args.allowed_directories),
+        checkpoint_directory=str((args.output_dir / "sandbox-checkpoints").resolve()),
         reuse=True,
     )
     try:
@@ -511,6 +680,7 @@ async def run(args: argparse.Namespace) -> None:
                 llm_api_key=api_key,
                 llm_base_url=os.environ.get("LLM_BASE_URL"),
                 llm_temperature=float(os.environ.get("LLM_TEMPERATURE", "0")),
+                params={"seed": args.model_seed} if args.model_seed is not None else {},
                 max_steps=args.max_steps,
                 use_vision=False,
                 memory_config=AgentMemoryConfig(**variant["agent_memory_config"]),
@@ -564,6 +734,13 @@ async def run(args: argparse.Namespace) -> None:
                     model_name="aworld-deterministic-capture-v1"
                 ),
             )
+        await _configure_benchmark_completion_contract(
+            agent,
+            sandbox,
+            variant,
+            required_artifacts=tuple(args.required_artifact),
+            completion_env_names=tuple(args.completion_env),
+        )
         response = await Runners.run(instruction, agent=agent)
         response_payload = to_serializable(response.to_dict())
         trajectory_payload = to_serializable(response.trajectory)
@@ -594,6 +771,10 @@ async def run(args: argparse.Namespace) -> None:
             ),
             "context_lifecycle.json": _write_json(
                 args.output_dir / "context_lifecycle.json", lifecycle_evidence
+            ),
+            "completion_contract.json": _write_json(
+                args.output_dir / "completion_contract.json",
+                _completion_contract_evidence(agent),
             ),
             "context_trace.json": _write_json(
                 args.output_dir / "context_trace.json",
@@ -632,6 +813,7 @@ async def run(args: argparse.Namespace) -> None:
                 "model": model_name,
                 "provider": provider_name,
                 "temperature": float(os.environ.get("LLM_TEMPERATURE", "0")),
+                "model_seed": args.model_seed,
                 "max_steps": args.max_steps,
                 "system_prompt_sha256": _sha256_bytes(system_prompt.encode("utf-8")),
                 "instruction_sha256": _sha256_bytes(instruction.encode("utf-8")),
@@ -694,9 +876,24 @@ async def run(args: argparse.Namespace) -> None:
                 "does not match; diagnostic artifacts were preserved, but reward cannot be "
                 "attributed to a context-management variant"
             )
+        if not response.success:
+            print(
+                json.dumps(
+                    {
+                        "schema_version": "aworld.run.failure.v1",
+                        "reason_code": "task_response_unsuccessful",
+                        "status": str(response.status),
+                        "message": str(response.msg or "")[:500],
+                    },
+                    ensure_ascii=False,
+                ),
+                file=sys.stderr,
+            )
+            return 2
+        return 0
     finally:
         await sandbox.cleanup()
 
 
 if __name__ == "__main__":
-    asyncio.run(run(parse_args()))
+    raise SystemExit(asyncio.run(run(parse_args())))

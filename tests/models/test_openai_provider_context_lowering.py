@@ -130,6 +130,22 @@ def test_azure_provider_uses_official_sync_and_async_sdk_boundaries(monkeypatch)
     assert constructed["sync"]["api_version"] == "2025-01-01-preview"
 
 
+def test_openai_async_only_initializes_transport_invariant(monkeypatch):
+    monkeypatch.setattr(
+        "aworld.models.openai_provider.AsyncOpenAI", lambda **kwargs: object()
+    )
+    provider = OpenAIProvider(
+        api_key="test-key",
+        base_url="https://example.invalid/v1",
+        model_name="test-model",
+        sync_enabled=False,
+        async_enabled=True,
+    )
+    assert provider.provider is None
+    assert provider.async_provider is not None
+    assert provider.is_http_provider is False
+
+
 def _policy(*, enforce_ready: bool = True) -> CandidateCompilePolicy:
     return CandidateCompilePolicy(
         compiler_version="openai-lowering-test-v1",

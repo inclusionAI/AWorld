@@ -995,6 +995,7 @@ context_compiler:
   progressive_tools: true
   task_catalog_policy: sticky  # per_call | sticky
   checkpoint_policy: budget_pressure  # explicit | budget_pressure | adaptive
+  destructive_sandbox_checkpoint: false  # opt-in; failed mutating Docker actions rollback
   default_tool_output_inline_tokens: 4096
   artifact_offload: true
   context_inspector: true
@@ -1047,6 +1048,58 @@ provider/model/environment 的 paired benchmark 和 independent verifier 归因�
 
 Milestone 3-6 已形成一个可整体验证的代码版本，当前状态不是“默认开启”，而是“核心控制面完成、进入
 跨 workload 收益验证”：
+
+#### Runtime closure update (2026-09-02)
+
+针对“配置存在但运行时未生效”的审计缺口，当前版本增加以下通用闭环；这些逻辑不读取 benchmark id、题目
+答案或特定命令，不构成刷题策略：
+
+- `LLMAgent.configure_completion_contract(...)` 将 typed contract 和异步 evidence resolver 自动安装到每个实际
+  execution Context；Agent 声称完成时先记录 final evidence、通过 sandbox 抽象检查 task-declared artifact 并执行
+  validation command。`REPAIR_REQUIRED` 消耗 contract 自身的 repair budget 并返回通用恢复反馈，最终 evidence 会
+  显式 merge 到 root Context，由 FINISHED handler 对同一 contract 再评估。Terminal/Skills/Browse adapter 根据只读
+  挂载的 `/tests/test.sh` 或 `/verifier/test.sh` 以及 dataset `artifacts` 自动构造契约；缺少确定性 verifier 时拒绝
+  启用，而不是让 `completion_contract: enforce` 退化为仅配置校验。
+- `checkpoint_policy=budget_pressure|adaptive` 已从配置项变成实际 model-boundary policy。运行时按 input budget 比率、
+  连续等价 Tool operation/result 和连续低信息增益 result 三类信号做决定；触发后执行真实 `Context.snapshot()`、
+  产生 checkpoint lifecycle/cache break，并在当前及后续请求持续压缩旧历史。压缩保留全部 system policy、原始
+  user task 和最近 turns，输出只含 shape/hash 的 receipt；语义停滞 feedback 要求重新规划和获取新证据，不包含
+  题目知识。
+- Tool progress watchdog 现在同时维护按 Agent 隔离的 bounded semantic fingerprint state。fingerprint 去除 call id、
+  request id、时间和 command echo 等 transport 噪声，并规范化 JSON Tool payload；相同操作+结果驱动 repetition，
+  不同操作但相同结果驱动 low-information-gain。checkpoint 后计数确认清零，保留有界 metrics 供 trajectory/report
+  审计。DockerSandbox 同时为每次 Tool result 附加 task artifact 的前后指纹；即使 operation/result 文本相同，只要
+  artifact 确实变化就重置停滞计数，避免把编译、下载、索引等“输出相似但产物持续推进”的操作误判为死循环。
+- adaptive compact marker 和停滞反馈固定为 model-visible dynamic user tail；checkpoint reason、turn、hash 和指标只
+  留在 receipt/trace，不再写入 system prefix。evaluation 从真实 provider request 计算 system-prefix hash 的唯一值
+  数量与稳定率，并继续以 provider 原生 cache usage 为命中真值，不能用逻辑稳定声明替代实际缓存收益。
+- `destructive_sandbox_checkpoint=true` 为本地 DockerSandbox 开启通用事务边界。write/edit/move/create 与包含删除、
+  覆盖重定向、in-place edit、git restore/reset/clean 等通用变更形态的 terminal action 在调用前对显式 tracked roots
+  建立 checksum-bound tar checkpoint；成功调用保留变更，Tool envelope/return code 表示失败或调用抛异常时自动恢复。
+  根路径 `/` 被拒绝，checkpoint 文件在 commit/rollback/cleanup 后删除。该机制不读取题目、benchmark id、预期答案
+  或 verifier 内容。
+- 本地 benchmark driver 对 Agent 非零退出实行 fail-closed：不再继续 verifier、不生成 reward 0，并保留子进程输出的
+  `aworld.run.failure.v1`。外部 timeout 或 finalize 中断时，从 checksum-valid append-only journal 生成
+  `raw_trajectory.partial.json`；它携带 `completion_state=incomplete` 和真实 call snapshots，永远不冒充 finalized
+  `raw_trajectory.json`。consumer 只有在 partial schema、incomplete 状态和 `capture_recovery` 文件校验和一致时才接受；
+  SIGINT 也先执行同一恢复路径再退出。这使“模型尚未响应”“已有模型响应但 final projection 缺失”和“完整 trajectory”
+  保持可区分。
+- paired harness 在镜像构建和 Agent 启动前执行真实 provider preflight。preflight 要求模型在固定 timeout 内完成一个
+  非 streaming response（不能以 `finish_reason=length` 或只有未完成 reasoning 通过），receipt 只保存 model/provider、
+  latency、usage、finish reason 与 response hash。每个 repetition 使用 `experiment_seed + repetition - 1` 作为模型
+  seed，同一 repetition 的 baseline/candidate seed 相同；少于 3 个 seed 自动标记为不能作显著性结论。显式 skip 仅供
+  substrate 诊断并使质量 claim 失效。
+
+上述本地 adapter 契约已经覆盖 AWorld 能控制的边界；没有修改 mcpgateway、lingguang-bench-runtime-dsh 或 Harbor。
+这些外层系统接入时必须传播非零退出、消费 typed failure/partial schema，并禁止 synthetic summary 进入 complete
+trajectory/reward 聚合。若外层违反该契约，AWorld 可以提供可核验的 failure/journal evidence，但不能把外层错误
+宣称为完整 Raw trajectory；该限制是明确的系统责任边界，不再是 AWorld 内部未分类状态。
+
+该闭环以 focused regression 及本地真实 Docker 验证；另以本地真实 Docker 容器、只读挂载的 `/tests/test.sh` 和
+`DockerSandbox.run_validation()` 完成无模型结构验收，contract 由挂载边界自动生成并得到 `satisfied`。真实
+Terminal Bench 原 verifier 的长时运行暴露了 validator timeout 路径；对应 regression 固化为失败 self-check，
+不会被当作缺失 evidence 或 successful completion。事务测试还在真实 Alpine container 中先删除 tracked artifact
+并返回非零，再验证文件内容自动恢复、receipt 声明 rollback 且 host checkpoint 已清除。验证容器均由调用方停止并删除。
 
 - universal final compiler 已统一消费 final messages、Tool Catalog、Steering、Amni folded system、memory、
   scoped instructions 和 progressive Skill sidecar；四种 LLM 调用形态共享同一 model boundary。`off` 不创建
@@ -1382,6 +1435,10 @@ opportunity，且没有 operational canary-health receipt 或外部 rollback bun
 | TC-DIRECT-FAILURE-028 | 分别模拟 target Agent 未注册、source import exception、executor 返回 None | stderr 输出合法 `aworld.run.failure.v1`；stage/error code 可区分；CLI exit 非零；`llm_call_count=0`；不输出 completed summary |
 | TC-HARNESS-STATUS-029 | 用 `aworld-cli ... 2>&1 | tee run.log` 包装 TC-DIRECT-FAILURE-028，并执行 ATIF/export/verifier | adapter 保留 AWorld 非零状态或每段 pipeline status；run 分类为 harness error；error artifact 可读；不生成 placeholder complete trajectory |
 | TC-ARTIFACT-OWNER-030 | Docker Tool 先对 100K stdout 做 head/tail + artifact，随后 Context/Memory/Amni 同时启用 offload | 模型主 receipt 仍为 `docker.read_output_artifact` 可读取的来源引用；Context exact snapshot 使用独立 `context_artifact_ref` 且 checksum 可恢复；Memory/Amni 不再二次 offload；任意无 checksum/byte count 路径不被提升为 capability |
+| TC-SEMANTIC-PROGRESS-031 | 连续三次 operation/result 指纹相同，但第二次确实改变 tracked artifact | artifact change 回执重置 repetition/low-information 计数；没有产物变化的第三次才重新累计；算法不读取 task 文本 |
+| TC-SANDBOX-ROLLBACK-032 | destructive Docker action 删除已有文件后以非零 return code 结束 | 调用前 checksum-bound checkpoint；目录根保留；文件内容自动恢复；receipt 标记 rollback；host archive 被清除 |
+| TC-PARTIAL-TRAJECTORY-033 | provider attempted 后 timeout，以及 model success 后 finalize 被 SIGINT | 两种情况都从 checksum-valid journal 生成 `completion_state=incomplete`；分类不同；篡改 checksum 后 consumer 拒绝；均不冒充 canonical Raw trajectory |
+| TC-PREFLIGHT-SEED-034 | GLM preflight timeout/length/stop 三路径，随后运行三 seed paired suite | 只有完整非流式 response 通过；失败时不启动 Docker job；pair 内模型 seed 相同；少于 3 个 complete seed 不允许显著性结论 |
 
 ### Test Tiers
 
@@ -1574,6 +1631,18 @@ in_progress，则稳定分类为 `provider_attempted_response_not_observed / not
 “trajectory 已生成但 runner 丢失”的错误归因；但在 model call 已完成而 final projection 缺失时仍保持
 `undetermined`，必须继续检查 runtime event/SAR 与 finalize receipts。正常运行同时强制 `dual` trajectory format，
 因此 legacy `trajectory.log` 与 v2 `trajectory.jsonl` 可在同一 fixture 做 checksum/continuity 验证。
+恢复路径现在还输出 `raw_trajectory.partial.json`，仅封装 checksum-valid journal 中真实存在的 call snapshot；
+该文件明确为 incomplete，不补造 Tool action、model response 或 reward，也不满足 complete trajectory gate。
+
+2026-09-02 的 GLM-5.2 复验先由新 preflight 揭示并修复了 async-only `OpenAIProvider` 未初始化 transport invariant
+的问题；修复后同一 provider/model/seed 在 5.637 秒内以 `finish_reason=stop` 完成 READY 响应，证明 endpoint 与 seed
+参数当时可用。随后启动冻结的 `regex-log`、baseline/candidate、3-seed paired 计划。首个实际 Agent request 在
+provider-attempted 后 900 秒无 response，得到 13 条 checksum-valid journal record、typed `agent_timeout`、
+`reward=null` 和 incomplete Raw trajectory；第二个 job 在用户中断扩样前已记录 model-call success，但尚未 final
+projection，因此恢复为 `model_call_completed_final_projection_missing / undetermined` 和 checksum-bound partial
+trajectory。该结果证明 preflight、运行时可用性和 trajectory persistence 是三个不同门禁：短 preflight 通过不把
+长调用 timeout 归因于 Context，也不允许在不足 3 个 complete seeds 时声称显著提升。冻结计划保留，provider 稳定后
+按相同 task/variants/seeds 重跑，而不是换题或加入 task-specific prompt。
 
 启用该机制后的第二次真实 `browsecomp-0566` paired run 使用预注册 900 秒 agent timeout。baseline 留下 13 条
 checksum-valid mutation evidence：三次 provider attempt 中前两次 `provider_call_failed`，第三次在
@@ -1792,7 +1861,9 @@ TC-PARITY-013 阻止入口语义分叉。
 7. enforce 模式下 required items 超预算时，是直接失败还是允许自动降低 reserved output？
 8. 哪些 provider 参数参与 `CacheIdentity`，adapter 如何报告 TTL evidence 和 usage 可信度？
 9. task-sticky Tool/Skill 集合的默认粒度是 task epoch、session 还是 provider-specific cache segment？
-10. `checkpoint/compact` 的默认触发是仅显式、预算压力还是预测未来 turn 的 adaptive policy？
+10. `checkpoint/compact` 的默认值保持 `explicit`；paired candidate 可选择 `budget_pressure` 或 `adaptive`。adaptive
+    首版只使用冻结阈值的预算压力、重复 operation/result 和低信息增益信号，不使用 benchmark/task 文本分类；阈值
+    的 default-on 调整仍须由跨 workload paired evidence 决定。
 11. Tool adapter 如何声明 quiet/structured 输出能力，无法控制的第三方 Tool 使用哪种 fallback？
 12. provider 缺少 billing/reasoning/cache usage 时，normalized cost 的权重、版本和跨 provider 可比性
     如何治理？
@@ -1808,7 +1879,8 @@ TC-PARITY-013 阻止入口语义分叉。
 - 不以“代码已接入”替代 Acceptance Gate。
 - 不在未完成 parity、trace exactness 和回退能力前删除旧链路。
 - 本阶段只在 AWorld/AWorld CLI 内实现 portability、失败记录和非零退出；mcpgateway、
-  lingguang-bench-runtime-dsh、Harbor 的 `pipefail`/preflight 要求先作为外部契约验证，不在同一变更中修改。
+  lingguang-bench-runtime-dsh、Harbor 的 `pipefail`/preflight 要求作为外部契约验证，不在同一变更中修改；AWorld
+  本地 driver 已 fail-closed 并产出 typed failure/partial trajectory，外层只有满足该传播契约后才能声明端到端闭环。
 
 完成标准不是 Context Compiler 类存在，而是所有入口通过同一不变量，且 paired evaluation 证明质量不
 回退、cache-adjusted cost per successful task 与 Tool inline output 明显下降、缓存与长任务稳定性提升、

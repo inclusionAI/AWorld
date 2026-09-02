@@ -19,6 +19,16 @@ from .frozen_json import (
     redacted_shape_preview,
     thaw_json,
 )
+from .adaptive import (
+    AdaptiveCheckpointDecision,
+    AdaptiveCheckpointPolicy,
+    AdaptiveCheckpointReason,
+    compact_message_history,
+    evaluate_adaptive_checkpoint,
+    semantic_fingerprint,
+    semantic_result_fingerprint,
+    semantic_projection,
+)
 from .attribution import (
     AttributionCollection,
     AttributionCollectionShape,
@@ -266,6 +276,9 @@ from .provider_registry import (
 )
 
 __all__ = [
+    "AdaptiveCheckpointDecision",
+    "AdaptiveCheckpointPolicy",
+    "AdaptiveCheckpointReason",
     "AWORLD_PROVIDER_CANDIDATE_KWARG",
     "AWORLD_PROVIDER_OBSERVED_ATTRIBUTION_KWARG",
     "AdapterDiagnostic",
@@ -447,11 +460,13 @@ __all__ = [
     "canonical_json_bytes",
     "canonical_json_hash",
     "compile_context_candidate",
+    "compact_message_history",
     "compile_final_context",
     "compile_minimal_tool_catalog",
     "preserve_unmanaged_tool_namespaces",
     "compile_model_boundary_context",
     "estimate_canonical_json_tokens",
+    "evaluate_adaptive_checkpoint",
     "freeze_json",
     "observe_legacy_provider_request",
     "inspect_final_context",
@@ -473,6 +488,9 @@ __all__ = [
     "merge_child_result",
     "validate_delegation_output",
     "select_rollout_request",
+    "semantic_fingerprint",
+    "semantic_result_fingerprint",
+    "semantic_projection",
     "serialized_prefix_checksum",
     "summarize_attribution_plan",
     "thaw_json",
