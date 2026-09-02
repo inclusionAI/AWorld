@@ -1061,6 +1061,7 @@ def test_agent_timeout_override_is_the_effective_typed_timeout(tmp_path, monkeyp
 def test_timeout_recovers_provider_attempt_without_synthesizing_trajectory(tmp_path):
     harness = _load_example("terminal_bench_context_eval")
     from aworld.core.llm_call_journal import append_llm_call_snapshot
+    from aworld.core.tool_action_journal import append_tool_action_event
 
     run_dir = tmp_path / "run"
     run_dir.mkdir()
@@ -1083,6 +1084,25 @@ def test_timeout_recovers_provider_attempt_without_synthesizing_trajectory(tmp_p
         ],
         path=run_dir / "llm_calls.journal.jsonl",
     )
+    append_tool_action_event(
+        context=Context(task_id="browse-task"),
+        event_type="tool_observation_recorded",
+        actions=[{"tool_call_id": "tool-1", "action_name": "run_code"}],
+        results=[
+            {
+                "success": True,
+                "content": "ok",
+                "metadata": {
+                    "context_management": {
+                        "schema_version": "aworld.sandbox-artifact-progress/v1",
+                        "checkpoint_created": True,
+                    }
+                },
+            }
+        ],
+        status="completed",
+        path=run_dir / "tool_actions.journal.jsonl",
+    )
 
     evidence = harness.recover_inflight_capture(run_dir)
     metrics = harness.collect_context_metrics(run_dir)
@@ -1100,12 +1120,16 @@ def test_timeout_recovers_provider_attempt_without_synthesizing_trajectory(tmp_p
     partial = json.loads(run_dir.joinpath("raw_trajectory.partial.json").read_text())
     assert partial["completion_state"] == "incomplete"
     assert partial["calls"][0]["request_id"] == "request-1"
+    assert partial["tool_events"][0]["results"][0]["content"] == "ok"
     assert not run_dir.joinpath("provider_calls.json").exists()
     assert metrics["provider_truth_available"] is False
     assert metrics["raw_trajectory_available"] is False
     assert metrics["partial_raw_trajectory_available"] is True
     assert metrics["partial_raw_trajectory_call_count"] == 1
     assert metrics["partial_provider_call_count"] == 1
+    assert metrics["partial_raw_trajectory_tool_event_count"] == 1
+    assert metrics["tool_action_journal_valid_records"] == 1
+    assert metrics["partial_provider_request_bytes"] > 0
     assert metrics["inflight_capture_available"] is True
     assert metrics["llm_call_journal_bytes"] > 0
     assert metrics["llm_call_journal_valid_records"] == 1
@@ -1131,6 +1155,33 @@ def test_partial_raw_trajectory_requires_matching_recovery_checksum(tmp_path):
     )
     metrics = harness.collect_context_metrics(run_dir)
     assert metrics["partial_raw_trajectory_available"] is False
+
+
+def test_timeout_recovers_tool_only_runtime_evidence(tmp_path):
+    harness = _load_example("terminal_bench_context_eval")
+    from aworld.core.tool_action_journal import append_tool_action_event
+
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    append_tool_action_event(
+        context=Context(task_id="tool-only"),
+        event_type="sandbox_call_started",
+        actions=[{"tool_call_id": "tool-1", "action_name": "run_code"}],
+        status="in_progress",
+        path=run_dir / "tool_actions.journal.jsonl",
+    )
+
+    evidence = harness.recover_inflight_capture(run_dir)
+    partial = json.loads(run_dir.joinpath("raw_trajectory.partial.json").read_text())
+
+    assert evidence["classification"] == "tool_action_started_result_not_observed"
+    assert evidence["tool_action_journal"]["unresolved_started_batch_count"] == 1
+    assert evidence["tool_action_journal"]["event_type_counts"] == {
+        "sandbox_call_started": 1
+    }
+    assert partial["calls"] == []
+    assert len(partial["tool_events"]) == 1
+    assert partial["completion_state"] == "incomplete"
 
 
 def test_context_metrics_measure_real_provider_system_prefix_stability(tmp_path):

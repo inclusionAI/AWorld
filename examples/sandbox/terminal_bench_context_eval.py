@@ -28,6 +28,7 @@ import uuid
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
@@ -35,6 +36,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from aworld.evaluations.normalized_cost import NormalizedCostPolicy  # noqa: E402
 from aworld.core.llm_call_journal import read_llm_call_journal  # noqa: E402
+from aworld.core.tool_action_journal import read_tool_action_journal  # noqa: E402
 from examples.sandbox.docker_terminal_bench import (  # noqa: E402
     load_external_mcp_config,
 )
@@ -675,11 +677,36 @@ def recover_inflight_capture(run_dir: Path) -> dict:
     """Recover runtime-stage evidence without manufacturing a trajectory.
 
     A checksum-valid journal can prove that an LLM request reached a provider
-    boundary before an external timeout.  It cannot prove that a model response,
-    tool action, verifier reward, or Raw trajectory ever existed.
+    boundary before an external timeout.  The independent Tool journal can prove
+    only Tool phases that were actually appended; neither journal can manufacture
+    a missing model response, Tool result, verifier reward, or Raw trajectory.
     """
     journal_path = run_dir / "llm_calls.journal.jsonl"
     recovery = read_llm_call_journal(journal_path)
+    tool_journal_path = run_dir / "tool_actions.journal.jsonl"
+    tool_recovery = read_tool_action_journal(tool_journal_path)
+    tool_events = list(tool_recovery.events)
+    tool_event_counts: dict[str, int] = {}
+    tool_batch_phases: dict[str, set[str]] = {}
+    for event in tool_events:
+        event_type = str(event.get("event_type") or "unknown")
+        tool_event_counts[event_type] = tool_event_counts.get(event_type, 0) + 1
+        batch_id = event.get("batch_id")
+        if isinstance(batch_id, str) and batch_id:
+            tool_batch_phases.setdefault(batch_id, set()).add(event_type)
+    unresolved_tool_batches = sorted(
+        batch_id
+        for batch_id, phases in tool_batch_phases.items()
+        if "sandbox_call_started" in phases
+        and not phases.intersection(
+            {
+                "sandbox_call_completed",
+                "sandbox_call_failed",
+                "sandbox_transaction_resolved",
+                "tool_observation_recorded",
+            }
+        )
+    )
     final_calls_path = run_dir / "llm_calls.json"
     raw_trajectory_path = run_dir / "raw_trajectory.json"
     partial_trajectory_path = run_dir / "raw_trajectory.partial.json"
@@ -692,6 +719,13 @@ def recover_inflight_capture(run_dir: Path) -> dict:
             "raw_trajectory_available": raw_trajectory_path.exists(),
             "partial_raw_trajectory_available": partial_trajectory_path.exists(),
             "raw_trajectory_authority": "runtime_events_and_finalized_trajectory_projection",
+            "tool_action_journal": {
+                **tool_recovery.to_evidence(),
+                "journal_path": tool_journal_path.name,
+                "event_type_counts": dict(sorted(tool_event_counts.items())),
+                "unresolved_started_batch_count": len(unresolved_tool_batches),
+                "unresolved_started_batch_ids": unresolved_tool_batches,
+            },
         }
     )
     calls = list(recovery.merged_llm_calls)
@@ -776,6 +810,19 @@ def recover_inflight_capture(run_dir: Path) -> dict:
                 "trajectory_persistence_state": "not_applicable",
             }
         )
+    elif tool_recovery.available:
+        tool_only_classification = (
+            "tool_action_started_result_not_observed"
+            if unresolved_tool_batches
+            else "tool_action_observed_final_projection_missing"
+        )
+        evidence.update(
+            {
+                "classification": tool_only_classification,
+                "trajectory_generation_state": "partial_runtime_state_possible",
+                "trajectory_persistence_state": "undetermined_until_finalize",
+            }
+        )
     else:
         evidence.update(
             {
@@ -788,7 +835,9 @@ def recover_inflight_capture(run_dir: Path) -> dict:
     if recovery.available and not final_calls_path.exists():
         write_json(run_dir / "llm_calls.partial.json", calls)
         write_json(run_dir / "provider_calls.partial.json", attempted)
-    if recovery.available and calls and not raw_trajectory_path.exists():
+    if (
+        (recovery.available and calls) or tool_recovery.available
+    ) and not raw_trajectory_path.exists():
         # Preserve only journal-observed data.  The explicit partial schema
         # prevents this evidence from being mistaken for finalized ATIF output.
         write_json(
@@ -796,10 +845,13 @@ def recover_inflight_capture(run_dir: Path) -> dict:
             {
                 "schema_version": "aworld.raw-trajectory.partial/v1",
                 "completion_state": "incomplete",
-                "authority": "checksum_valid_append_only_llm_call_journal",
+                "authority": "checksum_valid_append_only_runtime_journals",
                 "journal_status": evidence.get("status"),
                 "valid_record_count": recovery.valid_record_count,
                 "calls": calls,
+                "tool_journal_status": tool_recovery.to_evidence()["status"],
+                "tool_valid_record_count": tool_recovery.valid_record_count,
+                "tool_events": tool_events,
             },
         )
         evidence["partial_raw_trajectory_available"] = True
@@ -842,42 +894,58 @@ def collect_context_metrics(run_dir: Path) -> dict:
     manifest = load_evidence(manifest_path, {}, "run_manifest_malformed")
     capture = manifest.get("capture") if isinstance(manifest, dict) else {}
     continuity = capture.get("llm_call_continuity") if isinstance(capture, dict) else {}
-    prompt_tokens = completion_tokens = cache_read_tokens = 0
-    provider_request_bytes = trace_match_count = 0
-    provider_prefix_hashes: list[str] = []
-    for call in provider_calls if isinstance(provider_calls, list) else []:
-        if not isinstance(call, dict):
-            continue
-        provider_request = call.get("provider_request") or {}
-        request = provider_request.get("payload") or call.get("request") or {}
-        request_messages = request.get("messages", []) if isinstance(request, dict) else []
-        stable_prefix = []
-        for message in request_messages if isinstance(request_messages, list) else []:
-            if not isinstance(message, dict) or message.get("role") != "system":
-                break
-            stable_prefix.append(message)
-        provider_prefix_hashes.append(canonical_json_digest(stable_prefix))
-        provider_request_bytes += len(
-            json.dumps(request, ensure_ascii=False, sort_keys=True, default=str).encode(
-                "utf-8"
+    def provider_metrics(calls: object) -> dict[str, Any]:
+        prompt_tokens = completion_tokens = cache_read_tokens = 0
+        provider_request_bytes = trace_match_count = 0
+        provider_prefix_hashes: list[str] = []
+        values = calls if isinstance(calls, list) else []
+        for call in values:
+            if not isinstance(call, dict):
+                continue
+            provider_request = call.get("provider_request") or {}
+            request = provider_request.get("payload") or call.get("request") or {}
+            request_messages = request.get("messages", []) if isinstance(request, dict) else []
+            stable_prefix = []
+            for message in request_messages if isinstance(request_messages, list) else []:
+                if not isinstance(message, dict) or message.get("role") != "system":
+                    break
+                stable_prefix.append(message)
+            provider_prefix_hashes.append(canonical_json_digest(stable_prefix))
+            provider_request_bytes += len(
+                json.dumps(request, ensure_ascii=False, sort_keys=True, default=str).encode(
+                    "utf-8"
+                )
             )
-        )
-        usage = call.get("usage_normalized") or call.get("usage") or {}
-        raw_usage = call.get("usage_raw") or usage
-        prompt_details = raw_usage.get("prompt_tokens_details") or {}
-        prompt_tokens += int(
-            usage.get("prompt_tokens") or usage.get("input_tokens") or 0
-        )
-        completion_tokens += int(
-            usage.get("completion_tokens") or usage.get("output_tokens") or 0
-        )
-        cache_read_tokens += int(
-            raw_usage.get("cache_hit_tokens")
-            or raw_usage.get("cache_read_input_tokens")
-            or prompt_details.get("cached_tokens")
-            or 0
-        )
-        trace_match_count += int(call.get("request_trace_match") is True)
+            usage = call.get("usage_normalized") or call.get("usage") or {}
+            raw_usage = call.get("usage_raw") or usage
+            prompt_details = raw_usage.get("prompt_tokens_details") or {}
+            prompt_tokens += int(
+                usage.get("prompt_tokens") or usage.get("input_tokens") or 0
+            )
+            completion_tokens += int(
+                usage.get("completion_tokens") or usage.get("output_tokens") or 0
+            )
+            cache_read_tokens += int(
+                raw_usage.get("cache_hit_tokens")
+                or raw_usage.get("cache_read_input_tokens")
+                or prompt_details.get("cached_tokens")
+                or 0
+            )
+            trace_match_count += int(call.get("request_trace_match") is True)
+        return {
+            "provider_request_bytes": provider_request_bytes,
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "cache_read_tokens": cache_read_tokens,
+            "provider_prefix_unique_count": len(set(provider_prefix_hashes)),
+            "provider_prefix_stable": bool(
+                provider_prefix_hashes and len(set(provider_prefix_hashes)) == 1
+            ),
+            "request_trace_match_count": trace_match_count,
+        }
+
+    complete_metrics = provider_metrics(provider_calls)
+    partial_metrics = provider_metrics(partial_provider_calls)
 
     artifact_paths = [
         path
@@ -885,6 +953,8 @@ def collect_context_metrics(run_dir: Path) -> dict:
         if path.is_file()
     ]
     journal_path = run_dir / "llm_calls.journal.jsonl"
+    tool_journal_path = run_dir / "tool_actions.journal.jsonl"
+    tool_recovery = read_tool_action_journal(tool_journal_path)
     partial_trajectory_valid = bool(
         partial_trajectory_path.exists()
         and isinstance(partial_trajectory, dict)
@@ -923,17 +993,22 @@ def collect_context_metrics(run_dir: Path) -> dict:
             if isinstance(recovery, dict)
             else 0
         ),
-        "provider_request_bytes": provider_request_bytes,
-        "prompt_tokens": prompt_tokens,
-        "completion_tokens": completion_tokens,
-        "cache_read_tokens": cache_read_tokens,
-        "provider_prefix_unique_count": len(set(provider_prefix_hashes)),
-        "provider_prefix_stable": bool(
-            provider_prefix_hashes and len(set(provider_prefix_hashes)) == 1
-        ),
-        "request_trace_match_count": trace_match_count,
+        **complete_metrics,
+        "partial_provider_request_bytes": partial_metrics["provider_request_bytes"],
+        "partial_prompt_tokens": partial_metrics["prompt_tokens"],
+        "partial_completion_tokens": partial_metrics["completion_tokens"],
+        "partial_cache_read_tokens": partial_metrics["cache_read_tokens"],
+        "partial_provider_prefix_unique_count": partial_metrics[
+            "provider_prefix_unique_count"
+        ],
+        "partial_provider_prefix_stable": partial_metrics[
+            "provider_prefix_stable"
+        ],
+        "partial_request_trace_match_count": partial_metrics[
+            "request_trace_match_count"
+        ],
         "request_trace_match_rate": (
-            trace_match_count / len(provider_calls)
+            complete_metrics["request_trace_match_count"] / len(provider_calls)
             if isinstance(provider_calls, list) and provider_calls
             else 0.0
         ),
@@ -952,6 +1027,15 @@ def collect_context_metrics(run_dir: Path) -> dict:
             if partial_trajectory_valid
             else 0
         ),
+        "partial_raw_trajectory_tool_event_count": (
+            len(partial_trajectory.get("tool_events", []))
+            if partial_trajectory_valid
+            else 0
+        ),
+        "tool_action_journal_bytes": (
+            tool_journal_path.stat().st_size if tool_journal_path.exists() else 0
+        ),
+        "tool_action_journal_valid_records": tool_recovery.valid_record_count,
         "capture_integrity_available": bool(
             isinstance(capture, dict)
             and capture.get("provider_capture_gate_passed") is True
@@ -1027,6 +1111,22 @@ def summarize_results(results: list[dict], baseline_variant: str) -> dict:
             ),
             "median_llm_call_journal_bytes": statistics.median(
                 result["context_metrics"].get("llm_call_journal_bytes", 0)
+                for result in variant_results
+            ),
+            "median_tool_action_journal_bytes": statistics.median(
+                result["context_metrics"].get("tool_action_journal_bytes", 0)
+                for result in variant_results
+            ),
+            "median_partial_provider_request_bytes": statistics.median(
+                result["context_metrics"].get("partial_provider_request_bytes", 0)
+                for result in variant_results
+            ),
+            "median_partial_prompt_tokens": statistics.median(
+                result["context_metrics"].get("partial_prompt_tokens", 0)
+                for result in variant_results
+            ),
+            "median_partial_cache_read_tokens": statistics.median(
+                result["context_metrics"].get("partial_cache_read_tokens", 0)
                 for result in variant_results
             ),
         }

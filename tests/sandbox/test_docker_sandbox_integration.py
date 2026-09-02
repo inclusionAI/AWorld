@@ -91,6 +91,112 @@ async def test_real_docker_failed_mutation_is_rolled_back(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_real_docker_opaque_successful_command_cannot_silently_delete_artifact(
+    tmp_path, monkeypatch,
+):
+    """Cover implicit executable side effects without naming a benchmark program."""
+    docker = shutil.which("docker")
+    if not docker:
+        pytest.skip("Docker executable is unavailable")
+    container = f"aworld-docker-implicit-loss-{uuid.uuid4().hex[:10]}"
+    started = subprocess.run(
+        [
+            docker,
+            "run",
+            "-d",
+            "--rm",
+            "--name",
+            container,
+            "-w",
+            "/workspace",
+            "alpine:3.20",
+            "sleep",
+            "infinity",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if started.returncode != 0:
+        pytest.skip(f"unable to start alpine: {started.stderr.strip()}")
+    sandbox = None
+    try:
+        subprocess.run(
+            [
+                docker,
+                "exec",
+                container,
+                "sh",
+                "-c",
+                (
+                    "printf original > protected.sidecar; "
+                    "printf '#!/bin/sh\\nrm -f /workspace/protected.sidecar\\n"
+                    "printf inspected\\n' > /usr/local/bin/opaque-reader; "
+                    "chmod +x /usr/local/bin/opaque-reader"
+                ),
+            ],
+            check=True,
+        )
+        sandbox = DockerSandbox(
+            container=container,
+            workdir="/workspace",
+            allowed_directories=["/workspace"],
+            destructive_checkpoint=True,
+            tracked_artifact_paths=["/workspace"],
+            checkpoint_directory=str(tmp_path / "checkpoints"),
+            reuse=False,
+        )
+        tool_journal = tmp_path / "tool_actions.journal.jsonl"
+        monkeypatch.setenv("AWORLD_TOOL_ACTION_JOURNAL_PATH", str(tool_journal))
+        context = AWorldContext(task_id="implicit-side-effect")
+        context.agent_info.current_agent_id = "integration-agent"
+        results = await sandbox.call_tool(
+            [
+                {
+                    "tool_name": "docker",
+                    "action_name": "run_code",
+                    "params": {
+                        "code": "opaque-reader",
+                        "output_format": "json",
+                    },
+                }
+            ],
+            context=context,
+        )
+
+        restored = subprocess.run(
+            [docker, "exec", container, "cat", "/workspace/protected.sidecar"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        receipt = results[0].metadata["context_management"]
+        assert restored.stdout == "original"
+        assert results[0].success is False
+        assert receipt["mutating_action"] is False
+        assert receipt["implicit_artifact_loss_detected"] is True
+        assert receipt["rollback_reason"] == "unexpected_implicit_artifact_loss"
+        assert receipt["rollback_performed"] is True
+        assert not list((tmp_path / "checkpoints").glob("*.tar"))
+        from aworld.core.tool_action_journal import read_tool_action_journal
+
+        recovery = read_tool_action_journal(tool_journal)
+        transaction = next(
+            event
+            for event in recovery.events
+            if event["event_type"] == "sandbox_transaction_resolved"
+        )
+        assert transaction["status"] == "rolled_back"
+        assert transaction["metadata"]["context_management"]["rollback_reason"] == (
+            "unexpected_implicit_artifact_loss"
+        )
+    finally:
+        if sandbox is not None:
+            await sandbox.cleanup()
+        subprocess.run([docker, "rm", "-f", container], capture_output=True)
+
+
+@pytest.mark.asyncio
 async def test_real_docker_tool_capability_matrix(monkeypatch, tmp_path, record_property):
     docker = shutil.which("docker")
     if not docker:

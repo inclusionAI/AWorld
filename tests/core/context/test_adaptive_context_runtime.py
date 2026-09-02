@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -7,6 +8,12 @@ from aworld.core.common import ActionModel, ActionResult, Observation
 from aworld.core.context.base import Context
 from aworld.core.context.compiler import (
     AdaptiveCheckpointReason,
+    ArtifactEvidence,
+    ArtifactRequirement,
+    CompletionContract,
+    CompletionMode,
+    SelfCheckEvidence,
+    ValidationCommand,
     compact_message_history,
     evaluate_adaptive_checkpoint,
     semantic_fingerprint,
@@ -56,10 +63,12 @@ def test_semantic_progress_detects_repetition_and_low_information_gain():
     state = semantic_progress_for_agent(context, agent_id="agent")
     assert state["repetition_count"] == 3
     assert state["low_information_gain_count"] == 3
+    assert state["no_goal_progress_count"] == 3
     acknowledge_semantic_checkpoint(context, agent_id="agent")
     state = semantic_progress_for_agent(context, agent_id="agent")
     assert state["repetition_count"] == 0
     assert state["low_information_gain_count"] == 0
+    assert state["no_goal_progress_count"] == 0
 
 
 def test_semantic_progress_resets_when_task_artifact_changes():
@@ -108,6 +117,110 @@ def test_semantic_progress_resets_when_task_artifact_changes():
     assert state["low_information_gain_count"] == 1
     assert state["artifact_fingerprint"] == "after"
     assert context.context_info["post_tool_progress_metrics"]["task_artifact_change_count"] == 1
+
+
+def test_diverse_tool_results_without_goal_evidence_trigger_progress_window():
+    context = Context(task_id="goal-progress")
+    action = ActionModel(
+        tool_name="terminal", action_name="run_code", params={"code": "inspect"}
+    )
+    for index in range(6):
+        state = record_semantic_tool_progress(
+            context,
+            tool_name="terminal",
+            agent_id="agent",
+            actions=[action.model_copy(update={"tool_call_id": f"call-{index}"})],
+            observation=Observation(
+                action_result=[ActionResult(content=f"novel result {index}", success=True)]
+            ),
+        )
+
+    assert state["low_information_gain_count"] == 1
+    assert state["no_goal_progress_count"] == 6
+    decision = evaluate_adaptive_checkpoint(
+        policy_name="adaptive",
+        prompt_tokens=10,
+        input_budget=100,
+        repetition_count=state["repetition_count"],
+        low_information_gain_count=state["low_information_gain_count"],
+        no_goal_progress_count=state["no_goal_progress_count"],
+        turn_epoch=7,
+        last_checkpoint_turn=None,
+    )
+    assert AdaptiveCheckpointReason.NO_GOAL_PROGRESS in decision.reasons
+
+
+def test_completion_progress_requires_positive_goal_evidence():
+    context = Context(task_id="completion-progress")
+    context.configure_completion_contract(
+        CompletionContract(
+            required_artifacts=(
+                ArtifactRequirement(requirement_id="output", path="/workspace/out"),
+            ),
+            immutable_inputs=(),
+            validation_commands=(
+                ValidationCommand(command_id="check", argv=("verify",)),
+            ),
+            max_evidence_age_seconds=None,
+            required_final_evidence=("final",),
+        ),
+        mode=CompletionMode.ENFORCE,
+    )
+    observed_at = datetime.now(timezone.utc)
+    context.record_completion_artifact(
+        ArtifactEvidence(
+            requirement_id="output",
+            exists=False,
+            content_hash=None,
+            observed_at=observed_at,
+        )
+    )
+    context.record_completion_self_check(
+        SelfCheckEvidence(
+            command_id="check",
+            exit_code=1,
+            output_hash=None,
+            observed_at=observed_at,
+        )
+    )
+    action = ActionModel(tool_name="terminal", action_name="run_code")
+    failed = record_semantic_tool_progress(
+        context,
+        tool_name="terminal",
+        agent_id="agent",
+        actions=[action],
+        observation=Observation(action_result=[ActionResult(success=False)]),
+    )
+    assert failed["completion_advanced"] is False
+    assert failed["no_goal_progress_count"] == 1
+
+    context.record_completion_artifact(
+        ArtifactEvidence(
+            requirement_id="output",
+            exists=True,
+            content_hash=None,
+            observed_at=observed_at,
+        )
+    )
+    context.record_completion_self_check(
+        SelfCheckEvidence(
+            command_id="check",
+            exit_code=0,
+            output_hash=None,
+            observed_at=observed_at,
+        )
+    )
+    context.record_completion_final_evidence("final")
+    satisfied = record_semantic_tool_progress(
+        context,
+        tool_name="terminal",
+        agent_id="agent",
+        actions=[action],
+        observation=Observation(action_result=[ActionResult(success=True)]),
+    )
+    assert satisfied["completion_advanced"] is True
+    assert satisfied["completion_score"][0] == 3
+    assert satisfied["no_goal_progress_count"] == 0
 
 
 def test_adaptive_policy_has_cooldown_and_budget_pressure_modes():
@@ -171,6 +284,44 @@ def test_compaction_retains_task_system_policy_and_recent_turns():
     assert receipt["removed_messages_hash"] not in marker["content"]
 
 
+def test_compaction_never_splits_assistant_tool_atomic_group():
+    messages = [
+        {"role": "system", "content": "policy"},
+        {"role": "user", "content": "task"},
+        {"role": "assistant", "content": "old"},
+        {"role": "tool", "tool_call_id": "older", "content": "old result"},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {"id": "call-a", "type": "function", "function": {"name": "a"}},
+                {"id": "call-b", "type": "function", "function": {"name": "b"}},
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call-a", "content": "a"},
+        {"role": "tool", "tool_call_id": "call-b", "content": "b"},
+    ]
+
+    compacted, receipt = compact_message_history(messages, keep_recent=1)
+
+    assert receipt is not None
+    roles_and_ids = [
+        (message["role"], message.get("tool_call_id")) for message in compacted
+    ]
+    assert ("assistant", None) in roles_and_ids
+    assert ("tool", "call-a") in roles_and_ids
+    assert ("tool", "call-b") in roles_and_ids
+    marker_index = next(
+        index
+        for index, message in enumerate(compacted)
+        if "AWorld compacted earlier" in message.get("content", "")
+    )
+    assistant_index = next(
+        index for index, message in enumerate(compacted) if message.get("tool_calls")
+    )
+    assert marker_index < assistant_index
+
+
 @pytest.mark.asyncio
 async def test_agent_adaptive_policy_performs_checkpoint_and_compaction(monkeypatch):
     agent = LLMAgent.__new__(LLMAgent)
@@ -213,3 +364,50 @@ async def test_agent_adaptive_policy_performs_checkpoint_and_compaction(monkeypa
     assert "repeated_operation" not in compacted[-1]["content"]
     state = context.context_info["adaptive_context_state:agent"]
     assert state["last_checkpoint_id"] == "checkpoint-1"
+
+
+@pytest.mark.asyncio
+async def test_agent_compacts_diverse_history_after_no_goal_progress(monkeypatch):
+    agent = LLMAgent.__new__(LLMAgent)
+    agent._id = "agent"
+    agent._llm = SimpleNamespace(
+        _context_checkpoint_policy="adaptive",
+        _context_input_budget=100_000,
+    )
+    context = Context(task_id="goal-window-runtime")
+    context.advance_context_lifecycle("next_turn")
+
+    async def snapshot():
+        context.advance_context_lifecycle("checkpoint")
+        return SimpleNamespace(id="goal-window-checkpoint")
+
+    monkeypatch.setattr(context, "snapshot", snapshot)
+    context.context_info["context_semantic_progress"] = {
+        "agent": {
+            "repetition_count": 1,
+            "low_information_gain_count": 1,
+            "no_goal_progress_count": 6,
+        }
+    }
+    messages = [
+        {"role": "system", "content": "policy"},
+        {"role": "user", "content": "task"},
+        *[
+            {"role": "assistant" if index % 2 == 0 else "tool", "content": f"unique {index}"}
+            for index in range(20)
+        ],
+    ]
+
+    compacted = await agent._apply_adaptive_context_policy(
+        context=context,
+        messages=messages,
+        context_compiler_mode="enforce",
+    )
+
+    assert len(compacted) <= 10
+    state = context.context_info["adaptive_context_state:agent"]
+    assert state["last_reasons"] == ["no_goal_progress"]
+    assert state["compaction_active"] is True
+    assert state["last_effective_prompt_tokens"] < state["last_prompt_tokens"]
+    assert state["last_estimated_saved_prompt_tokens"] > 0
+    assert state["decisions"][-1]["estimated_saved_prompt_tokens"] > 0

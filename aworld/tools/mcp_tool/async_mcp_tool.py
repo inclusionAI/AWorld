@@ -2,8 +2,6 @@
 # Copyright (c) 2025 inclusionAI.
 from typing import Any, Dict, Tuple, Union
 
-from aworld.core.context.base import Context
-
 from aworld.config.conf import ToolConfig, ConfigDict
 from aworld.core.common import ActionModel, Observation, ActionResult
 from aworld.core.event.base import Message
@@ -107,7 +105,17 @@ class McpTool(AsyncTool):
         try:
             if agent and agent.sandbox:
                 sand_box = agent.sandbox
-                action_results = await sand_box.mcpservers.call_tool(action_list=mcp_actions, task_id=task_id, session_id=session_id,context=message.context, event_message=message)
+                # Always enter through the sandbox abstraction.  Calling the
+                # underlying MCP transport directly bypasses generic runtime
+                # policies such as append-only action capture and artifact
+                # checkpoint/rollback.
+                action_results = await sand_box.call_tool(
+                    action_list=mcp_actions,
+                    task_id=task_id,
+                    session_id=session_id,
+                    context=message.context,
+                    event_message=message,
+                )
             else:
                 action_results, ignore = await self.action_executor.async_execute_action(mcp_actions)
             reward = 1
