@@ -11,9 +11,18 @@ from aworld.self_evolve.cli_ingestion import (
     _ingestion_mode,
     _validate_frozen_semantic_runtime_admission,
 )
-from aworld.self_evolve.controllers.screening_execution import _load_json_mapping
+from aworld.self_evolve.history_support import _load_json_mapping
 from aworld.self_evolve.credit_assignment import TargetSelectionReport
-from aworld.self_evolve.datasets import SelfEvolveEvalSourceConfig
+from aworld.self_evolve.datasets import (
+    SelfEvolveDataset,
+    SelfEvolveEvalSourceConfig,
+)
+from aworld.self_evolve.dataset_snapshot import (
+    CAMPAIGN_DATASET_SNAPSHOT_SCHEMA_VERSION,
+    dataset_recipe_from_dict,
+    load_campaign_dataset_snapshot,
+    load_campaign_dataset_snapshot_manifest,
+)
 from aworld.self_evolve.ingestion import (
     fingerprint_json as ingestion_fingerprint_json,
 )
@@ -28,12 +37,12 @@ from aworld.self_evolve.provenance import (
     load_target_provenance_payload,
 )
 from aworld.self_evolve.store import FilesystemSelfEvolveStore
+from aworld.self_evolve.run_history import (
+    _load_candidate_variant as _load_candidate_variant,
+    _load_structural_edit_intent as _load_structural_edit_intent,
+)
 from aworld.self_evolve.types import (
-    CandidateFileDelta,
-    CandidateVariant,
     SelfEvolveTargetRef,
-    SkillStructuralEditAction,
-    SkillStructuralEditIntent,
 )
 
 
@@ -81,97 +90,8 @@ def _stored_selected_candidate_id(report: Mapping[str, Any]) -> str:
     raise ValueError("stored run report does not identify a selected candidate")
 
 
-def _load_candidate_variant(path: Path) -> CandidateVariant:
-    payload = _load_json_mapping(path)
-    target_payload = payload.get("target")
-    if not isinstance(target_payload, Mapping):
-        raise ValueError(f"candidate JSON is missing target: {path}")
-    return CandidateVariant(
-        candidate_id=str(payload.get("candidate_id") or ""),
-        target=SelfEvolveTargetRef(
-            target_type=str(target_payload.get("target_type") or ""),
-            target_id=str(target_payload.get("target_id") or ""),
-            path=(
-                str(target_payload.get("path"))
-                if target_payload.get("path") is not None
-                else None
-            ),
-        ),
-        content=str(payload.get("content") or ""),
-        rationale=str(payload.get("rationale") or ""),
-        parent_candidate_ids=tuple(
-            str(item)
-            for item in payload.get("parent_candidate_ids", ())
-            if isinstance(item, str)
-        ),
-        target_fingerprint=(
-            str(payload.get("target_fingerprint"))
-            if payload.get("target_fingerprint") is not None
-            else None
-        ),
-        files=tuple(
-            CandidateFileDelta(
-                path=str(item.get("path") or ""),
-                operation=str(item.get("operation") or "upsert"),
-                content=(
-                    str(item.get("content"))
-                    if item.get("content") is not None
-                    else None
-                ),
-                executable=item.get("executable") is True,
-            )
-            for item in payload.get("files", ())
-            if isinstance(item, Mapping)
-        ),
-        structural_edit_intent=_load_structural_edit_intent(
-            payload.get("structural_edit_intent")
-        ),
-    )
 
 
-def _load_structural_edit_intent(
-    value: Any,
-) -> SkillStructuralEditIntent | None:
-    if not isinstance(value, Mapping):
-        return None
-    actions = value.get("actions")
-    if not isinstance(actions, list):
-        return None
-    try:
-        return SkillStructuralEditIntent(
-            schema_version=str(value.get("schema_version") or ""),
-            authority=str(value.get("authority") or ""),
-            authorization=str(value.get("authorization") or ""),
-            reason=str(value.get("reason") or ""),
-            base_content_fingerprint=str(
-                value.get("base_content_fingerprint") or ""
-            ),
-            candidate_content_fingerprint=str(
-                value.get("candidate_content_fingerprint") or ""
-            ),
-            actions=tuple(
-                SkillStructuralEditAction(
-                    action=str(item.get("action") or ""),
-                    section_path=tuple(
-                        str(part)
-                        for part in item.get("section_path", ())
-                        if isinstance(part, str)
-                    ),
-                    base_section_fingerprint=(
-                        str(item.get("base_section_fingerprint"))
-                        if item.get("base_section_fingerprint") is not None
-                        else None
-                    ),
-                    result_section_fingerprint=str(
-                        item.get("result_section_fingerprint") or ""
-                    ),
-                )
-                for item in actions
-                if isinstance(item, Mapping)
-            ),
-        )
-    except (TypeError, ValueError):
-        return None
 
 
 def _source_config_from_stored_dataset_recipe(
@@ -234,6 +154,62 @@ def _source_config_from_stored_dataset_recipe(
     )
     split_seed = str(payload.get("split_seed") or "self-evolve-default-split")
     return source_config, split_seed
+
+
+def _load_stored_campaign_dataset(
+    *,
+    store: FilesystemSelfEvolveStore,
+    source_run_path: Path,
+) -> SelfEvolveDataset | None:
+    """Restore the immutable campaign dataset used by the source run."""
+
+    recipe_payload = _load_json_mapping(source_run_path / "dataset_recipe.json")
+    source = recipe_payload.get("source")
+    if not isinstance(source, Mapping):
+        raise ValueError("stored dataset recipe is missing source")
+    reference = source.get("campaign_dataset_snapshot")
+    if not isinstance(reference, Mapping):
+        return None
+    if (
+        reference.get("schema_version")
+        != CAMPAIGN_DATASET_SNAPSHOT_SCHEMA_VERSION
+    ):
+        raise ValueError("stored campaign dataset snapshot schema is unsupported")
+    campaign_id = reference.get("campaign_id")
+    if not isinstance(campaign_id, str) or not campaign_id:
+        raise ValueError("stored campaign dataset snapshot is missing campaign_id")
+    campaign = store.read_campaign(campaign_id)
+    if source_run_path.name not in campaign.run_ids:
+        raise ValueError("stored run is not a member of its dataset campaign")
+    snapshot_path = store.campaign_path(campaign_id) / "dataset_snapshot"
+    manifest = load_campaign_dataset_snapshot_manifest(
+        snapshot_path,
+        expected_campaign_id=campaign_id,
+        expected_campaign_source_fingerprint=campaign.source_fingerprint,
+    )
+    expected_reference = {
+        "schema_version": manifest.get("schema_version"),
+        "storage_layout": manifest.get("storage_layout"),
+        "campaign_id": manifest.get("campaign_id"),
+        "case_count": manifest.get("case_count"),
+        "cases_size_bytes": manifest.get("cases_size_bytes"),
+        "snapshot_fingerprint": manifest.get("snapshot_fingerprint"),
+    }
+    for key, expected in expected_reference.items():
+        if reference.get(key) != expected:
+            raise ValueError(
+                "stored run campaign dataset reference does not match snapshot: "
+                f"{key}"
+            )
+    snapshot = load_campaign_dataset_snapshot(
+        snapshot_path,
+        expected_campaign_id=campaign_id,
+        expected_campaign_source_fingerprint=campaign.source_fingerprint,
+    )
+    return SelfEvolveDataset(
+        cases=snapshot.cases,
+        recipe=dataset_recipe_from_dict(recipe_payload),
+    )
 
 
 def _validate_agentic_rerun_ingestion_ref(source_run_path: Path) -> None:

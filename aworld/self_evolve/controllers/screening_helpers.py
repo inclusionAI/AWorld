@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import math
 from dataclasses import replace
-from decimal import Decimal
 from pathlib import Path
-from typing import Any, Callable, Iterable, Mapping
+from typing import Any, Iterable, Mapping
 
 from aworld.self_evolve.candidate_package import classify_candidate_mutation
 from aworld.self_evolve.datasets import EvalCase, SelfEvolveDataset
@@ -19,6 +17,10 @@ from aworld.self_evolve.failure_events import (
     ReplayExecutionStatus,
     ReplayFailureEvent,
 )
+from aworld.self_evolve.history_support import (
+    _non_negative_int as _non_negative_int,
+    _non_negative_screening_float as _non_negative_screening_float,
+)
 from aworld.self_evolve.replay import (
     AWorldCliCandidateReplayBackend,
     AWorldCliReplayExecutor,
@@ -27,18 +29,15 @@ from aworld.self_evolve.replay import (
     NormalizedReplayMembers,
     _is_replayable_user_task_case,
     normalize_replay_members,
-    replay_support_fingerprint,
-    replay_timeout_envelope_fingerprint,
 )
-from aworld.self_evolve.replay_adaptation import (
-    ReplayAdaptationBundle,
-    ReplayCapabilityRequirement,
-    replay_adaptation_semantic_fingerprint,
+from aworld.self_evolve.replay_adaptation import ReplayCapabilityRequirement
+from aworld.self_evolve.population_projection import (
+    _candidate_validation_report_for_persistence as _candidate_validation_report_for_persistence,
 )
-from aworld.self_evolve.replay_capability import (
-    replay_capability_semantic_fingerprint,
+from aworld.self_evolve.screening_observation_history import (
+    _record_support_specific_control_observation as _record_support_specific_control_observation,
 )
-from aworld.self_evolve.sanitization import public_diagnostic_projection
+from aworld.self_evolve.target_package import _stable_json_fingerprint
 from aworld.self_evolve.types import CandidateVariant, GateResult
 
 
@@ -49,22 +48,6 @@ _MAX_CANDIDATE_SCREENING_TIMEOUT_SECONDS = 300
 _DEFAULT_CANDIDATE_SCREENING_TRACE_HORIZON = 4
 _DEFAULT_CANDIDATE_SCREENING_TOOL_CALL_LIMIT = 8
 _SCREENING_STEP_TIMEOUT_SECONDS = 30
-
-
-def _non_negative_int(value: Any) -> int:
-    if isinstance(value, int) and not isinstance(value, bool):
-        return max(0, value)
-    return 0
-
-
-def _stable_json_fingerprint(value: Any) -> str:
-    encoded = json.dumps(
-        value,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
-    return "sha256:" + hashlib.sha256(encoded).hexdigest()
 
 
 def _screening_attempt_is_budget_censored(
@@ -900,12 +883,6 @@ def _combined_candidate_validation_report(
     return report
 
 
-def _candidate_validation_report_for_persistence(
-    value: object,
-) -> object:
-    """Use the shared recursive type-aware projection for persisted reports."""
-
-    return public_diagnostic_projection(value)
 
 
 def _candidate_screening_rank(
@@ -954,139 +931,6 @@ def _candidate_screening_rank_details(rank: tuple[int, ...]) -> dict[str, int]:
     return dict(zip(labels, rank, strict=True))
 
 
-def _control_qualification_identity(
-    *,
-    case_id: str,
-    baseline_skill_fingerprint: str,
-    replay_adaptation: ReplayAdaptationBundle,
-    timeout_seconds: float,
-    max_steps: int | None,
-    max_tool_calls: int | None,
-    replay_capability_fingerprint: Callable[[object], str] = (
-        replay_capability_semantic_fingerprint
-    ),
-    replay_adaptation_fingerprint: Callable[[object], str] = (
-        replay_adaptation_semantic_fingerprint
-    ),
-    support_fingerprint: Callable[[object], str | None] = (
-        replay_support_fingerprint
-    ),
-) -> dict[str, object]:
-    """Freeze the exact support and envelope used to qualify one control."""
-
-    capability = replay_adaptation.replay_capability
-    capability_package_fingerprint = (
-        capability.capability_package_fingerprint
-        if capability is not None
-        else "framework-only"
-    )
-    resolved_replay_capability_fingerprint = (
-        replay_capability_fingerprint(capability)
-        if capability is not None
-        else "framework-only"
-    )
-    resolved_support_fingerprint = support_fingerprint(replay_adaptation)
-    assert resolved_support_fingerprint is not None
-    timeout_fingerprint = replay_timeout_envelope_fingerprint(
-        timeout_seconds=timeout_seconds,
-        max_steps=max_steps,
-        max_tool_calls=max_tool_calls,
-    )
-    identity: dict[str, object] = {
-        "schema_version": "aworld.self_evolve.control_qualification_identity.v1",
-        "case_id": case_id,
-        "baseline_skill_fingerprint": baseline_skill_fingerprint,
-        "capability_package_fingerprint": capability_package_fingerprint,
-        "replay_capability_fingerprint": (
-            resolved_replay_capability_fingerprint
-        ),
-        "adaptation_fingerprint": replay_adaptation_fingerprint(
-            replay_adaptation
-        ),
-        "support_fingerprint": resolved_support_fingerprint,
-        "timeout_envelope_fingerprint": timeout_fingerprint,
-        "timeout_seconds": float(timeout_seconds),
-        "max_steps": max_steps,
-        "max_tool_calls": max_tool_calls,
-    }
-    encoded = json.dumps(
-        identity,
-        ensure_ascii=True,
-        separators=(",", ":"),
-        sort_keys=True,
-    ).encode("utf-8")
-    identity["control_identity_fingerprint"] = (
-        "sha256:" + hashlib.sha256(encoded).hexdigest()
-    )
-    return identity
-
-
-def _record_support_specific_control_observation(
-    observations: dict[str, dict[str, object]],
-    *,
-    identity: Mapping[str, object],
-    attempt: Mapping[str, object],
-) -> None:
-    fingerprint = identity.get("control_identity_fingerprint")
-    required_fields = (
-        "case_id",
-        "baseline_skill_fingerprint",
-        "capability_package_fingerprint",
-        "replay_capability_fingerprint",
-        "adaptation_fingerprint",
-        "support_fingerprint",
-        "timeout_envelope_fingerprint",
-    )
-    if (
-        not isinstance(fingerprint, str)
-        or not fingerprint
-        or any(not isinstance(identity.get(key), str) for key in required_fields)
-    ):
-        return
-    current = observations.setdefault(
-        fingerprint,
-        {
-            "identity": dict(identity),
-            "attempt_count": 0,
-            "baseline_attempt_count": 0,
-            "baseline_success_count": 0,
-            "baseline_timeout_count": 0,
-            "passed_count": 0,
-            "total_wall_seconds": 0.0,
-        },
-    )
-    if current.get("identity") != dict(identity):
-        return
-    details = attempt.get("details")
-    baseline_status = (
-        str(details.get("baseline_status") or "")
-        if isinstance(details, Mapping)
-        else ""
-    )
-    baseline_failure = (
-        details.get("baseline_failure")
-        if isinstance(details, Mapping)
-        else None
-    )
-    current["attempt_count"] = _non_negative_int(
-        current.get("attempt_count")
-    ) + 1
-    current["passed_count"] = _non_negative_int(
-        current.get("passed_count")
-    ) + int(attempt.get("passed") is True)
-    current["total_wall_seconds"] = _non_negative_screening_float(
-        current.get("total_wall_seconds")
-    ) + _non_negative_screening_float(attempt.get("wall_seconds"))
-    if baseline_status and baseline_status not in {"blocked", "not_run"}:
-        current["baseline_attempt_count"] = _non_negative_int(
-            current.get("baseline_attempt_count")
-        ) + 1
-        current["baseline_success_count"] = _non_negative_int(
-            current.get("baseline_success_count")
-        ) + int(baseline_status == ReplayExecutionStatus.SUCCEEDED.value)
-        current["baseline_timeout_count"] = _non_negative_int(
-            current.get("baseline_timeout_count")
-        ) + int(_framework_phase_timeout(baseline_failure))
 
 
 def _candidate_screening_dataset(
@@ -1670,15 +1514,6 @@ def _screening_termination_axis_counts(
         for axis in _screening_attempt_termination_axes(attempt):
             counts[axis] = counts.get(axis, 0) + 1
     return counts
-
-
-def _non_negative_screening_float(value: object) -> float:
-    if isinstance(value, bool) or not isinstance(value, (int, float, Decimal)):
-        return 0.0
-    result = float(value)
-    if not math.isfinite(result) or result < 0:
-        return 0.0
-    return result
 
 
 def _candidate_screening_qualification_case_limit(

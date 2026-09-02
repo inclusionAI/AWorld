@@ -44,10 +44,10 @@ from aworld.self_evolve.replay import (
     build_replay_request,
     candidate_replay_is_comparable,
 )
-from aworld.self_evolve.runner import (
-    SelfEvolveRunner,
-    _find_reusable_baseline_replay_dir,
+from aworld.self_evolve.controllers.screening_execution import (
+    find_reusable_baseline_replay_dir as _find_reusable_baseline_replay_dir,
 )
+from aworld.self_evolve.runner import SelfEvolveRunner
 from aworld.self_evolve.store import FilesystemSelfEvolveStore
 from aworld.self_evolve.targets import SkillTextTarget
 from aworld.self_evolve.types import (

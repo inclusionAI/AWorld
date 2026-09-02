@@ -5,9 +5,9 @@ import hashlib
 import json
 import os
 import uuid
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Iterable, Mapping, Sequence
 
 
 HANDBOOK_SCHEMA_VERSION = "aworld.self_evolve.handbook.v1"
@@ -81,11 +81,7 @@ class SourceLocator:
                 else None
             ),
             status=str(value.get("status") or LOCATOR_FROZEN),
-            error=(
-                str(value["error"])
-                if value.get("error") is not None
-                else None
-            ),
+            error=(str(value["error"]) if value.get("error") is not None else None),
         )
 
 
@@ -118,11 +114,7 @@ class HandbookModule:
                 if isinstance(item, Mapping)
             ),
             status=str(value.get("status") or LOCATOR_FROZEN),
-            error=(
-                str(value["error"])
-                if value.get("error") is not None
-                else None
-            ),
+            error=(str(value["error"]) if value.get("error") is not None else None),
         )
 
 
@@ -419,12 +411,14 @@ _COMPONENT_SPECS = (
             "aworld/self_evolve/candidate_protocol.py",
             "aworld/self_evolve/candidate_package.py",
             "aworld/self_evolve/repair_conformance.py",
+            "aworld/self_evolve/controllers/run_repair_conformance.py",
+            "aworld/self_evolve/controllers/run_capability_validation.py",
         ),
         (
             ("aworld/self_evolve/gates.py", "CandidatePackageGate"),
             (
-                "aworld/self_evolve/repair_conformance.py",
-                "compile_repair_conformance_contract",
+                "aworld/self_evolve/controllers/run_repair_conformance.py",
+                "preflight_candidate_repair_conformance",
             ),
         ),
     ),
@@ -436,12 +430,13 @@ _COMPONENT_SPECS = (
             "aworld/self_evolve/replay_adaptation.py",
             "aworld/self_evolve/replay_capability.py",
             "aworld/self_evolve/overlay.py",
+            "aworld/self_evolve/controllers/run_replay_adaptation.py",
         ),
         (
             ("aworld/self_evolve/replay.py", "build_replay_request"),
             (
-                "aworld/self_evolve/replay_adaptation.py",
-                "ReplayAdaptationCompiler.compile",
+                "aworld/self_evolve/controllers/run_replay_adaptation.py",
+                "prepare_replay_adaptation",
             ),
         ),
     ),
@@ -500,6 +495,15 @@ _COMPONENT_SPECS = (
         "Own the run/campaign state machine, budgets, scheduling, and terminal reports.",
         (
             "aworld/self_evolve/runner.py",
+            "aworld/self_evolve/controllers/run_lifecycle_execution.py",
+            "aworld/self_evolve/controllers/run_lifecycle_bootstrap_execution.py",
+            "aworld/self_evolve/controllers/run_lifecycle_iteration_execution.py",
+            "aworld/self_evolve/controllers/run_lifecycle_terminal_execution.py",
+            "aworld/self_evolve/controllers/run_phase_assembly.py",
+            "aworld/self_evolve/controllers/run_screening_phases.py",
+            "aworld/self_evolve/controllers/run_measurement_phases.py",
+            "aworld/self_evolve/controllers/run_candidate_phases.py",
+            "aworld/self_evolve/controllers/run_apply_phases.py",
             "aworld/self_evolve/campaign.py",
             "aworld/self_evolve/scheduler.py",
             "aworld/self_evolve/runtime.py",
@@ -507,6 +511,18 @@ _COMPONENT_SPECS = (
         ),
         (
             ("aworld/self_evolve/runner.py", "SelfEvolveRunner.run_explicit_target"),
+            (
+                "aworld/self_evolve/controllers/run_lifecycle_execution.py",
+                "RunLifecycleExecution.execute",
+            ),
+            (
+                "aworld/self_evolve/controllers/run_phase_assembly.py",
+                "assemble_run_phases",
+            ),
+            (
+                "aworld/self_evolve/controllers/run_candidate_phases.py",
+                "CandidatePhaseFactory._candidate_iteration_execution",
+            ),
             (
                 "aworld/self_evolve/campaign.py",
                 "SelfImprovementCampaignController.advance_once",
@@ -528,7 +544,12 @@ _STATE_SPECS = (
                 "SkillTextTarget.apply_candidate_variant",
             ),
         ),
-        (("aworld/self_evolve/runner.py", "SelfEvolveRunner._apply_auto_verified"),),
+        (
+            (
+                "aworld/self_evolve/controllers/run_apply_transaction.py",
+                "execute_apply_transaction",
+            ),
+        ),
         (),
         "Durable in candidate, campaign, provenance, and apply journal artifacts.",
     ),
@@ -537,21 +558,41 @@ _STATE_SPECS = (
         "Replay dependency and workspace identity held stable across candidates.",
         (
             (
-                "aworld/self_evolve/replay_adaptation.py",
-                "ReplayAdaptationCompiler.compile",
+                "aworld/self_evolve/controllers/run_replay_adaptation.py",
+                "ReplayAdaptationState",
             ),
         ),
-        (("aworld/self_evolve/runner.py", "SelfEvolveRunner._replay_selected_candidate"),),
-        (("aworld/self_evolve/runner.py", "SelfEvolveRunner._replay_selected_candidate"),),
-        (("aworld/self_evolve/runner.py", "_RunFailureCleanup.cleanup"),),
+        (
+            (
+                "aworld/self_evolve/controllers/run_replay_adaptation.py",
+                "prepare_replay_adaptation",
+            ),
+        ),
+        (
+            (
+                "aworld/self_evolve/replay_gates.py",
+                "_environment_fingerprint_drift_gate",
+            ),
+        ),
+        (
+            (
+                "aworld/self_evolve/controllers/run_replay_adaptation.py",
+                "ReplayAdaptationState.cleanup_run",
+            ),
+        ),
         "Run-scoped; durable fingerprint remains in replay evidence.",
     ),
     _StateSpec(
         "candidate_lineage",
         "Candidate ancestry, source disposition, lessons, and lifecycle outcome.",
         (("aworld/self_evolve/types.py", "OptimizerLineage"),),
-        (("aworld/self_evolve/runner.py", "_persist_lineage_lifecycle"),),
-        (("aworld/self_evolve/store.py", "FilesystemSelfEvolveStore.write_optimizer_lineage"),),
+        (("aworld/self_evolve/lineage_history.py", "_persist_lineage_lifecycle"),),
+        (
+            (
+                "aworld/self_evolve/store.py",
+                "FilesystemSelfEvolveStore.write_optimizer_lineage",
+            ),
+        ),
         (("aworld/self_evolve/lifecycle.py", "_candidate_materialization_paths"),),
         "Selected lineage is durable; non-selected materializations follow retention policy.",
     ),
@@ -560,16 +601,41 @@ _STATE_SPECS = (
         "Reservation, debit, release, and cumulative usage authority.",
         (("aworld/self_evolve/budget.py", "RunBudgetLedger"),),
         (("aworld/self_evolve/budget.py", "RunBudgetLedger.remaining"),),
-        (("aworld/self_evolve/runner.py", "_RunBudgetContext.debit"),),
-        (("aworld/self_evolve/runner.py", "_RunBudgetContext.release_all"),),
+        (
+            (
+                "aworld/self_evolve/controllers/run_resources.py",
+                "RunBudgetContext.debit",
+            ),
+        ),
+        (
+            (
+                "aworld/self_evolve/controllers/run_resources.py",
+                "RunBudgetContext.release_all",
+            ),
+        ),
         "Run report and campaign usage persist after outstanding reservations close.",
     ),
     _StateSpec(
         "apply_journal",
         "Crash-safe record of backup, application, verification, rollback, and publish.",
-        (("aworld/self_evolve/store.py", "FilesystemSelfEvolveStore.write_apply_backup"),),
-        (("aworld/self_evolve/store.py", "FilesystemSelfEvolveStore.recover_interrupted_apply"),),
-        (("aworld/self_evolve/store.py", "FilesystemSelfEvolveStore.update_apply_journal"),),
+        (
+            (
+                "aworld/self_evolve/store.py",
+                "FilesystemSelfEvolveStore.write_apply_backup",
+            ),
+        ),
+        (
+            (
+                "aworld/self_evolve/store.py",
+                "FilesystemSelfEvolveStore.recover_interrupted_apply",
+            ),
+        ),
+        (
+            (
+                "aworld/self_evolve/store.py",
+                "FilesystemSelfEvolveStore.update_apply_journal",
+            ),
+        ),
         (("aworld/self_evolve/lifecycle.py", "_has_interrupted_apply"),),
         "Durable while referenced by terminal report; interrupted journals block cleanup.",
     ),
@@ -645,13 +711,19 @@ _STAGE_SPECS = (
         "independent_regression",
         "evaluation",
         ("apply", "candidate_generation"),
-        ("aworld/self_evolve/regression.py", "RegressionEvidence"),
+        (
+            "aworld/self_evolve/controllers/run_regression_execution.py",
+            "execute_independent_regression",
+        ),
     ),
     _StageSpec(
         "apply",
         "apply",
         ("complete",),
-        ("aworld/self_evolve/runner.py", "SelfEvolveRunner._apply_auto_verified"),
+        (
+            "aworld/self_evolve/controllers/run_apply_transaction.py",
+            "execute_apply_transaction",
+        ),
     ),
     _StageSpec(
         "complete",
@@ -676,12 +748,13 @@ def refresh_handbook_snapshot(
     if not source_root.is_dir() or not source_root.is_relative_to(workspace):
         raise ValueError("self-evolve handbook source root is unavailable")
 
-    previous_modules = {
-        item.relative_path: item for item in previous.modules
-    } if previous is not None else {}
+    previous_modules = (
+        {item.relative_path: item for item in previous.modules}
+        if previous is not None
+        else {}
+    )
     explicitly_changed = {
-        _workspace_relative_path(workspace, value)
-        for value in changed_paths
+        _workspace_relative_path(workspace, value) for value in changed_paths
     }
     current_paths = {
         path.relative_to(workspace).as_posix(): path
@@ -746,9 +819,7 @@ def load_or_refresh_handbook(
         else Path(".aworld/self_evolve/handbook/snapshot.json")
     )
     path = (
-        requested_path
-        if requested_path.is_absolute()
-        else workspace / requested_path
+        requested_path if requested_path.is_absolute() else workspace / requested_path
     ).resolve(strict=False)
     if not path.is_relative_to(workspace) or path.is_symlink():
         raise ValueError("handbook snapshot path must remain inside the workspace")
@@ -835,14 +906,8 @@ def handbook_slice_for_target(
     selected_states = tuple(
         entry
         for entry in snapshot.state_register
-        if any(
-            locator.relative_path == relative_target
-            for locator in entry.locators
-        )
-        or any(
-            token in normalized_signals
-            for token in entry.state_id.split("_")
-        )
+        if any(locator.relative_path == relative_target for locator in entry.locators)
+        or any(token in normalized_signals for token in entry.state_id.split("_"))
     )
     selected_stages = tuple(
         stage for stage in snapshot.stages if stage.component_id in component_ids
@@ -890,9 +955,9 @@ def validate_source_locator(
     if _bytes_fingerprint(content) != locator.module_fingerprint:
         return False
     indexed = _index_module(locator.relative_path, content, locator.module_fingerprint)
-    current = {
-        item.qualified_symbol: item for item in indexed.locators
-    }.get(locator.qualified_symbol)
+    current = {item.qualified_symbol: item for item in indexed.locators}.get(
+        locator.qualified_symbol
+    )
     return current is not None and current == locator
 
 
@@ -917,7 +982,9 @@ def _index_module(
 
     def visit(nodes: Iterable[ast.stmt], prefix: str = "") -> None:
         for node in nodes:
-            if not isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+            if not isinstance(
+                node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
+            ):
                 continue
             qualified = f"{prefix}.{node.name}" if prefix else node.name
             start = node.lineno
@@ -982,8 +1049,7 @@ def _resolve_state_register(
     entries: list[StateRegisterEntry] = []
     for spec in _STATE_SPECS:
         resolve = lambda values: tuple(  # noqa: E731
-            _resolve_locator(locator_index, path, symbol)
-            for path, symbol in values
+            _resolve_locator(locator_index, path, symbol) for path, symbol in values
         )
         create = resolve(spec.create)
         read = resolve(spec.read)
@@ -1019,9 +1085,7 @@ def _resolve_stages(
             stage_id=spec.stage_id,
             component_id=spec.component_id,
             next_stages=spec.next_stages,
-            failure_exits=(
-                () if spec.terminal else (f"{spec.stage_id}_failed",)
-            ),
+            failure_exits=(() if spec.terminal else (f"{spec.stage_id}_failed",)),
             entry_locator=_resolve_locator(locator_index, *spec.entry),
             terminal=spec.terminal,
         )

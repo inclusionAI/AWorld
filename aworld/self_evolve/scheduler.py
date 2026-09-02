@@ -14,6 +14,7 @@ from aworld.config.conf import SelfEvolveConfig
 WriteJobCallable = Callable[[Path, Mapping[str, Any]], None]
 RunJobCallable = Callable[[Mapping[str, Any]], Mapping[str, Any] | None]
 RuntimeRegistryRefresher = Callable[[Any], Any]
+RuntimeEffectCompensator = Callable[[Any, object | None], Any]
 
 
 @dataclass(frozen=True)
@@ -126,13 +127,19 @@ class SelfEvolveJobWorker:
         workspace_root: str | Path,
         run_job: RunJobCallable | None = None,
         runtime_registry_refresher: RuntimeRegistryRefresher | None = None,
+        runtime_registry_compensator: RuntimeEffectCompensator | None = None,
+        runtime_skill_compensator: RuntimeEffectCompensator | None = None,
     ) -> None:
         self.workspace_root = Path(workspace_root)
         self.runtime_registry_refresher = runtime_registry_refresher
+        self.runtime_registry_compensator = runtime_registry_compensator
+        self.runtime_skill_compensator = runtime_skill_compensator
         self.run_job = run_job or (
             lambda payload: _run_framework_job(
                 payload,
                 runtime_registry_refresher=self.runtime_registry_refresher,
+                runtime_registry_compensator=self.runtime_registry_compensator,
+                runtime_skill_compensator=self.runtime_skill_compensator,
             )
         )
 
@@ -254,10 +261,14 @@ def drain_pending_self_evolve_jobs(
     workspace_root: str | Path,
     max_jobs: int | None = None,
     runtime_registry_refresher: RuntimeRegistryRefresher | None = None,
+    runtime_registry_compensator: RuntimeEffectCompensator | None = None,
+    runtime_skill_compensator: RuntimeEffectCompensator | None = None,
 ) -> int:
     return SelfEvolveJobWorker(
         workspace_root=workspace_root,
         runtime_registry_refresher=runtime_registry_refresher,
+        runtime_registry_compensator=runtime_registry_compensator,
+        runtime_skill_compensator=runtime_skill_compensator,
     ).drain_pending_jobs(max_jobs=max_jobs)
 
 
@@ -266,12 +277,21 @@ async def drain_pending_self_evolve_jobs_async(
     workspace_root: str | Path,
     max_jobs: int | None = None,
     runtime_registry_refresher: RuntimeRegistryRefresher | None = None,
+    runtime_registry_compensator: RuntimeEffectCompensator | None = None,
+    runtime_skill_compensator: RuntimeEffectCompensator | None = None,
 ) -> int:
+    drain_kwargs: dict[str, object] = {
+        "workspace_root": workspace_root,
+        "max_jobs": max_jobs,
+        "runtime_registry_refresher": runtime_registry_refresher,
+    }
+    if runtime_registry_compensator is not None:
+        drain_kwargs["runtime_registry_compensator"] = runtime_registry_compensator
+    if runtime_skill_compensator is not None:
+        drain_kwargs["runtime_skill_compensator"] = runtime_skill_compensator
     return await asyncio.to_thread(
         drain_pending_self_evolve_jobs,
-        workspace_root=workspace_root,
-        max_jobs=max_jobs,
-        runtime_registry_refresher=runtime_registry_refresher,
+        **drain_kwargs,
     )
 
 
@@ -279,6 +299,8 @@ def _run_framework_job(
     payload: Mapping[str, Any],
     *,
     runtime_registry_refresher: RuntimeRegistryRefresher | None = None,
+    runtime_registry_compensator: RuntimeEffectCompensator | None = None,
+    runtime_skill_compensator: RuntimeEffectCompensator | None = None,
 ) -> Mapping[str, Any]:
     from aworld.self_evolve.runner import optimize_from_cli_request
 
@@ -342,6 +364,8 @@ def _run_framework_job(
         challenger_enabled=config.challenger_enabled,
         challenger_max_cases=config.challenger_max_cases,
         runtime_registry_refresher=runtime_registry_refresher,
+        runtime_registry_compensator=runtime_registry_compensator,
+        runtime_skill_compensator=runtime_skill_compensator,
     )
     apply_policy = _effective_background_apply_policy(config)
     if (

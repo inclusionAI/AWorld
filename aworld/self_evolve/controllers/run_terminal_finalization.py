@@ -528,6 +528,13 @@ def finalize_terminal_run(
                 "provenance_path",
                 "source_request_run_id",
                 "source_request_candidate_id",
+                "source_dataset_fingerprint",
+                "current_dataset_fingerprint",
+                "dataset_fingerprint_matches",
+                "source_dataset_snapshot_fingerprint",
+                "current_dataset_snapshot_fingerprint",
+                "dataset_snapshot_fingerprint_matches",
+                "dataset_authority_matches",
                 "replay_case_count",
                 "normalized_member_count",
             )

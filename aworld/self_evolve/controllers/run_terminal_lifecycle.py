@@ -8,18 +8,28 @@ from aworld.self_evolve.campaign_policy import (
     campaign_measurement_outcome_for_replay as _campaign_measurement_outcome_for_replay,
     is_verified_apply_policy as _is_verified_apply_policy,
 )
-from aworld.self_evolve.cli_orchestration import (
+from aworld.self_evolve.feedback_history import (
     _gate_has_candidate_prerequisite_failure,
-    _target_runtime_skill_path,
 )
 from aworld.self_evolve.controllers.measurement import (
+    CandidateMeasurementController,
+    MeasurementSearchProjectionExecution,
+    MeasurementSearchProjectionRequest,
     measurement_promotion_gate as _measurement_promotion_gate,
 )
+from aworld.self_evolve.controllers.run_apply_transaction import (
+    ApplyTransactionExecution,
+    ApplyTransactionRequest,
+)
+from aworld.self_evolve.controllers.run_verified_only_apply import (
+    VerifiedOnlyApplyExecution,
+    VerifiedOnlyApplyRequest,
+)
 from aworld.self_evolve.controllers.run_generation_helpers import (
-    _SEMANTIC_DEDUP_IDENTITY_VERSION,
     _VERIFICATION_CONTRACT_VERSION,
     _typed_repair_frontiers,
 )
+from aworld.self_evolve.controllers.run_budget_support import _execution_usage_report
 from aworld.self_evolve.controllers.run_iteration_helpers import (
     _infrastructure_prevented_comparable_evaluation,
 )
@@ -53,6 +63,34 @@ from aworld.self_evolve.controllers.screening_execution import (
 from aworld.self_evolve.datasets import SelfEvolveDataset
 from aworld.self_evolve.measurement import MeasurementPolicyMode, MeasurementSummary
 from aworld.self_evolve.optimizers.base import CandidateSourceDisposition
+from aworld.self_evolve.replay_gates import _gate_blocks_measurement_materialization
+from aworld.self_evolve.run_failure_attribution import (
+    _campaign_failure_attribution,
+    _candidate_generation_failure_events,
+    _candidate_policy_filter_outcomes,
+    _candidate_policy_frontier_stalled_event,
+    _optimizer_iteration_diagnostics,
+    _rejection_attribution,
+    _resolved_conformance_contract_fingerprints,
+    _status_without_selected_candidate,
+    _terminal_cause,
+)
+from aworld.self_evolve.iteration_selection import _select_iteration_state
+from aworld.self_evolve.lineage_history import (
+    _lineage_addressed_lesson_ids,
+    _persist_lineage_lifecycle,
+)
+from aworld.self_evolve.population_projection import _population_report
+from aworld.self_evolve.run_history import _SEMANTIC_DEDUP_IDENTITY_VERSION
+from aworld.self_evolve.run_reporting import (
+    _acceptance_confidence_report,
+    _evaluator_report_paths,
+    _no_op_report,
+    _repair_frontier_state_report,
+    _replay_capability_report,
+    _replay_report,
+    _trajectory_set_report,
+)
 from aworld.self_evolve.provenance import InferredNewSkillPolicy, TargetMutationIntent
 from aworld.self_evolve.replay import CandidateReplayResult
 from aworld.self_evolve.skill_evolution_contract import (
@@ -60,6 +98,7 @@ from aworld.self_evolve.skill_evolution_contract import (
     evaluate_skill_evolution_replay,
 )
 from aworld.self_evolve.store import FilesystemSelfEvolveStore
+from aworld.self_evolve.target_package import _target_runtime_skill_path
 from aworld.self_evolve.targets import DraftSkillTextTarget, SelfEvolveTarget
 from aworld.self_evolve.trace_pack import TracePack
 from aworld.self_evolve.types import (
@@ -73,29 +112,7 @@ from aworld.self_evolve.types import (
 
 @dataclass(frozen=True)
 class RunTerminalLifecycleServices:
-    _acceptance_confidence_report: Callable[..., Any]
-    _campaign_failure_attribution: Callable[..., Any]
-    _candidate_generation_failure_events: Callable[..., Any]
-    _candidate_policy_filter_outcomes: Callable[..., Any]
-    _candidate_policy_frontier_stalled_event: Callable[..., Any]
-    _evaluator_report_paths: Callable[..., Any]
-    _execution_usage_report: Callable[..., Any]
     _finalize_run_report: Callable[..., Any]
-    _gate_blocks_measurement_materialization: Callable[..., Any]
-    _lineage_addressed_lesson_ids: Callable[..., Any]
-    _no_op_report: Callable[..., Any]
-    _optimizer_iteration_diagnostics: Callable[..., Any]
-    _persist_lineage_lifecycle: Callable[..., Any]
-    _population_report: Callable[..., Any]
-    _rejection_attribution: Callable[..., Any]
-    _repair_frontier_state_report: Callable[..., Any]
-    _replay_capability_report: Callable[..., Any]
-    _replay_report: Callable[..., Any]
-    _resolved_conformance_contract_fingerprints: Callable[..., Any]
-    _select_iteration_state: Callable[..., Any]
-    _status_without_selected_candidate: Callable[..., Any]
-    _terminal_cause: Callable[..., Any]
-    _trajectory_set_report: Callable[..., Any]
 
 
 @dataclass(frozen=True)
@@ -119,10 +136,14 @@ class RunTerminalLifecycleRuntime:
     replay_candidate_limit: int
     regression_suites: tuple[Any, ...]
     deprecated_config_mappings: Mapping[str, object]
-    _materialize_candidate_measurement: Callable[..., Any]
-    _attach_measurement_search_performance: Callable[..., Any]
-    _apply_auto_verified: Callable[..., Any]
-    _apply_verified_only: Callable[..., Any]
+    measurement_controller: CandidateMeasurementController
+    measurement_search_projection: MeasurementSearchProjectionExecution
+    auto_apply: ApplyTransactionExecution | None
+    verified_only_apply: VerifiedOnlyApplyExecution
+    runtime_registry_compensator: Callable[..., Any] | None = None
+    runtime_skill_compensator: Callable[..., Any] | None = None
+    auto_apply_override: Callable[..., Any] | None = None
+    verified_only_apply_override: Callable[..., Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -231,7 +252,7 @@ async def execute_terminal_lifecycle(
         if shared_validation_gate is not None
         else run_state.select_iteration_evidence(
             fresh_evaluation_required=fresh_evaluation_required,
-            selector=services._select_iteration_state,
+            selector=_select_iteration_state,
         )
     )
     selected_state = (
@@ -258,12 +279,12 @@ async def execute_terminal_lifecycle(
         )
         candidate_generation_failure_events = (
             (
-                services._candidate_policy_frontier_stalled_event(
+                _candidate_policy_frontier_stalled_event(
                     run_state.generation.last_policy_filter_outcomes
                 ),
             )
             if run_state.generation.policy_frontier_exhausted
-            else services._candidate_generation_failure_events(optimizer_diagnostics)
+            else _candidate_generation_failure_events(optimizer_diagnostics)
         )
         candidate_generation_failure_event = (
             candidate_generation_failure_events[0]
@@ -338,7 +359,7 @@ async def execute_terminal_lifecycle(
         ),
         runtime=TerminalSelectionRuntime(
             candidate_prerequisite_failure=_gate_has_candidate_prerequisite_failure,
-            measurement_materialization_blocked=services._gate_blocks_measurement_materialization,
+            measurement_materialization_blocked=_gate_blocks_measurement_materialization,
         ),
     )
     gate_results = list(terminal_selection.gate_results)
@@ -363,7 +384,7 @@ async def execute_terminal_lifecycle(
                 if experiment is not None:
                     try:
                         measurement_summary = (
-                            runtime._materialize_candidate_measurement(
+                            runtime.measurement_controller.materialize_candidate(
                                 experiment=experiment,
                                 materialization_run_id=run_id,
                                 candidate=state_candidate,
@@ -451,7 +472,7 @@ async def execute_terminal_lifecycle(
         )
         if fallback_experiment is not None:
             try:
-                measurement_summary = runtime._materialize_candidate_measurement(
+                measurement_summary = runtime.measurement_controller.materialize_candidate(
                     experiment=fallback_experiment,
                     materialization_run_id=run_id,
                     candidate=fallback_candidate,
@@ -483,12 +504,14 @@ async def execute_terminal_lifecycle(
                     )
     if measurement_summary is not None:
         try:
-            measurement_summary = runtime._attach_measurement_search_performance(
-                run_id=run_id,
-                summary=measurement_summary,
-                candidates=all_candidates,
-                iteration_reports=iteration_reports,
-            )
+            measurement_summary = runtime.measurement_search_projection.execute(
+                MeasurementSearchProjectionRequest(
+                    run_id=run_id,
+                    summary=measurement_summary,
+                    candidates=tuple(all_candidates),
+                    iteration_reports=tuple(iteration_reports),
+                )
+            ).summary
         except (OSError, TypeError, ValueError):
             pass
     skill_evolution_progress: dict[str, object] | None = None
@@ -547,7 +570,7 @@ async def execute_terminal_lifecycle(
         runtime=TerminalPromotionRuntime(
             verified_apply_policy=_is_verified_apply_policy,
             infrastructure_prevented_comparable_evaluation=_infrastructure_prevented_comparable_evaluation,
-            status_without_selected_candidate=services._status_without_selected_candidate,
+            status_without_selected_candidate=_status_without_selected_candidate,
         ),
     )
     final_status = promotion_plan.final_status
@@ -560,20 +583,48 @@ async def execute_terminal_lifecycle(
             "expected_package_fingerprint": replay_result.request.verified_candidate_package_fingerprint
             if replay_result is not None
             else None,
-            "addressed_lesson_ids": services._lineage_addressed_lesson_ids(
+            "addressed_lesson_ids": _lineage_addressed_lesson_ids(
                 optimizer_lineage_paths_by_candidate.get(
                     selected_candidate.candidate_id
                 )
             ),
         }
         if apply_policy == "verified_only":
-            post_apply = await runtime._apply_verified_only(
-                run_id, target, selected_candidate, **apply_kwargs
-            )
+            if runtime.verified_only_apply_override is not None:
+                post_apply = await runtime.verified_only_apply_override(
+                    run_id, target, selected_candidate, **apply_kwargs
+                )
+            else:
+                post_apply = (
+                    await runtime.verified_only_apply.execute(
+                        VerifiedOnlyApplyRequest(
+                            run_id=run_id,
+                            target=target,
+                            candidate=selected_candidate,
+                            **apply_kwargs,
+                        )
+                    )
+                ).report
         else:
-            post_apply = await runtime._apply_auto_verified(
-                run_id, target, selected_candidate, **apply_kwargs
-            )
+            if runtime.auto_apply_override is not None:
+                post_apply = await runtime.auto_apply_override(
+                    run_id, target, selected_candidate, **apply_kwargs
+                )
+            else:
+                if runtime.auto_apply is None:
+                    raise ValueError(
+                        "auto_verified apply policy requires post_apply_evaluator"
+                    )
+                post_apply = (
+                    await runtime.auto_apply.execute(
+                        ApplyTransactionRequest(
+                            run_id=run_id,
+                            target=target,
+                            candidate=selected_candidate,
+                            **apply_kwargs,
+                        )
+                    )
+                ).report
         final_status = settle_post_apply_status(final_status, post_apply)
     if inferred_draft_creation:
         published = (
@@ -625,7 +676,7 @@ async def execute_terminal_lifecycle(
             )
             runtime.store.write_target_selection_report(run_id, target_selection_report)
     if optimizer_lineage_paths_by_candidate:
-        services._persist_lineage_lifecycle(
+        _persist_lineage_lifecycle(
             optimizer_lineage_paths_by_candidate,
             iteration_states=iteration_states,
             attempt_events=runtime.store.read_all_candidate_attempt_events(run_id),
@@ -678,7 +729,7 @@ async def execute_terminal_lifecycle(
         "iterations": iteration_reports,
         "execution": {
             "stages": execution_stages,
-            "total_usage": services._execution_usage_report(
+            "total_usage": _execution_usage_report(
                 optimizer_diagnostics=optimizer_diagnostics,
                 iteration_states=iteration_states,
                 stages=execution_stages,
@@ -711,8 +762,8 @@ async def execute_terminal_lifecycle(
                 unique_generated_candidate_count=len(all_candidates),
                 policy_filtered_candidate_count=sum(
                     (
-                        len(services._candidate_policy_filter_outcomes(diagnostics))
-                        for diagnostics in services._optimizer_iteration_diagnostics(
+                        len(_candidate_policy_filter_outcomes(diagnostics))
+                        for diagnostics in _optimizer_iteration_diagnostics(
                             optimizer_diagnostics
                         )
                     )
@@ -723,7 +774,7 @@ async def execute_terminal_lifecycle(
             )
         ),
         "handbook_slice": latest_handbook_slice,
-        "repair_frontier_state": services._repair_frontier_state_report(
+        "repair_frontier_state": _repair_frontier_state_report(
             store=runtime.store,
             target=target.identity,
             current_run_id=run_id,
@@ -754,7 +805,7 @@ async def execute_terminal_lifecycle(
             gate_results=tuple(gate_results),
         ),
         candidate_prerequisite_failure=_gate_has_candidate_prerequisite_failure,
-        measurement_materialization_blocked=services._gate_blocks_measurement_materialization,
+        measurement_materialization_blocked=_gate_blocks_measurement_materialization,
     )
     if measurement_report is not None:
         report["measurement"] = measurement_report
@@ -800,19 +851,19 @@ async def execute_terminal_lifecycle(
         ),
         runtime=TerminalFinalizationRuntime(
             store=runtime.store,
-            terminal_cause=services._terminal_cause,
-            rejection_attribution=services._rejection_attribution,
-            resolved_contract_fingerprints=services._resolved_conformance_contract_fingerprints,
-            campaign_failure_attribution=services._campaign_failure_attribution,
-            trajectory_set_report=services._trajectory_set_report,
-            population_report=services._population_report,
-            no_op_report=services._no_op_report,
-            replay_report=services._replay_report,
+            terminal_cause=_terminal_cause,
+            rejection_attribution=_rejection_attribution,
+            resolved_contract_fingerprints=_resolved_conformance_contract_fingerprints,
+            campaign_failure_attribution=_campaign_failure_attribution,
+            trajectory_set_report=_trajectory_set_report,
+            population_report=_population_report,
+            no_op_report=_no_op_report,
+            replay_report=_replay_report,
             replay_artifact_path=_replay_artifact_path,
             campaign_measurement_outcome=_campaign_measurement_outcome_for_replay,
-            replay_capability_report=services._replay_capability_report,
-            evaluator_report_paths=services._evaluator_report_paths,
-            acceptance_confidence_report=services._acceptance_confidence_report,
+            replay_capability_report=_replay_capability_report,
+            evaluator_report_paths=_evaluator_report_paths,
+            acceptance_confidence_report=_acceptance_confidence_report,
             finalize_run_report=services._finalize_run_report,
         ),
     )

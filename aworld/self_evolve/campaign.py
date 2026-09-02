@@ -62,7 +62,9 @@ _RUNTIME_ONLY_REQUEST_KEYS = {
     "progress_callback",
     "replay_adaptation_compiler",
     "runtime_registry_refresher",
+    "runtime_registry_compensator",
     "runtime_skill_activator",
+    "runtime_skill_compensator",
 }
 _SOURCE_REQUEST_KEYS = {
     "batch_config",

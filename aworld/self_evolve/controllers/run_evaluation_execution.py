@@ -29,9 +29,15 @@ from aworld.self_evolve.controllers.run_execution import (
 from aworld.self_evolve.controllers.run_replay_execution import (
     CandidateReplayExecutionResult,
 )
+from aworld.self_evolve.controllers.run_regression_execution import (
+    RegressionExecution,
+    RegressionExecutionRequest,
+)
 from aworld.self_evolve.controllers.screening_execution import (
     _budget_usage_for_attempt_event,
     _emit_progress,
+)
+from aworld.self_evolve.controllers.run_telemetry import (
     _stage_telemetry_usage_delta,
     _stage_telemetry_usage_snapshot,
 )
@@ -39,6 +45,15 @@ from aworld.self_evolve.evaluation import (
     EvaluationBackend,
     EvaluationRequest,
     determine_candidate_confidence,
+)
+from aworld.self_evolve.evaluation_reporting import (
+    _accumulate_score_evidence,
+    _evidence_quality_gate,
+    _summary_with_replay_evidence_metrics,
+)
+from aworld.self_evolve.controllers.run_budget_support import (
+    _judge_actual_token_usage,
+    _same_evaluation_execution,
 )
 from aworld.self_evolve.gates import (
     CostLatencyRegressionGate,
@@ -51,6 +66,7 @@ from aworld.self_evolve.gates import (
     ScoreImprovementGate,
 )
 from aworld.self_evolve.regression import RegressionEvidence
+from aworld.self_evolve.replay_gates import _replay_stability_gate
 from aworld.self_evolve.types import EvaluationSummary, GateResult
 
 
@@ -138,16 +154,16 @@ class CandidateEvaluationExecutionRuntime:
     progress_callback: Callable[[str, str], Any] | None
     evaluate_pair: EvaluatePair
     evaluate_variant: EvaluateVariant
-    merge_replay_evidence: MergeReplayEvidence
-    evidence_quality_gate: EvidenceQualityGateBuilder
-    accumulate_score_evidence: AccumulateScoreEvidence
-    replay_stability_gate: ReplayStabilityGateBuilder
-    same_evaluation_execution: SameEvaluationExecution
-    judge_actual_token_usage: JudgeActualTokenUsage
-    evaluate_independent_regression: IndependentRegressionEvaluator
+    evaluate_independent_regression: RegressionExecution | IndependentRegressionEvaluator
     gate_is_replay_infrastructure_failure: (
         ReplayInfrastructureFailurePredicate
     )
+    merge_replay_evidence: MergeReplayEvidence = _summary_with_replay_evidence_metrics
+    evidence_quality_gate: EvidenceQualityGateBuilder = _evidence_quality_gate
+    accumulate_score_evidence: AccumulateScoreEvidence = _accumulate_score_evidence
+    replay_stability_gate: ReplayStabilityGateBuilder = _replay_stability_gate
+    same_evaluation_execution: SameEvaluationExecution = _same_evaluation_execution
+    judge_actual_token_usage: JudgeActualTokenUsage = _judge_actual_token_usage
 
     def __post_init__(self) -> None:
         if (
@@ -165,11 +181,16 @@ class CandidateEvaluationExecutionRuntime:
             "replay_stability_gate",
             "same_evaluation_execution",
             "judge_actual_token_usage",
-            "evaluate_independent_regression",
             "gate_is_replay_infrastructure_failure",
         ):
             if not callable(getattr(self, field_name)):
                 raise TypeError(f"{field_name} must be callable")
+        if not isinstance(self.evaluate_independent_regression, RegressionExecution) and (
+            not callable(self.evaluate_independent_regression)
+        ):
+            raise TypeError(
+                "evaluate_independent_regression must be a typed execution or callable"
+            )
         if not isinstance(
             self.execution_telemetry,
             SelfEvolveExecutionTelemetry,
@@ -548,18 +569,36 @@ async def execute_candidate_evaluation(
                         ]
                         gate_results.extend(pre_regression_gates)
                         if all(gate.passed for gate in pre_regression_gates):
-                            (
-                                regression_evidence,
-                                challenge_report,
-                                challenger_gate,
-                            ) = await runtime.evaluate_independent_regression(
-                                run_id=evaluation.run_id,
-                                target=evaluation.target,
-                                selection_dataset=evaluation.dataset,
-                                candidate=evaluation.candidate,
-                                apply_policy=evaluation.apply_policy,
-                                budget_context=budget_context,
-                            )
+                            regression_executor = runtime.evaluate_independent_regression
+                            if isinstance(regression_executor, RegressionExecution):
+                                regression_result = await regression_executor.execute(
+                                    RegressionExecutionRequest(
+                                        run_id=evaluation.run_id,
+                                        target=evaluation.target,
+                                        selection_dataset=evaluation.dataset,
+                                        candidate=evaluation.candidate,
+                                        apply_policy=evaluation.apply_policy,
+                                        budget_context=budget_context,
+                                    )
+                                )
+                                (
+                                    regression_evidence,
+                                    challenge_report,
+                                    challenger_gate,
+                                ) = regression_result.as_tuple()
+                            else:
+                                (
+                                    regression_evidence,
+                                    challenge_report,
+                                    challenger_gate,
+                                ) = await regression_executor(
+                                    run_id=evaluation.run_id,
+                                    target=evaluation.target,
+                                    selection_dataset=evaluation.dataset,
+                                    candidate=evaluation.candidate,
+                                    apply_policy=evaluation.apply_policy,
+                                    budget_context=budget_context,
+                                )
                             gate_results.append(challenger_gate)
                             gate_results.append(
                                 GlobalRegressionBenchmarkGate().evaluate(

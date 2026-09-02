@@ -24,9 +24,11 @@ from aworld.self_evolve.controllers.measurement_execution_admission import (
 )
 from aworld.self_evolve.controllers.measurement_execution_datasets import (
     _authoritative_replay_dataset,
-    _control_qualification_identity_from_request,
     _partial_replay_evaluator_dataset,
     _prioritize_candidate_intervention_cases,
+)
+from aworld.self_evolve.screening_observation_history import (
+    _control_qualification_identity_from_request,
 )
 from aworld.self_evolve.controllers.measurement_execution_progress import (
     _replay_member_hard_deadline_seconds,
@@ -565,9 +567,26 @@ class PairedReplayExecutionController:
             replay_result.request.dataset_fingerprint
             == current_dataset_fingerprint
         )
+        current_snapshot_reference = dataset.recipe.source.get(
+            "campaign_dataset_snapshot"
+        )
+        current_snapshot_fingerprint = (
+            current_snapshot_reference.get("snapshot_fingerprint")
+            if isinstance(current_snapshot_reference, Mapping)
+            else None
+        )
+        dataset_snapshot_fingerprint_matches = bool(
+            disposition.source_dataset_snapshot_fingerprint is not None
+            and current_snapshot_fingerprint
+            == disposition.source_dataset_snapshot_fingerprint
+        )
+        dataset_authority_matches = bool(
+            dataset_fingerprint_matches
+            or dataset_snapshot_fingerprint_matches
+        )
         comparable = (
             source_provenance_matches
-            and dataset_fingerprint_matches
+            and dataset_authority_matches
             and candidate_replay_is_comparable(
                 dataset=dataset,
                 replay_result=replay_result,
@@ -591,6 +610,16 @@ class PairedReplayExecutionController:
             "current_dataset_fingerprint": current_dataset_fingerprint,
             "source_provenance_matches": source_provenance_matches,
             "dataset_fingerprint_matches": dataset_fingerprint_matches,
+            "source_dataset_snapshot_fingerprint": (
+                disposition.source_dataset_snapshot_fingerprint
+            ),
+            "current_dataset_snapshot_fingerprint": (
+                current_snapshot_fingerprint
+            ),
+            "dataset_snapshot_fingerprint_matches": (
+                dataset_snapshot_fingerprint_matches
+            ),
+            "dataset_authority_matches": dataset_authority_matches,
             "replay_case_count": replay_case_count,
             "normalized_member_count": len(normalized.members),
             "comparable": comparable,
@@ -619,6 +648,16 @@ class PairedReplayExecutionController:
             "normalized_member_count": len(normalized.members),
             "source_provenance_matches": source_provenance_matches,
             "dataset_fingerprint_matches": dataset_fingerprint_matches,
+            "source_dataset_snapshot_fingerprint": (
+                disposition.source_dataset_snapshot_fingerprint
+            ),
+            "current_dataset_snapshot_fingerprint": (
+                current_snapshot_fingerprint
+            ),
+            "dataset_snapshot_fingerprint_matches": (
+                dataset_snapshot_fingerprint_matches
+            ),
+            "dataset_authority_matches": dataset_authority_matches,
             **_replay_gate_details(
                 replay_result,
                 dataset=dataset,

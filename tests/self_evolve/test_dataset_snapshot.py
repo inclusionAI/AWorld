@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-import aworld.self_evolve.runner as runner_module
+from aworld.self_evolve.cli_ingestion import _load_or_build_campaign_dataset
 from aworld.self_evolve.campaign import (
     SelfImprovementCampaignController,
     run_self_improvement_campaign,
@@ -111,7 +111,7 @@ def test_campaign_cycle_reuses_frozen_dataset_without_reparsing_source(
         kind="trajectory_log",
         path=str(source_path),
     )
-    original_builder = runner_module.build_dataset_from_source
+    original_builder = build_dataset_from_source
     build_count = 0
 
     def counted_builder(*args, **kwargs):
@@ -119,16 +119,11 @@ def test_campaign_cycle_reuses_frozen_dataset_without_reparsing_source(
         build_count += 1
         return original_builder(*args, **kwargs)
 
-    monkeypatch.setattr(
-        runner_module,
-        "build_dataset_from_source",
-        counted_builder,
-    )
     events: list[str] = []
     store = FilesystemSelfEvolveStore(tmp_path)
 
     first, snapshot_path, first_reused = (
-        runner_module._load_or_build_campaign_dataset(
+        _load_or_build_campaign_dataset(
             store=store,
             campaign_id=campaign.campaign_id,
             campaign_cycle=1,
@@ -136,10 +131,11 @@ def test_campaign_cycle_reuses_frozen_dataset_without_reparsing_source(
             current_trajectory=None,
             task_id=None,
             progress_callback=lambda _stage, message: events.append(message),
+            dataset_builder=counted_builder,
         )
     )
     second, second_path, second_reused = (
-        runner_module._load_or_build_campaign_dataset(
+        _load_or_build_campaign_dataset(
             store=store,
             campaign_id=campaign.campaign_id,
             campaign_cycle=1,
@@ -147,6 +143,7 @@ def test_campaign_cycle_reuses_frozen_dataset_without_reparsing_source(
             current_trajectory=None,
             task_id=None,
             progress_callback=lambda _stage, message: events.append(message),
+            dataset_builder=counted_builder,
         )
     )
 
@@ -199,7 +196,7 @@ def test_bounded_campaign_reuses_snapshot_across_real_cycle_checkpoints(
     tmp_path: Path,
 ) -> None:
     source_path = _trajectory_fixture()
-    original_builder = runner_module.build_dataset_from_source
+    original_builder = build_dataset_from_source
     build_count = 0
     reused: list[bool] = []
 
@@ -208,16 +205,11 @@ def test_bounded_campaign_reuses_snapshot_across_real_cycle_checkpoints(
         build_count += 1
         return original_builder(*args, **kwargs)
 
-    monkeypatch.setattr(
-        runner_module,
-        "build_dataset_from_source",
-        counted_builder,
-    )
 
     def run_once(**request):
         cycle = request["campaign_cycle"]
         run_id = f"{request['campaign_id']}-cycle-{cycle:03d}"
-        _, _, snapshot_reused = runner_module._load_or_build_campaign_dataset(
+        _, _, snapshot_reused = _load_or_build_campaign_dataset(
             store=FilesystemSelfEvolveStore(tmp_path),
             campaign_id=request["campaign_id"],
             campaign_cycle=cycle,
@@ -228,6 +220,7 @@ def test_bounded_campaign_reuses_snapshot_across_real_cycle_checkpoints(
             current_trajectory=None,
             task_id=None,
             progress_callback=None,
+            dataset_builder=counted_builder,
         )
         reused.append(snapshot_reused)
         report = {
@@ -324,7 +317,7 @@ def test_frozen_snapshot_decouples_later_cycles_from_raw_source_changes(
         }
     )
     store = FilesystemSelfEvolveStore(tmp_path)
-    first, _, _ = runner_module._load_or_build_campaign_dataset(
+    first, _, _ = _load_or_build_campaign_dataset(
         store=store,
         campaign_id=campaign.campaign_id,
         campaign_cycle=1,
@@ -339,7 +332,7 @@ def test_frozen_snapshot_decouples_later_cycles_from_raw_source_changes(
     source_path.write_text("changed after snapshot publication\n", encoding="utf-8")
 
     reloaded_campaign = controller.load(campaign.campaign_id)
-    second, _, reused = runner_module._load_or_build_campaign_dataset(
+    second, _, reused = _load_or_build_campaign_dataset(
         store=store,
         campaign_id=reloaded_campaign.campaign_id,
         campaign_cycle=1,

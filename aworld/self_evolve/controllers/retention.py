@@ -145,6 +145,46 @@ class ArtifactRetentionController:
         )
 
 
+def _retention_controller(
+    store: FilesystemSelfEvolveStore,
+    *,
+    cleanup: Callable[..., dict[str, object]] = cleanup_self_evolve_artifacts,
+) -> ArtifactRetentionController:
+    """Build retention with an explicit legacy cleanup injection seam."""
+
+    return ArtifactRetentionController(store=store, cleanup=cleanup)
+
+
+def _artifact_retention_report(
+    store: FilesystemSelfEvolveStore,
+    run_id: str,
+    *,
+    previous: Mapping[str, object] | None = None,
+    cleanup: Callable[..., dict[str, object]] = cleanup_self_evolve_artifacts,
+) -> dict[str, object]:
+    return _retention_controller(store, cleanup=cleanup).build_report(
+        run_id,
+        previous=previous,
+    )
+
+
+def _finalize_run_report(
+    store: FilesystemSelfEvolveStore,
+    run_id: str,
+    *,
+    report: dict[str, Any],
+    completed_run: SelfEvolveRun,
+    previous_artifact_retention: Mapping[str, object] | None = None,
+    cleanup: Callable[..., dict[str, object]] = cleanup_self_evolve_artifacts,
+) -> Path:
+    return _retention_controller(store, cleanup=cleanup).finalize_run_report(
+        run_id,
+        report=report,
+        completed_run=completed_run,
+        previous_artifact_retention=previous_artifact_retention,
+    )
+
+
 def finalize_run_report(
     store: FilesystemSelfEvolveStore,
     run_id: str,
@@ -155,7 +195,8 @@ def finalize_run_report(
 ) -> Path:
     """Compatibility function for callers migrating to the controller."""
 
-    return ArtifactRetentionController(store).finalize_run_report(
+    return _finalize_run_report(
+        store,
         run_id,
         report=report,
         completed_run=completed_run,
@@ -171,7 +212,8 @@ def artifact_retention_report(
 ) -> dict[str, object]:
     """Compatibility function for callers migrating to the controller."""
 
-    return ArtifactRetentionController(store).build_report(
+    return _artifact_retention_report(
+        store,
         run_id,
         previous=previous,
     )

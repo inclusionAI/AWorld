@@ -2,34 +2,28 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 from dataclasses import replace
 from typing import Callable, Mapping
 
-from aworld.self_evolve.controllers.screening_execution import _non_negative_int
-from aworld.self_evolve.controllers.screening_helpers import (
-    _control_qualification_identity as _screening_control_qualification_identity,
-)
 from aworld.self_evolve.datasets import EvalCase, SelfEvolveDataset
+from aworld.self_evolve.history_support import _non_negative_int as _non_negative_int
 from aworld.self_evolve.replay import (
-    CandidateReplayRequest,
     CandidateReplayResult,
     NormalizedReplayMembers,
     _replay_member_pair_is_comparable,
     build_paired_replay_dataset,
     candidate_replay_is_comparable,
     normalize_replay_members,
-    replay_support_fingerprint,
 )
 from aworld.self_evolve.replay_adaptation import (
     ReplayAdaptationBundle,
-    replay_adaptation_semantic_fingerprint,
-)
-from aworld.self_evolve.replay_capability import (
-    replay_capability_semantic_fingerprint,
 )
 from aworld.self_evolve.sanitization import sanitize_text
+from aworld.self_evolve.screening_observation_history import (
+    _control_qualification_identity as _control_qualification_identity,
+    _control_qualification_identity_from_request as _control_qualification_identity_from_request,
+)
 from aworld.self_evolve.types import CandidateVariant
 
 
@@ -40,37 +34,6 @@ _AUTHORITATIVE_CONTEXT_ASSISTANT_TURN_CHARS = 1_000
 _AUTHORITATIVE_CONTEXT_ASSISTANT_TURNS = 2
 _AUTHORITATIVE_SHORT_CONTINUATION_CHARS = 16
 _AUTHORITATIVE_SHORT_CONTINUATION_TURNS = 4
-
-
-def _control_qualification_identity(
-    *,
-    case_id: str,
-    baseline_skill_fingerprint: str,
-    replay_adaptation: ReplayAdaptationBundle,
-    timeout_seconds: float,
-    max_steps: int | None,
-    max_tool_calls: int | None,
-    capability_fingerprint: Callable[[object], str] = (
-        replay_capability_semantic_fingerprint
-    ),
-    adaptation_fingerprint: Callable[[object], str] = (
-        replay_adaptation_semantic_fingerprint
-    ),
-    support_fingerprint: Callable[[object], str] = replay_support_fingerprint,
-) -> dict[str, object]:
-    """Preserve the legacy Runner fingerprint injection seams."""
-
-    return _screening_control_qualification_identity(
-        case_id=case_id,
-        baseline_skill_fingerprint=baseline_skill_fingerprint,
-        replay_adaptation=replay_adaptation,
-        timeout_seconds=timeout_seconds,
-        max_steps=max_steps,
-        max_tool_calls=max_tool_calls,
-        replay_capability_fingerprint=capability_fingerprint,
-        replay_adaptation_fingerprint=adaptation_fingerprint,
-        support_fingerprint=support_fingerprint,
-    )
 
 
 def _partial_replay_evaluator_dataset(
@@ -164,66 +127,8 @@ def _partial_replay_evaluator_dataset(
     )
 
 
-def _control_qualification_identity_from_request(
-    request: CandidateReplayRequest,
-) -> dict[str, object] | None:
-    adaptation = request.replay_adaptation
-    if (
-        adaptation is None
-        or request.baseline_skill_fingerprint is None
-        or request.timeout_seconds is None
-        or request.support_fingerprint is None
-        or request.timeout_envelope_fingerprint is None
-    ):
-        return None
-    identity = _control_qualification_identity(
-        case_id=request.task_id,
-        baseline_skill_fingerprint=request.baseline_skill_fingerprint,
-        replay_adaptation=adaptation,
-        timeout_seconds=request.timeout_seconds,
-        max_steps=request.max_steps,
-        max_tool_calls=request.max_tool_calls,
-    )
-    compatible_support_fingerprints = {identity["support_fingerprint"]}
-    legacy_support_fingerprint = _legacy_path_sensitive_support_fingerprint(
-        adaptation
-    )
-    if legacy_support_fingerprint is not None:
-        compatible_support_fingerprints.add(legacy_support_fingerprint)
-    if (
-        request.support_fingerprint not in compatible_support_fingerprints
-        or identity["timeout_envelope_fingerprint"]
-        != request.timeout_envelope_fingerprint
-    ):
-        return None
-    return identity
 
 
-def _legacy_path_sensitive_support_fingerprint(
-    replay_adaptation: ReplayAdaptationBundle,
-) -> str | None:
-    """Recognize persisted v1 requests whose support identity included paths."""
-
-    capability = replay_adaptation.replay_capability
-    payload = {
-        "schema_version": "aworld.self_evolve.replay_support_identity.v1",
-        "capability_package_fingerprint": (
-            capability.capability_package_fingerprint
-            if capability is not None
-            else "framework-only"
-        ),
-        "replay_capability_fingerprint": (
-            capability.fingerprint if capability is not None else "framework-only"
-        ),
-        "adaptation_fingerprint": replay_adaptation.adaptation_fingerprint,
-    }
-    encoded = json.dumps(
-        payload,
-        ensure_ascii=True,
-        separators=(",", ":"),
-        sort_keys=True,
-    ).encode("utf-8")
-    return "sha256:" + hashlib.sha256(encoded).hexdigest()
 
 
 def _task_input_content(value: object) -> str:

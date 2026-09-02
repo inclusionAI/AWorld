@@ -911,12 +911,6 @@ def _candidate_replay_provenance_is_comparable(
                 ),
                 "frozen_capability_fingerprint": replay_capability.fingerprint,
                 "service_runtime_fingerprint": replay_capability.fingerprint,
-                "service_logical_ids": json.dumps(
-                    sorted(service.service_id for service in replay_capability.services),
-                    separators=(",", ":"),
-                ),
-                "service_startup_status": "ready",
-                "service_cleanup_status": "stopped",
             }
             for variant in (baseline, candidate):
                 if any(
@@ -925,6 +919,25 @@ def _candidate_replay_provenance_is_comparable(
                 ):
                     return False
             if replay_capability.services:
+                declared_service_ids = {
+                    service.service_id for service in replay_capability.services
+                }
+                baseline_service_ids = _service_logical_id_values(baseline)
+                candidate_service_ids = _service_logical_id_values(candidate)
+                if (
+                    baseline_service_ids is None
+                    or candidate_service_ids is None
+                    or not baseline_service_ids
+                    or baseline_service_ids != candidate_service_ids
+                    or not baseline_service_ids <= declared_service_ids
+                ):
+                    return False
+                for variant in (baseline, candidate):
+                    if (
+                        variant.metrics.get("service_startup_status") != "ready"
+                        or variant.metrics.get("service_cleanup_status") != "stopped"
+                    ):
+                        return False
                 baseline_endpoints = _service_endpoint_values(baseline)
                 candidate_endpoints = _service_endpoint_values(candidate)
                 exclusive_measurement = bool(
@@ -951,6 +964,41 @@ def _candidate_replay_provenance_is_comparable(
         ):
             return False
     return True
+
+
+def _service_logical_id_values(
+    variant: ReplayVariantResult,
+) -> set[str] | None:
+    raw_values = variant.metrics.get("service_logical_ids_values")
+    if isinstance(raw_values, list):
+        values = raw_values
+    else:
+        direct = variant.metrics.get("service_logical_ids")
+        values = [direct] if isinstance(direct, str) else []
+    if not values:
+        return set()
+    decoded: list[set[str]] = []
+    for value in values:
+        if not isinstance(value, str):
+            return None
+        try:
+            payload = json.loads(value)
+        except json.JSONDecodeError:
+            return None
+        if (
+            not isinstance(payload, list)
+            or not payload
+            or any(not isinstance(item, str) or not item for item in payload)
+        ):
+            return None
+        logical_ids = set(payload)
+        if len(logical_ids) != len(payload):
+            return None
+        decoded.append(logical_ids)
+    first = decoded[0]
+    if any(logical_ids != first for logical_ids in decoded[1:]):
+        return None
+    return first
 
 
 def _isolated_workspace_paths(variant: ReplayVariantResult) -> tuple[str, ...]:
@@ -1428,6 +1476,7 @@ class ReplayEvidenceReuseDisposition:
     kind: ReplayEvidenceDispositionKind
     source_run_id: str
     source_replay_path: str
+    source_dataset_snapshot_fingerprint: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "kind", ReplayEvidenceDispositionKind(self.kind))
@@ -1435,13 +1484,25 @@ class ReplayEvidenceReuseDisposition:
             value = getattr(self, field_name)
             if not isinstance(value, str) or not value.strip():
                 raise ValueError(f"replay evidence reuse requires {field_name}")
+        if (
+            self.source_dataset_snapshot_fingerprint is not None
+            and not self.source_dataset_snapshot_fingerprint.startswith("sha256:")
+        ):
+            raise ValueError(
+                "replay evidence reuse dataset snapshot fingerprint must be sha256"
+            )
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        payload: dict[str, object] = {
             "kind": self.kind.value,
             "source_run_id": self.source_run_id,
             "source_replay_path": self.source_replay_path,
         }
+        if self.source_dataset_snapshot_fingerprint is not None:
+            payload["source_dataset_snapshot_fingerprint"] = (
+                self.source_dataset_snapshot_fingerprint
+            )
+        return payload
 
 
 @runtime_checkable

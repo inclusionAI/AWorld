@@ -6,9 +6,12 @@ import json
 import re
 from dataclasses import dataclass, field, replace
 from pathlib import PurePosixPath
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Mapping, Sequence
 
 from aworld.self_evolve.counterexamples import normalize_counterexample
+from aworld.self_evolve.history_support import (
+    _non_negative_numeric_int as _non_negative_int,
+)
 from aworld.self_evolve.replay_capability import (
     FrozenReplayCapability,
     REPLAY_CAPABILITY_SCHEMA_VERSION,
@@ -5413,12 +5416,6 @@ def _bounded_relative_path(value: object) -> str | None:
         return None
     normalized = path.as_posix()
     return sanitize_path_ref(normalized) if normalized not in {"", "."} else None
-
-
-def _non_negative_int(value: object) -> int:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return 0
-    return max(0, int(value))
 
 
 def _string_tuple(value: object) -> tuple[str, ...]:

@@ -8,6 +8,7 @@ from dataclasses import replace
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Mapping
 
 import pytest
 
@@ -26,6 +27,8 @@ from aworld.self_evolve.budget import (
     BudgetStage,
     BudgetUsage,
     RunBudgetLedger,
+    RepairFrontier,
+    SchedulerState,
 )
 from aworld.self_evolve.concurrency import SelfEvolveExecutionTelemetry
 from aworld.self_evolve.datasets import (
@@ -79,78 +82,219 @@ from aworld.self_evolve.replay_adaptation import (
     ReplayCapabilityRequirement,
     ReplayCaseAdaptation,
 )
-from aworld.self_evolve.runner import (
-    SelfEvolveRunner,
-    _FixedCandidateOptimizer,
-    _RunBudgetContext,
-    _StoredCandidateReplayBackend,
-    _TelemetryUsageSnapshot,
-    _aggregate_target_selection_decisions,
-    _authoritative_evidence_finalization_timeout_seconds,
-    _accumulate_score_evidence,
-    _auto_group_trajectory_log_dataset,
-    _baseline_replay_artifact_dir,
-    _backend_proves_zero_budget_usage,
-    _candidate_screening_timeout,
-    _candidate_screening_max_steps,
-    _candidate_validation_report_for_persistence,
-    _candidate_gate_results,
-    _candidate_screening_repair_feedback,
-    _default_cli_skill_candidate,
-    _default_iteration_budget,
-    _default_post_apply_evaluator,
+from aworld.self_evolve.controllers.measurement_execution_datasets import (
+    _partial_replay_evaluator_dataset,
+)
+from aworld.self_evolve.controllers.screening import (
+    StoredCandidateScreeningBypass,
+)
+from aworld.self_evolve.feedback_history import (
+    _feedback_from_report,
+    _report_has_shared_measurement_failure,
+)
+from aworld.self_evolve.iteration_selection import (
     _candidate_generation_limit,
-    _candidate_generation_actual_usage,
-    _candidate_generation_request_derived_tokens,
+    _select_iteration_state,
+)
+from aworld.self_evolve.population_projection import (
+    _candidate_validation_report_for_persistence,
+    _population_report,
+)
+from aworld.self_evolve.replay_cache import _reusable_baseline_case_count
+from aworld.self_evolve.run_history import (
+    _SEMANTIC_DEDUP_IDENTITY_VERSION,
+    _SemanticLessonFingerprint,
+    _load_prior_scheduler_state,
+    _rejected_candidate_ids_from_report,
+)
+from aworld.self_evolve.run_reporting import (
+    _repair_frontier_state_report,
+    _replay_report,
+)
+from aworld.self_evolve.screening_observation_history import (
+    _control_qualification_identity,
+    _restore_campaign_screening_case_observations,
+    _restore_historical_screening_lifecycle_observations,
+    _screening_control_harness_fingerprint,
+)
+from aworld.self_evolve.cli_orchestration import _empty_run_budget_report
+from aworld.self_evolve.controllers.run_budget_support import (
+    _execution_usage_report,
+    _judge_actual_token_usage,
+)
+from aworld.self_evolve.evaluation_reporting import (
+    _accumulate_score_evidence,
+    _summary_with_replay_evidence_metrics,
+)
+from aworld.self_evolve.replay_gates import _replay_confidence_gate
+from aworld.self_evolve.run_failure_attribution import (
     _campaign_failure_attribution,
+    _rejection_attribution,
+)
+from aworld.self_evolve.cli_orchestration import (
+    _FixedCandidateOptimizer,
+    _StoredCandidateReplayBackend,
+    _aggregate_target_selection_decisions,
+    _candidate_mutation_repair_prompt,
+    _default_iteration_budget,
+    _include_prior_run_cases,
+    _parse_candidate_mutation_model_output,
+    _trajectory_group_rank_key,
+)
+from aworld.self_evolve.cli_rerun import (
+    _load_target_provenance,
+    _load_target_selection_report,
+    _rerun_cli_run_id,
+    _source_config_from_stored_dataset_recipe,
+)
+from aworld.self_evolve.controllers.generation import (
+    candidate_generation_request_derived_tokens as _candidate_generation_request_derived_tokens,
+)
+from aworld.self_evolve.controllers.measurement_authority import (
+    _authoritative_evidence_finalization_timeout_seconds,
+)
+from aworld.self_evolve.controllers.measurement_execution_admission import (
+    _replay_gate_details,
+)
+from aworld.self_evolve.controllers.measurement_execution_datasets import (
+    _prioritize_candidate_intervention_cases,
+)
+from aworld.self_evolve.controllers.retention import (
+    merge_artifact_retention_reports as _merge_artifact_retention_reports,
+)
+from aworld.self_evolve.controllers.run_budget_support import (
+    backend_proves_zero_budget_usage as _backend_proves_zero_budget_usage,
+    configured_budget_usage as _configured_budget_usage,
+)
+from aworld.self_evolve.controllers.run_generation_helpers import (
+    _candidate_generation_actual_usage,
+    _candidate_materialization_stall_signature,
+    _canonicalize_verified_prerequisite_files,
+    _rank_candidate_population,
+)
+from aworld.self_evolve.controllers.run_iteration_helpers import (
     _candidate_conformance_failure_signatures,
     _candidate_conformance_repair_topologies,
     _candidate_conformance_stall_signature,
-    _candidate_materialization_failures,
-    _candidate_materialization_stall_signature,
-    _candidate_materialization_failure_events,
-    _candidate_mutation_repair_prompt,
-    _prioritize_candidate_intervention_cases,
-    _canonicalize_verified_prerequisite_files,
-    _configured_budget_usage,
-    _feedback_from_report,
-    _trajectory_group_rank_key,
-    _with_typed_gate_failure_event,
-    _failed_probe_typed_feedback,
-    _include_prior_run_cases,
-    _iteration_validation_feedback,
-    _judge_actual_token_usage,
-    _load_target_provenance,
-    _load_target_selection_report,
-    _merge_artifact_retention_reports,
-    _merge_validation_feedback,
-    _parse_candidate_mutation_model_output,
-    _population_report,
-    _partial_replay_evaluator_dataset,
-    _next_progress_repair_extension_family,
-    _rank_candidate_population,
-    _rejected_candidate_ids_from_report,
-    _replay_confidence_gate,
-    _replay_evaluator_admission_gate,
-    _replay_gate_details,
-    _replay_adaptation_exception_details,
-    _replay_report,
-    _repair_conformance_failure_diagnostics,
-    _repair_conformance_gate,
-    _repair_conformance_required_nonempty_operations,
-    _rerun_cli_run_id,
-    _retryable_candidate_generation_failure,
-    _select_iteration_state,
-    _candidate_screening_dataset,
-    _candidate_screening_qualification_case_limit,
-    _explicit_target_selection_report,
-    _source_config_from_stored_dataset_recipe,
-    _support_specific_control_circuit_breaker_gate,
-    _summary_with_replay_evidence_metrics,
+    _candidate_screening_repair_feedback,
+)
+from aworld.self_evolve.controllers.run_telemetry import (
+    _TelemetryUsageSnapshot,
     _stage_telemetry_usage_delta,
     _stage_telemetry_usage_snapshot,
     _telemetry_usage_with_observed_wall,
+)
+from aworld.self_evolve.controllers.screening import (
+    support_specific_control_circuit_breaker_gate as _support_specific_control_circuit_breaker_gate,
+)
+from aworld.self_evolve.controllers.screening_execution import (
+    _baseline_replay_artifact_dir,
+    _candidate_screening_max_steps,
+    _candidate_screening_timeout,
     _shared_replay_failure_blocks_population,
+)
+from aworld.self_evolve.controllers.screening_helpers import (
+    _candidate_screening_dataset,
+    _candidate_screening_qualification_case_limit,
+)
+from aworld.self_evolve.feedback_diagnostics import (
+    _merge_validation_feedback,
+    _next_progress_repair_extension_family,
+    _typed_gate_feedback_metrics,
+)
+from aworld.self_evolve.repair_conformance_diagnostics import (
+    _failed_probe_typed_feedback,
+    _repair_conformance_failure_diagnostics,
+    _repair_conformance_gate,
+    _repair_conformance_required_nonempty_operations,
+)
+from aworld.self_evolve.replay_adaptation_diagnostics import (
+    _replay_adaptation_exception_details,
+)
+from aworld.self_evolve.run_failure_attribution import (
+    _candidate_materialization_failure_events,
+    _candidate_materialization_failures,
+    _retryable_candidate_generation_failure,
+)
+from aworld.self_evolve.campaign_policy import (
+    campaign_measurement_outcome_for_replay as _campaign_measurement_outcome_for_replay,
+    effective_replay_repetitions as _effective_replay_repetitions,
+)
+from aworld.self_evolve.candidate_package import (
+    candidate_package_fingerprint,
+    candidate_semantic_package_fingerprint,
+)
+from aworld.self_evolve.cli_orchestration import (
+    _MeasurementResumeThenRepairOptimizer,
+    _materialize_run_owned_draft_decision,
+    _measurement_pending_candidate_checkpoint,
+)
+from aworld.self_evolve.controllers.measurement_execution_admission import (
+    _variant_has_progressing_task_timeout,
+    _variant_is_screening_timeout,
+)
+from aworld.self_evolve.controllers.measurement_execution_datasets import (
+    _authoritative_replay_dataset,
+)
+from aworld.self_evolve.controllers.measurement_execution_progress import (
+    _replay_member_hard_deadline_seconds,
+)
+from aworld.self_evolve.controllers.retention import (
+    recover_artifact_retention_transactions as _recover_artifact_retention_transactions,
+)
+from aworld.self_evolve.controllers.run_execution import iteration_state as _iteration_state
+from aworld.self_evolve.controllers.run_generation_helpers import (
+    _is_semantic_lesson_duplicate,
+    _semantic_lesson_duplicate_feedback,
+    _typed_repair_frontiers,
+)
+from aworld.self_evolve.controllers.run_iteration_helpers import (
+    _authoritative_attempt_consumed,
+    _candidate_validation_shared_failure_gate,
+    _infrastructure_prevented_comparable_evaluation,
+    _record_authoritative_replay_observations,
+)
+from aworld.self_evolve.controllers.screening_execution import (
+    _candidate_screening_escalated_timeout,
+)
+from aworld.self_evolve.controllers.screening_helpers import (
+    _candidate_support_baseline_incompatibility_gate,
+    _deduplicate_conformance_phenotypes,
+    _record_candidate_screening_observation,
+    _screening_gate_has_invalid_control,
+)
+from aworld.self_evolve.feedback_diagnostics import _validation_feedback_failure_family
+from aworld.self_evolve.gates import (
+    ScoreImprovementGate,
+    SkillMarkdownGate,
+)
+from aworld.self_evolve.repair_conformance_diagnostics import (
+    _gate_has_typed_shared_infrastructure_failure,
+    _repair_probe_root_cause_code,
+)
+from aworld.self_evolve.replay import (
+    ReplayServiceProcessExitedError,
+    ReplayServiceReadinessTimeout,
+)
+from aworld.self_evolve.replay_gates import (
+    _environment_fingerprint_drift_gate,
+    _gate_has_typed_shared_measurement_failure,
+)
+from aworld.self_evolve.schema_diagnostics import (
+    _repair_contract_fingerprint,
+    _schema_field_contract_fingerprint,
+)
+from aworld.self_evolve.runner import (
+    SelfEvolveRunner,
+    _RunBudgetContext,
+    _auto_group_trajectory_log_dataset,
+    _candidate_gate_results,
+    _default_cli_skill_candidate,
+    _default_post_apply_evaluator,
+    _with_typed_gate_failure_event,
+    _iteration_validation_feedback,
+    _replay_evaluator_admission_gate,
+    _explicit_target_selection_report,
     _infer_target_from_trace_packs,
     optimize_explicit_target,
     optimize_from_cli_request,
@@ -212,17 +356,17 @@ def test_replay_heartbeat_uses_frozen_measurement_member_deadline() -> None:
         timeout_seconds=300,
     )
 
-    assert runner_module._replay_member_hard_deadline_seconds(
+    assert _replay_member_hard_deadline_seconds(
         request,
         {"attempt_timeout_seconds": 600},
     ) == 900.0
 
     legacy = SimpleNamespace(measurement_plan=None, timeout_seconds=300)
-    assert runner_module._replay_member_hard_deadline_seconds(
+    assert _replay_member_hard_deadline_seconds(
         legacy,
         {"phase_timeout_seconds": 240},
     ) == 240.0
-    assert runner_module._replay_member_hard_deadline_seconds(
+    assert _replay_member_hard_deadline_seconds(
         SimpleNamespace(measurement_plan=None, timeout_seconds=None),
         {},
     ) is None
@@ -546,7 +690,7 @@ def test_campaign_restores_typed_scheduler_frontier_checkpoint(tmp_path) -> None
         encoding="utf-8",
     )
 
-    state = runner_module._load_prior_scheduler_state(
+    state = _load_prior_scheduler_state(
         store,
         target,
         current_run_id="campaign-demo-cycle-002",
@@ -594,7 +738,7 @@ def test_campaign_scheduler_checkpoint_uses_chronological_lineage(tmp_path) -> N
             encoding="utf-8",
         )
 
-    state = runner_module._load_prior_scheduler_state(
+    state = _load_prior_scheduler_state(
         store,
         target,
         current_run_id="campaign-demo-cycle-003",
@@ -642,13 +786,13 @@ def test_repair_frontier_state_marks_reappearing_resolved_frontier_regressed(
         encoding="utf-8",
     )
 
-    payload = runner_module._repair_frontier_state_report(
+    payload = _repair_frontier_state_report(
         store=store,
         target=target,
         current_run_id="campaign-demo-cycle-002",
         allowed_run_ids=(prior_run,),
         observed_frontiers=(
-            runner_module.RepairFrontier(
+            RepairFrontier(
                 semantic_key="semantic-a",
                 progress=1,
                 owner=FailureOwner.CANDIDATE,
@@ -656,7 +800,7 @@ def test_repair_frontier_state_marks_reappearing_resolved_frontier_regressed(
                 repairable=True,
             ),
         ),
-        scheduler_state=runner_module.SchedulerState(),
+        scheduler_state=SchedulerState(),
         selected_candidate_id="candidate-2",
         run_succeeded=False,
         campaign_id="campaign-demo",
@@ -700,13 +844,13 @@ def test_repair_frontier_state_marks_unobserved_history_dormant(tmp_path) -> Non
         encoding="utf-8",
     )
 
-    payload = runner_module._repair_frontier_state_report(
+    payload = _repair_frontier_state_report(
         store=store,
         target=target,
         current_run_id="campaign-demo-cycle-002",
         allowed_run_ids=(prior_run,),
         observed_frontiers=(),
-        scheduler_state=runner_module.SchedulerState(),
+        scheduler_state=SchedulerState(),
         selected_candidate_id=None,
         run_succeeded=False,
         campaign_id="campaign-demo",
@@ -787,7 +931,7 @@ def test_progress_repair_extension_requires_a_novel_repairable_failure_family() 
         reason="the same typed failure with different explanatory prose",
     )
     assert (
-        runner_module._validation_feedback_failure_family(prose_variant)
+        _validation_feedback_failure_family(prose_variant)
         == first_family
     )
 
@@ -1305,13 +1449,13 @@ def test_skill_release_fidelity_failure_enters_typed_repair_frontier() -> None:
     )
 
     gate = _with_typed_gate_failure_event(raw_gate)
-    metrics = runner_module._typed_gate_feedback_metrics((gate,))
+    metrics = _typed_gate_feedback_metrics((gate,))
     feedback = EvaluationSummary(
         variant_id=candidate.candidate_id,
         dataset_split="validation",
         metrics=metrics,
     )
-    frontiers = runner_module._typed_repair_frontiers((feedback,))
+    frontiers = _typed_repair_frontiers((feedback,))
 
     assert gate.details["code"] == "skill_section_content_truncated"
     assert gate.details["failure_class"] == "candidate"
@@ -1370,7 +1514,7 @@ def test_typed_gate_feedback_exposes_first_class_repair_contract() -> None:
         },
     )
 
-    metrics = runner_module._typed_gate_feedback_metrics((gate,))
+    metrics = _typed_gate_feedback_metrics((gate,))
     normalized = normalize_feedback_summary(
         EvaluationSummary(
             variant_id="candidate-child",
@@ -1402,7 +1546,7 @@ def test_causal_lesson_memory_restores_typed_repair_frontier() -> None:
         },
     )
 
-    frontiers = runner_module._typed_repair_frontiers((feedback,))
+    frontiers = _typed_repair_frontiers((feedback,))
 
     assert len(frontiers) == 1
     assert frontiers[0].semantic_key == "replay-failure-candidate-preflight"
@@ -1471,7 +1615,7 @@ def test_derived_replay_events_do_not_drive_repair_frontiers() -> None:
         },
     )
 
-    frontiers = runner_module._typed_repair_frontiers(
+    frontiers = _typed_repair_frontiers(
         (feedback, derived_lesson)
     )
 
@@ -1512,7 +1656,7 @@ def test_typed_gate_feedback_uses_only_relative_evidence_regressions() -> None:
         },
     )
 
-    metrics = runner_module._typed_gate_feedback_metrics((gate,))
+    metrics = _typed_gate_feedback_metrics((gate,))
 
     assert len(metrics["evidence_repair_constraints"]) == 1
     assert metrics["evidence_repair_constraints"][0]["failure_mode"] == (
@@ -1557,7 +1701,7 @@ def test_typed_gate_feedback_preserves_payload_free_replay_counterexample() -> N
         },
     )
 
-    metrics = runner_module._typed_gate_feedback_metrics((gate,))
+    metrics = _typed_gate_feedback_metrics((gate,))
 
     assert metrics["replay_counterexamples"] == [
         {
@@ -1592,7 +1736,7 @@ def test_typed_gate_feedback_builds_generic_candidate_counterexample() -> None:
         },
     )
 
-    metrics = runner_module._typed_gate_feedback_metrics((gate,))
+    metrics = _typed_gate_feedback_metrics((gate,))
 
     counterexample = metrics["replay_counterexamples"][0]
     assert counterexample["failure_code"] == (
@@ -1730,7 +1874,7 @@ def test_task_owned_counterexample_does_not_enter_candidate_repair() -> None:
         },
     )
 
-    metrics = runner_module._typed_gate_feedback_metrics((gate,))
+    metrics = _typed_gate_feedback_metrics((gate,))
 
     assert "replay_counterexamples" not in metrics
 
@@ -1880,14 +2024,14 @@ def test_framework_evidence_projection_failure_does_not_create_candidate_repair_
 
 def test_environment_fingerprint_drift_is_shared_infrastructure_failure() -> None:
     assert (
-        runner_module._environment_fingerprint_drift_gate(
+        _environment_fingerprint_drift_gate(
             "sha256:stable",
             "sha256:stable",
         )
         is None
     )
 
-    gate = runner_module._environment_fingerprint_drift_gate(
+    gate = _environment_fingerprint_drift_gate(
         "sha256:before",
         "sha256:after",
     )
@@ -1933,7 +2077,7 @@ async def test_repair_conformance_preserves_shared_adaptation_gate_identity(
         required_branch_paths=("replay/runtime.py",),
         base_branch_fingerprints={},
     )
-    drift_gate = runner_module._environment_fingerprint_drift_gate(
+    drift_gate = _environment_fingerprint_drift_gate(
         "sha256:before",
         "sha256:after",
     )
@@ -1978,7 +2122,7 @@ async def test_repair_conformance_preserves_shared_adaptation_gate_identity(
             ],
         }
     }
-    selected = runner_module._candidate_validation_shared_failure_gate(report)
+    selected = _candidate_validation_shared_failure_gate(report)
     assert selected.gate_name == "replay_environment_health"
     assert selected.details["code"] == "environment_fingerprint_drift"
 
@@ -2012,7 +2156,7 @@ def test_synthetic_summaries_do_not_hide_incomparable_evaluation_runtime() -> No
         },
     )
 
-    assert runner_module._infrastructure_prevented_comparable_evaluation(
+    assert _infrastructure_prevented_comparable_evaluation(
         (gate,),
         baseline_summary=baseline,
         candidate_summary=synthetic_failure,
@@ -2041,8 +2185,8 @@ def test_declared_shared_measurement_gate_publishes_typed_causal_event() -> None
     assert event["owner"] == "framework"
     assert event["scope"] == "shared_run"
     assert event["stage"] == "evaluation"
-    assert runner_module._gate_has_typed_shared_infrastructure_failure(gate)
-    assert runner_module._gate_has_typed_shared_measurement_failure(gate)
+    assert _gate_has_typed_shared_infrastructure_failure(gate)
+    assert _gate_has_typed_shared_measurement_failure(gate)
 
 
 def test_iteration_selection_prefers_fewer_failed_gates_without_scores() -> None:
@@ -2775,7 +2919,7 @@ def test_candidate_screening_requires_replay_intervention_exposure() -> None:
 def test_candidate_screening_observation_tracks_physical_termination_axis() -> None:
     observations: dict[str, dict[str, float | int]] = {}
 
-    runner_module._record_candidate_screening_observation(
+    _record_candidate_screening_observation(
         observations,
         case_ids=("case-a",),
         attempt={
@@ -2875,7 +3019,7 @@ def test_conformance_phenotype_dedupes_equivalent_support_source_variants() -> N
     }
 
     representatives, duplicate_of, fingerprints = (
-        runner_module._deduplicate_conformance_phenotypes(
+        _deduplicate_conformance_phenotypes(
             (first, second),
             conformance_report=report,
             current_content=current,
@@ -3055,7 +3199,7 @@ def test_score_tiebreak_accumulates_compatible_paired_samples() -> None:
         baseline_initial,
         baseline_additional,
     )
-    decision = runner_module.ScoreImprovementGate(min_delta=0.0).evaluate(
+    decision = ScoreImprovementGate(min_delta=0.0).evaluate(
         baseline=pooled_baseline,
         candidate=pooled,
     )
@@ -3204,11 +3348,12 @@ def test_runner_has_no_implicit_hard_budget(tmp_path) -> None:
 
 
 def test_empty_budget_report_marks_unbounded_default() -> None:
-    report = runner_module._empty_run_budget_report(
+    report = _empty_run_budget_report(
         max_run_tokens=None,
         total_run_token_budget=None,
         max_run_cost_usd=None,
         max_run_wall_seconds=None,
+        run_budget_context_type=_RunBudgetContext,
     )
 
     assert report["budget_mode"] == "unbounded"
@@ -3427,7 +3572,7 @@ def test_candidate_replay_capability_preserves_schema_field_constraints() -> Non
     assert details["capability_error_code"] == "schema_field_validation_failed"
     assert details["schema_field_constraints"] == [constraint]
     assert details["diagnostics"][0]["schema_field_constraints"] == [constraint]
-    fingerprint = runner_module._schema_field_contract_fingerprint(details)
+    fingerprint = _schema_field_contract_fingerprint(details)
     assert fingerprint is not None
     failure_event = details["causal_failure_events"][0]
     assert failure_event["code"] == "schema_field_validation_failed"
@@ -3441,7 +3586,7 @@ def test_candidate_replay_capability_preserves_schema_field_constraints() -> Non
             }
         ],
     }
-    assert runner_module._schema_field_contract_fingerprint(distinct) != fingerprint
+    assert _schema_field_contract_fingerprint(distinct) != fingerprint
 
     distinct_source_operations = {
         **details,
@@ -3454,7 +3599,7 @@ def test_candidate_replay_capability_preserves_schema_field_constraints() -> Non
         ],
     }
     assert (
-        runner_module._schema_field_contract_fingerprint(
+        _schema_field_contract_fingerprint(
             distinct_source_operations
         )
         != fingerprint
@@ -3501,7 +3646,7 @@ def test_conformance_strategy_switch_requires_output_witness_change() -> None:
             },
         )
 
-    unchanged = runner_module._candidate_conformance_repair_topologies(
+    unchanged = _candidate_conformance_repair_topologies(
         (
             (candidate("candidate-a", "def build():\n    return {}\n"), gate("sha256:" + "a" * 64)),
             (
@@ -3513,7 +3658,7 @@ def test_conformance_strategy_switch_requires_output_witness_change() -> None:
             ),
         )
     )
-    changed = runner_module._candidate_conformance_repair_topologies(
+    changed = _candidate_conformance_repair_topologies(
         (
             (candidate("candidate-a", "def build():\n    return {}\n"), gate("sha256:" + "a" * 64)),
             (candidate("candidate-c", "def build():\n    return {'readiness': {}}\n"), gate("sha256:" + "b" * 64)),
@@ -3547,7 +3692,7 @@ def test_substantive_screening_failure_outranks_later_duplicate_attempt() -> Non
         reason="candidate repeats a prior terminal candidate",
         details={"failure_class": "candidate", "code": "duplicate_prior_candidate"},
     )
-    substantive = runner_module._iteration_state(
+    substantive = _iteration_state(
         candidate=candidate,
         baseline_summary=None,
         candidate_summary=None,
@@ -3558,7 +3703,7 @@ def test_substantive_screening_failure_outranks_later_duplicate_attempt() -> Non
         feedback=(),
         status="rejected",
     )
-    duplicate = runner_module._iteration_state(
+    duplicate = _iteration_state(
         candidate=candidate,
         baseline_summary=None,
         candidate_summary=None,
@@ -3573,7 +3718,7 @@ def test_substantive_screening_failure_outranks_later_duplicate_attempt() -> Non
     selected = _select_iteration_state([substantive, duplicate])
 
     assert selected is substantive
-    attribution = runner_module._rejection_attribution(
+    attribution = _rejection_attribution(
         final_status=SelfEvolveRunStatus.REJECTED,
         selected_candidate_id=candidate.candidate_id,
         gate_results=selected["gate_results"],
@@ -3595,7 +3740,7 @@ def test_substantive_screening_failure_outranks_later_duplicate_attempt() -> Non
 
 
 def test_rejection_attribution_prefers_actionable_candidate_evidence_failure() -> None:
-    attribution = runner_module._rejection_attribution(
+    attribution = _rejection_attribution(
         final_status=SelfEvolveRunStatus.REJECTED,
         selected_candidate_id="candidate-evidence-repair",
         gate_results=(
@@ -3763,7 +3908,7 @@ def test_campaign_failure_attribution_prefers_terminal_shared_measurement() -> N
             }
         ]
     }
-    fingerprint = runner_module._repair_contract_fingerprint(contract)
+    fingerprint = _repair_contract_fingerprint(contract)
     assert fingerprint is not None
     states = (
         {
@@ -3891,7 +4036,7 @@ def test_resolved_conformance_frontier_is_not_campaign_primary() -> None:
             }
         ]
     }
-    fingerprint = runner_module._repair_contract_fingerprint(contract)
+    fingerprint = _repair_contract_fingerprint(contract)
     assert fingerprint is not None
 
     attribution = _campaign_failure_attribution(
@@ -3953,7 +4098,7 @@ def test_conformance_retry_identity_is_atomic_across_batch_composition() -> None
 
 
 def test_rejection_attribution_names_terminal_frontier_exhaustion() -> None:
-    attribution = runner_module._rejection_attribution(
+    attribution = _rejection_attribution(
         final_status=SelfEvolveRunStatus.REJECTED,
         selected_candidate_id=None,
         gate_results=(
@@ -3980,7 +4125,7 @@ def test_rejection_attribution_names_terminal_frontier_exhaustion() -> None:
 
 
 def test_rejection_attribution_names_shared_scheduler_blocker() -> None:
-    attribution = runner_module._rejection_attribution(
+    attribution = _rejection_attribution(
         final_status=SelfEvolveRunStatus.REJECTED,
         selected_candidate_id=None,
         gate_results=(
@@ -4047,17 +4192,17 @@ def test_semantic_duplicate_feedback_creates_typed_repair_frontier() -> None:
         content="# Generic\n",
         rationale="duplicate",
     )
-    fingerprint = runner_module._SemanticLessonFingerprint(
+    fingerprint = _SemanticLessonFingerprint(
         semantic_package_fingerprint="sha256:package",
         lesson_set_fingerprint="sha256:lessons",
         verification_contract_fingerprint="sha256:verification",
     )
 
-    feedback = runner_module._semantic_lesson_duplicate_feedback(
+    feedback = _semantic_lesson_duplicate_feedback(
         candidate,
         fingerprint=fingerprint,
     )
-    frontiers = runner_module._typed_repair_frontiers((feedback,))
+    frontiers = _typed_repair_frontiers((feedback,))
 
     assert feedback.metrics["code"] == "duplicate_semantic_lesson"
     assert len(frontiers) == 1
@@ -4066,18 +4211,18 @@ def test_semantic_duplicate_feedback_creates_typed_repair_frontier() -> None:
 
 
 def test_semantic_duplicate_identity_requires_same_verification_contract() -> None:
-    current = runner_module._SemanticLessonFingerprint(
+    current = _SemanticLessonFingerprint(
         semantic_package_fingerprint="sha256:package",
         lesson_set_fingerprint="sha256:lessons",
         verification_contract_fingerprint="sha256:verification-current",
     )
-    historical = runner_module._SemanticLessonFingerprint(
+    historical = _SemanticLessonFingerprint(
         semantic_package_fingerprint="sha256:package",
         lesson_set_fingerprint="sha256:lessons",
         verification_contract_fingerprint="sha256:verification-old",
     )
 
-    assert not runner_module._is_semantic_lesson_duplicate(
+    assert not _is_semantic_lesson_duplicate(
         "candidate",
         lineage_fingerprints={"candidate": current},
         rejected_semantic_lesson_fingerprints={historical},
@@ -4510,12 +4655,6 @@ def test_partial_replay_panel_can_feed_evaluator_without_aggregate_success(
         dataset=dataset,
         replay_result=replay,
     )
-    monkeypatch.setattr(
-        runner_module,
-        "candidate_replay_is_comparable",
-        lambda **_kwargs: True,
-    )
-
     projected, admitted = _partial_replay_evaluator_dataset(
         dataset=dataset,
         replay_result=replay,
@@ -4527,6 +4666,7 @@ def test_partial_replay_panel_can_feed_evaluator_without_aggregate_success(
         ),
         normalized=normalized,
         minimum_independent_cases=2,
+        replay_comparable=lambda **_kwargs: True,
     )
 
     assert admitted == ("task-a", "task-b")
@@ -4727,7 +4867,7 @@ def test_replay_confidence_preserves_physical_framework_failure_ownership() -> N
         apply_policy="auto_verified",
     )
     typed_gate = _with_typed_gate_failure_event(gate)
-    feedback = runner_module._typed_gate_feedback_metrics((typed_gate,))
+    feedback = _typed_gate_feedback_metrics((typed_gate,))
 
     assert gate is not None
     assert gate.passed is False
@@ -4925,7 +5065,7 @@ def test_replay_confidence_rejects_infrastructure_failure_pair() -> None:
     assert gate.details["causal_failure_events"][-1] == (
         gate.details["derived_failure_event"]
     )
-    assert runner_module._gate_has_typed_shared_measurement_failure(gate) is True
+    assert _gate_has_typed_shared_measurement_failure(gate) is True
 
 
 def test_evidence_finalization_timeout_is_a_progressing_task_timeout() -> None:
@@ -4949,8 +5089,8 @@ def test_evidence_finalization_timeout_is_a_progressing_task_timeout() -> None:
         failure=failure,
     )
 
-    assert runner_module._variant_is_screening_timeout(variant) is True
-    assert runner_module._variant_has_progressing_task_timeout(variant) is True
+    assert _variant_is_screening_timeout(variant) is True
+    assert _variant_has_progressing_task_timeout(variant) is True
 
 
 def test_framework_finalization_root_keeps_one_atomic_attribution_tuple(
@@ -5551,12 +5691,12 @@ def test_candidate_gate_results_short_circuit_structure_after_token_limit(
         pytest.fail("structural gates must not run after token-limit failure")
 
     monkeypatch.setattr(
-        runner_module.SkillMarkdownGate,
+        SkillMarkdownGate,
         "evaluate",
         fail_expensive_gate,
     )
     monkeypatch.setattr(
-        runner_module.SkillReleaseFidelityGate,
+        SkillReleaseFidelityGate,
         "evaluate",
         fail_expensive_gate,
     )
@@ -6040,12 +6180,15 @@ def test_explicit_jsonl_target_preserves_origin_through_evaluator_rerun(
     )
     dataset_path = tmp_path / "evaluation.jsonl"
     dataset_path.write_text(
-        json.dumps(
-            {
-                "case_id": "member-1",
-                "input": {"task": "exercise the capability"},
-                "expected_output": "completed",
-            }
+        "\n".join(
+            json.dumps(
+                {
+                    "case_id": f"member-{index}",
+                    "input": {"task": f"exercise the capability {index}"},
+                    "expected_output": "completed",
+                }
+            )
+            for index in range(1, 3)
         )
         + "\n",
         encoding="utf-8",
@@ -6265,8 +6408,8 @@ def test_explicit_jsonl_target_preserves_origin_through_evaluator_rerun(
     reuse = rerun_report["replay_evidence_reuse"]
     assert reuse["disposition"]["kind"] == "stored_source_reuse"
     assert reuse["disposition"]["source_run_id"] == initial["run_id"]
-    assert reuse["replay_case_count"] == 1
-    assert reuse["normalized_member_count"] == 1
+    assert reuse["replay_case_count"] == 2
+    assert reuse["normalized_member_count"] == 2
     assert Path(reuse["provenance_path"]).exists()
     stored_generation_debits = [
         item
@@ -6299,6 +6442,7 @@ def test_explicit_jsonl_target_preserves_origin_through_evaluator_rerun(
 async def test_stored_evidence_rerun_is_cardinality_safe_and_fails_closed(
     tmp_path: Path,
 ) -> None:
+    snapshot_fingerprint = "sha256:" + "a" * 64
     skill_path = tmp_path / "aworld-skills" / "capability" / "SKILL.md"
     skill_path.parent.mkdir(parents=True)
     skill_path.write_text(
@@ -6315,7 +6459,12 @@ async def test_stored_evidence_rerun_is_cardinality_safe_and_fails_closed(
             for index in range(1, 3)
         ),
         recipe=DatasetRecipe(
-            source={"kind": "test"},
+            source={
+                "kind": "test",
+                "campaign_dataset_snapshot": {
+                    "snapshot_fingerprint": snapshot_fingerprint,
+                },
+            },
             split_seed="seed",
             splits={"train": ["member-1", "member-2"]},
         ),
@@ -6337,7 +6486,7 @@ async def test_stored_evidence_rerun_is_cardinality_safe_and_fails_closed(
         candidate_id=candidate.candidate_id,
         overlay_skill_root=str(tmp_path / "source-overlay"),
         task_input=dataset.cases[0].input,
-        dataset_fingerprint=runner_module.replay_dataset_fingerprint(dataset),
+        dataset_fingerprint=replay_dataset_fingerprint(dataset),
         baseline_skill_fingerprint=candidate.target_fingerprint,
         adaptation_fingerprint="source-adaptation",
         workspace_seed_fingerprint="source-workspace",
@@ -6386,6 +6535,16 @@ async def test_stored_evidence_rerun_is_cardinality_safe_and_fails_closed(
             for case in dataset.cases
         ),
     )
+    reconstructed_dataset = replace(
+        dataset,
+        recipe=replace(
+            dataset.recipe,
+            source={
+                **dict(dataset.recipe.source),
+                "authoritative_compacted_context_case_ids": [],
+            },
+        ),
+    )
 
     class EvaluationBackend:
         def __init__(self, *, fail_candidate: bool = False) -> None:
@@ -6418,6 +6577,7 @@ async def test_stored_evidence_rerun_is_cardinality_safe_and_fails_closed(
                 replay_result=source_replay,
                 source_run_id="source-run",
                 source_replay_path=str(tmp_path / "source-replay"),
+                source_dataset_snapshot_fingerprint=snapshot_fingerprint,
             ),
             max_iterations=1,
             replay_candidate_limit=1,
@@ -6428,7 +6588,7 @@ async def test_stored_evidence_rerun_is_cardinality_safe_and_fails_closed(
     successful = await make_runner(successful_backend).run_explicit_target(
         run_id="stored-multi-success",
         target=target,
-        dataset=dataset,
+        dataset=reconstructed_dataset,
         trace_packs=(),
         apply_policy="proposal",
     )
@@ -6446,6 +6606,15 @@ async def test_stored_evidence_rerun_is_cardinality_safe_and_fails_closed(
     assert len(successful_backend.calls) == 2
     assert successful_report["replay_evidence_reuse"]["replay_case_count"] == 2
     assert successful_report["replay_evidence_reuse"]["normalized_member_count"] == 2
+    assert successful_report["replay_evidence_reuse"][
+        "dataset_fingerprint_matches"
+    ] is False
+    assert successful_report["replay_evidence_reuse"][
+        "dataset_snapshot_fingerprint_matches"
+    ] is True
+    assert successful_report["replay_evidence_reuse"][
+        "dataset_authority_matches"
+    ] is True
     assert successful_report["population"]["lifecycle"]["max_case_count"] == 2
     successful_gates = {
         gate["gate_name"]: gate for gate in successful_report["gate_results"]
@@ -6465,7 +6634,7 @@ async def test_stored_evidence_rerun_is_cardinality_safe_and_fails_closed(
     failed = await make_runner(failing_backend).run_explicit_target(
         run_id="stored-multi-failure",
         target=target,
-        dataset=dataset,
+        dataset=reconstructed_dataset,
         trace_packs=(),
         apply_policy="proposal",
     )
@@ -6491,7 +6660,7 @@ async def test_stored_evidence_rerun_is_cardinality_safe_and_fails_closed(
     missing_evaluator = await make_runner(None).run_explicit_target(
         run_id="stored-multi-missing-evaluator",
         target=target,
-        dataset=dataset,
+        dataset=reconstructed_dataset,
         trace_packs=(),
         apply_policy="proposal",
     )
@@ -6507,9 +6676,11 @@ async def test_stored_evidence_rerun_is_cardinality_safe_and_fails_closed(
     assert missing_evaluator.run.status is SelfEvolveRunStatus.FAILED
     assert missing_evaluator.selected_candidate is None
     assert missing_report["selected_candidate_id"] is None
-    assert "evaluation" not in missing_report["population"]["lifecycle"][
-        "stage_counts"
-    ]
+    missing_lifecycle = missing_report["population"]["lifecycle"]
+    assert "evaluation" not in missing_lifecycle["stage_counts"]
+    assert missing_lifecycle["attempt_count"] == 1
+    assert missing_lifecycle["stage_counts"]["generated"] == 1
+    assert "duplicate_filtered" not in missing_lifecycle["stage_counts"]
     assert any(
         gate["gate_name"] == "fresh_evaluator_rerun"
         and gate["passed"] is False
@@ -6570,7 +6741,7 @@ async def test_stored_candidate_resume_bypasses_empty_repair_frontier(
                 "path": target.identity.path,
             },
             "repair_frontier_state": {
-                "scheduler_state": runner_module.SchedulerState(
+                "scheduler_state": SchedulerState(
                     initial_exploration_scheduled=True
                 ).to_dict()
             },
@@ -6643,7 +6814,7 @@ async def test_measurement_resume_optimizer_opens_real_repair_frontier() -> None
         async def propose(self, request):
             return OptimizerResult(candidates=(repaired,))
 
-    optimizer = runner_module._MeasurementResumeThenRepairOptimizer(
+    optimizer = _MeasurementResumeThenRepairOptimizer(
         candidate=stored,
         source_run_id="prior-run",
         delegate=Delegate(),
@@ -6852,6 +7023,7 @@ async def test_auto_verified_no_candidate_is_rejected(tmp_path) -> None:
             "reward": {"status": "failed"},
         }
     ]
+    del target, store, trajectory
 
 
 @pytest.mark.asyncio
@@ -7716,7 +7888,7 @@ def test_artifact_retention_transaction_recovers_after_final_report_crash(
     assert any(transaction_dir.glob("*.json"))
 
     monkeypatch.setattr(store, "write_report", original_write_report)
-    runner_module._recover_artifact_retention_transactions(store)
+    _recover_artifact_retention_transactions(store)
 
     recovered = json.loads((run_dir / "report.json").read_text(encoding="utf-8"))
     retention = recovered["artifact_retention"]
@@ -8294,7 +8466,7 @@ def test_typed_gate_feedback_preserves_exact_aggregate_scalars_without_raw_paylo
         {"causal_failure_events": [aggregate.to_dict()]},
     )
 
-    metrics = runner_module._typed_gate_feedback_metrics((gate, gate))
+    metrics = _typed_gate_feedback_metrics((gate, gate))
     events = metrics["causal_failure_events"]
 
     assert len(events) == 1
@@ -8353,7 +8525,7 @@ def test_typed_causal_feedback_preserves_public_recovery_trace_before_return() -
         },
     )
 
-    metrics = runner_module._typed_gate_feedback_metrics((gate,))
+    metrics = _typed_gate_feedback_metrics((gate,))
 
     assert metrics["causal_failure_events"]
     assert metrics["recovery_trace"]["recovered_member_count"] == 1
@@ -8567,7 +8739,7 @@ def test_bounded_screening_marks_baseline_deadline_as_invalid_control_without_ca
         event["code"] == "candidate_intervention_unobserved"
         for event in details["causal_failure_events"]
     )
-    assert runner_module._screening_gate_has_invalid_control(gate) is True
+    assert _screening_gate_has_invalid_control(gate) is True
 
 
 def test_bounded_screening_promotes_candidate_only_deadline_to_candidate_repair(
@@ -8640,7 +8812,7 @@ def test_bounded_screening_promotes_candidate_only_deadline_to_candidate_repair(
     assert details["failure_owner"] == "candidate"
     assert details["failure_scope"] == "candidate"
     assert details["evaluator_skipped"] is True
-    assert runner_module._screening_gate_has_invalid_control(gate) is False
+    assert _screening_gate_has_invalid_control(gate) is False
 
 
 def test_campaign_measurement_retries_framework_owned_member_timeout() -> None:
@@ -8691,7 +8863,7 @@ def test_campaign_measurement_retries_framework_owned_member_timeout() -> None:
         },
     )
 
-    outcome = runner_module._campaign_measurement_outcome_for_replay(
+    outcome = _campaign_measurement_outcome_for_replay(
         replay_result,
         final_status=SelfEvolveRunStatus.REJECTED,
     )
@@ -8958,7 +9130,7 @@ def test_replay_gate_attributes_unobserved_candidate_intervention_to_framework(
     assert details["recovery_trace"]["candidate_intervention_required"] is True
     assert details["recovery_trace"]["candidate_intervention_observed"] is False
 
-    terminal_gate = runner_module._candidate_validation_shared_failure_gate(
+    terminal_gate = _candidate_validation_shared_failure_gate(
         {
             "screening": {
                 "stopped_by_shared_infrastructure": True,
@@ -12072,6 +12244,56 @@ def _cycle1_runner_fixture(
     )
 
 
+@pytest.mark.asyncio
+async def test_bootstrap_fault_publishes_and_cleans_current_ledger_on_runner_reuse(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    skill_path, dataset = _cycle1_runner_fixture(tmp_path)
+    runner = SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=SimpleNamespace(),
+    )
+    original_error = RuntimeError("scheduler restore failed")
+    observed_ledgers: list[RunBudgetLedger] = []
+
+    def fail_scheduler_restore(*args, **kwargs):
+        ledger = runner.run_budget_ledger
+        decision = ledger.reserve(
+            ledger.estimate_next(
+                stage=BudgetStage.CANDIDATE_GENERATION,
+                item_id=f"pending-bootstrap-{len(observed_ledgers)}",
+                cold_start_per_unit=BudgetUsage(tokens=1),
+            )
+        )
+        assert decision.allowed is True
+        observed_ledgers.append(ledger)
+        raise original_error
+
+    monkeypatch.setattr(
+        runner_module,
+        "_load_prior_scheduler_state",
+        fail_scheduler_restore,
+    )
+
+    for run_id in ("run-bootstrap-fault-1", "run-bootstrap-fault-2"):
+        with pytest.raises(RuntimeError) as raised:
+            await runner.run_explicit_target(
+                run_id=run_id,
+                target=SkillTextTarget(skill_path),
+                dataset=dataset,
+                trace_packs=(),
+                apply_policy="proposal",
+            )
+
+        assert raised.value is original_error
+        assert runner.run_budget_ledger is observed_ledgers[-1]
+        assert runner.run_budget_ledger.outstanding_reservations == ()
+
+    assert len(observed_ledgers) == 2
+    assert observed_ledgers[1] is not observed_ledgers[0]
+
+
 def test_stage_telemetry_delta_uses_only_new_batch_when_token_alias_changes() -> None:
     telemetry = SelfEvolveExecutionTelemetry()
     telemetry.record(
@@ -12304,7 +12526,7 @@ def test_stored_resume_zero_budget_override_does_not_exempt_later_repair() -> No
 
 
 def test_repair_probe_failure_identity_separates_normalized_root_causes() -> None:
-    readiness = runner_module.ReplayServiceReadinessTimeout(
+    readiness = ReplayServiceReadinessTimeout(
         "readiness failed",
         phase="preflight",
         timeout_seconds=10,
@@ -12314,7 +12536,7 @@ def test_repair_probe_failure_identity_separates_normalized_root_causes() -> Non
         last_error_errno=None,
         process_returncode=None,
     )
-    exited = runner_module.ReplayServiceProcessExitedError(
+    exited = ReplayServiceProcessExitedError(
         "service exited",
         phase="preflight",
         service_id="service",
@@ -12322,12 +12544,12 @@ def test_repair_probe_failure_identity_separates_normalized_root_causes() -> Non
         process_returncode=1,
     )
 
-    readiness_code = runner_module._repair_probe_root_cause_code(readiness)
-    exited_code = runner_module._repair_probe_root_cause_code(exited)
+    readiness_code = _repair_probe_root_cause_code(readiness)
+    exited_code = _repair_probe_root_cause_code(exited)
     assert readiness_code == "replay_service_readiness_failed"
     assert exited_code == "replay_service_process_exited_before_readiness"
 
-    protocol_timeout = runner_module.ReplayServiceReadinessTimeout(
+    protocol_timeout = ReplayServiceReadinessTimeout(
         "protocol probe failed",
         phase="protocol_probe",
         timeout_seconds=10,
@@ -12337,7 +12559,7 @@ def test_repair_probe_failure_identity_separates_normalized_root_causes() -> Non
         last_error_errno=None,
         process_returncode=None,
     )
-    assert runner_module._repair_probe_root_cause_code(protocol_timeout) == (
+    assert _repair_probe_root_cause_code(protocol_timeout) == (
         "replay_service_protocol_probe_timeout"
     )
 
@@ -12630,7 +12852,7 @@ def test_execution_usage_deduplicates_aliases_and_reused_baselines() -> None:
         },
     )
 
-    usage = runner_module._execution_usage_report(
+    usage = _execution_usage_report(
         optimizer_diagnostics=[],
         iteration_states=[
             {
@@ -12783,7 +13005,7 @@ async def test_shared_screening_measurement_prerequisite_preserves_causality(
         measurement_mode="required",
         max_iterations=3,
     )
-    expected_fingerprint = runner_module.candidate_package_fingerprint(candidate)
+    expected_fingerprint = candidate_package_fingerprint(candidate)
 
     async def blocked_screening(**kwargs):
         details = {
@@ -12858,7 +13080,7 @@ async def test_shared_screening_measurement_prerequisite_preserves_causality(
     assert report["campaign_failure_attribution"]["resume_candidate_id"] == (
         candidate.candidate_id
     )
-    assert runner_module._measurement_pending_candidate_checkpoint(
+    assert _measurement_pending_candidate_checkpoint(
         store=store,
         run_id=result.run.run_id,
         report=report,
@@ -14434,7 +14656,9 @@ async def test_stored_measurement_resume_bypasses_counterexample_screening(
         candidates=(candidate,),
         apply_policy="verified_only",
         require_single_candidate_screening=True,
-        stored_measurement_resume=True,
+        stored_candidate_bypass=(
+            StoredCandidateScreeningBypass.MEASUREMENT_RESUME
+        ),
     )
 
     assert selected == (candidate,)
@@ -14814,7 +15038,7 @@ def test_authoritative_failure_case_is_persisted_and_restored_for_screening(
     cumulative: dict[str, dict[str, float | int]] = {}
     current_run: dict[str, dict[str, int]] = {}
 
-    runner_module._record_authoritative_replay_observations(
+    _record_authoritative_replay_observations(
         cumulative,
         dataset=dataset,
         replay_result=replay,
@@ -14844,7 +15068,7 @@ def test_authoritative_failure_case_is_persisted_and_restored_for_screening(
         encoding="utf-8",
     )
     restored: dict[str, dict[str, float | int]] = {}
-    runner_module._restore_campaign_screening_case_observations(
+    _restore_campaign_screening_case_observations(
         restored,
         store=store,
         prior_run_ids=(prior_run_id,),
@@ -14928,7 +15152,7 @@ def test_campaign_restore_recovers_authoritative_member_lifecycle_before_report(
 
     observations: dict[str, dict[str, float | int]] = {}
     controls: dict[str, dict[str, object]] = {}
-    runner_module._restore_campaign_screening_case_observations(
+    _restore_campaign_screening_case_observations(
         observations,
         store=store,
         prior_run_ids=(run_id,),
@@ -15000,12 +15224,12 @@ def test_authoritative_invalid_control_is_persisted_and_deprioritized(
     )
     observations: dict[str, dict[str, float | int]] = {}
 
-    runner_module._record_authoritative_replay_observations(
+    _record_authoritative_replay_observations(
         observations,
         dataset=dataset,
         replay_result=replay,
     )
-    ordered = runner_module._authoritative_replay_dataset(
+    ordered = _authoritative_replay_dataset(
         dataset,
         empirical_observations=observations,
     )
@@ -15183,7 +15407,7 @@ def test_authoritative_replay_compacts_and_defers_short_context_continuation() -
         ),
     )
 
-    authoritative = runner_module._authoritative_replay_dataset(dataset)
+    authoritative = _authoritative_replay_dataset(dataset)
 
     assert authoritative.cases[-1].case_id == "unstable-continuation"
     compacted = authoritative.cases[-1]
@@ -15269,7 +15493,7 @@ def test_historical_baseline_lifecycles_preflight_control_before_generation(
         )
 
     observations: dict[str, dict[str, float | int]] = {}
-    runner_module._restore_historical_screening_lifecycle_observations(
+    _restore_historical_screening_lifecycle_observations(
         observations,
         store=store,
         target=target,
@@ -15399,15 +15623,15 @@ async def test_evolvability_preflight_blocks_before_optimizer_call(
 
 
 def test_screening_timeout_uses_one_bounded_same_case_escalation() -> None:
-    assert runner_module._candidate_screening_escalated_timeout(
+    assert _candidate_screening_escalated_timeout(
         177,
         authoritative_timeout_seconds=600,
     ) == 266
-    assert runner_module._candidate_screening_escalated_timeout(
+    assert _candidate_screening_escalated_timeout(
         266,
         authoritative_timeout_seconds=600,
     ) == 300
-    assert runner_module._candidate_screening_escalated_timeout(
+    assert _candidate_screening_escalated_timeout(
         300,
         authoritative_timeout_seconds=600,
     ) is None
@@ -15754,20 +15978,18 @@ async def test_candidate_support_attribution_preserves_raw_timeout_escalation(
         adaptation_fingerprint="sha256:candidate-adaptation",
         support_fingerprint="sha256:candidate-support",
     )
+    def qualification_identity(**kwargs):
+        return _control_qualification_identity(
+            **kwargs,
+            capability_fingerprint=lambda bundle: bundle.fingerprint,
+            adaptation_fingerprint=lambda bundle: bundle.adaptation_fingerprint,
+            support_fingerprint=lambda bundle: bundle.support_fingerprint,
+        )
+
     monkeypatch.setattr(
         runner_module,
-        "replay_support_fingerprint",
-        lambda bundle: bundle.support_fingerprint,
-    )
-    monkeypatch.setattr(
-        runner_module,
-        "replay_capability_semantic_fingerprint",
-        lambda bundle: bundle.fingerprint,
-    )
-    monkeypatch.setattr(
-        runner_module,
-        "replay_adaptation_semantic_fingerprint",
-        lambda bundle: bundle.adaptation_fingerprint,
+        "_measurement_control_identity",
+        qualification_identity,
     )
     monkeypatch.setattr(
         runner,
@@ -15777,7 +15999,7 @@ async def test_candidate_support_attribution_preserves_raw_timeout_escalation(
             GateResult("replay_adaptation", True, "ready"),
         ),
     )
-    current_identity = runner_module._control_qualification_identity(
+    current_identity = qualification_identity(
         case_id="case-1",
         baseline_skill_fingerprint=target.fingerprint_current_content(),
         replay_adaptation=adaptation,
@@ -15895,7 +16117,7 @@ def test_candidate_owned_support_baseline_incompatibility_is_candidate_repair() 
         "support_fingerprint": "sha256:framework-support",
     }
 
-    attributed = runner_module._candidate_support_baseline_incompatibility_gate(
+    attributed = _candidate_support_baseline_incompatibility_gate(
         gate,
         control_identity=current_identity,
         control_observations={
@@ -15918,7 +16140,7 @@ def test_candidate_owned_support_baseline_incompatibility_is_candidate_repair() 
     assert attributed.details["failure_class"] == "candidate"
     assert attributed.details["failure_owner"] == "candidate"
     assert attributed.details["next_action"] == "continue_candidate_repair"
-    assert runner_module._screening_gate_has_invalid_control(attributed) is False
+    assert _screening_gate_has_invalid_control(attributed) is False
 
 
 def test_candidate_support_attribution_requires_repeated_current_failure() -> None:
@@ -15951,7 +16173,7 @@ def test_candidate_support_attribution_requires_repeated_current_failure() -> No
         "support_fingerprint": "sha256:qualified-support",
     }
 
-    attributed = runner_module._candidate_support_baseline_incompatibility_gate(
+    attributed = _candidate_support_baseline_incompatibility_gate(
         gate,
         control_identity=current_identity,
         control_observations={
@@ -16007,7 +16229,7 @@ def test_unobserved_candidate_intervention_preserves_framework_baseline_timeout(
         "support_fingerprint": "sha256:qualified-support",
     }
 
-    attributed = runner_module._candidate_support_baseline_incompatibility_gate(
+    attributed = _candidate_support_baseline_incompatibility_gate(
         gate,
         control_identity=current_identity,
         control_observations={
@@ -16023,7 +16245,7 @@ def test_unobserved_candidate_intervention_preserves_framework_baseline_timeout(
     assert attributed.details.get("code") != (
         "candidate_replay_support_baseline_incompatible"
     )
-    assert runner_module._screening_gate_has_invalid_control(attributed) is True
+    assert _screening_gate_has_invalid_control(attributed) is True
 
 
 def test_candidate_support_counterfactual_requires_identical_execution_envelope() -> None:
@@ -16063,7 +16285,7 @@ def test_candidate_support_counterfactual_requires_identical_execution_envelope(
         "timeout_seconds": 180.0,
     }
 
-    attributed = runner_module._candidate_support_baseline_incompatibility_gate(
+    attributed = _candidate_support_baseline_incompatibility_gate(
         gate,
         control_identity=current_identity,
         control_observations={
@@ -16076,7 +16298,7 @@ def test_candidate_support_counterfactual_requires_identical_execution_envelope(
 
     assert attributed is gate
     assert attributed.details["failure_class"] == "framework"
-    assert runner_module._screening_gate_has_invalid_control(attributed) is True
+    assert _screening_gate_has_invalid_control(attributed) is True
 
 
 @pytest.mark.asyncio
@@ -16098,7 +16320,7 @@ async def test_runner_blocks_generation_after_control_preflight_is_infeasible(
                 },
                 "screening_control_preflight": {
                     "harness_fingerprint": (
-                        runner_module._screening_control_harness_fingerprint()
+                        _screening_control_harness_fingerprint()
                     )
                 },
             }
@@ -16987,7 +17209,7 @@ async def test_candidate_capability_operational_preflight_blocks_paired_replay(
     assert gate.details["failure_event"]["owner"] == "candidate"
 
     async def fail_startup_preflight(*args, **kwargs):
-        raise runner_module.ReplayServiceReadinessTimeout(
+        raise ReplayServiceReadinessTimeout(
             "connection refused",
             phase="startup",
             timeout_seconds=15.0,
@@ -18815,7 +19037,7 @@ async def test_candidate_compile_failure_accumulates_latest_schema_constraint(
     )
     assert gate.details["causal_failure_events"][0][
         "contract_fingerprint"
-    ] == runner_module._schema_field_contract_fingerprint(
+    ] == _schema_field_contract_fingerprint(
         gate.details["repair_conformance"]
     )
 
@@ -19112,7 +19334,7 @@ def test_repair_conformance_gate_never_exposes_private_assertion_values() -> Non
     )
     encoded = json.dumps(gate.details, sort_keys=True)
     feedback_encoded = json.dumps(
-        runner_module._typed_gate_feedback_metrics((gate,)),
+        _typed_gate_feedback_metrics((gate,)),
         sort_keys=True,
     )
 
@@ -19154,7 +19376,7 @@ def test_repair_conformance_gate_keys_source_failures_by_typed_contract() -> Non
 
     event = gate.details["causal_failure_events"][0]
     assert event["contract_fingerprint"] == (
-        runner_module._schema_field_contract_fingerprint(
+        _schema_field_contract_fingerprint(
             {"schema_field_constraints": [constraint.to_dict()]}
         )
     )
@@ -19963,14 +20185,6 @@ async def test_runner_filters_quality_rejection_but_retries_replay_only_candidat
         rationale="duplicate",
         target_fingerprint="fingerprint",
     )
-    fresh_candidate = CandidateVariant(
-        candidate_id="candidate-fresh",
-        target=SelfEvolveTargetRef(target_type="skill", target_id="demo", path=str(skill_path)),
-        content="---\nname: demo\n---\n# Demo\n\nFresh candidate.\n",
-        rationale="fresh",
-        target_fingerprint="fingerprint",
-    )
-
     class PopulationOptimizer:
         def __init__(self) -> None:
             self.requests: list[OptimizerRequest] = []
@@ -20191,10 +20405,10 @@ async def test_runner_filters_prior_semantic_lesson_duplicate_candidates_before_
     historical_lineage.update(
         {
             "semantic_identity_version": (
-                runner_module._SEMANTIC_DEDUP_IDENTITY_VERSION
+                _SEMANTIC_DEDUP_IDENTITY_VERSION
             ),
             "semantic_package_fingerprint": (
-                runner_module.candidate_semantic_package_fingerprint(
+                candidate_semantic_package_fingerprint(
                     semantic_duplicate,
                     content_semantic_fingerprint="semantic-same",
                 )
@@ -20376,10 +20590,10 @@ async def test_semantic_dedup_exhaustion_retries_typed_frontier_and_reports_root
                     "semantic_fingerprint": semantic,
                     "lesson_set_fingerprint": "lesson-set-same",
                     "semantic_identity_version": (
-                        runner_module._SEMANTIC_DEDUP_IDENTITY_VERSION
+                        _SEMANTIC_DEDUP_IDENTITY_VERSION
                     ),
                     "semantic_package_fingerprint": (
-                        runner_module.candidate_semantic_package_fingerprint(
+                        candidate_semantic_package_fingerprint(
                             candidate,
                             content_semantic_fingerprint=semantic,
                         )
@@ -20822,7 +21036,7 @@ async def test_runner_persists_lineage_lifecycle_for_rejected_and_accepted_candi
     assert strong_lineage["replayed"] is True
     assert strong_lineage["post_apply_status"] == "accepted"
     assert strong_lineage["semantic_identity_version"] == (
-        runner_module._SEMANTIC_DEDUP_IDENTITY_VERSION
+        _SEMANTIC_DEDUP_IDENTITY_VERSION
     )
     assert strong_lineage["semantic_package_fingerprint"].startswith("sha256:")
     assert strong_lineage["verification_contract_fingerprint"].startswith(
@@ -24024,7 +24238,6 @@ def test_optimize_cli_request_uses_model_generated_candidate_files(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    import aworld.self_evolve.runner as runner_module
 
     skill_path = tmp_path / "aworld-skills" / "demo" / "SKILL.md"
     skill_path.parent.mkdir(parents=True)
@@ -24139,7 +24352,6 @@ def test_optimize_cli_request_stops_population_after_model_runtime_failure(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    import aworld.self_evolve.runner as runner_module
 
     skill_path = tmp_path / "aworld-skills" / "demo" / "SKILL.md"
     skill_path.parent.mkdir(parents=True)
@@ -25415,7 +25627,7 @@ def test_run_owned_draft_materialization_fails_closed_on_unsafe_paths(
         linked_root.mkdir()
         (tmp_path / ".aworld").symlink_to(linked_root, target_is_directory=True)
 
-    materialized = runner_module._materialize_run_owned_draft_decision(
+    materialized = _materialize_run_owned_draft_decision(
         decision,
         store=FilesystemSelfEvolveStore(tmp_path),
         run_id=run_id,
@@ -26203,7 +26415,7 @@ async def test_paired_replay_timeout_persists_progressive_resume_checkpoint(
         / candidate.candidate_id
         / "members"
     )
-    assert runner_module._reusable_baseline_case_count(
+    assert _reusable_baseline_case_count(
         dataset=dataset,
         baseline_replay_dir=str(replay_dir),
         baseline_repetitions=1,
@@ -26260,7 +26472,7 @@ def test_shared_measurement_without_candidate_observation_releases_authoritative
             "repairable": True,
         },
     )
-    assert runner_module._authoritative_attempt_consumed(
+    assert _authoritative_attempt_consumed(
         {
             "status": "rejected",
             "replay_result": None,
@@ -26280,7 +26492,7 @@ def test_shared_measurement_without_candidate_observation_releases_authoritative
             trajectory=[{"role": "assistant", "content": "done"}],
         ),
     )
-    assert runner_module._authoritative_attempt_consumed(
+    assert _authoritative_attempt_consumed(
         {
             "status": "rejected",
             "replay_result": executed_replay,
@@ -26297,7 +26509,7 @@ def test_shared_measurement_without_candidate_observation_releases_authoritative
 
     # A completed control alone is reusable framework evidence, not a result
     # about the candidate package.
-    assert runner_module._authoritative_attempt_consumed(
+    assert _authoritative_attempt_consumed(
         {
             "status": "rejected",
             "replay_result": None,
@@ -26322,7 +26534,7 @@ def test_shared_measurement_without_candidate_observation_releases_authoritative
             "repairable": False,
         },
     )
-    assert runner_module._authoritative_attempt_consumed(
+    assert _authoritative_attempt_consumed(
         {
             "status": "rejected",
             "replay_result": None,
@@ -26379,7 +26591,7 @@ def test_measurement_checkpoint_rejects_candidate_only_marker(
     )
     for candidate in candidates:
         store.write_candidate(run_id, candidate)
-    expected_fingerprint = runner_module.candidate_package_fingerprint(
+    expected_fingerprint = candidate_package_fingerprint(
         candidates[1]
     )
     report = {
@@ -26394,7 +26606,7 @@ def test_measurement_checkpoint_rejects_candidate_only_marker(
         },
     }
 
-    checkpoint = runner_module._measurement_pending_candidate_checkpoint(
+    checkpoint = _measurement_pending_candidate_checkpoint(
         store=store,
         run_id=run_id,
         report=report,
@@ -26419,7 +26631,7 @@ def test_measurement_checkpoint_rejects_screening_attempt(
     )
     for candidate in candidates:
         store.write_candidate(run_id, candidate)
-    expected_fingerprint = runner_module.candidate_package_fingerprint(
+    expected_fingerprint = candidate_package_fingerprint(
         candidates[1]
     )
     report = {
@@ -26450,7 +26662,7 @@ def test_measurement_checkpoint_rejects_screening_attempt(
         },
     }
 
-    checkpoint = runner_module._measurement_pending_candidate_checkpoint(
+    checkpoint = _measurement_pending_candidate_checkpoint(
         store=store,
         run_id=run_id,
         report=report,
@@ -26511,14 +26723,14 @@ def test_candidate_prerequisite_failure_does_not_create_measurement_checkpoint(
         ],
     }
 
-    checkpoint = runner_module._measurement_pending_candidate_checkpoint(
+    checkpoint = _measurement_pending_candidate_checkpoint(
         store=store,
         run_id=run_id,
         report=report,
     )
 
     assert checkpoint is None
-    assert runner_module._report_has_shared_measurement_failure(report) is False
+    assert _report_has_shared_measurement_failure(report) is False
 
 
 def test_failed_probe_feedback_preserves_schema_counterexample_contracts() -> None:
@@ -26531,7 +26743,7 @@ def test_failed_probe_feedback_preserves_schema_counterexample_contracts() -> No
         },
     }
 
-    feedback = runner_module._failed_probe_typed_feedback(
+    feedback = _failed_probe_typed_feedback(
         (
             {
                 "code": "schema_field_validation_failed",
@@ -26546,7 +26758,7 @@ def test_failed_probe_feedback_preserves_schema_counterexample_contracts() -> No
 
 
 def test_effective_replay_repetitions_share_planning_and_execution_policy() -> None:
-    assert runner_module._effective_replay_repetitions(
+    assert _effective_replay_repetitions(
         apply_policy="verified_only",
         repetitions_explicit=False,
         replay_case_count=11,
@@ -26554,7 +26766,7 @@ def test_effective_replay_repetitions_share_planning_and_execution_policy() -> N
         baseline_repetitions=2,
         candidate_repetitions=3,
     ) == (1, 1, "independent_case_adaptive")
-    assert runner_module._effective_replay_repetitions(
+    assert _effective_replay_repetitions(
         apply_policy="verified_only",
         repetitions_explicit=False,
         replay_case_count=2,
@@ -26562,7 +26774,7 @@ def test_effective_replay_repetitions_share_planning_and_execution_policy() -> N
         baseline_repetitions=2,
         candidate_repetitions=3,
     ) == (1, 1, "independent_case_adaptive")
-    assert runner_module._effective_replay_repetitions(
+    assert _effective_replay_repetitions(
         apply_policy="verified_only",
         repetitions_explicit=True,
         replay_case_count=11,
