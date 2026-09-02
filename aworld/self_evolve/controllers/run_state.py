@@ -139,20 +139,19 @@ class VerificationFunnelRequest:
 
 
 @dataclass(frozen=True)
-class ConformanceStrategyTransition:
-    """One conformance topology observation and its frontier effect."""
+class ConformanceProgressTransition:
+    """One typed conformance observation and its bounded retry decision."""
 
-    new_switch_requests: tuple[str, ...]
-    materialized_switches: tuple[str, ...]
-    unmaterialized_switches: tuple[str, ...]
-    exhausted_materialized: tuple[str, ...]
-    prior_topology_fingerprints: tuple[str, ...]
+    new_repair_requests: tuple[str, ...]
+    semantic_progress: tuple[str, ...]
+    changed_strategies: tuple[str, ...]
+    stagnant_failures: tuple[str, ...]
+    exhausted_failures: tuple[str, ...]
+    prior_strategy_fingerprints: tuple[str, ...]
 
     @property
     def frontier_exhausted(self) -> bool:
-        return bool(
-            self.exhausted_materialized or self.unmaterialized_switches
-        )
+        return bool(self.exhausted_failures)
 
 
 @dataclass
@@ -178,6 +177,15 @@ class GenerationFrontierState:
     conformance_strategy_topologies: dict[str, set[str]] = field(
         default_factory=dict
     )
+    conformance_result_observations: dict[str, set[str]] = field(
+        default_factory=dict
+    )
+    conformance_stagnant_attempts: dict[str, int] = field(
+        default_factory=dict
+    )
+    conformance_targeted_repair_request_count: int = 0
+    conformance_semantic_progress_count: int = 0
+    conformance_semantic_frontier_stalled: bool = False
     pending_conformance_counterexamples: set[str] = field(
         default_factory=set
     )
@@ -342,77 +350,99 @@ class GenerationFrontierState:
         self.pending_conformance_counterexamples = set(observed)
         return repeated
 
-    def observe_conformance_strategies(
+    def observe_conformance_progress(
         self,
         *,
         signatures: tuple[str, ...],
-        topology_by_signature: Mapping[str, tuple[str, ...]],
-        max_switch_attempts: int,
-    ) -> ConformanceStrategyTransition:
-        """Atomically update topology switches and conformance exhaustion."""
+        result_observations_by_signature: Mapping[str, tuple[str, ...]],
+        strategy_by_signature: Mapping[str, tuple[str, ...]],
+        max_stagnant_attempts: int,
+    ) -> ConformanceProgressTransition:
+        """Advance repair using result progress instead of owner/file churn."""
 
-        new_switch_requests: list[str] = []
-        materialized_switches: list[str] = []
-        unmaterialized_switches: list[str] = []
+        if max_stagnant_attempts < 1:
+            raise ValueError("max_stagnant_attempts must be positive")
+        new_repair_requests: list[str] = []
+        semantic_progress: list[str] = []
+        changed_strategies: list[str] = []
+        stagnant_failures: list[str] = []
+        exhausted_failures: list[str] = []
         for signature in signatures:
-            current_topologies = set(topology_by_signature.get(signature, ()))
-            prior_topologies = self.conformance_strategy_topologies.get(
-                signature
+            current_results = set(
+                result_observations_by_signature.get(signature, ())
             )
-            if prior_topologies is None:
-                self.conformance_strategy_topologies[signature] = set(
-                    current_topologies
+            current_strategies = set(strategy_by_signature.get(signature, ()))
+            prior_results = self.conformance_result_observations.get(signature)
+            prior_strategies = self.conformance_strategy_topologies.get(signature)
+            if prior_results is None:
+                self.conformance_result_observations[signature] = set(
+                    current_results
                 )
-                new_switch_requests.append(signature)
+                self.conformance_strategy_topologies[signature] = set(
+                    current_strategies
+                )
+                self.conformance_stagnant_attempts[signature] = 0
+                new_repair_requests.append(signature)
                 continue
-            new_topologies = current_topologies - prior_topologies
-            if new_topologies:
-                prior_topologies.update(new_topologies)
+            new_strategies = current_strategies - (prior_strategies or set())
+            if new_strategies:
+                self.conformance_strategy_topologies.setdefault(
+                    signature, set()
+                ).update(new_strategies)
                 self.conformance_strategy_attempts[signature] = (
                     self.conformance_strategy_attempts.get(signature, 0) + 1
                 )
-                materialized_switches.append(signature)
+                changed_strategies.append(signature)
+            new_results = current_results - prior_results
+            if new_results:
+                prior_results.update(new_results)
+                self.conformance_stagnant_attempts[signature] = 0
+                semantic_progress.append(signature)
+                new_repair_requests.append(signature)
             else:
-                unmaterialized_switches.append(signature)
-        exhausted_materialized = tuple(
-            signature
-            for signature in materialized_switches
-            if self.conformance_strategy_attempts.get(signature, 0)
-            >= max_switch_attempts
-        )
-        frontier_exhausted = bool(
-            exhausted_materialized or unmaterialized_switches
-        )
-        if frontier_exhausted:
+                stagnant_count = (
+                    self.conformance_stagnant_attempts.get(signature, 0) + 1
+                )
+                self.conformance_stagnant_attempts[signature] = stagnant_count
+                stagnant_failures.append(signature)
+                if stagnant_count >= max_stagnant_attempts:
+                    exhausted_failures.append(signature)
+                else:
+                    new_repair_requests.append(signature)
+        if exhausted_failures:
             self.conformance_frontier_exhausted = True
-            self.conformance_strategy_switch_count += len(
-                materialized_switches
+            self.conformance_semantic_frontier_stalled = True
+            self.conformance_strategy_switch_not_materialized = any(
+                not self.conformance_strategy_attempts.get(signature, 0)
+                for signature in exhausted_failures
             )
-            self.conformance_strategy_switch_not_materialized = bool(
-                unmaterialized_switches
-            )
-        else:
-            self.conformance_strategy_switch_request_count += len(
-                new_switch_requests
-            )
-        prior_topology_fingerprints = tuple(
+        self.conformance_strategy_switch_count += len(changed_strategies)
+        self.conformance_strategy_switch_request_count += len(
+            new_repair_requests
+        )
+        self.conformance_targeted_repair_request_count += len(
+            new_repair_requests
+        )
+        self.conformance_semantic_progress_count += len(semantic_progress)
+        prior_strategy_fingerprints = tuple(
             sorted(
                 {
-                    topology
-                    for signature in new_switch_requests
-                    for topology in self.conformance_strategy_topologies.get(
+                    strategy
+                    for signature in new_repair_requests
+                    for strategy in self.conformance_strategy_topologies.get(
                         signature,
                         set(),
                     )
                 }
             )
         )
-        return ConformanceStrategyTransition(
-            new_switch_requests=tuple(new_switch_requests),
-            materialized_switches=tuple(materialized_switches),
-            unmaterialized_switches=tuple(unmaterialized_switches),
-            exhausted_materialized=exhausted_materialized,
-            prior_topology_fingerprints=prior_topology_fingerprints,
+        return ConformanceProgressTransition(
+            new_repair_requests=tuple(new_repair_requests),
+            semantic_progress=tuple(semantic_progress),
+            changed_strategies=tuple(changed_strategies),
+            stagnant_failures=tuple(stagnant_failures),
+            exhausted_failures=tuple(exhausted_failures),
+            prior_strategy_fingerprints=prior_strategy_fingerprints,
         )
 
     def release_effective_candidates(
@@ -438,6 +468,8 @@ class GenerationFrontierState:
     def stop_reason(self) -> str | None:
         """Project the terminal generation-frontier reason."""
 
+        if self.conformance_semantic_frontier_stalled:
+            return "conformance_semantic_frontier_stalled"
         if self.conformance_strategy_switch_not_materialized:
             return "conformance_strategy_switch_not_materialized"
         if self.conformance_frontier_exhausted:
@@ -527,6 +559,18 @@ class ExplicitRunStateAccumulator:
             ),
             "conformance_strategy_switch_not_materialized": (
                 self.generation.conformance_strategy_switch_not_materialized
+            ),
+            "conformance_targeted_repair_request_count": (
+                self.generation.conformance_targeted_repair_request_count
+            ),
+            "conformance_semantic_progress_count": (
+                self.generation.conformance_semantic_progress_count
+            ),
+            "conformance_stagnant_attempt_count": sum(
+                self.generation.conformance_stagnant_attempts.values()
+            ),
+            "conformance_semantic_frontier_stalled": (
+                self.generation.conformance_semantic_frontier_stalled
             ),
             "pending_conformance_counterexample_count": len(
                 self.generation.pending_conformance_counterexamples

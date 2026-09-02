@@ -222,7 +222,8 @@ def _candidate_conformance_repair_topologies(
     Candidate-family labels are intent, not evidence of a structural switch.
     This fingerprint records the authorized owners, edited package paths, and
     source control/data-flow shape while deliberately ignoring identifiers and
-    literal values.
+    literal values. Result witnesses are tracked separately so same-file
+    micro-repairs are not mistaken for an unchanged strategy.
     """
 
     topologies: dict[str, set[str]] = {}
@@ -255,45 +256,13 @@ def _candidate_conformance_repair_topologies(
                     "source_shape": source_shape,
                 }
             )
-        raw_counterexamples = details.get("counterexample_contracts")
-        output_witnesses = sorted(
-            (
-                str(item.get("counterexample_id") or ""),
-                str(item.get("actual_type") or ""),
-                str(item.get("actual_fingerprint") or ""),
-            )
-            for item in (
-                raw_counterexamples
-                if isinstance(raw_counterexamples, (list, tuple))
-                else ()
-            )
-            if isinstance(item, Mapping)
-            and isinstance(item.get("counterexample_id"), str)
-            and isinstance(item.get("actual_fingerprint"), str)
-        )
-        proof_witnesses = sorted(
-            str(item)
-            for item in tuple(details.get("proof_fingerprints") or ())
-            if isinstance(item, str) and item
-        )
         payload = {
             "owner_paths": owner_paths,
-            # A typed counterexample is an executable output witness. Source
-            # refactors do not constitute a strategy switch while the selected
-            # subject retains the same type and content fingerprint.
-            "counterexample_output_witnesses": output_witnesses,
-            "source_behavior_proof_witnesses": proof_witnesses,
-            **(
-                {}
-                if output_witnesses or proof_witnesses
-                else {
-                    "edited_files": edited_files,
-                    "structural_authorization": (
-                        candidate.structural_edit_intent.authorization
-                        if candidate.structural_edit_intent is not None
-                        else None
-                    ),
-                }
+            "edited_files": edited_files,
+            "structural_authorization": (
+                candidate.structural_edit_intent.authorization
+                if candidate.structural_edit_intent is not None
+                else None
             ),
         }
         fingerprint = (
@@ -313,6 +282,75 @@ def _candidate_conformance_repair_topologies(
     return {
         signature: tuple(sorted(values))
         for signature, values in sorted(topologies.items())
+    }
+
+
+def _candidate_conformance_result_observations(
+    failures: Iterable[tuple[CandidateVariant, GateResult]],
+) -> dict[str, tuple[str, ...]]:
+    """Fingerprint active invalid results independently of source strategy."""
+
+    observations: dict[str, set[str]] = {}
+    for candidate, gate in failures:
+        signatures = _candidate_conformance_failure_signatures(((candidate, gate),))
+        if not signatures:
+            continue
+        details = gate.details if isinstance(gate.details, Mapping) else {}
+        raw_counterexamples = details.get("counterexample_contracts")
+        raw_violations = details.get("schema_field_violations")
+        payload = {
+            "counterexamples": [
+                {
+                    "counterexample_id": item.get("counterexample_id"),
+                    "actual_type": item.get("actual_type"),
+                    "actual_fingerprint": item.get("actual_fingerprint"),
+                }
+                for item in (
+                    raw_counterexamples
+                    if isinstance(raw_counterexamples, (list, tuple))
+                    else ()
+                )
+                if isinstance(item, Mapping)
+            ],
+            "schema_field_violations": [
+                {
+                    key: item.get(key)
+                    for key in (
+                        "constraint_identity_digest",
+                        "field_path",
+                        "rule",
+                        "actual_type",
+                        "actual_fingerprint",
+                        "occurrence_count",
+                    )
+                }
+                for item in (
+                    raw_violations
+                    if isinstance(raw_violations, (list, tuple))
+                    else ()
+                )
+                if isinstance(item, Mapping)
+            ],
+            "proof_fingerprints": sorted(
+                str(item)
+                for item in tuple(details.get("proof_fingerprints") or ())
+                if isinstance(item, str) and item
+            ),
+        }
+        fingerprint = "sha256:" + hashlib.sha256(
+            json.dumps(
+                payload,
+                ensure_ascii=True,
+                separators=(",", ":"),
+                sort_keys=True,
+                default=str,
+            ).encode("utf-8")
+        ).hexdigest()
+        for signature in signatures:
+            observations.setdefault(signature, set()).add(fingerprint)
+    return {
+        signature: tuple(sorted(values))
+        for signature, values in sorted(observations.items())
     }
 
 
@@ -345,24 +383,57 @@ def _source_control_flow_shape(path: str, source: str) -> object:
     }
 
 
-def _candidate_conformance_strategy_switch_feedback(
+def _candidate_conformance_targeted_repair_feedback(
     *,
     signature: str,
-    prior_topology_fingerprints: Sequence[str] = (),
+    failures: Iterable[tuple[CandidateVariant, GateResult]],
+    prior_strategy_fingerprints: Sequence[str] = (),
 ) -> EvaluationSummary:
+    active_constraints: list[Mapping[str, object]] = []
+    active_violations: list[Mapping[str, object]] = []
+    required_branch_paths: set[str] = set()
+    for _, gate in failures:
+        details = gate.details if isinstance(gate.details, Mapping) else {}
+        raw_constraints = details.get("schema_field_constraints")
+        raw_violations = details.get("schema_field_violations")
+        active_constraints.extend(
+            item
+            for item in (
+                raw_constraints
+                if isinstance(raw_constraints, (list, tuple))
+                else ()
+            )
+            if isinstance(item, Mapping)
+        )
+        active_violations.extend(
+            item
+            for item in (
+                raw_violations
+                if isinstance(raw_violations, (list, tuple))
+                else ()
+            )
+            if isinstance(item, Mapping)
+        )
+        contract = details.get("repair_conformance")
+        if isinstance(contract, Mapping):
+            required_branch_paths.update(
+                str(path)
+                for path in tuple(contract.get("required_branch_paths") or ())
+                if isinstance(path, str) and path
+            )
     event = ReplayFailureEvent(
-        code="candidate_conformance_strategy_switch_required",
+        code="candidate_conformance_targeted_repair_required",
         owner=FailureOwner.CANDIDATE,
         stage=FailureStage.CAPABILITY_PREFLIGHT,
         scope=FailureScope.CANDIDATE,
         repairable=True,
         category="repair_conformance",
-        summary="typed conformance failure requires a structural strategy switch",
+        summary="typed conformance failure requires a focused source repair",
         contract_fingerprint=signature,
     ).to_dict()
     return EvaluationSummary(
         variant_id=(
-            "candidate-conformance-strategy-switch-"
+            "candidate-conformance-targeted-repair-"
             f"{signature.removeprefix('sha256:')[:16]}"
         ),
         dataset_split="validation",
@@ -373,13 +444,17 @@ def _candidate_conformance_strategy_switch_feedback(
             "repairable": True,
             "candidate_validation_diagnostics": [
                 {
-                    "code": "candidate_conformance_strategy_switch_required",
+                    "code": "candidate_conformance_targeted_repair_required",
                     "stage": "repair_conformance",
                     "failure_fingerprint": signature,
-                    "required_action": (
-                        "change the failing data-flow or control-flow topology"
+                    "required_action": "satisfy_only_the_active_typed_violations",
+                    "repair_scope": "smallest_authorized_source_delta",
+                    "required_branch_paths": sorted(required_branch_paths),
+                    "active_schema_field_constraints": active_constraints[:100],
+                    "active_schema_field_violations": active_violations[:100],
+                    "prior_strategy_fingerprints": list(
+                        prior_strategy_fingerprints
                     ),
-                    "prior_topology_fingerprints": list(prior_topology_fingerprints),
                 }
             ],
             "failure_event": event,

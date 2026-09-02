@@ -355,6 +355,30 @@ def test_task_rollout_repair_prompt_requires_behavior_change() -> None:
     assert "replay compiler/runtime edits alone are insufficient" in instructions
 
 
+def test_active_schema_repair_prompt_prioritizes_smallest_producer_delta() -> None:
+    constraint = {
+        "schema_layer": "compile_result",
+        "field_path": "services[*].readiness.kind",
+        "rule": "required",
+        "expected": ["http", "tcp"],
+    }
+    instructions = _focused_repair_prompt_instructions(
+        {
+            "repair_conformance": {
+                "required_branch_paths": ["replay/compiler.py"],
+                "schema_field_constraints": [constraint],
+            },
+            "validation_feedback": [
+                {"active_schema_field_constraints": [constraint]}
+            ],
+        }
+    )
+
+    assert "blockers observed on the immediately preceding compile" in instructions
+    assert "Make the smallest edit in the declared producer path" in instructions
+    assert "verify the field is assigned on each branch" in instructions
+
+
 @pytest.mark.asyncio
 async def test_llm_mutator_stops_population_after_infrastructure_failure() -> None:
     calls = 0

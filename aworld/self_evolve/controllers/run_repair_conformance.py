@@ -549,10 +549,11 @@ async def validate_repair_conformance_population(
     request: RepairConformancePopulationRequest,
     runtime: RepairConformancePopulationRuntime,
 ) -> RepairConformancePopulationResult:
+    contracts_by_candidate = dict(request.repair_conformance_contracts)
     applicable = tuple(
         candidate
         for candidate in request.candidates
-        if candidate.candidate_id in request.repair_conformance_contracts
+        if candidate.candidate_id in contracts_by_candidate
     )
     if not applicable:
         return RepairConformancePopulationResult(request.candidates, None)
@@ -568,9 +569,10 @@ async def validate_repair_conformance_population(
     passed_candidates: list[CandidateVariant] = []
     stopped_by_shared_infrastructure = False
     superseded_candidate_ids: list[str] = []
+    rebased_candidate_ids: list[str] = []
     superseding_contract_identity: str | None = None
     for candidate_index, candidate in enumerate(request.candidates):
-        contract = request.repair_conformance_contracts.get(candidate.candidate_id)
+        contract = contracts_by_candidate.get(candidate.candidate_id)
         if contract is None:
             passed_candidates.append(candidate)
             continue
@@ -700,28 +702,29 @@ async def validate_repair_conformance_population(
                 )
             ):
                 superseding_contract_identity = evolved_identity
-                superseded = tuple(request.candidates[candidate_index + 1 :])
-                superseded_candidate_ids.extend(
-                    item.candidate_id for item in superseded
-                )
-                for stale_candidate in superseded:
-                    stale_key = (
-                        request.attempt_keys.get(stale_candidate.candidate_id)
-                        if request.attempt_keys is not None
-                        else None
+                if passed_candidates:
+                    superseded_candidate_ids.extend(
+                        item.candidate_id for item in passed_candidates
                     )
-                    if (
-                        request.attempt_tracker is not None
-                        and stale_key is not None
-                        and not request.attempt_tracker.terminal(stale_key)
-                    ):
-                        request.attempt_tracker.emit(
-                            stale_key,
-                            CandidateAttemptStage.NOT_RUN,
-                            reason_code="repair_contract_superseded",
+                    passed_candidates.clear()
+                for sibling in request.candidates[candidate_index + 1 :]:
+                    sibling_contract = contracts_by_candidate.get(
+                        sibling.candidate_id
+                    )
+                    if sibling_contract is None:
+                        continue
+                    contracts_by_candidate[sibling.candidate_id] = (
+                        _rebase_repair_conformance_contract(
+                            sibling_contract,
+                            evolved_contract,
+                            details=(
+                                gate.details
+                                if isinstance(gate.details, Mapping)
+                                else {}
+                            ),
                         )
-                passed_candidates.clear()
-                break
+                    )
+                    rebased_candidate_ids.append(sibling.candidate_id)
         if _conformance_gate_blocks_population(gate):
             stopped_by_shared_infrastructure = True
             passed_candidates.clear()
@@ -737,9 +740,57 @@ async def validate_repair_conformance_population(
             ],
             "stopped_by_shared_infrastructure": stopped_by_shared_infrastructure,
             "superseded_candidate_ids": superseded_candidate_ids,
+            "rebased_candidate_ids": list(dict.fromkeys(rebased_candidate_ids)),
             "superseding_contract_identity": superseding_contract_identity,
             "attempts": attempts,
         },
+    )
+
+
+def _rebase_repair_conformance_contract(
+    contract: RepairConformanceContract,
+    evolved_contract: Mapping[str, object],
+    *,
+    details: Mapping[str, object],
+) -> RepairConformanceContract:
+    """Merge public constraints while retaining a sibling's private lease."""
+
+    merged = merge_repair_conformance_constraint_context(
+        contract.to_public_dict(), evolved_contract, details
+    )
+    if merged is None:
+        return contract
+    merged["projection_schema_version"] = (
+        "aworld.self_evolve.repair_conformance.public.v1"
+    )
+    public_contract = RepairConformanceContract.from_public_dict(merged)
+    return replace(
+        contract,
+        failure_codes=public_contract.failure_codes,
+        required_branch_paths=public_contract.required_branch_paths,
+        manifest_path=public_contract.manifest_path,
+        compiler_path=public_contract.compiler_path,
+        runtime_paths=public_contract.runtime_paths,
+        late_observed_operations=public_contract.late_observed_operations,
+        requires_compiler_fixture_reconstruction=(
+            public_contract.requires_compiler_fixture_reconstruction
+        ),
+        requires_fixture_derived_probe=(
+            public_contract.requires_fixture_derived_probe
+        ),
+        required_fixture_probe_operations=(
+            public_contract.required_fixture_probe_operations
+        ),
+        fixture_probe_constraints=public_contract.fixture_probe_constraints,
+        schema_field_constraints=public_contract.schema_field_constraints,
+        runtime_response_constraints=public_contract.runtime_response_constraints,
+        runtime_artifact_constraints=public_contract.runtime_artifact_constraints,
+        required_runtime_transitions=(
+            public_contract.required_runtime_transitions
+        ),
+        artifact_lifecycle_constraint=(
+            public_contract.artifact_lifecycle_constraint
+        ),
     )
 
 

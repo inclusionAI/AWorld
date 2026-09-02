@@ -181,6 +181,18 @@ def normalize_feedback_summary(feedback: EvaluationSummary) -> dict[str, Any]:
         )
         if isinstance(projected_contract, Mapping):
             result["repair_conformance"] = dict(projected_contract)
+    for key in (
+        "active_schema_field_constraints",
+        "active_schema_field_violations",
+    ):
+        raw_items = metrics.get(key)
+        if not isinstance(raw_items, (list, tuple)):
+            continue
+        projected_items = public_diagnostic_projection(
+            list(raw_items[:100]), max_chars=8_192
+        )
+        if isinstance(projected_items, list):
+            result[key] = projected_items
     return result
 
 
@@ -613,6 +625,51 @@ def _repair_plan(
         evidence=evidence,
         metrics=metrics,
     )
+    active_schema_constraints = metrics.get("active_schema_field_constraints")
+    active_schema_violations = metrics.get("active_schema_field_violations")
+    if isinstance(active_schema_constraints, (list, tuple)) and (
+        active_schema_constraints
+    ):
+        issues.append("active_typed_schema_violation")
+        for constraint in active_schema_constraints[:_MAX_LIST_ITEMS]:
+            if not isinstance(constraint, Mapping):
+                continue
+            field_path = sanitize_text(
+                constraint.get("field_path"), max_chars=240
+            )
+            rule = sanitize_text(constraint.get("rule"), max_chars=80)
+            expected = constraint.get("expected")
+            expected_text = ",".join(
+                str(item)
+                for item in (
+                    expected
+                    if isinstance(expected, (list, tuple))
+                    else ()
+                )[:8]
+            )
+            actions.append(
+                "emit_every_selector_match:"
+                f"{field_path}:rule={rule}:expected={expected_text or 'schema'}"
+            )
+            acceptance_criteria.append(
+                f"no_active_violation:{field_path}:{rule}"
+            )
+    if isinstance(active_schema_violations, (list, tuple)):
+        for violation in active_schema_violations[:_MAX_LIST_ITEMS]:
+            if not isinstance(violation, Mapping):
+                continue
+            field_path = sanitize_text(
+                violation.get("field_path"), max_chars=240
+            )
+            actual_type = sanitize_text(
+                violation.get("actual_type"), max_chars=80
+            )
+            occurrence_count = violation.get("occurrence_count")
+            actions.append(
+                "replace_invalid_schema_value:"
+                f"{field_path}:actual_type={actual_type}:"
+                f"occurrences={occurrence_count or 1}"
+            )
     if has_evidence_problem:
         issues.append("compacted_or_incomplete_evidence")
         actions.extend(
@@ -731,7 +788,9 @@ def _repair_plan(
         }
 
     priority = (
-        "evidence_verifiability"
+        "schema_conformance"
+        if "active_typed_schema_violation" in issues
+        else "evidence_verifiability"
         if has_evidence_problem or has_manifest_problem
         else "score_and_efficiency"
     )
