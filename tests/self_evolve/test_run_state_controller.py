@@ -384,35 +384,61 @@ def test_conformance_counterexamples_move_between_pending_and_resolved() -> None
     }
 
 
-def test_conformance_strategy_transition_detects_unmaterialized_switch() -> None:
+def test_conformance_progress_allows_bounded_same_file_micro_repairs() -> None:
     frontier = GenerationFrontierState()
 
-    initial = frontier.observe_conformance_strategies(
+    initial = frontier.observe_conformance_progress(
         signatures=("contract-a",),
-        topology_by_signature={"contract-a": ("topology-1",)},
-        max_switch_attempts=2,
+        result_observations_by_signature={"contract-a": ("invalid-null",)},
+        strategy_by_signature={"contract-a": ("topology-1",)},
+        max_stagnant_attempts=2,
     )
-    materialized = frontier.observe_conformance_strategies(
+    changed_source = frontier.observe_conformance_progress(
         signatures=("contract-a",),
-        topology_by_signature={"contract-a": ("topology-2",)},
-        max_switch_attempts=2,
+        result_observations_by_signature={"contract-a": ("invalid-null",)},
+        strategy_by_signature={"contract-a": ("topology-2",)},
+        max_stagnant_attempts=2,
     )
-    repeated = frontier.observe_conformance_strategies(
+    exhausted = frontier.observe_conformance_progress(
         signatures=("contract-a",),
-        topology_by_signature={"contract-a": ("topology-2",)},
-        max_switch_attempts=2,
+        result_observations_by_signature={"contract-a": ("invalid-null",)},
+        strategy_by_signature={"contract-a": ("topology-2",)},
+        max_stagnant_attempts=2,
     )
 
-    assert initial.new_switch_requests == ("contract-a",)
-    assert initial.prior_topology_fingerprints == ("topology-1",)
-    assert materialized.materialized_switches == ("contract-a",)
-    assert materialized.frontier_exhausted is False
-    assert repeated.unmaterialized_switches == ("contract-a",)
-    assert repeated.frontier_exhausted is True
-    assert frontier.conformance_strategy_switch_not_materialized is True
-    assert frontier.stop_reason() == (
-        "conformance_strategy_switch_not_materialized"
+    assert initial.new_repair_requests == ("contract-a",)
+    assert initial.prior_strategy_fingerprints == ("topology-1",)
+    assert changed_source.changed_strategies == ("contract-a",)
+    assert changed_source.frontier_exhausted is False
+    assert exhausted.exhausted_failures == ("contract-a",)
+    assert frontier.conformance_semantic_frontier_stalled is True
+    assert frontier.stop_reason() == "conformance_semantic_frontier_stalled"
+
+
+def test_conformance_progress_resets_stagnation_on_result_progress() -> None:
+    frontier = GenerationFrontierState()
+    frontier.observe_conformance_progress(
+        signatures=("contract-a",),
+        result_observations_by_signature={"contract-a": ("invalid-null",)},
+        strategy_by_signature={"contract-a": ("topology-1",)},
+        max_stagnant_attempts=2,
     )
+    frontier.observe_conformance_progress(
+        signatures=("contract-a",),
+        result_observations_by_signature={"contract-a": ("invalid-null",)},
+        strategy_by_signature={"contract-a": ("topology-1",)},
+        max_stagnant_attempts=2,
+    )
+    progressed = frontier.observe_conformance_progress(
+        signatures=("contract-a",),
+        result_observations_by_signature={"contract-a": ("invalid-string",)},
+        strategy_by_signature={"contract-a": ("topology-1",)},
+        max_stagnant_attempts=2,
+    )
+
+    assert progressed.semantic_progress == ("contract-a",)
+    assert progressed.frontier_exhausted is False
+    assert frontier.conformance_stagnant_attempts["contract-a"] == 0
 
 
 def test_generation_slots_and_repair_releases_share_one_counter() -> None:

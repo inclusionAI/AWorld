@@ -175,6 +175,7 @@ from aworld.self_evolve.controllers.run_generation_helpers import (
 from aworld.self_evolve.controllers.run_iteration_helpers import (
     _candidate_conformance_failure_signatures,
     _candidate_conformance_repair_topologies,
+    _candidate_conformance_result_observations,
     _candidate_conformance_stall_signature,
     _candidate_screening_repair_feedback,
 )
@@ -1509,6 +1510,18 @@ def test_typed_gate_feedback_exposes_first_class_repair_contract() -> None:
             "failure_class": "candidate",
             "repairable": True,
             "repair_conformance": contract.to_public_dict(),
+            "schema_field_constraints": [constraint.to_dict()],
+            "schema_field_violations": [
+                {
+                    "constraint_identity_digest": constraint.identity_digest,
+                    "schema_layer": "compile_result",
+                    "field_path": "services[*].transport",
+                    "rule": "enum",
+                    "actual_type": "null",
+                    "actual_fingerprint": "sha256:" + "a" * 64,
+                    "occurrence_count": 2,
+                }
+            ],
             "failure_event": event,
             "causal_failure_events": [event],
         },
@@ -1527,6 +1540,17 @@ def test_typed_gate_feedback_exposes_first_class_repair_contract() -> None:
         constraint.to_dict()
     ]
     assert normalized["repair_conformance"] == metrics["repair_conformance"]
+    assert normalized["active_schema_field_constraints"] == [
+        constraint.to_dict()
+    ]
+    assert normalized["active_schema_field_violations"][0]["actual_type"] == (
+        "null"
+    )
+    assert normalized["repair_plan"]["priority"] == "schema_conformance"
+    assert any(
+        action.startswith("emit_every_selector_match:services[*].transport")
+        for action in normalized["repair_plan"]["actions"]
+    )
 
 
 def test_causal_lesson_memory_restores_typed_repair_frontier() -> None:
@@ -3606,7 +3630,7 @@ def test_candidate_replay_capability_preserves_schema_field_constraints() -> Non
     )
 
 
-def test_conformance_strategy_switch_requires_output_witness_change() -> None:
+def test_conformance_progress_separates_source_strategy_and_output_witness() -> None:
     target = SelfEvolveTargetRef("skill", "demo")
 
     def candidate(candidate_id: str, source: str) -> CandidateVariant:
@@ -3646,27 +3670,40 @@ def test_conformance_strategy_switch_requires_output_witness_change() -> None:
             },
         )
 
-    unchanged = _candidate_conformance_repair_topologies(
+    failures = (
         (
-            (candidate("candidate-a", "def build():\n    return {}\n"), gate("sha256:" + "a" * 64)),
+            candidate("candidate-a", "def build():\n    return {}\n"),
+            gate("sha256:" + "a" * 64),
+        ),
+        (
+            candidate(
+                "candidate-b",
+                "def helper():\n    return None\n\ndef build():\n    return {}\n",
+            ),
+            gate("sha256:" + "a" * 64),
+        ),
+    )
+    changed_source = _candidate_conformance_repair_topologies(failures)
+    unchanged_result = _candidate_conformance_result_observations(failures)
+    changed_result = _candidate_conformance_result_observations(
+        (
+            (
+                candidate("candidate-a", "def build():\n    return {}\n"),
+                gate("sha256:" + "a" * 64),
+            ),
             (
                 candidate(
-                    "candidate-b",
-                    "def helper():\n    return None\n\ndef build():\n    return {}\n",
+                    "candidate-c",
+                    "def build():\n    return {'readiness': {}}\n",
                 ),
-                gate("sha256:" + "a" * 64),
+                gate("sha256:" + "b" * 64),
             ),
         )
     )
-    changed = _candidate_conformance_repair_topologies(
-        (
-            (candidate("candidate-a", "def build():\n    return {}\n"), gate("sha256:" + "a" * 64)),
-            (candidate("candidate-c", "def build():\n    return {'readiness': {}}\n"), gate("sha256:" + "b" * 64)),
-        )
-    )
 
-    assert len(next(iter(unchanged.values()))) == 1
-    assert len(next(iter(changed.values()))) == 2
+    assert len(next(iter(changed_source.values()))) == 2
+    assert len(next(iter(unchanged_result.values()))) == 1
+    assert len(next(iter(changed_result.values()))) == 2
 
 
 def test_substantive_screening_failure_outranks_later_duplicate_attempt() -> None:
@@ -13786,6 +13823,10 @@ async def test_verified_runner_bounds_authoritative_candidates_across_iterations
         "conformance_strategy_switch_count": 0,
         "conformance_strategy_switch_request_count": 0,
         "conformance_strategy_switch_not_materialized": False,
+        "conformance_targeted_repair_request_count": 0,
+        "conformance_semantic_progress_count": 0,
+        "conformance_stagnant_attempt_count": 0,
+        "conformance_semantic_frontier_stalled": False,
         "pending_conformance_counterexample_count": 0,
         "resolved_conformance_counterexample_count": 0,
         "conformance_counterexamples_by_stage": {},
@@ -13977,7 +14018,7 @@ async def test_materialization_failure_receives_replacement_effective_slot(
 
 
 @pytest.mark.asyncio
-async def test_verified_runner_does_not_count_unmaterialized_strategy_switch(
+async def test_verified_runner_allows_bounded_targeted_conformance_repairs(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -14092,12 +14133,12 @@ async def test_verified_runner_does_not_count_unmaterialized_strategy_switch(
         apply_policy="verified_only",
     )
 
-    assert len(requests) == 2
+    assert len(requests) == 4
     second_feedback = json.dumps(
         [dict(item.metrics) for item in requests[1].validation_feedback],
         sort_keys=True,
     )
-    assert "candidate_conformance_strategy_switch_required" in second_feedback
+    assert "candidate_conformance_targeted_repair_required" in second_feedback
     report = json.loads(
         (
             runner.store.run_path("run-conformance-strategy-switch-bound")
@@ -14106,14 +14147,17 @@ async def test_verified_runner_does_not_count_unmaterialized_strategy_switch(
     )
     funnel = report["verification_funnel"]
     assert funnel["generated_candidate_slot_count"] < 6
-    assert funnel["candidate_generation_batch_count"] == 2
+    assert funnel["candidate_generation_batch_count"] == 4
     assert funnel["generation_conformance_frontier_exhausted"] is True
-    assert funnel["conformance_strategy_switch_request_count"] == 1
+    assert funnel["conformance_strategy_switch_request_count"] == 3
+    assert funnel["conformance_targeted_repair_request_count"] == 3
+    assert funnel["conformance_stagnant_attempt_count"] == 3
+    assert funnel["conformance_semantic_frontier_stalled"] is True
     assert funnel["conformance_strategy_switch_count"] == 0
     assert funnel["conformance_strategy_switch_not_materialized"] is True
-    assert funnel["repeated_contract_replacement_candidate_count"] == 1
-    assert funnel["conformance_same_slot_repair_count"] == 3
-    assert funnel["serialized_new_contract_repair_count"] == 1
+    assert funnel["repeated_contract_replacement_candidate_count"] >= 1
+    assert funnel["conformance_same_slot_repair_count"] > 3
+    assert funnel["serialized_new_contract_repair_count"] >= 1
     assert funnel["generated_candidate_slot_count"] == 0
     assert funnel["conformance_counterexamples_by_stage"] == {
         "capability_parse_schema": {
@@ -14123,26 +14167,24 @@ async def test_verified_runner_does_not_count_unmaterialized_strategy_switch(
             ],
         }
     }
-    assert funnel["generation_stop_reason"] == (
-        "conformance_strategy_switch_not_materialized"
-    )
+    assert funnel["generation_stop_reason"] == "conformance_semantic_frontier_stalled"
     conformance_messages = [
         message
         for stage, message in progress_events
         if stage == "candidate_conformance"
     ]
     assert any(
-        "requesting a structural strategy switch" in message
+        "requesting the smallest authorized source repair" in message
         for message in conformance_messages
     )
     assert any(
-        "did not change the authorized owner/edit topology" in message
+        "remained after 3 focused repair attempts" in message
         for message in conformance_messages
     )
 
 
 @pytest.mark.asyncio
-async def test_conformance_contract_upgrade_invalidates_stale_sibling(
+async def test_conformance_contract_upgrade_revalidates_stale_sibling(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -14231,7 +14273,13 @@ async def test_conformance_contract_upgrade_invalidates_stale_sibling(
     assert passed == ()
     assert preflight_candidates == ["candidate-0"]
     assert report is not None
-    assert report["superseded_candidate_ids"] == ["candidate-1"]
+    assert report["attempted_candidate_count"] == 2
+    assert [item["candidate_id"] for item in report["attempts"]] == [
+        "candidate-0",
+        "candidate-1",
+    ]
+    assert report["superseded_candidate_ids"] == []
+    assert report["rebased_candidate_ids"] == ["candidate-1"]
     assert report["superseding_contract_identity"] == (
         runtime_contract.contract_identity
     )

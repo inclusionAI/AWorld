@@ -490,6 +490,8 @@ def _typed_gate_feedback_metrics(
     replay_counterexamples: list[dict[str, object]] = []
     replay_counterexample_fingerprints: set[str] = set()
     conformance_counterexample_contracts: dict[str, dict[str, object]] = {}
+    active_schema_constraints: dict[str, dict[str, object]] = {}
+    active_schema_violations: dict[str, dict[str, object]] = {}
 
     def add_replay_counterexample(value: object) -> None:
         normalized = normalize_counterexample(value)
@@ -560,6 +562,40 @@ def _typed_gate_feedback_metrics(
                 violated_schema_constraint_ids.add(
                     f"sha256:{constraint.identity_digest}"
                 )
+                active_schema_constraints[constraint.identity_digest] = (
+                    constraint.to_dict()
+                )
+        raw_schema_violations = details.get("schema_field_violations")
+        if isinstance(raw_schema_violations, (list, tuple)):
+            for raw_violation in raw_schema_violations[:100]:
+                if not isinstance(raw_violation, Mapping):
+                    continue
+                identity = str(
+                    raw_violation.get("constraint_identity_digest") or ""
+                )
+                if not identity:
+                    continue
+                projected = {
+                    key: raw_violation.get(key)
+                    for key in (
+                        "constraint_identity_digest",
+                        "schema_layer",
+                        "field_path",
+                        "rule",
+                        "actual_type",
+                        "actual_fingerprint",
+                        "occurrence_count",
+                    )
+                    if raw_violation.get(key) is not None
+                }
+                observation_key = json.dumps(
+                    projected,
+                    ensure_ascii=True,
+                    separators=(",", ":"),
+                    sort_keys=True,
+                    default=str,
+                )
+                active_schema_violations[observation_key] = projected
         raw_evidence_regressions = details.get(
             "evidence_constraint_regressions"
         )
@@ -707,6 +743,16 @@ def _typed_gate_feedback_metrics(
                 or merged_repair_contract
             )
         result["repair_conformance"] = dict(merged_repair_contract)
+    if active_schema_constraints:
+        result["active_schema_field_constraints"] = [
+            active_schema_constraints[key]
+            for key in sorted(active_schema_constraints)
+        ]
+    if active_schema_violations:
+        result["active_schema_field_violations"] = [
+            active_schema_violations[key]
+            for key in sorted(active_schema_violations)
+        ]
     if causal_events:
         ordered_events = [causal_events[key] for key in sorted(causal_events)]
         result["causal_failure_events"] = ordered_events

@@ -1109,6 +1109,29 @@ def test_render_optimize_summary_reports_campaign_primary_failure() -> None:
     ) in summary
 
 
+def test_render_optimize_summary_explains_pre_judge_rejection() -> None:
+    summary = render_optimize_summary(
+        {
+            "status": "rejected",
+            "execution": {
+                "total_usage": {
+                    "evaluation_usage": {
+                        "judge_attempt_count": 0,
+                        "scheduled_tasks": 0,
+                    }
+                }
+            },
+            "measurement": {
+                "measurement_readiness_stage": "candidate_admission_blocked",
+            },
+        }
+    )
+
+    assert (
+        "Judge: skipped (no candidate passed conformance/admission)" in summary
+    )
+
+
 def test_run_optimize_cli_uses_interactive_auto_verified_defaults(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

@@ -16,6 +16,11 @@ from aworld.self_evolve.controllers.run_execution import (
     CandidateEvaluationRequest,
     iteration_state as _iteration_state,
 )
+from aworld.self_evolve.controllers.run_conformance_lifecycle import (
+    ConformanceLifecycleRequest,
+    ConformanceLifecycleRuntime,
+    advance_conformance_lifecycle,
+)
 from aworld.self_evolve.controllers.run_generation_execution import (
     GenerationExecutionDisposition,
     GenerationExecutionPolicy,
@@ -29,12 +34,6 @@ from aworld.self_evolve.controllers.run_generation_helpers import (
 )
 from aworld.self_evolve.controllers.run_iteration_helpers import (
     _authoritative_attempt_consumed,
-    _candidate_conformance_counterexample_ids,
-    _candidate_conformance_counterexample_stages,
-    _candidate_conformance_failure_signatures,
-    _candidate_conformance_repair_topologies,
-    _candidate_conformance_stall_signature,
-    _candidate_conformance_strategy_switch_feedback,
     _candidate_gate_results,
     _candidate_repair_conformance_contracts,
     _candidate_screening_repair_failures,
@@ -93,9 +92,6 @@ from aworld.self_evolve.trace_pack import TracePack
 from aworld.self_evolve.types import CandidateVariant, EvaluationSummary, GateResult
 
 _DEFAULT_CANDIDATE_CONTENT_MAX_CHARS = 500_000
-_MAX_CONFORMANCE_STRATEGY_SWITCH_ATTEMPTS = 2
-
-
 @dataclass(frozen=True)
 class IterationExecutionPolicy:
     allow_external_target_mutation: bool
@@ -527,108 +523,27 @@ async def execute_iteration_lifecycle(
                         status="rejected",
                     )
                 )
-        same_slot_conformance_repair_ids = {
-            failed_candidate.candidate_id
-            for failed_candidate, failed_gate in screening_failures
-            if failed_gate.gate_name == "candidate_repair_conformance"
-            and isinstance(failed_gate.details, Mapping)
-            and (failed_gate.details.get("failure_class") == "candidate")
-            and (failed_gate.details.get("repairable") is True)
-        }
-        if same_slot_conformance_repair_ids:
-            run_state.generation.release_effective_candidates(
-                same_slot_conformance_repair_ids, same_slot_repair=True
-            )
-            if isinstance(screening_report, dict):
-                screening_report["same_slot_conformance_repair_ids"] = sorted(
-                    same_slot_conformance_repair_ids
-                )
-                screening_report["effective_candidate_slot_count"] = (
-                    run_state.generation.generated_candidate_slot_count
-                )
-        conformance_failure_signatures = (
-            _candidate_conformance_failure_signatures(screening_failures)
-            if screening_feedback
-            and (not candidate_population)
-            and (
-                not (
-                    isinstance(screening_report, Mapping)
-                    and screening_report.get("superseding_contract_identity")
-                )
-            )
-            else ()
-        )
-        observed_conformance_counterexamples = (
-            _candidate_conformance_counterexample_ids(screening_failures)
-        )
-        repeated_conformance_counterexamples = (
-            run_state.generation.record_conformance_counterexamples(
-                observed=set(observed_conformance_counterexamples),
-                by_stage=_candidate_conformance_counterexample_stages(
-                    screening_failures
+        conformance_lifecycle = advance_conformance_lifecycle(
+            ConformanceLifecycleRequest(
+                failures=screening_failures,
+                feedback=screening_feedback,
+                candidate_population_empty=not candidate_population,
+                screening_report=(
+                    screening_report
+                    if isinstance(screening_report, dict)
+                    else None
                 ),
-            )
+                validation_feedback=validation_feedback,
+                run_state=run_state,
+            ),
+            ConformanceLifecycleRuntime(
+                progress_callback=runtime.progress_callback,
+                emit_progress=_emit_progress,
+            ),
         )
-        released_repeated_contract_candidate_ids: set[str] = set()
-        if repeated_conformance_counterexamples:
-            for failed_candidate, failed_gate in screening_failures:
-                candidate_counterexamples = _candidate_conformance_counterexample_ids(
-                    ((failed_candidate, failed_gate),)
-                )
-                if not candidate_counterexamples & repeated_conformance_counterexamples:
-                    continue
-                released_repeated_contract_candidate_ids.add(
-                    failed_candidate.candidate_id
-                )
-            run_state.generation.release_effective_candidates(
-                released_repeated_contract_candidate_ids,
-                repeated_contract_replacement=True,
-            )
-            if screening_report is not None:
-                screening_report["repeated_contract_replacement_candidate_ids"] = (
-                    sorted(released_repeated_contract_candidate_ids)
-                )
-                screening_report["repeated_counterexample_ids"] = sorted(
-                    repeated_conformance_counterexamples
-                )
-        if conformance_failure_signatures:
-            topology_by_signature = _candidate_conformance_repair_topologies(
-                screening_failures
-            )
-            strategy_transition = run_state.generation.observe_conformance_strategies(
-                signatures=tuple(conformance_failure_signatures),
-                topology_by_signature=topology_by_signature,
-                max_switch_attempts=_MAX_CONFORMANCE_STRATEGY_SWITCH_ATTEMPTS,
-            )
-            if strategy_transition.frontier_exhausted:
-                _emit_progress(
-                    runtime.progress_callback,
-                    "candidate_conformance",
-                    "Stopped candidate generation: the requested structural strategy switch did not change the authorized owner/edit topology"
-                    if strategy_transition.unmaterialized_switches
-                    else "Stopped candidate generation: the same typed conformance counterexample remained after the allowed structural strategy switches",
-                )
-            else:
-                switch_signature = _candidate_conformance_stall_signature(
-                    screening_failures
-                )
-                assert switch_signature is not None
-                validation_feedback = _merge_validation_feedback(
-                    validation_feedback,
-                    (
-                        _candidate_conformance_strategy_switch_feedback(
-                            signature=switch_signature,
-                            prior_topology_fingerprints=strategy_transition.prior_topology_fingerprints,
-                        ),
-                    ),
-                )
-                _emit_progress(
-                    runtime.progress_callback,
-                    "candidate_conformance",
-                    "Typed conformance failure captured; requesting a structural strategy switch bound to the original executable counterexample contract",
-                )
+        validation_feedback = conformance_lifecycle.validation_feedback
         if screening_feedback and (not candidate_population):
-            if run_state.generation.conformance_frontier_exhausted:
+            if conformance_lifecycle.should_stop:
                 break
             continue
         accepted_in_iteration = False

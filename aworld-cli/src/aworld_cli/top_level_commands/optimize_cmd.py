@@ -744,6 +744,9 @@ def render_optimize_summary(report: Any) -> str:
             if isinstance(affected_count, int):
                 summary += f" across {affected_count} candidate(s)"
             lines.append(summary)
+    judge_skip_summary = _judge_skip_summary(report)
+    if status == "rejected" and judge_skip_summary:
+        lines.append(judge_skip_summary)
     if status == "rejected" and _has_missing_independent_regression(report):
         lines.append(
             "Regression required: the target has no usable baseline contract; "
@@ -780,6 +783,33 @@ def render_optimize_summary(report: Any) -> str:
             "--from-run --rerun-evaluator cannot add missing replay repetitions."
         )
     return "\n".join(lines)
+
+
+def _judge_skip_summary(report: Any) -> str | None:
+    """Explain a pre-evaluation rejection without implicating the judge."""
+
+    execution = _read_report_value(report, "execution")
+    if not isinstance(execution, Mapping):
+        return None
+    total_usage = execution.get("total_usage")
+    if not isinstance(total_usage, Mapping):
+        return None
+    evaluation_usage = total_usage.get("evaluation_usage")
+    if not isinstance(evaluation_usage, Mapping):
+        return None
+    if evaluation_usage.get("judge_attempt_count") != 0:
+        return None
+    measurement = _read_report_value(report, "measurement")
+    readiness_stage = (
+        measurement.get("measurement_readiness_stage")
+        if isinstance(measurement, Mapping)
+        else None
+    )
+    if readiness_stage == "candidate_admission_blocked":
+        return "Judge: skipped (no candidate passed conformance/admission)"
+    if evaluation_usage.get("scheduled_tasks") == 0:
+        return "Judge: skipped (no evaluation task was scheduled)"
+    return None
 
 
 def _has_missing_independent_regression(report: Any) -> bool:

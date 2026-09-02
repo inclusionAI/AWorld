@@ -1064,6 +1064,22 @@ def _focused_repair_prompt_instructions(
         sort_keys=True,
         default=str,
     ).lower()
+    active_schema_constraints = tuple(
+        constraint
+        for feedback_item in (
+            validation_feedback if isinstance(validation_feedback, list) else ()
+        )
+        if isinstance(feedback_item, Mapping)
+        for constraint in (
+            feedback_item.get("active_schema_field_constraints")
+            if isinstance(
+                feedback_item.get("active_schema_field_constraints"),
+                (list, tuple),
+            )
+            else ()
+        )
+        if isinstance(constraint, Mapping)
+    )
     requires_source_behavior_proof = any(
         item.get("value_domain") == "source_behavior"
         for item in schema_field_constraints
@@ -1435,6 +1451,24 @@ def _focused_repair_prompt_instructions(
             "in a compile-result service field. Repair the compiler or manifest "
             "that owns the field rather than suppressing validation, changing the "
             "diagnostic, or special-casing a recorded case. "
+        )
+    if active_schema_constraints:
+        active_contract = json.dumps(
+            list(active_schema_constraints[:8]),
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+            default=str,
+        )
+        instructions += (
+            "The following active_schema_field_constraints are the blockers "
+            "observed on the immediately preceding compile, not historical "
+            f"background: {active_contract}. Make the smallest edit in the "
+            "declared producer path that satisfies every selected instance. "
+            "Preserve already-satisfied runtime and probe behavior, and do not "
+            "rewrite unrelated package files merely to create a different "
+            "control-flow shape. Before returning, trace every branch that emits "
+            "the selected object and verify the field is assigned on each branch. "
         )
     if requires_http_1_1_websocket_upgrade:
         instructions += (
