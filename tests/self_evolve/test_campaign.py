@@ -754,6 +754,29 @@ def test_zero_generation_scheduler_stall_is_not_a_legacy_pause() -> None:
     assert disposition.stage == "candidate_generation"
 
 
+def test_materialization_stall_continues_under_budget_candidate_repair() -> None:
+    report = _report(_event())
+    report["rejection_attribution"] = {
+        "failure_class": "candidate",
+        "primary_gate": "candidate_generation",
+        "scheduler_reason_code": "repair_frontier_stalled",
+        "scheduler_stop": True,
+    }
+    report["verification_funnel"] = {
+        "authoritative_candidate_count": 1,
+        "max_authoritative_candidates": 3,
+        "generation_materialization_frontier_exhausted": True,
+        "generation_stop_reason": "materialization_frontier_repeated",
+    }
+    report["campaign"] = {"cycle": 2, "max_cycles": 4}
+
+    disposition = derive_self_improvement_disposition(report)
+
+    assert disposition.kind is SelfImprovementDispositionKind.CONTINUE_CANDIDATE
+    assert disposition.reason_code == "candidate_materialization_repair_required"
+    assert disposition.repairable is True
+
+
 def test_shared_scheduler_block_is_a_framework_goal_handoff() -> None:
     report = {
         "status": "rejected",

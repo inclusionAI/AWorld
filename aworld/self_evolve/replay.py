@@ -12163,7 +12163,7 @@ Self-evolve replay evidence requirements:
 - Inspect only explicit byte-bounded excerpts or selected fields; `head -N` is not a byte bound.
 - Append one compact JSON line per source to AWORLD_SELF_EVOLVE_EVIDENCE_MANIFEST ({evidence_manifest}). Include source_id, extraction_method, bounded fields/excerpt, and artifact_path for files; use evidence_type="metadata" plus one object for non-file evidence.
 - Reject compacted, truncated, invalid, or unbounded evidence; retry once with a narrower extraction.
-- After the first valid artifact-backed sample, persist it and its manifest entry, then stop collecting and return the answer with artifact path, counts, and a concise claim ledger. Omit unsupported claims.
+- Persist every valid artifact-backed sample and its manifest entry immediately. Continue only until every evidence subject required by the user task is covered (for example, every item in a comparison), or until one materially different bounded attempt establishes that a subject is unavailable. Then stop collecting and return the answer with artifact paths, subject coverage counts, explicit missing subjects, and a concise claim ledger. Omit unsupported claims.
 """.strip()
 
 
@@ -12174,7 +12174,7 @@ Self-evolve replay runtime contract:
 - Preserve supplied HOME, TMPDIR, XDG_*, and runtime roots. Use only AWORLD_REPLAY_ENDPOINT_* endpoints; never discover alternate host ports.
 - On terminal protocol mismatch, persist one bounded diagnostic and stop. If a bounded non-mutating prerequisite probe fails, return prerequisite-unavailable.
 - Keep created files in the workspace/artifact directory. Switch strategy once when no new evidence is possible, otherwise fail with the observed reason.
-- A valid artifact-backed sample is terminal: make no further tool call and synthesize the final response.
+- Evidence completion is terminal: once every required evidence subject is covered, or bounded insufficiency is established for the missing subjects, make no further tool call and synthesize the final response. A single sample is terminal only for a genuinely single-subject task.
 """.strip()
 
 

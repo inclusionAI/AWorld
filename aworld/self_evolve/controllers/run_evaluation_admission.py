@@ -29,6 +29,7 @@ from aworld.self_evolve.evaluation import (
     EvaluationBackend,
     EvaluationRequest,
     evaluation_request_identity,
+    has_trajectory_set_validation_source,
 )
 from aworld.self_evolve.gates import TargetBehaviorDeltaGate
 from aworld.self_evolve.types import GateResult
@@ -60,6 +61,7 @@ class CandidateEvaluationAdmissionPolicy:
     replay_enabled: bool
     evaluation_backend: EvaluationBackend | None
     judge_repetitions: int
+    min_eval_cases: int = 30
     regression_suite_case_counts: tuple[int, ...] = ()
     challenger_enabled: bool = False
     challenger_max_cases: int = 1
@@ -71,6 +73,12 @@ class CandidateEvaluationAdmissionPolicy:
             or self.judge_repetitions < 0
         ):
             raise ValueError("judge_repetitions must be a non-negative integer")
+        if (
+            isinstance(self.min_eval_cases, bool)
+            or not isinstance(self.min_eval_cases, int)
+            or self.min_eval_cases < 0
+        ):
+            raise ValueError("min_eval_cases must be a non-negative integer")
         counts = tuple(self.regression_suite_case_counts)
         if any(
             isinstance(count, bool)
@@ -166,6 +174,88 @@ def _terminal_result(
     )
 
 
+def _verification_feasibility_gate(
+    *,
+    dataset: SelfEvolveDataset,
+    min_eval_cases: int,
+    deterministic_replay_available: bool,
+) -> GateResult:
+    """Reject verified-only work before judge spend when confidence is unreachable."""
+
+    source = dataset.recipe.source
+    independent_held_out_count = source.get("held_out_member_count")
+    held_out_case_count = (
+        int(independent_held_out_count)
+        if isinstance(independent_held_out_count, int)
+        and not isinstance(independent_held_out_count, bool)
+        and independent_held_out_count >= 0
+        else len(dataset.recipe.held_out_case_ids)
+    )
+    command_case_count = sum(
+        1 for case in dataset.cases if case.verification_command
+    )
+    deterministic_available = bool(
+        deterministic_replay_available or command_case_count > 0
+    )
+    trajectory_set_available = bool(
+        held_out_case_count > 0
+        and has_trajectory_set_validation_source(dataset)
+    )
+    single_case_replay_available = bool(
+        deterministic_replay_available
+        and source.get("paired_replay") is True
+        and source.get("original_case_count") == 1
+    )
+    reachable = bool(
+        deterministic_available
+        and (
+            held_out_case_count >= min_eval_cases
+            or trajectory_set_available
+            or single_case_replay_available
+        )
+    )
+    details = {
+        "code": (
+            "verified_confidence_reachable"
+            if reachable
+            else "verified_confidence_unreachable"
+        ),
+        "held_out_case_count": held_out_case_count,
+        "min_eval_cases": min_eval_cases,
+        "deterministic_replay_available": deterministic_replay_available,
+        "verification_command_case_count": command_case_count,
+        "deterministic_verification_available": deterministic_available,
+        "trajectory_set_validation_available": trajectory_set_available,
+        "single_case_replay_available": single_case_replay_available,
+    }
+    if reachable:
+        return GateResult(
+            gate_name="verification_feasibility",
+            passed=True,
+            reason="verified confidence is reachable for the admitted evaluation plan",
+            details=details,
+        )
+    return GateResult(
+        gate_name="verification_feasibility",
+        passed=False,
+        reason=(
+            "verified confidence is unreachable: available independent held-out "
+            "cases and deterministic verification cannot satisfy policy"
+        ),
+        details={
+            **details,
+            "failure_class": "framework",
+            "failure_owner": "framework",
+            "failure_scope": "shared_run",
+            "repairable": False,
+            "next_action": (
+                "provide verification commands, add independent held-out cases, "
+                "or use a non-verified apply policy"
+            ),
+        },
+    )
+
+
 def plan_candidate_evaluation_admission(
     request: CandidateEvaluationAdmissionRequest,
     policy: CandidateEvaluationAdmissionPolicy,
@@ -240,6 +330,38 @@ def plan_candidate_evaluation_admission(
         and evaluation.candidate.target.target_type == "skill"
         and replay.replay_dataset is None
     )
+    if (
+        verified_apply
+        and not replay_blocked_verified_apply
+        and getattr(policy.evaluation_backend, "probabilistic_only", False)
+        is True
+    ):
+        feasibility_gate = _verification_feasibility_gate(
+            dataset=evaluation_dataset,
+            min_eval_cases=policy.min_eval_cases,
+            deterministic_replay_available=bool(
+                replay.replay_result is not None
+                and replay.replay_result.succeeded
+            ),
+        )
+        gate_results.append(feasibility_gate)
+        if not feasibility_gate.passed:
+            return CandidateEvaluationAdmissionResult(
+                gate_results=tuple(gate_results),
+                evaluation_dataset=evaluation_dataset,
+                replay_blocked_verified_apply=False,
+                evaluation_budget=None,
+                judge_budget=None,
+                expected_judge_summary_count=0,
+                evaluation_case_count=len(evaluation_dataset.cases),
+                baseline_is_cached=False,
+                evaluation_units=0,
+                terminal_result=_terminal_result(
+                    request,
+                    runtime,
+                    gate_results=gate_results,
+                ),
+            )
     evaluation_budget: BudgetDecision | None = None
     judge_budget: BudgetDecision | None = None
     expected_judge_summary_count = 0

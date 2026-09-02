@@ -25,6 +25,10 @@ from aworld.self_evolve.evaluation import (
     estimate_replay_cost,
     evaluate_baseline_and_candidate,
 )
+from aworld.self_evolve.evaluation_reporting import (
+    _summary_with_replay_evidence_metrics,
+)
+from aworld.self_evolve.replay import ReplayVariantResult
 from aworld.self_evolve.trace_pack import build_trace_pack
 from aworld.self_evolve.types import (
     CandidateVariant,
@@ -52,6 +56,44 @@ def _candidate(candidate_id: str = "candidate") -> CandidateVariant:
         content="# Demo\n",
         rationale="test candidate",
     )
+
+
+def test_replay_merge_projects_independent_deterministic_verification() -> None:
+    summary = EvaluationSummary(
+        variant_id="candidate",
+        dataset_split="held_out",
+        metrics={
+            "evaluator_mode": "aworld_trajectory_evaluator",
+            "judge_gate_passed": True,
+            "judge_estimated_input_tokens_total": 500,
+        },
+    )
+    replay = ReplayVariantResult(
+        variant_id="candidate",
+        status="succeeded",
+        trajectory=[],
+        metrics={
+            "repetition_count": 3,
+            "successful_repetition_count": 3,
+            "failed_repetition_count": 0,
+            "blocked_repetition_count": 0,
+            "evidence_bundle_valid": True,
+            "evidence_manifest_valid": True,
+            "evidence_runtime_policy_authoritative_passed": True,
+            "total_tokens": 120,
+            "latency_ms": 40,
+        },
+    )
+
+    merged = _summary_with_replay_evidence_metrics(summary, replay)
+
+    assert merged.metrics["deterministic_verification_source"] == (
+        "paired_replay_invariants"
+    )
+    assert merged.metrics["deterministic_verification_case_count"] == 3
+    assert merged.metrics["deterministic_verification_pass_count"] == 3
+    assert merged.metrics["replay_total_tokens"] == 120
+    assert merged.metrics["replay_latency_ms"] == 40
 
 
 def test_isolated_evaluator_timeout_terminates_descendant_processes(tmp_path) -> None:
@@ -594,7 +636,8 @@ async def test_aworld_trajectory_evaluator_backend_degrades_when_all_judge_attem
 
     assert summary.metrics["score"] == 0.0
     assert summary.metrics["evaluator_gate_passed"] is False
-    assert summary.metrics["deterministic_signal"] is False
+    assert "deterministic_signal" not in summary.metrics
+    assert summary.metrics["judge_gate_passed"] is False
     assert summary.metrics["judge_attempt_count"] == 3
     assert summary.metrics["judge_success_count"] == 0
     assert summary.metrics["judge_failure_count"] == 3
@@ -1126,11 +1169,13 @@ async def test_aworld_trajectory_evaluator_backend_preserves_paired_case_cardina
     assert baseline.metrics["original_case_count"] == 4
     assert baseline.metrics["effective_case_count"] == 4
     assert baseline.metrics["deduplicated_case_count"] == 0
-    assert baseline.metrics["command_case_count"] == 4
+    assert "command_case_count" not in baseline.metrics
+    assert baseline.metrics["judge_gate_passed"] is True
     assert candidate.metrics["original_case_count"] == 4
     assert candidate.metrics["effective_case_count"] == 4
     assert candidate.metrics["deduplicated_case_count"] == 0
-    assert candidate.metrics["command_case_count"] == 4
+    assert "command_case_count" not in candidate.metrics
+    assert candidate.metrics["judge_gate_passed"] is True
     assert baseline.metrics["comparison_plan_fingerprint"] == candidate.metrics[
         "comparison_plan_fingerprint"
     ]

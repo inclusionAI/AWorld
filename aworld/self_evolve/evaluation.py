@@ -248,6 +248,13 @@ class CommandVerificationBackend:
             dataset_split=request.dataset_split,
             metrics={
                 "deterministic_signal": bool(case_results),
+                "deterministic_verification_source": "verification_command",
+                "deterministic_verification_case_count": len(case_results),
+                "deterministic_verification_pass_count": pass_count,
+                "deterministic_verification_failure_count": failure_count,
+                "deterministic_verification_pass_rate": pass_rate,
+                # Compatibility aliases for persisted pre-v2 reports.  Only
+                # CommandVerificationBackend is allowed to emit command_*.
                 "command_case_count": len(case_results),
                 "command_pass_count": pass_count,
                 "command_failure_count": failure_count,
@@ -353,6 +360,10 @@ class SkillCandidateOverlayBackend:
             metrics={
                 "score": score,
                 "deterministic_signal": True,
+                "deterministic_verification_source": "skill_candidate_overlay",
+                "deterministic_verification_case_count": 1,
+                "deterministic_verification_pass_count": 1,
+                "deterministic_verification_failure_count": 0,
                 "command_case_count": 1,
                 "command_pass_count": 1,
                 "command_failure_count": 0,
@@ -365,6 +376,8 @@ class SkillCandidateOverlayBackend:
 
 class AWorldTrajectoryEvaluatorBackend:
     """Evaluate baseline or candidate trajectories through AWorld evaluator runtime."""
+
+    probabilistic_only = True
 
     def __init__(
         self,
@@ -461,7 +474,6 @@ class AWorldTrajectoryEvaluatorBackend:
         evaluation_cases = _evaluation_cases_for_split(request)
         original_case_count = len(evaluation_cases)
         effective_case_count = len(records)
-        deduplicated_case_count = max(0, original_case_count - effective_case_count)
         comparison_metrics = _aworld_comparison_plan_metrics(
             request=request,
             evaluation_cases=evaluation_cases,
@@ -1443,7 +1455,7 @@ def determine_candidate_confidence(
         held_out_summary is not None
         and held_out_case_count > 0
         and deterministic_signal_present
-        and _has_trajectory_set_validation_source(dataset)
+        and has_trajectory_set_validation_source(dataset)
     ):
         return CandidateConfidenceDecision(
             confidence="verified",
@@ -1668,7 +1680,9 @@ def _paired_replay_independence_mapping_is_valid(
     )
 
 
-def _has_trajectory_set_validation_source(dataset: SelfEvolveDataset) -> bool:
+def has_trajectory_set_validation_source(dataset: SelfEvolveDataset) -> bool:
+    """Return whether held-out rows represent independent trajectory members."""
+
     source = dataset.recipe.source
     if source.get("kind") == "trajectory_set":
         return True
@@ -1722,6 +1736,11 @@ def _has_trajectory_set_validation_source(dataset: SelfEvolveDataset) -> bool:
         return False
     selected_count = auto_grouping.get("selected_case_count")
     return isinstance(selected_count, int) and selected_count > 1
+
+
+# Private compatibility alias for callers/tests written before the typed
+# verification-feasibility boundary was introduced.
+_has_trajectory_set_validation_source = has_trajectory_set_validation_source
 
 
 def _int_metric(metrics: Mapping[str, Any], key: str) -> int | None:
@@ -1952,11 +1971,12 @@ def _aworld_evaluator_metrics(
     metrics["evaluator_gate_status"] = gate_status
     metrics["evaluator_gate_passed"] = gate_passed
     metrics["global_regression_passed"] = gate_status != "fail"
-    metrics["deterministic_signal"] = gate_passed
-    metrics["command_case_count"] = case_count
-    metrics["command_pass_count"] = case_count if gate_passed else 0
-    metrics["command_failure_count"] = 0 if gate_passed else case_count
-    metrics["command_pass_rate"] = 1.0 if gate_passed else 0.0
+    # A model judge is probabilistic evidence.  Its aggregate gate must not be
+    # relabelled as a deterministic signal or as verification-command output.
+    # Independent command/replay verification is merged through its own typed
+    # metrics later in the evaluation lifecycle.
+    metrics["judge_gate_status"] = gate_status
+    metrics["judge_gate_passed"] = gate_passed
 
     if isinstance(gate, Mapping):
         gate_value = gate.get("value")
@@ -2142,11 +2162,10 @@ def _aggregate_aworld_evaluator_metrics(
 
     gate_passed = bool(aggregated.get("evaluator_gate_passed"))
     aggregated["global_regression_passed"] = gate_passed
-    aggregated["deterministic_signal"] = gate_passed
-    aggregated["command_case_count"] = case_count
-    aggregated["command_pass_count"] = case_count if gate_passed else 0
-    aggregated["command_failure_count"] = 0 if gate_passed else case_count
-    aggregated["command_pass_rate"] = 1.0 if gate_passed else 0.0
+    aggregated["judge_gate_status"] = (
+        "pass" if gate_passed else "fail"
+    )
+    aggregated["judge_gate_passed"] = gate_passed
     return aggregated
 
 
@@ -2366,11 +2385,8 @@ def _failed_aworld_evaluator_metrics(
         "evaluator_gate_status": "fail",
         "evaluator_gate_passed": False,
         "global_regression_passed": False,
-        "deterministic_signal": False,
-        "command_case_count": case_count,
-        "command_pass_count": 0,
-        "command_failure_count": case_count,
-        "command_pass_rate": 0.0,
+        "judge_gate_status": "fail",
+        "judge_gate_passed": False,
         "judge_attempt_count": len(failures),
         "judge_success_count": 0,
         "judge_failure_count": len(failures),
@@ -2430,7 +2446,32 @@ def _has_deterministic_signal(
     held_out_summary: EvaluationSummary | None,
 ) -> bool:
     summaries = (validation_summary,) if held_out_summary is None else (validation_summary, held_out_summary)
-    return any(summary.metrics.get("deterministic_signal") is True for summary in summaries)
+    return any(_summary_has_deterministic_verification(summary) for summary in summaries)
+
+
+def _summary_has_deterministic_verification(
+    summary: EvaluationSummary,
+) -> bool:
+    """Read typed deterministic evidence without treating judge output as such."""
+
+    metrics = summary.metrics
+    case_count = metrics.get("deterministic_verification_case_count")
+    pass_count = metrics.get("deterministic_verification_pass_count")
+    if (
+        isinstance(case_count, (int, float))
+        and not isinstance(case_count, bool)
+        and isinstance(pass_count, (int, float))
+        and not isinstance(pass_count, bool)
+        and int(case_count) > 0
+    ):
+        return int(pass_count) == int(case_count)
+    # Preserve compatibility for non-AWorld custom backends that predate the
+    # typed metrics.  AWorld judge summaries are explicitly excluded because
+    # their legacy deterministic_signal was derived from the judge gate.
+    return bool(
+        metrics.get("evaluator_mode") != "aworld_trajectory_evaluator"
+        and metrics.get("deterministic_signal") is True
+    )
 
 
 def _bounded_text(value: str, *, max_chars: int = 2000) -> str:

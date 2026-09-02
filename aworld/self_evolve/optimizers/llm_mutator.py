@@ -1188,9 +1188,12 @@ def _focused_repair_prompt_instructions(
         instructions += (
             "This repair has a typed artifact_lifecycle_constraint. Change reusable "
             "target behavior so evidence collection has an explicit bounded attempt "
-            "path, persists the first valid artifact and manifest entry immediately, "
-            "reuses that artifact instead of creating retry files, and returns the "
-            "final answer without another collection tool call once evidence is ready. "
+            "path, persists each valid artifact and manifest entry immediately, "
+            "reuses artifacts instead of creating retry files, and returns the "
+            "final answer without another collection tool call once every evidence "
+            "subject required by the task is covered or explicitly unavailable after "
+            "one materially different bounded attempt. A comparison or multi-source "
+            "task must not stop after only its first valid sample. "
             "The candidate must demonstrate these counters in representative "
             "screening; a rationale or documentation-only claim cannot satisfy "
             "admission. Honor max_artifact_files="
@@ -1667,7 +1670,7 @@ def _validate_mutator_output_context(
     """Validate request-bound semantics while same-slot repair is available."""
 
     try:
-        output = _canonicalize_single_trailing_patch_fence_output(
+        output = _canonicalize_single_trailing_fence_output(
             output,
             request=request,
         )
@@ -1886,26 +1889,38 @@ def _canonicalize_replay_manifest_path_heading_output(
     return _replace_output_files(output, tuple(normalized_files))
 
 
-def _canonicalize_single_trailing_patch_fence_output(
+def _canonicalize_single_trailing_fence_output(
     output: Mapping[str, Any],
     *,
     request: OptimizerRequest,
 ) -> Mapping[str, Any]:
-    """Close one patch-local trailing fence without repairing arbitrary Markdown.
+    """Close one trailing fence without repairing arbitrary Markdown.
 
     Structured-output models occasionally omit only the final fence delimiter from a
-    bounded ``patch_intent`` body.  The complete base skill is independently valid, and
-    the omitted delimiter otherwise turns a representation defect into an authoritative
-    candidate.  Normalize only one such patch-local defect.  Full-content responses,
-    multiple affected operations, ambiguous delimiter shapes, and all other Markdown
-    damage remain unchanged and fail through the normal structural validator.
+    bounded ``patch_intent`` body or a full-content response.  The complete base skill
+    is independently valid, and the omitted delimiter otherwise consumes a campaign
+    repair frontier for a representation-only defect.  Normalize one unambiguous EOF
+    defect. Multiple affected operations, ambiguous delimiter shapes, and all other
+    Markdown damage remain unchanged and fail through the structural validator.
     """
 
     if request.target.target_type != "skill":
         return output
     patch_intent = output.get("patch_intent")
     if not isinstance(patch_intent, Mapping):
-        return output
+        content = output.get("content")
+        if not isinstance(content, str):
+            return output
+        if not validate_skill_markdown_structure(request.current_content).passed:
+            return output
+        delimiter = _single_trailing_unclosed_fence_delimiter(content)
+        if delimiter is None:
+            return output
+        normalized_output = dict(output)
+        normalized_output["content"] = (
+            content.rstrip("\n") + "\n" + delimiter + "\n"
+        )
+        return normalized_output
     operations = patch_intent.get("operations")
     if not isinstance(operations, list):
         return output

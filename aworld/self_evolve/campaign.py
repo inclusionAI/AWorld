@@ -6760,6 +6760,20 @@ def derive_self_improvement_disposition(
             repairable=False,
             progress_delta_ids=delta,
         )
+    if _report_materialization_frontier_retryable(report) and any(
+        item.get("owner") == "candidate"
+        and item.get("repairable") is True
+        for item in events
+    ):
+        return SelfImprovementDisposition(
+            kind=SelfImprovementDispositionKind.CONTINUE_CANDIDATE,
+            reason_code="candidate_materialization_repair_required",
+            owner="candidate",
+            stage="candidate_generation",
+            scope="candidate",
+            repairable=True,
+            progress_delta_ids=delta,
+        )
     if (
         isinstance(attribution, Mapping)
         and attribution.get("failure_class") == "candidate"
@@ -6968,6 +6982,9 @@ def derive_self_improvement_disposition(
             ),
         )
 
+    materialization_frontier_retryable = (
+        _report_materialization_frontier_retryable(report)
+    )
     candidate = actionable_candidate
     if candidate is not None:
         if candidate.get("code") == "evaluation_support_bootstrap_only":
@@ -6984,6 +7001,24 @@ def derive_self_improvement_disposition(
                 ),
                 candidate,
                 delta,
+            )
+        if materialization_frontier_retryable:
+            # Repeated representation failures are not evidence that the
+            # behavioral repair frontier is exhausted.  Preserve the candidate
+            # quality failure as repair focus and let the next bounded Campaign
+            # cycle retry materialization without charging an authoritative
+            # candidate slot.
+            return SelfImprovementDisposition(
+                kind=SelfImprovementDispositionKind.CONTINUE_CANDIDATE,
+                reason_code="candidate_materialization_repair_required",
+                owner="candidate",
+                stage="candidate_generation",
+                scope="candidate",
+                repairable=True,
+                progress_delta_ids=delta,
+                diagnostic_refs=_string_tuple(
+                    report.get("optimizer_diagnostics_path")
+                ),
             )
         if delta:
             return _event_disposition(
@@ -7118,6 +7153,42 @@ def derive_self_improvement_disposition(
         reason_code="legacy_report_missing_typed_disposition",
         progress_delta_ids=delta,
     )
+
+
+def _report_materialization_frontier_retryable(
+    report: Mapping[str, Any],
+) -> bool:
+    """Return whether representation failures stopped an under-budget search."""
+
+    funnel = report.get("verification_funnel")
+    campaign = report.get("campaign")
+    if not isinstance(funnel, Mapping):
+        return False
+    authoritative_count = funnel.get("authoritative_candidate_count")
+    authoritative_limit = funnel.get("max_authoritative_candidates")
+    if not (
+        funnel.get("generation_materialization_frontier_exhausted") is True
+        and funnel.get("generation_stop_reason")
+        == "materialization_frontier_repeated"
+        and isinstance(authoritative_count, int)
+        and not isinstance(authoritative_count, bool)
+        and isinstance(authoritative_limit, int)
+        and not isinstance(authoritative_limit, bool)
+        and authoritative_count < authoritative_limit
+    ):
+        return False
+    if isinstance(campaign, Mapping):
+        cycle = campaign.get("cycle")
+        max_cycles = campaign.get("max_cycles")
+        if (
+            isinstance(cycle, int)
+            and not isinstance(cycle, bool)
+            and isinstance(max_cycles, int)
+            and not isinstance(max_cycles, bool)
+            and cycle >= max_cycles
+        ):
+            return False
+    return True
 
 
 def campaign_usage_from_report(report: Mapping[str, Any]) -> CampaignUsage:

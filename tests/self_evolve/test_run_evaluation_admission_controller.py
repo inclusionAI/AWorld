@@ -135,6 +135,10 @@ class _EvaluationBackend:
         raise AssertionError(f"planning must not evaluate {request.variant_id}")
 
 
+class _ProbabilisticEvaluationBackend(_EvaluationBackend):
+    probabilistic_only = True
+
+
 def _request(
     *,
     candidate: CandidateVariant | None = None,
@@ -251,8 +255,25 @@ def test_target_behavior_admission_preserves_support_prerequisite() -> None:
 
 def test_evaluation_planning_reserves_full_verified_workload() -> None:
     budget = _BudgetContext()
+    cases = tuple(
+        EvalCase(
+            case_id=f"case-{index}",
+            input={"content": "task"},
+            verification_command="true",
+        )
+        for index in range(2)
+    )
+    dataset = SelfEvolveDataset(
+        cases=cases,
+        recipe=DatasetRecipe(
+            source={"kind": "trajectory_set"},
+            split_seed="seed",
+            splits={"held_out": [case.case_id for case in cases]},
+            held_out_case_ids=tuple(case.case_id for case in cases),
+        ),
+    )
     request = _request(
-        dataset=_dataset(2),
+        dataset=dataset,
         apply_policy="verified_only",
         budget_context=budget,
     )
@@ -263,6 +284,7 @@ def test_evaluation_planning_reserves_full_verified_workload() -> None:
             replay_enabled=False,
             evaluation_backend=_EvaluationBackend(),
             judge_repetitions=3,
+            min_eval_cases=2,
             regression_suite_case_counts=(3,),
             challenger_enabled=True,
             challenger_max_cases=2,
@@ -281,6 +303,36 @@ def test_evaluation_planning_reserves_full_verified_workload() -> None:
         (BudgetStage.EVALUATION, "candidate-1-evaluation", 20),
         (BudgetStage.JUDGE, "candidate-1-judge", 60),
     ]
+
+
+def test_verified_planning_rejects_unreachable_confidence_before_budget() -> None:
+    budget = _BudgetContext()
+    request = _request(
+        dataset=_dataset(2),
+        apply_policy="verified_only",
+        budget_context=budget,
+    )
+
+    result = plan_candidate_evaluation_admission(
+        request,
+        CandidateEvaluationAdmissionPolicy(
+            replay_enabled=False,
+            evaluation_backend=_ProbabilisticEvaluationBackend(),
+            judge_repetitions=1,
+            min_eval_cases=30,
+        ),
+        _runtime(),
+    )
+
+    assert result.terminal_result is not None
+    gate = next(
+        gate
+        for gate in result.gate_results
+        if gate.gate_name == "verification_feasibility"
+    )
+    assert gate.passed is False
+    assert gate.details["code"] == "verified_confidence_unreachable"
+    assert budget.reservations == []
 
 
 def test_evaluation_budget_denial_releases_dependent_reservation() -> None:

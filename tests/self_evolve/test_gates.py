@@ -536,7 +536,7 @@ def test_cost_latency_gate_fails_closed_when_verified_resource_evidence_missing(
     assert result.details["failure_owner"] == "framework"
 
 
-def test_cost_latency_gate_uses_token_and_model_latency_proxies() -> None:
+def test_cost_latency_gate_excludes_judge_measurement_overhead() -> None:
     result = CostLatencyRegressionGate(
         max_cost_regression_ratio=0.25,
         max_latency_regression_ratio=0.5,
@@ -558,10 +558,30 @@ def test_cost_latency_gate_uses_token_and_model_latency_proxies() -> None:
         ),
     )
 
-    assert result.passed is True
+    assert result.passed is False
     assert result.details is not None
-    assert result.details["cost_metric"] == "judge_estimated_input_tokens_total"
-    assert result.details["latency_metric"] == "judge_model_latency_ms_total"
+    assert result.details["code"] == "resource_regression_evidence_missing"
+
+
+def test_cost_latency_gate_uses_replay_runtime_proxies() -> None:
+    result = CostLatencyRegressionGate(
+        max_cost_regression_ratio=0.25,
+        max_latency_regression_ratio=0.5,
+        require_resource_evidence=True,
+    ).evaluate(
+        baseline=EvaluationSummary(
+            variant_id="baseline",
+            metrics={"replay_total_tokens": 100, "replay_latency_ms": 1_000},
+        ),
+        candidate=EvaluationSummary(
+            variant_id="candidate",
+            metrics={"replay_total_tokens": 110, "replay_latency_ms": 1_200},
+        ),
+    )
+
+    assert result.passed is True
+    assert result.details["cost_metric"] == "replay_total_tokens"
+    assert result.details["latency_metric"] == "replay_latency_ms"
 
 
 def test_noop_and_skill_markdown_gates_reject_bad_candidates() -> None:
@@ -1060,9 +1080,9 @@ def test_required_verification_gate_requires_all_commands_to_pass() -> None:
         EvaluationSummary(
             variant_id="cand-1",
             metrics={
-                "deterministic_signal": True,
-                "command_case_count": 2,
-                "command_pass_count": 2,
+                "deterministic_verification_source": "verification_command",
+                "deterministic_verification_case_count": 2,
+                "deterministic_verification_pass_count": 2,
             },
         )
     )
@@ -1070,9 +1090,9 @@ def test_required_verification_gate_requires_all_commands_to_pass() -> None:
         EvaluationSummary(
             variant_id="cand-1",
             metrics={
-                "deterministic_signal": True,
-                "command_case_count": 2,
-                "command_pass_count": 1,
+                "deterministic_verification_source": "verification_command",
+                "deterministic_verification_case_count": 2,
+                "deterministic_verification_pass_count": 1,
             },
         )
     )
@@ -1080,9 +1100,27 @@ def test_required_verification_gate_requires_all_commands_to_pass() -> None:
 
     assert passed.passed is True
     assert failed.passed is False
-    assert failed.reason == "required verification commands did not all pass"
+    assert failed.reason == "required independent deterministic verification did not all pass"
     assert missing.passed is False
-    assert missing.reason == "required deterministic verification command was not run"
+    assert missing.reason == "required independent deterministic verification was not run"
+
+
+def test_required_verification_does_not_accept_aworld_judge_aliases() -> None:
+    result = RequiredVerificationGate().evaluate(
+        EvaluationSummary(
+            variant_id="candidate",
+            metrics={
+                "evaluator_mode": "aworld_trajectory_evaluator",
+                "evaluator_gate_passed": True,
+                "deterministic_signal": True,
+                "command_case_count": 4,
+                "command_pass_count": 4,
+            },
+        )
+    )
+
+    assert result.passed is False
+    assert result.details["code"] == "deterministic_verification_not_available"
 
 
 def test_evidence_quality_gate_rejects_compacted_tool_evidence() -> None:
