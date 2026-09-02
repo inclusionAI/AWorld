@@ -1666,6 +1666,11 @@ def test_fixture_probe_prompt_prioritizes_recorded_response_sources() -> None:
     assert "positive integer response_record_count" in instructions
     assert "prefer the greatest record count" in instructions
     assert "Never rank all sources by smallest byte_length" in instructions
+    assert "urllib.parse.urlsplit" in instructions
+    assert "Never emit one constant '/' path" in instructions
+    assert "deriving them from identifier" in instructions
+    assert "Delete candidate-owned raw-fixture scalar selectors" in instructions
+    assert "protocol-shape placeholder" in instructions
 
 
 def test_websocket_http_version_constraint_targets_live_runtime_status_line() -> None:

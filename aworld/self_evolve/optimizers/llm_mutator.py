@@ -194,6 +194,10 @@ class TraceReflectiveLLMMutator:
                                     request,
                                     slot.index,
                                 ),
+                                strategy_id=_candidate_strategy_id(
+                                    request,
+                                    slot.index,
+                                ),
                             )
                         )
                     else:
@@ -1411,6 +1415,19 @@ def _focused_repair_prompt_instructions(
             "byte length only as a deterministic tie-break). Never rank all sources by "
             "smallest byte_length before recorded-response eligibility: a compact tool-call "
             "fragment can contain no replayable response, leaving only an invented fallback. "
+            "For every handled HTTP requirement, derive the protocol probe path from that "
+            "same request.requirements[*].identifier with urllib.parse.urlsplit: use the "
+            "parsed path or '/' when it is empty, and discard query and fragment. Pass the "
+            "requirement or derived path into the probe builder so requirement_id, service, "
+            "kind, and path remain correlated. Never emit one constant '/' path for every "
+            "requirement, and never copy the concrete paths from this repair contract into "
+            "source code; deriving them from identifier is the reusable repair and is not "
+            "hard-coding. Emit one matching probe for every distinct constraint. "
+            "The compiler does not need to rediscover response_contains by recursively "
+            "walking the copied raw fixture. Delete candidate-owned raw-fixture scalar "
+            "selectors and emit a non-empty protocol-shape placeholder instead; after source "
+            "selection the framework replaces it with the exact canonical assertion and "
+            "stable response_record_id from the selected response index. "
             "Treat required_branch_paths as the producer repair boundary: "
             "a schema constraint from another layer is a preservation invariant and "
             "cannot substitute for materially changing the named failing branch. "
@@ -1808,6 +1825,7 @@ def _validate_mutator_output_context(
                     ),
                     details={
                         "repair_conformance": conformance.to_dict(),
+                        **_executable_conformance_repair_hints(conformance),
                     },
                 )
     except CandidateSemanticValidationError:
@@ -1825,6 +1843,59 @@ def _validate_mutator_output_context(
             request=request,
         ) from exc
     return output
+
+
+def _executable_conformance_repair_hints(
+    conformance: Any,
+) -> dict[str, object]:
+    """Keep actionable source feedback shallow enough for repair prompts."""
+
+    details = getattr(conformance, "details", None)
+    if not isinstance(details, Mapping):
+        return {}
+    hints: dict[str, object] = {}
+    required_change = details.get("required_change")
+    if isinstance(required_change, str) and required_change.strip():
+        hints["required_change"] = sanitize_text(
+            required_change,
+            max_chars=2_000,
+        )
+    raw_violations = details.get("violations")
+    violation_locations: list[dict[str, object]] = []
+    violation_constructs: list[str] = []
+    if isinstance(raw_violations, (list, tuple)):
+        for item in raw_violations[:16]:
+            if not isinstance(item, Mapping):
+                continue
+            construct = item.get("construct")
+            if isinstance(construct, str) and construct.strip():
+                violation_constructs.append(
+                    sanitize_text(construct, max_chars=160)
+                )
+            location = {
+                key: item[key]
+                for key in ("path", "function", "line", "construct")
+                if isinstance(item.get(key), (str, int))
+                and not isinstance(item.get(key), bool)
+            }
+            if location:
+                violation_locations.append(location)
+    if violation_constructs:
+        hints["violation_constructs"] = list(
+            dict.fromkeys(violation_constructs)
+        )
+    if violation_locations:
+        hints["violation_locations"] = violation_locations
+    forbidden = details.get("forbidden_derivations")
+    if isinstance(forbidden, (list, tuple)):
+        bounded_forbidden = [
+            sanitize_text(item, max_chars=240)
+            for item in forbidden[:16]
+            if isinstance(item, str) and item.strip()
+        ]
+        if bounded_forbidden:
+            hints["forbidden_derivations"] = bounded_forbidden
+    return hints
 
 
 _MARKDOWN_FENCE_LINE = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
@@ -2161,6 +2232,13 @@ _MINIMUM_BYTE_SOURCE_SELECTOR = '''def _select_source(evidence_ref: str, derivat
     return ranked[0]
 '''
 
+_FIRST_SOURCE_SELECTOR = '''def select_source(evidence_ref, derivations):
+    sources = derivations.get(evidence_ref, [])
+    if not sources:
+        return None
+    return sources[0]
+'''
+
 _RECORDED_RESPONSE_SOURCE_SELECTOR = '''def _select_source(evidence_ref: str, derivations: dict) -> dict | None:
     sources = derivations.get(evidence_ref, [])
     if not sources:
@@ -2192,26 +2270,35 @@ _RECORDED_RESPONSE_SOURCE_SELECTOR = '''def _select_source(evidence_ref: str, de
 
 
 def _canonicalize_fixture_source_selector(source: str) -> str | None:
-    """Rewrite the exact selector that discards recorded-response evidence."""
+    """Rewrite proven simple selectors that discard recorded responses."""
 
     try:
         tree = ast.parse(source)
-        legacy_function = ast.parse(_MINIMUM_BYTE_SOURCE_SELECTOR).body[0]
+        legacy_functions = tuple(
+            ast.parse(template).body[0]
+            for template in (
+                _MINIMUM_BYTE_SOURCE_SELECTOR,
+                _FIRST_SOURCE_SELECTOR,
+            )
+        )
     except SyntaxError:
         return None
     matches = [
         node
         for node in tree.body
         if isinstance(node, ast.FunctionDef)
-        and [argument.arg for argument in node.args.args]
-        == [argument.arg for argument in legacy_function.args.args]
-        and ast.dump(
-            ast.Module(body=node.body, type_ignores=[]),
-            include_attributes=False,
-        )
-        == ast.dump(
-            ast.Module(body=legacy_function.body, type_ignores=[]),
-            include_attributes=False,
+        and any(
+            [argument.arg for argument in node.args.args]
+            == [argument.arg for argument in legacy_function.args.args]
+            and ast.dump(
+                ast.Module(body=node.body, type_ignores=[]),
+                include_attributes=False,
+            )
+            == ast.dump(
+                ast.Module(body=legacy_function.body, type_ignores=[]),
+                include_attributes=False,
+            )
+            for legacy_function in legacy_functions
         )
     ]
     if len(matches) != 1:
@@ -2222,7 +2309,11 @@ def _canonicalize_fixture_source_selector(source: str) -> str | None:
     end = int(function.end_lineno or function.lineno)
     rewritten = (
         "".join(lines[:start])
-        + _RECORDED_RESPONSE_SOURCE_SELECTOR
+        + _RECORDED_RESPONSE_SOURCE_SELECTOR.replace(
+            "def _select_source(",
+            f"def {function.name}(",
+            1,
+        )
         + "".join(lines[end:])
     )
     try:

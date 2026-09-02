@@ -1249,6 +1249,13 @@ async def execute_generation_iteration(
                             "candidate_protocol_invalid_count": protocol_invalid_count,
                             "candidate_protocol_overflow_count": candidate_protocol_overflow_count,
                             "candidate_materialization_invalid_count": materialization_invalid_count,
+                            "candidate_conformance_strategy_switch_required": bool(
+                                any(
+                                    failure.get("stage")
+                                    == "candidate_semantic_validation"
+                                    for failure in materialization_failures
+                                )
+                            ),
                             "candidate_validation_diagnostics": list(
                                 materialization_failures
                             ),

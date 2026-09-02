@@ -4,6 +4,7 @@ import hashlib
 import json
 import subprocess
 import sys
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -15,6 +16,7 @@ from aworld.self_evolve.replay_capability import (
     REPLAY_CAPABILITY_RESULT_SCHEMA_VERSION,
     ReplayCapabilityCompileRequest,
     ReplayCapabilityError,
+    ReplayProtocolProbe,
     _build_recorded_response_index,
     _compile_failure_runtime_binding_diagnostics,
     build_replay_resource_limited_command,
@@ -1820,6 +1822,36 @@ def test_fixture_probe_compile_error_aggregates_all_requirement_shapes(
         "requirement-1",
         "requirement-2",
     ]
+
+
+def test_framework_binds_generic_http_probe_to_requirement_path() -> None:
+    requirement = ReplayCapabilityRequirement(
+        requirement_id="requirement-http",
+        kind="http_resource",
+        identifier="https:" + "//example.test/articles/42?view=full#section",
+        case_ids=("case-1",),
+        evidence_refs=("evidence-1",),
+        status="runtime_required",
+        detail="recorded HTTP resource",
+    )
+    root_probe = ReplayProtocolProbe(
+        kind="http",
+        path="/",
+        timeout_seconds=10,
+        response_contains="framework-placeholder",
+    )
+
+    bound = replay_capability_module._framework_bind_http_requirement_probe_path(
+        (root_probe,),
+        requirement=requirement,
+    )
+
+    assert bound[0].path == "/articles/42"
+    explicit = replace(root_probe, path="/explicit")
+    assert replay_capability_module._framework_bind_http_requirement_probe_path(
+        (explicit,),
+        requirement=requirement,
+    ) == (explicit,)
 
 
 def test_service_schema_error_aggregates_all_invalid_field_instances(
