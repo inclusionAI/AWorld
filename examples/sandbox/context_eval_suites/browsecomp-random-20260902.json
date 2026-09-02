@@ -1,0 +1,79 @@
+{
+  "schema_version": "aworld.context-eval-suite/v1",
+  "name": "browsecomp-random-20260902",
+  "dataset": {
+    "dataset_id": "openai_browsecomp_652c89d",
+    "sample_count": 1266,
+    "sha256": "79787541403882a9bcc2e375809b6026dc72acae8a69e97ce3aef22907dd2937"
+  },
+  "selection_policy": {
+    "algorithm": "python random.Random(seed).sample(catalog_rows, candidate_pool_size)",
+    "seed": 20260902,
+    "candidate_pool_size": 5,
+    "evaluation_prefix_size": 3,
+    "frozen_before_complete_reward_observation": true,
+    "outcome_blind": true,
+    "ground_truth_not_used_for_selection": true,
+    "case_specific_prompting_forbidden": true,
+    "purpose": "Cross-workload Context Management acceptance, not BrowseComp score tuning."
+  },
+  "candidate_pool": [
+    {
+      "task_id": "browsecomp-0566",
+      "source_row": 566,
+      "problem_topic": "Music",
+      "selected_for_initial_evaluation": true
+    },
+    {
+      "task_id": "browsecomp-1249",
+      "source_row": 1249,
+      "problem_topic": "Geography",
+      "selected_for_initial_evaluation": true
+    },
+    {
+      "task_id": "browsecomp-0742",
+      "source_row": 742,
+      "problem_topic": "History",
+      "selected_for_initial_evaluation": true
+    },
+    {
+      "task_id": "browsecomp-0042",
+      "source_row": 42,
+      "problem_topic": "Other",
+      "selected_for_initial_evaluation": false
+    },
+    {
+      "task_id": "browsecomp-1153",
+      "source_row": 1153,
+      "problem_topic": "Other",
+      "selected_for_initial_evaluation": false
+    }
+  ],
+  "tasks": [
+    "browsecomp-0566",
+    "browsecomp-1249",
+    "browsecomp-0742"
+  ],
+  "tool_profile": {
+    "path": "examples/sandbox/context_eval_tools/browsecomp-playwright-mcp.json",
+    "canonical_config_sha256": "2eab658a0a0070accc66abc3693a4702463bddf38faaf8f0ade9b0e76491a292",
+    "file_sha256": "a22764c3c393ce40b4898792e90fb1c8741264d4819a6cd37d11e93d6eaef54f",
+    "server_names": [
+      "ms-playwright"
+    ],
+    "shared_by_all_variants": true
+  },
+  "variants": [
+    "legacy-observe",
+    "unified-context-progressive"
+  ],
+  "repeat": 1,
+  "seed": 20260902,
+  "max_steps": 20,
+  "minimum_complete_pair_requirement": 3,
+  "timeouts_sec": {
+    "build": 1800,
+    "agent": 900,
+    "verifier": 900
+  }
+}

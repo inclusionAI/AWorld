@@ -56,6 +56,7 @@ _ALLOWED_COMPILER_FIELDS = {
     "progressive_skills",
     "progressive_tools",
     "progressive_tool_base_tools",
+    "progressive_tool_unmanaged_policy",
     "task_catalog_policy",
     "checkpoint_policy",
     "default_tool_output_inline_tokens",

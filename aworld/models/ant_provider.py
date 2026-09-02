@@ -1,5 +1,6 @@
 import ast
 import asyncio
+import copy
 import datetime
 import html
 import json
@@ -17,14 +18,38 @@ from binascii import b2a_hex
 
 from aworld.config.conf import ClientType
 from aworld.core.llm_provider import LLMProviderBase
+from aworld.core.context.compiler import (
+    AttributionCollectionShape,
+    CandidateRequestNotEnforceable,
+    ProviderLoweringCapability,
+    ProviderToolsLowering,
+)
 from aworld.models.llm_http_handler import LLMHTTPHandler
 from aworld.models.model_response import ModelResponse, LLMResponseError, ToolCall
 from aworld.logs.util import logger
 from aworld.utils import import_package
+from aworld.models.provider_context_request import (
+    PreparedProviderContextRequest,
+    ProviderWireProjection,
+    mark_prepared_provider_attempt,
+    prepare_provider_context_request,
+)
+
+
+ANT_CONTEXT_LOWERING = ProviderLoweringCapability(
+    provider_name="ant",
+    adapter_identity="aworld.provider.ant.chat",
+    adapter_version="v1",
+    request_projection="ant.chat.request.v1",
+)
 
 
 MODEL_NAMES = {
-    "anthropic": ["claude-3-5-sonnet-20241022", "claude-3-5-sonnet-20240620", "claude-3-opus-20240229"],
+    "anthropic": [
+        "claude-3-5-sonnet-20241022",
+        "claude-3-5-sonnet-20240620",
+        "claude-3-opus-20240229",
+    ],
     "openai": ["gpt-4o", "gpt-4", "gpt-3.5-turbo", "o3-mini", "gpt-4o-mini"],
 }
 
@@ -35,11 +60,11 @@ class CustomJSONEncoder(json.JSONEncoder):
 
     def default(self, obj):
         # Handle objects with to_dict method
-        if hasattr(obj, 'to_dict') and callable(obj.to_dict):
+        if hasattr(obj, "to_dict") and callable(obj.to_dict):
             return obj.to_dict()
 
         # Handle objects with __dict__ attribute (most custom classes)
-        if hasattr(obj, '__dict__'):
+        if hasattr(obj, "__dict__"):
             return obj.__dict__
 
         # Let the base class handle it (will raise TypeError if not serializable)
@@ -47,8 +72,7 @@ class CustomJSONEncoder(json.JSONEncoder):
 
 
 class AntProvider(LLMProviderBase):
-    """Ant provider implementation.
-    """
+    """Ant provider implementation."""
 
     def _init_provider(self):
         """Initialize Ant provider.
@@ -67,10 +91,11 @@ class AntProvider(LLMProviderBase):
             self.api_key = api_key
             if not api_key:
                 raise ValueError(
-                    f"ANT API key not found, please set {env_var} environment variable or provide it in the parameters")
+                    f"ANT API key not found, please set {env_var} environment variable or provide it in the parameters"
+                )
 
         if api_key and api_key.startswith("ak_info:"):
-            ak_info_str = api_key[len("ak_info:"):]
+            ak_info_str = api_key[len("ak_info:") :]
             try:
                 ak_info = json.loads(ak_info_str)
                 for key, value in ak_info.items():
@@ -116,6 +141,95 @@ class AntProvider(LLMProviderBase):
     def supported_models(cls) -> list[str]:
         return [""]
 
+    def context_candidate_lowering_capability(
+        self,
+    ) -> ProviderLoweringCapability | None:
+        return ANT_CONTEXT_LOWERING
+
+    def _lower_context_request(
+        self,
+        standard: Dict[str, Any],
+        request_kwargs: Dict[str, Any],
+        stream: bool,
+    ) -> ProviderWireProjection:
+        params = standard["params"]
+        messages = copy.deepcopy(standard["messages"])
+        tools = copy.deepcopy(standard["tools"])
+        wire_kwargs = dict(request_kwargs)
+        wire_kwargs.pop("context", None)
+        wire_kwargs.pop("llm_request_id", None)
+        wire_kwargs.pop("prompt_assembly_plan", None)
+        wire_kwargs.pop("provider_native_prompt_cache", None)
+        if tools is None:
+            wire_kwargs.pop("tools", None)
+        else:
+            wire_kwargs["tools"] = tools
+
+        metadata = None
+        provider_shape_override = None
+        if stream:
+            wire_kwargs["stream"] = True
+            openai_params = self._build_openai_params(
+                messages,
+                params["temperature"],
+                params["max_tokens"],
+                params["stop"],
+                **wire_kwargs,
+            )
+            payload = self.preprocess_stream_call_message(messages, openai_params)
+        else:
+            message_key = self._gen_message_key()
+            service_param = self._get_service_param(
+                message_key,
+                "request",
+                messages,
+                params["temperature"],
+                params["max_tokens"],
+                params["stop"],
+                model_name=self.model_name,
+                **wire_kwargs,
+            )
+            payload = self._build_request_data(service_param)
+            metadata = {"message_key": message_key}
+            provider_shape_override = (
+                AttributionCollectionShape.ABSENT
+                if tools is None
+                else AttributionCollectionShape.ARRAY
+            )
+        return ProviderWireProjection(
+            payload=payload,
+            message_occurrences=tuple(messages),
+            tool_occurrences=(None if tools is None else tuple(tools)),
+            tools_lowering=(
+                ProviderToolsLowering.NULL_TO_ABSENT
+                if tools is None
+                else ProviderToolsLowering.PRESERVE
+            ),
+            provider_tools_shape_override=provider_shape_override,
+            metadata=metadata,
+        )
+
+    def _prepare_context_request(
+        self,
+        messages: List[Dict[str, Any]],
+        temperature: float,
+        max_tokens: int | None,
+        stop: List[str] | None,
+        kwargs: Dict[str, Any],
+        *,
+        stream: bool,
+    ) -> PreparedProviderContextRequest:
+        return prepare_provider_context_request(
+            provider=self,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            stop=stop,
+            kwargs=kwargs,
+            stream=stream,
+            lower=self._lower_context_request,
+        )
+
     def _aes_encrypt(self, data, key):
         """AES encryption function. If data is not a multiple of 16 [encrypted data must be a multiple of 16!], pad it to a multiple of 16.
 
@@ -129,7 +243,7 @@ class AntProvider(LLMProviderBase):
         from Crypto.Cipher import AES
 
         iv = "1234567890123456"
-        cipher = AES.new(key.encode('utf-8'), AES.MODE_CBC, iv.encode('utf-8'))
+        cipher = AES.new(key.encode("utf-8"), AES.MODE_CBC, iv.encode("utf-8"))
         block_size = AES.block_size
 
         # Check if data is a multiple of 16, if not, pad with b'\0'
@@ -137,29 +251,42 @@ class AntProvider(LLMProviderBase):
             add = block_size - (len(data) % block_size)
         else:
             add = 0
-        data = data.encode('utf-8') + b'\0' * add
+        data = data.encode("utf-8") + b"\0" * add
         encrypted = cipher.encrypt(data)
         result = b2a_hex(encrypted)
-        return result.decode('utf-8')
+        return result.decode("utf-8")
 
-    def _build_openai_params(self,
-                             messages: List[Dict[str, str]],
-                             temperature: float = 0.0,
-                             max_tokens: int = None,
-                             stop: List[str] = None,
-                             **kwargs) -> Dict[str, Any]:
+    def _build_openai_params(
+        self,
+        messages: List[Dict[str, str]],
+        temperature: float = 0.0,
+        max_tokens: int = None,
+        stop: List[str] = None,
+        **kwargs,
+    ) -> Dict[str, Any]:
         openai_params = {
             "model": kwargs.get("model_name", self.model_name or ""),
             "messages": messages,
             "temperature": temperature,
             "max_tokens": max_tokens,
-            "stop": stop
+            "stop": stop,
         }
 
         supported_params = [
-            "frequency_penalty", "logit_bias", "logprobs", "top_logprobs",
-            "presence_penalty", "response_format", "seed", "stream", "top_p",
-            "user", "function_call", "functions", "tools", "tool_choice"
+            "frequency_penalty",
+            "logit_bias",
+            "logprobs",
+            "top_logprobs",
+            "presence_penalty",
+            "response_format",
+            "seed",
+            "stream",
+            "top_p",
+            "user",
+            "function_call",
+            "functions",
+            "tools",
+            "tool_choice",
         ]
 
         for param in supported_params:
@@ -168,22 +295,28 @@ class AntProvider(LLMProviderBase):
 
         return openai_params
 
-    def _build_claude_params(self,
-                             messages: List[Dict[str, str]],
-                             temperature: float = 0.0,
-                             max_tokens: int = None,
-                             stop: List[str] = None,
-                             **kwargs) -> Dict[str, Any]:
+    def _build_claude_params(
+        self,
+        messages: List[Dict[str, str]],
+        temperature: float = 0.0,
+        max_tokens: int = None,
+        stop: List[str] = None,
+        **kwargs,
+    ) -> Dict[str, Any]:
         claude_params = {
             "model": kwargs.get("model_name", self.model_name or ""),
             "messages": messages,
             "temperature": temperature,
             "max_tokens": max_tokens,
-            "stop": stop
+            "stop": stop,
         }
 
         supported_params = [
-            "top_p", "top_k", "reasoning_effort", "tools", "tool_choice"
+            "top_p",
+            "top_k",
+            "reasoning_effort",
+            "tools",
+            "tool_choice",
         ]
 
         for param in supported_params:
@@ -194,31 +327,40 @@ class AntProvider(LLMProviderBase):
 
     def _get_visit_info(self):
         visit_info = {
-            "visitDomain": self.kwargs.get("ant_visit_domain") or os.getenv("ANT_VISIT_DOMAIN", "BU_general"),
-            "visitBiz": self.kwargs.get("ant_visit_biz") or os.getenv("ANT_VISIT_BIZ", ""),
-            "visitBizLine": self.kwargs.get("ant_visit_biz_line") or os.getenv("ANT_VISIT_BIZ_LINE", "")
+            "visitDomain": self.kwargs.get("ant_visit_domain")
+            or os.getenv("ANT_VISIT_DOMAIN", "BU_general"),
+            "visitBiz": self.kwargs.get("ant_visit_biz")
+            or os.getenv("ANT_VISIT_BIZ", ""),
+            "visitBizLine": self.kwargs.get("ant_visit_biz_line")
+            or os.getenv("ANT_VISIT_BIZ_LINE", ""),
         }
         if not visit_info["visitBiz"] or not visit_info["visitBizLine"]:
             return None
         return visit_info
 
-    def _get_service_param(self,
-                           message_key: str,
-                           output_type: str = "request",
-                           messages: List[Dict[str, str]] = None,
-                           temperature: float = 0.0,
-                           max_tokens: int = None,
-                           stop: List[str] = None,
-                           **kwargs
-                           ) -> Dict[str, Any]:
+    def _get_service_param(
+        self,
+        message_key: str,
+        output_type: str = "request",
+        messages: List[Dict[str, str]] = None,
+        temperature: float = 0.0,
+        max_tokens: int = None,
+        stop: List[str] = None,
+        **kwargs,
+    ) -> Dict[str, Any]:
         """Get service name from model name.
         Returns:
             Service name.
         """
         if messages:
             for message in messages:
-                if message["role"] == "assistant" and "tool_calls" in message and message["tool_calls"]:
-                    if message["content"] is None: message["content"] = ""
+                if (
+                    message["role"] == "assistant"
+                    and "tool_calls" in message
+                    and message["tool_calls"]
+                ):
+                    if message["content"] is None:
+                        message["content"] = ""
                     processed_tool_calls = []
                     for tool_call in message["tool_calls"]:
                         if isinstance(tool_call, dict):
@@ -229,25 +371,35 @@ class AntProvider(LLMProviderBase):
         query_conditions = {
             "messageKey": message_key,
         }
-        param = {"cacheInterval": -1, }
+        param = {
+            "cacheInterval": -1,
+        }
         visit_info = self._get_visit_info()
         if not visit_info:
             raise LLMResponseError(
                 f"AntProvider#Invalid visit_info, please set ANT_VISIT_BIZ and ANT_VISIT_BIZ_LINE environment variable or provide it in the parameters",
-                self.model_name or "unknown"
+                self.model_name or "unknown",
             )
         param.update(visit_info)
         if self.model_name.startswith("claude"):
-            query_conditions.update(self._build_claude_params(messages, temperature, max_tokens, stop, **kwargs))
-            param.update({
-                "serviceName": "amazon_claude_chat_completions_dataview",
-                "queryConditions": query_conditions,
-            })
+            query_conditions.update(
+                self._build_claude_params(
+                    messages, temperature, max_tokens, stop, **kwargs
+                )
+            )
+            param.update(
+                {
+                    "serviceName": "amazon_claude_chat_completions_dataview",
+                    "queryConditions": query_conditions,
+                }
+            )
         elif output_type == "pull":
-            param.update({
-                "serviceName": "chatgpt_response_query_dataview",
-                "queryConditions": query_conditions
-            })
+            param.update(
+                {
+                    "serviceName": "chatgpt_response_query_dataview",
+                    "queryConditions": query_conditions,
+                }
+            )
         else:
             query_conditions = {
                 "model": self.model_name,
@@ -257,11 +409,17 @@ class AntProvider(LLMProviderBase):
                 "outputType": "PULL",
                 "messages": messages,
             }
-            query_conditions.update(self._build_openai_params(messages, temperature, max_tokens, stop, **kwargs))
-            param.update({
-                "serviceName": "asyn_chatgpt_prompts_completions_query_dataview",
-                "queryConditions": query_conditions,
-            })
+            query_conditions.update(
+                self._build_openai_params(
+                    messages, temperature, max_tokens, stop, **kwargs
+                )
+            )
+            param.update(
+                {
+                    "serviceName": "asyn_chatgpt_prompts_completions_query_dataview",
+                    "queryConditions": query_conditions,
+                }
+            )
         return param
 
     def _gen_message_key(self):
@@ -279,32 +437,42 @@ class AntProvider(LLMProviderBase):
         post_data = {"encryptedParam": encrypted_param_data}
         return post_data
 
-    def _build_chat_query_request_data(self,
-                                       message_key: str,
-                                       messages: List[Dict[str, str]],
-                                       temperature: float = 0.0,
-                                       max_tokens: int = None,
-                                       stop: List[str] = None,
-                                       **kwargs):
-        param = self._get_service_param(message_key, "request", messages, temperature, max_tokens, stop, **kwargs)
+    def _build_chat_query_request_data(
+        self,
+        message_key: str,
+        messages: List[Dict[str, str]],
+        temperature: float = 0.0,
+        max_tokens: int = None,
+        stop: List[str] = None,
+        **kwargs,
+    ):
+        param = self._get_service_param(
+            message_key, "request", messages, temperature, max_tokens, stop, **kwargs
+        )
         query_data = self._build_request_data(param)
         return query_data
 
-    def _post_chat_query_request(self,
-                                 messages: List[Dict[str, str]],
-                                 temperature: float = 0.0,
-                                 max_tokens: int = None,
-                                 stop: List[str] = None,
-                                 **kwargs):
+    def _post_chat_query_request(
+        self,
+        messages: List[Dict[str, str]],
+        temperature: float = 0.0,
+        max_tokens: int = None,
+        stop: List[str] = None,
+        **kwargs,
+    ):
         message_key = self._gen_message_key()
-        post_data = self._build_chat_query_request_data(message_key,
-                                                        messages,
-                                                        model_name=self.model_name,
-                                                        temperature=temperature,
-                                                        max_tokens=max_tokens,
-                                                        stop=stop,
-                                                        **kwargs)
-        response = self.http_provider.sync_call(post_data, endpoint="commonQuery/queryData")
+        post_data = self._build_chat_query_request_data(
+            message_key,
+            messages,
+            model_name=self.model_name,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            stop=stop,
+            **kwargs,
+        )
+        response = self.http_provider.sync_call(
+            post_data, endpoint="commonQuery/queryData"
+        )
         return message_key, response
 
     def _valid_chat_result(self, body):
@@ -312,7 +480,10 @@ class AntProvider(LLMProviderBase):
             return False
         if "values" not in body["data"] or not body["data"]["values"]:
             return False
-        if "response" not in body["data"]["values"] and "data" not in body["data"]["values"]:
+        if (
+            "response" not in body["data"]["values"]
+            and "data" not in body["data"]["values"]
+        ):
             return False
         return True
 
@@ -333,21 +504,21 @@ class AntProvider(LLMProviderBase):
             else:
                 raise LLMResponseError(
                     f"Invalid response from Ant API, response: {response}",
-                    self.model_name or "unknown"
+                    self.model_name or "unknown",
                 )
 
         post_data = self._build_chat_pull_request_data(message_key)
-        url = 'commonQuery/queryData'
-        headers = {
-            'Content-Type': 'application/json'
-        }
+        url = "commonQuery/queryData"
+        headers = {"Content-Type": "application/json"}
 
         # Start polling until valid result or timeout
         start_time = time.time()
         elapsed_time = 0
 
         while elapsed_time < timeout:
-            response = self.http_provider.sync_call(post_data, endpoint=url, headers=headers)
+            response = self.http_provider.sync_call(
+                post_data, endpoint=url, headers=headers
+            )
 
             logger.debug(f"Poll attempt at {elapsed_time}s, response: {response}")
 
@@ -358,13 +529,14 @@ class AntProvider(LLMProviderBase):
                 result = html.unescape(ast_str)
                 data = json.loads(result)
                 return data
-            elif (not response.get("success")) or ("data" in response and response["data"]):
+            elif (not response.get("success")) or (
+                "data" in response and response["data"]
+            ):
                 err_code = response.get("data", {}).get("errorCode", "")
                 err_msg = response.get("data", {}).get("errorMessage", "")
                 if err_code or err_msg:
                     raise LLMResponseError(
-                        f"Request failed: {response}",
-                        self.model_name or "unknown"
+                        f"Request failed: {response}", self.model_name or "unknown"
                     )
 
             # If no result, wait 1 second and query again
@@ -375,10 +547,12 @@ class AntProvider(LLMProviderBase):
         # Timeout handling
         raise LLMResponseError(
             f"Timeout after {timeout} seconds waiting for response from Ant API",
-            self.model_name or "unknown"
+            self.model_name or "unknown",
         )
 
-    async def _async_pull_chat_result(self, message_key, response: Dict[str, Any], timeout):
+    async def _async_pull_chat_result(
+        self, message_key, response: Dict[str, Any], timeout
+    ):
         if self.model_name.startswith("claude"):
             if self._valid_chat_result(response):
                 x = response["data"]["values"]["data"]
@@ -386,27 +560,28 @@ class AntProvider(LLMProviderBase):
                 result = html.unescape(ast_str)
                 data = json.loads(result)
                 return data
-            elif (not response.get("success")) or ("data" in response and response["data"]):
+            elif (not response.get("success")) or (
+                "data" in response and response["data"]
+            ):
                 err_code = response.get("data", {}).get("errorCode", "")
                 err_msg = response.get("data", {}).get("errorMessage", "")
                 if err_code or err_msg:
                     raise LLMResponseError(
-                        f"Request failed: {response}",
-                        self.model_name or "unknown"
+                        f"Request failed: {response}", self.model_name or "unknown"
                     )
 
         post_data = self._build_chat_pull_request_data(message_key)
-        url = 'commonQuery/queryData'
-        headers = {
-            'Content-Type': 'application/json'
-        }
+        url = "commonQuery/queryData"
+        headers = {"Content-Type": "application/json"}
 
         # Start polling until valid result or timeout
         start_time = time.time()
         elapsed_time = 0
 
         while elapsed_time < timeout:
-            response = await self.http_provider.async_call(post_data, endpoint=url, headers=headers)
+            response = await self.http_provider.async_call(
+                post_data, endpoint=url, headers=headers
+            )
 
             logger.debug(f"Poll attempt at {elapsed_time}s, response: {response}")
 
@@ -417,13 +592,14 @@ class AntProvider(LLMProviderBase):
                 result = html.unescape(ast_str)
                 data = json.loads(result)
                 return data
-            elif (not response.get("success")) or ("data" in response and response["data"]):
+            elif (not response.get("success")) or (
+                "data" in response and response["data"]
+            ):
                 err_code = response.get("data", {}).get("errorCode", "")
                 err_msg = response.get("data", {}).get("errorMessage", "")
                 if err_code or err_msg:
                     raise LLMResponseError(
-                        f"Request failed: {response}",
-                        self.model_name or "unknown"
+                        f"Request failed: {response}", self.model_name or "unknown"
                     )
 
             # If no result, wait 1 second and query again
@@ -434,10 +610,12 @@ class AntProvider(LLMProviderBase):
         # Timeout handling
         raise LLMResponseError(
             f"Timeout after {timeout} seconds waiting for response from Ant API",
-            self.model_name or "unknown"
+            self.model_name or "unknown",
         )
 
-    def _convert_completion_message(self, message: Dict[str, Any], is_finished: bool = False) -> ModelResponse:
+    def _convert_completion_message(
+        self, message: Dict[str, Any], is_finished: bool = False
+    ) -> ModelResponse:
         """Convert Ant completion message to OpenAI format.
 
         Args:
@@ -447,17 +625,13 @@ class AntProvider(LLMProviderBase):
             OpenAI format message.
         """
         # Generate unique ID
-        response_id = f"ant-{hash(str(message)) & 0xffffffff:08x}"
+        response_id = f"ant-{hash(str(message)) & 0xFFFFFFFF:08x}"
 
         # Get content
         content = message.get("completion", "")
 
         # Create message object
-        message_dict = {
-            "role": "assistant",
-            "content": content,
-            "is_chunk": True
-        }
+        message_dict = {"role": "assistant", "content": content, "is_chunk": True}
 
         # Keep original contextId and sessionId
         if "contextId" in message:
@@ -468,7 +642,8 @@ class AntProvider(LLMProviderBase):
         usage = {
             "completion_tokens": message.get("completionToken", 0),
             "prompt_tokens": message.get("promptTokens", 0),
-            "total_tokens": message.get("completionToken", 0) + message.get("promptTokens", 0)
+            "total_tokens": message.get("completionToken", 0)
+            + message.get("promptTokens", 0),
         }
 
         # process tool calls
@@ -478,14 +653,13 @@ class AntProvider(LLMProviderBase):
             name = tool_call.get("function", {}).get("name")
             arguments = tool_call.get("function", {}).get("arguments")
             if index >= len(self.stream_tool_buffer):
-                self.stream_tool_buffer.append({
-                    "id": tool_call.get("id"),
-                    "type": "function",
-                    "function": {
-                        "name": name,
-                        "arguments": arguments
+                self.stream_tool_buffer.append(
+                    {
+                        "id": tool_call.get("id"),
+                        "type": "function",
+                        "function": {"name": name, "arguments": arguments},
                     }
-                })
+                )
             else:
                 self.stream_tool_buffer[index]["function"]["arguments"] += arguments
 
@@ -501,7 +675,7 @@ class AntProvider(LLMProviderBase):
                 tool_calls=processed_tool_calls,
                 usage=usage,
                 raw_response=message,
-                message=message_dict
+                message=message_dict,
             )
             self.stream_tool_buffer = []
             return tool_resp
@@ -514,11 +688,12 @@ class AntProvider(LLMProviderBase):
             tool_calls=None,  # TODO: add tool calls
             usage=usage,
             raw_response=message,
-            message=message_dict
+            message=message_dict,
         )
 
-    def preprocess_stream_call_message(self, messages: List[Dict[str, str]], ext_params: Dict[str, Any]) -> Dict[
-        str, str]:
+    def preprocess_stream_call_message(
+        self, messages: List[Dict[str, str]], ext_params: Dict[str, Any]
+    ) -> Dict[str, str]:
         """Preprocess messages, use Ant format directly.
 
         Args:
@@ -534,7 +709,7 @@ class AntProvider(LLMProviderBase):
             "needMemory": False,
             "stream": True,
             "contextId": "contextId_34555fd2d246447fa55a1a259445a427",
-            "platform": "AWorld"
+            "platform": "AWorld",
         }
         for k in ext_params.keys():
             if k not in param:
@@ -553,18 +728,24 @@ class AntProvider(LLMProviderBase):
         Raises:
             LLMResponseError: When LLM response error occurs.
         """
-        if ((not isinstance(response, dict) and (not hasattr(response, 'choices') or not response.choices))
-                or (isinstance(response, dict) and not response.get("choices"))):
+        if (
+            not isinstance(response, dict)
+            and (not hasattr(response, "choices") or not response.choices)
+        ) or (isinstance(response, dict) and not response.get("choices")):
             error_msg = ""
-            if hasattr(response, 'error') and response.error and isinstance(response.error, dict):
-                error_msg = response.error.get('message', '')
-            elif hasattr(response, 'msg'):
+            if (
+                hasattr(response, "error")
+                and response.error
+                and isinstance(response.error, dict)
+            ):
+                error_msg = response.error.get("message", "")
+            elif hasattr(response, "msg"):
                 error_msg = response.msg
 
             raise LLMResponseError(
                 error_msg if error_msg else "Unknown error",
                 self.model_name or "unknown",
-                response
+                response,
             )
 
         return ModelResponse.from_openai_response(response)
@@ -582,26 +763,28 @@ class AntProvider(LLMProviderBase):
             LLMResponseError: When LLM response error occurs.
         """
         # Check if chunk contains error
-        if hasattr(chunk, 'error') or (isinstance(chunk, dict) and chunk.get('error')):
-            error_msg = chunk.error if hasattr(chunk, 'error') else chunk.get('error', 'Unknown error')
-            raise LLMResponseError(
-                error_msg,
-                self.model_name or "unknown",
-                chunk
+        if hasattr(chunk, "error") or (isinstance(chunk, dict) and chunk.get("error")):
+            error_msg = (
+                chunk.error
+                if hasattr(chunk, "error")
+                else chunk.get("error", "Unknown error")
             )
+            raise LLMResponseError(error_msg, self.model_name or "unknown", chunk)
 
-        if isinstance(chunk, dict) and ('completion' in chunk):
+        if isinstance(chunk, dict) and ("completion" in chunk):
             return self._convert_completion_message(chunk)
 
         # If chunk is already in OpenAI format, use standard processing method
         return ModelResponse.from_openai_stream_chunk(chunk)
 
-    def completion(self,
-                   messages: List[Dict[str, str]],
-                   temperature: float = 0.0,
-                   max_tokens: int = None,
-                   stop: List[str] = None,
-                   **kwargs) -> ModelResponse:
+    def completion(
+        self,
+        messages: List[Dict[str, str]],
+        temperature: float = 0.0,
+        max_tokens: int = None,
+        stop: List[str] = None,
+        **kwargs,
+    ) -> ModelResponse:
         """Synchronously call Ant to generate response.
 
         Args:
@@ -619,11 +802,19 @@ class AntProvider(LLMProviderBase):
         """
         if not self.provider:
             raise RuntimeError(
-                "Sync provider not initialized. Make sure 'sync_enabled' parameter is set to True in initialization.")
+                "Sync provider not initialized. Make sure 'sync_enabled' parameter is set to True in initialization."
+            )
 
         try:
             start_time = time.time()
-            message_key, response = self._post_chat_query_request(messages, temperature, max_tokens, stop, **kwargs)
+            prepared = self._prepare_context_request(
+                messages, temperature, max_tokens, stop, kwargs, stream=False
+            )
+            mark_prepared_provider_attempt(self, prepared)
+            response = self.http_provider.sync_call(
+                prepared.payload, endpoint="commonQuery/queryData"
+            )
+            message_key = prepared.metadata["message_key"]
             timeout = kwargs.get("response_timeout", self.kwargs.get("timeout", 180))
             result = self._pull_chat_result(message_key, response, timeout)
             logger.info(f"completion cost time: {time.time() - start_time}s.")
@@ -631,17 +822,23 @@ class AntProvider(LLMProviderBase):
             resp = self.postprocess_response(result)
             return resp
         except Exception as e:
+            if isinstance(e, CandidateRequestNotEnforceable):
+                raise
             if isinstance(e, LLMResponseError):
                 raise e
             logger.warn(f"Error in Ant completion: {e}")
-            raise LLMResponseError(str(e), kwargs.get("model_name", self.model_name or "unknown"))
+            raise LLMResponseError(
+                str(e), kwargs.get("model_name", self.model_name or "unknown")
+            )
 
-    async def acompletion(self,
-                          messages: List[Dict[str, str]],
-                          temperature: float = 0.0,
-                          max_tokens: int = None,
-                          stop: List[str] = None,
-                          **kwargs) -> ModelResponse:
+    async def acompletion(
+        self,
+        messages: List[Dict[str, str]],
+        temperature: float = 0.0,
+        max_tokens: int = None,
+        stop: List[str] = None,
+        **kwargs,
+    ) -> ModelResponse:
         """Asynchronously call Ant to generate response.
 
         Args:
@@ -662,7 +859,14 @@ class AntProvider(LLMProviderBase):
 
         start_time = time.time()
         try:
-            message_key, response = self._post_chat_query_request(messages, temperature, max_tokens, stop, **kwargs)
+            prepared = self._prepare_context_request(
+                messages, temperature, max_tokens, stop, kwargs, stream=False
+            )
+            mark_prepared_provider_attempt(self, prepared)
+            response = await self.http_provider.async_call(
+                prepared.payload, endpoint="commonQuery/queryData"
+            )
+            message_key = prepared.metadata["message_key"]
             timeout = kwargs.get("response_timeout", self.kwargs.get("timeout", 180))
             result = await self._async_pull_chat_result(message_key, response, timeout)
             logger.info(f"completion cost time: {time.time() - start_time}s.")
@@ -671,17 +875,23 @@ class AntProvider(LLMProviderBase):
             return resp
 
         except Exception as e:
+            if isinstance(e, CandidateRequestNotEnforceable):
+                raise
             if isinstance(e, LLMResponseError):
                 raise e
             logger.warn(f"Error in async Ant completion: {e}")
-            raise LLMResponseError(str(e), kwargs.get("model_name", self.model_name or "unknown"))
+            raise LLMResponseError(
+                str(e), kwargs.get("model_name", self.model_name or "unknown")
+            )
 
-    def stream_completion(self,
-                          messages: List[Dict[str, str]],
-                          temperature: float = 0.0,
-                          max_tokens: int = None,
-                          stop: List[str] = None,
-                          **kwargs) -> Generator[ModelResponse, None, None]:
+    def stream_completion(
+        self,
+        messages: List[Dict[str, str]],
+        temperature: float = 0.0,
+        max_tokens: int = None,
+        stop: List[str] = None,
+        **kwargs,
+    ) -> Generator[ModelResponse, None, None]:
         """Synchronously call Ant to generate streaming response.
 
         Args:
@@ -699,38 +909,28 @@ class AntProvider(LLMProviderBase):
         """
         if not self.provider:
             raise RuntimeError(
-                "Sync provider not initialized. Make sure 'sync_enabled' parameter is set to True in initialization.")
+                "Sync provider not initialized. Make sure 'sync_enabled' parameter is set to True in initialization."
+            )
 
         start_time = time.time()
-        # Generate message_key
-        timestamp = int(time.time())
-        self.message_key = f"llm_call_{timestamp}"
-        message_key_literal = self.message_key  # Ensure it's a direct string literal
         self.aes_key = kwargs.get("aes_key", self.aes_key)
 
-        # Add streaming parameter
-        kwargs["stream"] = True
-        processed_messages = self.preprocess_stream_call_message(messages,
-                                                                 self._build_openai_params(temperature, max_tokens,
-                                                                                           stop, **kwargs))
-        if not processed_messages:
-            raise LLMResponseError("Failed to get post data", self.model_name or "unknown")
-
-        usage = {
-            "prompt_tokens": 0,
-            "completion_tokens": 0,
-            "total_tokens": 0
-        }
+        usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
 
         try:
+            prepared = self._prepare_context_request(
+                messages, temperature, max_tokens, stop, kwargs, stream=True
+            )
+            mark_prepared_provider_attempt(self, prepared)
             # Send request
             # response = self.http_provider.sync_call(processed_messages[0], endpoint="commonQuery/queryData")
             headers = {
                 "Content-Type": "application/json",
-                "X_ACCESS_KEY": self.stream_api_key
+                "X_ACCESS_KEY": self.stream_api_key,
             }
-            response_stream = self.http_provider.sync_stream_call(processed_messages, endpoint="chat/completions",
-                                                                  headers=headers)
+            response_stream = self.http_provider.sync_stream_call(
+                prepared.payload, endpoint="chat/completions", headers=headers
+            )
             if response_stream:
                 for chunk in response_stream:
                     if not chunk:
@@ -741,22 +941,36 @@ class AntProvider(LLMProviderBase):
                         if chunk["status"] == "done":
                             # Stream completion marker, can choose to end
                             logger.info("Received [DONE] marker, stream completed")
-                            yield self._convert_completion_message(chunk, is_finished=True)
-                            yield ModelResponse.from_special_marker("done", self.model_name, chunk)
+                            yield self._convert_completion_message(
+                                chunk, is_finished=True
+                            )
+                            yield ModelResponse.from_special_marker(
+                                "done", self.model_name, chunk
+                            )
                             break
                         elif chunk["status"] == "revoke":
                             # Revoke marker, need to notify the frontend to revoke the displayed content
-                            logger.info("Received [REVOKE] marker, content should be revoked")
-                            yield ModelResponse.from_special_marker("revoke", self.model_name, chunk)
+                            logger.info(
+                                "Received [REVOKE] marker, content should be revoked"
+                            )
+                            yield ModelResponse.from_special_marker(
+                                "revoke", self.model_name, chunk
+                            )
                             continue
                         elif chunk["status"] == "fail":
                             # Fail marker
                             logger.error("Received [FAIL] marker, request failed")
-                            raise LLMResponseError("Request failed", self.model_name or "unknown")
+                            raise LLMResponseError(
+                                "Request failed", self.model_name or "unknown"
+                            )
                         elif chunk["status"] == "cancel":
                             # Request was cancelled
-                            logger.warning("Received [CANCEL] marker, stream was cancelled")
-                            raise LLMResponseError("Stream was cancelled", self.model_name or "unknown")
+                            logger.warning(
+                                "Received [CANCEL] marker, stream was cancelled"
+                            )
+                            raise LLMResponseError(
+                                "Stream was cancelled", self.model_name or "unknown"
+                            )
                         continue
 
                     # Process normal response chunks
@@ -766,17 +980,23 @@ class AntProvider(LLMProviderBase):
 
             logger.info(f"stream_completion cost time: {time.time() - start_time}s.")
         except Exception as e:
+            if isinstance(e, CandidateRequestNotEnforceable):
+                raise
             if isinstance(e, LLMResponseError):
                 raise e
             logger.error(f"Error in Ant stream completion: {e}")
-            raise LLMResponseError(str(e), kwargs.get("model_name", self.model_name or "unknown"))
+            raise LLMResponseError(
+                str(e), kwargs.get("model_name", self.model_name or "unknown")
+            )
 
-    async def astream_completion(self,
-                                 messages: List[Dict[str, str]],
-                                 temperature: float = 0.0,
-                                 max_tokens: int = None,
-                                 stop: List[str] = None,
-                                 **kwargs) -> AsyncGenerator[ModelResponse, None]:
+    async def astream_completion(
+        self,
+        messages: List[Dict[str, str]],
+        temperature: float = 0.0,
+        max_tokens: int = None,
+        stop: List[str] = None,
+        **kwargs,
+    ) -> AsyncGenerator[ModelResponse, None]:
         """Asynchronously call Ant to generate streaming response.
 
         Args:
@@ -796,34 +1016,23 @@ class AntProvider(LLMProviderBase):
             self._init_async_provider()
 
         start_time = time.time()
-        # Generate message_key
-        timestamp = int(time.time())
-        self.message_key = f"llm_call_{timestamp}"
-        message_key_literal = self.message_key  # Ensure it's a direct string literal
         self.aes_key = kwargs.get("aes_key", self.aes_key)
 
-        # Add streaming parameter
-        kwargs["stream"] = True
-        processed_messages = self.preprocess_stream_call_message(messages,
-                                                                 self._build_openai_params(temperature, max_tokens,
-                                                                                           stop, **kwargs))
-        if not processed_messages:
-            raise LLMResponseError("Failed to get post data", self.model_name or "unknown")
-
-        usage = {
-            "prompt_tokens": 0,
-            "completion_tokens": 0,
-            "total_tokens": 0
-        }
+        usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
         try:
+            prepared = self._prepare_context_request(
+                messages, temperature, max_tokens, stop, kwargs, stream=True
+            )
+            mark_prepared_provider_attempt(self, prepared)
             headers = {
                 "Content-Type": "application/json",
-                "X_ACCESS_KEY": self.stream_api_key
+                "X_ACCESS_KEY": self.stream_api_key,
             }
-            logger.info(f"astream_completion request data: {processed_messages}")
+            logger.info("astream_completion request prepared")
 
-            async for chunk in self.http_provider.async_stream_call(processed_messages, endpoint="chat/completions",
-                                                                    headers=headers):
+            async for chunk in self.http_provider.async_stream_call(
+                prepared.payload, endpoint="chat/completions", headers=headers
+            ):
                 if not chunk:
                     continue
 
@@ -832,21 +1041,31 @@ class AntProvider(LLMProviderBase):
                     if chunk["status"] == "done":
                         # Stream completion marker, can choose to end
                         logger.info("Received [DONE] marker, stream completed")
-                        yield ModelResponse.from_special_marker("done", self.model_name, chunk)
+                        yield ModelResponse.from_special_marker(
+                            "done", self.model_name, chunk
+                        )
                         break
                     elif chunk["status"] == "revoke":
                         # Revoke marker, need to notify the frontend to revoke the displayed content
-                        logger.info("Received [REVOKE] marker, content should be revoked")
-                        yield ModelResponse.from_special_marker("revoke", self.model_name, chunk)
+                        logger.info(
+                            "Received [REVOKE] marker, content should be revoked"
+                        )
+                        yield ModelResponse.from_special_marker(
+                            "revoke", self.model_name, chunk
+                        )
                         continue
                     elif chunk["status"] == "fail":
                         # Fail marker
                         logger.error("Received [FAIL] marker, request failed")
-                        raise LLMResponseError("Request failed", self.model_name or "unknown")
+                        raise LLMResponseError(
+                            "Request failed", self.model_name or "unknown"
+                        )
                     elif chunk["status"] == "cancel":
                         # Request was cancelled
                         logger.warning("Received [CANCEL] marker, stream was cancelled")
-                        raise LLMResponseError("Stream was cancelled", self.model_name or "unknown")
+                        raise LLMResponseError(
+                            "Stream was cancelled", self.model_name or "unknown"
+                        )
                     continue
 
                 # Process normal response chunks
@@ -856,7 +1075,11 @@ class AntProvider(LLMProviderBase):
 
             logger.info(f"astream_completion cost time: {time.time() - start_time}s.")
         except Exception as e:
+            if isinstance(e, CandidateRequestNotEnforceable):
+                raise
             if isinstance(e, LLMResponseError):
                 raise e
             logger.warn(f"Error in async Ant stream completion: {e}")
-            raise LLMResponseError(str(e), kwargs.get("model_name", self.model_name or "unknown"))
+            raise LLMResponseError(
+                str(e), kwargs.get("model_name", self.model_name or "unknown")
+            )

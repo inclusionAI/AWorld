@@ -24,6 +24,7 @@
       "create_directory",
       "move_file"
     ],
+    "progressive_tool_unmanaged_policy": "preserve",
     "task_catalog_policy": "sticky",
     "checkpoint_policy": "adaptive",
     "default_tool_output_inline_tokens": 4096,

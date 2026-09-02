@@ -228,6 +228,17 @@ task-level cost、latency 和成功率为准，不把厂商特定的价格比例
 `TrajectoryDataset`、`trajectory.log`、`TaskResponse` 和 Runtime ATIF adapter 继续承担现有职责；新增能力
 只负责跟踪增量构建任务、建立 finalize barrier、输出 build manifest/fidelity/checksum，并验证各边界回执。
 
+为覆盖进程在 finalize 前被外部 timeout/kill 的窗口，允许启用 `llm_calls` mutation journal。每个 Context/fork
+拥有独立 `stream_id`；一个 stream 的首个 mutation 写继承状态的完整 snapshot，后续只把 append 或递归
+remove/replace delta 以 checksum-valid JSONL append + fsync。reader 按 stream 独立校验 hash chain、顺序重放并
+忽略 torn final record；单个 stream 损坏不能污染 sibling stream。恢复输出同时保留 per-stream state，并按
+每个 call/request identity 的最后 mutation timestamp 合并为 supervisor 视图，避免多个 Context/Subagent 共用同一
+journal 时发生交错覆盖。不生成 SAR step、不推断 Tool action/result，也不产生 reward。它是第 1 层上游 truth
+source 的 crash-recovery transport，不是新的 trajectory 数据面；正常 finalize 后仍以
+`trajectory.log/jsonl`、TaskResponse 和 runtime events 为准，并校验 merged journal 与最终 `llm_calls.json` 的
+count/hash continuity。新写入的每个 stream 从 sequence 0 开始，并把上一条 record checksum 写入下一条记录；
+兼容 reader 仍可读取升级前没有 chain 字段的完整 legacy stream，但同一 stream 不允许在两种模式间切换。
+
 `llm_calls[*].request` 是 provider 请求真值，event/runtime state 是动作和执行结果的上游证据，
 `trajectory.log` 与 ATIF 都是可版本化重建的派生投影。派生文件存在不能自动证明完整，派生文件缺失也
 不能自动证明 Agent 没有运行。
@@ -302,6 +313,10 @@ trajectory 与本地 Docker 环境是闭环的证据和实验基础设施，不�
     `unavailable/build_failed`，不能是 `complete`，也不能使用 completed placeholder 作为 agent message。
 22. 通过 shell pipeline 调用 AWorld 的 adapter 必须保留 AWorld 进程的真实退出状态；日志复制、`tee`、
     summary/ATIF 生成和 verifier 均不得把非零状态覆盖为成功。
+23. provider I/O 前的 `prepared -> attempted` 跃迁必须在可选 crash-recovery journal 中先完成 append + fsync；
+    journal 只能证明请求执行阶段。若 attempted call 仍为 `in_progress` 且没有响应，trajectory 状态必须是
+    `not_produced_no_model_response`，不能报告为 trajectory 存储失败；若已有 model completion 但 final projection
+    缺失，只能报告 generation/persistence `undetermined`，不能凭 journal 选择其一。
 
 ## Architecture
 
@@ -891,6 +906,11 @@ preflight 必须在目标 task container/namespace 中真正执行 `load target 
 3. `trajectory.log`/artifact 与 `TaskResponse.trajectory/ref`：finalize 后的版本化派生快照。
 4. Runtime ATIF 与 Scheduler Raw trajectory：跨进程交付投影。
 
+可选的 `llm_calls.journal.jsonl` 只提供第 1 层的 append-only crash recovery。外部 supervisor 可从最后一个
+checksum-valid snapshot 恢复 `llm_calls.partial.json` 和 `provider_calls.partial.json`，并忽略 torn final line；
+文件名、schema 和汇总指标必须保留 `partial`，不得把它们计入 `provider_truth_available`、paired reward、
+Raw trajectory completeness 或训练数据。它解决“运行阶段不可见”，不替代 finalize barrier。
+
 另有第 0 层 execution-start control record，专门描述尚未产生 LLM/event trajectory 的 bootstrap、Agent 和
 executor 失败。它不是模型 trajectory，却是解释 `llm_call_count=0` 的必需证据。不能为了满足 ATIF 至少
 一条 message 的格式要求，把 framework error 改写成 assistant completed message；应使用 harness error/status
@@ -999,8 +1019,9 @@ context_compiler:
 `enforce` 不能只凭 model-boundary candidate 的 `enforce_ready` 标志开放。每个 provider 必须在自己的真实
 发送边界实现并通过以下门禁，未完成的 provider 继续 `blocked_before_provider`：
 
-- framework 只把 frozen、capability-free 的 candidate envelope 交给已注册且精确匹配的内置 provider
-  adapter；自定义 provider 不能通过自报 capability 获得 enforce 权限。
+- framework 只把 frozen、capability-free 的 candidate envelope 交给已注册且精确匹配的 framework-reviewed
+  provider adapter；任意自定义 provider/subclass 不能通过自报 capability 获得 enforce 权限。custom transport
+  必须使用框架自有、exact-type 的 `ReviewedCustomChatProvider`，接收已经冻结的 standard-chat 参数并直接发送。
 - provider adapter 在最终 SDK/HTTP 参数组装前消费 candidate，且 candidate 的 messages、Tools 和统一参数
   必须覆盖 legacy 对应字段。任何仍会在其后替换 messages 的 provider transform 都必须 fail-closed。
 - adapter 对最终参数建立 `PROVIDER_PREPARED` immutable snapshot，将 request id、candidate content hash、
@@ -1012,10 +1033,15 @@ context_compiler:
   provider 参数默认只保存 redacted hash receipt，不能把顶层 raw request 虚标成 `PROVIDER_PREPARED`；旧请求
   observer 必须标记为 pre-rollout baseline，不能和已选择的 candidate 混成同一个 snapshot。
 
-首个实现切片只开放内置 `OpenAIProvider` 的 Chat Completions SDK/HTTP 路径，覆盖 sync、async、sync stream
-和 async stream。`AzureOpenAIProvider` 使用不同的 LangChain 发送边界，自定义 provider 也没有经过同一证明，
-因此仍保持 fail-closed。该门禁证明“candidate 确实成为 provider 请求”，但不单独证明 Context 优化有收益；
-收益仍必须通过固定 provider/model/environment 的 paired benchmark 和 independent verifier 归因。
+四个内置 chat provider（`OpenAIProvider`、`AzureOpenAIProvider`、`AnthropicProvider`、`AntProvider`）均覆盖
+sync、async、sync stream 和 async stream。Azure 已从未对齐该边界的 LangChain client 迁移到官方
+`AzureOpenAI`/`AsyncAzureOpenAI` SDK；Anthropic 在 Messages API 的 system/message/Tool schema reshape 后建立
+provider projection receipt；Ant 在 service-param 与加密 HTTP envelope 的真实边界绑定 source occurrences，持久化
+只保留实际加密 transport payload，不泄漏 request credential。框架自有 `ReviewedCustomChatProvider` 为直接消费
+standard-chat JSON 的 custom transport 提供相同四路径回执；其 subclass 和任意其他自定义 provider 仍保持
+fail-closed。image/video/audio 等非 chat request 不属于本 Context chat-compiler parity matrix。该门禁证明
+“candidate 确实成为 provider 请求”，但不单独证明 Context 优化有收益；收益仍必须通过固定
+provider/model/environment 的 paired benchmark 和 independent verifier 归因。
 
 ### Integrated Implementation Status (2026-09-01)
 
@@ -1026,10 +1052,11 @@ Milestone 3-6 已形成一个可整体验证的代码版本，当前状态不是
   scoped instructions 和 progressive Skill sidecar；四种 LLM 调用形态共享同一 model boundary。`off` 不创建
   新 lifecycle/catalog/sidecar 状态，`observe/shadow` 不授权外部动作，`enforce` 在 finalize、compile、provider
   lowering 或 receipt 失败时记录 `blocked_before_provider`。
-- 内置 OpenAI Chat Completions 已拥有 SDK 的 `PROVIDER_PREPARED` 结构回执和 HTTP canonical serialized bytes；
+- 四个内置 chat provider 与 framework-reviewed custom standard-chat wrapper 已拥有 `PROVIDER_PREPARED` 结构
+  回执；OpenAI HTTP 路径另有 canonical serialized bytes，Ant 回执绑定加密 transport payload；
   verified cache identity 只从 provider-wire prefix 建立，并记录 `initialized/continued/broken` 与完整
-  `CacheBreakReason`。Azure、自定义 provider 和未审查的发送边界继续由 capability registry fail-closed，不能
-  通过自报 capability 绕过。
+  `CacheBreakReason`。任意 provider subclass 和未审查的发送边界继续由 exact-type capability registry
+  fail-closed，不能通过自报 capability 绕过。
 - nested/path/global instruction loader、trust isolation、task-epoch lifecycle、checkpoint/rewind/resume、
   progressive Skill、task-sticky minimal Tool Catalog 和 redacted Context Inspector 已接入共享 Context/LLM 路径。
   Amni resume 不持久化 runtime sidecar，而是从结构化 system memory 重新验证 exact folded message。
@@ -1130,9 +1157,11 @@ Milestone 7.2-7.3 随后的实现与独立审查已收口机制层缺口，但�
   opportunity 且 consumption coverage 为 100%。本地 Docker opt-in gate 已用真实容器执行
   `read_output_artifact` 并验证下一 model request consumption。
 
-Milestone 8 已增加精确 built-in provider/入口证据：Azure 因 LangChain 发送边界尚未实现 immutable lowering，
-在 sync/async/stream 四条 `enforce` 路径均保持 `blocked_before_provider`，off/observe 继续发送原 legacy request；
-custom/subclass 不能自报 capability。Final compiler 产生可独立重验的 `entrypoint-parity.v1` receipt，入口标签不
+Milestone 8 已增加精确 provider/入口证据：OpenAI、Azure OpenAI、Anthropic、Ant 与 reviewed custom wrapper 的
+sync/async/stream 四条 `enforce` 路径均在各自 provider-owned SDK/HTTP 边界完成 immutable lowering，并证明实际
+发送请求来自同一 candidate snapshot；Anthropic/Ant 的协议 reshape 使用按 source ordinal 绑定的 provider
+projection，不能用变换后的文本反向猜 attribution。off/observe 仍发送原 legacy request，任意 custom/subclass
+不能自报 capability。Final compiler 产生可独立重验的 `entrypoint-parity.v1` receipt，入口标签不
 参与 semantic fingerprint，fingerprint 覆盖 provider request、resolution decisions、budget accounting、authority、
 scope/trust、Tool/Skill 与 stable/dynamic partition。Agent、Amni、CLI、ACP 与 resume 只发布入口标签，不能改变
 provider request。该 gate 同时发现并修复 logical cache hash 误含 request-scoped item id 的问题；现在使用有序
@@ -1495,6 +1524,94 @@ Docker substrate 和 verifier 通道有效，不能冒充 AWorld rollout、Raw t
 伪造为 reward 0。该 run 同时暴露并修复了 harness 的 step-budget gap：CLI `--max-steps` 现在绑定
 `BaseAgent.max_loop_steps`，而不是只写入不控制实际循环的 `AgentConfig.max_steps`。agent/verifier timeout 也可
 独立覆盖并记录 effective typed evidence。待 provider 恢复后按冻结 suite 重跑，不得依据这次 timeout 更换题目。
+
+#### BrowseComp Research Fixture
+
+同一通用 driver 也支持 `openai_browsecomp_652c89d` 的 `yolo-dataset-package/v2` archive，以补充真实网页
+检索、跨页面证据保留和长 Tool trace 压力。AWorld 仍通过本仓库的 attach-only `DockerSandbox` 连接 task
+container；浏览器能力来自宿主侧固定版本 `@playwright/mcp@0.0.37`，由 `DockerSandbox.mcp_config` 与保留的
+`docker` bridge 合并，不修改 mcpgateway、lingguang-bench-runtime-dsh、dataset 或 task image。外部 MCP
+配置对所有 paired variant 完全相同，manifest 只保存 canonical config SHA-256 和 server names，不保存可能的
+环境变量值。
+
+首批 outcome-blind 随机 suite 冻结在
+`examples/sandbox/context_eval_suites/browsecomp-random-20260902.json`。dataset 共 1,266 条，SHA-256 为
+`79787541403882a9bcc2e375809b6026dc72acae8a69e97ce3aef22907dd2937`；使用固定 seed `20260902` 的
+`random.Random.sample` 先生成五条候选池，再冻结前三条作为最小验收集，未读取 ground truth、judge reward
+或既有 rollout 来选题：
+
+| Task | source row | topic | 通用 Context 压力面 |
+|---|---:|---|---|
+| `browsecomp-0566` | 566 | Music | 多跳实体消歧、网页证据与最终答案约束 |
+| `browsecomp-1249` | 1249 | Geography | 跨来源检索、事实一致性和长历史保持 |
+| `browsecomp-0742` | 742 | History | 时间线推理、来源切换和 Tool 目录稳定性 |
+
+另外两条冻结候选 `browsecomp-0042`、`browsecomp-1153` 只作为后续扩样顺序，不得根据前三条 reward 决定
+是否替换。所有 case 共用 `examples/sandbox/context_eval_tools/browsecomp-playwright-mcp.json`；本机真实 capability
+gate 已证明 AWorld 同时获得 15 个 Docker Tool 和 21 个 Playwright Tool，并通过 `browser_navigate` 访问
+`https://example.com`。该 gate 固化为 `tests/sandbox/test_browsecomp_browser_integration.py`，通过
+`AWORLD_RUN_BROWSECOMP_INTEGRATION=1` 显式启用。
+
+BrowseComp 原始 `task.toml` 的 LLM judge 使用 `${VAR}`/`${VAR:-default}` verifier env。driver 只接受完整、
+受限的表达式，解析后通过 `docker exec --env NAME` 的父进程环境传值；命令行、experiment manifest 和 result
+只记录 name/source/default/status，不记录 secret。缺少 required host env 时在启动 Agent 前产生 typed
+`verifier_environment_unavailable`、`reward=null`，不得降级成 reward 0。
+
+首条真实 paired smoke 使用相同 `glm-5.2`、temperature 0、相同 immutable image
+`sha256:4ca94df8ec8f3c6cf93ff08de02e1d9968b5d36ef294163370cd4aa02071fad4`、相同 36 项 permission-filtered
+Tool surface 和相同 judge contract。`legacy-observe` 与 `unified-context-progressive` 均在首个 provider call
+超过 300 秒，得到 typed `agent_timeout`、`reward=null`，因此没有 complete pair、不能计算 reward delta，也不能
+声称双 0。MCP 连接和 Tool catalog 均已成功，但进程被外部 timeout 终止前只来得及写 `llm.log` 的 request，
+没有 finalize `raw_trajectory.json`、`provider_calls.json` 或 `run_manifest.json`。这再次证明 append-only capture
+与最终 TaskResponse/finalize 解耦仍是独立可靠性门禁：文本日志可作诊断，不能替代 provider-bound structured
+receipt 或 Raw trajectory。
+
+针对该窗口，通用 runner 已启用 `AWORLD_LLM_CALL_JOURNAL_PATH`：compiler capture、model-boundary bind、
+provider prepared/attempted 和 model success/failed/cancelled 都经同一个 `Context.replace_llm_call` mutation
+入口 append + fsync。父 harness 在 timeout 后读取最后一个 checksum-valid snapshot，输出
+`capture_recovery.json`、`llm_calls.partial.json` 和 `provider_calls.partial.json`；如果最后状态是 attempted +
+in_progress，则稳定分类为 `provider_attempted_response_not_observed / not_produced_no_model_response`。这能排除
+“trajectory 已生成但 runner 丢失”的错误归因；但在 model call 已完成而 final projection 缺失时仍保持
+`undetermined`，必须继续检查 runtime event/SAR 与 finalize receipts。正常运行同时强制 `dual` trajectory format，
+因此 legacy `trajectory.log` 与 v2 `trajectory.jsonl` 可在同一 fixture 做 checksum/continuity 验证。
+
+启用该机制后的第二次真实 `browsecomp-0566` paired run 使用预注册 900 秒 agent timeout。baseline 留下 13 条
+checksum-valid mutation evidence：三次 provider attempt 中前两次 `provider_call_failed`，第三次在
+`attempted/in_progress` 被 timeout，且没有一次成功 model response，故正确分类为
+`provider_attempted_response_not_observed / not_produced_no_model_response`，不是 trajectory storage failure。
+candidate 留下 97 条 evidence：前 13 次 provider call success 并真实调用 `browser_navigate/type/evaluate`，第 14
+次仍在 progress 时 timeout；它只能分类为 `partial_runtime_state_possible / undetermined_until_finalize`。两侧均无
+final `raw_trajectory.json`、reward 为 null，继续排除 paired aggregate，不能把 0/13 successful calls 的差异归因
+为 Context 收益。
+
+该 run 还用真实长历史暴露 journal 自身的 O(n²) snapshot amplification：baseline/candidate 文件约为 3.2 MB /
+273 MB。实现随即改为单-call append + recursive replace delta；大 request 不会在 attempted/status 更新时重复写入，
+`llm_call_journal_bytes` 和 valid record count 进入 harness metrics，compact replay 单测约束 10 KB request 的二次
+状态更新后 journal 小于 15 KB。对同一 candidate 的 97 个真实 snapshot 做离线等价重放后，文件从
+274,397,534 bytes 降至 8,146,272 bytes（2.97%），最后 `llm_calls` canonical state 完全一致；这验证 codec
+amplification 已消除。随后使用已缓存的 BrowseComp immutable image 和真实 attach-only DockerSandbox 完成在线
+结构验收：任务正常 `finished`，SAR finalize 为 `complete`，TaskResponse 与 `raw_trajectory.json` 各 1 项且
+`llm_calls` snapshot continuity 一致；journal 为 72,034 bytes、6 条有效记录、0 条无效记录，在实际 runtime 的
+2 个 Context stream 中恢复并合并出同一条 `success` call。该 run 使用显式
+`--deterministic-capture-provider --allow-missing-provider-trace`，只能运行 baseline/off，manifest 标记
+`structural_capture_only=true`；它只证明在线 compact journal、正常 finalize 与 Raw trajectory persistence 协作，
+不能计入 provider-wire trace、Reward、paired benefit 或 default-on 证据。journal 只在 benchmark 显式配置路径时
+启用，避免把逐 mutation fsync 成本带入默认生产路径；生产 canary 仍需单独量化 size/latency overhead。
+
+加入 per-stream sequence/hash chain 后又使用最终代码重跑
+`online-compact-finalize-chain-proof-20260902`：真实 Docker task 正常 `finished`，SAR 为 `complete`，
+TaskResponse 与 `raw_trajectory.json` 仍各 1 项；69,502-byte journal 含 6 条有效记录、0 条无效记录、2 个交错
+Context stream，每条前序 checksum 和 sequence 均通过独立重算，merged recovery 与最终 `llm_calls.json`
+canonical state 完全一致，容器随后停止并删除。该证据同样标记 `structural_capture_only=true`，只关闭
+“compact/多流 journal 在线运行后无法正常 finalize Raw trajectory”的结构缺口，不提升 benchmark Reward 结论。
+
+该 smoke 还发现 progressive candidate 会把不在静态 base list、且没有 task Skill 的整个浏览器 namespace
+静默移除。修复采用通用 capability-owner 规则，而非 BrowseComp 关键词或题目特判：显式 base/Skill request
+出现时，该 MCP namespace 视为由 selector 管理；新接入但尚无 selector metadata 的 permission-filtered namespace
+按 `progressive_tool_unmanaged_policy=preserve` 暂时完整保留，直到通用 Skill/capability metadata 能安全窄化。
+算法不读取 task text、Tool description、答案或 benchmark id，权限上界仍由 runtime catalog 决定。待 provider
+恢复后须重跑冻结的三条 paired suite；在三组 complete pair 和 Raw trajectory 到齐前，BrowseComp 只证明
+执行 substrate、工具能力与失败分类，不能作为 Context Management 收益证据。
 
 真实 Docker capability gate 由 `tests/sandbox/test_docker_sandbox_integration.py` 自动执行 15 项 terminal/
 filesystem Tool matrix；默认跳过，CI/nightly 通过 `AWORLD_RUN_DOCKER_INTEGRATION=1` 开启，并记录 image

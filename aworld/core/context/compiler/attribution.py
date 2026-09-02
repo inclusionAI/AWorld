@@ -94,7 +94,11 @@ class ContextAttributionPlanEntry:
         object.__setattr__(self, "owner_code", AttributionOwnerCode(self.owner_code))
         object.__setattr__(self, "collection", AttributionCollection(self.collection))
         object.__setattr__(self, "residency", LogicalResidency(self.residency))
-        if isinstance(self.ordinal, bool) or not isinstance(self.ordinal, int) or self.ordinal < 0:
+        if (
+            isinstance(self.ordinal, bool)
+            or not isinstance(self.ordinal, int)
+            or self.ordinal < 0
+        ):
             raise ValueError("ordinal must be a non-negative integer")
         for name in ("kind", "source_kind", "stability"):
             value = getattr(self, name)
@@ -170,44 +174,82 @@ class ProviderRequestAttributionPlan:
             ):
                 raise ValueError(f"{name} must be a canonical sha256 hash")
         object.__setattr__(self, "entries", tuple(self.entries))
-        shape_explicit = self.messages_count is not None and self.tools_shape is not None
+        shape_explicit = (
+            self.messages_count is not None and self.tools_shape is not None
+        )
         object.__setattr__(self, "shape_explicit", shape_explicit)
-        inferred_messages = sum(entry.collection is AttributionCollection.MESSAGES for entry in self.entries)
-        inferred_tools = sum(entry.collection is AttributionCollection.TOOLS for entry in self.entries)
+        inferred_messages = sum(
+            entry.collection is AttributionCollection.MESSAGES for entry in self.entries
+        )
+        inferred_tools = sum(
+            entry.collection is AttributionCollection.TOOLS for entry in self.entries
+        )
         if self.messages_count is None:
             object.__setattr__(self, "messages_count", inferred_messages)
         if self.tools_shape is None:
             object.__setattr__(
                 self,
                 "tools_shape",
-                AttributionCollectionShape.ARRAY if inferred_tools else AttributionCollectionShape.NULL,
+                AttributionCollectionShape.ARRAY
+                if inferred_tools
+                else AttributionCollectionShape.NULL,
             )
             if inferred_tools:
                 object.__setattr__(self, "tools_count", inferred_tools)
         else:
-            object.__setattr__(self, "tools_shape", AttributionCollectionShape(self.tools_shape))
-        if isinstance(self.messages_count, bool) or not isinstance(self.messages_count, int) or self.messages_count < 0:
+            object.__setattr__(
+                self, "tools_shape", AttributionCollectionShape(self.tools_shape)
+            )
+        if (
+            isinstance(self.messages_count, bool)
+            or not isinstance(self.messages_count, int)
+            or self.messages_count < 0
+        ):
             raise ValueError("messages_count must be non-negative")
         if self.tools_shape is AttributionCollectionShape.ARRAY:
-            if isinstance(self.tools_count, bool) or not isinstance(self.tools_count, int) or self.tools_count < 0:
+            if (
+                isinstance(self.tools_count, bool)
+                or not isinstance(self.tools_count, int)
+                or self.tools_count < 0
+            ):
                 raise ValueError("array tools require a non-negative tools_count")
         elif self.tools_count is not None:
             raise ValueError("non-array tools cannot have tools_count")
-        if not all(isinstance(value, ContextAttributionPlanEntry) for value in self.entries):
+        if not all(
+            isinstance(value, ContextAttributionPlanEntry) for value in self.entries
+        ):
             raise TypeError("entries must contain ContextAttributionPlanEntry values")
         positions = [(value.collection, value.ordinal) for value in self.entries]
         if len(set(positions)) != len(positions):
             raise ValueError("attribution entries must have unique collection ordinals")
         for collection in AttributionCollection:
             ordinals = sorted(
-                value.ordinal for value in self.entries if value.collection is collection
+                value.ordinal
+                for value in self.entries
+                if value.collection is collection
             )
             if ordinals != list(range(len(ordinals))):
                 raise ValueError("attribution collection ordinals must be contiguous")
-        if sum(entry.collection is AttributionCollection.MESSAGES for entry in self.entries) != self.messages_count:
+        if (
+            sum(
+                entry.collection is AttributionCollection.MESSAGES
+                for entry in self.entries
+            )
+            != self.messages_count
+        ):
             raise ValueError("message entries must match messages_count")
-        expected_tools = self.tools_count if self.tools_shape is AttributionCollectionShape.ARRAY else 0
-        if sum(entry.collection is AttributionCollection.TOOLS for entry in self.entries) != expected_tools:
+        expected_tools = (
+            self.tools_count
+            if self.tools_shape is AttributionCollectionShape.ARRAY
+            else 0
+        )
+        if (
+            sum(
+                entry.collection is AttributionCollection.TOOLS
+                for entry in self.entries
+            )
+            != expected_tools
+        ):
             raise ValueError("tool entries must match tools shape/count")
 
     def fingerprint_payload(self) -> dict[str, Any]:
@@ -283,7 +325,9 @@ class ProviderRequestAttributionReceipt:
     binding_explicit: bool = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "serialization", AttributionSerialization(self.serialization))
+        object.__setattr__(
+            self, "serialization", AttributionSerialization(self.serialization)
+        )
         for name in ("provider_request_content_hash", "canonical_request_checksum"):
             if not isinstance(getattr(self, name), str) or not _SHA256_RE.fullmatch(
                 getattr(self, name)
@@ -314,16 +358,36 @@ class ProviderRequestAttributionReceipt:
                 "plan_request_id_hash",
                 "candidate_content_hash",
             ):
-                if not isinstance(getattr(self, name), str) or not _SHA256_RE.fullmatch(getattr(self, name)):
+                if not isinstance(getattr(self, name), str) or not _SHA256_RE.fullmatch(
+                    getattr(self, name)
+                ):
                     raise ValueError(f"{name} must be a canonical sha256 hash")
-            if isinstance(self.messages_count, bool) or not isinstance(self.messages_count, int) or self.messages_count < 0:
+            if (
+                isinstance(self.messages_count, bool)
+                or not isinstance(self.messages_count, int)
+                or self.messages_count < 0
+            ):
                 raise ValueError("messages_count must be non-negative")
-            object.__setattr__(self, "tools_shape", AttributionCollectionShape(self.tools_shape))
-            object.__setattr__(self, "provider_tools_shape", AttributionCollectionShape(self.provider_tools_shape))
-            object.__setattr__(self, "tools_lowering", ProviderToolsLowering(self.tools_lowering))
-            object.__setattr__(self, "subject", ProviderAttributionSubject(self.subject))
+            object.__setattr__(
+                self, "tools_shape", AttributionCollectionShape(self.tools_shape)
+            )
+            object.__setattr__(
+                self,
+                "provider_tools_shape",
+                AttributionCollectionShape(self.provider_tools_shape),
+            )
+            object.__setattr__(
+                self, "tools_lowering", ProviderToolsLowering(self.tools_lowering)
+            )
+            object.__setattr__(
+                self, "subject", ProviderAttributionSubject(self.subject)
+            )
             if self.tools_shape is AttributionCollectionShape.ARRAY:
-                if isinstance(self.tools_count, bool) or not isinstance(self.tools_count, int) or self.tools_count < 0:
+                if (
+                    isinstance(self.tools_count, bool)
+                    or not isinstance(self.tools_count, int)
+                    or self.tools_count < 0
+                ):
                     raise ValueError("array tools require a non-negative tools_count")
             elif self.tools_count is not None:
                 raise ValueError("non-array tools cannot have tools_count")
@@ -333,8 +397,12 @@ class ProviderRequestAttributionReceipt:
             not explicit or not _SHA256_RE.fullmatch(self.plan_fingerprint)
         ):
             raise ValueError("plan_fingerprint requires a complete canonical binding")
-        if not all(isinstance(value, ProviderRequestAttributionEntry) for value in self.entries):
-            raise TypeError("entries must contain ProviderRequestAttributionEntry values")
+        if not all(
+            isinstance(value, ProviderRequestAttributionEntry) for value in self.entries
+        ):
+            raise TypeError(
+                "entries must contain ProviderRequestAttributionEntry values"
+            )
         for name in (
             "total_canonical_bytes",
             "attributed_value_bytes",
@@ -351,7 +419,9 @@ class ProviderRequestAttributionReceipt:
             self.attributed_value_bytes + self.provider_envelope_and_params_bytes
             != self.total_canonical_bytes
         ):
-            raise ValueError("attribution bytes do not conserve canonical request bytes")
+            raise ValueError(
+                "attribution bytes do not conserve canonical request bytes"
+            )
 
     def to_redacted_dict(self) -> dict[str, Any]:
         payload = {
@@ -368,18 +438,20 @@ class ProviderRequestAttributionReceipt:
             "entries": [entry.to_redacted_dict() for entry in self.entries],
         }
         if self.binding_explicit:
-            payload.update({
-                "plan_request_id_hash": self.plan_request_id_hash,
-                "candidate_content_hash": self.candidate_content_hash,
-                "messages_shape": AttributionCollectionShape.ARRAY.value,
-                "messages_count": self.messages_count,
-                "tools_shape": self.tools_shape.value,
-                "tools_count": self.tools_count,
-                "provider_tools_shape": self.provider_tools_shape.value,
-                "tools_lowering": self.tools_lowering.value,
-                "plan_fingerprint": self.plan_fingerprint,
-                "subject": self.subject.value,
-            })
+            payload.update(
+                {
+                    "plan_request_id_hash": self.plan_request_id_hash,
+                    "candidate_content_hash": self.candidate_content_hash,
+                    "messages_shape": AttributionCollectionShape.ARRAY.value,
+                    "messages_count": self.messages_count,
+                    "tools_shape": self.tools_shape.value,
+                    "tools_count": self.tools_count,
+                    "provider_tools_shape": self.provider_tools_shape.value,
+                    "tools_lowering": self.tools_lowering.value,
+                    "plan_fingerprint": self.plan_fingerprint,
+                    "subject": self.subject.value,
+                }
+            )
         return payload
 
     def binds_plan(self, plan: ProviderRequestAttributionPlan) -> bool:
@@ -409,8 +481,19 @@ def build_provider_attribution_receipt(
     serialization: AttributionSerialization,
     canonical_request_body: bytes | None = None,
     tools_lowering: ProviderToolsLowering = ProviderToolsLowering.PRESERVE,
+    source_request: dict[str, Any] | None = None,
+    provider_message_occurrences: Iterable[Any] | None = None,
+    provider_tool_occurrences: Iterable[Any] | None = None,
+    provider_tools_shape_override: AttributionCollectionShape | None = None,
 ) -> ProviderRequestAttributionReceipt:
-    """Bind plan entries by collection+ordinal and verify hashes in place."""
+    """Bind plan entries to a reviewed provider projection.
+
+    By default, model-boundary messages/tools must remain at the same paths in
+    the provider request. Reviewed adapters whose wire protocol reshapes those
+    collections may supply both the immutable source request and one wire
+    occurrence per source ordinal. Source hashes still bind the compiler plan;
+    byte accounting uses the actual provider-visible occurrence values.
+    """
     if not isinstance(plan, ProviderRequestAttributionPlan):
         raise TypeError("plan must be a ProviderRequestAttributionPlan")
     canonical_body = canonical_json_bytes(provider_request)
@@ -418,19 +501,47 @@ def build_provider_attribution_receipt(
         raise ProviderAttributionMismatch(ProviderAttributionMismatch.code)
     tools_lowering = ProviderToolsLowering(tools_lowering)
     entries: list[ProviderRequestAttributionEntry] = []
-    if "messages" not in provider_request or not isinstance(provider_request["messages"], list) or len(provider_request["messages"]) != plan.messages_count:
+    source = provider_request if source_request is None else source_request
+    source_messages = source.get("messages")
+    if (
+        not isinstance(source_messages, list)
+        or len(source_messages) != plan.messages_count
+    ):
         raise ProviderAttributionMismatch(ProviderAttributionMismatch.code)
-    tools_present = "tools" in provider_request
-    raw_tools = provider_request.get("tools")
-    provider_tools_shape = (
+    message_occurrences = (
+        source_messages
+        if provider_message_occurrences is None
+        else list(provider_message_occurrences)
+    )
+    if len(message_occurrences) != plan.messages_count:
+        raise ProviderAttributionMismatch(ProviderAttributionMismatch.code)
+
+    source_tools_present = "tools" in source
+    raw_tools = source.get("tools")
+    source_tools_shape = (
         AttributionCollectionShape.ABSENT
-        if not tools_present
+        if not source_tools_present
         else AttributionCollectionShape.NULL
         if raw_tools is None
         else AttributionCollectionShape.ARRAY
         if isinstance(raw_tools, list)
         else AttributionCollectionShape.ABSENT
     )
+    if source_request is not None and source_tools_shape is not plan.tools_shape:
+        raise ProviderAttributionMismatch(ProviderAttributionMismatch.code)
+    provider_tools_present = "tools" in provider_request
+    provider_raw_tools = provider_request.get("tools")
+    provider_tools_shape = (
+        AttributionCollectionShape.ABSENT
+        if not provider_tools_present
+        else AttributionCollectionShape.NULL
+        if provider_raw_tools is None
+        else AttributionCollectionShape.ARRAY
+        if isinstance(provider_raw_tools, list)
+        else AttributionCollectionShape.ABSENT
+    )
+    if provider_tools_shape_override is not None:
+        provider_tools_shape = AttributionCollectionShape(provider_tools_shape_override)
     expected_provider_tools_shape = (
         AttributionCollectionShape.ABSENT
         if plan.tools_shape is AttributionCollectionShape.NULL
@@ -439,16 +550,34 @@ def build_provider_attribution_receipt(
     )
     if provider_tools_shape is not expected_provider_tools_shape:
         raise ProviderAttributionMismatch(ProviderAttributionMismatch.code)
-    if plan.tools_shape is AttributionCollectionShape.ARRAY and len(raw_tools) != plan.tools_count:
+    if (
+        plan.tools_shape is AttributionCollectionShape.ARRAY
+        and len(raw_tools) != plan.tools_count
+    ):
+        raise ProviderAttributionMismatch(ProviderAttributionMismatch.code)
+    tool_occurrences = (
+        raw_tools
+        if provider_tool_occurrences is None
+        else list(provider_tool_occurrences)
+    )
+    if plan.tools_shape is AttributionCollectionShape.ARRAY and (
+        not isinstance(tool_occurrences, list)
+        or len(tool_occurrences) != plan.tools_count
+    ):
         raise ProviderAttributionMismatch(ProviderAttributionMismatch.code)
     for plan_entry in plan.entries:
-        value = provider_request[plan_entry.collection.value][plan_entry.ordinal]
-        if canonical_json_hash(value) != plan_entry.content_hash:
+        source_value = source[plan_entry.collection.value][plan_entry.ordinal]
+        if canonical_json_hash(source_value) != plan_entry.content_hash:
             raise ProviderAttributionMismatch(ProviderAttributionMismatch.code)
+        provider_value = (
+            message_occurrences[plan_entry.ordinal]
+            if plan_entry.collection is AttributionCollection.MESSAGES
+            else tool_occurrences[plan_entry.ordinal]
+        )
         entries.append(
             ProviderRequestAttributionEntry(
                 plan=plan_entry,
-                canonical_value_bytes=len(canonical_json_bytes(value)),
+                canonical_value_bytes=len(canonical_json_bytes(provider_value)),
             )
         )
     attributed = sum(entry.canonical_value_bytes for entry in entries)
