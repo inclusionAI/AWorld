@@ -19,6 +19,7 @@ from aworld.core.context.compiler import (
     TaskCatalogSnapshot,
     ToolCatalogEntry,
     compile_minimal_tool_catalog,
+    preserve_unmanaged_tool_namespaces,
     transition_task_catalog,
 )
 from aworld.skills.progressive_context import (
@@ -70,6 +71,35 @@ def test_explicit_empty_base_selects_only_skill_requests():
         task_epoch=1,
     )
     assert [entry.tool_id for entry in selected.entries] == ["read"]
+
+
+def test_unmanaged_mcp_namespace_is_preserved_without_task_text_matching():
+    selected = preserve_unmanaged_tool_namespaces(
+        ("run_code", "read_file", "browser_navigate", "browser_snapshot"),
+        requested_tools=("run_code", "read_file"),
+        tool_identity_mapping={
+            "run_code": "docker__run_code",
+            "read_file": "docker__read_file",
+            "browser_navigate": "ms-playwright__browser_navigate",
+            "browser_snapshot": "ms-playwright__browser_snapshot",
+        },
+    )
+
+    assert selected == ("browser_navigate", "browser_snapshot")
+
+
+def test_skill_request_marks_namespace_as_managed_and_keeps_selection_narrow():
+    selected = preserve_unmanaged_tool_namespaces(
+        ("run_code", "browser_navigate", "browser_snapshot"),
+        requested_tools=("run_code", "browser_navigate"),
+        tool_identity_mapping={
+            "run_code": "docker__run_code",
+            "browser_navigate": "ms-playwright__browser_navigate",
+            "browser_snapshot": "ms-playwright__browser_snapshot",
+        },
+    )
+
+    assert selected == ()
 
 
 def test_sticky_transition_distinguishes_requested_applied_and_deferred():

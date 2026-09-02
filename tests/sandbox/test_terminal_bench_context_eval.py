@@ -83,11 +83,7 @@ def test_variant_contract_accepts_context_policy_only(tmp_path):
 def test_legacy_observe_baseline_preserves_legacy_policy_and_adds_evidence_only():
     runner = _load_example("docker_terminal_bench")
     loaded = runner._load_variant(
-        ROOT
-        / "examples"
-        / "sandbox"
-        / "context_eval_variants"
-        / "legacy-observe.json"
+        ROOT / "examples" / "sandbox" / "context_eval_variants" / "legacy-observe.json"
     )
 
     assert loaded["name"] == "legacy-observe"
@@ -112,7 +108,9 @@ def test_variant_contract_rejects_unknown_context_compiler_fields(tmp_path):
         encoding="utf-8",
     )
 
-    with pytest.raises(ValueError, match="context_compiler contains unsupported fields"):
+    with pytest.raises(
+        ValueError, match="context_compiler contains unsupported fields"
+    ):
         runner._load_variant(variant)
 
 
@@ -192,9 +190,7 @@ def test_llm_call_capture_falls_back_to_live_context_for_blocked_calls():
     class Agent:
         context = LiveContext()
 
-    calls, source, continuity = runner._resolve_llm_call_capture(
-        Response(), Agent()
-    )
+    calls, source, continuity = runner._resolve_llm_call_capture(Response(), Agent())
 
     assert calls == [{"status": "blocked_before_provider"}]
     assert source == "live_context_fallback"
@@ -260,9 +256,7 @@ def test_capture_reconciliation_preserves_live_retry_attempts_for_diagnostics():
         {"call_id": "agent-call", "request_id": "request-1", "status": "success"},
         {"call_id": "agent-call", "request_id": "request-2", "status": "blocked"},
     ]
-    agent = SimpleNamespace(
-        context=SimpleNamespace(get_llm_calls=lambda: live_calls)
-    )
+    agent = SimpleNamespace(context=SimpleNamespace(get_llm_calls=lambda: live_calls))
 
     calls, source, continuity = runner._resolve_llm_call_capture(response, agent)
 
@@ -345,28 +339,62 @@ def test_dataset_adapter_extracts_generic_task_archive(tmp_path, monkeypatch):
     }
 
 
+def test_dataset_adapter_identifies_browsecomp_without_reading_ground_truth(tmp_path):
+    harness = _load_example("terminal_bench_context_eval")
+    archive_buffer = io.BytesIO()
+    files = {
+        "browsecomp-0001/task.toml": (
+            b'[task]\nname="openai/browsecomp"\n'
+            b"[verifier]\ntimeout_sec=900\n"
+            b'[verifier.env]\nOPENAI_API_KEY="${SOURCE_API_KEY}"\n'
+            b"[environment]\nbuild_timeout_sec=600\n"
+        ),
+        "browsecomp-0001/instruction.md": b"Research the question",
+        "browsecomp-0001/environment/Dockerfile": b"FROM python:3.11-slim\n",
+        "browsecomp-0001/tests/test.sh": b"#!/bin/sh\nexit 0\n",
+        "browsecomp-0001/tests/ground_truth.json": b'{"answer":"sealed"}',
+    }
+    with tarfile.open(fileobj=archive_buffer, mode="w:gz") as archive:
+        for name, content in files.items():
+            info = tarfile.TarInfo(name)
+            info.size = len(content)
+            archive.addfile(info, io.BytesIO(content))
+
+    dataset = tmp_path / "browsecomp.zip"
+    catalog_row = {
+        "dataset_id": "openai_browsecomp_test",
+        "task_id": "browsecomp-0001",
+        "task_dir": "tasks/browsecomp-0001.tar.gz",
+    }
+    with zipfile.ZipFile(dataset, "w") as package:
+        package.writestr("dataset.jsonl", json.dumps(catalog_row) + "\n")
+        package.writestr("tasks/browsecomp-0001.tar.gz", archive_buffer.getvalue())
+
+    fixture = harness.extract_task(dataset, "browsecomp-0001", tmp_path / "fixture")
+
+    assert fixture.benchmark_adapter == "openai-browsecomp"
+    assert fixture.config["verifier"]["env"]["OPENAI_API_KEY"] == "${SOURCE_API_KEY}"
+    assert (
+        fixture.tests.joinpath("ground_truth.json").read_text() == '{"answer":"sealed"}'
+    )
+
+
 def test_dataset_adapter_extracts_skillsbench_archive_and_preserves_digest(
     tmp_path, monkeypatch
 ):
     harness = _load_example("terminal_bench_context_eval")
     archive_buffer = io.BytesIO()
     digest = "b" * 64
-    declared_image = (
-        "registry-vpc.example.com/team/skillsbench:sample@sha256:" + digest
-    )
+    declared_image = "registry-vpc.example.com/team/skillsbench:sample@sha256:" + digest
     files = {
         "sample/task.md": b"# task metadata\n",
         "sample/instruction.md": b"Use the relevant skill and solve the task",
-        "sample/environment/Dockerfile": (
-            f"FROM {declared_image}\n".encode("utf-8")
-        ),
+        "sample/environment/Dockerfile": (f"FROM {declared_image}\n".encode("utf-8")),
         "sample/environment/skills/retrieval/SKILL.md": (
             b"---\nname: retrieval\ndescription: Retrieve evidence.\n---\n\n"
             b"Read evidence with the terminal.\n"
         ),
-        "sample/verifier/test.sh": (
-            b"#!/bin/sh\necho 1 > /logs/verifier/reward.txt\n"
-        ),
+        "sample/verifier/test.sh": (b"#!/bin/sh\necho 1 > /logs/verifier/reward.txt\n"),
     }
     with tarfile.open(fileobj=archive_buffer, mode="w:gz") as archive:
         for name, content in files.items():
@@ -462,12 +490,105 @@ def test_task_skill_loader_discovers_real_skill_content(tmp_path):
     assert runner._load_task_skills(None) == {}
 
 
+def test_external_mcp_profile_is_checksum_bound_and_redacted(tmp_path):
+    runner = _load_example("docker_terminal_bench")
+    config = tmp_path / "mcp.json"
+    config.write_text(
+        json.dumps(
+            {
+                "mcpServers": {
+                    "browser": {
+                        "command": "browser-command",
+                        "env": {"PRIVATE_TOKEN": "must-not-be-persisted"},
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload, evidence = runner.load_external_mcp_config(config)
+
+    assert payload["mcpServers"]["browser"]["command"] == "browser-command"
+    assert evidence["status"] == "enabled"
+    assert evidence["server_names"] == ["browser"]
+    assert len(evidence["config_sha256"]) == 64
+    assert "must-not-be-persisted" not in repr(evidence)
+
+
+def test_external_mcp_profile_rejects_reserved_docker_server(tmp_path):
+    runner = _load_example("docker_terminal_bench")
+    config = tmp_path / "mcp.json"
+    config.write_text(
+        json.dumps({"mcpServers": {"docker": {"command": "other"}}}),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="reserved"):
+        runner.load_external_mcp_config(config)
+
+
+def test_browsecomp_suite_freezes_outcome_blind_random_prefix():
+    suite = json.loads(
+        ROOT.joinpath(
+            "examples/sandbox/context_eval_suites/browsecomp-random-20260902.json"
+        ).read_text(encoding="utf-8")
+    )
+    selected = [
+        item["task_id"]
+        for item in suite["candidate_pool"]
+        if item["selected_for_initial_evaluation"]
+    ]
+
+    assert suite["selection_policy"]["seed"] == 20260902
+    assert suite["selection_policy"]["outcome_blind"] is True
+    assert suite["selection_policy"]["ground_truth_not_used_for_selection"] is True
+    assert (
+        suite["tasks"]
+        == selected
+        == [
+            "browsecomp-0566",
+            "browsecomp-1249",
+            "browsecomp-0742",
+        ]
+    )
+    assert suite["tool_profile"]["shared_by_all_variants"] is True
+
+
 def test_runner_max_steps_binds_the_actual_agent_loop_guard():
     runner = _load_example("docker_terminal_bench")
 
     assert runner._agent_loop_budget(7) == {"max_loop_steps": 7}
     with pytest.raises(ValueError, match="max-steps must be positive"):
         runner._agent_loop_budget(0)
+
+
+def test_verifier_environment_resolution_is_typed_and_secret_safe():
+    harness = _load_example("terminal_bench_context_eval")
+    config = {
+        "verifier": {
+            "env": {
+                "OPENAI_API_KEY": "${SOURCE_API_KEY}",
+                "JUDGE_MODEL": "${JUDGE_MODEL:-default-judge}",
+                "LITERAL": "fixed",
+            }
+        }
+    }
+
+    resolved, evidence = harness.resolve_verifier_environment(
+        config, {"SOURCE_API_KEY": "private-value"}
+    )
+
+    assert resolved == {
+        "JUDGE_MODEL": "default-judge",
+        "LITERAL": "fixed",
+        "OPENAI_API_KEY": "private-value",
+    }
+    assert evidence["status"] == "available"
+    assert evidence["names"] == ["JUDGE_MODEL", "LITERAL", "OPENAI_API_KEY"]
+    assert "private-value" not in repr(evidence)
+    with pytest.raises(harness.VerifierEnvironmentUnavailable, match="SOURCE_API_KEY"):
+        harness.resolve_verifier_environment(config, {})
 
 
 def test_registry_rewrite_is_host_exact_and_rejects_ambiguity():
@@ -495,7 +616,9 @@ def test_registry_rewrite_is_host_exact_and_rejects_ambiguity():
         )
 
 
-def test_packaged_image_build_timeout_can_override_dataset_default(tmp_path, monkeypatch):
+def test_packaged_image_build_timeout_can_override_dataset_default(
+    tmp_path, monkeypatch
+):
     harness = _load_example("terminal_bench_context_eval")
     environment = tmp_path / "environment"
     environment.mkdir()
@@ -641,6 +764,110 @@ def test_timeout_output_accepts_text_and_bytes():
     assert harness.timeout_output(bytes_timeout, "stderr") == "byte stderr"
 
 
+def test_missing_verifier_environment_fails_before_agent_execution(
+    tmp_path, monkeypatch
+):
+    harness = _load_example("terminal_bench_context_eval")
+    root = tmp_path / "fixture"
+    root.joinpath("environment").mkdir(parents=True)
+    root.joinpath("tests").mkdir()
+    root.joinpath("instruction.md").write_text("research", encoding="utf-8")
+    fixture = harness.TaskFixture(
+        name="browsecomp-sample",
+        root=root,
+        archive_sha256="a" * 64,
+        config={
+            "environment": {},
+            "verifier": {"env": {"OPENAI_API_KEY": "${MISSING_API_KEY}"}},
+        },
+        benchmark_adapter="openai-browsecomp",
+    )
+    calls = []
+    monkeypatch.delenv("MISSING_API_KEY", raising=False)
+    monkeypatch.setattr(
+        harness,
+        "run_command",
+        lambda command, **kwargs: calls.append(command),
+    )
+
+    result = harness.execute_job(
+        docker="docker",
+        fixture=fixture,
+        image="sha256:" + "b" * 64,
+        variant_name="legacy-observe",
+        variant_path=None,
+        repetition=1,
+        output_dir=tmp_path / "output",
+        max_steps=1,
+        keep_container=False,
+        verifier_mode="packaged",
+    )
+
+    assert calls == []
+    assert result["reward"] is None
+    assert result["failure"] == {
+        "stage": "verifier_preflight",
+        "reason_code": "verifier_environment_unavailable",
+        "target_name": "OPENAI_API_KEY",
+        "source_name": "MISSING_API_KEY",
+    }
+
+
+def test_verifier_secret_is_passed_by_process_environment_not_command(
+    tmp_path, monkeypatch
+):
+    harness = _load_example("terminal_bench_context_eval")
+    root = tmp_path / "fixture"
+    root.joinpath("environment").mkdir(parents=True)
+    root.joinpath("tests").mkdir()
+    root.joinpath("instruction.md").write_text("research", encoding="utf-8")
+    fixture = harness.TaskFixture(
+        name="browsecomp-sample",
+        root=root,
+        archive_sha256="a" * 64,
+        config={
+            "environment": {},
+            "verifier": {
+                "timeout_sec": 2,
+                "env": {"OPENAI_API_KEY": "${SOURCE_API_KEY}"},
+            },
+        },
+        benchmark_adapter="openai-browsecomp",
+    )
+    monkeypatch.setenv("SOURCE_API_KEY", "private-verifier-secret")
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append((command, kwargs))
+        if command[0] == sys.executable:
+            return subprocess.CompletedProcess(command, 0, stdout="done", stderr="")
+        return subprocess.CompletedProcess(command, 0, stdout="image-id\n", stderr="")
+
+    monkeypatch.setattr(harness, "run_command", fake_run)
+    result = harness.execute_job(
+        docker="docker",
+        fixture=fixture,
+        image="sha256:" + "b" * 64,
+        variant_name="legacy-observe",
+        variant_path=None,
+        repetition=1,
+        output_dir=tmp_path / "output",
+        max_steps=1,
+        keep_container=False,
+        verifier_mode="packaged",
+    )
+
+    verifier_command, verifier_kwargs = next(
+        (command, kwargs)
+        for command, kwargs in calls
+        if command[:2] == ["docker", "exec"]
+    )
+    assert verifier_command[2:4] == ["--env", "OPENAI_API_KEY"]
+    assert "private-verifier-secret" not in repr(verifier_command)
+    assert verifier_kwargs["env"]["OPENAI_API_KEY"] == "private-verifier-secret"
+    assert "private-verifier-secret" not in repr(result["verifier_environment"])
+
+
 def test_agent_timeout_is_persisted_as_typed_incomplete_result(tmp_path, monkeypatch):
     harness = _load_example("terminal_bench_context_eval")
     root = tmp_path / "fixture"
@@ -683,7 +910,10 @@ def test_agent_timeout_is_persisted_as_typed_incomplete_result(tmp_path, monkeyp
         "reason_code": "agent_timeout",
         "timeout_sec": 61.0,
     }
-    assert json.loads(run_dir.joinpath("result.json").read_text())["failure"] == result["failure"]
+    assert (
+        json.loads(run_dir.joinpath("result.json").read_text())["failure"]
+        == result["failure"]
+    )
     assert run_dir.joinpath("agent.stdout.log").read_text() == "partial"
     assert run_dir.joinpath("agent.stderr.log").read_text() == "timed out"
 
@@ -727,6 +957,154 @@ def test_agent_timeout_override_is_the_effective_typed_timeout(tmp_path, monkeyp
         "reason_code": "agent_timeout",
         "timeout_sec": 12.5,
     }
+
+
+def test_timeout_recovers_provider_attempt_without_synthesizing_trajectory(tmp_path):
+    harness = _load_example("terminal_bench_context_eval")
+    from aworld.core.llm_call_journal import append_llm_call_snapshot
+
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    append_llm_call_snapshot(
+        context=Context(task_id="browse-task"),
+        event_type="provider_request_attempted",
+        llm_calls=[
+            {
+                "call_id": "call-1",
+                "request_id": "request-1",
+                "status": "in_progress",
+                "provider_invoked": True,
+                "provider_attempt_status": "attempted",
+                "provider_request": {
+                    "capture_stage": "provider_prepared",
+                    "fidelity": "provider_prepared",
+                    "payload": {"messages": [{"role": "user", "content": "question"}]},
+                },
+            }
+        ],
+        path=run_dir / "llm_calls.journal.jsonl",
+    )
+
+    evidence = harness.recover_inflight_capture(run_dir)
+    metrics = harness.collect_context_metrics(run_dir)
+
+    assert evidence["classification"] == "provider_attempted_response_not_observed"
+    assert evidence["trajectory_generation_state"] == "not_produced_no_model_response"
+    assert evidence["trajectory_persistence_state"] == "not_applicable"
+    assert (
+        json.loads(run_dir.joinpath("provider_calls.partial.json").read_text())[0][
+            "request_id"
+        ]
+        == "request-1"
+    )
+    assert not run_dir.joinpath("raw_trajectory.json").exists()
+    assert not run_dir.joinpath("provider_calls.json").exists()
+    assert metrics["provider_truth_available"] is False
+    assert metrics["raw_trajectory_available"] is False
+    assert metrics["partial_provider_call_count"] == 1
+    assert metrics["inflight_capture_available"] is True
+    assert metrics["llm_call_journal_bytes"] > 0
+    assert metrics["llm_call_journal_valid_records"] == 1
+
+
+def test_recovery_does_not_claim_storage_failure_after_completed_model_call(tmp_path):
+    harness = _load_example("terminal_bench_context_eval")
+    from aworld.core.llm_call_journal import append_llm_call_snapshot
+
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    append_llm_call_snapshot(
+        context=Context(task_id="completed-task"),
+        event_type="model_request_success",
+        llm_calls=[
+            {
+                "request_id": "request-1",
+                "status": "success",
+                "provider_invoked": True,
+                "provider_attempt_status": "attempted",
+                "response": {"finish_reason": "stop"},
+            }
+        ],
+        path=run_dir / "llm_calls.journal.jsonl",
+    )
+
+    evidence = harness.recover_inflight_capture(run_dir)
+
+    assert evidence["classification"] == "model_call_completed_final_projection_missing"
+    assert evidence["trajectory_generation_state"] == "undetermined"
+    assert evidence["trajectory_persistence_state"] == "undetermined"
+    assert not run_dir.joinpath("raw_trajectory.json").exists()
+
+
+def test_failed_retries_before_active_attempt_are_not_model_completion(tmp_path):
+    harness = _load_example("terminal_bench_context_eval")
+    from aworld.core.llm_call_journal import append_llm_call_snapshot
+
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    append_llm_call_snapshot(
+        context=Context(task_id="retry-task"),
+        event_type="provider_request_attempted",
+        llm_calls=[
+            {
+                "request_id": "request-1",
+                "status": "failed",
+                "provider_invoked": True,
+                "provider_attempt_status": "attempted",
+            },
+            {
+                "request_id": "request-2",
+                "status": "failed",
+                "provider_invoked": True,
+                "provider_attempt_status": "attempted",
+            },
+            {
+                "request_id": "request-3",
+                "status": "in_progress",
+                "provider_invoked": True,
+                "provider_attempt_status": "attempted",
+            },
+        ],
+        path=run_dir / "llm_calls.journal.jsonl",
+    )
+
+    evidence = harness.recover_inflight_capture(run_dir)
+
+    assert evidence["attempted_provider_call_count"] == 3
+    assert evidence["classification"] == "provider_attempted_response_not_observed"
+    assert evidence["trajectory_generation_state"] == "not_produced_no_model_response"
+    assert evidence["trajectory_persistence_state"] == "not_applicable"
+
+
+def test_final_capture_is_reconciled_with_journal_snapshot(tmp_path):
+    harness = _load_example("terminal_bench_context_eval")
+    from aworld.core.llm_call_journal import append_llm_call_snapshot
+
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    calls = [
+        {
+            "request_id": "request-1",
+            "status": "success",
+            "provider_invoked": True,
+            "provider_attempt_status": "attempted",
+        }
+    ]
+    append_llm_call_snapshot(
+        context=Context(task_id="final-task"),
+        event_type="model_request_success",
+        llm_calls=calls,
+        path=run_dir / "llm_calls.journal.jsonl",
+    )
+    run_dir.joinpath("llm_calls.json").write_text(json.dumps(calls), encoding="utf-8")
+    run_dir.joinpath("raw_trajectory.json").write_text("[]", encoding="utf-8")
+
+    evidence = harness.recover_inflight_capture(run_dir)
+
+    assert evidence["classification"] == "final_capture_available"
+    assert evidence["trajectory_generation_state"] == "finalized"
+    assert evidence["journal_final_continuity"]["snapshots_match"] is True
+    assert not run_dir.joinpath("llm_calls.partial.json").exists()
 
 
 def test_verifier_timeout_is_persisted_and_excluded_from_pairs(tmp_path, monkeypatch):
@@ -773,10 +1151,16 @@ def test_verifier_timeout_is_persisted_and_excluded_from_pairs(tmp_path, monkeyp
         "timeout_sec": 2.0,
     }
     assert run_dir.joinpath("verifier", "stdout.log").read_text() == "checking"
-    assert json.loads(run_dir.joinpath("result.json").read_text())["failure"] == result["failure"]
-    assert harness.summarize_results(
-        [result], baseline_variant="candidate"
-    )["paired_deltas"] == []
+    assert (
+        json.loads(run_dir.joinpath("result.json").read_text())["failure"]
+        == result["failure"]
+    )
+    assert (
+        harness.summarize_results([result], baseline_variant="candidate")[
+            "paired_deltas"
+        ]
+        == []
+    )
 
 
 def test_summary_pairs_reward_with_context_effects():
@@ -824,7 +1208,9 @@ def test_summary_pairs_reward_with_context_effects():
     ]
 
 
-def test_python_functions_verifier_mode_is_explicit_and_not_a_variant_field(tmp_path, monkeypatch):
+def test_python_functions_verifier_mode_is_explicit_and_not_a_variant_field(
+    tmp_path, monkeypatch
+):
     harness = _load_example("terminal_bench_context_eval")
     monkeypatch.setattr(
         sys,

@@ -24,7 +24,16 @@ class ReviewedProviderLoweringRegistry:
     """
 
     _FRAMEWORK_TYPE_IDENTITIES = frozenset(
-        {("aworld.models.openai_provider", "OpenAIProvider")}
+        {
+            ("aworld.models.openai_provider", "OpenAIProvider"),
+            ("aworld.models.openai_provider", "AzureOpenAIProvider"),
+            ("aworld.models.anthropic_provider", "AnthropicProvider"),
+            ("aworld.models.ant_provider", "AntProvider"),
+            (
+                "aworld.models.reviewed_custom_provider",
+                "ReviewedCustomChatProvider",
+            ),
+        }
     )
 
     def __init__(self) -> None:
@@ -45,7 +54,9 @@ class ReviewedProviderLoweringRegistry:
         with self._lock:
             existing = self._by_type.get(provider_type)
             if existing is not None and existing != adapter:
-                raise ValueError("provider type already has a different reviewed adapter")
+                raise ValueError(
+                    "provider type already has a different reviewed adapter"
+                )
             self._by_type[provider_type] = adapter
 
     def resolve(
@@ -63,9 +74,7 @@ class ReviewedProviderLoweringRegistry:
 
     def capabilities(self) -> tuple[ProviderLoweringCapability, ...]:
         with self._lock:
-            return tuple(
-                adapter.capability for adapter in self._by_type.values()
-            )
+            return tuple(adapter.capability for adapter in self._by_type.values())
 
 
 reviewed_provider_lowerings = ReviewedProviderLoweringRegistry()

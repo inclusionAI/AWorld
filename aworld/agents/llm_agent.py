@@ -368,9 +368,9 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         started_at = started_at or datetime.now().isoformat()
         call_id = reserved_call_id or uuid.uuid4().hex
         serializable_messages = to_serializable(messages)
-        context_info = message.context.context_info
-        llm_calls = list(context_info.get("llm_calls") or [])
-        llm_calls.append(
+        context = message.context
+        context_info = context.context_info
+        context.append_llm_call(
             {
                 "capture_stage": "compiled",
                 "call_id": call_id,
@@ -383,9 +383,9 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                     "params": to_serializable(request_params or {}),
                 },
                 "request_metrics": collect_replay_message_metrics(serializable_messages),
-            }
+            },
+            event_type="compiler_request_captured",
         )
-        context_info["llm_calls"] = llm_calls
         # Backward-compatible aliases for current readers.
         context_info["llm_input"] = serializable_messages
         context_info["llm_call_start_time"] = started_at
@@ -411,8 +411,9 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         llm_response: ModelResponse | None,
     ) -> None:
         """Attach response/usage to the matching call record and preserve legacy aliases."""
-        context_info = message.context.context_info
-        llm_calls = list(context_info.get("llm_calls") or [])
+        context = message.context
+        context_info = context.context_info
+        llm_calls = context.get_llm_calls()
         serialized_response = None
         serialized_usage = None
         if llm_response is not None:
@@ -436,8 +437,11 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                     metadata = dict(metadata)
                     metadata["provider_native_cache"] = True
                     updated_record["assembly_observability"] = metadata
-                llm_calls[index] = updated_record
-                context_info["llm_calls"] = llm_calls
+                context.replace_llm_call(
+                    index,
+                    updated_record,
+                    event_type="agent_response_captured",
+                )
                 break
 
         context_info["llm_output"] = llm_response
@@ -460,15 +464,18 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         """Attach prompt-assembly metadata to the matching call record."""
         if not isinstance(metadata, dict):
             return
-        context_info = message.context.context_info
-        llm_calls = list(context_info.get("llm_calls") or [])
+        context = message.context
+        llm_calls = context.get_llm_calls()
         for index in range(len(llm_calls) - 1, -1, -1):
             record = llm_calls[index]
             if isinstance(record, dict) and record.get("call_id") == call_id:
                 updated_record = dict(record)
                 updated_record["assembly_observability"] = dict(metadata)
-                llm_calls[index] = updated_record
-                context_info["llm_calls"] = llm_calls
+                context.replace_llm_call(
+                    index,
+                    updated_record,
+                    event_type="assembly_observability_updated",
+                )
                 break
 
     def _safe_update_llm_call_observability(self, *args, **kwargs) -> None:
@@ -1381,6 +1388,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                     ToolCatalogEntry,
                     compile_minimal_tool_catalog,
                     estimate_canonical_json_tokens,
+                    preserve_unmanaged_tool_namespaces,
                 )
 
                 entries = []
@@ -1414,6 +1422,29 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                         if progressive_skill_proposal is not None
                         else ()
                     )
+                    if (
+                        getattr(
+                            self.llm,
+                            "_context_progressive_tool_unmanaged_policy",
+                            "preserve",
+                        )
+                        == "preserve"
+                    ):
+                        unmanaged_tools = preserve_unmanaged_tool_namespaces(
+                            available_tool_ids,
+                            requested_tools=(
+                                *progressive_tool_base_tools,
+                                *skill_requested_tools,
+                            ),
+                            tool_identity_mapping=(
+                                getattr(self, "tool_mapping", {}) or {}
+                            ),
+                        )
+                        skill_requested_tools = tuple(
+                            dict.fromkeys(
+                                (*skill_requested_tools, *unmanaged_tools)
+                            )
+                        )
                     candidate_catalog = compile_minimal_tool_catalog(
                         entries,
                         base_tools=progressive_tool_base_tools,

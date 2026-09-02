@@ -403,6 +403,82 @@ async def test_progressive_catalog_requires_explicit_enforce_opt_in(
 
 
 @pytest.mark.asyncio
+async def test_progressive_catalog_preserves_new_unmanaged_mcp_namespace(monkeypatch):
+    captured = {}
+    schemas = [
+        {"type": "function", "function": {"name": "run_code"}},
+        {"type": "function", "function": {"name": "read_file"}},
+        {"type": "function", "function": {"name": "browser_navigate"}},
+        {"type": "function", "function": {"name": "browser_snapshot"}},
+    ]
+
+    class CapturingAgent(Agent):
+        async def build_llm_input(self, observation, info=None, message=None, **kwargs):
+            return [{"role": "user", "content": "research a question"}]
+
+        async def _filter_tools(self, context=None):
+            self.tool_mapping = {
+                "run_code": "docker__run_code",
+                "read_file": "docker__read_file",
+                "browser_navigate": "ms-playwright__browser_navigate",
+                "browser_snapshot": "ms-playwright__browser_snapshot",
+            }
+            return schemas
+
+        async def invoke_model(self, messages=None, message=None, **kwargs):
+            captured["tools"] = kwargs.get("prepared_tools")
+            return ModelResponse(
+                id="resp-progressive-unmanaged-tools",
+                model="fake-model",
+                content="done",
+                usage={"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            )
+
+    agent = CapturingAgent(
+        name="Aworld",
+        conf=AgentConfig(
+            llm_provider="custom",
+            llm_model_name="fake-model",
+            llm_api_key="fake-key",
+        ),
+    )
+    agent._llm = SimpleNamespace(
+        context_compiler_mode="enforce",
+        _context_progressive_skills=False,
+        _context_progressive_tools=True,
+        _context_progressive_tool_base_tools=("run_code",),
+        _context_progressive_tool_unmanaged_policy="preserve",
+        _context_task_catalog_policy="sticky",
+        _context_artifact_offload=True,
+        enforced_tool_output_policy=None,
+    )
+
+    async def skip_memory(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(agent, "_add_message_to_memory", skip_memory)
+    context = _build_context("task-progressive-unmanaged-tools")
+    message = Message(
+        category=Constants.AGENT,
+        sender="user",
+        receiver=agent.name(),
+        headers={"context": context},
+    )
+
+    await agent.async_policy(
+        SimpleNamespace(observer="user", from_agent_name=None, context=None),
+        message=message,
+    )
+
+    actual = captured["tools"] or []
+    assert [schema["function"]["name"] for schema in actual] == [
+        "run_code",
+        "browser_navigate",
+        "browser_snapshot",
+    ]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "capture_method",
     ["_record_llm_call_request", "_update_llm_call_observability"],

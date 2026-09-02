@@ -170,7 +170,9 @@ class LLMProviderBase(abc.ABC):
                     }
                 updated_rollout.pop("error", None)
                 updated.update({"request": envelope.candidate_request.thaw(), "request_selection": "candidate", "context_observe_scope": "legacy_request_before_rollout", "provider_prepared_request_match": None, "context_rollout": updated_rollout})
-            llm_calls[index] = updated
+            context.replace_llm_call(
+                index, updated, event_type="provider_request_prepared"
+            )
         except CandidateRequestNotEnforceable:
             raise
         except Exception:
@@ -208,7 +210,9 @@ class LLMProviderBase(abc.ABC):
             try:
                 if cache_identity is not None:
                     context.commit_provider_cache_identity(cache_identity)
-                llm_calls[index] = updated
+                context.replace_llm_call(
+                    index, updated, event_type="provider_request_attempted"
+                )
             except Exception:
                 context._provider_cache_identity = previous_cache
                 context._pending_cache_break_reasons = previous_breaks
@@ -279,7 +283,9 @@ class LLMProviderBase(abc.ABC):
             "provider_attempt_status": "prepared",
             "context_rollout": updated_rollout,
         })
-        llm_calls[index] = updated
+        context.replace_llm_call(
+            index, updated, event_type="provider_observed_attribution_committed"
+        )
 
     def commit_provider_observation_unavailable(
         self,
@@ -322,7 +328,9 @@ class LLMProviderBase(abc.ABC):
             })
             if snapshot is not None:
                 updated["provider_request"] = snapshot.to_dict()
-            llm_calls[index] = updated
+            context.replace_llm_call(
+                index, updated, event_type="provider_observation_unavailable"
+            )
             return True
         except Exception:
             return False
@@ -345,7 +353,9 @@ class LLMProviderBase(abc.ABC):
             index, record = matches[0]
             updated = dict(record)
             updated.update({"provider_invoked": True, "provider_attempt_status": "attempted"})
-            llm_calls[index] = updated
+            context.replace_llm_call(
+                index, updated, event_type="provider_request_attempted_fail_open"
+            )
         except Exception:
             return
 

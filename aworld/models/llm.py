@@ -13,22 +13,36 @@ from typing import (
     Union,
     Generator,
     AsyncGenerator,
-    Any, Optional,
+    Any,
+    Optional,
 )
 from aworld.config import ConfigDict, ModelConfig
 from aworld.config.conf import AgentConfig, ClientType
-from aworld.core.model_output_parser.default_parsers import ToolParser, ReasoningParser, CodeParser, JsonParser
+from aworld.core.model_output_parser.default_parsers import (
+    ToolParser,
+    ReasoningParser,
+    CodeParser,
+    JsonParser,
+)
 from aworld.logs.util import logger, log_llm_record
 
 from aworld.core.llm_provider import LLMProviderBase
 from aworld.core.video_gen_provider import VideoGenProviderBase
 from aworld.models.openai_provider import (
+    AZURE_OPENAI_CONTEXT_LOWERING,
     OPENAI_CONTEXT_LOWERING,
     OpenAIProvider,
     AzureOpenAIProvider,
 )
-from aworld.models.anthropic_provider import AnthropicProvider
-from aworld.models.ant_provider import AntProvider
+from aworld.models.anthropic_provider import (
+    ANTHROPIC_CONTEXT_LOWERING,
+    AnthropicProvider,
+)
+from aworld.models.ant_provider import ANT_CONTEXT_LOWERING, AntProvider
+from aworld.models.reviewed_custom_provider import (
+    REVIEWED_CUSTOM_CONTEXT_LOWERING,
+    ReviewedCustomChatProvider,
+)
 from aworld.models.together_video_provider import TogetherVideoProvider
 from aworld.models.ant_video_provider import AntVideoProvider
 from aworld.models.kling_provider import KlingProvider
@@ -86,8 +100,12 @@ _AWORLD_CONTEXT_CALL_ID: ContextVar[str | None] = ContextVar(
     "aworld_context_call_id", default=None
 )
 
+reviewed_provider_lowerings.register(OpenAIProvider, OPENAI_CONTEXT_LOWERING)
+reviewed_provider_lowerings.register(AzureOpenAIProvider, AZURE_OPENAI_CONTEXT_LOWERING)
+reviewed_provider_lowerings.register(AnthropicProvider, ANTHROPIC_CONTEXT_LOWERING)
+reviewed_provider_lowerings.register(AntProvider, ANT_CONTEXT_LOWERING)
 reviewed_provider_lowerings.register(
-    OpenAIProvider, OPENAI_CONTEXT_LOWERING
+    ReviewedCustomChatProvider, REVIEWED_CUSTOM_CONTEXT_LOWERING
 )
 
 
@@ -104,7 +122,9 @@ def bind_llm_context_call_id(call_id: str):
 def _resolve_context_call_id(kwargs: dict[str, Any]) -> str | None:
     # Continue accepting the historical private kwarg for direct callers while
     # ensuring it is removed before any provider invocation.
-    return kwargs.pop(AWORLD_CONTEXT_CALL_ID_KWARG, None) or _AWORLD_CONTEXT_CALL_ID.get()
+    return (
+        kwargs.pop(AWORLD_CONTEXT_CALL_ID_KWARG, None) or _AWORLD_CONTEXT_CALL_ID.get()
+    )
 
 
 def _optional_runtime_identity(value: Any) -> str | None:
@@ -114,9 +134,14 @@ def _optional_runtime_identity(value: Any) -> str | None:
     normalized = value.strip()
     return normalized or None
 
+
 # Predefined model names for common providers
 MODEL_NAMES = {
-    "anthropic": ["claude-3-5-sonnet-20241022", "claude-3-5-sonnet-20240620", "claude-3-opus-20240229"],
+    "anthropic": [
+        "claude-3-5-sonnet-20241022",
+        "claude-3-5-sonnet-20240620",
+        "claude-3-opus-20240229",
+    ],
     "openai": ["gpt-4o", "gpt-4", "gpt-3.5-turbo", "o3-mini", "gpt-4o-mini"],
     "azure_openai": ["gpt-4", "gpt-4-turbo", "gpt-4o", "gpt-35-turbo"],
 }
@@ -165,10 +190,10 @@ PROVIDER_CLASSES = {
 
 VIDEO_PROVIDER_CLASSES: Dict[str, type] = {
     # MatrixCube: alias "video" matches endpoint detection; implementation is AntVideoProvider only
-    "video":          AntVideoProvider,
-    "ant_video":      AntVideoProvider,
-    "kling_video":    KlingProvider,
-    "kling_avatar":   KlingAvatarProvider,
+    "video": AntVideoProvider,
+    "ant_video": AntVideoProvider,
+    "kling_video": KlingProvider,
+    "kling_avatar": KlingAvatarProvider,
     "volcano_seedance": VolcanoSeedanceProvider,
     "together_video": TogetherVideoProvider,
 }
@@ -176,25 +201,29 @@ VIDEO_PROVIDER_CLASSES: Dict[str, type] = {
 VIDEO_MODEL_REGISTRY: List[tuple] = [
     # (pattern, provider_name) — first match wins.
     # Direct Kling official API (kling_provider.KlingProvider), not MatrixCube
-    (r"^kling-",        "kling_video"),
+    (r"^kling-", "kling_video"),
     # Ant gateway (Doubao/Seedance, Veo via matrixcube) — AntVideoProvider
     (r"^doubao-video-", "ant_video"),
-    (r"^seedance-",     "ant_video"),
-    (r"^veo-",          "ant_video"),
+    (r"^seedance-", "ant_video"),
+    (r"^veo-", "ant_video"),
     # Together.ai video models (use regex; matched with re.match from model_name start)
-    (r".*minimax/.*",           "together_video"),
-    (r".*google/veo-.*",        "together_video"),
+    (r".*minimax/.*", "together_video"),
+    (r".*google/veo-.*", "together_video"),
     (r".*ByteDance/Seedance.*", "together_video"),
-    (r".*pixverse/.*",          "together_video"),
-    (r".*kwaivgI/kling-.*",     "together_video"),
-    (r".*Wan-AI/.*",            "together_video"),
-    (r".*vidu/.*",              "together_video"),
-    (r".*openai/sora-.*",       "together_video"),
+    (r".*pixverse/.*", "together_video"),
+    (r".*kwaivgI/kling-.*", "together_video"),
+    (r".*Wan-AI/.*", "together_video"),
+    (r".*vidu/.*", "together_video"),
+    (r".*openai/sora-.*", "together_video"),
 ]
 
 
 class ModelResponseParser(ModelOutputParser[ModelResponse, ModelResponse]):
-    def __init__(self, parsers: List[BaseContentParser] = None, enable_default_parsers: bool = False) -> None:
+    def __init__(
+        self,
+        parsers: List[BaseContentParser] = None,
+        enable_default_parsers: bool = False,
+    ) -> None:
         """Initialize the ModelOutputParser with default parsers and optional user-defined parsers.
 
         Args:
@@ -209,12 +238,7 @@ class ModelResponseParser(ModelOutputParser[ModelResponse, ModelResponse]):
         self._parsers: Dict[str, BaseContentParser] = {}
 
         # Initialize default parsers
-        default_parsers = [
-            ToolParser(),
-            ReasoningParser(),
-            CodeParser(),
-            JsonParser()
-        ]
+        default_parsers = [ToolParser(), ReasoningParser(), CodeParser(), JsonParser()]
 
         if enable_default_parsers:
             for parser in default_parsers:
@@ -268,7 +292,10 @@ class ModelResponseParser(ModelOutputParser[ModelResponse, ModelResponse]):
         if not resp:
             logger.warning("no valid content to parse!")
             return resp
-        if kwargs.get("use_tools_in_prompt", False) and 'tool' not in self.list_supported_parser_types():
+        if (
+            kwargs.get("use_tools_in_prompt", False)
+            and "tool" not in self.list_supported_parser_types()
+        ):
             self.register_parser(ToolParser())
 
         for content_parser in self.get_parsers().values():
@@ -282,10 +309,14 @@ class ModelResponseParser(ModelOutputParser[ModelResponse, ModelResponse]):
 
 
 class LLMModel:
-    """Unified large model interface, encapsulates different model implementations, provides a unified completion method.
-    """
+    """Unified large model interface, encapsulates different model implementations, provides a unified completion method."""
 
-    def __init__(self, conf: Union[ConfigDict, ModelConfig] = None, custom_provider: LLMProviderBase = None, **kwargs):
+    def __init__(
+        self,
+        conf: Union[ConfigDict, ModelConfig] = None,
+        custom_provider: LLMProviderBase = None,
+        **kwargs,
+    ):
         """Initialize unified model interface.
 
         Args:
@@ -311,6 +342,7 @@ class LLMModel:
             if isinstance(runtime_config, dict)
             else getattr(runtime_config, "compiler_version", "v1")
         )
+
         def context_config_value(name: str, default: Any) -> Any:
             if isinstance(runtime_config, dict):
                 return runtime_config.get(name, default)
@@ -323,9 +355,7 @@ class LLMModel:
         self._context_default_tool_output_inline_tokens = context_config_value(
             "default_tool_output_inline_tokens", 4096
         )
-        self._context_artifact_offload = context_config_value(
-            "artifact_offload", True
-        )
+        self._context_artifact_offload = context_config_value("artifact_offload", True)
         self._context_progressive_skills = context_config_value(
             "progressive_skills", True
         )
@@ -340,15 +370,16 @@ class LLMModel:
             if progressive_tool_base_tools is None
             else tuple(progressive_tool_base_tools)
         )
+        self._context_progressive_tool_unmanaged_policy = context_config_value(
+            "progressive_tool_unmanaged_policy", "preserve"
+        )
         self._context_task_catalog_policy = context_config_value(
             "task_catalog_policy", "sticky"
         )
         if candidate_policy is None:
             final_policy = None
             if context_config_value("universal_final", True):
-                configured_context_limit = context_config_value(
-                    "context_limit", None
-                )
+                configured_context_limit = context_config_value("context_limit", None)
                 if configured_context_limit is None:
                     configured_context_limit = (
                         getattr(conf, "max_model_len", None) or 128000
@@ -367,9 +398,7 @@ class LLMModel:
                         safety_margin_tokens=context_config_value(
                             "safety_margin_tokens", 512
                         ),
-                        max_item_tokens=context_config_value(
-                            "max_item_tokens", 10000
-                        ),
+                        max_item_tokens=context_config_value("max_item_tokens", 10000),
                     ),
                     require_proven_semantics_for_enforce=context_config_value(
                         "require_proven_semantics_for_enforce", True
@@ -384,8 +413,11 @@ class LLMModel:
             candidate_policy=candidate_policy,
         )
 
-        self.llm_response_parser: ModelResponseParser = conf.llm_response_parser \
-            if conf and hasattr(conf, 'llm_response_parser') else None
+        self.llm_response_parser: ModelResponseParser = (
+            conf.llm_response_parser
+            if conf and hasattr(conf, "llm_response_parser")
+            else None
+        )
 
         # If custom_provider instance is provided, use it directly
         if custom_provider is not None:
@@ -397,39 +429,48 @@ class LLMModel:
             self.provider = custom_provider
             return
         # Get basic parameters
-        base_url = kwargs.get("base_url") or (
-            conf.llm_base_url if conf else None)
-        model_name = kwargs.get("model_name") or (
-            conf.llm_model_name if conf else None)
-        llm_provider = conf.llm_provider if conf_contains_key(
-            conf, "llm_provider") else None
+        base_url = kwargs.get("base_url") or (conf.llm_base_url if conf else None)
+        model_name = kwargs.get("model_name") or (conf.llm_model_name if conf else None)
+        llm_provider = (
+            conf.llm_provider if conf_contains_key(conf, "llm_provider") else None
+        )
 
         # Get API key from configuration (if any)
         if conf and conf.llm_api_key:
             kwargs["api_key"] = conf.llm_api_key
 
         # Identify provider
-        self.provider_name = self._identify_provider(
-            llm_provider, base_url, model_name)
+        self.provider_name = self._identify_provider(llm_provider, base_url, model_name)
 
         # Fill basic parameters
-        kwargs['base_url'] = base_url
-        kwargs['model_name'] = model_name
+        kwargs["base_url"] = base_url
+        kwargs["model_name"] = model_name
 
         # Fill parameters for llm provider
-        kwargs['sync_enabled'] = conf.llm_sync_enabled if conf_contains_key(
-            conf, "llm_sync_enabled") else True
-        kwargs['async_enabled'] = conf.llm_async_enabled if conf_contains_key(
-            conf, "llm_async_enabled") else True
-        kwargs['client_type'] = conf.llm_client_type if conf_contains_key(
-            conf, "llm_client_type") else ClientType.SDK
+        kwargs["sync_enabled"] = (
+            conf.llm_sync_enabled
+            if conf_contains_key(conf, "llm_sync_enabled")
+            else True
+        )
+        kwargs["async_enabled"] = (
+            conf.llm_async_enabled
+            if conf_contains_key(conf, "llm_async_enabled")
+            else True
+        )
+        kwargs["client_type"] = (
+            conf.llm_client_type
+            if conf_contains_key(conf, "llm_client_type")
+            else ClientType.SDK
+        )
 
         kwargs.update(self._transfer_conf_to_args(conf))
 
         # Create model provider based on provider_name
         self._create_provider(**kwargs)
 
-    def _transfer_conf_to_args(self, conf: Union[ConfigDict, AgentConfig] = None) -> dict:
+    def _transfer_conf_to_args(
+        self, conf: Union[ConfigDict, AgentConfig] = None
+    ) -> dict:
         """
         Transfer parameters from conf to args
 
@@ -440,13 +481,22 @@ class LLMModel:
             return {}
 
         # Get all parameters from conf
-        if type(conf).__name__ == 'ModelConfig':
+        if type(conf).__name__ == "ModelConfig":
             conf_dict = conf.model_dump()
         else:  # ConfigDict
             conf_dict = conf
 
-        ignored_keys = ["llm_provider", "llm_base_url", "llm_model_name", "llm_api_key", "llm_sync_enabled",
-                        "llm_async_enabled", "llm_client_type", "llm_response_parser", "context_compiler"]
+        ignored_keys = [
+            "llm_provider",
+            "llm_base_url",
+            "llm_model_name",
+            "llm_api_key",
+            "llm_sync_enabled",
+            "llm_async_enabled",
+            "llm_client_type",
+            "llm_response_parser",
+            "context_compiler",
+        ]
         args = {}
         # Filter out used parameters and add remaining parameters to args
         for key, value in conf_dict.items():
@@ -507,7 +557,9 @@ class LLMModel:
             policy_version="aworld-tool-output-v1",
         )
 
-    def _identify_provider(self, provider: str = None, base_url: str = None, model_name: str = None) -> str:
+    def _identify_provider(
+        self, provider: str = None, base_url: str = None, model_name: str = None
+    ) -> str:
         """Identify the provider for the given configuration.
 
         Identification logic (in priority order):
@@ -532,9 +584,7 @@ class LLMModel:
         all_providers = {**PROVIDER_CLASSES, **VIDEO_PROVIDER_CLASSES}
         if provider:
             if provider in all_providers:
-                logger.info(
-                    f"Using explicit provider: {provider}"
-                )
+                logger.info(f"Using explicit provider: {provider}")
                 return provider
             else:
                 logger.warning(
@@ -565,7 +615,9 @@ class LLMModel:
             else:
                 # Fall back to LLM model name matching
                 for p, models in MODEL_NAMES.items():
-                    if model_name in models or any(model_name.startswith(m) for m in models):
+                    if model_name in models or any(
+                        model_name.startswith(m) for m in models
+                    ):
                         identified_provider = p
                         logger.info(
                             f"Identified provider: {identified_provider} based on model_name: {model_name}"
@@ -573,7 +625,12 @@ class LLMModel:
                         break
 
         # 4. FOURTH: Default fallback
-        if identified_provider == "openai" and not provider and not base_url and not model_name:
+        if (
+            identified_provider == "openai"
+            and not provider
+            and not base_url
+            and not model_name
+        ):
             logger.debug("No provider information provided, using default: openai")
         return identified_provider
 
@@ -596,11 +653,18 @@ class LLMModel:
         elif self.provider_name in PROVIDER_CLASSES:
             provider_class = PROVIDER_CLASSES[self.provider_name]
             # Lazy load providers to avoid circular import
-            if provider_class is None and self.provider_name in ("speech", "doubao_tts"):
+            if provider_class is None and self.provider_name in (
+                "speech",
+                "doubao_tts",
+            ):
                 from aworld.models.doubao_tts_provider import DoubaoTTSProvider
+
                 provider_class = DoubaoTTSProvider
                 PROVIDER_CLASSES[self.provider_name] = provider_class
-            elif provider_class is None and self.provider_name == "volcano_openspeech_tts":
+            elif (
+                provider_class is None
+                and self.provider_name == "volcano_openspeech_tts"
+            ):
                 from aworld.models.volcano_openspeech_tts_provider import (
                     VolcanoOpenSpeechTTSProvider,
                 )
@@ -609,10 +673,12 @@ class LLMModel:
                 PROVIDER_CLASSES[self.provider_name] = provider_class
             elif provider_class is None and self.provider_name == "image":
                 from aworld.models.image_provider import ImageProvider
+
                 provider_class = ImageProvider
                 PROVIDER_CLASSES[self.provider_name] = provider_class
             elif provider_class is None and self.provider_name == "kling_image":
                 from aworld.models.kling_image_provider import KlingImageProvider
+
                 provider_class = KlingImageProvider
                 PROVIDER_CLASSES[self.provider_name] = provider_class
             self.provider = provider_class(**kwargs)
@@ -687,15 +753,19 @@ class LLMModel:
     def _is_meaningful_stream_response(cls, response: Optional[ModelResponse]) -> bool:
         if response is None:
             return False
-        return any([
-            cls._has_meaningful_value(getattr(response, "provider_request_id", None)),
-            cls._has_meaningful_value(getattr(response, "content", None)),
-            cls._has_meaningful_value(getattr(response, "tool_calls", None)),
-            cls._has_meaningful_value(getattr(response, "finish_reason", None)),
-            cls._usage_has_meaningful_value(getattr(response, "usage", None)),
-            cls._usage_has_meaningful_value(getattr(response, "raw_usage", None)),
-            cls._message_has_meaningful_value(getattr(response, "message", None)),
-        ])
+        return any(
+            [
+                cls._has_meaningful_value(
+                    getattr(response, "provider_request_id", None)
+                ),
+                cls._has_meaningful_value(getattr(response, "content", None)),
+                cls._has_meaningful_value(getattr(response, "tool_calls", None)),
+                cls._has_meaningful_value(getattr(response, "finish_reason", None)),
+                cls._usage_has_meaningful_value(getattr(response, "usage", None)),
+                cls._usage_has_meaningful_value(getattr(response, "raw_usage", None)),
+                cls._message_has_meaningful_value(getattr(response, "message", None)),
+            ]
+        )
 
     def _merge_stream_response_record(
         self,
@@ -719,7 +789,14 @@ class LLMModel:
         elif self._message_has_meaningful_value(next_message):
             message = self._safe_copy(next_message)
 
-        for attr in ("id", "model", "provider_request_id", "finish_reason", "content", "tool_calls"):
+        for attr in (
+            "id",
+            "model",
+            "provider_request_id",
+            "finish_reason",
+            "content",
+            "tool_calls",
+        ):
             value = getattr(next_response, attr, None)
             if self._has_meaningful_value(value):
                 setattr(merged, attr, self._safe_copy(value))
@@ -742,9 +819,7 @@ class LLMModel:
             if base_response is None or self._is_meaningful_stream_response(
                 next_response
             ):
-                return self._merge_stream_response_record(
-                    base_response, next_response
-                )
+                return self._merge_stream_response_record(base_response, next_response)
             return base_response
         except Exception as exc:
             logger.warning(
@@ -845,9 +920,7 @@ class LLMModel:
         """Apply reviewed provider normalization and publish the exact boundary."""
         values = messages
         if self.context_compiler_mode is not ContextCompilerMode.OFF:
-            normalizer = getattr(
-                self.provider, "context_model_boundary_messages", None
-            )
+            normalizer = getattr(self.provider, "context_model_boundary_messages", None)
             if callable(normalizer):
                 values = normalizer(messages)
                 if not isinstance(values, list):
@@ -1031,7 +1104,9 @@ class LLMModel:
                 plan = build_observed_model_boundary_attribution_plan(
                     observed_request=observed_request,
                     observations=(
-                        context.get_context_observations() if context is not None else ()
+                        context.get_context_observations()
+                        if context is not None
+                        else ()
                     ),
                     task_epoch=(context.task_epoch if context is not None else None),
                 )
@@ -1040,20 +1115,22 @@ class LLMModel:
                     attribution_plan=plan,
                     expected_lowering=capability,
                 )
-                metadata.update({
-                    "observed_snapshot": {
-                        "content_hash": observed_request.content_hash,
-                        "capture_stage": observed_request.capture_stage.value,
-                        "fidelity": observed_request.fidelity.value,
-                        "attribution_plan_fingerprint": plan.fingerprint,
-                    },
-                    "compiler_attribution_plan": plan.to_redacted_dict(),
-                    "provider_attribution": {
-                        "subject": ProviderAttributionSubject.LEGACY_OBSERVED.value,
-                        "subject_content_hash": observed_request.content_hash,
-                        "status": "awaiting_receipt",
-                    },
-                })
+                metadata.update(
+                    {
+                        "observed_snapshot": {
+                            "content_hash": observed_request.content_hash,
+                            "capture_stage": observed_request.capture_stage.value,
+                            "fidelity": observed_request.fidelity.value,
+                            "attribution_plan_fingerprint": plan.fingerprint,
+                        },
+                        "compiler_attribution_plan": plan.to_redacted_dict(),
+                        "provider_attribution": {
+                            "subject": ProviderAttributionSubject.LEGACY_OBSERVED.value,
+                            "subject_content_hash": observed_request.content_hash,
+                            "status": "awaiting_receipt",
+                        },
+                    }
+                )
                 return metadata, None, envelope
             except Exception:
                 metadata["provider_attribution"] = {
@@ -1123,9 +1200,7 @@ class LLMModel:
                     ),
                 )
             return (
-                fail_metadata(
-                    status="failed", error_code="invalid_compiler_policy"
-                ),
+                fail_metadata(status="failed", error_code="invalid_compiler_policy"),
                 None,
                 None,
             )
@@ -1138,10 +1213,7 @@ class LLMModel:
             )
             if resolved_active_path is not None:
                 resolved_active_path = str(resolved_active_path)
-            if (
-                context is not None
-                and self._context_scoped_instructions == "nested"
-            ):
+            if context is not None and self._context_scoped_instructions == "nested":
                 context.refresh_nested_instruction_observation(
                     active_path=resolved_active_path
                 )
@@ -1163,9 +1235,7 @@ class LLMModel:
             )
             task_epoch = context.task_epoch if context is not None else None
             agent_id = self._context_agent_identity(context)
-            workspace_path = (
-                context.workspace_path if context is not None else None
-            )
+            workspace_path = context.workspace_path if context is not None else None
             context_limit = (
                 policy.final_policy.input_budget.context_limit
                 if policy.final_policy is not None
@@ -1230,9 +1300,7 @@ class LLMModel:
                     ),
                 )
             return (
-                fail_metadata(
-                    status="failed", error_code="candidate_input_failed"
-                ),
+                fail_metadata(status="failed", error_code="candidate_input_failed"),
                 None,
                 None,
             )
@@ -1286,8 +1354,7 @@ class LLMModel:
                 },
                 "compiler_attribution_plan": attribution_plan.to_redacted_dict(),
                 "comparison": (
-                    selection.comparison.to_dict()
-                    if selection.comparison else None
+                    selection.comparison.to_dict() if selection.comparison else None
                 ),
                 "diagnostic_code_hashes": [
                     canonical_json_hash({"code": code})
@@ -1344,9 +1411,7 @@ class LLMModel:
                 blocked["candidate_status"] = "blocked"
                 blocked["error"] = {"code": "candidate_not_enforce_ready"}
                 block(
-                    CandidateRequestNotEnforceable(
-                        "candidate_not_enforce_ready"
-                    ),
+                    CandidateRequestNotEnforceable("candidate_not_enforce_ready"),
                     blocked,
                 )
             capability = reviewed_provider_lowerings.resolve(
@@ -1357,9 +1422,7 @@ class LLMModel:
                 blocked["candidate_status"] = "blocked"
                 blocked["error"] = {"code": "provider_lowering_required"}
                 block(
-                    CandidateRequestNotEnforceable(
-                        "provider_lowering_required"
-                    ),
+                    CandidateRequestNotEnforceable("provider_lowering_required"),
                     blocked,
                 )
             try:
@@ -1405,16 +1468,18 @@ class LLMModel:
                     blocked,
                 )
             prepared = dict(metadata)
-            prepared.update({
-                "candidate_status": "awaiting_provider_lowering",
-                "provider_lowering_ready": True,
-                "provider_lowering": {
-                    "adapter_identity": capability.adapter_identity,
-                    "adapter_version": capability.adapter_version,
-                    "request_projection": capability.request_projection,
-                    "status": "awaiting_receipt",
-                },
-            })
+            prepared.update(
+                {
+                    "candidate_status": "awaiting_provider_lowering",
+                    "provider_lowering_ready": True,
+                    "provider_lowering": {
+                        "adapter_identity": capability.adapter_identity,
+                        "adapter_version": capability.adapter_version,
+                        "request_projection": capability.request_projection,
+                        "status": "awaiting_receipt",
+                    },
+                }
+            )
             return prepared, envelope, None
         return metadata, None, None
 
@@ -1431,20 +1496,29 @@ class LLMModel:
                 return
             llm_calls = context.get_llm_calls()
             for index, record in enumerate(llm_calls):
-                if not isinstance(record, dict) or record.get("request_id") != request_id:
+                if (
+                    not isinstance(record, dict)
+                    or record.get("request_id") != request_id
+                ):
                     continue
                 updated = dict(record)
                 rollout = dict(updated.get("context_rollout") or {})
-                rollout.update({
-                    "candidate_status": "blocked",
-                    "candidate_applied": False,
-                    "error": {"code": reason_code},
-                })
-                updated.update({
-                    "context_rollout": rollout,
-                    "provider_invoked": False,
-                })
-                llm_calls[index] = updated
+                rollout.update(
+                    {
+                        "candidate_status": "blocked",
+                        "candidate_applied": False,
+                        "error": {"code": reason_code},
+                    }
+                )
+                updated.update(
+                    {
+                        "context_rollout": rollout,
+                        "provider_invoked": False,
+                    }
+                )
+                context.replace_llm_call(
+                    index, updated, event_type="provider_lowering_blocked"
+                )
                 return
         except Exception as exc:
             logger.warning(
@@ -1473,10 +1547,14 @@ class LLMModel:
 
         agent_info = context.agent_info
         agent_id = (
-            agent_info.get("current_agent_id")
-            if isinstance(agent_info, dict)
-            else getattr(agent_info, "current_agent_id", None)
-        ) if agent_info else None
+            (
+                agent_info.get("current_agent_id")
+                if isinstance(agent_info, dict)
+                else getattr(agent_info, "current_agent_id", None)
+            )
+            if agent_info
+            else None
+        )
         request = self._model_boundary_request(
             messages=messages,
             temperature=temperature,
@@ -1500,9 +1578,7 @@ class LLMModel:
                 session_id=_optional_runtime_identity(
                     getattr(context, "session_id", None)
                 ),
-                trace_id=_optional_runtime_identity(
-                    getattr(context, "trace_id", None)
-                ),
+                trace_id=_optional_runtime_identity(getattr(context, "trace_id", None)),
             )
             observe_payload = observation.to_redacted_dict()
         except Exception as exc:
@@ -1511,8 +1587,7 @@ class LLMModel:
                 "error": {"code": "context_observe_failed"},
             }
             logger.warning(
-                "Context request observation failed; "
-                f"error_type={type(exc).__name__}"
+                f"Context request observation failed; error_type={type(exc).__name__}"
             )
 
         llm_call = {
@@ -1549,9 +1624,7 @@ class LLMModel:
             llm_call["context_rollout"] = self._safe_copy(context_rollout)
         if not provider_invoked:
             llm_call["provider_invoked"] = False
-        llm_call["request_trace_match_scope"] = (
-            "aworld.standard.model_boundary.v1"
-        )
+        llm_call["request_trace_match_scope"] = "aworld.standard.model_boundary.v1"
         if observation is not None:
             try:
                 direct_match = request_trace_match(
@@ -1562,9 +1635,7 @@ class LLMModel:
                 llm_call["request_trace_mismatch_paths"] = list(
                     direct_match.mismatch_paths
                 )
-                llm_call["request_trace_mismatch_count"] = (
-                    direct_match.mismatch_count
-                )
+                llm_call["request_trace_mismatch_count"] = direct_match.mismatch_count
             except Exception:
                 llm_call["request_trace_match"] = None
                 llm_call["request_trace_mismatch_paths"] = None
@@ -1581,8 +1652,7 @@ class LLMModel:
             matched = [
                 (index, record)
                 for index, record in enumerate(llm_calls)
-                if isinstance(record, dict)
-                and record.get("call_id") == agent_call_id
+                if isinstance(record, dict) and record.get("call_id") == agent_call_id
             ]
             unbound = next(
                 (
@@ -1643,13 +1713,15 @@ class LLMModel:
                     merged["request_trace_mismatch_paths"] = None
                     merged["request_trace_mismatch_count"] = None
                 if unbound is not None:
-                    llm_calls[unbound[0]] = merged
+                    context.replace_llm_call(
+                        unbound[0], merged, event_type="model_request_bound"
+                    )
                 else:
-                    llm_calls.append(merged)
+                    context.append_llm_call(merged, event_type="model_attempt_appended")
                 return
             llm_call["call_id"] = agent_call_id
             llm_call["correlation"] = {"status": "compiler_call_not_found"}
-        context.append_llm_call(llm_call)
+        context.append_llm_call(llm_call, event_type="model_request_started")
 
     def _begin_llm_call_record(self, **kwargs) -> None:
         """Observe request start without changing provider-call semantics."""
@@ -1710,7 +1782,9 @@ class LLMModel:
                             "status": "unavailable",
                             "reason_code": "tool_origin_record_failed",
                         }
-            llm_calls[index] = updated
+            context.replace_llm_call(
+                index, updated, event_type=f"model_request_{status}"
+            )
             return
 
     def _finish_llm_call_record(self, **kwargs) -> None:
@@ -1722,45 +1796,53 @@ class LLMModel:
                 f"LLM request capture failed at completion; error_type={type(exc).__name__}"
             )
 
-    def _apply_updated_output(self, response: ModelResponse, updated_output: Any, *, sync_mode: bool = False) -> ModelResponse:
+    def _apply_updated_output(
+        self, response: ModelResponse, updated_output: Any, *, sync_mode: bool = False
+    ) -> ModelResponse:
         if updated_output is None:
             return response
 
         if hasattr(updated_output, "content") and not isinstance(updated_output, dict):
-            logger.info(f"AFTER_LLM_CALL hook replaced response object{' (sync)' if sync_mode else ''}")
+            logger.info(
+                f"AFTER_LLM_CALL hook replaced response object{' (sync)' if sync_mode else ''}"
+            )
             return updated_output
 
         if not isinstance(updated_output, dict):
             return response
 
-        if 'content' in updated_output:
-            response.content = updated_output['content']
+        if "content" in updated_output:
+            response.content = updated_output["content"]
             if isinstance(getattr(response, "message", None), dict):
                 response.message["content"] = updated_output["content"]
 
-        if 'token_usage' in updated_output:
-            response.usage = updated_output['token_usage']
-        if 'usage' in updated_output:
-            response.usage = updated_output['usage']
-        if 'raw_usage' in updated_output:
-            response.raw_usage = updated_output['raw_usage']
+        if "token_usage" in updated_output:
+            response.usage = updated_output["token_usage"]
+        if "usage" in updated_output:
+            response.usage = updated_output["usage"]
+        if "raw_usage" in updated_output:
+            response.raw_usage = updated_output["raw_usage"]
 
         for key, value in updated_output.items():
-            if key == 'token_usage':
+            if key == "token_usage":
                 continue
             if hasattr(response, key):
                 setattr(response, key, value)
 
-        logger.info(f"AFTER_LLM_CALL hook modified response fields{' (sync)' if sync_mode else ''}")
+        logger.info(
+            f"AFTER_LLM_CALL hook modified response fields{' (sync)' if sync_mode else ''}"
+        )
         return response
 
-    async def acompletion(self,
-                          messages: List[Dict[str, str]],
-                          temperature: float = 0.0,
-                          max_tokens: int = None,
-                          stop: List[str] = None,
-                          context: Context = None,
-                          **kwargs) -> ModelResponse:
+    async def acompletion(
+        self,
+        messages: List[Dict[str, str]],
+        temperature: float = 0.0,
+        max_tokens: int = None,
+        stop: List[str] = None,
+        context: Context = None,
+        **kwargs,
+    ) -> ModelResponse:
         """Asynchronously call model to generate response.
 
         Args:
@@ -1787,7 +1869,9 @@ class LLMModel:
             "request_id": request_id,
         }
         kwargs["llm_request_id"] = request_id
-        log_llm_record("INPUT", self.provider.model_name, messages, log_params, context_trace_id)
+        log_llm_record(
+            "INPUT", self.provider.model_name, messages, log_params, context_trace_id
+        )
 
         if context:
             try:
@@ -1814,18 +1898,20 @@ class LLMModel:
             model_name=kwargs.get("model_name") or kwargs.get("model"),
             call_shape=ContextCallShape.ASYNC,
         )
-        context_rollout, provider_candidate, observed_attribution = self._prepare_context_rollout(
-            context=context,
-            request_id=request_id,
-            agent_call_id=agent_call_id,
-            started_at=start_ms,
-            messages=messages,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            stop=stop,
-            tools=kwargs.get("tools"),
-            model_name=kwargs.get("model_name") or kwargs.get("model"),
-            call_shape=ContextCallShape.ASYNC,
+        context_rollout, provider_candidate, observed_attribution = (
+            self._prepare_context_rollout(
+                context=context,
+                request_id=request_id,
+                agent_call_id=agent_call_id,
+                started_at=start_ms,
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                stop=stop,
+                tools=kwargs.get("tools"),
+                model_name=kwargs.get("model_name") or kwargs.get("model"),
+                call_shape=ContextCallShape.ASYNC,
+            )
         )
         self._begin_llm_call_record(
             context=context,
@@ -1839,7 +1925,9 @@ class LLMModel:
             tools=kwargs.get("tools"),
             model_name=kwargs.get("model_name") or kwargs.get("model"),
             context_rollout=context_rollout,
-            provider_invoked=(provider_candidate is None and observed_attribution is None),
+            provider_invoked=(
+                provider_candidate is None and observed_attribution is None
+            ),
         )
         if provider_candidate is not None:
             kwargs[AWORLD_PROVIDER_CANDIDATE_KWARG] = provider_candidate
@@ -1852,7 +1940,7 @@ class LLMModel:
                 max_tokens=max_tokens,
                 stop=stop,
                 context=context,
-                **kwargs
+                **kwargs,
             )
             if self.llm_response_parser:
                 response_parse_args = kwargs.get("response_parse_args") or {}
@@ -1860,7 +1948,9 @@ class LLMModel:
                 resp = await self.llm_response_parser.parse(resp, **response_parse_args)
 
             log_params["time_cost"] = round(time.time() - start_ms, 3)
-            log_llm_record("OUTPUT", self.provider.model_name, resp, log_params, context_trace_id)
+            log_llm_record(
+                "OUTPUT", self.provider.model_name, resp, log_params, context_trace_id
+            )
 
             # Hooks V2: 触发 AFTER_LLM_CALL hook 并消费 updated_output
             if context:
@@ -1869,31 +1959,31 @@ class LLMModel:
                     from aworld.runners.hook.utils import run_hooks
 
                     after_llm_call_payload = {
-                        'event': 'after_llm_call',
-                        'model_name': self.provider.model_name,
-                        'provider_name': self.provider_name,
-                        'request_id': request_id,
-                        'time_cost': log_params["time_cost"],
-                        'response_content': resp.content if resp else None,
-                        'token_usage': getattr(resp, 'token_usage', None),
-                        'status': 'success',
-                        'timestamp': time.time()
+                        "event": "after_llm_call",
+                        "model_name": self.provider.model_name,
+                        "provider_name": self.provider_name,
+                        "request_id": request_id,
+                        "time_cost": log_params["time_cost"],
+                        "response_content": resp.content if resp else None,
+                        "token_usage": getattr(resp, "token_usage", None),
+                        "status": "success",
+                        "timestamp": time.time(),
                     }
 
                     after_hook_events = []
                     async for hook_event in run_hooks(
                         context=context,
                         hook_point=HookPoint.AFTER_LLM_CALL,
-                        hook_from='llm_model',
+                        hook_from="llm_model",
                         payload=after_llm_call_payload,
-                        workspace_path=getattr(context, 'workspace_path', None)
+                        workspace_path=getattr(context, "workspace_path", None),
                     ):
                         after_hook_events.append(hook_event)
 
                     # Apply updated_output from hooks if present (chain all modifications)
                     for hook_event in after_hook_events:
-                        if hook_event and hasattr(hook_event, 'headers'):
-                            updated_output = hook_event.headers.get('updated_output')
+                        if hook_event and hasattr(hook_event, "headers"):
+                            updated_output = hook_event.headers.get("updated_output")
                             if updated_output:
                                 # Update resp with modified output
                                 # Accept either complete response object or dict with specific fields
@@ -1941,8 +2031,12 @@ class LLMModel:
                 finished_at=time.time(),
                 error_code="provider_call_failed",
             )
-            logger.error(f"Provider {self.provider_name} does not support acompletion: {e}")
-            raise NotImplementedError(f"Provider {self.provider_name} does not support async completion") from e
+            logger.error(
+                f"Provider {self.provider_name} does not support acompletion: {e}"
+            )
+            raise NotImplementedError(
+                f"Provider {self.provider_name} does not support async completion"
+            ) from e
         except (ConnectionError, TimeoutError) as e:
             self._finish_llm_call_record(
                 context=context,
@@ -1952,7 +2046,9 @@ class LLMModel:
                 error_code="provider_call_failed",
             )
             logger.error(f"Network error calling {self.provider_name}: {e}")
-            raise ConnectionError(f"Failed to connect to {self.provider_name} API") from e
+            raise ConnectionError(
+                f"Failed to connect to {self.provider_name} API"
+            ) from e
         except Exception as e:
             self._finish_llm_call_record(
                 context=context,
@@ -1961,7 +2057,9 @@ class LLMModel:
                 finished_at=time.time(),
                 error_code="provider_call_failed",
             )
-            logger.error(f"Unexpected error calling model {self.provider_name}: {traceback.format_exc()}")
+            logger.error(
+                f"Unexpected error calling model {self.provider_name}: {traceback.format_exc()}"
+            )
             logger.debug(
                 "Failed request details redacted: "
                 f"message_count={len(messages) if isinstance(messages, list) else None}, "
@@ -1983,13 +2081,15 @@ class LLMModel:
             )
             raise
 
-    def completion(self,
-                   messages: List[Dict[str, str]],
-                   temperature: float = 0.0,
-                   max_tokens: int = None,
-                   stop: List[str] = None,
-                   context: Context = None,
-                   **kwargs) -> ModelResponse:
+    def completion(
+        self,
+        messages: List[Dict[str, str]],
+        temperature: float = 0.0,
+        max_tokens: int = None,
+        stop: List[str] = None,
+        context: Context = None,
+        **kwargs,
+    ) -> ModelResponse:
         """Synchronously call model to generate response.
 
         Args:
@@ -2014,7 +2114,9 @@ class LLMModel:
             "request_id": request_id,
         }
         kwargs["llm_request_id"] = request_id
-        log_llm_record("INPUT", self.provider.model_name, messages, log_params, context_trace_id)
+        log_llm_record(
+            "INPUT", self.provider.model_name, messages, log_params, context_trace_id
+        )
 
         if context:
             try:
@@ -2042,18 +2144,20 @@ class LLMModel:
             model_name=kwargs.get("model_name") or kwargs.get("model"),
             call_shape=ContextCallShape.SYNC,
         )
-        context_rollout, provider_candidate, observed_attribution = self._prepare_context_rollout(
-            context=context,
-            request_id=request_id,
-            agent_call_id=agent_call_id,
-            started_at=start_ms,
-            messages=messages,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            stop=stop,
-            tools=kwargs.get("tools"),
-            model_name=kwargs.get("model_name") or kwargs.get("model"),
-            call_shape=ContextCallShape.SYNC,
+        context_rollout, provider_candidate, observed_attribution = (
+            self._prepare_context_rollout(
+                context=context,
+                request_id=request_id,
+                agent_call_id=agent_call_id,
+                started_at=start_ms,
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                stop=stop,
+                tools=kwargs.get("tools"),
+                model_name=kwargs.get("model_name") or kwargs.get("model"),
+                call_shape=ContextCallShape.SYNC,
+            )
         )
         self._begin_llm_call_record(
             context=context,
@@ -2067,7 +2171,9 @@ class LLMModel:
             tools=kwargs.get("tools"),
             model_name=kwargs.get("model_name") or kwargs.get("model"),
             context_rollout=context_rollout,
-            provider_invoked=(provider_candidate is None and observed_attribution is None),
+            provider_invoked=(
+                provider_candidate is None and observed_attribution is None
+            ),
         )
         if provider_candidate is not None:
             kwargs[AWORLD_PROVIDER_CANDIDATE_KWARG] = provider_candidate
@@ -2080,11 +2186,13 @@ class LLMModel:
                 max_tokens=max_tokens,
                 stop=stop,
                 context=context,
-                **kwargs
+                **kwargs,
             )
             if self.llm_response_parser:
                 response_parse_args = kwargs.get("response_parse_args") or {}
-                resp = sync_exec(self.llm_response_parser.parse, resp, **response_parse_args)
+                resp = sync_exec(
+                    self.llm_response_parser.parse, resp, **response_parse_args
+                )
         except BaseException as exc:
             if isinstance(exc, CandidateRequestNotEnforceable):
                 self._mark_context_rollout_blocked(
@@ -2115,7 +2223,9 @@ class LLMModel:
             raise
 
         log_params["time_cost"] = round(time.time() - start_ms, 3)
-        log_llm_record("OUTPUT", self.provider.model_name, resp, log_params, context_trace_id)
+        log_llm_record(
+            "OUTPUT", self.provider.model_name, resp, log_params, context_trace_id
+        )
 
         # Hooks V2: 触发 AFTER_LLM_CALL hook (同步版本)
         if context:
@@ -2124,15 +2234,15 @@ class LLMModel:
                 from aworld.runners.hook.utils import run_hooks
 
                 after_llm_call_payload = {
-                    'event': 'after_llm_call',
-                    'model_name': self.provider.model_name,
-                    'provider_name': self.provider_name,
-                    'request_id': request_id,
-                    'time_cost': log_params["time_cost"],
-                    'response_content': resp.content if resp else None,
-                    'token_usage': getattr(resp, 'token_usage', None),
-                    'status': 'success',
-                    'timestamp': time.time()
+                    "event": "after_llm_call",
+                    "model_name": self.provider.model_name,
+                    "provider_name": self.provider_name,
+                    "request_id": request_id,
+                    "time_cost": log_params["time_cost"],
+                    "response_content": resp.content if resp else None,
+                    "token_usage": getattr(resp, "token_usage", None),
+                    "status": "success",
+                    "timestamp": time.time(),
                 }
 
                 # 同步执行 async hooks 并消费 updated_output
@@ -2142,18 +2252,20 @@ class LLMModel:
                     async for hook_event in run_hooks(
                         context=context,
                         hook_point=HookPoint.AFTER_LLM_CALL,
-                        hook_from='llm_model',
+                        hook_from="llm_model",
                         payload=after_llm_call_payload,
-                        workspace_path=getattr(context, 'workspace_path', None)
+                        workspace_path=getattr(context, "workspace_path", None),
                     ):
                         after_hook_events.append(hook_event)
 
                     # Apply updated_output from hooks if present (chain all modifications)
                     for hook_event in after_hook_events:
-                        if hook_event and hasattr(hook_event, 'headers'):
-                            updated_output = hook_event.headers.get('updated_output')
+                        if hook_event and hasattr(hook_event, "headers"):
+                            updated_output = hook_event.headers.get("updated_output")
                             if updated_output:
-                                resp = self._apply_updated_output(resp, updated_output, sync_mode=True)
+                                resp = self._apply_updated_output(
+                                    resp, updated_output, sync_mode=True
+                                )
 
                 sync_exec(_run_after_hooks)
             except Exception as e:
@@ -2168,13 +2280,15 @@ class LLMModel:
         )
         return resp
 
-    def stream_completion(self,
-                          messages: List[Dict[str, str]],
-                          temperature: float = 0.0,
-                          max_tokens: int = None,
-                          stop: List[str] = None,
-                          context: Context = None,
-                          **kwargs) -> Generator[ModelResponse, None, None]:
+    def stream_completion(
+        self,
+        messages: List[Dict[str, str]],
+        temperature: float = 0.0,
+        max_tokens: int = None,
+        stop: List[str] = None,
+        context: Context = None,
+        **kwargs,
+    ) -> Generator[ModelResponse, None, None]:
         """Synchronously call model to generate streaming response.
 
         Args:
@@ -2197,7 +2311,9 @@ class LLMModel:
             "request_id": request_id,
         }
         kwargs["llm_request_id"] = request_id
-        log_llm_record("INPUT", self.provider.model_name, messages, log_params, context_trace_id)
+        log_llm_record(
+            "INPUT", self.provider.model_name, messages, log_params, context_trace_id
+        )
         stream_started_at = start_ms
 
         if context:
@@ -2230,18 +2346,20 @@ class LLMModel:
             model_name=kwargs.get("model_name") or kwargs.get("model"),
             call_shape=ContextCallShape.SYNC_STREAM,
         )
-        context_rollout, provider_candidate, observed_attribution = self._prepare_context_rollout(
-            context=context,
-            request_id=request_id,
-            agent_call_id=agent_call_id,
-            started_at=stream_started_at,
-            messages=messages,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            stop=stop,
-            tools=kwargs.get("tools"),
-            model_name=kwargs.get("model_name") or kwargs.get("model"),
-            call_shape=ContextCallShape.SYNC_STREAM,
+        context_rollout, provider_candidate, observed_attribution = (
+            self._prepare_context_rollout(
+                context=context,
+                request_id=request_id,
+                agent_call_id=agent_call_id,
+                started_at=stream_started_at,
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                stop=stop,
+                tools=kwargs.get("tools"),
+                model_name=kwargs.get("model_name") or kwargs.get("model"),
+                call_shape=ContextCallShape.SYNC_STREAM,
+            )
         )
         self._begin_llm_call_record(
             context=context,
@@ -2255,7 +2373,9 @@ class LLMModel:
             tools=kwargs.get("tools"),
             model_name=kwargs.get("model_name") or kwargs.get("model"),
             context_rollout=context_rollout,
-            provider_invoked=(provider_candidate is None and observed_attribution is None),
+            provider_invoked=(
+                provider_candidate is None and observed_attribution is None
+            ),
         )
         if provider_candidate is not None:
             kwargs[AWORLD_PROVIDER_CANDIDATE_KWARG] = provider_candidate
@@ -2268,7 +2388,7 @@ class LLMModel:
                 max_tokens=max_tokens,
                 stop=stop,
                 context=context,
-                **kwargs
+                **kwargs,
             ):
                 if self.llm_response_parser:
                     response_parse_args = kwargs.get("response_parse_args") or {}
@@ -2279,13 +2399,15 @@ class LLMModel:
                     )
                 log_params["time_cost"] = round(time.time() - start_ms, 3)
                 log_llm_record(
-                    "CHUNK", self.provider.model_name, chunk, log_params, context_trace_id
+                    "CHUNK",
+                    self.provider.model_name,
+                    chunk,
+                    log_params,
+                    context_trace_id,
                 )
                 start_ms = time.time()
                 final_chunk = chunk
-                record_chunk = self._capture_stream_response_record(
-                    record_chunk, chunk
-                )
+                record_chunk = self._capture_stream_response_record(record_chunk, chunk)
                 yield chunk
         except GeneratorExit:
             terminal_status = "cancelled"
@@ -2320,13 +2442,15 @@ class LLMModel:
                 error_code=terminal_error,
             )
 
-    async def astream_completion(self,
-                                 messages: List[Dict[str, str]],
-                                 temperature: float = 0.0,
-                                 max_tokens: int = None,
-                                 stop: List[str] = None,
-                                 context: Context = None,
-                                 **kwargs) -> AsyncGenerator[ModelResponse, None]:
+    async def astream_completion(
+        self,
+        messages: List[Dict[str, str]],
+        temperature: float = 0.0,
+        max_tokens: int = None,
+        stop: List[str] = None,
+        context: Context = None,
+        **kwargs,
+    ) -> AsyncGenerator[ModelResponse, None]:
         """Asynchronously call model to generate streaming response.
 
         Args:
@@ -2353,7 +2477,9 @@ class LLMModel:
             "request_id": request_id,
         }
         kwargs["llm_request_id"] = request_id
-        log_llm_record("INPUT", self.provider.model_name, messages, log_params, context_trace_id)
+        log_llm_record(
+            "INPUT", self.provider.model_name, messages, log_params, context_trace_id
+        )
         stream_started_at = start_ms
 
         if context:
@@ -2384,18 +2510,20 @@ class LLMModel:
             model_name=kwargs.get("model_name") or kwargs.get("model"),
             call_shape=ContextCallShape.ASYNC_STREAM,
         )
-        context_rollout, provider_candidate, observed_attribution = self._prepare_context_rollout(
-            context=context,
-            request_id=request_id,
-            agent_call_id=agent_call_id,
-            started_at=stream_started_at,
-            messages=messages,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            stop=stop,
-            tools=kwargs.get("tools"),
-            model_name=kwargs.get("model_name") or kwargs.get("model"),
-            call_shape=ContextCallShape.ASYNC_STREAM,
+        context_rollout, provider_candidate, observed_attribution = (
+            self._prepare_context_rollout(
+                context=context,
+                request_id=request_id,
+                agent_call_id=agent_call_id,
+                started_at=stream_started_at,
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                stop=stop,
+                tools=kwargs.get("tools"),
+                model_name=kwargs.get("model_name") or kwargs.get("model"),
+                call_shape=ContextCallShape.ASYNC_STREAM,
+            )
         )
         self._begin_llm_call_record(
             context=context,
@@ -2409,7 +2537,9 @@ class LLMModel:
             tools=kwargs.get("tools"),
             model_name=kwargs.get("model_name") or kwargs.get("model"),
             context_rollout=context_rollout,
-            provider_invoked=(provider_candidate is None and observed_attribution is None),
+            provider_invoked=(
+                provider_candidate is None and observed_attribution is None
+            ),
         )
         if provider_candidate is not None:
             kwargs[AWORLD_PROVIDER_CANDIDATE_KWARG] = provider_candidate
@@ -2417,12 +2547,12 @@ class LLMModel:
             kwargs[AWORLD_PROVIDER_OBSERVED_ATTRIBUTION_KWARG] = observed_attribution
         try:
             async for chunk in self.provider.astream_completion(
-                    messages=messages,
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                    stop=stop,
-                    context=context,
-                    **kwargs
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                stop=stop,
+                context=context,
+                **kwargs,
             ):
                 if self.llm_response_parser:
                     response_parse_args = kwargs.get("response_parse_args") or {}
@@ -2431,13 +2561,15 @@ class LLMModel:
                     )
                 log_params["time_cost"] = round(time.time() - start_ms, 3)
                 log_llm_record(
-                    "CHUNK", self.provider.model_name, chunk, log_params, context_trace_id
+                    "CHUNK",
+                    self.provider.model_name,
+                    chunk,
+                    log_params,
+                    context_trace_id,
                 )
                 start_ms = time.time()
                 final_chunk = chunk
-                record_chunk = self._capture_stream_response_record(
-                    record_chunk, chunk
-                )
+                record_chunk = self._capture_stream_response_record(record_chunk, chunk)
                 yield chunk
         except GeneratorExit:
             terminal_status = "cancelled"
@@ -2472,11 +2604,9 @@ class LLMModel:
                 error_code=terminal_error,
             )
 
-    def speech_to_text(self,
-                       audio_file: str,
-                       language: str = None,
-                       prompt: str = None,
-                       **kwargs) -> ModelResponse:
+    def speech_to_text(
+        self, audio_file: str, language: str = None, prompt: str = None, **kwargs
+    ) -> ModelResponse:
         """Convert speech to text.
 
         Args:
@@ -2493,17 +2623,12 @@ class LLMModel:
             NotImplementedError: When provider does not support speech to text conversion.
         """
         return self.provider.speech_to_text(
-            audio_file=audio_file,
-            language=language,
-            prompt=prompt,
-            **kwargs
+            audio_file=audio_file, language=language, prompt=prompt, **kwargs
         )
 
-    async def aspeech_to_text(self,
-                              audio_file: str,
-                              language: str = None,
-                              prompt: str = None,
-                              **kwargs) -> ModelResponse:
+    async def aspeech_to_text(
+        self, audio_file: str, language: str = None, prompt: str = None, **kwargs
+    ) -> ModelResponse:
         """Asynchronously convert speech to text.
 
         Args:
@@ -2520,10 +2645,7 @@ class LLMModel:
             NotImplementedError: When provider does not support speech to text conversion.
         """
         return await self.provider.aspeech_to_text(
-            audio_file=audio_file,
-            language=language,
-            prompt=prompt,
-            **kwargs
+            audio_file=audio_file, language=language, prompt=prompt, **kwargs
         )
 
     def apply_chat_template(self, messages: List[Dict[str, str]]) -> List[int]:
@@ -2622,7 +2744,9 @@ def register_video_provider(
         ENDPOINT_PATTERNS[provider] = endpoint_patterns
 
 
-def conf_contains_key(conf: Union[ConfigDict, AgentConfig, ModelConfig], key: str) -> bool:
+def conf_contains_key(
+    conf: Union[ConfigDict, AgentConfig, ModelConfig], key: str
+) -> bool:
     """Check if configuration contains a specific key.
 
     Args:
@@ -2641,15 +2765,17 @@ def conf_contains_key(conf: Union[ConfigDict, AgentConfig, ModelConfig], key: st
     """
     if not conf:
         return False
-    if type(conf).__name__ == 'ModelConfig':
+    if type(conf).__name__ == "ModelConfig":
         return hasattr(conf, key)
     else:
         return key in conf
 
 
-def get_llm_model(conf: Union[ConfigDict, ModelConfig] = None,
-                  custom_provider: LLMProviderBase = None,
-                  **kwargs) -> Union[LLMModel, 'ChatOpenAI']:
+def get_llm_model(
+    conf: Union[ConfigDict, ModelConfig] = None,
+    custom_provider: LLMProviderBase = None,
+    **kwargs,
+) -> Union[LLMModel, "ChatOpenAI"]:
     """Get a unified LLM model instance.
 
     Args:
@@ -2665,23 +2791,32 @@ def get_llm_model(conf: Union[ConfigDict, ModelConfig] = None,
         Unified model interface.
     """
     # Create and return LLMModel instance directly
-    llm_provider = conf.llm_provider if conf_contains_key(
-        conf, "llm_provider") else None
+    llm_provider = (
+        conf.llm_provider if conf_contains_key(conf, "llm_provider") else None
+    )
 
-    if (llm_provider == "chatopenai"):
+    if llm_provider == "chatopenai":
         from langchain_openai import ChatOpenAI
-        conf = conf.llm_config if type(conf).__name__ == 'AgentConfig' else conf
+
+        conf = conf.llm_config if type(conf).__name__ == "AgentConfig" else conf
         base_url = kwargs.get("base_url") or (
-            conf.llm_base_url if conf_contains_key(conf, "llm_base_url") else None)
+            conf.llm_base_url if conf_contains_key(conf, "llm_base_url") else None
+        )
         model_name = kwargs.get("model_name") or (
-            conf.llm_model_name if conf_contains_key(conf, "llm_model_name") else None)
+            conf.llm_model_name if conf_contains_key(conf, "llm_model_name") else None
+        )
         api_key = kwargs.get("api_key") or (
-            conf.llm_api_key if conf_contains_key(conf, "llm_api_key") else None)
+            conf.llm_api_key if conf_contains_key(conf, "llm_api_key") else None
+        )
 
         return ChatOpenAI(
             model=model_name,
-            temperature=kwargs.get("temperature", conf.llm_temperature if conf_contains_key(
-                conf, "llm_temperature") else 0.0),
+            temperature=kwargs.get(
+                "temperature",
+                conf.llm_temperature
+                if conf_contains_key(conf, "llm_temperature")
+                else 0.0,
+            ),
             base_url=base_url,
             api_key=api_key,
         )
@@ -2690,13 +2825,13 @@ def get_llm_model(conf: Union[ConfigDict, ModelConfig] = None,
 
 
 def call_llm_model(
-        llm_model: LLMModel,
-        messages: List[Dict[str, str]],
-        temperature: float = 0.0,
-        max_tokens: int = None,
-        stop: List[str] = None,
-        stream: bool = False,
-        **kwargs
+    llm_model: LLMModel,
+    messages: List[Dict[str, str]],
+    temperature: float = 0.0,
+    max_tokens: int = None,
+    stop: List[str] = None,
+    stream: bool = False,
+    **kwargs,
 ) -> Union[ModelResponse, Generator[ModelResponse, None, None]]:
     """Convenience function to call LLM model.
 
@@ -2718,7 +2853,7 @@ def call_llm_model(
             temperature=temperature,
             max_tokens=max_tokens,
             stop=stop,
-            **kwargs
+            **kwargs,
         )
     else:
         return llm_model.completion(
@@ -2726,19 +2861,19 @@ def call_llm_model(
             temperature=temperature,
             max_tokens=max_tokens,
             stop=stop,
-            **kwargs
+            **kwargs,
         )
 
 
 async def acall_llm_model(
-        llm_model: LLMModel,
-        messages: List[Dict[str, str]],
-        temperature: float = 0.0,
-        max_tokens: int = None,
-        stop: List[str] = None,
-        stream: bool = False,
-        context: Context = None,
-        **kwargs
+    llm_model: LLMModel,
+    messages: List[Dict[str, str]],
+    temperature: float = 0.0,
+    max_tokens: int = None,
+    stop: List[str] = None,
+    stream: bool = False,
+    context: Context = None,
+    **kwargs,
 ) -> ModelResponse:
     """Convenience function to asynchronously call LLM model.
 
@@ -2761,25 +2896,25 @@ async def acall_llm_model(
         stop=stop,
         stream=stream,
         context=context,
-        **kwargs
+        **kwargs,
     )
 
 
 async def acall_llm_model_stream(
-        llm_model: LLMModel,
-        messages: List[Dict[str, str]],
-        temperature: float = 0.0,
-        max_tokens: int = None,
-        stop: List[str] = None,
-        **kwargs
+    llm_model: LLMModel,
+    messages: List[Dict[str, str]],
+    temperature: float = 0.0,
+    max_tokens: int = None,
+    stop: List[str] = None,
+    **kwargs,
 ) -> AsyncGenerator[ModelResponse, None]:
     # Fix: Cannot await an async generator, directly iterate over it
     stream = llm_model.astream_completion(
-            messages=messages,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            stop=stop,
-            **kwargs
+        messages=messages,
+        temperature=temperature,
+        max_tokens=max_tokens,
+        stop=stop,
+        **kwargs,
     )
     try:
         async for chunk in stream:
@@ -2789,11 +2924,11 @@ async def acall_llm_model_stream(
 
 
 def speech_to_text(
-        llm_model: LLMModel,
-        audio_file: str,
-        language: str = None,
-        prompt: str = None,
-        **kwargs
+    llm_model: LLMModel,
+    audio_file: str,
+    language: str = None,
+    prompt: str = None,
+    **kwargs,
 ) -> ModelResponse:
     """Convenience function to convert speech to text.
 
@@ -2809,22 +2944,20 @@ def speech_to_text(
     """
     if llm_model.provider_name != "openai":
         raise NotImplementedError(
-            f"Speech-to-text functionality is currently only supported for OpenAI compatible provider, current provider: {llm_model.provider_name}")
+            f"Speech-to-text functionality is currently only supported for OpenAI compatible provider, current provider: {llm_model.provider_name}"
+        )
 
     return llm_model.speech_to_text(
-        audio_file=audio_file,
-        language=language,
-        prompt=prompt,
-        **kwargs
+        audio_file=audio_file, language=language, prompt=prompt, **kwargs
     )
 
 
 async def aspeech_to_text(
-        llm_model: LLMModel,
-        audio_file: str,
-        language: str = None,
-        prompt: str = None,
-        **kwargs
+    llm_model: LLMModel,
+    audio_file: str,
+    language: str = None,
+    prompt: str = None,
+    **kwargs,
 ) -> ModelResponse:
     """Convenience function to asynchronously convert speech to text.
 
@@ -2840,19 +2973,17 @@ async def aspeech_to_text(
     """
     if llm_model.provider_name != "openai":
         raise NotImplementedError(
-            f"Speech-to-text functionality is currently only supported for OpenAI compatible provider, current provider: {llm_model.provider_name}")
+            f"Speech-to-text functionality is currently only supported for OpenAI compatible provider, current provider: {llm_model.provider_name}"
+        )
 
     return await llm_model.aspeech_to_text(
-        audio_file=audio_file,
-        language=language,
-        prompt=prompt,
-        **kwargs
+        audio_file=audio_file, language=language, prompt=prompt, **kwargs
     )
 
 
 def apply_chat_template(
-        llm_model: LLMModel,
-        messages: List[Dict[str, str]]) -> List[int]:
+    llm_model: LLMModel, messages: List[Dict[str, str]]
+) -> List[int]:
     """Apply the chat template to the messages.
 
     Args:

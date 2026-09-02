@@ -10,6 +10,7 @@ import pytest
 
 from aworld.config import ModelConfig
 from aworld.core.context.base import Context
+from aworld.core.llm_call_journal import JOURNAL_PATH_ENV, read_llm_call_journal
 from aworld.core.context.compiler import (
     CanaryHealthEvidence,
     CanaryHealthPolicy,
@@ -35,6 +36,7 @@ from aworld.core.trajectory import (
 from aworld.models.llm import LLMModel
 from aworld.models.model_response import LLMResponseError, ModelResponse
 from aworld.models.openai_provider import OpenAIProvider
+from aworld.models.openai_provider import AzureOpenAIProvider
 
 
 class _SyncCompletions:
@@ -96,6 +98,38 @@ def _provider() -> tuple[OpenAIProvider, list[dict], list[dict]]:
     return provider, sync_calls, async_calls
 
 
+def test_azure_provider_uses_official_sync_and_async_sdk_boundaries(monkeypatch):
+    constructed: dict[str, dict[str, Any]] = {}
+
+    def sync_client(**kwargs):
+        constructed["sync"] = kwargs
+        return object()
+
+    def async_client(**kwargs):
+        constructed["async"] = kwargs
+        return object()
+
+    monkeypatch.setattr("aworld.models.openai_provider.AzureOpenAIClient", sync_client)
+    monkeypatch.setattr(
+        "aworld.models.openai_provider.AsyncAzureOpenAIClient", async_client
+    )
+
+    provider = AzureOpenAIProvider(
+        api_key="test-key",
+        base_url="https://example.openai.azure.com",
+        model_name="deployment-name",
+        api_version="2025-01-01-preview",
+        azure_deployment="deployment-name",
+    )
+
+    assert provider.provider is not None
+    assert provider.async_provider is not None
+    assert provider.is_http_provider is False
+    assert constructed["sync"]["azure_endpoint"] == ("https://example.openai.azure.com")
+    assert constructed["async"]["azure_deployment"] == "deployment-name"
+    assert constructed["sync"]["api_version"] == "2025-01-01-preview"
+
+
 def _policy(*, enforce_ready: bool = True) -> CandidateCompilePolicy:
     return CandidateCompilePolicy(
         compiler_version="openai-lowering-test-v1",
@@ -119,10 +153,12 @@ def _policy(*, enforce_ready: bool = True) -> CandidateCompilePolicy:
 
 def _model(provider: OpenAIProvider, *, policy: CandidateCompilePolicy | None = None):
     model = LLMModel(
-        conf=ModelConfig(context_compiler={
-            "mode": "enforce",
-            "compiler_version": "openai-lowering-test-v1",
-        }),
+        conf=ModelConfig(
+            context_compiler={
+                "mode": "enforce",
+                "compiler_version": "openai-lowering-test-v1",
+            }
+        ),
         custom_provider=provider,
         context_candidate_policy=policy or _policy(),
     )
@@ -163,20 +199,22 @@ def _assert_lowering_receipt(context: Context, sent: dict[str, Any]) -> None:
     assert record["provider_attempt_status"] == "attempted"
     assert rollout["candidate_applied"] is True
     assert rollout["provider_lowering_ready"] is True
-    assert receipt["candidate_content_hash"] == rollout["candidate_snapshot"][
-        "content_hash"
-    ]
+    assert (
+        receipt["candidate_content_hash"]
+        == rollout["candidate_snapshot"]["content_hash"]
+    )
     assert receipt["provider_request"]["content_hash"] == canonical_json_hash(sent)
     assert receipt["provider_request"]["capture_stage"] == "provider_prepared"
     assert receipt["provider_request"]["fidelity"] == "provider_prepared"
-    assert receipt["adapter_identity"] == (
-        "aworld.provider.openai.chat_completions"
-    )
+    assert receipt["adapter_identity"] == ("aworld.provider.openai.chat_completions")
     attribution = receipt["attribution"]
     compiler_plan = rollout["compiler_attribution_plan"]
     assert attribution["status"] == "available"
     assert attribution["plan_fingerprint"] == compiler_plan["plan_fingerprint"]
-    assert rollout["candidate_snapshot"]["attribution_plan_fingerprint"] == compiler_plan["plan_fingerprint"]
+    assert (
+        rollout["candidate_snapshot"]["attribution_plan_fingerprint"]
+        == compiler_plan["plan_fingerprint"]
+    )
     assert attribution["byte_conservation"] is True
     assert (
         attribution["attributed_value_bytes"]
@@ -211,7 +249,36 @@ def test_openai_off_mode_captures_provider_prepared_request_before_send():
     assert "context_rollout" not in record
 
 
-def test_openai_observe_is_byte_compatible_and_does_not_compile_or_leak_metadata(monkeypatch):
+def test_provider_attempt_is_fsynced_before_sdk_invocation(tmp_path, monkeypatch):
+    provider, sync_calls, _ = _provider()
+    model = LLMModel(custom_provider=provider)
+    model.provider_name = "openai"
+    context = Context(task_id="provider-attempt-journal-order")
+    journal = tmp_path / "llm_calls.journal.jsonl"
+    monkeypatch.setenv(JOURNAL_PATH_ENV, str(journal))
+
+    def assert_attempt_was_persisted(**kwargs):
+        recovery = read_llm_call_journal(journal)
+        assert recovery.latest_event_type == "provider_request_attempted"
+        attempted = recovery.latest_llm_calls[0]
+        assert attempted["provider_attempt_status"] == "attempted"
+        assert attempted["provider_invoked"] is True
+        assert attempted["status"] == "in_progress"
+        sync_calls.append(kwargs)
+        return object()
+
+    provider.provider.chat.completions.create = assert_attempt_was_persisted
+
+    model.completion([{"role": "user", "content": "go"}], context=context)
+
+    recovery = read_llm_call_journal(journal)
+    assert recovery.latest_event_type == "model_request_success"
+    assert recovery.latest_llm_calls[0]["status"] == "success"
+
+
+def test_openai_observe_is_byte_compatible_and_does_not_compile_or_leak_metadata(
+    monkeypatch,
+):
     off_provider, off_calls, _ = _provider()
     observe_provider, observe_calls, _ = _provider()
     off = LLMModel(custom_provider=off_provider)
@@ -305,12 +372,18 @@ async def test_openai_observe_opaque_sdk_params_match_off_once_sync_and_async():
     observed = _observe_model(observed_provider)
     messages = [{"role": "user", "content": "same"}]
 
-    off.completion(messages, context=Context(task_id="opaque-off-sync"), response_format=opaque)
+    off.completion(
+        messages, context=Context(task_id="opaque-off-sync"), response_format=opaque
+    )
     observed_sync_context = Context(task_id="opaque-observe-sync")
     observed.completion(messages, context=observed_sync_context, response_format=opaque)
-    await off.acompletion(messages, context=Context(task_id="opaque-off-async"), response_format=opaque)
+    await off.acompletion(
+        messages, context=Context(task_id="opaque-off-async"), response_format=opaque
+    )
     observed_async_context = Context(task_id="opaque-observe-async")
-    await observed.acompletion(messages, context=observed_async_context, response_format=opaque)
+    await observed.acompletion(
+        messages, context=observed_async_context, response_format=opaque
+    )
 
     assert off_sync == observed_sync
     assert off_async == observed_async
@@ -323,7 +396,9 @@ async def test_openai_observe_opaque_sdk_params_match_off_once_sync_and_async():
         record = context.get_llm_calls()[0]
         assert record["provider_invoked"] is True
         assert record["provider_attempt_status"] == "attempted"
-        assert record["context_rollout"]["provider_attribution"]["status"] == "unavailable"
+        assert (
+            record["context_rollout"]["provider_attribution"]["status"] == "unavailable"
+        )
 
 
 @pytest.mark.asyncio
@@ -356,7 +431,8 @@ def test_openai_observe_provider_transform_is_unavailable_but_still_sends_once()
     provider, sync_calls, _ = _provider()
     provider.preprocess_messages = MethodType(
         lambda self, messages, **kwargs: [
-            *messages, {"role": "system", "content": "provider-added"}
+            *messages,
+            {"role": "system", "content": "provider-added"},
         ],
         provider,
     )
@@ -394,7 +470,9 @@ def test_openai_http_observe_binds_serialized_provider_payload():
     evidence = record["context_rollout"]["provider_attribution"]
     assert evidence["status"] == "available"
     assert evidence["attribution"]["serialization"] == "http_serialized_canonical_json"
-    assert record["provider_request"]["serialized_checksum"] == canonical_json_hash(sent[0][0])
+    assert record["provider_request"]["serialized_checksum"] == canonical_json_hash(
+        sent[0][0]
+    )
 
 
 @pytest.mark.asyncio
@@ -442,7 +520,9 @@ async def test_openai_observe_provider_error_and_cancel_keep_attempt_truth():
         model.completion([{"role": "user", "content": "go"}], context=sync_context)
     async_context = Context(task_id="observe-provider-cancel")
     with pytest.raises(asyncio.CancelledError):
-        await model.acompletion([{"role": "user", "content": "go"}], context=async_context)
+        await model.acompletion(
+            [{"role": "user", "content": "go"}], context=async_context
+        )
 
     assert len(sync_calls) == len(async_calls) == 1
     assert sync_context.get_llm_calls()[0]["provider_invoked"] is True
@@ -458,9 +538,7 @@ async def test_openai_enforce_lowers_same_candidate_once_across_all_paths():
     provider, sync_calls, async_calls = _provider()
     model = _model(provider)
     legacy_messages = [{"role": "user", "content": "legacy-secret"}]
-    legacy_tools = [
-        {"type": "function", "function": {"name": "legacy_tool"}}
-    ]
+    legacy_tools = [{"type": "function", "function": {"name": "legacy_tool"}}]
     contexts = [Context(task_id=f"openai-enforce-{index}") for index in range(4)]
     common = {
         "tools": legacy_tools,
@@ -472,17 +550,18 @@ async def test_openai_enforce_lowers_same_candidate_once_across_all_paths():
     await model.acompletion(legacy_messages, context=contexts[0], **common)
     model.completion(legacy_messages, context=contexts[1], **common)
     list(model.stream_completion(legacy_messages, context=contexts[2], **common))
-    [chunk async for chunk in model.astream_completion(
-        legacy_messages, context=contexts[3], **common
-    )]
+    [
+        chunk
+        async for chunk in model.astream_completion(
+            legacy_messages, context=contexts[3], **common
+        )
+    ]
 
     assert len(sync_calls) == 2
     assert len(async_calls) == 2
     sent_requests = [async_calls[0], sync_calls[0], sync_calls[1], async_calls[1]]
     for index, sent in enumerate(sent_requests):
-        assert sent["messages"] == [
-            {"role": "user", "content": "candidate-secret"}
-        ]
+        assert sent["messages"] == [{"role": "user", "content": "candidate-secret"}]
         assert sent["tools"][0]["function"]["name"] == "candidate_tool"
         assert sent["temperature"] == 0.25
         assert sent["max_tokens"] == 17
@@ -497,18 +576,14 @@ async def test_openai_enforce_lowers_same_candidate_once_across_all_paths():
         _assert_lowering_receipt(contexts[index], sent)
         assert contexts[index].get_llm_calls()[0]["context_rollout"][
             "provider_lowering"
-        ]["attribution"]["serialization"] == (
-            "provider_prepared_canonical_json"
-        )
+        ]["attribution"]["serialization"] == ("provider_prepared_canonical_json")
 
 
 @pytest.mark.asyncio
 async def test_provider_verified_parity_distinguishes_all_call_shapes():
     provider, _, _ = _provider()
     model = LLMModel(
-        conf=ModelConfig(
-            context_compiler={"mode": "enforce", "universal_final": True}
-        ),
+        conf=ModelConfig(context_compiler={"mode": "enforce", "universal_final": True}),
         custom_provider=provider,
     )
     model.provider_name = "openai"
@@ -570,9 +645,7 @@ def test_prepared_receipt_mutation_failure_does_not_send_or_mark_invoked():
     context = MutationFailureContext()
 
     with pytest.raises(CandidateRequestNotEnforceable) as raised:
-        model.completion(
-            [{"role": "user", "content": "legacy"}], context=context
-        )
+        model.completion([{"role": "user", "content": "legacy"}], context=context)
 
     assert raised.value.reason_code == "provider_prepared_attempt_failed"
     assert sync_calls == []
@@ -606,7 +679,10 @@ def test_cache_commit_failure_rolls_back_attempt_and_does_not_send():
 
     with pytest.raises(CandidateRequestNotEnforceable) as raised:
         model.completion(
-            [{"role": "system", "content": "stable"}, {"role": "user", "content": "go"}],
+            [
+                {"role": "system", "content": "stable"},
+                {"role": "user", "content": "go"},
+            ],
             context=context,
         )
 
@@ -623,9 +699,7 @@ def test_openai_enforce_requires_explicit_compiler_readiness():
     context = Context(task_id="not-ready")
 
     with pytest.raises(CandidateRequestNotEnforceable) as raised:
-        model.completion(
-            [{"role": "user", "content": "legacy"}], context=context
-        )
+        model.completion([{"role": "user", "content": "legacy"}], context=context)
 
     assert raised.value.reason_code == "candidate_not_enforce_ready"
     assert sync_calls == []
@@ -650,16 +724,17 @@ def test_openai_http_enforce_binds_the_same_provider_prepared_mapping():
     model = _model(provider)
     context = Context(task_id="openai-http-enforce")
 
-    model.completion(
-        [{"role": "user", "content": "legacy"}], context=context
-    )
+    model.completion([{"role": "user", "content": "legacy"}], context=context)
 
     assert len(sent) == 1
     assert serialized[0] is not None
     _assert_lowering_receipt(context, sent[0])
-    assert context.get_llm_calls()[0]["context_rollout"]["provider_lowering"][
-        "attribution"
-    ]["serialization"] == "http_serialized_canonical_json"
+    assert (
+        context.get_llm_calls()[0]["context_rollout"]["provider_lowering"][
+            "attribution"
+        ]["serialization"]
+        == "http_serialized_canonical_json"
+    )
     assert context.get_llm_calls()[0]["capture_fidelity"] == "model_boundary"
 
 
@@ -675,9 +750,7 @@ def test_universal_final_http_enforce_records_serialized_cache_continuity():
     provider.is_http_provider = True
     provider.http_provider = HTTPHandler()
     model = LLMModel(
-        conf=ModelConfig(
-            context_compiler={"mode": "enforce", "universal_final": True}
-        ),
+        conf=ModelConfig(context_compiler={"mode": "enforce", "universal_final": True}),
         custom_provider=provider,
     )
     model.provider_name = "openai"
@@ -688,45 +761,40 @@ def test_universal_final_http_enforce_records_serialized_cache_continuity():
     context.trace_id = ""
     system = {"role": "system", "content": "stable rules"}
 
-    model.completion(
-        [system, {"role": "user", "content": "first"}], context=context
-    )
-    model.completion(
-        [system, {"role": "user", "content": "second"}], context=context
-    )
+    model.completion([system, {"role": "user", "content": "first"}], context=context)
+    model.completion([system, {"role": "user", "content": "second"}], context=context)
 
     assert len(sent) == 2
     assert all(serialized_body for _, serialized_body in sent)
     first, second = context.get_llm_calls()
-    verified_first = VerifiedContextEntrypointParityReceipt.from_llm_call_record(
-        first
-    )
+    verified_first = VerifiedContextEntrypointParityReceipt.from_llm_call_record(first)
     assert verified_first.receipt.provider_binding is not None
     assert (
         verified_first.receipt.provider_binding["serialization"]
         == "http_serialized_canonical_json"
     )
-    assert first["provider_request"]["serialized_checksum"] == first[
-        "provider_request"
-    ]["content_hash"]
+    assert (
+        first["provider_request"]["serialized_checksum"]
+        == first["provider_request"]["content_hash"]
+    )
     assert first["request_trace_match"] is True
     assert second["request_trace_match"] is True
     assert first["context_observe"]["request"]["capture_stage"] == "model_boundary"
     assert first["context_rollout"]["final_compile"]["enforce"]["ready"]
-    assert first["context_rollout"]["provider_lowering"][
-        "cache_continuity"
-    ]["status"] == "initialized"
-    assert second["context_rollout"]["provider_lowering"][
-        "cache_continuity"
-    ]["status"] == "continued"
+    assert (
+        first["context_rollout"]["provider_lowering"]["cache_continuity"]["status"]
+        == "initialized"
+    )
+    assert (
+        second["context_rollout"]["provider_lowering"]["cache_continuity"]["status"]
+        == "continued"
+    )
 
 
 def test_universal_final_enforce_lowers_verified_tool_result_boundary():
     provider, sent, _ = _provider()
     model = LLMModel(
-        conf=ModelConfig(
-            context_compiler={"mode": "enforce", "universal_final": True}
-        ),
+        conf=ModelConfig(context_compiler={"mode": "enforce", "universal_final": True}),
         custom_provider=provider,
     )
     model.provider_name = "openai"
@@ -758,9 +826,7 @@ def test_universal_final_enforce_lowers_verified_tool_result_boundary():
 def test_entrypoint_label_state_and_stale_raw_provider_receipt_are_rejected():
     provider, _, _ = _provider()
     model = LLMModel(
-        conf=ModelConfig(
-            context_compiler={"mode": "enforce", "universal_final": True}
-        ),
+        conf=ModelConfig(context_compiler={"mode": "enforce", "universal_final": True}),
         custom_provider=provider,
     )
     model.provider_name = "openai"
@@ -794,9 +860,7 @@ def test_entrypoint_label_state_and_stale_raw_provider_receipt_are_rejected():
 def test_provider_verified_parity_preserves_model_visible_provider_parameters():
     provider, _, _ = _provider()
     model = LLMModel(
-        conf=ModelConfig(
-            context_compiler={"mode": "enforce", "universal_final": True}
-        ),
+        conf=ModelConfig(context_compiler={"mode": "enforce", "universal_final": True}),
         custom_provider=provider,
     )
     model.provider_name = "openai"
@@ -833,9 +897,7 @@ def test_provider_verified_parity_preserves_model_visible_provider_parameters():
 def test_default_on_capability_requires_verified_provider_and_trajectory_evidence():
     provider, _, _ = _provider()
     model = LLMModel(
-        conf=ModelConfig(
-            context_compiler={"mode": "enforce", "universal_final": True}
-        ),
+        conf=ModelConfig(context_compiler={"mode": "enforce", "universal_final": True}),
         custom_provider=provider,
     )
     model.provider_name = "openai"
@@ -966,9 +1028,7 @@ def test_openai_enforce_rejects_message_reorder_as_attribution_mismatch():
     )
 
     with pytest.raises(CandidateRequestNotEnforceable) as raised:
-        model.completion(
-            [{"role": "user", "content": "legacy"}], context=context
-        )
+        model.completion([{"role": "user", "content": "legacy"}], context=context)
 
     assert raised.value.reason_code == "provider_attribution_mismatch"
     assert sync_calls == []
@@ -998,7 +1058,9 @@ def test_openai_declares_exact_tools_shape_lowering(
     model.completion([{"role": "user", "content": "legacy"}], context=context)
 
     assert len(sync_calls) == 1
-    receipt = context.get_llm_calls()[0]["context_rollout"]["provider_lowering"]["attribution"]
+    receipt = context.get_llm_calls()[0]["context_rollout"]["provider_lowering"][
+        "attribution"
+    ]
     assert receipt["tools_shape"] == ("null" if candidate_tools is None else "array")
     assert receipt["provider_tools_shape"] == provider_tools_shape
     assert receipt["tools_lowering"] == "null_to_absent"

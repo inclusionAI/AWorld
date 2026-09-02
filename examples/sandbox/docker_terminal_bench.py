@@ -19,6 +19,7 @@ import asyncio
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -33,9 +34,10 @@ if str(REPO_ROOT) not in sys.path:
 
 
 SYSTEM_PROMPT = (
-    "You are solving a terminal benchmark inside the attached Docker container. "
-    "Inspect and modify the actual container workspace with tools. Implement the "
-    "solution and run focused verification before returning a final answer."
+    "You are solving a tool-using benchmark with an attached Docker container. "
+    "Use the provided tools to inspect the real task environment, gather any required "
+    "evidence, implement the solution when files must change, and perform focused "
+    "verification before returning a final answer."
 )
 
 
@@ -44,7 +46,9 @@ def _sha256_bytes(value: bytes) -> str:
 
 
 def _write_json(path: Path, payload) -> str:
-    encoded = json.dumps(payload, ensure_ascii=False, indent=2, default=str).encode("utf-8")
+    encoded = json.dumps(payload, ensure_ascii=False, indent=2, default=str).encode(
+        "utf-8"
+    )
     path.write_bytes(encoded)
     return _sha256_bytes(encoded)
 
@@ -233,7 +237,9 @@ def _load_variant(path: Path | None) -> dict:
         "tool_result_length_threshold",
         "tool_result_preview_chars",
     }
-    unexpected_memory = sorted(set(payload["agent_memory_config"]) - allowed_memory_fields)
+    unexpected_memory = sorted(
+        set(payload["agent_memory_config"]) - allowed_memory_fields
+    )
     if unexpected_memory:
         raise ValueError(
             "Variant agent_memory_config contains non-evaluation fields: "
@@ -254,6 +260,7 @@ def _load_variant(path: Path | None) -> dict:
         "progressive_skills",
         "progressive_tools",
         "progressive_tool_base_tools",
+        "progressive_tool_unmanaged_policy",
         "task_catalog_policy",
         "checkpoint_policy",
         "default_tool_output_inline_tokens",
@@ -271,7 +278,9 @@ def _load_variant(path: Path | None) -> dict:
             + ", ".join(unexpected_compiler)
         )
     allowed_output_fields = {"max_inline_output_bytes", "output_head_bytes"}
-    unexpected_output = sorted(set(payload["docker_output_policy"]) - allowed_output_fields)
+    unexpected_output = sorted(
+        set(payload["docker_output_policy"]) - allowed_output_fields
+    )
     if unexpected_output:
         raise ValueError(
             "Variant docker_output_policy contains unsupported fields: "
@@ -296,6 +305,47 @@ def _load_task_skills(path: Path | None) -> dict[str, dict]:
         descriptor.skill_name: registry.build_skill_config(descriptor.skill_id)
         for descriptor in descriptors
     }
+
+
+def load_external_mcp_config(path: Path | None) -> tuple[dict, dict]:
+    """Load an invariant external Tool profile without persisting its values."""
+    payload: dict = {"mcpServers": {}}
+    status = "disabled"
+    if path is not None:
+        resolved = path.resolve()
+        if not resolved.is_file():
+            raise ValueError(f"MCP config does not exist: {resolved}")
+        loaded = json.loads(resolved.read_text(encoding="utf-8"))
+        if not isinstance(loaded, dict) or set(loaded) != {"mcpServers"}:
+            raise ValueError(
+                "MCP config must contain only a top-level mcpServers object"
+            )
+        servers = loaded.get("mcpServers")
+        if not isinstance(servers, dict) or not servers:
+            raise ValueError("MCP config requires at least one server")
+        for name, config in servers.items():
+            if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9_.-]+", name):
+                raise ValueError(f"Unsafe MCP server name: {name!r}")
+            if name == "docker":
+                raise ValueError(
+                    "MCP server name 'docker' is reserved by DockerSandbox"
+                )
+            if not isinstance(config, dict):
+                raise ValueError(f"MCP server {name!r} must be an object")
+        payload = loaded
+        status = "enabled"
+    canonical = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    evidence = {
+        "status": status,
+        "config_sha256": _sha256_bytes(canonical),
+        "server_names": sorted(payload["mcpServers"]),
+    }
+    return payload, evidence
 
 
 def _agent_loop_budget(max_steps: int) -> dict[str, int]:
@@ -357,9 +407,26 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--mcp-config",
+        type=Path,
+        help=(
+            "Invariant external MCP Tool profile shared by every paired variant. "
+            "Only its checksum and server names are persisted."
+        ),
+    )
+    parser.add_argument(
         "--allow-missing-provider-trace",
         action="store_true",
         help="Compatibility escape hatch; context evaluations should keep the provider trace hard gate enabled.",
+    )
+    parser.add_argument(
+        "--deterministic-capture-provider",
+        action="store_true",
+        help=(
+            "Use a local one-response provider for structural capture validation only. "
+            "This mode requires --allow-missing-provider-trace and must not be used "
+            "as benchmark quality or Reward evidence."
+        ),
     )
     return parser.parse_args()
 
@@ -369,7 +436,11 @@ async def run(args: argparse.Namespace) -> None:
     args.output_dir.mkdir(parents=True, exist_ok=True)
     log_dir = args.output_dir / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
-    os.environ.setdefault("AWORLD_LOG_PATH", str(log_dir.resolve()))
+    os.environ["AWORLD_LOG_PATH"] = str(log_dir.resolve())
+    os.environ["AWORLD_TRAJECTORY_FORMAT"] = "dual"
+    os.environ["AWORLD_LLM_CALL_JOURNAL_PATH"] = str(
+        (args.output_dir / "llm_calls.journal.jsonl").resolve()
+    )
 
     # Import after AWORLD_LOG_PATH is configured so trajectory.log is placed
     # beside the canonical TaskResponse artifacts.
@@ -379,22 +450,50 @@ async def run(args: argparse.Namespace) -> None:
     from aworld.sandbox import DockerSandbox
     from aworld.utils.serialized_util import to_serializable
 
-    model_name = os.environ.get("LLM_MODEL_NAME")
-    api_key = os.environ.get("LLM_API_KEY")
+    if args.deterministic_capture_provider and not args.allow_missing_provider_trace:
+        raise RuntimeError(
+            "--deterministic-capture-provider requires --allow-missing-provider-trace"
+        )
+    if args.deterministic_capture_provider and args.variant_config is not None:
+        raise RuntimeError(
+            "deterministic capture validation must use the baseline/off variant"
+        )
+
+    model_name = (
+        "aworld-deterministic-capture-v1"
+        if args.deterministic_capture_provider
+        else os.environ.get("LLM_MODEL_NAME")
+    )
+    api_key = (
+        "not-used"
+        if args.deterministic_capture_provider
+        else os.environ.get("LLM_API_KEY")
+    )
     if not model_name or not api_key:
         raise RuntimeError("LLM_MODEL_NAME and LLM_API_KEY must be set")
+    provider_name = (
+        "deterministic_capture"
+        if args.deterministic_capture_provider
+        else os.environ.get("LLM_PROVIDER", "openai")
+    )
 
     instruction = args.instruction.read_text(encoding="utf-8")
     variant = _load_variant(args.variant_config)
     skill_configs = _load_task_skills(args.skills_directory)
+    external_mcp_config, external_mcp_evidence = load_external_mcp_config(
+        args.mcp_config
+    )
     output_policy = variant["docker_output_policy"]
     sandbox = DockerSandbox(
         container=args.container,
         workdir=args.workdir,
         allowed_directories=args.allowed_directories,
-        max_inline_output_bytes=int(output_policy.get("max_inline_output_bytes", 1_048_576)),
+        max_inline_output_bytes=int(
+            output_policy.get("max_inline_output_bytes", 1_048_576)
+        ),
         output_head_bytes=output_policy.get("output_head_bytes"),
         artifact_directory=str((args.output_dir / "tool-output-artifacts").resolve()),
+        mcp_config=external_mcp_config,
         reuse=True,
     )
     try:
@@ -423,6 +522,48 @@ async def run(args: argparse.Namespace) -> None:
             system_prompt=system_prompt,
             **_agent_loop_budget(args.max_steps),
         )
+        if args.deterministic_capture_provider:
+            from aworld.core.llm_provider import LLMProviderBase
+            from aworld.models.llm import LLMModel
+            from aworld.models.model_response import ModelResponse
+
+            class DeterministicCaptureProvider(LLMProviderBase):
+                """Local structural probe; deliberately has no benchmark ability."""
+
+                def _init_provider(self):
+                    return None
+
+                def postprocess_response(self, response):
+                    return response
+
+                @staticmethod
+                def _response() -> ModelResponse:
+                    content = "Deterministic structural capture completed."
+                    return ModelResponse(
+                        id="deterministic-capture-response",
+                        model="aworld-deterministic-capture-v1",
+                        content=content,
+                        usage={
+                            "prompt_tokens": 1,
+                            "completion_tokens": 1,
+                            "total_tokens": 2,
+                        },
+                        message={"role": "assistant", "content": content},
+                        finish_reason="stop",
+                    )
+
+                def completion(self, messages, **kwargs):
+                    return self._response()
+
+                async def acompletion(self, messages, **kwargs):
+                    return self._response()
+
+            agent._llm = LLMModel(
+                conf=agent.conf.llm_config,
+                custom_provider=DeterministicCaptureProvider(
+                    model_name="aworld-deterministic-capture-v1"
+                ),
+            )
         response = await Runners.run(instruction, agent=agent)
         response_payload = to_serializable(response.to_dict())
         trajectory_payload = to_serializable(response.trajectory)
@@ -430,10 +571,7 @@ async def run(args: argparse.Namespace) -> None:
             _resolve_llm_call_capture(response, agent)
         )
         llm_calls = to_serializable(captured_llm_calls)
-        provider_calls = [
-            call for call in llm_calls
-            if _is_provider_bound_call(call)
-        ]
+        provider_calls = [call for call in llm_calls if _is_provider_bound_call(call)]
         provider_capture_gate_passed = bool(provider_calls) and bool(
             llm_capture_continuity["snapshots_match"]
         )
@@ -442,10 +580,18 @@ async def run(args: argparse.Namespace) -> None:
             agent, args.output_dir
         )
         checksums = {
-            "task_response.json": _write_json(args.output_dir / "task_response.json", response_payload),
-            "raw_trajectory.json": _write_json(args.output_dir / "raw_trajectory.json", trajectory_payload),
-            "llm_calls.json": _write_json(args.output_dir / "llm_calls.json", llm_calls),
-            "provider_calls.json": _write_json(args.output_dir / "provider_calls.json", provider_calls),
+            "task_response.json": _write_json(
+                args.output_dir / "task_response.json", response_payload
+            ),
+            "raw_trajectory.json": _write_json(
+                args.output_dir / "raw_trajectory.json", trajectory_payload
+            ),
+            "llm_calls.json": _write_json(
+                args.output_dir / "llm_calls.json", llm_calls
+            ),
+            "provider_calls.json": _write_json(
+                args.output_dir / "provider_calls.json", provider_calls
+            ),
             "context_lifecycle.json": _write_json(
                 args.output_dir / "context_lifecycle.json", lifecycle_evidence
             ),
@@ -468,7 +614,13 @@ async def run(args: argparse.Namespace) -> None:
             ),
         }
         inspect = subprocess.run(
-            [sandbox.docker_binary, "inspect", "--format", "{{json .Image}}", args.container],
+            [
+                sandbox.docker_binary,
+                "inspect",
+                "--format",
+                "{{json .Image}}",
+                args.container,
+            ],
             capture_output=True,
             text=True,
             check=False,
@@ -478,7 +630,7 @@ async def run(args: argparse.Namespace) -> None:
             "variant": variant,
             "invariants": {
                 "model": model_name,
-                "provider": os.environ.get("LLM_PROVIDER", "openai"),
+                "provider": provider_name,
                 "temperature": float(os.environ.get("LLM_TEMPERATURE", "0")),
                 "max_steps": args.max_steps,
                 "system_prompt_sha256": _sha256_bytes(system_prompt.encode("utf-8")),
@@ -499,10 +651,14 @@ async def run(args: argparse.Namespace) -> None:
                         sort_keys=True,
                     ).encode("utf-8")
                 ),
+                "external_mcp": external_mcp_evidence,
+                "structural_capture_only": args.deterministic_capture_provider,
             },
             "container": {
                 "name": args.container,
-                "image_id": inspect.stdout.strip().strip('"') if inspect.returncode == 0 else None,
+                "image_id": inspect.stdout.strip().strip('"')
+                if inspect.returncode == 0
+                else None,
                 "workdir": sandbox.container_workdir,
             },
             "capture": {

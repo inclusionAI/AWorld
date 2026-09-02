@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 import re
-from typing import Any, ClassVar, Iterable
+from typing import Any, ClassVar, Iterable, Mapping
 
 from .frozen_json import FrozenJSON, canonical_json_hash, freeze_json
 from .models import CacheBreakReason, ContextItem, ContextKind
@@ -522,6 +522,42 @@ def compile_minimal_tool_catalog(
     return TaskCatalogSnapshot.build(task_epoch, selected)
 
 
+def preserve_unmanaged_tool_namespaces(
+    available_tool_ids: Iterable[str],
+    *,
+    requested_tools: Iterable[str],
+    tool_identity_mapping: Mapping[str, str] | None,
+) -> tuple[str, ...]:
+    """Keep permission-filtered MCP namespaces that no selector manages yet.
+
+    Explicit base/Skill requests prove that a server namespace is governed by
+    the progressive selector. A newly attached namespace with no such request
+    must not disappear silently: retaining it is a quality-preserving fallback
+    until capability metadata or a Skill can select a narrower subset.
+    """
+    mapping = dict(tool_identity_mapping or {})
+
+    def namespace(tool_id: str) -> str | None:
+        identity = mapping.get(tool_id)
+        if not isinstance(identity, str) or "__" not in identity:
+            return None
+        value, _ = identity.split("__", 1)
+        return value or None
+
+    managed_namespaces = {
+        value
+        for tool_id in requested_tools
+        for value in (namespace(tool_id),)
+        if value is not None
+    }
+    return tuple(
+        tool_id
+        for tool_id in available_tool_ids
+        if (value := namespace(tool_id)) is not None
+        and value not in managed_namespaces
+    )
+
+
 def transition_task_catalog(
     previous: TaskCatalogSnapshot | None,
     candidate: TaskCatalogSnapshot,
@@ -588,6 +624,7 @@ __all__ = [
     "TaskSkillSnapshot",
     "ToolCatalogEntry",
     "compile_minimal_tool_catalog",
+    "preserve_unmanaged_tool_namespaces",
     "transition_task_catalog",
     "transition_task_skills",
     "route_skills",

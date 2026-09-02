@@ -135,6 +135,7 @@ class ContextCompilerRuntimeConfig(BaseConfig):
     # explicitly configured list (including ``[]``) opts into progressive
     # selection and is combined only with activated Skill Tool requests.
     progressive_tool_base_tools: Optional[List[str]] = None
+    progressive_tool_unmanaged_policy: Literal["preserve", "drop"] = "preserve"
     task_catalog_policy: Literal["per_call", "sticky"] = "sticky"
     checkpoint_policy: Literal[
         "explicit", "budget_pressure", "adaptive"
