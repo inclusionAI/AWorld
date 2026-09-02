@@ -1536,6 +1536,23 @@ def observe_replay_failures(
     return tuple(observations)
 
 
+def _typed_causal_feedback_event(
+    payload: Mapping[str, object],
+) -> AggregatedReplayFailure:
+    """Parse causal transport without routing typed scalars through sanitization."""
+
+    if str(payload.get("schema_version") or "").startswith(
+        "aworld.self_evolve.replay_failure_aggregate."
+    ):
+        return AggregatedReplayFailure.from_dict(payload)
+    if payload.get("schema_version") is not None:
+        event = ReplayFailureEvent.from_dict(payload)
+        return aggregate_replay_failure_observations(
+            (ReplayFailureObservation(event=event),)
+        )[0]
+    return AggregatedReplayFailure.from_dict(payload)
+
+
 def aggregate_replay_failures(
     replay_result: Any,
     *,

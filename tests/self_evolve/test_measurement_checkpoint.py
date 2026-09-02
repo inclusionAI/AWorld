@@ -48,7 +48,7 @@ from aworld.self_evolve.replay import (
     baseline_control_fingerprint,
 )
 from aworld.self_evolve.store import FilesystemSelfEvolveStore
-from aworld.self_evolve.runner import (
+from aworld.self_evolve.cli_orchestration import (
     _measurement_pending_candidate_checkpoint,
     _paired_replay_pending_candidate_checkpoint,
 )

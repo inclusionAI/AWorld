@@ -646,7 +646,7 @@ def test_job_worker_requeues_exactly_one_continuable_campaign_generation(tmp_pat
     assert pending[0]["campaign_cycle"] == 2
 
 
-def test_job_worker_forwards_runtime_registry_refresher_to_framework_job(
+def test_job_worker_forwards_runtime_effect_and_compensation_seams(
     monkeypatch,
     tmp_path,
 ) -> None:
@@ -674,6 +674,12 @@ def test_job_worker_forwards_runtime_registry_refresher_to_framework_job(
     def refresh_runtime(candidate):
         return {"status": "refreshed"}
 
+    def restore_registry(candidate, token):
+        return {"status": "restored"}
+
+    def restore_skill(candidate, token):
+        return {"status": "restored"}
+
     monkeypatch.setattr(
         "aworld.self_evolve.runner.optimize_from_cli_request",
         fake_optimize_from_cli_request,
@@ -682,10 +688,14 @@ def test_job_worker_forwards_runtime_registry_refresher_to_framework_job(
     drained = SelfEvolveJobWorker(
         workspace_root=tmp_path,
         runtime_registry_refresher=refresh_runtime,
+        runtime_registry_compensator=restore_registry,
+        runtime_skill_compensator=restore_skill,
     ).drain_pending_jobs()
 
     assert drained == 1
     assert calls["runtime_registry_refresher"] is refresh_runtime
+    assert calls["runtime_registry_compensator"] is restore_registry
+    assert calls["runtime_skill_compensator"] is restore_skill
 
 
 def test_job_worker_recovers_interrupted_apply_before_draining(tmp_path) -> None:

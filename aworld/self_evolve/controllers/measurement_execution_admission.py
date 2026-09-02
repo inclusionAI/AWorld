@@ -36,6 +36,7 @@ from aworld.self_evolve.replay import (
     candidate_replay_pair_coverage,
     normalize_replay_members,
 )
+from aworld.self_evolve.replay_gates import _system_owned_repetition_failures
 
 
 def _replay_gate_details(
@@ -897,18 +898,4 @@ def _candidate_intervention_unobserved(
             and recovery_trace.get("candidate_intervention_required") is True
             and recovery_trace.get("candidate_intervention_observed") is False
         )
-    )
-
-
-def _system_owned_repetition_failures(
-    *variants: ReplayVariantResult,
-) -> tuple[ReplayFailureEvent, ...]:
-    return tuple(
-        result.failure
-        for variant in variants
-        for result in (variant.repetition_results or (variant,))
-        if result.status is ReplayExecutionStatus.FAILED
-        and isinstance(result.failure, ReplayFailureEvent)
-        and result.failure.owner
-        in {FailureOwner.FRAMEWORK, FailureOwner.INFRASTRUCTURE}
     )

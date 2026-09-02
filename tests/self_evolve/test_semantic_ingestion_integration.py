@@ -77,8 +77,8 @@ from aworld.self_evolve.ingestion.types import (
     IngestionMode,
     fingerprint_json,
 )
+from aworld.self_evolve.cli_ingestion import _load_human_evidence_approval
 from aworld.self_evolve.runner import (
-    _load_human_evidence_approval,
     optimize_from_cli_request,
     promote_ingestion_from_cli_request,
 )

@@ -831,6 +831,8 @@ def run_optimize_cli(
     max_score_tiebreak_candidates: int = 1,
     runtime_registry_refresher: Callable[[Any], Any] | None = None,
     runtime_skill_activator: Callable[[Any], Any] | None = None,
+    runtime_registry_compensator: Callable[[Any, object | None], Any] | None = None,
+    runtime_skill_compensator: Callable[[Any, object | None], Any] | None = None,
     progress_callback: Callable[[str, str], Any] | None = None,
     from_run: str | None = None,
     rerun_evaluator: bool = False,
@@ -979,6 +981,7 @@ def run_optimize_cli(
     )
     if progress_callback is not None:
         progress_callback("prepare", "Preparing self-evolve optimize request")
+    default_skill_runtime = runtime_skill_activator is None
     request = {
         "agent": agent,
         "task": task,
@@ -1038,8 +1041,16 @@ def run_optimize_cli(
         "replay_enabled": runtime_apply in VERIFIED_APPLY_POLICIES,
         "replay_repetitions_explicit": replay_repetitions_explicit,
         "runtime_registry_refresher": runtime_registry_refresher,
+        "runtime_registry_compensator": runtime_registry_compensator,
         "runtime_skill_activator": runtime_skill_activator
         or _default_runtime_skill_activator(),
+        "runtime_skill_compensator": (
+            runtime_skill_compensator
+            if runtime_skill_compensator is not None
+            else _default_runtime_skill_compensator()
+            if default_skill_runtime
+            else None
+        ),
         "progress_callback": progress_callback,
         **_replay_options(
             replay_timeout_seconds=replay_timeout_seconds,
@@ -1225,6 +1236,48 @@ def _default_runtime_skill_activator() -> Callable[[Any], Mapping[str, Any]]:
     return activate
 
 
+def _default_runtime_skill_compensator() -> Callable[
+    [Any, object | None], Mapping[str, Any]
+]:
+    def compensate(
+        candidate: Any,
+        effect_result: object | None,
+    ) -> Mapping[str, Any]:
+        from aworld_cli.core.skill_state_manager import SkillStateManager
+
+        if not isinstance(effect_result, Mapping):
+            raise ValueError("skill activation compensation token is unavailable")
+        if effect_result.get("status") == "skipped":
+            return {
+                "status": "skipped",
+                "reason": "forward skill activation was skipped",
+                "compensated": True,
+            }
+        skill_name = effect_result.get("skill_name")
+        was_enabled = effect_result.get("was_enabled")
+        if not isinstance(skill_name, str) or not skill_name:
+            target = getattr(candidate, "target", None)
+            skill_name = getattr(target, "target_id", None)
+        if not isinstance(skill_name, str) or not skill_name:
+            raise ValueError("skill activation compensation token has no skill name")
+        if not isinstance(was_enabled, bool):
+            raise ValueError("skill activation compensation token has no prior state")
+        manager = SkillStateManager()
+        if was_enabled:
+            manager.enable_skill(skill_name)
+        else:
+            manager.disable_skill(skill_name)
+        return {
+            "status": "restored",
+            "skill_name": skill_name,
+            "was_enabled": was_enabled,
+            "enabled": manager.is_enabled(skill_name),
+            "compensated": True,
+        }
+
+    return compensate
+
+
 def _auto_verified_default(
     apply_policy: str,
     value: int | None,
@@ -1278,12 +1331,16 @@ def drain_pending_self_evolve_jobs(
     *,
     workspace_root: str,
     runtime_registry_refresher: Callable[[Any], Any] | None = None,
+    runtime_registry_compensator: Callable[[Any, object | None], Any] | None = None,
+    runtime_skill_compensator: Callable[[Any, object | None], Any] | None = None,
 ) -> int:
     import aworld.self_evolve as self_evolve
 
     return self_evolve.drain_pending_self_evolve_jobs(
         workspace_root=workspace_root,
         runtime_registry_refresher=runtime_registry_refresher,
+        runtime_registry_compensator=runtime_registry_compensator,
+        runtime_skill_compensator=runtime_skill_compensator,
     )
 
 

@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import math
 import time
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Callable, Mapping
@@ -17,8 +16,6 @@ from aworld.self_evolve.budget import (
     BudgetDecision,
     BudgetStage,
     BudgetUsage,
-    BudgetUsageCompleteness,
-    BudgetUsageObservation,
     CandidateAttemptStage,
 )
 from aworld.self_evolve.campaign_policy import (
@@ -31,10 +28,12 @@ from aworld.self_evolve.candidate_package import (
     candidate_package_fingerprint,
     classify_candidate_mutation,
 )
-from aworld.self_evolve.concurrency import SelfEvolveExecutionTelemetry
 from aworld.self_evolve.controllers.screening import (
     ScreeningPopulationRequest,
     ScreeningPopulationRuntime,
+)
+from aworld.self_evolve.screening_observation_history import (
+    _control_qualification_identity,
 )
 from aworld.self_evolve.controllers.screening_helpers import (
     _DEFAULT_CANDIDATE_SCREENING_TIMEOUT_SECONDS,
@@ -51,9 +50,7 @@ from aworld.self_evolve.controllers.screening_helpers import (
     _candidate_screening_rank_details,
     _candidate_support_baseline_incompatibility_gate,
     _candidate_task_plane_intervention_case_ids,
-    _candidate_validation_report_for_persistence,
     _combined_candidate_validation_report,
-    _control_qualification_identity,
     _deduplicate_conformance_phenotypes,
     _non_negative_screening_float,
     _record_candidate_screening_observation,
@@ -72,21 +69,20 @@ from aworld.self_evolve.controllers.screening_helpers import (
 )
 from aworld.self_evolve.datasets import SelfEvolveDataset
 from aworld.self_evolve.failure_events import (
-    AggregatedReplayFailure,
     FailureEventSource,
     FailureOwner,
     FailureScope,
     FailureStage,
     ReplayFailureEvent,
-    ReplayFailureObservation,
-    aggregate_replay_failure_observations,
+)
+from aworld.self_evolve.history_support import (
+    _load_json_mapping as _load_json_mapping,
+    _non_negative_int as _non_negative_int,
 )
 from aworld.self_evolve.overlay import create_candidate_skill_overlay
 from aworld.self_evolve.repair_conformance import (
-    RepairConformanceContract,
     RepairConformanceResult,
     evaluate_artifact_lifecycle_conformance,
-    merge_repair_conformance_constraint_context,
 )
 from aworld.self_evolve.replay import (
     CandidateReplayRequest,
@@ -106,231 +102,24 @@ from aworld.self_evolve.replay import (
     replay_timeout_envelope_fingerprint,
 )
 from aworld.self_evolve.replay_adaptation import ReplayAdaptationBundle
+from aworld.self_evolve.repair_conformance_diagnostics import (
+    _gate_has_typed_shared_infrastructure_failure,
+    _repair_conformance_gate,
+)
+from aworld.self_evolve.replay_gates import (
+    _gate_has_typed_shared_measurement_failure,
+)
 from aworld.self_evolve.store import FilesystemSelfEvolveStore
 from aworld.self_evolve.types import (
     CandidateVariant,
     GateResult,
     SelfEvolveTargetRef,
 )
-
-
-@dataclass(frozen=True)
-class _TelemetryUsageSnapshot:
-    batches: tuple[Mapping[str, object], ...] = ()
-
-
-@dataclass(frozen=True)
-class _TelemetryUsageDelta:
-    observation: BudgetUsageObservation
-    source: str
-
-
-
-def _decimal_metric(value: object) -> Decimal | None:
-    if isinstance(value, bool) or value is None:
-        return None
-    try:
-        result = Decimal(str(value))
-    except Exception:
-        return None
-    return result if result.is_finite() and result >= 0 else None
-
-
-def _sanitized_telemetry_usage_batch(
-    value: Mapping[str, object],
-) -> dict[str, object]:
-    """Retain only bounded accounting fields from a telemetry batch."""
-
-    result: dict[str, object] = {}
-    token_usage = value.get("token_usage")
-    if isinstance(token_usage, Mapping):
-        result["token_usage"] = {
-            key: item
-            for key, item in token_usage.items()
-            if key
-            in {
-                "total_tokens",
-                "input_tokens",
-                "output_tokens",
-                "prompt_tokens",
-                "completion_tokens",
-            }
-            and isinstance(item, int)
-            and not isinstance(item, bool)
-            and item >= 0
-        }
-    for key in (
-        "total_cost_usd",
-        "cost_usd",
-        "elapsed_seconds",
-        "execution_seconds",
-    ):
-        item = _decimal_metric(value.get(key))
-        if item is not None:
-            result[key] = str(item)
-    return result
-
-
-def _stage_telemetry_usage_snapshot(
-    telemetry: SelfEvolveExecutionTelemetry,
-    stage: str,
-) -> _TelemetryUsageSnapshot:
-    """Capture a stable cursor over sanitized per-batch stage telemetry."""
-
-    report = telemetry.to_report()
-    stage_report = report.get(stage)
-    if not isinstance(stage_report, Mapping):
-        return _TelemetryUsageSnapshot()
-    batches = stage_report.get("batches")
-    if not isinstance(batches, (list, tuple)):
-        return _TelemetryUsageSnapshot()
-    return _TelemetryUsageSnapshot(
-        batches=tuple(
-            _sanitized_telemetry_usage_batch(item)
-            for item in batches
-            if isinstance(item, Mapping)
-        )
-    )
-
-
-def _canonical_batch_token_usage(batch: Mapping[str, object]) -> int | None:
-    usage = batch.get("token_usage")
-    if not isinstance(usage, Mapping):
-        return None
-    total = usage.get("total_tokens")
-    if isinstance(total, int) and not isinstance(total, bool) and total >= 0:
-        return total
-    for input_key, output_key in (
-        ("input_tokens", "output_tokens"),
-        ("prompt_tokens", "completion_tokens"),
-    ):
-        input_tokens = usage.get(input_key)
-        output_tokens = usage.get(output_key)
-        if all(
-            isinstance(item, int)
-            and not isinstance(item, bool)
-            and item >= 0
-            for item in (input_tokens, output_tokens)
-        ):
-            return int(input_tokens) + int(output_tokens)
-    return None
-
-
-def _canonical_batch_decimal_usage(
-    batch: Mapping[str, object],
-    *keys: str,
-) -> Decimal | None:
-    for key in keys:
-        value = _decimal_metric(batch.get(key))
-        if value is not None:
-            return value
-    return None
-
-
-def _stage_telemetry_usage_delta(
-    before: _TelemetryUsageSnapshot,
-    after: _TelemetryUsageSnapshot,
-) -> _TelemetryUsageDelta:
-    cursor = len(before.batches)
-    if len(after.batches) <= cursor or after.batches[:cursor] != before.batches:
-        return _TelemetryUsageDelta(
-            observation=BudgetUsageObservation(
-                known_lower_bound=BudgetUsage(),
-                completeness=BudgetUsageCompleteness.incomplete(),
-            ),
-            source="reserved_fallback_missing_stage_telemetry_delta",
-        )
-    new_batches = after.batches[cursor:]
-    batch_tokens = tuple(_canonical_batch_token_usage(batch) for batch in new_batches)
-    batch_costs = tuple(
-        _canonical_batch_decimal_usage(batch, "total_cost_usd", "cost_usd")
-        for batch in new_batches
-    )
-    batch_walls = tuple(
-        _canonical_batch_decimal_usage(
-            batch,
-            "elapsed_seconds",
-            "execution_seconds",
-        )
-        for batch in new_batches
-    )
-    token_complete = all(value is not None for value in batch_tokens)
-    cost_complete = all(value is not None for value in batch_costs)
-    wall_complete = all(value is not None for value in batch_walls)
-    token_delta = sum(
-        int(value) for value in batch_tokens if value is not None
-    )
-    cost_delta = sum(
-        (value for value in batch_costs if value is not None), Decimal("0")
-    )
-    wall_delta = sum(
-        (value for value in batch_walls if value is not None), Decimal("0")
-    )
-    observed = []
-    for name, values, complete in (
-        ("tokens", batch_tokens, token_complete),
-        ("cost_usd", batch_costs, cost_complete),
-        ("wall_seconds", batch_walls, wall_complete),
-    ):
-        if complete:
-            observed.append(name)
-        elif any(value is not None for value in values):
-            observed.append(f"{name}_lower_bound")
-    source = (
-        "telemetry_delta_" + "+".join(observed)
-        if observed
-        else "reserved_fallback_missing_stage_telemetry_delta"
-    )
-    return _TelemetryUsageDelta(
-        observation=BudgetUsageObservation(
-            known_lower_bound=BudgetUsage(
-                tokens=token_delta,
-                cost_usd=cost_delta,
-                wall_seconds=wall_delta,
-            ),
-            completeness=BudgetUsageCompleteness(
-                tokens=token_complete,
-                cost_usd=cost_complete,
-                wall_seconds=wall_complete,
-            ),
-        ),
-        source=source,
-    )
-
-
-def _telemetry_usage_with_observed_wall(
-    usage: _TelemetryUsageDelta,
-    *,
-    elapsed_seconds: float,
-) -> _TelemetryUsageDelta:
-    """Complete wall accounting even when a stage exits before telemetry starts."""
-
-    observation = usage.observation
-    lower_bound = observation.known_lower_bound
-    observed_wall = Decimal(str(max(0.0, elapsed_seconds)))
-    complete_wall = max(lower_bound.wall_seconds, observed_wall)
-    source = usage.source
-    if not observation.completeness.wall_seconds:
-        source = (
-            "observed_stage_elapsed_seconds"
-            if source == "reserved_fallback_missing_stage_telemetry_delta"
-            else f"{source}+observed_stage_elapsed_seconds"
-        )
-    return _TelemetryUsageDelta(
-        observation=BudgetUsageObservation(
-            known_lower_bound=BudgetUsage(
-                tokens=lower_bound.tokens,
-                cost_usd=lower_bound.cost_usd,
-                wall_seconds=complete_wall,
-            ),
-            completeness=BudgetUsageCompleteness(
-                tokens=observation.completeness.tokens,
-                cost_usd=observation.completeness.cost_usd,
-                wall_seconds=True,
-            ),
-        ),
-        source=source,
-    )
+from aworld.self_evolve.controllers.run_telemetry import (
+    _stage_telemetry_usage_delta,
+    _stage_telemetry_usage_snapshot,
+    _telemetry_usage_with_observed_wall,
+)
 
 
 def _budget_usage_for_attempt_event(
@@ -361,12 +150,6 @@ def _emit_progress(
         progress_callback(stage, message)
     except Exception as exc:
         logger.debug(f"self_evolve.progress_callback_failed stage={stage} error={exc}")
-
-
-def _non_negative_int(value: Any) -> int:
-    if isinstance(value, int) and not isinstance(value, bool):
-        return max(0, value)
-    return 0
 
 
 def _candidate_screening_timeout(
@@ -463,97 +246,6 @@ def _candidate_screening_max_steps(
     )
 
 
-def _schema_field_contract_fingerprint(
-    details: Mapping[str, object],
-) -> str | None:
-    raw_constraints = details.get("schema_field_constraints")
-    constraints = [
-        {
-            "schema_layer": item.get("schema_layer"),
-            "field_path": item.get("field_path"),
-            "rule": item.get("rule"),
-            "expected": item.get("expected"),
-            "value_domain": item.get("value_domain", "schema_value"),
-            "required_operations": item.get("required_operations", ()),
-            "forbidden_operations": item.get("forbidden_operations", ()),
-        }
-        for item in (
-            raw_constraints[:100]
-            if isinstance(raw_constraints, (list, tuple))
-            else ()
-        )
-        if isinstance(item, Mapping)
-    ]
-    raw_runtime_constraints = details.get("runtime_response_constraints")
-    runtime_constraints = [
-        dict(item)
-        for item in (
-            raw_runtime_constraints[:64]
-            if isinstance(raw_runtime_constraints, (list, tuple))
-            else ()
-        )
-        if isinstance(item, Mapping)
-    ]
-    raw_runtime_artifacts = details.get("runtime_artifact_constraints")
-    runtime_artifacts = [
-        dict(item)
-        for item in (
-            raw_runtime_artifacts[:64]
-            if isinstance(raw_runtime_artifacts, (list, tuple))
-            else ()
-        )
-        if isinstance(item, Mapping)
-    ]
-    if not constraints and not runtime_constraints and not runtime_artifacts:
-        return None
-    sorted_schema_constraints = sorted(
-        constraints,
-        key=lambda item: json.dumps(item, sort_keys=True, default=str),
-    )
-    sorted_runtime_constraints = sorted(
-        runtime_constraints,
-        key=lambda item: json.dumps(item, sort_keys=True, default=str),
-    )
-    sorted_runtime_artifacts = sorted(
-        runtime_artifacts,
-        key=lambda item: json.dumps(item, sort_keys=True, default=str),
-    )
-    active_components = sum(
-        bool(item)
-        for item in (constraints, runtime_constraints, runtime_artifacts)
-    )
-    payload: object
-    if active_components == 1:
-        payload = (
-            sorted_schema_constraints
-            if constraints
-            else sorted_runtime_constraints
-            if runtime_constraints
-            else sorted_runtime_artifacts
-        )
-    else:
-        payload = {
-            "schema_field_constraints": sorted_schema_constraints,
-            "runtime_response_constraints": sorted_runtime_constraints,
-            "runtime_artifact_constraints": sorted_runtime_artifacts,
-        }
-    encoded = json.dumps(
-        payload,
-        ensure_ascii=True,
-        separators=(",", ":"),
-        sort_keys=True,
-        default=str,
-    ).encode("utf-8")
-    prefix = (
-        "schema-fields"
-        if constraints and active_components == 1
-        else "runtime-response"
-        if runtime_constraints and active_components == 1
-        else "runtime-artifact"
-        if runtime_artifacts and active_components == 1
-        else "typed-repair"
-    )
-    return f"{prefix}:sha256:" + hashlib.sha256(encoded).hexdigest()
 
 
 def _with_typed_gate_failure_event(gate: GateResult) -> GateResult:
@@ -946,151 +638,6 @@ def _replay_target_matches(
     return Path(stored.path).expanduser() == Path(current.path).expanduser()
 
 
-def _load_json_mapping(path: Path) -> Mapping[str, Any]:
-    import json
-
-    payload = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(payload, Mapping):
-        raise ValueError(f"expected JSON object in {path}")
-    return payload
-
-
-def _gate_has_typed_shared_infrastructure_failure(gate: GateResult) -> bool:
-    details = gate.details
-    if not isinstance(details, Mapping):
-        return False
-    raw_events: list[Mapping[str, object]] = []
-    raw_event = details.get("failure_event")
-    if isinstance(raw_event, Mapping):
-        raw_events.append(raw_event)
-    raw_causal_events = details.get("causal_failure_events")
-    if isinstance(raw_causal_events, (list, tuple)):
-        raw_events.extend(
-            item for item in raw_causal_events if isinstance(item, Mapping)
-        )
-    for payload in raw_events:
-        try:
-            event = _typed_causal_feedback_event(payload)
-        except (TypeError, ValueError):
-            continue
-        if (
-            FailureEventSource.NATIVE.value in event.source_kinds
-            and event.scope is FailureScope.SHARED_RUN
-            and event.owner
-            in {FailureOwner.INFRASTRUCTURE, FailureOwner.FRAMEWORK}
-        ):
-            return True
-    return False
-
-
-def _gate_has_typed_shared_measurement_failure(gate: GateResult) -> bool:
-    """Return true only when the shared measurement experiment is invalid."""
-
-    details = gate.details
-    if not isinstance(details, Mapping):
-        return False
-    return bool(
-        gate.gate_name
-        in {
-            "candidate_replay",
-            "replay_confidence",
-            "fresh_evaluator_rerun",
-            "trusted_improvement_measurement",
-        }
-        and details.get("failure_class")
-        in {"measurement", "framework", "infrastructure"}
-        and details.get("failure_owner")
-        in {FailureOwner.FRAMEWORK.value, FailureOwner.INFRASTRUCTURE.value}
-        and details.get("failure_scope") == FailureScope.SHARED_RUN.value
-        and details.get("repairable") is True
-    )
-
-
-def _repair_conformance_gate(
-    result: RepairConformanceResult,
-    *,
-    contract: RepairConformanceContract | None = None,
-) -> GateResult:
-    public_result_details = _candidate_validation_report_for_persistence(
-        dict(result.details)
-    )
-    if not isinstance(public_result_details, Mapping):
-        public_result_details = {}
-    details = {
-        "failure_class": (
-            None if result.passed else result.failure_class
-        ),
-        "repairable": bool(not result.passed and result.repairable),
-        "stage": "repair_conformance",
-        "code": result.code,
-        **dict(public_result_details),
-    }
-    if result.failure_fingerprint is not None:
-        details["failure_fingerprint"] = result.failure_fingerprint
-    if not result.passed:
-        raw_causal_events = details.get("causal_failure_events")
-        causal_events = (
-            [dict(item) for item in raw_causal_events if isinstance(item, Mapping)]
-            if isinstance(raw_causal_events, (list, tuple))
-            else []
-        )
-        if not causal_events:
-            failure_owner = (
-                FailureOwner.FRAMEWORK
-                if result.failure_class == "framework"
-                else (
-                    FailureOwner.INFRASTRUCTURE
-                    if result.failure_class == "infrastructure"
-                    else FailureOwner.CANDIDATE
-                )
-            )
-            failure_event = ReplayFailureEvent(
-                code=result.code,
-                owner=failure_owner,
-                stage=FailureStage.CAPABILITY_PREFLIGHT,
-                scope=(
-                    FailureScope.CANDIDATE
-                    if failure_owner is FailureOwner.CANDIDATE
-                    else FailureScope.SHARED_RUN
-                ),
-                repairable=result.repairable,
-                category="repair_conformance",
-                summary=result.reason,
-                contract_fingerprint=(
-                    _schema_field_contract_fingerprint(details)
-                    or (
-                        contract.contract_identity
-                        if contract is not None
-                        else None
-                    )
-                ),
-                diagnostics={
-                    "focus_candidate_id": (
-                        contract.focus_candidate_id if contract is not None else None
-                    ),
-                },
-            )
-            causal_events = [failure_event.to_dict()]
-        details["failure_event"] = causal_events[0]
-        # Conformance is an independent pre-replay gate, so publish every
-        # distinct failed group through the causal feedback channel.
-        details["causal_failure_events"] = causal_events
-    if contract is not None:
-        details["repair_conformance"] = (
-            merge_repair_conformance_constraint_context(
-                contract.to_public_dict(),
-                details,
-            )
-            or contract.to_public_dict()
-        )
-    return GateResult(
-        gate_name="candidate_repair_conformance",
-        passed=result.passed,
-        reason=result.reason,
-        details=details,
-    )
-
-
 def _shared_replay_failure_blocks_population(
     replay_result: CandidateReplayResult,
 ) -> bool:
@@ -1224,21 +771,6 @@ def _replay_evaluator_admission_gate(
     )
 
 
-def _typed_causal_feedback_event(
-    payload: Mapping[str, object],
-) -> AggregatedReplayFailure:
-    """Parse causal transport without routing typed scalars through sanitization."""
-
-    if str(payload.get("schema_version") or "").startswith(
-        "aworld.self_evolve.replay_failure_aggregate."
-    ):
-        return AggregatedReplayFailure.from_dict(payload)
-    if payload.get("schema_version") is not None:
-        event = ReplayFailureEvent.from_dict(payload)
-        return aggregate_replay_failure_observations(
-            (ReplayFailureObservation(event=event),)
-        )[0]
-    return AggregatedReplayFailure.from_dict(payload)
 
 
 
@@ -1260,7 +792,7 @@ async def execute_screen_candidate_population(
     require_single_candidate_screening = (
         request.require_single_candidate_screening
     )
-    stored_measurement_resume = request.stored_measurement_resume
+    stored_candidate_bypass = request.stored_candidate_bypass
     if (
         not candidates
         or not runtime.replay_enabled
@@ -1323,15 +855,24 @@ async def execute_screen_candidate_population(
             "phenotype_fingerprints": dict(phenotype_fingerprints),
         }
 
-    if stored_measurement_resume:
+    if stored_candidate_bypass is not None:
         if len(conformance_candidates) != 1:
             raise ValueError(
-                "stored measurement resume requires exactly one frozen candidate"
+                "stored candidate screening bypass requires exactly one frozen "
+                "candidate"
             )
         sole_candidate = conformance_candidates[0]
+        measurement_resume = (
+            stored_candidate_bypass.value
+            == "stored_candidate_measurement_resume"
+        )
         screening_report = {
-            "screening_strategy": "stored_candidate_measurement_resume",
-            "screening_role": "bypassed_for_authoritative_measurement",
+            "screening_strategy": stored_candidate_bypass.value,
+            "screening_role": (
+                "bypassed_for_authoritative_measurement"
+                if measurement_resume
+                else "bypassed_for_fresh_evaluator_rerun"
+            ),
             "generated_candidate_count": 1,
             "attempted_candidate_count": 0,
             "physical_pair_execution_count": 0,
@@ -1340,12 +881,22 @@ async def execute_screen_candidate_population(
             "candidate_dispositions": {
                 sole_candidate.candidate_id: (
                     "promoted_to_authoritative_measurement_resume"
+                    if measurement_resume
+                    else "promoted_to_stored_replay_evidence_reuse"
                 ),
             },
             "selection_reason": (
-                "the immutable measurement-pending candidate already passed "
-                "candidate selection and resumes directly on the authoritative "
-                "measurement plane"
+                (
+                    "the immutable measurement-pending candidate already passed "
+                    "candidate selection and resumes directly on the authoritative "
+                    "measurement plane"
+                )
+                if measurement_resume
+                else (
+                    "the immutable candidate already passed candidate selection; "
+                    "the evaluator-only rerun reuses its authoritative replay "
+                    "evidence without representative screening"
+                )
             ),
             "attempts": [],
             "stopped_by_shared_infrastructure": False,

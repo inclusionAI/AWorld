@@ -9,7 +9,6 @@ import shutil
 import socket
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 from dataclasses import asdict, replace
@@ -127,12 +126,30 @@ from aworld.self_evolve.measurement_control import (
     MeasurementWorkUnitState,
     MeasurementWorkUnitV1,
 )
-from aworld.self_evolve.types import SelfEvolveTargetRef
 from aworld.self_evolve.replay_adaptation import (
+    ReplayAdapterBinding,
     ReplayAdaptationCompiler,
     compile_replay_adaptation_isolation_decision,
 )
-from aworld.self_evolve.replay_capability import fingerprint_skill_package
+from aworld.self_evolve.replay_capability import (
+    FrozenReplayCapability,
+    FrozenReplayFile,
+    ReplayReadinessProbe,
+    ReplayServiceSpec,
+    fingerprint_skill_package,
+)
+from aworld.self_evolve.controllers.screening_execution import (
+    find_reusable_baseline_replay_dir as _find_reusable_baseline_replay_dir,
+    _replay_result_has_reusable_baseline,
+)
+from aworld.self_evolve.store import FilesystemSelfEvolveStore
+from aworld.self_evolve.types import (
+    CandidateFileDelta,
+    CandidateVariant,
+    DatasetRecipe,
+    SelfEvolveTargetRef,
+)
+from aworld.skills.compat_provider import build_compat_registry
 
 
 def test_candidate_replay_artifact_directory_is_shared_with_measurement_lanes(
@@ -185,7 +202,9 @@ def test_authoritative_evidence_profile_binds_all_compiler_inputs_and_services(
         bundle,
         replay_capability=_frozen_skill_runtime_capability(tmp_path),
     )
-    fp = lambda value: "sha256:" + hashlib.sha256(value.encode()).hexdigest()
+    def fp(value: str) -> str:
+        return "sha256:" + hashlib.sha256(value.encode()).hexdigest()
+
     experiment = ControlledExperimentSpec.create(
         run_id="run-profile",
         mode=MeasurementPolicyMode.REQUIRED,
@@ -380,7 +399,9 @@ async def test_required_measurement_preflight_uses_framework_endpoint_binding(
             ),
         )
     )
-    fp = lambda value: "sha256:" + hashlib.sha256(value.encode()).hexdigest()
+    def fp(value: str) -> str:
+        return "sha256:" + hashlib.sha256(value.encode()).hexdigest()
+
     plan_fingerprint = fp("measurement-plan")
     work_unit = MeasurementWorkUnitV1.create(
         measurement_plan_fingerprint=plan_fingerprint,
@@ -491,25 +512,6 @@ def test_run_owned_inferred_draft_is_not_used_as_baseline_skill_root(
     )
 
     assert _infer_baseline_skill_root_from_target(target) is None
-from aworld.self_evolve.replay_adaptation import ReplayAdapterBinding
-from aworld.self_evolve.replay_capability import (
-    FrozenReplayCapability,
-    FrozenReplayFile,
-    ReplayReadinessProbe,
-    ReplayServiceSpec,
-)
-from aworld.self_evolve.runner import (
-    _find_reusable_baseline_replay_dir,
-    _replay_result_has_reusable_baseline,
-)
-from aworld.self_evolve.store import FilesystemSelfEvolveStore
-from aworld.self_evolve.types import (
-    CandidateFileDelta,
-    CandidateVariant,
-    DatasetRecipe,
-    SelfEvolveTargetRef,
-)
-from aworld.skills.compat_provider import build_compat_registry
 
 
 def test_frozen_capability_restores_framework_response_record_identity() -> None:
@@ -4603,6 +4605,111 @@ def test_case_projection_starts_only_reachable_replay_services(
     assert projected.endpoint_replacements == {
         "https://example.test/a": "service-a"
     }
+
+
+def test_replay_comparability_accepts_same_case_reachable_service_subset(
+    tmp_path: Path,
+) -> None:
+    dataset = SelfEvolveDataset(
+        cases=(EvalCase(case_id="case-a", input={"content": "run case a"}),),
+        recipe=DatasetRecipe(
+            source={"kind": "test"},
+            split_seed="seed",
+            splits={"train": ["case-a"], "validation": [], "held_out": []},
+        ),
+    )
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    bundle = ReplayAdaptationCompiler().compile(
+        dataset=dataset,
+        workspace_root=workspace,
+        artifact_root=tmp_path / "adaptation",
+    )
+    base = _frozen_skill_runtime_capability(tmp_path)
+    capability = replace(
+        base,
+        endpoint_replacements={
+            "https://example.test/a": "service-a",
+            "https://example.test/b": "service-b",
+        },
+        services=(
+            replace(base.services[0], service_id="service-a"),
+            replace(base.services[0], service_id="service-b"),
+        ),
+    )
+    bundle = replace(bundle, replay_capability=capability)
+    candidate = _candidate("---\nname: demo\n---\n# Demo\n")
+    request = build_replay_request(
+        run_id="run-service-subset",
+        workspace_root=workspace,
+        target=candidate.target,
+        candidate=candidate,
+        overlay_skill_root=tmp_path / "overlay",
+        dataset=dataset,
+        replay_adaptation=bundle,
+    )
+    common_metrics = {
+        "adaptation_fingerprint": request.adaptation_fingerprint,
+        "workspace_seed_fingerprint": request.workspace_seed_fingerprint,
+        "task_input_fingerprint": request.task_input_fingerprint,
+        "dataset_fingerprint": request.dataset_fingerprint,
+        "baseline_skill_fingerprint": request.baseline_skill_fingerprint,
+        "adapter_determinism": "deterministic",
+        "replay_capability_id": capability.capability_id,
+        "capability_package_fingerprint": (
+            capability.capability_package_fingerprint
+        ),
+        "frozen_capability_fingerprint": capability.fingerprint,
+        "service_runtime_fingerprint": capability.fingerprint,
+        "service_logical_ids": '["service-a"]',
+        "service_startup_status": "ready",
+        "service_cleanup_status": "stopped",
+        "repetition_count": 1,
+    }
+    baseline = ReplayVariantResult(
+        variant_id="baseline",
+        status="succeeded",
+        trajectory=[{"action": {"content": "baseline"}}],
+        metrics={
+            **common_metrics,
+            "isolated_workspace_path": str(tmp_path / "baseline-workspace"),
+            "service_endpoint": '{"service-a":"http://127.0.0.1:41001"}',
+        },
+    )
+    candidate_result = ReplayVariantResult(
+        variant_id=candidate.candidate_id,
+        status="succeeded",
+        trajectory=[{"action": {"content": "candidate"}}],
+        metrics={
+            **common_metrics,
+            "isolated_workspace_path": str(tmp_path / "candidate-workspace"),
+            "service_endpoint": '{"service-a":"http://127.0.0.1:41002"}',
+        },
+    )
+    replay_result = CandidateReplayResult(
+        request=request,
+        baseline=baseline,
+        candidate=candidate_result,
+    )
+
+    assert candidate_replay_is_comparable(
+        dataset=dataset,
+        replay_result=replay_result,
+        require_adapted=True,
+    )
+
+    mismatched_candidate = replace(
+        candidate_result,
+        metrics={
+            **dict(candidate_result.metrics),
+            "service_logical_ids": '["service-b"]',
+        },
+    )
+    assert not candidate_replay_is_comparable(
+        dataset=dataset,
+        replay_result=replace(replay_result, candidate=mismatched_candidate),
+        require_adapted=True,
+    )
 
 
 def test_case_projection_omits_unreferenced_replay_services(

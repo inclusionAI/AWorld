@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Protocol
 
 from aworld.self_evolve.budget import (
@@ -17,6 +18,9 @@ from aworld.self_evolve.concurrency import (
 )
 from aworld.self_evolve.controllers.screening_helpers import (
     SCREENING_BUDGET_CENSORED_CODE,
+)
+from aworld.self_evolve.history_support import (
+    _non_negative_numeric_int as _non_negative_int,
 )
 from aworld.self_evolve.datasets import SelfEvolveDataset
 from aworld.self_evolve.failure_events import (
@@ -78,6 +82,13 @@ class ScreeningBudgetContextProtocol(Protocol):
     ) -> object: ...
 
 
+class StoredCandidateScreeningBypass(str, Enum):
+    """Why an immutable candidate skips comparative ranking replay."""
+
+    MEASUREMENT_RESUME = "stored_candidate_measurement_resume"
+    FRESH_EVALUATION_RERUN = "stored_candidate_fresh_evaluation"
+
+
 @dataclass(frozen=True)
 class ScreeningPopulationRequest:
     """Frozen run inputs for comparative candidate screening."""
@@ -95,7 +106,7 @@ class ScreeningPopulationRequest:
     attempt_keys: Mapping[str, CandidateAttemptKey] | None = None
     budget_context: ScreeningBudgetContextProtocol | None = None
     require_single_candidate_screening: bool = False
-    stored_measurement_resume: bool = False
+    stored_candidate_bypass: StoredCandidateScreeningBypass | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.run_id, str) or not self.run_id.strip():
@@ -110,6 +121,12 @@ class ScreeningPopulationRequest:
             )
         object.__setattr__(self, "run_id", self.run_id.strip())
         object.__setattr__(self, "candidates", tuple(self.candidates))
+        if self.stored_candidate_bypass is not None:
+            object.__setattr__(
+                self,
+                "stored_candidate_bypass",
+                StoredCandidateScreeningBypass(self.stored_candidate_bypass),
+            )
         object.__setattr__(
             self,
             "capability_requirements",
@@ -425,9 +442,3 @@ def screening_attempt_is_budget_censored(
 
 def screening_gate_is_budget_censored(gate: GateResult | None) -> bool:
     return CandidateScreeningController().gate_is_budget_censored(gate)
-
-
-def _non_negative_int(value: object) -> int:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return 0
-    return max(0, int(value))

@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any, Callable
-
 import hashlib
 import json
 import re
@@ -25,13 +22,21 @@ from aworld.self_evolve.campaign_policy import (
     effective_cli_measurement_mode as _effective_cli_measurement_mode,
     is_verified_apply_policy as _is_verified_apply_policy,
 )
+from aworld.self_evolve.apply_runtime_support import (
+    default_new_skill_registry_compensator,
+    default_new_skill_registry_refresher,
+    default_post_apply_evaluator,
+)
+from aworld.self_evolve.target_selection_support import explicit_target_selection_report
+from aworld.self_evolve.target_package import (
+    _target_runtime_skill_path as target_runtime_skill_path,
+)
 from aworld.self_evolve.candidate_generation import (
     CandidateGenerationAgent,
     _effective_candidate_output_token_limit,
 )
 from aworld.self_evolve.candidate_package import (
     candidate_package_fingerprint,
-    candidate_package_reference_report,
 )
 from aworld.self_evolve.candidate_protocol import (
     CANDIDATE_OUTPUT_CONTRACT,
@@ -40,9 +45,6 @@ from aworld.self_evolve.candidate_protocol import (
     merge_candidate_repair_output,
     normalize_candidate_output,
 )
-from aworld.self_evolve.causal_admission import (
-    causal_admission_prerequisite_blocker,
-)
 from aworld.self_evolve.challenger import (
     ChallengerBackend,
     DEFAULT_CHALLENGE_CASES,
@@ -50,7 +52,6 @@ from aworld.self_evolve.challenger import (
 from aworld.self_evolve.cli_ingestion import (
     _dataset_ingestion_summary,
     _ingestion_mode,
-    _ingestor_for_request,
     _persist_ingestion_rejection,
     _source_config_from_cli_request,
     _validate_eval_source_request,
@@ -60,9 +61,9 @@ from aworld.self_evolve.cli_ingestion import (
     promote_ingestion_from_cli_request,
 )
 from aworld.self_evolve.cli_rerun import (
-    _load_candidate_variant,
     _load_target_provenance,
     _load_target_selection_report,
+    _load_stored_campaign_dataset,
     _rerun_cli_run_id,
     _resolve_stored_run_path,
     _source_config_from_stored_dataset_recipe,
@@ -75,13 +76,13 @@ from aworld.self_evolve.concurrency import (
     SelfEvolveConcurrencyPolicy,
 )
 from aworld.self_evolve.controllers.retention import (
-    ArtifactRetentionController,
+    _artifact_retention_report,
     acknowledge_reported_artifact_retention as _acknowledge_reported_artifact_retention,
 )
 from aworld.self_evolve.controllers.screening_execution import (
     _emit_progress,
-    _load_json_mapping,
 )
+from aworld.self_evolve.history_support import _load_json_mapping
 from aworld.self_evolve.credit_assignment import (
     TargetSelectionDecision,
     TargetSelectionReport,
@@ -101,6 +102,10 @@ from aworld.self_evolve.evaluation import (
     EvaluationBackend,
     SkillCandidateOverlayBackend,
 )
+from aworld.self_evolve.evaluation_reporting import _metric_number
+from aworld.self_evolve.feedback_history import (
+    _report_has_shared_measurement_failure,
+)
 from aworld.self_evolve.ingestion import (
     DEFAULT_INGESTION_REGISTRY,
     FrozenIngestionSnapshot,
@@ -115,9 +120,6 @@ from aworld.self_evolve.ingestion.semantic_snapshot import (
 )
 from aworld.self_evolve.ingestion.semantic_verifier import (
     evaluate_semantic_quality_gate,
-)
-from aworld.self_evolve.lifecycle import (
-    cleanup_self_evolve_artifacts,
 )
 from aworld.self_evolve.measurement import (
     MeasurementPolicyMode,
@@ -165,6 +167,11 @@ from aworld.self_evolve.replay import (
     candidate_replay_is_comparable,
     load_candidate_replay_result,
 )
+from aworld.self_evolve.run_history import (
+    _load_candidate_variant,
+    _report_matches_target,
+)
+
 from aworld.self_evolve.replay_adaptation import (
     ReplayAdaptationCompiler,
 )
@@ -192,15 +199,10 @@ from aworld.self_evolve.trace_pack import (
 from aworld.self_evolve.types import (
     CandidateVariant,
     DatasetRecipe,
-    EvaluationSummary,
-    GateResult,
     SelfEvolveRun,
     SelfEvolveRunStatus,
     SelfEvolveTargetRef,
     to_json_dict,
-)
-from aworld.skills.compat_provider import (
-    build_compat_registry,
 )
 from dataclasses import (
     dataclass,
@@ -252,6 +254,11 @@ class _FixedCandidateOptimizer:
 
         return self.admission_reason_code
 
+    def opens_repair_frontier_after_stored_candidate(self) -> bool:
+        """Evaluator-only reruns must never generate replacement candidates."""
+
+        return False
+
     async def propose(self, request: OptimizerRequest) -> OptimizerResult:
         return OptimizerResult(
             candidates=(self.candidate,),
@@ -287,6 +294,9 @@ class _MeasurementResumeThenRepairOptimizer:
             return "stored_candidate_measurement_resume"
         return None
 
+    def opens_repair_frontier_after_stored_candidate(self) -> bool:
+        return True
+
     async def propose(self, request: OptimizerRequest) -> OptimizerResult:
         if self.proposal_count == 0:
             self.proposal_count = 1
@@ -312,6 +322,7 @@ class _StoredCandidateReplayBackend:
     replay_result: CandidateReplayResult
     source_run_id: str
     source_replay_path: str
+    source_dataset_snapshot_fingerprint: str | None = None
 
     def proves_zero_budget_usage(self, stage: BudgetStage) -> bool:
         return stage is BudgetStage.PAIRED_REPLAY
@@ -323,6 +334,9 @@ class _StoredCandidateReplayBackend:
             kind=ReplayEvidenceDispositionKind.STORED_SOURCE_REUSE,
             source_run_id=self.source_run_id,
             source_replay_path=self.source_replay_path,
+            source_dataset_snapshot_fingerprint=(
+                self.source_dataset_snapshot_fingerprint
+            ),
         )
 
     async def reuse_replay_evidence(
@@ -474,9 +488,22 @@ def _evaluation_backend_from_judge_config(
     if config.mode == "agent_md":
         if not config.agent_path:
             raise ValueError("agent_md self-evolve evaluator requires agent_path")
+        judge_agent_path = Path(config.agent_path).expanduser().resolve()
+        if not judge_agent_path.is_file():
+            raise FileNotFoundError(
+                f"judge agent does not exist: {judge_agent_path}"
+            )
+        try:
+            judge_agent_source = judge_agent_path.read_text(encoding="utf-8")
+        except UnicodeDecodeError as exc:
+            raise ValueError(
+                f"judge agent is not valid UTF-8: {judge_agent_path}"
+            ) from exc
+        if not judge_agent_source.strip():
+            raise ValueError(f"judge agent is empty: {judge_agent_path}")
         return AWorldTrajectoryEvaluatorBackend(
             workspace_root=workspace_root,
-            judge_agent=config.agent_path,
+            judge_agent=str(judge_agent_path),
             judge_model_profile=config.model_profile,
             judge_repetitions=judge_repetitions,
             judge_timeout_seconds=judge_timeout_seconds,
@@ -504,131 +531,6 @@ def _evaluation_backend_from_judge_config(
     if config.mode == "disabled":
         raise ValueError("auto_verified self-evolve requires an evaluation backend")
     raise ValueError(f"unsupported judge mode: {config.mode}")
-
-
-def _default_post_apply_evaluator(
-    target: SelfEvolveTarget,
-) -> Callable[[CandidateVariant], EvaluationSummary]:
-    def evaluate(candidate: CandidateVariant) -> EvaluationSummary:
-        target_path = _target_runtime_skill_path(target)
-        loaded_skill_path: str | None = None
-        runtime_skill_found = False
-        loaded_from_real_path = False
-        runtime_content_matches = False
-        content_matches_target_file = (
-            target_path.read_text(encoding="utf-8") == candidate.content
-            if target_path is not None and target_path.exists()
-            else False
-        )
-        package_references = candidate_package_reference_report(
-            candidate,
-            package_root=(target_path.parent if target_path is not None else None),
-        )
-
-        if target_path is not None:
-            registry = build_compat_registry(target_path.parent.parent)
-            descriptor = next(
-                (
-                    item
-                    for item in registry.list_descriptors()
-                    if item.skill_name == target.identity.target_id
-                ),
-                None,
-            )
-            if descriptor is not None:
-                runtime_skill_found = True
-                loaded_skill_path = descriptor.skill_file
-                loaded_from_real_path = Path(descriptor.skill_file).resolve() == target_path
-                loaded_content = Path(descriptor.skill_file).read_text(encoding="utf-8")
-                runtime_content_matches = (
-                    _content_fingerprint(loaded_content)
-                    == _content_fingerprint(candidate.content)
-                )
-
-        post_apply_passed = (
-            content_matches_target_file
-            and runtime_skill_found
-            and loaded_from_real_path
-            and runtime_content_matches
-            and package_references["closed"]
-        )
-        return EvaluationSummary(
-            variant_id=candidate.candidate_id,
-            dataset_split="post_apply",
-            metrics={
-                "post_apply_passed": post_apply_passed,
-                "deterministic_signal": True,
-                "evaluator_mode": "post_apply_runtime_loader",
-                "content_matches_target_file": content_matches_target_file,
-                "runtime_skill_found": runtime_skill_found,
-                "loaded_from_real_path": loaded_from_real_path,
-                "runtime_content_matches": runtime_content_matches,
-                "candidate_package_references": package_references,
-                "loaded_skill_path": loaded_skill_path,
-                "expected_skill_path": str(target_path) if target_path is not None else None,
-            },
-        )
-
-    return evaluate
-
-
-def _default_new_skill_registry_refresher(
-    target: SelfEvolveTarget,
-) -> Callable[[CandidateVariant], Mapping[str, Any]]:
-    def refresh(candidate: CandidateVariant) -> Mapping[str, Any]:
-        target_path = _target_runtime_skill_path(target)
-        if target_path is None or not target_path.is_file():
-            raise ValueError("published skill is unavailable for registry refresh")
-        registry = build_compat_registry(target_path.parent.parent)
-        descriptor = next(
-            (
-                item
-                for item in registry.list_descriptors()
-                if item.skill_name == candidate.target.target_id
-            ),
-            None,
-        )
-        if descriptor is None:
-            raise ValueError("published skill is absent from refreshed registry")
-        if Path(descriptor.skill_file).resolve() != target_path.resolve():
-            raise ValueError("refreshed registry resolved the published skill elsewhere")
-        return {
-            "refreshed": True,
-            "strategy": "compat_registry_rebuild",
-            "skill_id": candidate.target.target_id,
-        }
-
-    return refresh
-
-
-def _target_runtime_skill_path(target: SelfEvolveTarget) -> Path | None:
-    runtime_path = getattr(target, "runtime_skill_path", None)
-    if runtime_path is not None:
-        return Path(runtime_path).resolve()
-    return Path(target.identity.path).resolve() if target.identity.path else None
-
-
-def _retention_controller(
-    store: FilesystemSelfEvolveStore,
-) -> ArtifactRetentionController:
-    """Build the controller with the legacy runner injection seam intact."""
-
-    return ArtifactRetentionController(
-        store=store,
-        cleanup=cleanup_self_evolve_artifacts,
-    )
-
-
-def _artifact_retention_report(
-    store: FilesystemSelfEvolveStore,
-    run_id: str,
-    *,
-    previous: Mapping[str, object] | None = None,
-) -> dict[str, object]:
-    return _retention_controller(store).build_report(
-        run_id,
-        previous=previous,
-    )
 
 
 def _rerun_evaluator_from_stored_run(
@@ -678,6 +580,12 @@ def _rerun_evaluator_from_stored_run(
     regression_replay_backend: CandidateReplayBackend | None,
     runtime_registry_refresher: Callable[[CandidateVariant], Any] | None,
     runtime_skill_activator: Callable[[CandidateVariant], Any] | None,
+    runtime_registry_compensator: Callable[
+        [CandidateVariant, object | None], Any
+    ]
+    | None,
+    runtime_skill_compensator: Callable[[CandidateVariant, object | None], Any]
+    | None,
     progress_callback: Callable[[str, str], Any] | None,
     concurrency_policy: SelfEvolveConcurrencyPolicy,
     runner_type: Callable[..., Any],
@@ -702,12 +610,17 @@ def _rerun_evaluator_from_stored_run(
         source_config,
         apply_policy=apply_policy,
     )
-    built_dataset = build_dataset_from_source(
-        source_config,
-        current_trajectory=None,
-        task_id=task,
-        split_seed=split_seed,
+    built_dataset = _load_stored_campaign_dataset(
+        store=store,
+        source_run_path=source_run_path,
     )
+    if built_dataset is None:
+        built_dataset = build_dataset_from_source(
+            source_config,
+            current_trajectory=None,
+            task_id=task,
+            split_seed=split_seed,
+        )
     if not candidate_replay_is_comparable(
         dataset=built_dataset,
         replay_result=replay_result,
@@ -717,6 +630,15 @@ def _rerun_evaluator_from_stored_run(
             "stored replay did not produce comparable paired outcomes; "
             "rerun the full optimize flow instead"
         )
+    snapshot_reference = built_dataset.recipe.source.get(
+        "campaign_dataset_snapshot"
+    )
+    source_dataset_snapshot_fingerprint = (
+        str(snapshot_reference.get("snapshot_fingerprint"))
+        if isinstance(snapshot_reference, Mapping)
+        and isinstance(snapshot_reference.get("snapshot_fingerprint"), str)
+        else None
+    )
     trace_packs = tuple(
         case.trace_pack for case in built_dataset.cases if case.trace_pack is not None
     )
@@ -867,6 +789,9 @@ def _rerun_evaluator_from_stored_run(
             replay_result=replay_result,
             source_run_id=source_run_id,
             source_replay_path=str(replay_path),
+            source_dataset_snapshot_fingerprint=(
+                source_dataset_snapshot_fingerprint
+            ),
         ),
         regression_replay_backend=regression_replay_backend,
         replay_timeout_seconds=replay_timeout_seconds,
@@ -892,6 +817,8 @@ def _rerun_evaluator_from_stored_run(
         replay_agent=agent,
         runtime_registry_refresher=runtime_registry_refresher,
         runtime_skill_activator=runtime_skill_activator,
+        runtime_registry_compensator=runtime_registry_compensator,
+        runtime_skill_compensator=runtime_skill_compensator,
         progress_callback=progress_callback,
         skip_duplicate_rejected_candidate_gate=True,
         concurrency_policy=concurrency_policy,
@@ -1205,26 +1132,6 @@ def _prior_run_metric_summary(value: Any) -> Mapping[str, Any]:
     }
 
 
-def _report_matches_target(
-    report: Mapping[str, Any],
-    target: SelfEvolveTargetRef,
-    *,
-    require_path: bool = True,
-) -> bool:
-    payload = report.get("target")
-    if not isinstance(payload, Mapping):
-        return False
-    return (
-        payload.get("target_type") == target.target_type
-        and payload.get("target_id") == target.target_id
-        and (
-            not require_path
-            or
-            target.path is None
-            or payload.get("path") is None
-            or str(payload.get("path")) == str(target.path)
-        )
-    )
 
 
 def _campaign_target_matches(
@@ -1239,73 +1146,10 @@ def _campaign_target_matches(
     )
 
 
-def _report_has_shared_measurement_failure(
-    report: Mapping[str, Any],
-) -> bool:
-    if _report_has_candidate_prerequisite_failure(report):
-        return False
-    outcome = report.get("campaign_measurement_outcome")
-    if (
-        isinstance(outcome, Mapping)
-        and outcome.get("continuation_available") is True
-        and outcome.get("execution_status")
-        in {"checkpointed", "invalid", "framework_blocked"}
-    ):
-        return True
-    disposition = report.get("self_improvement_disposition")
-    if (
-        isinstance(disposition, Mapping)
-        and disposition.get("kind") == "repair_measurement"
-        and disposition.get("scope") == "shared_run"
-    ):
-        return True
-    for key in ("rejection_attribution", "campaign_failure_attribution"):
-        attribution = report.get(key)
-        if not isinstance(attribution, Mapping):
-            continue
-        if (
-            attribution.get("failure_class") == "measurement"
-            and attribution.get("failure_owner")
-            in {"framework", "infrastructure", "evaluation_harness"}
-            and attribution.get("failure_scope") == "shared_run"
-        ):
-            return True
-    return False
 
 
-def _gate_has_candidate_prerequisite_failure(gate: GateResult) -> bool:
-    return causal_admission_prerequisite_blocker(
-        gate_name=gate.gate_name,
-        passed=gate.passed,
-        details=gate.details,
-    )
 
 
-def _report_has_candidate_prerequisite_failure(
-    report: Mapping[str, Any],
-) -> bool:
-    raw_gates = report.get("gate_results")
-    if not isinstance(raw_gates, list):
-        return False
-    for raw_gate in raw_gates:
-        if not isinstance(raw_gate, Mapping):
-            continue
-        gate_name = raw_gate.get("gate_name")
-        if not isinstance(gate_name, str) or not gate_name:
-            continue
-        gate = GateResult(
-            gate_name=gate_name,
-            passed=raw_gate.get("passed") is True,
-            reason=str(raw_gate.get("reason") or ""),
-            details=(
-                dict(raw_gate["details"])
-                if isinstance(raw_gate.get("details"), Mapping)
-                else None
-            ),
-        )
-        if _gate_has_candidate_prerequisite_failure(gate):
-            return True
-    return False
 
 
 def _measurement_pending_candidate_checkpoint(
@@ -1490,9 +1334,6 @@ def _paired_replay_pending_candidate_checkpoint(
     )
 
 
-def _metric_number(metrics: Mapping[str, Any], key: str) -> float | None:
-    value = metrics.get(key)
-    return float(value) if isinstance(value, (int, float)) else None
 
 
 def _feedback_required_behaviors_from_mutation_prompt(prompt: str | None) -> set[str]:
@@ -2486,27 +2327,12 @@ def _target_selection_priority(report: TargetSelectionReport) -> int:
     return priorities.get(report.selected_target.target_type, 1)
 
 
-def _explicit_target_selection_report(
-    target: SelfEvolveTargetRef,
-    trace_packs: tuple[TracePack, ...],
-) -> TargetSelectionReport:
-    evidence_step_ids = tuple(
-        step.evidence_id
-        for trace_pack in trace_packs
-        for step in trace_pack.steps
-    )
-    return TargetSelectionReport(
-        selected_target=target,
-        confidence=1.0,
-        evidence_step_ids=evidence_step_ids,
-        failure_category="explicit_target",
-        signals=("explicit_target",),
-        diagnostics={
-            "pack_ids": [trace_pack.pack_id for trace_pack in trace_packs],
-            "target_inference": "bypassed",
-        },
-        selection_origin=TargetSelectionOrigin.OPERATOR_EXPLICIT,
-    )
+# Historical import seams remain aliases while their implementation lives inward.
+_default_post_apply_evaluator = default_post_apply_evaluator
+_default_new_skill_registry_refresher = default_new_skill_registry_refresher
+_default_new_skill_registry_compensator = default_new_skill_registry_compensator
+_explicit_target_selection_report = explicit_target_selection_report
+_target_runtime_skill_path = target_runtime_skill_path
 
 
 def _no_evidence_target_selection_report(source_kind: str) -> TargetSelectionReport:
@@ -2981,6 +2807,12 @@ def execute_cli_optimization(
     replay_adaptation_compiler: ReplayAdaptationCompiler | None = None,
     runtime_registry_refresher: Callable[[CandidateVariant], Any] | None = None,
     runtime_skill_activator: Callable[[CandidateVariant], Any] | None = None,
+    runtime_registry_compensator: Callable[
+        [CandidateVariant, object | None], Any
+    ]
+    | None = None,
+    runtime_skill_compensator: Callable[[CandidateVariant, object | None], Any]
+    | None = None,
     progress_callback: Callable[[str, str], Any] | None = None,
     concurrency_policy: SelfEvolveConcurrencyPolicy | None = None,
     campaign_id: str | None = None,
@@ -3089,6 +2921,8 @@ def execute_cli_optimization(
             regression_replay_backend=regression_replay_backend,
             runtime_registry_refresher=runtime_registry_refresher,
             runtime_skill_activator=runtime_skill_activator,
+            runtime_registry_compensator=runtime_registry_compensator,
+            runtime_skill_compensator=runtime_skill_compensator,
             progress_callback=progress_callback,
             concurrency_policy=effective_concurrency_policy,
         )
@@ -3127,7 +2961,6 @@ def execute_cli_optimization(
         effective_ingestor_name = source_ingestor or "auto"
         registry = ingestion_registry or DEFAULT_INGESTION_REGISTRY
         if frozen_ingestion_id is not None:
-            ingestor = registry.get_ingestor(effective_ingestor_name)
             if (
                 semantic_evidence_approval is not None
                 or semantic_qualification_report is not None
@@ -3149,11 +2982,6 @@ def execute_cli_optimization(
                     frozen_ingestion_id
                 )
         else:
-            ingestor = _ingestor_for_request(
-                effective_ingestor_name,
-                registry=registry,
-                ingestion_model_config=ingestion_model_config,
-            )
             ingestion_snapshot = prepare_ingestion_from_cli_request(
                 workspace_root=workspace_root,
                 from_source=str(from_source),
@@ -3763,6 +3591,9 @@ def execute_cli_optimization(
         runtime_registry_refresher = _default_new_skill_registry_refresher(
             target_adapter
         )
+        runtime_registry_compensator = _default_new_skill_registry_compensator(
+            target_adapter
+        )
     if replay_enabled and candidate_replay_backend is None:
         candidate_replay_backend = runtime.replay_backend_type()
         if hasattr(candidate_replay_backend, "concurrency_policy"):
@@ -3976,6 +3807,8 @@ def execute_cli_optimization(
         replay_agent=agent,
         runtime_registry_refresher=runtime_registry_refresher,
         runtime_skill_activator=runtime_skill_activator,
+        runtime_registry_compensator=runtime_registry_compensator,
+        runtime_skill_compensator=runtime_skill_compensator,
         progress_callback=progress_callback,
         concurrency_policy=effective_concurrency_policy,
         ingestion_model_call_count=(

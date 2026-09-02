@@ -38,9 +38,11 @@ from aworld.self_evolve.ingestion.types import (
     IngestionContractError,
 )
 from aworld.self_evolve.store import FilesystemSelfEvolveStore
-from aworld.self_evolve.runner import (
+from aworld.self_evolve.cli_rerun import (
     _source_config_from_stored_dataset_recipe,
     _validate_agentic_rerun_ingestion_ref,
+)
+from aworld.self_evolve.runner import (
     optimize_from_cli_request,
     prepare_ingestion_from_cli_request,
 )

@@ -66,10 +66,8 @@ from aworld.self_evolve.ingestion.types import (
     IngestorTrustLevel,
 )
 from aworld.self_evolve.store import FilesystemSelfEvolveStore
-from aworld.self_evolve.runner import (
-    _validate_frozen_semantic_runtime_admission,
-    _validate_rerun_source_runtime_admission,
-)
+from aworld.self_evolve.cli_ingestion import _validate_frozen_semantic_runtime_admission
+from aworld.self_evolve.cli_rerun import _validate_rerun_source_runtime_admission
 from tests.self_evolve.test_semantic_compiler import (
     _authoritative_graph_and_context,
     _with_input_and_traces,

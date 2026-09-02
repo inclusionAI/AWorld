@@ -244,9 +244,16 @@ class OptimizeCommand(Command):
 
         if args.drain_pending:
             runtime_registry_refresher = _runtime_registry_refresher(context.runtime)
+            runtime_registry_compensator = _runtime_registry_compensator(
+                context.runtime
+            )
             drain_kwargs = {"workspace_root": context.cwd}
             if runtime_registry_refresher is not None:
                 drain_kwargs["runtime_registry_refresher"] = runtime_registry_refresher
+            if runtime_registry_compensator is not None:
+                drain_kwargs["runtime_registry_compensator"] = (
+                    runtime_registry_compensator
+                )
             drained = await asyncio.to_thread(
                 drain_pending_self_evolve_jobs,
                 **drain_kwargs,
@@ -264,6 +271,9 @@ class OptimizeCommand(Command):
 
         try:
             runtime_registry_refresher = _runtime_registry_refresher(context.runtime)
+            runtime_registry_compensator = _runtime_registry_compensator(
+                context.runtime
+            )
             report = await asyncio.to_thread(
                 run_optimize_cli,
                 agent=args.agent,
@@ -336,6 +346,7 @@ class OptimizeCommand(Command):
                     args.measurement_maximum_interval_width
                 ),
                 runtime_registry_refresher=runtime_registry_refresher,
+                runtime_registry_compensator=runtime_registry_compensator,
             )
         except (FileNotFoundError, ValueError, KeyError, NotImplementedError) as exc:
             return f"Optimize error: {exc}"
@@ -346,3 +357,12 @@ class OptimizeCommand(Command):
 def _runtime_registry_refresher(runtime):
     refresher = getattr(runtime, "refresh_skill_registry", None)
     return refresher if callable(refresher) else None
+
+
+def _runtime_registry_compensator(runtime):
+    compensator = getattr(
+        runtime,
+        "restore_skill_registry_after_self_evolve",
+        None,
+    )
+    return compensator if callable(compensator) else None

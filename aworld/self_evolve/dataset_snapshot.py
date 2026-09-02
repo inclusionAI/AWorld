@@ -171,7 +171,7 @@ def load_campaign_dataset_snapshot(
         case.case_id for case in cases
     ]:
         raise ValueError("campaign dataset snapshot case identities changed")
-    recipe = _dataset_recipe_from_dict(manifest.get("recipe"))
+    recipe = dataset_recipe_from_dict(manifest.get("recipe"))
     return SelfEvolveDataset(cases=tuple(cases), recipe=recipe)
 
 
@@ -352,7 +352,7 @@ def _context_snapshot_from_dict(
     )
 
 
-def _dataset_recipe_from_dict(value: object) -> DatasetRecipe:
+def dataset_recipe_from_dict(value: object) -> DatasetRecipe:
     if not isinstance(value, Mapping):
         raise ValueError("campaign dataset snapshot recipe is invalid")
     splits = value.get("splits")

@@ -59,12 +59,12 @@ from aworld.self_evolve.replay_adaptation import (
     ReplayCaseAdaptation,
 )
 from aworld.self_evolve.store import FilesystemSelfEvolveStore
-from aworld.self_evolve.runner import (
-    SelfEvolveRunner,
-    _campaign_measurement_outcome_for_replay,
-    _effective_cli_measurement_mode,
-    _rebase_measurement_experiment_for_materialization,
+from aworld.self_evolve.campaign_policy import (
+    campaign_measurement_outcome_for_replay as _campaign_measurement_outcome_for_replay,
+    effective_cli_measurement_mode as _effective_cli_measurement_mode,
+    rebase_measurement_experiment_for_materialization as _rebase_measurement_experiment_for_materialization,
 )
+from aworld.self_evolve.runner import SelfEvolveRunner
 from aworld.self_evolve.targets import SkillTextTarget
 from aworld.self_evolve.types import (
     CandidateVariant,

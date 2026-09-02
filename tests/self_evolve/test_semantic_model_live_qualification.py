@@ -15,9 +15,7 @@ from aworld.self_evolve.ingestion.types import (
     DatasetIngestionRequest,
     IngestionMode,
 )
-from aworld.self_evolve.runner import (
-    _IngestionSemanticModelProvider,
-)
+from aworld.self_evolve.cli_ingestion import _IngestionSemanticModelProvider
 from aworld.self_evolve.semantic_qualification import (
     SemanticQualificationSnapshotDeploymentRunnerV1,
     load_semantic_qualification_corpus,

@@ -12,7 +12,6 @@ from aworld.self_evolve.budget import (
     BudgetStage,
     CandidateAttemptKey,
     CandidateAttemptStage,
-    ZeroBudgetUsageProofProvider,
 )
 from aworld.self_evolve.campaign_policy import (
     effective_replay_repetitions,
@@ -29,6 +28,9 @@ from aworld.self_evolve.credit_assignment import (
 )
 from aworld.self_evolve.datasets import SelfEvolveDataset
 from aworld.self_evolve.evaluation import estimate_replay_cost
+from aworld.self_evolve.controllers.run_budget_support import (
+    backend_proves_zero_budget_usage as _backend_proves_zero_budget_usage,
+)
 from aworld.self_evolve.gates import BudgetGate, TargetBehaviorDeltaGate
 from aworld.self_evolve.optimizers.base import CandidateSourceDisposition
 from aworld.self_evolve.provenance import (
@@ -40,10 +42,10 @@ from aworld.self_evolve.regression import RegressionEvidence
 from aworld.self_evolve.replay import (
     CandidateReplayEvidenceReuseBackend,
     CandidateReplayResult,
-    _is_replayable_user_task_case,
 )
 from aworld.self_evolve.replay_adaptation import ReplayCapabilityRequirement
 from aworld.self_evolve.targets import SelfEvolveTarget
+from aworld.self_evolve.target_package import _replayable_user_task_dataset
 from aworld.self_evolve.trace_pack import TracePack
 from aworld.self_evolve.types import (
     CandidateVariant,
@@ -602,29 +604,8 @@ def terminal_candidate_evaluation_result(
     )
 
 
-def _replayable_user_task_dataset(
-    dataset: SelfEvolveDataset,
-) -> SelfEvolveDataset:
-    return SelfEvolveDataset(
-        cases=tuple(
-            case
-            for case in dataset.cases
-            if _is_replayable_user_task_case(case)
-        ),
-        recipe=dataset.recipe,
-    )
 
 
-def _backend_proves_zero_budget_usage(
-    backend: object | None,
-    stage: BudgetStage,
-) -> bool:
-    if not isinstance(backend, ZeroBudgetUsageProofProvider):
-        return False
-    try:
-        return backend.proves_zero_budget_usage(stage) is True
-    except Exception:
-        return False
 
 
 async def execute_candidate_replay_admission(

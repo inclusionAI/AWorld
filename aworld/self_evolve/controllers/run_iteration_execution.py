@@ -46,6 +46,12 @@ from aworld.self_evolve.controllers.run_iteration_helpers import (
     _record_authoritative_replay_observations,
 )
 from aworld.self_evolve.controllers.run_state import ExplicitRunStateAccumulator
+from aworld.self_evolve.controllers.run_resources import (
+    remaining_measurement_budget as _remaining_measurement_budget,
+)
+from aworld.self_evolve.controllers.screening import (
+    StoredCandidateScreeningBypass,
+)
 from aworld.self_evolve.controllers.screening_execution import (
     _baseline_replay_artifact_dir,
     _emit_progress,
@@ -65,7 +71,6 @@ from aworld.self_evolve.measurement import (
     MeasurementEarlyStopPolicy,
     MeasurementPolicyMode,
     MeasurementSummary,
-    MeasurementUsage,
     evaluate_measurement_stopping,
 )
 from aworld.self_evolve.optimizers.base import (
@@ -172,15 +177,6 @@ class IterationExecutionResult:
     shared_validation_gate: GateResult | None
 
 
-def _remaining_measurement_budget(context: Any) -> MeasurementUsage:
-    remaining = context.ledger.remaining()
-    return MeasurementUsage(
-        tokens=remaining.tokens,
-        cost_usd=float(remaining.cost_usd) if remaining.cost_usd is not None else None,
-        wall_seconds=float(remaining.wall_seconds)
-        if remaining.wall_seconds is not None
-        else None,
-    )
 
 
 async def execute_iteration_lifecycle(
@@ -414,8 +410,12 @@ async def execute_iteration_lifecycle(
             require_single_candidate_screening=_feedback_requires_counterexample_screening(
                 (*prior_feedback, *validation_feedback)
             ),
-            stored_measurement_resume=stored_candidate_admission_reason
-            == "stored_candidate_measurement_resume",
+            stored_candidate_bypass=(
+                StoredCandidateScreeningBypass(stored_candidate_admission_reason)
+                if stored_candidate_admission_reason
+                in {item.value for item in StoredCandidateScreeningBypass}
+                else None
+            ),
         )
         if screening_report is not None:
             population_screening_reports.append(screening_report)

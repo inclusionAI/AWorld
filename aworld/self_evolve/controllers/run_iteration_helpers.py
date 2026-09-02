@@ -11,17 +11,15 @@ from aworld.self_evolve.campaign_policy import (
     gate_has_candidate_owned_repair as _gate_has_candidate_owned_repair,
     is_verified_apply_policy as _is_verified_apply_policy,
 )
-from aworld.self_evolve.cli_orchestration import _metric_number
-from aworld.self_evolve.controllers.measurement_execution_datasets import (
+from aworld.self_evolve.evaluation_reporting import _metric_number
+from aworld.self_evolve.screening_observation_history import (
     _control_qualification_identity_from_request,
 )
 from aworld.self_evolve.controllers.screening_execution import (
-    _gate_has_typed_shared_infrastructure_failure,
     _gate_has_typed_shared_measurement_failure,
     _non_negative_int,
-    _schema_field_contract_fingerprint,
-    _typed_causal_feedback_event,
 )
+from aworld.self_evolve.schema_diagnostics import _repair_contract_fingerprint
 from aworld.self_evolve.controllers.screening_helpers import (
     _non_negative_screening_float,
     _record_support_specific_control_observation,
@@ -35,6 +33,13 @@ from aworld.self_evolve.failure_events import (
     FailureStage,
     ReplayExecutionStatus,
     ReplayFailureEvent,
+    _typed_causal_feedback_event,
+)
+from aworld.self_evolve.repair_conformance_diagnostics import (
+    _gate_has_typed_shared_infrastructure_failure,
+)
+from aworld.self_evolve.replay_gates import (
+    _gate_is_replay_execution_infrastructure_failure,
 )
 from aworld.self_evolve.feedback_diagnostics import _typed_gate_feedback_metrics
 from aworld.self_evolve.gates import (
@@ -407,28 +412,8 @@ def _infrastructure_prevented_comparable_evaluation(
     return has_infrastructure_failure and not has_candidate_owned_failure
 
 
-def _repair_contract_fingerprint(
-    details: Mapping[str, object],
-) -> str | None:
-    """Resolve the typed constraint identity from a gate or its projection."""
-
-    direct = _schema_field_contract_fingerprint(details)
-    if direct is not None:
-        return direct
-    projected = details.get("repair_conformance")
-    if isinstance(projected, Mapping):
-        return _schema_field_contract_fingerprint(projected)
-    return None
 
 
-def _gate_is_replay_execution_infrastructure_failure(gate: GateResult) -> bool:
-    details = gate.details
-    return bool(
-        gate.gate_name == "candidate_replay"
-        and isinstance(details, Mapping)
-        and details.get("code") == "candidate_replay_infrastructure_error"
-        and _gate_has_typed_shared_infrastructure_failure(gate)
-    )
 
 
 def _authoritative_attempt_consumed(

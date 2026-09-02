@@ -9,18 +9,11 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from decimal import Decimal
-from typing import Any, Callable, Iterable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Mapping
 
 from aworld.self_evolve.budget import RepairFrontier, SchedulerDecision, SchedulerState
-from aworld.self_evolve.candidate_errors import (
-    candidate_materialization_requirement_id,
-    normalize_candidate_contract_fingerprint,
-    normalize_candidate_failure_field,
-    normalize_candidate_materialization_code,
-    normalize_candidate_representation,
-)
 from aworld.self_evolve.candidate_package import (
     CandidateMutationKind,
     candidate_content_semantic_fingerprint,
@@ -29,27 +22,26 @@ from aworld.self_evolve.candidate_package import (
     classify_candidate_mutation,
     validate_candidate_files,
 )
-from aworld.self_evolve.controllers.screening_execution import (
-    _decimal_metric,
-    _non_negative_int,
-    _typed_causal_feedback_event,
-)
+from aworld.self_evolve.controllers.run_telemetry import _decimal_metric
 from aworld.self_evolve.failure_events import (
     FailureOwner,
     FailureScope,
     FailureStage,
     ReplayFailureEvent,
+    _typed_causal_feedback_event,
 )
 from aworld.self_evolve.feedback_diagnostics import _failure_signature_values
 from aworld.self_evolve.optimizers.base import (
-    CandidateGenerationOutcome,
-    CandidateGenerationOutcomeKind,
     CandidateOptimizer,
     OptimizerResult,
 )
 from aworld.self_evolve.recovery_trace import RECOVERY_TRACE_SCHEMA_VERSION
+from aworld.self_evolve.population_projection import _candidate_strategy_records
+from aworld.self_evolve.run_history import (
+    _SEMANTIC_DEDUP_IDENTITY_VERSION,
+    _SemanticLessonFingerprint,
+)
 from aworld.self_evolve.repair_conformance import RepairConformanceContract
-from aworld.self_evolve.sanitization import public_diagnostic_projection, sanitize_text
 from aworld.self_evolve.types import (
     CandidateFileDelta,
     CandidateVariant,
@@ -59,17 +51,8 @@ from aworld.self_evolve.types import (
 )
 
 _MAX_CONSECUTIVE_DUPLICATE_POPULATION_STALLS = 1
-_MAX_CONSECUTIVE_POLICY_FILTER_STALLS = 2
 _MAX_CONSECUTIVE_MATERIALIZATION_STALLS = 2
-_SEMANTIC_DEDUP_IDENTITY_VERSION = "aworld.self_evolve.semantic_dedup.v2"
 _VERIFICATION_CONTRACT_VERSION = "aworld.self_evolve.verification_contract.v2"
-
-
-@dataclass(frozen=True)
-class _SemanticLessonFingerprint:
-    semantic_package_fingerprint: str
-    lesson_set_fingerprint: str
-    verification_contract_fingerprint: str
 
 
 def _candidate_attempt_placeholder(iteration: int, slot: int) -> str:
@@ -246,60 +229,24 @@ def _optimizer_stored_candidate_admission_reason(
     return reason if isinstance(reason, str) and reason.strip() else None
 
 
-def _candidate_materialization_failures(
-    diagnostics: Mapping[str, object],
-) -> tuple[dict[str, object], ...]:
-    raw_failures = diagnostics.get("candidate_materialization_failures")
-    if not isinstance(raw_failures, (list, tuple)):
-        return ()
-    failures: list[dict[str, object]] = []
-    for item in raw_failures[:16]:
-        if not isinstance(item, Mapping):
-            continue
-        code = normalize_candidate_materialization_code(item.get("code")).value
-        representation = normalize_candidate_representation(
-            item.get("representation")
-        ).value
-        field_path = normalize_candidate_failure_field(item.get("field_path")).value
-        raw_stage = str(item.get("stage") or "").strip()
-        failure = {
-            "code": code,
-            "stage": (
-                raw_stage
-                if raw_stage
-                in {
-                    "candidate_generation",
-                    "candidate_protocol",
-                    "candidate_semantic_validation",
-                }
-                else "candidate_generation"
-            ),
-            "failure_class": "candidate",
-            "repairable": item.get("repairable") is not False,
-            "candidate_index": _non_negative_int(item.get("candidate_index")),
-            "representation": representation,
-            "field_path": field_path,
-            "reason": sanitize_text(item.get("reason"), max_chars=240),
-        }
-        contract_fingerprint = normalize_candidate_contract_fingerprint(
-            item.get("contract_fingerprint")
-        )
-        if contract_fingerprint is not None:
-            failure["contract_fingerprint"] = contract_fingerprint
-        raw_details = item.get("details")
-        if isinstance(raw_details, Mapping):
-            public_details = public_diagnostic_projection(raw_details)
-            if isinstance(public_details, Mapping):
-                failure["details"] = dict(public_details)
-        raw_allowed_ids = item.get("allowed_improvement_signal_ids")
-        if isinstance(raw_allowed_ids, (list, tuple)):
-            failure["allowed_improvement_signal_ids"] = [
-                sanitize_text(value, max_chars=512)
-                for value in raw_allowed_ids[:256]
-                if isinstance(value, str) and value
-            ]
-        failures.append(failure)
-    return tuple(failures)
+def _optimizer_opens_repair_frontier_after_stored_candidate(
+    optimizer: CandidateOptimizer,
+) -> bool:
+    """Whether a stored-candidate optimizer may mutate after its first attempt."""
+
+    declaration = getattr(
+        optimizer,
+        "opens_repair_frontier_after_stored_candidate",
+        None,
+    )
+    if not callable(declaration):
+        return True
+    try:
+        return declaration() is True
+    except (TypeError, ValueError):
+        return False
+
+
 
 
 def _candidate_materialization_stall_signature(
@@ -344,137 +291,14 @@ def _candidate_materialization_stall_signature(
     ).hexdigest()
 
 
-def _candidate_materialization_failure_event(
-    failure: Mapping[str, object],
-) -> dict[str, object]:
-    code = normalize_candidate_materialization_code(failure.get("code")).value
-    field_path = normalize_candidate_failure_field(failure.get("field_path")).value
-    representation = normalize_candidate_representation(
-        failure.get("representation")
-    ).value
-    contract_fingerprint = normalize_candidate_contract_fingerprint(
-        failure.get("contract_fingerprint")
-    )
-    event = ReplayFailureEvent(
-        code=code,
-        owner=FailureOwner.CANDIDATE,
-        stage=FailureStage.CANDIDATE_GENERATION,
-        scope=FailureScope.CANDIDATE,
-        repairable=failure.get("repairable") is not False,
-        category="candidate_generation",
-        summary="candidate package could not be materialized",
-        diagnostics={
-            "field_path": field_path,
-            "representation": representation,
-        },
-        requirement_id=candidate_materialization_requirement_id(
-            representation=representation,
-            field_path=field_path,
-        ),
-        contract_fingerprint=(contract_fingerprint),
-    )
-    return event.to_dict()
 
 
-def _candidate_materialization_failure_events(
-    failures: Iterable[Mapping[str, object]],
-) -> tuple[dict[str, object], ...]:
-    events: list[dict[str, object]] = []
-    seen_semantic_keys: set[str] = set()
-    for failure in failures:
-        event = _candidate_materialization_failure_event(failure)
-        semantic_key = str(event["semantic_key"])
-        if semantic_key in seen_semantic_keys:
-            continue
-        seen_semantic_keys.add(semantic_key)
-        events.append(event)
-    return tuple(events)
 
 
-def _candidate_policy_filter_event(
-    outcome: CandidateGenerationOutcome,
-) -> dict[str, object]:
-    constraint_identity = json.dumps(
-        {
-            "policy_id": outcome.policy_id,
-            "constraint_ids": list(outcome.constraint_ids),
-            "enforcement": outcome.enforcement,
-        },
-        sort_keys=True,
-        separators=(",", ":"),
-    )
-    event = ReplayFailureEvent(
-        code="candidate_generation_policy_filtered",
-        owner=FailureOwner.CANDIDATE,
-        stage=FailureStage.CANDIDATE_GENERATION,
-        scope=FailureScope.CANDIDATE,
-        repairable=outcome.repairable,
-        category="candidate_generation_policy",
-        summary="candidate violated a deterministic generation policy",
-        diagnostics={
-            "policy_id": outcome.policy_id,
-            "enforcement": outcome.enforcement,
-            "reason_codes": list(outcome.reason_codes),
-            "constraint_ids": list(outcome.constraint_ids),
-            "active_frontier_key": outcome.active_frontier_key,
-            "affected_case_ids": list(outcome.affected_case_ids),
-            "candidate_fingerprint": outcome.candidate_fingerprint,
-            "semantic_fingerprint": outcome.semantic_fingerprint,
-            "strategy_id": outcome.strategy_id,
-        },
-        requirement_id=(
-            "candidate-policy:sha256:"
-            + hashlib.sha256(constraint_identity.encode("utf-8")).hexdigest()
-        ),
-    )
-    return event.to_dict()
 
 
-def _candidate_policy_filter_signature(
-    outcomes: Sequence[CandidateGenerationOutcome],
-) -> str | None:
-    policy_outcomes = [
-        outcome
-        for outcome in outcomes
-        if outcome.kind is CandidateGenerationOutcomeKind.POLICY_FILTERED
-    ]
-    if not policy_outcomes:
-        return None
-    payload = sorted(
-        {
-            (
-                str(outcome.policy_id),
-                str(outcome.enforcement),
-                tuple(sorted(outcome.reason_codes)),
-                tuple(sorted(outcome.constraint_ids)),
-                tuple(sorted(outcome.affected_case_ids)),
-            )
-            for outcome in policy_outcomes
-        }
-    )
-    return (
-        "candidate-policy-filter:sha256:"
-        + hashlib.sha256(
-            json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
-        ).hexdigest()
-    )
 
 
-def _retryable_candidate_generation_failure(
-    failure: Mapping[str, object],
-) -> bool:
-    error_type = str(failure.get("error_type") or "").strip().casefold()
-    stage = str(failure.get("stage") or "").strip().casefold()
-    if stage not in {"model_provider", "model_response"}:
-        return False
-    return error_type in {
-        "apiconnectionerror",
-        "apitimeouterror",
-        "connectionerror",
-        "llmresponseerror",
-        "ratelimiterror",
-        "timeouterror",
-    }
 
 
 def _scheduler_state_with_mutation_families(
@@ -638,23 +462,6 @@ def _verified_prerequisite_files(
     return None
 
 
-def _candidate_strategy_records(
-    optimizer_diagnostics: list[dict[str, object]] | tuple[dict[str, object], ...],
-) -> list[dict[str, object]]:
-    records: list[dict[str, object]] = []
-    for item in optimizer_diagnostics:
-        diagnostics = item.get("diagnostics")
-        if not isinstance(diagnostics, Mapping):
-            continue
-        strategies = diagnostics.get("candidate_strategies")
-        if not isinstance(strategies, list):
-            continue
-        for strategy in strategies:
-            if isinstance(strategy, Mapping) and isinstance(
-                strategy.get("candidate_id"), str
-            ):
-                records.append(dict(strategy))
-    return records
 
 
 def _rank_candidate_population(

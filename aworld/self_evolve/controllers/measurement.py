@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import json
+import math
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from decimal import Decimal
 from pathlib import Path
 
@@ -15,6 +16,7 @@ from aworld.self_evolve.campaign_policy import (
 from aworld.self_evolve.credit_assignment import TargetSelectionReport
 from aworld.self_evolve.datasets import SelfEvolveDataset
 from aworld.self_evolve.measurement import (
+    BudgetLedger,
     ControlledExperimentSpec,
     ComponentIdentity,
     ExperimentBudget,
@@ -26,14 +28,23 @@ from aworld.self_evolve.measurement import (
     MeasurementUsage,
     OutcomePlan,
     SamplingPlan,
+    SearchCandidateResult,
     SwapAxis,
     TargetResolutionConfidence,
     build_attribution_report,
+    build_search_performance,
     observations_from_evaluation,
     observations_from_replay,
     observations_with_evaluation_metric,
     observations_with_usage_fallback,
     stable_measurement_fingerprint,
+)
+from aworld.self_evolve.measurement_reporting import (
+    _budget_curve_points,
+    _finite_measurement_metric,
+    _non_negative_measurement_float,
+    _non_negative_measurement_int,
+    _optional_measurement_bool,
 )
 from aworld.self_evolve.replay import (
     CandidateReplayRequest,
@@ -54,6 +65,200 @@ from aworld.self_evolve.types import (
 _rebase_measurement_experiment_for_materialization = (
     rebase_measurement_experiment_for_materialization
 )
+
+
+@dataclass(frozen=True)
+class MeasurementSearchProjectionRequest:
+    run_id: str
+    summary: MeasurementSummary
+    candidates: tuple[CandidateVariant, ...]
+    iteration_reports: tuple[Mapping[str, object], ...]
+
+
+@dataclass(frozen=True)
+class MeasurementSearchProjectionRuntime:
+    store: FilesystemSelfEvolveStore
+    experiments: Mapping[object, ControlledExperimentSpec]
+    summaries: dict[tuple[str, str], MeasurementSummary]
+    min_score_delta: float
+
+
+@dataclass(frozen=True)
+class MeasurementSearchProjectionResult:
+    summary: MeasurementSummary
+
+
+@dataclass(frozen=True)
+class MeasurementSearchProjectionExecution:
+    runtime: MeasurementSearchProjectionRuntime
+
+    def execute(
+        self,
+        request: MeasurementSearchProjectionRequest,
+    ) -> MeasurementSearchProjectionResult:
+        return attach_measurement_search_performance(request, self.runtime)
+
+
+
+
+
+
+
+
+
+
+
+
+def attach_measurement_search_performance(
+    request: MeasurementSearchProjectionRequest,
+    runtime: MeasurementSearchProjectionRuntime,
+) -> MeasurementSearchProjectionResult:
+    reports_by_candidate = {
+        str(item.get("candidate_id")): item
+        for item in request.iteration_reports
+        if isinstance(item.get("candidate_id"), str)
+    }
+    results: list[SearchCandidateResult] = []
+    baseline_scores: list[float] = []
+    for candidate in request.candidates:
+        item = reports_by_candidate.get(candidate.candidate_id, {})
+        metrics = (
+            item.get("candidate_metrics")
+            if isinstance(item.get("candidate_metrics"), Mapping)
+            else {}
+        )
+        baseline_metrics = (
+            item.get("baseline_metrics")
+            if isinstance(item.get("baseline_metrics"), Mapping)
+            else {}
+        )
+        baseline_score = _finite_measurement_metric(baseline_metrics.get("score"))
+        if baseline_score is not None:
+            baseline_scores.append(baseline_score)
+        held_out_metrics = (
+            item.get("held_out_metrics")
+            if isinstance(item.get("held_out_metrics"), Mapping)
+            else {}
+        )
+        status = str(item.get("status") or "not_run")
+        results.append(
+            SearchCandidateResult(
+                candidate_id=candidate.candidate_id,
+                score=_finite_measurement_metric(metrics.get("score")),
+                passed=status == "accepted",
+                valid=status
+                not in {"local_gate_rejected", "screening_rejected", "not_run"},
+                authoritative=(
+                    item.get("baseline_metrics") is not None
+                    or item.get("lifecycle_stage") == "authoritative_replay"
+                ),
+                tokens=_non_negative_measurement_int(
+                    metrics.get("search_total_tokens", metrics.get("total_tokens"))
+                ),
+                wall_seconds=_non_negative_measurement_float(
+                    metrics.get("search_wall_seconds", metrics.get("wall_seconds"))
+                ),
+                cost_usd=_non_negative_measurement_float(
+                    metrics.get("search_cost_usd", metrics.get("cost_usd"))
+                ),
+                regression_passed=_optional_measurement_bool(
+                    held_out_metrics.get(
+                        "global_regression_passed",
+                        metrics.get("global_regression_passed"),
+                    )
+                ),
+            )
+        )
+    token_total = sum(item.tokens or 0 for item in results)
+    wall_total = sum(item.wall_seconds or 0.0 for item in results)
+    search_performance = build_search_performance(
+        results,
+        k_values=(1, 2, 4, 8),
+        token_budget_points=(
+            _budget_curve_points(token_total)
+            if results and all(item.tokens is not None for item in results)
+            else ()
+        ),
+        wall_time_budget_points=(
+            _budget_curve_points(wall_total)
+            if results and all(item.wall_seconds is not None for item in results)
+            else ()
+        ),
+        selection_protocol="generation_order_authoritative_funnel",
+        quality_threshold=(
+            baseline_scores[0] + runtime.min_score_delta
+            if baseline_scores
+            and all(
+                math.isclose(value, baseline_scores[0])
+                for value in baseline_scores[1:]
+            )
+            else None
+        ),
+    )
+    authority_run_id = next(
+        (
+            experiment.run_id
+            for experiment in runtime.experiments.values()
+            if experiment.experiment_id == request.summary.experiment_id
+        ),
+        request.run_id,
+    )
+    attribution = runtime.store.read_measurement_attribution_report(
+        authority_run_id,
+        request.summary.experiment_id,
+    )
+    usage = MeasurementUsage(
+        tokens=(
+            token_total
+            if results and all(item.tokens is not None for item in results)
+            else None
+        ),
+        cost_usd=(
+            sum(item.cost_usd or 0.0 for item in results)
+            if results and all(item.cost_usd is not None for item in results)
+            else None
+        ),
+        wall_seconds=(
+            wall_total
+            if results and all(item.wall_seconds is not None for item in results)
+            else None
+        ),
+        candidate_opportunities=len(results),
+    )
+    updated = replace(
+        attribution,
+        search_performance=search_performance,
+        budget_ledger=BudgetLedger(
+            search=usage,
+            measurement=attribution.budget_ledger.measurement,
+        ),
+        measurement_yield=replace(
+            attribution.measurement_yield,
+            search_tokens=usage.tokens,
+            authoritative_candidate_count=sum(
+                1 for item in results if item.authoritative
+            ),
+        ),
+    )
+    runtime.store.write_measurement_attribution_report(updated)
+    refreshed = updated.summary(
+        attribution_report_path=runtime.store.measurement_attribution_ref(
+            authority_run_id,
+            request.summary.experiment_id,
+        )
+    )
+    candidate_key = next(
+        (
+            key
+            for key, cached in runtime.summaries.items()
+            if key[0] == authority_run_id
+            and cached.experiment_id == request.summary.experiment_id
+        ),
+        None,
+    )
+    if candidate_key is not None:
+        runtime.summaries[candidate_key] = refreshed
+    return MeasurementSearchProjectionResult(refreshed)
 
 
 @dataclass(frozen=True)
@@ -644,3 +849,4 @@ def measurement_promotion_gate(summary: MeasurementSummary) -> GateResult:
             "next_action": summary.next_action.value,
         },
     )
+    SearchCandidateResult,

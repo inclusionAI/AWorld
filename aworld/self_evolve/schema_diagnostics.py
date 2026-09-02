@@ -7,6 +7,114 @@ from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
 
+
+def _schema_field_contract_fingerprint(
+    details: Mapping[str, object],
+) -> str | None:
+    raw_constraints = details.get("schema_field_constraints")
+    constraints = [
+        {
+            "schema_layer": item.get("schema_layer"),
+            "field_path": item.get("field_path"),
+            "rule": item.get("rule"),
+            "expected": item.get("expected"),
+            "value_domain": item.get("value_domain", "schema_value"),
+            "required_operations": item.get("required_operations", ()),
+            "forbidden_operations": item.get("forbidden_operations", ()),
+        }
+        for item in (
+            raw_constraints[:100]
+            if isinstance(raw_constraints, (list, tuple))
+            else ()
+        )
+        if isinstance(item, Mapping)
+    ]
+    raw_runtime_constraints = details.get("runtime_response_constraints")
+    runtime_constraints = [
+        dict(item)
+        for item in (
+            raw_runtime_constraints[:64]
+            if isinstance(raw_runtime_constraints, (list, tuple))
+            else ()
+        )
+        if isinstance(item, Mapping)
+    ]
+    raw_runtime_artifacts = details.get("runtime_artifact_constraints")
+    runtime_artifacts = [
+        dict(item)
+        for item in (
+            raw_runtime_artifacts[:64]
+            if isinstance(raw_runtime_artifacts, (list, tuple))
+            else ()
+        )
+        if isinstance(item, Mapping)
+    ]
+    if not constraints and not runtime_constraints and not runtime_artifacts:
+        return None
+    sorted_schema_constraints = sorted(
+        constraints,
+        key=lambda item: json.dumps(item, sort_keys=True, default=str),
+    )
+    sorted_runtime_constraints = sorted(
+        runtime_constraints,
+        key=lambda item: json.dumps(item, sort_keys=True, default=str),
+    )
+    sorted_runtime_artifacts = sorted(
+        runtime_artifacts,
+        key=lambda item: json.dumps(item, sort_keys=True, default=str),
+    )
+    active_components = sum(
+        bool(item)
+        for item in (constraints, runtime_constraints, runtime_artifacts)
+    )
+    payload: object
+    if active_components == 1:
+        payload = (
+            sorted_schema_constraints
+            if constraints
+            else sorted_runtime_constraints
+            if runtime_constraints
+            else sorted_runtime_artifacts
+        )
+    else:
+        payload = {
+            "schema_field_constraints": sorted_schema_constraints,
+            "runtime_response_constraints": sorted_runtime_constraints,
+            "runtime_artifact_constraints": sorted_runtime_artifacts,
+        }
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+        default=str,
+    ).encode("utf-8")
+    prefix = (
+        "schema-fields"
+        if constraints and active_components == 1
+        else "runtime-response"
+        if runtime_constraints and active_components == 1
+        else "runtime-artifact"
+        if runtime_artifacts and active_components == 1
+        else "typed-repair"
+    )
+    return f"{prefix}:sha256:" + hashlib.sha256(encoded).hexdigest()
+
+
+def _repair_contract_fingerprint(
+    details: Mapping[str, object],
+) -> str | None:
+    """Resolve the typed constraint identity from a gate or its projection."""
+
+    direct = _schema_field_contract_fingerprint(details)
+    if direct is not None:
+        return direct
+    projected = details.get("repair_conformance")
+    if isinstance(projected, Mapping):
+        return _schema_field_contract_fingerprint(projected)
+    return None
+
+
 _SUPPORTED_RULES = frozenset(
     {
         "enum",

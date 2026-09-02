@@ -283,6 +283,16 @@ class BaseCliRuntime:
             "source_paths": list(getattr(view, "source_paths", ())),
         }
 
+    def restore_skill_registry_after_self_evolve(
+        self,
+        candidate: Any = None,
+        _effect_result: object | None = None,
+    ) -> dict[str, Any]:
+        """Reload runtime skills only after the apply controller restored disk."""
+
+        result = self.refresh_skill_registry(candidate)
+        return {**result, "status": "restored", "compensated": True}
+
     async def _drain_pending_self_evolve_jobs(self, *, max_jobs: int | None = None) -> int:
         if os.environ.get("AWORLD_SELF_EVOLVE_AUTO_DRAIN", "1").lower() in {
             "0",
@@ -307,6 +317,9 @@ class BaseCliRuntime:
                 workspace_root=Path.cwd(),
                 max_jobs=max_jobs,
                 runtime_registry_refresher=self.refresh_skill_registry,
+                runtime_registry_compensator=(
+                    self.restore_skill_registry_after_self_evolve
+                ),
             )
         except Exception as exc:
             logger.warning(f"Failed to drain pending self-evolve jobs: {exc}")

@@ -8,9 +8,6 @@ import re
 from dataclasses import replace
 from typing import Any, Iterable, Mapping
 
-from aworld.self_evolve.controllers.screening_execution import (
-    _typed_causal_feedback_event,
-)
 from aworld.self_evolve.counterexamples import (
     candidate_failure_counterexample,
     normalize_counterexample,
@@ -19,7 +16,10 @@ from aworld.self_evolve.evidence_diagnostics import (
     EvidenceRepairConstraint,
     merge_evidence_repair_constraints,
 )
-from aworld.self_evolve.failure_events import FailureOwner
+from aworld.self_evolve.failure_events import (
+    FailureOwner,
+    _typed_causal_feedback_event,
+)
 from aworld.self_evolve.recovery_trace import (
     update_constraint_recovery_trace,
     validate_public_constraint_recovery_trace,

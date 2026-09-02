@@ -34,26 +34,29 @@ from aworld.self_evolve.controllers.run_execution import (
 from aworld.self_evolve.controllers.run_generation_helpers import (
     _MAX_CONSECUTIVE_DUPLICATE_POPULATION_STALLS,
     _MAX_CONSECUTIVE_MATERIALIZATION_STALLS,
-    _MAX_CONSECUTIVE_POLICY_FILTER_STALLS,
     _candidate_attempt_placeholder,
     _candidate_generation_actual_usage,
-    _candidate_materialization_failure_events,
-    _candidate_materialization_failures,
     _candidate_materialization_stall_signature,
-    _candidate_policy_filter_event,
-    _candidate_policy_filter_signature,
     _canonicalize_verified_prerequisite_files,
     _is_semantic_lesson_duplicate,
     _known_duplicate_candidate_count,
     _lineage_semantic_lesson_fingerprints,
     _optimizer_stored_candidate_admission_reason,
+    _optimizer_opens_repair_frontier_after_stored_candidate,
     _rank_candidate_population,
-    _retryable_candidate_generation_failure,
     _scheduler_state_with_mutation_families,
     _semantic_lesson_duplicate_count,
     _semantic_lesson_duplicate_feedback,
     _typed_repair_frontiers,
     _with_versioned_semantic_lineage,
+)
+from aworld.self_evolve.run_failure_attribution import (
+    _MAX_CONSECUTIVE_POLICY_FILTER_STALLS,
+    _candidate_materialization_failure_events,
+    _candidate_materialization_failures,
+    _candidate_policy_filter_event,
+    _candidate_policy_filter_signature,
+    _retryable_candidate_generation_failure,
 )
 from aworld.self_evolve.controllers.run_state import ExplicitRunStateAccumulator
 from aworld.self_evolve.controllers.screening_execution import (
@@ -328,6 +331,13 @@ async def execute_generation_iteration(
 
     if run_state.baseline_preflight_blocked:
         return _result(GenerationExecutionDisposition.STOP)
+    if (
+        iteration_index > 0
+        and not _optimizer_opens_repair_frontier_after_stored_candidate(
+            runtime.optimizer
+        )
+    ):
+        return _result(GenerationExecutionDisposition.STOP)
     if iteration_index >= policy.max_iterations:
         repair_family = _next_progress_repair_extension_family(
             validation_feedback,
@@ -455,10 +465,19 @@ async def execute_generation_iteration(
         return _result(GenerationExecutionDisposition.STOP)
     generation_slot_count = len(scheduler_decision.slots)
     if stored_admission_reason is not None:
+        evaluator_rerun = (
+            stored_admission_reason == "stored_candidate_fresh_evaluation"
+        )
         _emit_progress(
             runtime.progress_callback,
-            "measurement_resume",
-            "Restoring the immutable measurement-pending candidate; mutation generation and candidate slot charging are skipped",
+            "evaluator_rerun_resume" if evaluator_rerun else "measurement_resume",
+            (
+                "Restoring the immutable candidate and its authoritative replay "
+                "evidence; mutation generation, screening replay, and candidate "
+                "slot charging are skipped"
+                if evaluator_rerun
+                else "Restoring the immutable measurement-pending candidate; mutation generation and candidate slot charging are skipped"
+            ),
         )
     else:
         first_generation_attempt_slot = run_state.generation.begin_generation_slots(

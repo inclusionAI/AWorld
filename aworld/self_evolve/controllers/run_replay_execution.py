@@ -17,6 +17,8 @@ from aworld.self_evolve.controllers.run_execution import (
 )
 from aworld.self_evolve.controllers.screening_execution import (
     _budget_usage_for_attempt_event,
+)
+from aworld.self_evolve.controllers.run_telemetry import (
     _stage_telemetry_usage_delta,
     _stage_telemetry_usage_snapshot,
     _telemetry_usage_with_observed_wall,
