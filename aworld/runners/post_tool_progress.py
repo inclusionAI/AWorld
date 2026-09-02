@@ -77,6 +77,13 @@ def record_semantic_tool_progress(
     artifact_changed = any(
         receipt.get("artifact_changed") is True for receipt in artifact_receipts
     )
+    rollback_performed = any(
+        receipt.get("rollback_performed") is True for receipt in artifact_receipts
+    )
+    implicit_artifact_loss = any(
+        receipt.get("implicit_artifact_loss_detected") is True
+        for receipt in artifact_receipts
+    )
     artifact_fingerprint = next(
         (
             receipt.get("artifact_fingerprint_after")
@@ -95,18 +102,121 @@ def record_semantic_tool_progress(
     result_hash = semantic_result_fingerprint(serialized_observation)
     same_operation = operation_hash == previous.get("operation_hash")
     same_result = result_hash == previous.get("result_hash")
+    completion_assessment = None
+    try:
+        completion_assessment = runtime_context.assess_completion_contract(
+            agent_claimed_finished=False
+        )
+    except Exception:
+        completion_assessment = None
+    completion_projection = (
+        {
+            "status": completion_assessment.status.value,
+            "reason_codes": list(completion_assessment.reason_codes),
+            "artifact_evidence_count": len(
+                getattr(runtime_context, "_completion_artifact_evidence", ())
+            ),
+            "self_check_count": len(
+                getattr(runtime_context, "_completion_self_checks", ())
+            ),
+            "final_evidence_count": len(
+                getattr(runtime_context, "_completion_final_evidence_codes", ())
+            ),
+            "satisfied_artifact_count": sum(
+                evidence.exists is True
+                for evidence in getattr(
+                    runtime_context, "_completion_artifact_evidence", ()
+                )
+            ),
+            "successful_self_check_count": sum(
+                evidence.exit_code == 0
+                for evidence in getattr(runtime_context, "_completion_self_checks", ())
+            ),
+            "valid_immutable_input_count": sum(
+                evidence.expected_hash == evidence.observed_hash
+                for evidence in getattr(
+                    runtime_context, "_completion_immutable_input_evidence", ()
+                )
+            ),
+            "external_verifier_passed": bool(
+                getattr(runtime_context, "_completion_external_verifier", None)
+                and runtime_context._completion_external_verifier.passed
+            ),
+        }
+        if completion_assessment is not None
+        else None
+    )
+    completion_fingerprint = (
+        semantic_fingerprint(completion_projection)
+        if completion_projection is not None
+        else None
+    )
+    completion_positive_evidence = (
+        sum(
+            int(completion_projection[key])
+            for key in (
+                "satisfied_artifact_count",
+                "successful_self_check_count",
+                "valid_immutable_input_count",
+                "final_evidence_count",
+                "external_verifier_passed",
+            )
+        )
+        if completion_projection is not None
+        else 0
+    )
+    completion_score = (
+        [
+            completion_positive_evidence,
+            -len(completion_projection["reason_codes"]),
+        ]
+        if completion_projection is not None
+        else None
+    )
+    previous_completion_score = previous.get("completion_score")
+    completion_advanced = bool(
+        completion_score is not None
+        and (
+            (
+                isinstance(previous_completion_score, list)
+                and tuple(completion_score) > tuple(previous_completion_score)
+            )
+            or (
+                not isinstance(previous_completion_score, list)
+                and completion_positive_evidence > 0
+            )
+        )
+    )
+    recent_artifact_fingerprints = list(
+        previous.get("recent_artifact_fingerprints") or []
+    )[-7:]
+    artifact_advanced = bool(
+        artifact_changed
+        and not rollback_performed
+        and artifact_fingerprint
+        and artifact_fingerprint != previous.get("artifact_fingerprint")
+        and artifact_fingerprint not in recent_artifact_fingerprints
+    )
+    goal_progress = artifact_advanced or completion_advanced
+    no_goal_progress_count = (
+        0
+        if goal_progress
+        else int(previous.get("no_goal_progress_count", 0) or 0) + 1
+    )
     repetition_count = (
         int(previous.get("repetition_count", 0) or 0) + 1
-        if same_operation and same_result and not artifact_changed
+        if same_operation and same_result and not artifact_advanced
         else 1
     )
     low_information_gain_count = (
         int(previous.get("low_information_gain_count", 0) or 0) + 1
-        if same_result and not artifact_changed
+        if same_result and not artifact_advanced
         else 1
     )
     history = list(previous.get("recent_result_hashes") or [])[-7:]
     history.append(result_hash)
+    if artifact_fingerprint:
+        recent_artifact_fingerprints.append(artifact_fingerprint)
     state = {
         "agent_id": agent_id,
         "operation_hash": operation_hash,
@@ -114,8 +224,17 @@ def record_semantic_tool_progress(
         "repetition_count": repetition_count,
         "low_information_gain_count": low_information_gain_count,
         "recent_result_hashes": history,
+        "recent_artifact_fingerprints": recent_artifact_fingerprints[-8:],
         "artifact_changed": artifact_changed,
         "artifact_fingerprint": artifact_fingerprint,
+        "artifact_advanced": artifact_advanced,
+        "rollback_performed": rollback_performed,
+        "implicit_artifact_loss": implicit_artifact_loss,
+        "completion_fingerprint": completion_fingerprint,
+        "completion_score": completion_score,
+        "completion_advanced": completion_advanced,
+        "goal_progress": goal_progress,
+        "no_goal_progress_count": no_goal_progress_count,
         "updated_at": time.time(),
     }
     state_by_agent[agent_id] = state
@@ -125,17 +244,33 @@ def record_semantic_tool_progress(
     metrics["semantic_tool_observation_count"] = int(
         metrics.get("semantic_tool_observation_count", 0) or 0
     ) + 1
-    if same_operation and same_result and not artifact_changed:
+    if same_operation and same_result and not artifact_advanced:
         metrics["repeated_operation_count"] = int(
             metrics.get("repeated_operation_count", 0) or 0
         ) + 1
-    if same_result and not artifact_changed:
+    if same_result and not artifact_advanced:
         metrics["low_information_gain_count"] = int(
             metrics.get("low_information_gain_count", 0) or 0
         ) + 1
     if artifact_changed:
         metrics["task_artifact_change_count"] = int(
             metrics.get("task_artifact_change_count", 0) or 0
+        ) + 1
+    if goal_progress:
+        metrics["goal_progress_count"] = int(
+            metrics.get("goal_progress_count", 0) or 0
+        ) + 1
+    else:
+        metrics["no_goal_progress_observation_count"] = int(
+            metrics.get("no_goal_progress_observation_count", 0) or 0
+        ) + 1
+    if rollback_performed:
+        metrics["sandbox_rollback_count"] = int(
+            metrics.get("sandbox_rollback_count", 0) or 0
+        ) + 1
+    if implicit_artifact_loss:
+        metrics["implicit_artifact_loss_count"] = int(
+            metrics.get("implicit_artifact_loss_count", 0) or 0
         ) + 1
     runtime_context.context_info[WATCHDOG_METRICS_KEY] = metrics
     return state
@@ -164,6 +299,7 @@ def acknowledge_semantic_checkpoint(context, *, agent_id: str) -> None:
         return
     state["repetition_count"] = 0
     state["low_information_gain_count"] = 0
+    state["no_goal_progress_count"] = 0
     state_by_agent[agent_id] = state
     runtime_context.context_info[SEMANTIC_PROGRESS_KEY] = state_by_agent
 

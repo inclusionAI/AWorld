@@ -18,6 +18,7 @@ class AdaptiveCheckpointReason(str, Enum):
     BUDGET_PRESSURE = "budget_pressure"
     REPEATED_OPERATION = "repeated_operation"
     LOW_INFORMATION_GAIN = "low_information_gain"
+    NO_GOAL_PROGRESS = "no_goal_progress"
 
 
 @dataclass(frozen=True, slots=True)
@@ -25,8 +26,9 @@ class AdaptiveCheckpointPolicy:
     budget_pressure_ratio: float = 0.78
     repeated_operation_threshold: int = 3
     low_information_gain_threshold: int = 3
+    no_goal_progress_threshold: int = 6
     minimum_turn_interval: int = 2
-    keep_recent_messages: int = 8
+    keep_recent_messages: int = 6
 
     def __post_init__(self) -> None:
         if not 0 < self.budget_pressure_ratio <= 1:
@@ -34,6 +36,7 @@ class AdaptiveCheckpointPolicy:
         for name in (
             "repeated_operation_threshold",
             "low_information_gain_threshold",
+            "no_goal_progress_threshold",
             "minimum_turn_interval",
             "keep_recent_messages",
         ):
@@ -51,6 +54,7 @@ class AdaptiveCheckpointDecision:
     input_budget: int
     repetition_count: int
     low_information_gain_count: int
+    no_goal_progress_count: int
 
 
 def evaluate_adaptive_checkpoint(
@@ -60,6 +64,7 @@ def evaluate_adaptive_checkpoint(
     input_budget: int,
     repetition_count: int,
     low_information_gain_count: int,
+    no_goal_progress_count: int = 0,
     turn_epoch: int,
     last_checkpoint_turn: int | None,
     policy: AdaptiveCheckpointPolicy | None = None,
@@ -68,7 +73,13 @@ def evaluate_adaptive_checkpoint(
     policy = policy or AdaptiveCheckpointPolicy()
     if policy_name not in {"explicit", "budget_pressure", "adaptive"}:
         raise ValueError(f"unsupported checkpoint policy: {policy_name}")
-    if min(prompt_tokens, input_budget, repetition_count, low_information_gain_count) < 0:
+    if min(
+        prompt_tokens,
+        input_budget,
+        repetition_count,
+        low_information_gain_count,
+        no_goal_progress_count,
+    ) < 0:
         raise ValueError("adaptive checkpoint measurements must be non-negative")
 
     reasons: list[AdaptiveCheckpointReason] = []
@@ -79,6 +90,8 @@ def evaluate_adaptive_checkpoint(
             reasons.append(AdaptiveCheckpointReason.REPEATED_OPERATION)
         if low_information_gain_count >= policy.low_information_gain_threshold:
             reasons.append(AdaptiveCheckpointReason.LOW_INFORMATION_GAIN)
+        if no_goal_progress_count >= policy.no_goal_progress_threshold:
+            reasons.append(AdaptiveCheckpointReason.NO_GOAL_PROGRESS)
     if policy_name == "explicit":
         reasons = []
     if policy_name == "budget_pressure":
@@ -101,6 +114,7 @@ def evaluate_adaptive_checkpoint(
         input_budget=input_budget,
         repetition_count=repetition_count,
         low_information_gain_count=low_information_gain_count,
+        no_goal_progress_count=no_goal_progress_count,
     )
 
 
@@ -188,6 +202,42 @@ def compact_message_history(
     if first_user is not None:
         protected.add(first_user)
     protected.update(range(max(0, len(values) - keep_recent), len(values)))
+    # Preserve complete assistant/tool atomic groups.  A suffix boundary must
+    # never leave an orphan Tool result or an assistant call without its result.
+    tool_groups: list[set[int]] = []
+    for assistant_index, message in enumerate(values):
+        if message.get("role") != "assistant":
+            continue
+        tool_calls = message.get("tool_calls")
+        if not isinstance(tool_calls, list) or not tool_calls:
+            continue
+        call_ids = {
+            call.get("id")
+            for call in tool_calls
+            if isinstance(call, Mapping)
+            and isinstance(call.get("id"), str)
+            and call.get("id")
+        }
+        if not call_ids:
+            continue
+        group = {assistant_index}
+        for result_index in range(assistant_index + 1, len(values)):
+            result = values[result_index]
+            if result.get("role") in {"assistant", "user", "system"}:
+                break
+            if (
+                result.get("role") == "tool"
+                and result.get("tool_call_id") in call_ids
+            ):
+                group.add(result_index)
+        tool_groups.append(group)
+    changed = True
+    while changed:
+        changed = False
+        for group in tool_groups:
+            if protected.intersection(group) and not group.issubset(protected):
+                protected.update(group)
+                changed = True
     removed = [message for index, message in enumerate(values) if index not in protected]
     if not removed:
         return values, None
@@ -211,11 +261,11 @@ def compact_message_history(
         ),
     }
     compacted: list[dict[str, Any]] = []
-    recent_start = max(0, len(values) - keep_recent)
     marker_inserted = False
     for index, message in enumerate(values):
         if index in protected:
-            if not marker_inserted and index >= recent_start:
+            is_prefix_policy = message.get("role") == "system" or index == first_user
+            if not marker_inserted and not is_prefix_policy:
                 compacted.append(marker)
                 marker_inserted = True
             compacted.append(message)

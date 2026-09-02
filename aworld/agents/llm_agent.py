@@ -1341,6 +1341,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             return messages
 
         from aworld.core.context.compiler import (
+            AdaptiveCheckpointPolicy,
             compact_message_history,
             estimate_canonical_json_tokens,
             evaluate_adaptive_checkpoint,
@@ -1355,6 +1356,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         adaptive_state = context.context_info.get(state_key)
         if not isinstance(adaptive_state, dict):
             adaptive_state = {}
+        adaptive_policy = AdaptiveCheckpointPolicy()
         decision = evaluate_adaptive_checkpoint(
             policy_name=policy_name,
             prompt_tokens=prompt_tokens,
@@ -1363,17 +1365,36 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             low_information_gain_count=int(
                 progress.get("low_information_gain_count", 0) or 0
             ),
+            no_goal_progress_count=int(
+                progress.get("no_goal_progress_count", 0) or 0
+            ),
             turn_epoch=context.context_lifecycle_state.turn_epoch,
             last_checkpoint_turn=adaptive_state.get("last_checkpoint_turn"),
+            policy=adaptive_policy,
         )
         if not decision.checkpoint:
             if adaptive_state.get("compaction_active") is True:
-                compacted, _ = compact_message_history(messages)
+                compacted, _ = compact_message_history(
+                    messages, keep_recent=adaptive_policy.keep_recent_messages
+                )
+                effective_prompt_tokens = int(
+                    estimate_canonical_json_tokens(compacted).value or 0
+                )
+                adaptive_state["last_prompt_tokens"] = prompt_tokens
+                adaptive_state["last_effective_prompt_tokens"] = (
+                    effective_prompt_tokens
+                )
+                adaptive_state["last_estimated_saved_prompt_tokens"] = max(
+                    0, prompt_tokens - effective_prompt_tokens
+                )
+                context.context_info[state_key] = adaptive_state
                 return compacted
             return messages
 
         checkpoint = await context.snapshot()
-        compacted, receipt = compact_message_history(messages)
+        compacted, receipt = compact_message_history(
+            messages, keep_recent=adaptive_policy.keep_recent_messages
+        )
         reasons = [reason.value for reason in decision.reasons]
         adaptive_state.update(
             {
@@ -1398,7 +1419,6 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             }
         )
         adaptive_state["decisions"] = decisions[-32:]
-        context.context_info[state_key] = adaptive_state
         acknowledge_semantic_checkpoint(context, agent_id=self.id())
 
         progress_signal = {
@@ -1411,6 +1431,22 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         }
         compacted = list(compacted)
         compacted.append(progress_signal)
+        effective_prompt_tokens = int(
+            estimate_canonical_json_tokens(compacted).value or 0
+        )
+        adaptive_state["last_effective_prompt_tokens"] = effective_prompt_tokens
+        adaptive_state["last_estimated_saved_prompt_tokens"] = max(
+            0, prompt_tokens - effective_prompt_tokens
+        )
+        adaptive_state["decisions"][-1].update(
+            {
+                "effective_prompt_tokens": effective_prompt_tokens,
+                "estimated_saved_prompt_tokens": max(
+                    0, prompt_tokens - effective_prompt_tokens
+                ),
+            }
+        )
+        context.context_info[state_key] = adaptive_state
         logger.info(
             f"Adaptive Context checkpoint for agent {self.id()}: "
             f"reasons={reasons} compacted={receipt is not None}"

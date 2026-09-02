@@ -29,6 +29,10 @@ from aworld.sandbox.config.templates import (
 )
 from aworld.sandbox.implementations.sandbox import Sandbox
 from aworld.sandbox.models import SandboxEnvType, SandboxLocalResponse, SandboxStatus
+from aworld.core.tool_action_journal import (
+    append_tool_action_event,
+    tool_action_batch_id,
+)
 
 
 _CONTAINER_IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
@@ -48,6 +52,7 @@ _MUTATING_SHELL_PATTERN = re.compile(
     r"|(?:^|[^<])(?:>>?|2>>?)\s*[^&]",
     re.IGNORECASE,
 )
+_OPAQUE_SHELL_ACTIONS = {"run_code", "execute_command", "mcp_execute_command"}
 
 
 class DockerSandbox(Sandbox):
@@ -181,7 +186,10 @@ class DockerSandbox(Sandbox):
                 "destructive_checkpoint": {
                     "enabled": self.destructive_checkpoint,
                     "tracked_path_count": len(self.tracked_artifact_paths),
-                    "rollback_policy": "failed_mutating_action",
+                    "transaction_scope": "all_shell_and_declared_file_writes",
+                    "rollback_policy": (
+                        "failed_action_or_unexpected_implicit_artifact_loss"
+                    ),
                 },
             }
         )
@@ -211,13 +219,19 @@ class DockerSandbox(Sandbox):
         action_name = str(cls._action_value(action, "action_name", "") or "")
         if action_name in _MUTATING_FILE_ACTIONS:
             return True
-        if action_name not in {"run_code", "execute_command", "mcp_execute_command"}:
+        if action_name not in _OPAQUE_SHELL_ACTIONS:
             return False
         params = cls._action_value(action, "params", {}) or {}
         if not isinstance(params, dict):
             return False
         command = params.get("code") or params.get("command") or ""
         return isinstance(command, str) and bool(_MUTATING_SHELL_PATTERN.search(command))
+
+    @classmethod
+    def _requires_transaction(cls, action: Any) -> bool:
+        """Snapshot opaque shell execution without guessing executable behavior."""
+        action_name = str(cls._action_value(action, "action_name", "") or "")
+        return action_name in _OPAQUE_SHELL_ACTIONS or action_name in _MUTATING_FILE_ACTIONS
 
     def _docker_run(self, command: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
         return subprocess.run(command, check=False, **kwargs)
@@ -260,6 +274,45 @@ class DockerSandbox(Sandbox):
         if isinstance(output, str):
             output = output.encode()
         return hashlib.sha256(output).hexdigest()
+
+    def _artifact_paths_sync(self) -> frozenset[str] | None:
+        """List tracked paths with NUL framing for loss detection.
+
+        Content identity remains owned by ``_artifact_fingerprint_sync``.  This
+        inventory is used only to detect that a previously present path vanished;
+        paths are never exposed in model-visible receipts.
+        """
+        if not self.destructive_checkpoint or not self.tracked_artifact_paths:
+            return None
+        program = (
+            'for target do if [ -e "$target" ] || [ -L "$target" ]; then '
+            'find "$target" -print0; '
+            'else printf "missing:%s\\0" "$target"; fi; done'
+        )
+        result = self._docker_run(
+            [
+                self.docker_binary,
+                "exec",
+                self.container,
+                self.container_shell,
+                "-c",
+                program,
+                "aworld-artifact-inventory",
+                *self.tracked_artifact_paths,
+            ],
+            capture_output=True,
+            timeout=120,
+        )
+        if result.returncode != 0:
+            return None
+        output = result.stdout or b""
+        if isinstance(output, str):
+            output = output.encode()
+        return frozenset(
+            item.decode("utf-8", errors="surrogateescape")
+            for item in output.split(b"\0")
+            if item
+        )
 
     def _create_checkpoint_sync(self) -> dict[str, Any]:
         if self.checkpoint_directory is None:
@@ -413,48 +466,204 @@ class DockerSandbox(Sandbox):
                 metadata["context_management"] = dict(receipt)
                 result.metadata = metadata
 
+    @staticmethod
+    def _mark_unexpected_rollback(results: list[Any]) -> None:
+        error = "sandbox transaction rolled back unexpected implicit artifact loss"
+        for result in results:
+            if isinstance(result, dict):
+                result["success"] = False
+                result["error"] = error
+            else:
+                result.success = False
+                result.error = error
+
+    @staticmethod
+    def _journal_transaction(
+        context: Any,
+        actions: list[Any],
+        receipt: dict[str, Any],
+    ) -> None:
+        if context is None:
+            return
+        try:
+            append_tool_action_event(
+                context=context,
+                event_type="sandbox_transaction_resolved",
+                actions=actions,
+                status=(
+                    "rolled_back"
+                    if receipt["rollback_performed"]
+                    else "failed"
+                    if receipt.get("tool_failed") is True
+                    else "committed"
+                ),
+                batch_id=tool_action_batch_id(actions),
+                metadata={"context_management": receipt},
+            )
+        except Exception as exc:
+            from aworld.logs.util import logger
+
+            logger.warning(
+                "Sandbox transaction journal append failed open; "
+                f"error_type={type(exc).__name__}"
+            )
+
     async def call_tool(
         self,
         action_list: List[Dict[str, Any]] = None,
         task_id: str = None,
         session_id: str = None,
         context: Any = None,
+        event_message: Any = None,
     ) -> List[Any]:
         actions = action_list or []
         if not self.destructive_checkpoint or not self.tracked_artifact_paths:
-            return await super().call_tool(actions, task_id, session_id, context)
+            return await super().call_tool(
+                actions, task_id, session_id, context, event_message
+            )
         async with self._checkpoint_lock:
             before = await asyncio.to_thread(self._artifact_fingerprint_sync)
-            mutating = any(self._is_mutating_action(action) for action in actions)
+            before_paths = await asyncio.to_thread(self._artifact_paths_sync)
+            declared_mutating = any(self._is_mutating_action(action) for action in actions)
+            transactional = any(self._requires_transaction(action) for action in actions)
             checkpoint = (
-                await asyncio.to_thread(self._create_checkpoint_sync) if mutating else None
+                await asyncio.to_thread(self._create_checkpoint_sync)
+                if transactional
+                else None
             )
             rolled_back = False
             rollback_attempted = False
+            rollback_reason = None
+            rollback_skipped_reason = None
             try:
-                results = await super().call_tool(actions, task_id, session_id, context)
-                if checkpoint is not None and self._results_failed(results):
+                results = await super().call_tool(
+                    actions, task_id, session_id, context, event_message
+                )
+                if results is None:
+                    results = []
+                tool_failed = self._results_failed(results)
+                observed_after = await asyncio.to_thread(
+                    self._artifact_fingerprint_sync
+                )
+                observed_after_paths = await asyncio.to_thread(
+                    self._artifact_paths_sync
+                )
+                removed_paths = (
+                    frozenset(
+                        path
+                        for path in before_paths - observed_after_paths
+                        if not path.startswith("missing:")
+                    )
+                    if before_paths is not None and observed_after_paths is not None
+                    else frozenset()
+                )
+                unexpected_loss = bool(
+                    checkpoint is not None
+                    and removed_paths
+                    and not declared_mutating
+                )
+                if checkpoint is not None and tool_failed and before != observed_after:
                     rollback_attempted = True
                     await asyncio.to_thread(self._restore_checkpoint_sync, checkpoint)
                     rolled_back = True
-                after = await asyncio.to_thread(self._artifact_fingerprint_sync)
+                    rollback_reason = "tool_failure"
+                elif checkpoint is not None and tool_failed:
+                    rollback_skipped_reason = "artifact_unchanged_after_tool_failure"
+                elif unexpected_loss:
+                    rollback_attempted = True
+                    await asyncio.to_thread(self._restore_checkpoint_sync, checkpoint)
+                    rolled_back = True
+                    rollback_reason = "unexpected_implicit_artifact_loss"
+                    self._mark_unexpected_rollback(results)
+                after = (
+                    await asyncio.to_thread(self._artifact_fingerprint_sync)
+                    if rolled_back
+                    else observed_after
+                )
+                removed_paths = (
+                    frozenset(
+                        path
+                        for path in before_paths - observed_after_paths
+                        if not path.startswith("missing:")
+                    )
+                    if before_paths is not None and observed_after_paths is not None
+                    else frozenset()
+                )
+                added_paths = (
+                    frozenset(
+                        path
+                        for path in observed_after_paths - before_paths
+                        if not path.startswith("missing:")
+                    )
+                    if before_paths is not None and observed_after_paths is not None
+                    else frozenset()
+                )
                 receipt = {
                     "schema_version": "aworld.sandbox-artifact-progress/v1",
                     "artifact_fingerprint_before": before,
                     "artifact_fingerprint_after": after,
                     "artifact_changed": bool(before != after),
-                    "mutating_action": mutating,
+                    "artifact_change_observed_before_resolution": bool(
+                        observed_after is not None and before != observed_after
+                    ),
+                    "artifact_fingerprint_observed_after_action": observed_after,
+                    "artifact_inventory_available": bool(
+                        before_paths is not None and observed_after_paths is not None
+                    ),
+                    "added_artifact_count": len(added_paths),
+                    "removed_artifact_count": len(removed_paths),
+                    "implicit_artifact_loss_detected": bool(
+                        removed_paths and not declared_mutating
+                    ),
+                    "tool_failed": tool_failed,
+                    "mutating_action": declared_mutating,
+                    "transactional_action": transactional,
                     "checkpoint_created": checkpoint is not None,
+                    "checkpoint_id": checkpoint.get("id") if checkpoint else None,
                     "checkpoint_sha256": checkpoint.get("sha256") if checkpoint else None,
                     "rollback_performed": rolled_back,
-                    "rollback_reason": "tool_failure" if rolled_back else None,
+                    "rollback_reason": rollback_reason,
+                    "rollback_skipped_reason": rollback_skipped_reason,
                 }
                 self._attach_context_receipt(results, receipt)
+                self._journal_transaction(context, actions, receipt)
                 self._last_artifact_fingerprint = after
                 return results
             except BaseException:
                 if checkpoint is not None and not rollback_attempted:
                     await asyncio.to_thread(self._restore_checkpoint_sync, checkpoint)
+                    rollback_attempted = True
+                    rolled_back = True
+                if checkpoint is not None:
+                    after = (
+                        await asyncio.to_thread(self._artifact_fingerprint_sync)
+                        if rolled_back
+                        else None
+                    )
+                    receipt = {
+                        "schema_version": "aworld.sandbox-artifact-progress/v1",
+                        "artifact_fingerprint_before": before,
+                        "artifact_fingerprint_after": after,
+                        "artifact_changed": bool(
+                            before is not None and after is not None and before != after
+                        ),
+                        "artifact_change_observed_before_resolution": None,
+                        "artifact_fingerprint_observed_after_action": None,
+                        "artifact_inventory_available": before_paths is not None,
+                        "added_artifact_count": None,
+                        "removed_artifact_count": None,
+                        "implicit_artifact_loss_detected": None,
+                        "tool_failed": True,
+                        "mutating_action": declared_mutating,
+                        "transactional_action": transactional,
+                        "checkpoint_created": True,
+                        "checkpoint_id": checkpoint.get("id"),
+                        "checkpoint_sha256": checkpoint.get("sha256"),
+                        "rollback_performed": rolled_back,
+                        "rollback_reason": "tool_exception" if rolled_back else None,
+                        "rollback_skipped_reason": None,
+                    }
+                    self._journal_transaction(context, actions, receipt)
                 raise
             finally:
                 self._discard_checkpoint(checkpoint)

@@ -605,6 +605,9 @@ async def run(args: argparse.Namespace) -> int:
     os.environ["AWORLD_LLM_CALL_JOURNAL_PATH"] = str(
         (args.output_dir / "llm_calls.journal.jsonl").resolve()
     )
+    os.environ["AWORLD_TOOL_ACTION_JOURNAL_PATH"] = str(
+        (args.output_dir / "tool_actions.journal.jsonl").resolve()
+    )
 
     # Import after AWORLD_LOG_PATH is configured so trajectory.log is placed
     # beside the canonical TaskResponse artifacts.
@@ -612,6 +615,7 @@ async def run(args: argparse.Namespace) -> int:
     from aworld.config.conf import AgentConfig, AgentMemoryConfig
     from aworld.runner import Runners
     from aworld.sandbox import DockerSandbox
+    from aworld.core.tool_action_journal import read_tool_action_journal
     from aworld.utils.serialized_util import to_serializable
 
     if args.deterministic_capture_provider and not args.allow_missing_provider_trace:
@@ -756,6 +760,8 @@ async def run(args: argparse.Namespace) -> int:
         context_artifacts = _export_context_tool_output_artifacts(
             agent, args.output_dir
         )
+        tool_journal_path = args.output_dir / "tool_actions.journal.jsonl"
+        tool_journal_recovery = read_tool_action_journal(tool_journal_path)
         checksums = {
             "task_response.json": _write_json(
                 args.output_dir / "task_response.json", response_payload
@@ -794,6 +800,10 @@ async def run(args: argparse.Namespace) -> int:
                 ],
             ),
         }
+        if tool_journal_path.exists():
+            checksums[tool_journal_path.name] = _sha256_bytes(
+                tool_journal_path.read_bytes()
+            )
         inspect = subprocess.run(
             [
                 sandbox.docker_binary,
@@ -851,6 +861,7 @@ async def run(args: argparse.Namespace) -> int:
                 "provider_capture_gate_passed": provider_capture_gate_passed,
                 "trajectory_items": len(response.trajectory or []),
                 "context_tool_output_artifacts": context_artifacts,
+                "tool_action_journal": tool_journal_recovery.to_evidence(),
                 "checksums": checksums,
             },
             "started_at_epoch": started_at,

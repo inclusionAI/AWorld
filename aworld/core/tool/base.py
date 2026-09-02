@@ -38,6 +38,10 @@ from aworld.output.base import StepOutput
 from aworld.runners.hook.hooks import HookPoint
 from aworld.runners.hook.utils import run_hooks
 from aworld.runners.post_tool_progress import arm_post_tool_progress_watchdog
+from aworld.core.tool_action_journal import (
+    append_tool_action_event,
+    tool_action_batch_id,
+)
 from aworld.utils.common import convert_to_snake, sync_exec
 
 AgentInput = TypeVar("AgentInput")
@@ -45,6 +49,28 @@ ToolInput = TypeVar("ToolInput")
 
 # Forward declaration of action_executor to fix NameError
 action_executor = None
+
+
+def _journal_model_visible_tool_observation(context, actions, observation) -> None:
+    """Persist the exact bounded ActionResults that can enter model history."""
+    if context is None:
+        return
+    try:
+        results = getattr(observation, "action_result", None) or []
+        append_tool_action_event(
+            context=context,
+            event_type="tool_observation_recorded",
+            actions=actions,
+            results=results,
+            status="completed",
+            batch_id=tool_action_batch_id(actions),
+            metadata={"source": "model_visible_observation"},
+        )
+    except Exception as exc:
+        logger.warning(
+            "Tool observation journal append failed open; "
+            f"error_type={type(exc).__name__}"
+        )
 
 
 async def maybe_await(result: Any) -> Any:
@@ -530,6 +556,9 @@ class Tool(BaseTool[Observation, List[ActionModel]]):
             res = enforce_tool_output_boundary(
                 res, action, message.context, tool_output_plans
             )
+            _journal_model_visible_tool_observation(
+                message.context, action, res[0]
+            )
 
             final_res = self.post_step(res, action,message=message, **kwargs)
             if isinstance(final_res, Message):
@@ -826,6 +855,9 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
             )
             res = enforce_tool_output_boundary(
                 res, action, message.context, tool_output_plans
+            )
+            _journal_model_visible_tool_observation(
+                message.context, action, res[0]
             )
 
             final_res = await self.post_step(res, action, message=message,**kwargs)

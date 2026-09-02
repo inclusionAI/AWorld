@@ -5,6 +5,8 @@ from subprocess import CompletedProcess
 import pytest
 
 from aworld.core.common import ActionResult
+from aworld.core.context.base import Context
+from aworld.core.tool_action_journal import read_tool_action_journal
 from aworld.sandbox import DockerSandbox, SandboxEnvType, create_sandbox
 from aworld.sandbox.base import BaseSandbox
 
@@ -139,10 +141,13 @@ def test_docker_sandbox_mutation_classifier_is_generic() -> None:
     assert not DockerSandbox._is_mutating_action(
         {"action_name": "run_code", "params": {"code": "cat result"}}
     )
+    assert DockerSandbox._requires_transaction(
+        {"action_name": "run_code", "params": {"code": "opaque-program result"}}
+    )
 
 
 @pytest.mark.asyncio
-async def test_failed_mutation_rolls_back_and_emits_artifact_receipt(
+async def test_failed_unchanged_action_skips_unnecessary_restore(
     docker_runtime: None, tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     sandbox = DockerSandbox(
@@ -159,10 +164,18 @@ async def test_failed_mutation_rolls_back_and_emits_artifact_receipt(
     restored = []
 
     monkeypatch.setattr(sandbox, "_artifact_fingerprint_sync", lambda: next(fingerprints))
+    monkeypatch.setattr(sandbox, "_artifact_paths_sync", lambda: frozenset({"/workspace"}))
     monkeypatch.setattr(sandbox, "_create_checkpoint_sync", lambda: checkpoint)
     monkeypatch.setattr(sandbox, "_restore_checkpoint_sync", lambda value: restored.append(value))
 
-    async def failed_call(self, action_list=None, task_id=None, session_id=None, context=None):
+    async def failed_call(
+        self,
+        action_list=None,
+        task_id=None,
+        session_id=None,
+        context=None,
+        event_message=None,
+    ):
         return [
             ActionResult(
                 success=True,
@@ -175,7 +188,56 @@ async def test_failed_mutation_rolls_back_and_emits_artifact_receipt(
         [{"action_name": "run_code", "params": {"code": "rm -f result"}}]
     )
     receipt = results[0].metadata["context_management"]
+    assert restored == []
+    assert receipt["tool_failed"] is True
+    assert receipt["rollback_performed"] is False
+    assert receipt["rollback_reason"] is None
+    assert receipt["rollback_skipped_reason"] == (
+        "artifact_unchanged_after_tool_failure"
+    )
+    assert receipt["artifact_changed"] is False
+    assert not archive.exists()
+
+
+@pytest.mark.asyncio
+async def test_failed_changed_action_rolls_back_artifact_state(
+    docker_runtime: None, tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sandbox = DockerSandbox(
+        container="task",
+        destructive_checkpoint=True,
+        tracked_artifact_paths=["/workspace"],
+        checkpoint_directory=str(tmp_path),
+        reuse=False,
+    )
+    archive = tmp_path / "checkpoint.tar"
+    archive.write_bytes(b"checkpoint")
+    checkpoint = {"id": "checkpoint", "archive": archive, "sha256": "digest"}
+    fingerprints = iter(("before", "damaged", "before"))
+    restored = []
+    monkeypatch.setattr(sandbox, "_artifact_fingerprint_sync", lambda: next(fingerprints))
+    monkeypatch.setattr(sandbox, "_artifact_paths_sync", lambda: frozenset({"/workspace"}))
+    monkeypatch.setattr(sandbox, "_create_checkpoint_sync", lambda: checkpoint)
+    monkeypatch.setattr(sandbox, "_restore_checkpoint_sync", lambda value: restored.append(value))
+
+    async def failed_call(
+        self,
+        action_list=None,
+        task_id=None,
+        session_id=None,
+        context=None,
+        event_message=None,
+    ):
+        return [ActionResult(success=False, content="failed")]
+
+    monkeypatch.setattr(BaseSandbox, "call_tool", failed_call)
+    results = await sandbox.call_tool(
+        [{"action_name": "run_code", "params": {"code": "opaque-program"}}]
+    )
+
+    receipt = results[0].metadata["context_management"]
     assert restored == [checkpoint]
+    assert receipt["tool_failed"] is True
     assert receipt["rollback_performed"] is True
     assert receipt["rollback_reason"] == "tool_failure"
     assert receipt["artifact_changed"] is False
@@ -200,10 +262,21 @@ async def test_successful_mutation_reports_artifact_progress_without_rollback(
     fingerprints = iter(("before", "after"))
     restored = []
     monkeypatch.setattr(sandbox, "_artifact_fingerprint_sync", lambda: next(fingerprints))
+    path_states = iter(
+        (frozenset({"/workspace/result.txt"}), frozenset({"/workspace/result.txt"}))
+    )
+    monkeypatch.setattr(sandbox, "_artifact_paths_sync", lambda: next(path_states))
     monkeypatch.setattr(sandbox, "_create_checkpoint_sync", lambda: checkpoint)
     monkeypatch.setattr(sandbox, "_restore_checkpoint_sync", lambda value: restored.append(value))
 
-    async def successful_call(self, action_list=None, task_id=None, session_id=None, context=None):
+    async def successful_call(
+        self,
+        action_list=None,
+        task_id=None,
+        session_id=None,
+        context=None,
+        event_message=None,
+    ):
         return [ActionResult(success=True, content='{"success": true}')]
 
     monkeypatch.setattr(BaseSandbox, "call_tool", successful_call)
@@ -214,6 +287,165 @@ async def test_successful_mutation_reports_artifact_progress_without_rollback(
     assert restored == []
     assert receipt["artifact_changed"] is True
     assert receipt["rollback_performed"] is False
+    assert not archive.exists()
+
+
+@pytest.mark.asyncio
+async def test_successful_opaque_shell_artifact_loss_is_rolled_back(
+    docker_runtime: None, tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sandbox = DockerSandbox(
+        container="task",
+        destructive_checkpoint=True,
+        tracked_artifact_paths=["/workspace"],
+        checkpoint_directory=str(tmp_path),
+        reuse=False,
+    )
+    archive = tmp_path / "checkpoint.tar"
+    archive.write_bytes(b"checkpoint")
+    checkpoint = {"id": "checkpoint", "archive": archive, "sha256": "digest"}
+    fingerprints = iter(("before", "side-effect", "before"))
+    path_states = iter(
+        (
+            frozenset({"/workspace", "/workspace/important.sidecar"}),
+            frozenset({"/workspace"}),
+            frozenset({"/workspace", "/workspace/important.sidecar"}),
+        )
+    )
+    restored = []
+    monkeypatch.setattr(sandbox, "_artifact_fingerprint_sync", lambda: next(fingerprints))
+    monkeypatch.setattr(sandbox, "_artifact_paths_sync", lambda: next(path_states))
+    monkeypatch.setattr(sandbox, "_create_checkpoint_sync", lambda: checkpoint)
+    monkeypatch.setattr(sandbox, "_restore_checkpoint_sync", lambda value: restored.append(value))
+
+    async def successful_call(
+        self,
+        action_list=None,
+        task_id=None,
+        session_id=None,
+        context=None,
+        event_message=None,
+    ):
+        return [ActionResult(success=True, content='{"success": true}')]
+
+    monkeypatch.setattr(BaseSandbox, "call_tool", successful_call)
+    results = await sandbox.call_tool(
+        [{"action_name": "run_code", "params": {"code": "opaque-reader data"}}]
+    )
+
+    receipt = results[0].metadata["context_management"]
+    assert restored == [checkpoint]
+    assert results[0].success is False
+    assert receipt["transactional_action"] is True
+    assert receipt["mutating_action"] is False
+    assert receipt["implicit_artifact_loss_detected"] is True
+    assert receipt["removed_artifact_count"] == 1
+    assert receipt["rollback_performed"] is True
+    assert receipt["rollback_reason"] == "unexpected_implicit_artifact_loss"
+    assert receipt["artifact_changed"] is False
+    assert not archive.exists()
+
+
+@pytest.mark.asyncio
+async def test_successful_opaque_shell_addition_is_not_misclassified_as_loss(
+    docker_runtime: None, tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sandbox = DockerSandbox(
+        container="task",
+        destructive_checkpoint=True,
+        tracked_artifact_paths=["/workspace/result.txt"],
+        checkpoint_directory=str(tmp_path),
+        reuse=False,
+    )
+    archive = tmp_path / "checkpoint.tar"
+    archive.write_bytes(b"checkpoint")
+    checkpoint = {"id": "checkpoint", "archive": archive, "sha256": "digest"}
+    fingerprints = iter(("missing", "created"))
+    path_states = iter(
+        (
+            frozenset({"missing:/workspace/result.txt"}),
+            frozenset({"/workspace/result.txt"}),
+        )
+    )
+    restored = []
+    monkeypatch.setattr(sandbox, "_artifact_fingerprint_sync", lambda: next(fingerprints))
+    monkeypatch.setattr(sandbox, "_artifact_paths_sync", lambda: next(path_states))
+    monkeypatch.setattr(sandbox, "_create_checkpoint_sync", lambda: checkpoint)
+    monkeypatch.setattr(sandbox, "_restore_checkpoint_sync", lambda value: restored.append(value))
+
+    async def successful_call(
+        self,
+        action_list=None,
+        task_id=None,
+        session_id=None,
+        context=None,
+        event_message=None,
+    ):
+        return [ActionResult(success=True, content='{"success": true}')]
+
+    monkeypatch.setattr(BaseSandbox, "call_tool", successful_call)
+    results = await sandbox.call_tool(
+        [{"action_name": "run_code", "params": {"code": "opaque-producer"}}]
+    )
+
+    receipt = results[0].metadata["context_management"]
+    assert restored == []
+    assert receipt["removed_artifact_count"] == 0
+    assert receipt["added_artifact_count"] == 1
+    assert receipt["rollback_performed"] is False
+
+
+@pytest.mark.asyncio
+async def test_tool_exception_rollback_is_preserved_in_action_journal(
+    docker_runtime: None, tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sandbox = DockerSandbox(
+        container="task",
+        destructive_checkpoint=True,
+        tracked_artifact_paths=["/workspace"],
+        checkpoint_directory=str(tmp_path / "checkpoints"),
+        reuse=False,
+    )
+    archive = tmp_path / "checkpoint.tar"
+    archive.write_bytes(b"checkpoint")
+    checkpoint = {"id": "checkpoint", "archive": archive, "sha256": "digest"}
+    fingerprints = iter(("before", "before"))
+    restored = []
+    monkeypatch.setattr(sandbox, "_artifact_fingerprint_sync", lambda: next(fingerprints))
+    monkeypatch.setattr(
+        sandbox, "_artifact_paths_sync", lambda: frozenset({"/workspace"})
+    )
+    monkeypatch.setattr(sandbox, "_create_checkpoint_sync", lambda: checkpoint)
+    monkeypatch.setattr(sandbox, "_restore_checkpoint_sync", lambda value: restored.append(value))
+
+    async def exceptional_call(
+        self,
+        action_list=None,
+        task_id=None,
+        session_id=None,
+        context=None,
+        event_message=None,
+    ):
+        raise RuntimeError("tool transport failed")
+
+    monkeypatch.setattr(BaseSandbox, "call_tool", exceptional_call)
+    journal = tmp_path / "tool-actions.journal.jsonl"
+    monkeypatch.setenv("AWORLD_TOOL_ACTION_JOURNAL_PATH", str(journal))
+    context = Context(task_id="exception-task")
+
+    with pytest.raises(RuntimeError, match="transport failed"):
+        await sandbox.call_tool(
+            [{"action_name": "run_code", "params": {"code": "opaque-command"}}],
+            context=context,
+        )
+
+    assert restored == [checkpoint]
+    recovery = read_tool_action_journal(journal)
+    assert recovery.events[-1]["event_type"] == "sandbox_transaction_resolved"
+    assert recovery.events[-1]["status"] == "rolled_back"
+    assert recovery.events[-1]["metadata"]["context_management"]["rollback_reason"] == (
+        "tool_exception"
+    )
     assert not archive.exists()
 
 
