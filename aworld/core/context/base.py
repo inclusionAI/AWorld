@@ -7,7 +7,7 @@ import uuid
 from collections import OrderedDict
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
-from typing import Dict, Any, TYPE_CHECKING, List, Literal, Optional
+from typing import Awaitable, Callable, Dict, Any, TYPE_CHECKING, List, Literal, Optional
 
 from aworld.checkpoint.inmemory import InMemoryCheckpointRepository
 from aworld.config import ConfigDict, AgentMemoryConfig
@@ -269,6 +269,9 @@ class Context:
         self._completion_external_verifier: ExternalVerifierEvidence | None = None
         self._completion_repair_attempt = 0
         self._completion_assessment: CompletionAssessment | None = None
+        self._completion_evidence_resolver: (
+            Callable[["Context", CompletionContract], Awaitable[None]] | None
+        ) = None
         self._task_tool_catalogs: Dict[str, TaskCatalogSnapshot] = {}
         self._tool_catalog_transitions: List[CatalogTransition] = []
         self._task_skill_sets: Dict[str, tuple[str, ...]] = {}
@@ -390,11 +393,17 @@ class Context:
         contract: CompletionContract | None,
         *,
         mode: CompletionMode = CompletionMode.OFF,
+        evidence_resolver: (
+            Callable[["Context", CompletionContract], Awaitable[None]] | None
+        ) = None,
     ) -> None:
         if contract is not None and not isinstance(contract, CompletionContract):
             raise TypeError("contract must be CompletionContract or None")
         self._completion_contract = contract
         self._completion_mode = CompletionMode(mode)
+        if evidence_resolver is not None and not callable(evidence_resolver):
+            raise TypeError("evidence_resolver must be callable or None")
+        self._completion_evidence_resolver = evidence_resolver
         self._completion_artifact_evidence = []
         self._completion_immutable_input_evidence = []
         self._completion_self_checks = []
@@ -402,6 +411,24 @@ class Context:
         self._completion_external_verifier = None
         self._completion_repair_attempt = 0
         self._completion_assessment = None
+
+    @property
+    def completion_contract(self) -> CompletionContract | None:
+        return self._completion_contract
+
+    @property
+    def completion_mode(self) -> CompletionMode:
+        return self._completion_mode
+
+    async def resolve_completion_evidence(self) -> None:
+        """Execute the runtime-owned evidence resolver, when one is configured."""
+        if self._completion_contract is None or self._completion_evidence_resolver is None:
+            return
+        await self._completion_evidence_resolver(self, self._completion_contract)
+
+    def increment_completion_repair_attempt(self) -> int:
+        self._completion_repair_attempt += 1
+        return self._completion_repair_attempt
 
     def configure_tool_output_boundary(
         self,
@@ -1610,6 +1637,47 @@ class Context:
     def merge_context(self, other_context: "Context") -> None:
         if not other_context:
             return
+
+        # Completion evidence is runtime state, not ordinary ContextState data.
+        # Preserve it explicitly so the root task handler assesses the same
+        # contract/evidence that the executing Agent used.
+        other_contract = getattr(other_context, "_completion_contract", None)
+        if other_contract is not None:
+            if self._completion_contract is None:
+                self._completion_contract = other_contract
+                self._completion_mode = other_context._completion_mode
+                self._completion_evidence_resolver = getattr(
+                    other_context, "_completion_evidence_resolver", None
+                )
+            elif self._completion_contract != other_contract:
+                raise ValueError("cannot merge conflicting completion contracts")
+            self._completion_artifact_evidence.extend(
+                item
+                for item in other_context._completion_artifact_evidence
+                if item not in self._completion_artifact_evidence
+            )
+            self._completion_immutable_input_evidence.extend(
+                item
+                for item in other_context._completion_immutable_input_evidence
+                if item not in self._completion_immutable_input_evidence
+            )
+            self._completion_self_checks.extend(
+                item
+                for item in other_context._completion_self_checks
+                if item not in self._completion_self_checks
+            )
+            self._completion_final_evidence_codes.update(
+                other_context._completion_final_evidence_codes
+            )
+            self._completion_external_verifier = (
+                other_context._completion_external_verifier
+                or self._completion_external_verifier
+            )
+            self._completion_repair_attempt = max(
+                self._completion_repair_attempt,
+                other_context._completion_repair_attempt,
+            )
+            self._completion_assessment = other_context._completion_assessment
 
         # 1. Merge context_info state
         if hasattr(other_context, "context_info") and other_context.context_info:

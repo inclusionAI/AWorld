@@ -140,6 +140,7 @@ class ContextCompilerRuntimeConfig(BaseConfig):
     checkpoint_policy: Literal[
         "explicit", "budget_pressure", "adaptive"
     ] = "explicit"
+    destructive_sandbox_checkpoint: bool = False
     default_tool_output_inline_tokens: int = Field(default=4096, gt=0)
     artifact_offload: bool = True
     context_inspector: bool = True

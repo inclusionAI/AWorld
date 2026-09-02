@@ -376,6 +376,22 @@ class LLMModel:
         self._context_task_catalog_policy = context_config_value(
             "task_catalog_policy", "sticky"
         )
+        self._context_checkpoint_policy = context_config_value(
+            "checkpoint_policy", "explicit"
+        )
+        configured_context_limit = context_config_value("context_limit", None)
+        if configured_context_limit is None:
+            configured_context_limit = getattr(conf, "max_model_len", None) or 128000
+        self._context_input_budget = max(
+            0,
+            int(configured_context_limit)
+            - int(context_config_value("reserved_output_tokens", 4096))
+            - int(context_config_value("provider_protocol_reserve", 256))
+            - int(context_config_value("safety_margin_tokens", 512)),
+        )
+        self._context_completion_mode = context_config_value(
+            "completion_contract", "off"
+        )
         if candidate_policy is None:
             final_policy = None
             if context_config_value("universal_final", True):

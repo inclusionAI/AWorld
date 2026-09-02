@@ -4,6 +4,8 @@ from datetime import datetime, timezone
 import json
 from types import SimpleNamespace
 
+import pytest
+
 from aworld.agents.final_context_adapter import adapt_agent_final_request
 from aworld.core.context.base import Context
 from aworld.core.context.compiler import (
@@ -28,6 +30,7 @@ from aworld.core.context.compiler import (
     MergePolicy,
     ScopeKind,
     SerializedPrefixEvidence,
+    SelfCheckEvidence,
     SkillDescriptor,
     SkillIndexEntry,
     SourceKind,
@@ -38,6 +41,7 @@ from aworld.core.context.compiler import (
     ToolOutputMode,
     ToolOutputPolicy,
     Trust,
+    ValidationCommand,
     build_cache_identity,
     canonical_json_hash,
     merge_child_result,
@@ -425,3 +429,41 @@ def test_completion_contract_keeps_agent_claim_separate_from_evidence():
     context.record_completion_final_evidence("final_answer")
     satisfied = context.assess_completion_contract(agent_claimed_finished=True)
     assert satisfied.status is CompletionStatus.SATISFIED
+
+
+@pytest.mark.asyncio
+async def test_completion_contract_runtime_resolver_and_merge_are_automatic():
+    child = Context(task_id="completion")
+    calls = []
+
+    async def resolver(context, contract):
+        calls.append(contract.validation_commands[0].command_id)
+        context.record_completion_self_check(
+            SelfCheckEvidence(
+                command_id="check",
+                exit_code=0,
+                output_hash=canonical_json_hash({"ok": True}),
+                observed_at=datetime.now(timezone.utc),
+            )
+        )
+
+    contract = CompletionContract(
+        required_artifacts=(),
+        immutable_inputs=(),
+        validation_commands=(ValidationCommand("check", ("true",)),),
+        max_evidence_age_seconds=60,
+        required_final_evidence=("agent_final_response",),
+        max_repairs=0,
+    )
+    child.configure_completion_contract(
+        contract,
+        mode=CompletionMode.ENFORCE,
+        evidence_resolver=resolver,
+    )
+    child.record_completion_final_evidence("agent_final_response")
+    await child.resolve_completion_evidence()
+    root = Context(task_id="completion")
+    root.merge_context(child)
+    assessment = root.assess_completion_contract(agent_claimed_finished=True)
+    assert calls == ["check"]
+    assert assessment.status is CompletionStatus.SATISFIED

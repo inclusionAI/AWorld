@@ -59,7 +59,11 @@ from aworld.output import Outputs
 from aworld.output.base import MessageOutput, Output
 from aworld.runners.hook.hooks import HookPoint
 from aworld.runners.hook.utils import run_hooks
-from aworld.runners.post_tool_progress import mark_post_tool_progress_llm_started
+from aworld.runners.post_tool_progress import (
+    acknowledge_semantic_checkpoint,
+    mark_post_tool_progress_llm_started,
+    semantic_progress_for_agent,
+)
 from aworld.sandbox import Sandbox
 from aworld.utils.common import sync_exec, nest_dict_counter
 from aworld.utils.serialized_util import to_serializable
@@ -278,6 +282,11 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         self.tools_aggregate_func = tool_aggregate_func if tool_aggregate_func else self._tools_aggregate_func
         self.event_handler_name = event_handler_name
         self.context = kwargs.get("context", None)
+        self._runtime_completion_contract = kwargs.get("completion_contract")
+        self._runtime_completion_mode = kwargs.get("completion_mode")
+        self._runtime_completion_evidence_resolver = kwargs.get(
+            "completion_evidence_resolver"
+        )
         self.llm_max_attempts = max(1, llm_max_attempts)  # Ensure at least 1 attempt
         self.llm_retry_delay = llm_retry_delay
 
@@ -353,6 +362,81 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             # Disable subagent on initialization failure
             self.enable_subagent = False
             self.subagent_manager = None
+
+    def configure_completion_contract(
+        self,
+        contract,
+        *,
+        mode,
+        evidence_resolver=None,
+    ) -> None:
+        """Bind a runtime contract that is installed into every execution Context."""
+        from aworld.core.context.compiler import CompletionContract, CompletionMode
+
+        if not isinstance(contract, CompletionContract):
+            raise TypeError("contract must be a CompletionContract")
+        self._runtime_completion_contract = contract
+        self._runtime_completion_mode = CompletionMode(mode)
+        if evidence_resolver is not None and not callable(evidence_resolver):
+            raise TypeError("evidence_resolver must be callable or None")
+        self._runtime_completion_evidence_resolver = evidence_resolver
+
+    def _install_runtime_completion_contract(self, context: Context) -> None:
+        contract = self._runtime_completion_contract
+        if contract is None:
+            return
+        from aworld.core.context.compiler import CompletionMode
+
+        mode = self._runtime_completion_mode or getattr(
+            self.llm, "_context_completion_mode", "off"
+        )
+        if (
+            context.completion_contract == contract
+            and context.completion_mode is CompletionMode(mode)
+        ):
+            return
+        context.configure_completion_contract(
+            contract,
+            mode=CompletionMode(mode),
+            evidence_resolver=self._runtime_completion_evidence_resolver,
+        )
+
+    async def _completion_feedback_if_unsatisfied(
+        self, *, context: Context, final_response_text: str
+    ) -> str | None:
+        contract = context.completion_contract
+        if contract is None:
+            return None
+        from aworld.core.context.compiler import CompletionMode, CompletionStatus
+
+        if final_response_text.strip():
+            context.record_completion_final_evidence("agent_final_response")
+        try:
+            await context.resolve_completion_evidence()
+        except Exception as exc:
+            logger.warning(
+                "Completion evidence resolver failed for agent "
+                f"{self.id()}: {type(exc).__name__}"
+            )
+            context.context_info[f"completion_evidence_error:{self.id()}"] = {
+                "error_type": type(exc).__name__,
+                "message": str(exc)[:500],
+            }
+        assessment = context.assess_completion_contract(agent_claimed_finished=True)
+        if (
+            assessment is None
+            or assessment.mode is CompletionMode.OFF
+            or assessment.status is CompletionStatus.SATISFIED
+        ):
+            return None
+        reasons = ", ".join(assessment.reason_codes)
+        if assessment.status is CompletionStatus.REPAIR_REQUIRED:
+            context.increment_completion_repair_attempt()
+            return (
+                "The runtime completion contract rejected the completion claim "
+                f"({reasons}). Continue working, gather new evidence, and rerun focused checks."
+            )
+        return None
 
     def _record_llm_call_request(
         self,
@@ -1244,6 +1328,95 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 raise asyncio.CancelledError(cancel_reason)
             raise asyncio.CancelledError(cancel_reason) from source_exception
 
+    async def _apply_adaptive_context_policy(
+        self,
+        *,
+        context: Context,
+        messages: List[Dict[str, Any]],
+        context_compiler_mode: str,
+    ) -> List[Dict[str, Any]]:
+        """Checkpoint and compact from generic pressure/progress signals."""
+        policy_name = getattr(self.llm, "_context_checkpoint_policy", "explicit")
+        if context_compiler_mode == "off" or policy_name == "explicit":
+            return messages
+
+        from aworld.core.context.compiler import (
+            compact_message_history,
+            estimate_canonical_json_tokens,
+            evaluate_adaptive_checkpoint,
+        )
+
+        progress = semantic_progress_for_agent(context, agent_id=self.id())
+        prompt_tokens = int(estimate_canonical_json_tokens(messages).value or 0)
+        input_budget = int(
+            getattr(self.llm, "_context_input_budget", 0) or 0
+        )
+        state_key = f"adaptive_context_state:{self.id()}"
+        adaptive_state = context.context_info.get(state_key)
+        if not isinstance(adaptive_state, dict):
+            adaptive_state = {}
+        decision = evaluate_adaptive_checkpoint(
+            policy_name=policy_name,
+            prompt_tokens=prompt_tokens,
+            input_budget=input_budget,
+            repetition_count=int(progress.get("repetition_count", 0) or 0),
+            low_information_gain_count=int(
+                progress.get("low_information_gain_count", 0) or 0
+            ),
+            turn_epoch=context.context_lifecycle_state.turn_epoch,
+            last_checkpoint_turn=adaptive_state.get("last_checkpoint_turn"),
+        )
+        if not decision.checkpoint:
+            if adaptive_state.get("compaction_active") is True:
+                compacted, _ = compact_message_history(messages)
+                return compacted
+            return messages
+
+        checkpoint = await context.snapshot()
+        compacted, receipt = compact_message_history(messages)
+        reasons = [reason.value for reason in decision.reasons]
+        adaptive_state.update(
+            {
+                "schema_version": "aworld.context.adaptive-state/v1",
+                "last_checkpoint_turn": context.context_lifecycle_state.turn_epoch,
+                "last_checkpoint_id": getattr(checkpoint, "id", None),
+                "last_reasons": reasons,
+                "last_prompt_tokens": prompt_tokens,
+                "last_input_budget": input_budget,
+                "last_compaction_receipt": receipt,
+                "compaction_active": receipt is not None,
+            }
+        )
+        decisions = list(adaptive_state.get("decisions") or [])
+        decisions.append(
+            {
+                "turn_epoch": context.context_lifecycle_state.turn_epoch,
+                "reasons": reasons,
+                "prompt_tokens": prompt_tokens,
+                "input_budget": input_budget,
+                "compacted": receipt is not None,
+            }
+        )
+        adaptive_state["decisions"] = decisions[-32:]
+        context.context_info[state_key] = adaptive_state
+        acknowledge_semantic_checkpoint(context, agent_id=self.id())
+
+        progress_signal = {
+            "role": "user",
+            "content": (
+                "AWorld detected insufficient semantic progress. Reassess the plan, "
+                "inspect new evidence, "
+                "and do not repeat an operation unless it can change the result."
+            ),
+        }
+        compacted = list(compacted)
+        compacted.append(progress_signal)
+        logger.info(
+            f"Adaptive Context checkpoint for agent {self.id()}: "
+            f"reasons={reasons} compacted={receipt is not None}"
+        )
+        return compacted
+
     async def async_policy(self, observation: Observation, info: Dict[str, Any] = {}, message: Message = None,
                            **kwargs) -> List[ActionModel]:
         """The strategy of an agent can be to decide which tools to use in the environment, or to delegate tasks to other agents.
@@ -1258,6 +1431,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         logger.info(f"Agent{type(self)}#{self.id()}: async_policy start")
         # temporary state context
         self.context = message.context
+        self._install_runtime_completion_contract(message.context)
         context_compiler_mode = self._context_compiler_mode_value()
         # A turn boundary expires single-call/turn sidecars before new owner
         # observations are collected for this request.
@@ -1292,6 +1466,11 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             self.task_histories = observation.context
 
         raw_messages = await self.build_llm_input(observation, info, message=message, **kwargs)
+        raw_messages = await self._apply_adaptive_context_policy(
+            context=message.context,
+            messages=raw_messages,
+            context_compiler_mode=context_compiler_mode,
+        )
         tools = await self._filter_tools(message.context)
         progressive_tool_base_tools = getattr(
             self.llm, "_context_progressive_tool_base_tools", None
@@ -1670,6 +1849,11 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                                                                          use_tools_in_prompt=self.use_tools_in_prompt)
                     candidate_finished = not agent_result.is_call_tool
                     if candidate_finished:
+                        validation_feedback = await self._completion_feedback_if_unsatisfied(
+                            context=message.context,
+                            final_response_text=llm_response.content or "",
+                        )
+                    if candidate_finished and not validation_feedback:
                         validation_feedback = self._build_result_validation_feedback_from_context(
                             context=message.context,
                             final_response_text=llm_response.content or "",

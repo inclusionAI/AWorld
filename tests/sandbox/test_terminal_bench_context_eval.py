@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from aworld.core.context.base import Context
+from aworld.core.context.compiler import CompletionMode, CompletionStatus
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -78,6 +79,104 @@ def test_variant_contract_accepts_context_policy_only(tmp_path):
     loaded = runner._load_variant(variant)
     assert loaded["name"] == "candidate"
     assert loaded["context_compiler"]["mode"] == "enforce"
+
+
+@pytest.mark.asyncio
+async def test_benchmark_completion_contract_is_constructed_and_executes(monkeypatch):
+    runner = _load_example("docker_terminal_bench")
+
+    class FakeSandbox:
+        docker_binary = "docker"
+        container = "task"
+        container_workdir = "/workspace"
+
+        async def run_validation(
+            self, argv, *, cwd=None, timeout, env_names=()
+        ):
+            if tuple(argv[:2]) == ("test", "-f"):
+                assert cwd == "/"
+            if tuple(argv) == ("test", "-f", "/verifier/test.sh"):
+                return subprocess.CompletedProcess(argv, 1, stdout="", stderr="")
+            if tuple(argv) == ("test", "-f", "/tests/test.sh"):
+                return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+            assert tuple(argv) == ("/bin/bash", "/tests/test.sh")
+            assert cwd == "/workspace"
+            assert timeout == 900
+            assert env_names == ()
+            return subprocess.CompletedProcess(argv, 0, stdout="ok", stderr="")
+
+    sandbox = FakeSandbox()
+    configured = {}
+
+    class FakeAgent:
+        def configure_completion_contract(self, contract, *, mode, evidence_resolver):
+            configured.update(
+                contract=contract, mode=mode, evidence_resolver=evidence_resolver
+            )
+
+    await runner._configure_benchmark_completion_contract(
+        FakeAgent(),
+        sandbox,
+        {"context_compiler": {"completion_contract": "enforce"}},
+    )
+    assert configured["mode"] is CompletionMode.ENFORCE
+    assert configured["contract"].validation_commands[0].command_id == "packaged-verifier"
+    context = Context(task_id="completion")
+    context.configure_completion_contract(
+        configured["contract"],
+        mode=configured["mode"],
+        evidence_resolver=configured["evidence_resolver"],
+    )
+    context.record_completion_final_evidence("agent_final_response")
+    await context.resolve_completion_evidence()
+    assert (
+        context.assess_completion_contract(agent_claimed_finished=True).status
+        is CompletionStatus.SATISFIED
+    )
+
+
+@pytest.mark.asyncio
+async def test_benchmark_completion_timeout_becomes_failed_self_check():
+    runner = _load_example("docker_terminal_bench")
+
+    class TimeoutSandbox:
+        docker_binary = "docker"
+        container = "task"
+        container_workdir = "/workspace"
+
+        async def run_validation(
+            self, argv, *, cwd=None, timeout, env_names=()
+        ):
+            if tuple(argv) == ("test", "-f", "/verifier/test.sh"):
+                return subprocess.CompletedProcess(argv, 1, stdout="", stderr="")
+            if tuple(argv) == ("test", "-f", "/tests/test.sh"):
+                return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+            raise subprocess.TimeoutExpired(argv, timeout, output="partial")
+
+    configured = {}
+
+    class FakeAgent:
+        def configure_completion_contract(self, contract, *, mode, evidence_resolver):
+            configured.update(
+                contract=contract, mode=mode, evidence_resolver=evidence_resolver
+            )
+
+    await runner._configure_benchmark_completion_contract(
+        FakeAgent(),
+        TimeoutSandbox(),
+        {"context_compiler": {"completion_contract": "enforce"}},
+    )
+    context = Context(task_id="completion-timeout")
+    context.configure_completion_contract(
+        configured["contract"],
+        mode=configured["mode"],
+        evidence_resolver=configured["evidence_resolver"],
+    )
+    context.record_completion_final_evidence("agent_final_response")
+    await context.resolve_completion_evidence()
+    assessment = context.assess_completion_contract(agent_claimed_finished=True)
+    assert assessment.status is CompletionStatus.REPAIR_REQUIRED
+    assert assessment.reason_codes == ("self_check_failed",)
 
 
 def test_legacy_observe_baseline_preserves_legacy_policy_and_adds_evidence_only():
@@ -998,13 +1097,102 @@ def test_timeout_recovers_provider_attempt_without_synthesizing_trajectory(tmp_p
         == "request-1"
     )
     assert not run_dir.joinpath("raw_trajectory.json").exists()
+    partial = json.loads(run_dir.joinpath("raw_trajectory.partial.json").read_text())
+    assert partial["completion_state"] == "incomplete"
+    assert partial["calls"][0]["request_id"] == "request-1"
     assert not run_dir.joinpath("provider_calls.json").exists()
     assert metrics["provider_truth_available"] is False
     assert metrics["raw_trajectory_available"] is False
+    assert metrics["partial_raw_trajectory_available"] is True
+    assert metrics["partial_raw_trajectory_call_count"] == 1
     assert metrics["partial_provider_call_count"] == 1
     assert metrics["inflight_capture_available"] is True
     assert metrics["llm_call_journal_bytes"] > 0
     assert metrics["llm_call_journal_valid_records"] == 1
+
+
+def test_partial_raw_trajectory_requires_matching_recovery_checksum(tmp_path):
+    harness = _load_example("terminal_bench_context_eval")
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    partial = run_dir / "raw_trajectory.partial.json"
+    partial.write_text(
+        json.dumps(
+            {
+                "schema_version": "aworld.raw-trajectory.partial/v1",
+                "completion_state": "incomplete",
+                "calls": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (run_dir / "capture_recovery.json").write_text(
+        json.dumps({"partial_raw_trajectory_sha256": "wrong"}), encoding="utf-8"
+    )
+    metrics = harness.collect_context_metrics(run_dir)
+    assert metrics["partial_raw_trajectory_available"] is False
+
+
+def test_context_metrics_measure_real_provider_system_prefix_stability(tmp_path):
+    harness = _load_example("terminal_bench_context_eval")
+    provider_calls = []
+    for user_content in ("first", "second"):
+        provider_calls.append(
+            {
+                "provider_request": {
+                    "payload": {
+                        "messages": [
+                            {"role": "system", "content": "stable policy"},
+                            {"role": "user", "content": user_content},
+                        ]
+                    }
+                },
+                "request_trace_match": True,
+            }
+        )
+    (tmp_path / "provider_calls.json").write_text(
+        json.dumps(provider_calls), encoding="utf-8"
+    )
+    metrics = harness.collect_context_metrics(tmp_path)
+    assert metrics["provider_prefix_unique_count"] == 1
+    assert metrics["provider_prefix_stable"] is True
+
+
+def test_model_preflight_parser_prefers_typed_receipt():
+    harness = _load_example("terminal_bench_context_eval")
+    receipt = harness.parse_model_preflight(
+        "log line\n"
+        + json.dumps(
+            {
+                "schema_version": "aworld.model-preflight/v1",
+                "status": "passed",
+            }
+        )
+    )
+    assert receipt["status"] == "passed"
+
+
+def test_model_preflight_runner_persists_redacted_receipt_logs(tmp_path, monkeypatch):
+    harness = _load_example("terminal_bench_context_eval")
+    payload = {
+        "schema_version": "aworld.model-preflight/v1",
+        "status": "passed",
+        "response_sha256": "a" * 64,
+    }
+    monkeypatch.setattr(
+        harness,
+        "run_command",
+        lambda command, **kwargs: subprocess.CompletedProcess(
+            command, 0, stdout=json.dumps(payload), stderr="diagnostic"
+        ),
+    )
+    receipt = harness.run_model_preflight(
+        tmp_path, timeout_sec=12.0, model_seed=7
+    )
+    assert receipt["status"] == "passed"
+    assert receipt["process_exit_code"] == 0
+    assert tmp_path.joinpath("model-preflight.stderr.log").read_text() == "diagnostic"
+    assert json.loads(tmp_path.joinpath("model-preflight.json").read_text()) == receipt
 
 
 def test_recovery_does_not_claim_storage_failure_after_completed_model_call(tmp_path):
@@ -1034,6 +1222,8 @@ def test_recovery_does_not_claim_storage_failure_after_completed_model_call(tmp_
     assert evidence["trajectory_generation_state"] == "undetermined"
     assert evidence["trajectory_persistence_state"] == "undetermined"
     assert not run_dir.joinpath("raw_trajectory.json").exists()
+    partial = json.loads(run_dir.joinpath("raw_trajectory.partial.json").read_text())
+    assert partial["calls"][0]["status"] == "success"
 
 
 def test_failed_retries_before_active_attempt_are_not_model_completion(tmp_path):
@@ -1163,6 +1353,54 @@ def test_verifier_timeout_is_persisted_and_excluded_from_pairs(tmp_path, monkeyp
     )
 
 
+def test_agent_nonzero_exit_is_fail_closed_without_running_verifier(tmp_path, monkeypatch):
+    harness = _load_example("terminal_bench_context_eval")
+    root = tmp_path / "fixture"
+    root.joinpath("environment").mkdir(parents=True)
+    root.joinpath("tests").mkdir()
+    root.joinpath("instruction.md").write_text("do the task", encoding="utf-8")
+    fixture = harness.TaskFixture(
+        name="sample",
+        root=root,
+        archive_sha256="a" * 64,
+        config={"environment": {}, "verifier": {"timeout_sec": 2}},
+    )
+    verifier_calls = []
+
+    def fake_run(command, **kwargs):
+        if command[0] == sys.executable:
+            return subprocess.CompletedProcess(
+                command,
+                2,
+                stdout="",
+                stderr='{"schema_version":"aworld.run.failure.v1"}',
+            )
+        if command[:2] == ["docker", "exec"]:
+            verifier_calls.append(command)
+        return subprocess.CompletedProcess(command, 0, stdout="image-id\n", stderr="")
+
+    monkeypatch.setattr(harness, "run_command", fake_run)
+    result = harness.execute_job(
+        docker="docker",
+        fixture=fixture,
+        image="sha256:" + "b" * 64,
+        variant_name="candidate",
+        variant_path=None,
+        repetition=1,
+        output_dir=tmp_path / "output",
+        max_steps=1,
+        keep_container=False,
+        verifier_mode="python-functions",
+    )
+    assert result["reward"] is None
+    assert result["failure"] == {
+        "stage": "agent",
+        "reason_code": "agent_nonzero_exit",
+        "aworld_failure": {"schema_version": "aworld.run.failure.v1"},
+    }
+    assert verifier_calls == []
+
+
 def test_summary_pairs_reward_with_context_effects():
     harness = _load_example("terminal_bench_context_eval")
     results = [
@@ -1206,6 +1444,36 @@ def test_summary_pairs_reward_with_context_effects():
             "offloaded_artifact_bytes_delta": 500,
         }
     ]
+    assert summary["minimum_seed_gate"]["passed"] is False
+
+
+def test_summary_requires_three_distinct_complete_paired_model_seeds():
+    harness = _load_example("terminal_bench_context_eval")
+    results = []
+    for repetition, model_seed in enumerate((11, 12, 13), start=1):
+        for variant in ("legacy", "candidate"):
+            results.append(
+                {
+                    "task": "generic-task",
+                    "variant": variant,
+                    "repetition": repetition,
+                    "model_seed": model_seed,
+                    "reward": "1",
+                    "context_metrics": {
+                        "provider_truth_available": True,
+                        "provider_request_bytes": 10,
+                        "prompt_tokens": 5,
+                        "offloaded_artifact_bytes": 0,
+                    },
+                }
+            )
+    summary = harness.summarize_results(results, "legacy")
+    assert summary["minimum_seed_gate"] == {
+        "required_complete_pairs_per_candidate": 3,
+        "complete_seed_count_by_candidate": {"candidate": 3},
+        "passed": True,
+        "seed_mismatch_count": 0,
+    }
 
 
 def test_python_functions_verifier_mode_is_explicit_and_not_a_variant_field(

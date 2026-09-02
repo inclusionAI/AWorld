@@ -41,6 +41,7 @@ from examples.sandbox.docker_terminal_bench import (  # noqa: E402
 
 
 RUNNER = Path(__file__).with_name("docker_terminal_bench.py")
+MODEL_PREFLIGHT = Path(__file__).with_name("model_preflight.py")
 _VERIFIER_ENV_EXPRESSION = re.compile(r"^\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}$")
 
 
@@ -108,6 +109,77 @@ def timeout_output(exc: subprocess.TimeoutExpired, stream: str) -> str:
     if isinstance(value, bytes):
         return value.decode(errors="replace")
     return str(value)
+
+
+def parse_aworld_run_failure(*streams: str) -> dict | None:
+    """Recover the typed failure emitted by the direct AWorld boundary."""
+    for stream in streams:
+        for line in reversed(str(stream or "").splitlines()):
+            try:
+                value = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if (
+                isinstance(value, dict)
+                and value.get("schema_version") == "aworld.run.failure.v1"
+            ):
+                return value
+    return None
+
+
+def parse_model_preflight(*streams: str) -> dict | None:
+    for stream in streams:
+        for line in reversed(str(stream or "").splitlines()):
+            try:
+                value = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if (
+                isinstance(value, dict)
+                and value.get("schema_version") == "aworld.model-preflight/v1"
+            ):
+                return value
+    return None
+
+
+def run_model_preflight(
+    output_dir: Path, *, timeout_sec: float, model_seed: int
+) -> dict:
+    command = [
+        sys.executable,
+        str(MODEL_PREFLIGHT),
+        "--timeout-sec",
+        str(timeout_sec),
+        "--model-seed",
+        str(model_seed),
+    ]
+    try:
+        result = run_command(
+            command,
+            capture_output=True,
+            timeout=timeout_sec + 15,
+            env=os.environ.copy(),
+        )
+        stdout, stderr = result.stdout or "", result.stderr or ""
+        returncode = result.returncode
+    except subprocess.TimeoutExpired as exc:
+        stdout = timeout_output(exc, "stdout")
+        stderr = timeout_output(exc, "stderr")
+        returncode = None
+    (output_dir / "model-preflight.stdout.log").write_text(stdout, encoding="utf-8")
+    (output_dir / "model-preflight.stderr.log").write_text(stderr, encoding="utf-8")
+    receipt = parse_model_preflight(stderr, stdout) or {
+        "schema_version": "aworld.model-preflight/v1",
+        "status": "failed",
+        "reason_code": (
+            "provider_connectivity_timeout"
+            if returncode is None
+            else "provider_preflight_receipt_missing"
+        ),
+    }
+    receipt["process_exit_code"] = returncode
+    write_json(output_dir / "model-preflight.json", receipt)
+    return receipt
 
 
 class VerifierEnvironmentUnavailable(ValueError):
@@ -405,6 +477,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--variant-config", type=Path, action="append", dest="variants")
     parser.add_argument("--repeat", type=int, default=1)
     parser.add_argument("--seed", type=int, default=20260831)
+    parser.add_argument(
+        "--model-preflight-timeout-sec",
+        type=float,
+        default=120,
+        help="Fail-fast provider connectivity timeout before Docker image work starts.",
+    )
+    parser.add_argument(
+        "--skip-model-preflight",
+        action="store_true",
+        help="Explicit diagnostic-only escape hatch; makes quality claims ineligible.",
+    )
     parser.add_argument("--output-dir", required=True, type=Path)
     parser.add_argument("--max-steps", type=int, default=10)
     parser.add_argument(
@@ -599,6 +682,7 @@ def recover_inflight_capture(run_dir: Path) -> dict:
     recovery = read_llm_call_journal(journal_path)
     final_calls_path = run_dir / "llm_calls.json"
     raw_trajectory_path = run_dir / "raw_trajectory.json"
+    partial_trajectory_path = run_dir / "raw_trajectory.partial.json"
     evidence = recovery.to_evidence()
     evidence.update(
         {
@@ -606,6 +690,7 @@ def recover_inflight_capture(run_dir: Path) -> dict:
             "journal_path": journal_path.name,
             "final_llm_calls_available": final_calls_path.exists(),
             "raw_trajectory_available": raw_trajectory_path.exists(),
+            "partial_raw_trajectory_available": partial_trajectory_path.exists(),
             "raw_trajectory_authority": "runtime_events_and_finalized_trajectory_projection",
         }
     )
@@ -703,6 +788,25 @@ def recover_inflight_capture(run_dir: Path) -> dict:
     if recovery.available and not final_calls_path.exists():
         write_json(run_dir / "llm_calls.partial.json", calls)
         write_json(run_dir / "provider_calls.partial.json", attempted)
+    if recovery.available and calls and not raw_trajectory_path.exists():
+        # Preserve only journal-observed data.  The explicit partial schema
+        # prevents this evidence from being mistaken for finalized ATIF output.
+        write_json(
+            partial_trajectory_path,
+            {
+                "schema_version": "aworld.raw-trajectory.partial/v1",
+                "completion_state": "incomplete",
+                "authority": "checksum_valid_append_only_llm_call_journal",
+                "journal_status": evidence.get("status"),
+                "valid_record_count": recovery.valid_record_count,
+                "calls": calls,
+            },
+        )
+        evidence["partial_raw_trajectory_available"] = True
+        evidence["partial_raw_trajectory_path"] = partial_trajectory_path.name
+        evidence["partial_raw_trajectory_sha256"] = sha256_file(
+            partial_trajectory_path
+        )
     write_json(run_dir / "capture_recovery.json", evidence)
     return evidence
 
@@ -722,10 +826,14 @@ def collect_context_metrics(run_dir: Path) -> dict:
     provider_calls_path = run_dir / "provider_calls.json"
     partial_provider_calls_path = run_dir / "provider_calls.partial.json"
     trajectory_path = run_dir / "raw_trajectory.json"
+    partial_trajectory_path = run_dir / "raw_trajectory.partial.json"
     provider_calls = load_evidence(provider_calls_path, [], "provider_calls_malformed")
     trajectory = load_evidence(trajectory_path, [], "raw_trajectory_malformed")
     partial_provider_calls = load_evidence(
         partial_provider_calls_path, [], "partial_provider_calls_malformed"
+    )
+    partial_trajectory = load_evidence(
+        partial_trajectory_path, {}, "partial_raw_trajectory_malformed"
     )
     recovery = load_evidence(
         run_dir / "capture_recovery.json", {}, "capture_recovery_malformed"
@@ -736,11 +844,19 @@ def collect_context_metrics(run_dir: Path) -> dict:
     continuity = capture.get("llm_call_continuity") if isinstance(capture, dict) else {}
     prompt_tokens = completion_tokens = cache_read_tokens = 0
     provider_request_bytes = trace_match_count = 0
+    provider_prefix_hashes: list[str] = []
     for call in provider_calls if isinstance(provider_calls, list) else []:
         if not isinstance(call, dict):
             continue
         provider_request = call.get("provider_request") or {}
         request = provider_request.get("payload") or call.get("request") or {}
+        request_messages = request.get("messages", []) if isinstance(request, dict) else []
+        stable_prefix = []
+        for message in request_messages if isinstance(request_messages, list) else []:
+            if not isinstance(message, dict) or message.get("role") != "system":
+                break
+            stable_prefix.append(message)
+        provider_prefix_hashes.append(canonical_json_digest(stable_prefix))
         provider_request_bytes += len(
             json.dumps(request, ensure_ascii=False, sort_keys=True, default=str).encode(
                 "utf-8"
@@ -769,6 +885,16 @@ def collect_context_metrics(run_dir: Path) -> dict:
         if path.is_file()
     ]
     journal_path = run_dir / "llm_calls.journal.jsonl"
+    partial_trajectory_valid = bool(
+        partial_trajectory_path.exists()
+        and isinstance(partial_trajectory, dict)
+        and partial_trajectory.get("schema_version")
+        == "aworld.raw-trajectory.partial/v1"
+        and partial_trajectory.get("completion_state") == "incomplete"
+        and isinstance(recovery, dict)
+        and recovery.get("partial_raw_trajectory_sha256")
+        == sha256_file(partial_trajectory_path)
+    )
     return {
         "provider_call_count": len(provider_calls)
         if isinstance(provider_calls, list)
@@ -801,6 +927,10 @@ def collect_context_metrics(run_dir: Path) -> dict:
         "prompt_tokens": prompt_tokens,
         "completion_tokens": completion_tokens,
         "cache_read_tokens": cache_read_tokens,
+        "provider_prefix_unique_count": len(set(provider_prefix_hashes)),
+        "provider_prefix_stable": bool(
+            provider_prefix_hashes and len(set(provider_prefix_hashes)) == 1
+        ),
         "request_trace_match_count": trace_match_count,
         "request_trace_match_rate": (
             trace_match_count / len(provider_calls)
@@ -815,6 +945,12 @@ def collect_context_metrics(run_dir: Path) -> dict:
         "raw_trajectory_available": bool(
             trajectory_path.exists()
             and "raw_trajectory_malformed" not in parse_failures
+        ),
+        "partial_raw_trajectory_available": partial_trajectory_valid,
+        "partial_raw_trajectory_call_count": (
+            len(partial_trajectory.get("calls", []))
+            if partial_trajectory_valid
+            else 0
         ),
         "capture_integrity_available": bool(
             isinstance(capture, dict)
@@ -869,6 +1005,11 @@ def summarize_results(results: list[dict], baseline_variant: str) -> dict:
                 for result in variant_results
             )
             / len(variant_results),
+            "provider_prefix_stability_rate": sum(
+                bool(result["context_metrics"].get("provider_prefix_stable"))
+                for result in variant_results
+            )
+            / len(variant_results),
             "median_provider_request_bytes": statistics.median(
                 result["context_metrics"]["provider_request_bytes"]
                 for result in variant_results
@@ -891,6 +1032,7 @@ def summarize_results(results: list[dict], baseline_variant: str) -> dict:
         }
 
     paired = []
+    seed_mismatches = []
     for (task, repetition), pair_results in sorted(by_pair.items()):
         baseline = next(
             (
@@ -905,8 +1047,16 @@ def summarize_results(results: list[dict], baseline_variant: str) -> dict:
         for candidate in pair_results:
             if candidate is baseline or candidate.get("reward") in (None, ""):
                 continue
-            paired.append(
-                {
+            if candidate.get("model_seed") != baseline.get("model_seed"):
+                seed_mismatches.append(
+                    {
+                        "task": task,
+                        "repetition": repetition,
+                        "candidate": candidate["variant"],
+                    }
+                )
+                continue
+            pair_record = {
                     "task": task,
                     "repetition": repetition,
                     "baseline": baseline_variant,
@@ -926,12 +1076,33 @@ def summarize_results(results: list[dict], baseline_variant: str) -> dict:
                         - baseline["context_metrics"]["offloaded_artifact_bytes"]
                     ),
                 }
-            )
+            if isinstance(candidate.get("model_seed"), int):
+                pair_record["model_seed"] = candidate["model_seed"]
+            paired.append(pair_record)
+    complete_seeds_by_candidate: dict[str, set[int]] = {}
+    for pair in paired:
+        candidate = pair["candidate"]
+        seed = pair.get("model_seed")
+        if isinstance(seed, int):
+            complete_seeds_by_candidate.setdefault(candidate, set()).add(seed)
+    complete_seed_count_by_candidate = {
+        candidate: len(seeds)
+        for candidate, seeds in sorted(complete_seeds_by_candidate.items())
+    }
+    minimum_seed_gate_passed = bool(complete_seed_count_by_candidate) and all(
+        count >= 3 for count in complete_seed_count_by_candidate.values()
+    )
     return {
         "schema_version": "aworld.context-eval-summary/v1",
         "baseline_variant": baseline_variant,
         "aggregates": aggregates,
         "paired_deltas": paired,
+        "minimum_seed_gate": {
+            "required_complete_pairs_per_candidate": 3,
+            "complete_seed_count_by_candidate": complete_seed_count_by_candidate,
+            "passed": minimum_seed_gate_passed,
+            "seed_mismatch_count": len(seed_mismatches),
+        },
         "decision_note": (
             "This summary is descriptive. Apply the spec's sample-size, confidence interval, "
             "hard-gate, and cross-workload requirements before claiming framework benefit."
@@ -954,6 +1125,7 @@ def execute_job(
     agent_timeout_sec_override: float | None = None,
     verifier_timeout_sec_override: float | None = None,
     external_mcp_config_path: Path | None = None,
+    model_seed: int | None = None,
 ) -> dict:
     run_dir = (
         output_dir / "runs" / fixture.name / variant_name / f"repeat-{repetition:02d}"
@@ -1031,10 +1203,24 @@ def execute_job(
             "--max-steps",
             str(max_steps),
         ]
+        if model_seed is not None:
+            agent_command.extend(["--model-seed", str(model_seed)])
         if variant_path:
             agent_command.extend(["--variant-config", str(variant_path)])
         if fixture.skills is not None:
             agent_command.extend(["--skills-directory", str(fixture.skills.resolve())])
+        declared_artifacts = fixture.config.get("artifacts", [])
+        if declared_artifacts is None:
+            declared_artifacts = []
+        if not isinstance(declared_artifacts, list) or any(
+            not isinstance(path, str) or not path.strip()
+            for path in declared_artifacts
+        ):
+            raise ValueError("task artifacts must be a list of non-empty paths")
+        for artifact_path in declared_artifacts:
+            agent_command.extend(["--required-artifact", artifact_path])
+        for environment_name in sorted(verifier_environment):
+            agent_command.extend(["--completion-env", environment_name])
         if external_mcp_config_path is not None:
             agent_command.extend(
                 ["--mcp-config", str(external_mcp_config_path.resolve())]
@@ -1055,6 +1241,7 @@ def execute_job(
             if not existing_pythonpath
             else repo_root + os.pathsep + existing_pythonpath
         )
+        agent_environment.update(verifier_environment)
         try:
             agent_result = run_command(
                 agent_command,
@@ -1062,6 +1249,32 @@ def execute_job(
                 timeout=agent_timeout,
                 env=agent_environment,
             )
+        except KeyboardInterrupt:
+            recovery = recover_inflight_capture(run_dir)
+            write_json(
+                run_dir / "result.json",
+                {
+                    "schema_version": "aworld.context-eval-result/v1",
+                    "task": fixture.name,
+                    "variant": variant_name,
+                    "repetition": repetition,
+                    "model_seed": model_seed,
+                    "agent_exit_code": None,
+                    "verifier_exit_code": None,
+                    "verifier_mode": verifier_mode,
+                    "reward": None,
+                    "failure": {
+                        "stage": "agent",
+                        "reason_code": "experiment_interrupted",
+                    },
+                    "capture_recovery": recovery,
+                    "container_image_id": container_image_id(docker, container),
+                    "task_archive_sha256": fixture.archive_sha256,
+                    "verifier_environment": verifier_environment_evidence,
+                    "context_metrics": collect_context_metrics(run_dir),
+                },
+            )
+            raise
         except subprocess.TimeoutExpired as exc:
             (run_dir / "agent.stdout.log").write_text(
                 timeout_output(exc, "stdout"), encoding="utf-8"
@@ -1075,6 +1288,7 @@ def execute_job(
                 "task": fixture.name,
                 "variant": variant_name,
                 "repetition": repetition,
+                "model_seed": model_seed,
                 "agent_exit_code": None,
                 "verifier_exit_code": None,
                 "verifier_mode": verifier_mode,
@@ -1099,6 +1313,34 @@ def execute_job(
             agent_result.stderr or "", encoding="utf-8"
         )
         recovery = recover_inflight_capture(run_dir)
+
+        if agent_result.returncode != 0:
+            aworld_failure = parse_aworld_run_failure(
+                agent_result.stderr or "", agent_result.stdout or ""
+            )
+            result = {
+                "schema_version": "aworld.context-eval-result/v1",
+                "task": fixture.name,
+                "variant": variant_name,
+                "repetition": repetition,
+                "model_seed": model_seed,
+                "agent_exit_code": agent_result.returncode,
+                "verifier_exit_code": None,
+                "verifier_mode": verifier_mode,
+                "reward": None,
+                "failure": {
+                    "stage": "agent",
+                    "reason_code": "agent_nonzero_exit",
+                    "aworld_failure": aworld_failure,
+                },
+                "capture_recovery": recovery,
+                "container_image_id": container_image_id(docker, container),
+                "task_archive_sha256": fixture.archive_sha256,
+                "verifier_environment": verifier_environment_evidence,
+                "context_metrics": collect_context_metrics(run_dir),
+            }
+            write_json(run_dir / "result.json", result)
+            return result
 
         verifier_timeout = float(
             verifier_timeout_sec_override
@@ -1168,6 +1410,7 @@ for test in tests:
                 "task": fixture.name,
                 "variant": variant_name,
                 "repetition": repetition,
+                "model_seed": model_seed,
                 "agent_exit_code": agent_result.returncode,
                 "verifier_exit_code": None,
                 "verifier_mode": verifier_mode,
@@ -1207,6 +1450,7 @@ for test in tests:
             "task": fixture.name,
             "variant": variant_name,
             "repetition": repetition,
+            "model_seed": model_seed,
             "agent_exit_code": agent_result.returncode,
             "verifier_exit_code": verifier_result.returncode,
             "verifier_mode": verifier_mode,
@@ -1235,6 +1479,7 @@ def main() -> None:
     for option_name, value in (
         ("--agent-timeout-sec", args.agent_timeout_sec),
         ("--verifier-timeout-sec", args.verifier_timeout_sec),
+        ("--model-preflight-timeout-sec", args.model_preflight_timeout_sec),
     ):
         if value is not None and (not math.isfinite(value) or value <= 0):
             raise ValueError(f"{option_name} must be positive")
@@ -1287,6 +1532,8 @@ def main() -> None:
         "variants": [payload for _, _, payload in variants],
         "repeat": args.repeat,
         "seed": args.seed,
+        "model_seeds": [args.seed + repetition - 1 for repetition in range(1, args.repeat + 1)],
+        "minimum_model_seed_count_configured": args.repeat >= 3,
         "job_order": [
             {"task": fixture.name, "variant": variant, "repetition": repetition}
             for fixture, variant, _, repetition in jobs
@@ -1317,12 +1564,32 @@ def main() -> None:
         "use_declared_image": args.use_declared_image,
         "image_build_plans": image_build_plans,
         "image_resolution": {"status": "not_attempted", "images": {}},
+        "model_preflight": {"status": "not_attempted"},
         "created_at_epoch": time.time(),
     }
     write_json(output_dir / "experiment_manifest.json", experiment)
     if args.dry_run:
         print(json.dumps(experiment, ensure_ascii=False, indent=2))
         return
+
+    if args.skip_model_preflight:
+        experiment["model_preflight"] = {
+            "schema_version": "aworld.model-preflight/v1",
+            "status": "skipped",
+            "reason_code": "explicit_diagnostic_override",
+        }
+        experiment["minimum_model_seed_count_configured"] = False
+    else:
+        experiment["model_preflight"] = run_model_preflight(
+            output_dir,
+            timeout_sec=args.model_preflight_timeout_sec,
+            model_seed=args.seed,
+        )
+    write_json(output_dir / "experiment_manifest.json", experiment)
+    if experiment["model_preflight"].get("status") == "failed":
+        raise RuntimeError(
+            "Model connectivity preflight failed; benchmark jobs were not started"
+        )
 
     assert docker is not None
     images: dict[str, str] = {}
@@ -1399,10 +1666,14 @@ def main() -> None:
                 agent_timeout_sec_override=args.agent_timeout_sec,
                 verifier_timeout_sec_override=args.verifier_timeout_sec,
                 external_mcp_config_path=args.mcp_config,
+                model_seed=args.seed + repetition - 1,
             )
         )
     write_json(output_dir / "results.json", results)
-    write_json(output_dir / "summary.json", summarize_results(results, variants[0][0]))
+    summary = summarize_results(results, variants[0][0])
+    write_json(output_dir / "summary.json", summary)
+    experiment["minimum_seed_gate"] = summary["minimum_seed_gate"]
+    write_json(output_dir / "experiment_manifest.json", experiment)
     print(
         json.dumps(
             {"runs": len(results), "output_dir": str(output_dir)}, ensure_ascii=False

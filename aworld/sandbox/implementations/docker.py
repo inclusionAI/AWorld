@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
 import copy
+import hashlib
 import json
 import re
 import shutil
 import subprocess
 import sys
+import uuid
 from pathlib import Path, PurePosixPath
 from typing import Any, Dict, List, Optional
 
@@ -29,6 +32,22 @@ from aworld.sandbox.models import SandboxEnvType, SandboxLocalResponse, SandboxS
 
 
 _CONTAINER_IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
+_ENV_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_MUTATING_FILE_ACTIONS = {
+    "create_directory",
+    "edit_file",
+    "move_file",
+    "upload_file",
+    "write_file",
+    "write_file_base64",
+}
+_MUTATING_SHELL_PATTERN = re.compile(
+    r"(?:^|[;&|\n]\s*|\bsudo\s+)(?:rm|mv|cp|install|mkdir|touch|truncate|dd)\b"
+    r"|\bsed\s+[^\n;|]*\s-i(?:\s|$)"
+    r"|\bgit\s+(?:checkout|restore|reset|clean)\b"
+    r"|(?:^|[^<])(?:>>?|2>>?)\s*[^&]",
+    re.IGNORECASE,
+)
 
 
 class DockerSandbox(Sandbox):
@@ -49,6 +68,9 @@ class DockerSandbox(Sandbox):
         max_inline_output_bytes: int = 1_048_576,
         output_head_bytes: Optional[int] = None,
         artifact_directory: Optional[str] = None,
+        destructive_checkpoint: bool = False,
+        tracked_artifact_paths: Optional[List[str]] = None,
+        checkpoint_directory: Optional[str] = None,
         validate_connection: bool = True,
         metadata: Optional[Dict[str, str]] = None,
         mcp_config: Optional[Any] = None,
@@ -74,6 +96,35 @@ class DockerSandbox(Sandbox):
         self.container_workdir = effective_workdir
         self.allowed_directories = list(effective_allowed)
         self.container_shell = shell
+        self.destructive_checkpoint = bool(destructive_checkpoint)
+        tracked_paths = tracked_artifact_paths or [effective_workdir]
+        resolved_tracked_paths: list[str] = []
+        for path in tracked_paths:
+            candidate = PurePosixPath(path)
+            if not candidate.is_absolute():
+                candidate = PurePosixPath(effective_workdir) / candidate
+            normalized = str(candidate)
+            self._validate_absolute_container_path(normalized, "tracked artifact path")
+            if normalized == "/":
+                if self.destructive_checkpoint:
+                    raise ValueError(
+                        "destructive checkpoint requires a tracked path narrower than '/'"
+                    )
+                continue
+            if normalized not in resolved_tracked_paths:
+                resolved_tracked_paths.append(normalized)
+        self.tracked_artifact_paths = resolved_tracked_paths
+        self._checkpoint_lock = asyncio.Lock()
+        self._checkpoint_files: set[Path] = set()
+        self._last_artifact_fingerprint: str | None = None
+        resolved_checkpoint_directory = None
+        if checkpoint_directory:
+            resolved_checkpoint_directory = Path(checkpoint_directory).expanduser().resolve()
+            resolved_checkpoint_directory.mkdir(parents=True, exist_ok=True)
+        elif self.destructive_checkpoint:
+            resolved_checkpoint_directory = Path(artifact_directory or ".").expanduser().resolve() / "sandbox-checkpoints"
+            resolved_checkpoint_directory.mkdir(parents=True, exist_ok=True)
+        self.checkpoint_directory = resolved_checkpoint_directory
         if max_inline_output_bytes < 1:
             raise ValueError("max_inline_output_bytes must be positive")
         effective_head_bytes = output_head_bytes or max_inline_output_bytes // 2
@@ -127,6 +178,11 @@ class DockerSandbox(Sandbox):
                     "head_bytes": effective_head_bytes,
                     "artifact_directory": resolved_artifact_directory,
                 },
+                "destructive_checkpoint": {
+                    "enabled": self.destructive_checkpoint,
+                    "tracked_path_count": len(self.tracked_artifact_paths),
+                    "rollback_policy": "failed_mutating_action",
+                },
             }
         )
 
@@ -143,6 +199,265 @@ class DockerSandbox(Sandbox):
         self._env_type = SandboxEnvType.DOCKER
         self._metadata.update(docker_metadata)
         self._metadata["env_type"] = SandboxEnvType.DOCKER
+
+    @staticmethod
+    def _action_value(action: Any, name: str, default: Any = None) -> Any:
+        if isinstance(action, dict):
+            return action.get(name, default)
+        return getattr(action, name, default)
+
+    @classmethod
+    def _is_mutating_action(cls, action: Any) -> bool:
+        action_name = str(cls._action_value(action, "action_name", "") or "")
+        if action_name in _MUTATING_FILE_ACTIONS:
+            return True
+        if action_name not in {"run_code", "execute_command", "mcp_execute_command"}:
+            return False
+        params = cls._action_value(action, "params", {}) or {}
+        if not isinstance(params, dict):
+            return False
+        command = params.get("code") or params.get("command") or ""
+        return isinstance(command, str) and bool(_MUTATING_SHELL_PATTERN.search(command))
+
+    def _docker_run(self, command: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+        return subprocess.run(command, check=False, **kwargs)
+
+    @staticmethod
+    def _sha256_path(path: Path) -> str:
+        digest = hashlib.sha256()
+        with path.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+
+    def _artifact_fingerprint_sync(self) -> str | None:
+        if not self.destructive_checkpoint or not self.tracked_artifact_paths:
+            return None
+        program = (
+            'for target do if [ -e "$target" ]; then '
+            'find "$target" -type d -print; '
+            'find "$target" -type f -exec cksum {} \\; -print; '
+            'find "$target" -type l -exec readlink {} \\; -print; '
+            'else printf "missing:%s\\n" "$target"; fi; done | LC_ALL=C sort'
+        )
+        result = self._docker_run(
+            [
+                self.docker_binary,
+                "exec",
+                self.container,
+                self.container_shell,
+                "-c",
+                program,
+                "aworld-artifact-fingerprint",
+                *self.tracked_artifact_paths,
+            ],
+            capture_output=True,
+            timeout=120,
+        )
+        if result.returncode != 0:
+            return None
+        output = result.stdout or b""
+        if isinstance(output, str):
+            output = output.encode()
+        return hashlib.sha256(output).hexdigest()
+
+    def _create_checkpoint_sync(self) -> dict[str, Any]:
+        if self.checkpoint_directory is None:
+            raise RuntimeError("checkpoint directory is not configured")
+        checkpoint_id = uuid.uuid4().hex
+        archive = self.checkpoint_directory / f"{checkpoint_id}.tar"
+        existing: list[str] = []
+        for path in self.tracked_artifact_paths:
+            found = self._docker_run(
+                [self.docker_binary, "exec", self.container, "test", "-e", path],
+                capture_output=True,
+                timeout=30,
+            )
+            if found.returncode == 0:
+                existing.append(path.lstrip("/"))
+        with archive.open("wb") as stream:
+            command = [self.docker_binary, "exec", self.container, "tar", "-C", "/", "-cf", "-"]
+            command.extend(existing if existing else ["--files-from", "/dev/null"])
+            snapshot = self._docker_run(
+                command,
+                stdout=stream,
+                stderr=subprocess.PIPE,
+                timeout=300,
+            )
+        if snapshot.returncode != 0:
+            archive.unlink(missing_ok=True)
+            detail = (snapshot.stderr or b"").decode(errors="replace")[:500]
+            raise RuntimeError(f"Docker checkpoint failed: {detail}")
+        self._checkpoint_files.add(archive)
+        return {
+            "id": checkpoint_id,
+            "archive": archive,
+            "sha256": self._sha256_path(archive),
+            "existing_paths": tuple(f"/{path}" for path in existing),
+        }
+
+    def _restore_checkpoint_sync(self, checkpoint: dict[str, Any]) -> None:
+        archive = Path(checkpoint["archive"])
+        if self._sha256_path(archive) != checkpoint["sha256"]:
+            raise RuntimeError("Docker checkpoint checksum mismatch")
+        cleanup_program = (
+            'for target do if [ -d "$target" ]; then '
+            'find "$target" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +; '
+            'else rm -f -- "$target"; fi; done'
+        )
+        cleared = self._docker_run(
+            [
+                self.docker_binary,
+                "exec",
+                self.container,
+                self.container_shell,
+                "-c",
+                cleanup_program,
+                "aworld-checkpoint-rollback",
+                *self.tracked_artifact_paths,
+            ],
+            capture_output=True,
+            timeout=120,
+        )
+        if cleared.returncode != 0:
+            detail = (cleared.stderr or b"")
+            if isinstance(detail, bytes):
+                detail = detail.decode(errors="replace")
+            raise RuntimeError(
+                f"Unable to clear tracked paths before rollback: {str(detail)[:500]}"
+            )
+        with archive.open("rb") as stream:
+            restored = self._docker_run(
+                [self.docker_binary, "exec", "-i", self.container, "tar", "-C", "/", "-xf", "-"],
+                stdin=stream,
+                capture_output=True,
+                timeout=300,
+            )
+        if restored.returncode != 0:
+            detail = (restored.stderr or b"")
+            if isinstance(detail, bytes):
+                detail = detail.decode(errors="replace")
+            raise RuntimeError(f"Unable to restore Docker checkpoint: {str(detail)[:500]}")
+        existing_paths = set(checkpoint.get("existing_paths") or ())
+        missing_paths = [
+            path for path in self.tracked_artifact_paths if path not in existing_paths
+        ]
+        if missing_paths:
+            removed = self._docker_run(
+                [
+                    self.docker_binary,
+                    "exec",
+                    self.container,
+                    self.container_shell,
+                    "-c",
+                    'for target do rm -rf -- "$target"; done',
+                    "aworld-remove-created-artifacts",
+                    *missing_paths,
+                ],
+                capture_output=True,
+                timeout=120,
+            )
+            if removed.returncode != 0:
+                raise RuntimeError("Unable to remove artifacts absent at checkpoint")
+
+    def _discard_checkpoint(self, checkpoint: dict[str, Any] | None) -> None:
+        if not checkpoint:
+            return
+        archive = Path(checkpoint["archive"])
+        archive.unlink(missing_ok=True)
+        self._checkpoint_files.discard(archive)
+
+    @staticmethod
+    def _results_failed(results: list[Any]) -> bool:
+        for result in results:
+            success = (
+                result.get("success", True)
+                if isinstance(result, dict)
+                else getattr(result, "success", True)
+            )
+            if success is False:
+                return True
+            content = (
+                result.get("content")
+                if isinstance(result, dict)
+                else getattr(result, "content", None)
+            )
+            if isinstance(content, str) and content.lstrip().startswith("{"):
+                try:
+                    content = json.loads(content)
+                except json.JSONDecodeError:
+                    content = None
+            if isinstance(content, dict):
+                if content.get("success") is False:
+                    return True
+                metadata = content.get("metadata")
+                if isinstance(metadata, dict) and (
+                    metadata.get("timed_out") is True
+                    or (
+                        isinstance(metadata.get("return_code"), int)
+                        and metadata["return_code"] != 0
+                    )
+                ):
+                    return True
+        return False
+
+    @staticmethod
+    def _attach_context_receipt(results: list[Any], receipt: dict[str, Any]) -> None:
+        for result in results:
+            if isinstance(result, dict):
+                metadata = dict(result.get("metadata") or {})
+                metadata["context_management"] = dict(receipt)
+                result["metadata"] = metadata
+            else:
+                metadata = dict(getattr(result, "metadata", None) or {})
+                metadata["context_management"] = dict(receipt)
+                result.metadata = metadata
+
+    async def call_tool(
+        self,
+        action_list: List[Dict[str, Any]] = None,
+        task_id: str = None,
+        session_id: str = None,
+        context: Any = None,
+    ) -> List[Any]:
+        actions = action_list or []
+        if not self.destructive_checkpoint or not self.tracked_artifact_paths:
+            return await super().call_tool(actions, task_id, session_id, context)
+        async with self._checkpoint_lock:
+            before = await asyncio.to_thread(self._artifact_fingerprint_sync)
+            mutating = any(self._is_mutating_action(action) for action in actions)
+            checkpoint = (
+                await asyncio.to_thread(self._create_checkpoint_sync) if mutating else None
+            )
+            rolled_back = False
+            rollback_attempted = False
+            try:
+                results = await super().call_tool(actions, task_id, session_id, context)
+                if checkpoint is not None and self._results_failed(results):
+                    rollback_attempted = True
+                    await asyncio.to_thread(self._restore_checkpoint_sync, checkpoint)
+                    rolled_back = True
+                after = await asyncio.to_thread(self._artifact_fingerprint_sync)
+                receipt = {
+                    "schema_version": "aworld.sandbox-artifact-progress/v1",
+                    "artifact_fingerprint_before": before,
+                    "artifact_fingerprint_after": after,
+                    "artifact_changed": bool(before != after),
+                    "mutating_action": mutating,
+                    "checkpoint_created": checkpoint is not None,
+                    "checkpoint_sha256": checkpoint.get("sha256") if checkpoint else None,
+                    "rollback_performed": rolled_back,
+                    "rollback_reason": "tool_failure" if rolled_back else None,
+                }
+                self._attach_context_receipt(results, receipt)
+                self._last_artifact_fingerprint = after
+                return results
+            except BaseException:
+                if checkpoint is not None and not rollback_attempted:
+                    await asyncio.to_thread(self._restore_checkpoint_sync, checkpoint)
+                raise
+            finally:
+                self._discard_checkpoint(checkpoint)
 
     @staticmethod
     def _merge_user_config(user_config: Optional[Any], bridge_config: Dict[str, Any]) -> Dict[str, Any]:
@@ -207,3 +522,48 @@ class DockerSandbox(Sandbox):
     async def remove(self) -> bool:
         """Detach AWorld without changing the externally-owned container."""
         return True
+
+    async def cleanup(self) -> None:
+        try:
+            await super().cleanup()
+        finally:
+            for archive in tuple(self._checkpoint_files):
+                archive.unlink(missing_ok=True)
+                self._checkpoint_files.discard(archive)
+
+    async def run_validation(
+        self,
+        argv: tuple[str, ...] | list[str],
+        *,
+        cwd: str | None = None,
+        timeout: int = 300,
+        env_names: tuple[str, ...] | list[str] = (),
+    ) -> subprocess.CompletedProcess[str]:
+        """Run a completion validator without shell interpolation.
+
+        Environment values are inherited by Docker from the current process;
+        only validated names enter argv, so secrets are absent from receipts and
+        command logs.
+        """
+        command_argv = tuple(argv)
+        if not command_argv or any(not isinstance(arg, str) for arg in command_argv):
+            raise ValueError("validation argv must contain at least one string")
+        if isinstance(timeout, bool) or not isinstance(timeout, int) or timeout <= 0:
+            raise ValueError("validation timeout must be a positive integer")
+        effective_cwd = cwd or self.container_workdir
+        self._validate_absolute_container_path(effective_cwd, "validation cwd")
+        environment_names = tuple(env_names)
+        if any(not _ENV_IDENTIFIER.fullmatch(name) for name in environment_names):
+            raise ValueError("validation environment names must be safe identifiers")
+        command = [self.docker_binary, "exec", "--workdir", effective_cwd]
+        for name in environment_names:
+            command.extend(["--env", name])
+        command.extend([self.container, *command_argv])
+        return await asyncio.to_thread(
+            subprocess.run,
+            command,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )

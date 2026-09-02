@@ -27,6 +27,7 @@
     "progressive_tool_unmanaged_policy": "preserve",
     "task_catalog_policy": "sticky",
     "checkpoint_policy": "adaptive",
+    "destructive_sandbox_checkpoint": true,
     "default_tool_output_inline_tokens": 4096,
     "artifact_offload": true,
     "context_inspector": true,
