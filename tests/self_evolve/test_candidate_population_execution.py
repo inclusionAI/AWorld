@@ -837,6 +837,16 @@ def test_fixture_source_selector_prefers_authoritative_record_coverage() -> None
     )
     assert llm_mutator_module._canonicalize_fixture_source_selector(untyped) is not None
 
+    first_source = llm_mutator_module._canonicalize_fixture_source_selector(
+        llm_mutator_module._FIRST_SOURCE_SELECTOR
+    )
+    assert first_source is not None
+    first_namespace: dict[str, object] = {}
+    exec(compile(first_source, "<selector>", "exec"), first_namespace)
+    assert first_namespace["select_source"]("evidence", derivations)[
+        "path"
+    ] == "complete"
+
 
 def test_fixture_source_selector_normalization_uses_typed_probe_contract(
     monkeypatch: pytest.MonkeyPatch,

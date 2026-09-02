@@ -141,6 +141,7 @@ from aworld.self_evolve.cli_orchestration import (
     _parse_candidate_mutation_model_output,
     _trajectory_group_rank_key,
 )
+from aworld.self_evolve.optimizers import llm_mutator as llm_mutator_module
 from aworld.self_evolve.cli_rerun import (
     _load_target_provenance,
     _load_target_selection_report,
@@ -7268,7 +7269,7 @@ async def test_candidate_materialization_failure_retries_as_typed_feedback(
                         "candidate_materialization_failures": [
                             {
                                 "code": "candidate_materialization_invalid",
-                                "stage": "candidate_generation",
+                                "stage": "candidate_semantic_validation",
                                 "failure_class": "candidate",
                                 "repairable": True,
                                 "candidate_index": 0,
@@ -7319,6 +7320,9 @@ async def test_candidate_materialization_failure_retries_as_typed_feedback(
     assert optimizer.requests[1].validation_feedback[0].metrics[
         "candidate_materialization_invalid_count"
     ] == 1
+    assert optimizer.requests[1].validation_feedback[0].metrics[
+        "candidate_conformance_strategy_switch_required"
+    ] is True
     assert optimizer.requests[1].validation_feedback[0].metrics[
         "candidate_validation_diagnostics"
     ][0]["details"]["repair_conformance"]["failure_fingerprint"] == (
@@ -7398,7 +7402,12 @@ def test_candidate_repair_prompt_explains_fixture_conformance_violation() -> Non
         conformance.reason,
         field_path="files",
         representation="candidate_package",
-        details={"repair_conformance": conformance.to_dict()},
+        details={
+            "repair_conformance": conformance.to_dict(),
+            **llm_mutator_module._executable_conformance_repair_hints(
+                conformance
+            ),
+        },
     )
 
     prompt = _candidate_mutation_repair_prompt('{"files":[]}', error)
@@ -7406,7 +7415,15 @@ def test_candidate_repair_prompt_explains_fixture_conformance_violation() -> Non
     diagnostic = json.loads(serialized)["diagnostics"][0]
 
     assert "repair every reported violation" in instruction
-    assert "Never use mapping keys, boolean metadata" in instruction
+    assert "reject bool before int or float" in instruction
+    assert "boolean_metadata_not_excluded" in instruction
+    assert "Remove that selector" in instruction
+    assert diagnostic["details"]["required_change"] == (
+        "reject bool before int or float"
+    )
+    assert diagnostic["details"]["violation_constructs"] == [
+        "boolean_metadata_not_excluded"
+    ]
     assert diagnostic["details"]["repair_conformance"][
         "failure_fingerprint"
     ] == conformance.failure_fingerprint

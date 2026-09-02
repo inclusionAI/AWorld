@@ -16,7 +16,7 @@ import time
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path, PurePosixPath
 from typing import Any, Mapping, NoReturn, Protocol, Sequence
-from urllib.parse import unquote
+from urllib.parse import unquote, urlsplit
 
 from aworld.self_evolve.replay_adaptation import (
     ReplayAdapterBinding,
@@ -3067,6 +3067,7 @@ def _parse_compile_result(
         handled_requirements=set(handled),
         fixture_evidence_refs=fixture_evidence_refs,
         requirement_evidence_refs=evidence_refs,
+        requirements=requirements,
     )
     for requirement_id in handled:
         requirement = requirements[requirement_id]
@@ -4408,6 +4409,7 @@ def _parse_services(
     handled_requirements: set[str],
     fixture_evidence_refs: Mapping[str, tuple[str, ...]],
     requirement_evidence_refs: Mapping[str, tuple[str, ...]],
+    requirements: Mapping[str, ReplayCapabilityRequirement] | None = None,
 ) -> tuple[ReplayServiceSpec, ...]:
     _validate_compile_result_service_schema(raw)
     if not isinstance(raw, list):
@@ -4505,6 +4507,14 @@ def _parse_services(
             protocol_probes = _parse_protocol_probes(
                 value.get("protocol_probes"),
                 service_id=service_id,
+            )
+            protocol_probes = _framework_bind_http_requirement_probe_path(
+                protocol_probes,
+                requirement=(
+                    requirements.get(requirement_id)
+                    if requirements is not None
+                    else None
+                ),
             )
             if not any(_is_data_plane_probe(item) for item in protocol_probes):
                 raise ReplayCapabilityError(
@@ -4645,6 +4655,40 @@ def _parse_services(
             },
         )
     return tuple(sorted(services, key=lambda item: item.service_id))
+
+
+def _framework_bind_http_requirement_probe_path(
+    probes: Sequence[ReplayProtocolProbe],
+    *,
+    requirement: ReplayCapabilityRequirement | None,
+) -> tuple[ReplayProtocolProbe, ...]:
+    """Bind one generic root data probe to its typed HTTP requirement path."""
+
+    if requirement is None or requirement.kind != "http_resource":
+        return tuple(probes)
+    identifier = requirement.identifier
+    if not isinstance(identifier, str) or not identifier.strip():
+        return tuple(probes)
+    parsed = urlsplit(identifier)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return tuple(probes)
+    expected_path = parsed.path or "/"
+    data_plane_indexes = [
+        index
+        for index, probe in enumerate(probes)
+        if probe.kind == "http"
+        and probe.response_contains is not None
+        and not probe.validate_advertised_websockets
+    ]
+    if len(data_plane_indexes) != 1:
+        return tuple(probes)
+    target_index = data_plane_indexes[0]
+    target = probes[target_index]
+    if target.path != "/" or expected_path == "/":
+        return tuple(probes)
+    bound = list(probes)
+    bound[target_index] = replace(target, path=expected_path)
+    return tuple(bound)
 
 
 def _select_runtime_task_entry_path(

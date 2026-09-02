@@ -439,18 +439,46 @@ def _candidate_mutation_repair_prompt(
         diagnostic.get("details"),
         Mapping,
     ):
+        diagnostic_details = diagnostic["details"]
         repair_instruction += (
             "The nested repair_conformance result is executable feedback: repair "
             "every reported violation and missing operation in the submitted source. "
             "Function names and line numbers are locations, not requirements; renaming "
             "or moving the same invalid construct does not change its failure fingerprint. "
         )
+        required_change = diagnostic_details.get("required_change")
+        if isinstance(required_change, str) and required_change.strip():
+            repair_instruction += (
+                "Apply this analyzer-required source change literally before making "
+                "any optional refactor: "
+                + required_change
+                + ". "
+            )
+        violation_constructs = diagnostic_details.get(
+            "violation_constructs"
+        )
+        if isinstance(violation_constructs, (list, tuple)) and any(
+            isinstance(item, str) and item.strip()
+            for item in violation_constructs
+        ):
+            repair_instruction += (
+                "Remove every named invalid construct from its reported source "
+                "location: "
+                + ", ".join(
+                    str(item)
+                    for item in violation_constructs
+                    if isinstance(item, str) and item.strip()
+                )
+                + ". "
+            )
         if error.code == "forbidden_fixture_probe_derivation":
             repair_instruction += (
-                "For fixture probe assertions, select exactly one non-empty scalar "
-                "descendant from mapping values or sequence items. Never use mapping "
-                "keys, boolean metadata, or a concatenation of multiple scalars as "
-                "response_contains. Check bool before int/float and reject it. "
+                "Do not repair a compiler-side fixture assertion by adding another raw "
+                "fixture walk. Remove that selector and leave a non-empty protocol-shape "
+                "placeholder for framework canonical binding. If the diagnosed branch is "
+                "runtime-side, read AWORLD_REPLAY_RESPONSE_INDEX and project one correlated "
+                "record value; never use mapping keys, boolean metadata, or a concatenation "
+                "of multiple scalars. Check bool before int/float and reject it. "
             )
     return repair_instruction + (
         "Do not invent new task evidence. Return exactly one candidate JSON object.\n"
