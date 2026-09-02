@@ -272,6 +272,7 @@ async def execute_iteration_candidate(
             replay_enabled=policy.replay_enabled,
             evaluation_backend=policy.evaluation_backend,  # type: ignore[arg-type]
             judge_repetitions=policy.judge_repetitions,
+            min_eval_cases=policy.min_eval_cases,
             regression_suite_case_counts=policy.regression_suite_case_counts,
             challenger_enabled=policy.challenger_enabled,
             challenger_max_cases=policy.challenger_max_cases,

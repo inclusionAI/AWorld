@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import re
 import math
 import statistics
 from dataclasses import dataclass
@@ -474,15 +473,21 @@ class CostLatencyRegressionGate:
             baseline.metrics,
             candidate.metrics,
             (
+                "replay_cost_usd",
                 "cost_usd",
-                "judge_total_tokens",
-                "judge_estimated_input_tokens_total",
+                "replay_total_tokens",
+                "agent_total_tokens",
             ),
         )
         latency_key = _first_comparable_metric_key(
             baseline.metrics,
             candidate.metrics,
-            ("latency_ms", "judge_model_latency_ms_total"),
+            (
+                "replay_latency_ms",
+                "replay_duration_ms",
+                "agent_latency_ms",
+                "latency_ms",
+            ),
         )
         if (
             self.require_resource_evidence
@@ -910,26 +915,77 @@ class BudgetGate:
 
 class RequiredVerificationGate:
     def evaluate(self, summary: EvaluationSummary) -> GateResult:
-        command_case_count = int(_number_metric(summary.metrics, "command_case_count") or 0)
-        command_pass_count = int(_number_metric(summary.metrics, "command_pass_count") or 0)
-        if command_case_count <= 0:
-            return GateResult(
-                gate_name="required_verification",
-                passed=False,
-                reason="required deterministic verification command was not run",
+        metrics = summary.metrics
+        case_count = int(
+            _number_metric(
+                metrics,
+                "deterministic_verification_case_count",
             )
-        if command_pass_count != command_case_count:
+            or 0
+        )
+        pass_count = int(
+            _number_metric(
+                metrics,
+                "deterministic_verification_pass_count",
+            )
+            or 0
+        )
+        source = metrics.get("deterministic_verification_source")
+        # Compatibility is intentionally limited to non-AWorld backends.
+        # AWorld judge reports historically forged command_* from judge gates.
+        if (
+            case_count <= 0
+            and metrics.get("evaluator_mode") != "aworld_trajectory_evaluator"
+        ):
+            case_count = int(
+                _number_metric(metrics, "command_case_count") or 0
+            )
+            pass_count = int(
+                _number_metric(metrics, "command_pass_count") or 0
+            )
+            if case_count > 0:
+                source = source or "legacy_command_metrics"
+        if case_count <= 0:
             return GateResult(
                 gate_name="required_verification",
                 passed=False,
-                reason="required verification commands did not all pass",
-                details={"command_case_count": command_case_count, "command_pass_count": command_pass_count},
+                reason="required independent deterministic verification was not run",
+                details={
+                    "code": "deterministic_verification_not_available",
+                    "deterministic_verification_source": source,
+                    "deterministic_verification_case_count": 0,
+                    "deterministic_verification_pass_count": 0,
+                    "failure_class": "framework",
+                    "failure_owner": "framework",
+                    "failure_scope": "shared_run",
+                    "repairable": False,
+                },
+            )
+        if pass_count != case_count:
+            return GateResult(
+                gate_name="required_verification",
+                passed=False,
+                reason="required independent deterministic verification did not all pass",
+                details={
+                    "code": "deterministic_verification_failed",
+                    "deterministic_verification_source": source,
+                    "deterministic_verification_case_count": case_count,
+                    "deterministic_verification_pass_count": pass_count,
+                    "failure_class": "candidate",
+                    "failure_owner": "candidate",
+                    "failure_scope": "candidate",
+                    "repairable": True,
+                },
             )
         return GateResult(
             gate_name="required_verification",
             passed=True,
-            reason="required verification commands passed",
-            details={"command_case_count": command_case_count, "command_pass_count": command_pass_count},
+            reason="required independent deterministic verification passed",
+            details={
+                "deterministic_verification_source": source,
+                "deterministic_verification_case_count": case_count,
+                "deterministic_verification_pass_count": pass_count,
+            },
         )
 
 

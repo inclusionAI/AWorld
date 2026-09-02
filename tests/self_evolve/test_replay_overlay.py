@@ -8084,7 +8084,8 @@ async def test_aworld_cli_replay_executor_requests_machine_readable_trajectory_a
     assert "Preserve supplied HOME, TMPDIR, XDG_*" in task_text
     assert "Use only AWORLD_REPLAY_ENDPOINT_* endpoints" in task_text
     assert "return prerequisite-unavailable" in task_text
-    assert "A valid artifact-backed sample is terminal" in task_text
+    assert "Evidence completion is terminal" in task_text
+    assert "single sample is terminal only for a genuinely single-subject task" in task_text
     assert len(task_text) < 3_500
     assert captured["kwargs"]["cwd"] == str(tmp_path)
     assert captured["kwargs"]["env"]["AWORLD_SELF_EVOLVE_AUTO_DRAIN"] == "0"

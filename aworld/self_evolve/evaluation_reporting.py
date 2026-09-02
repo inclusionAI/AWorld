@@ -191,9 +191,90 @@ def _summary_with_replay_evidence_metrics(
         if metric_name in replay_metrics:
             merged_metrics.setdefault(metric_name, replay_metrics[metric_name])
             merged_metrics[f"replay_{metric_name}"] = replay_metrics[metric_name]
+    _merge_replay_runtime_cost_metrics(merged_metrics, replay_metrics)
+    _merge_replay_deterministic_verification(
+        merged_metrics,
+        replay_variant,
+        replay_metrics,
+    )
     failure_summary = _replay_failure_summary(replay_metrics.get("repetition_failures"))
     merged_metrics.update(failure_summary)
     return replace(summary, metrics=merged_metrics)
+
+
+def _merge_replay_runtime_cost_metrics(
+    merged_metrics: dict[str, Any],
+    replay_metrics: Mapping[str, Any],
+) -> None:
+    """Keep candidate runtime cost separate from evaluator/judge overhead."""
+
+    for source_key, target_key in (
+        ("cost_usd", "replay_cost_usd"),
+        ("total_tokens", "replay_total_tokens"),
+        ("latency_ms", "replay_latency_ms"),
+        ("duration_ms", "replay_duration_ms"),
+        ("external_tool_call_count", "replay_external_tool_call_count"),
+    ):
+        value = replay_metrics.get(source_key)
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            merged_metrics[target_key] = value
+
+
+def _merge_replay_deterministic_verification(
+    merged_metrics: dict[str, Any],
+    replay_variant: ReplayVariantResult,
+    replay_metrics: Mapping[str, Any],
+) -> None:
+    """Project successful paired-replay invariants as independent verification.
+
+    This signal proves the deterministic replay/evidence lifecycle only; judge
+    scores remain the authority for answer quality.  It is nevertheless a real
+    independent signal for verified confidence and replaces the old judge-gate
+    alias that was reported as verification commands.
+    """
+
+    status = getattr(replay_variant.status, "value", replay_variant.status)
+    repetition_count = replay_metrics.get("repetition_count")
+    successful_count = replay_metrics.get("successful_repetition_count")
+    count = (
+        int(repetition_count)
+        if isinstance(repetition_count, (int, float))
+        and not isinstance(repetition_count, bool)
+        and repetition_count > 0
+        else max(1, len(replay_variant.repetition_results))
+    )
+    successful = (
+        int(successful_count)
+        if isinstance(successful_count, (int, float))
+        and not isinstance(successful_count, bool)
+        else count if status == "succeeded" else 0
+    )
+    invariant_passed = bool(
+        status == "succeeded"
+        and successful == count
+        and replay_metrics.get("blocked_repetition_count", 0) == 0
+        and replay_metrics.get("failed_repetition_count", 0) == 0
+        and replay_metrics.get("evidence_bundle_valid") is not False
+        and replay_metrics.get("evidence_manifest_valid") is not False
+        and replay_metrics.get("evidence_runtime_policy_authoritative_passed")
+        is not False
+    )
+    merged_metrics.update(
+        {
+            "deterministic_signal": invariant_passed,
+            "deterministic_verification_source": "paired_replay_invariants",
+            "deterministic_verification_case_count": count,
+            "deterministic_verification_pass_count": (
+                count if invariant_passed else 0
+            ),
+            "deterministic_verification_failure_count": (
+                0 if invariant_passed else count
+            ),
+            "deterministic_verification_pass_rate": (
+                1.0 if invariant_passed else 0.0
+            ),
+        }
+    )
 
 
 def _replay_failure_summary(value: object) -> dict[str, object]:

@@ -980,6 +980,34 @@ def test_contextual_validation_does_not_repair_multiple_unclosed_patch_fences() 
     assert exc_info.value.representation == "patch_intent"
 
 
+def test_contextual_validation_closes_one_trailing_full_content_fence() -> None:
+    current_content = (
+        "---\nname: demo-skill\ndescription: demo\n---\n\n"
+        "# Demo\n\nOld guidance.\n"
+    )
+    request = OptimizerRequest(
+        target=_target(),
+        current_content=current_content,
+        target_fingerprint="sha256:old",
+        trace_packs=(_trace_pack(),),
+        target_package_inventory=("SKILL.md",),
+        max_candidates=1,
+    )
+    output = {
+        "content": current_content
+        + "\n## Bounded workflow\n\n```bash\nagent-browser snapshot -i\n",
+        "rationale": "add a bounded workflow",
+    }
+
+    normalized = _validate_mutator_output_context(
+        output,
+        request=request,
+        candidate_index=0,
+    )
+
+    assert normalized["content"].endswith("agent-browser snapshot -i\n```\n")
+
+
 @pytest.mark.asyncio
 async def test_llm_mutator_unwraps_structured_expected_output_envelope() -> None:
     async def mutate(prompt: str) -> dict:
