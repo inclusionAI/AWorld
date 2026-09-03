@@ -8199,6 +8199,7 @@ def _constraint_identities(report: Mapping[str, Any]) -> set[str]:
                     "schema_field_constraints",
                     "runtime_artifact_constraints",
                     "runtime_response_constraints",
+                    "runtime_route_constraints",
                     "required_runtime_transitions",
                 )
             }
@@ -8209,6 +8210,8 @@ def _constraint_identities(report: Mapping[str, Any]) -> set[str]:
         for key in (
             "schema_field_constraints",
             "fixture_probe_constraints",
+            "runtime_response_constraints",
+            "runtime_route_constraints",
             "runtime_artifact_constraints",
             "repair_constraints",
         ):
@@ -8291,6 +8294,16 @@ def _typed_constraint_identity(value: Any, *, kind: str) -> str | None:
             "relative_path",
             "producer_layer",
             "availability_milestone",
+        )
+    elif kind == "runtime_response_constraints":
+        required = ("constraint_kind", "response_source", "probe_kind")
+    elif kind == "runtime_route_constraints":
+        required = (
+            "constraint_kind",
+            "transport",
+            "probe_kind",
+            "path_source",
+            "routing_behavior",
         )
     else:
         required = ("identity",)

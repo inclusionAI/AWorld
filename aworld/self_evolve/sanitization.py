@@ -399,6 +399,7 @@ def _typed_repair_conformance_public_projection(
         FixtureDerivedProbeConstraint,
         RuntimeArtifactConstraint,
         RuntimeResponseConstraint,
+        RuntimeRouteConstraint,
     )
     from aworld.self_evolve.schema_diagnostics import (
         SchemaFieldRepairConstraint,
@@ -600,6 +601,19 @@ def _typed_repair_conformance_public_projection(
         projected["runtime_response_constraints"] = (
             public_runtime_constraints
         )
+    if "runtime_route_constraints" in raw:
+        constraints = raw.get("runtime_route_constraints")
+        if not isinstance(constraints, (list, tuple)) or len(constraints) > 64:
+            raise ValueError("public runtime route constraints must be bounded")
+        public_route_constraints: list[dict[str, object]] = []
+        for item in constraints:
+            if not isinstance(item, Mapping):
+                raise ValueError(
+                    "public runtime route constraint must be a mapping"
+                )
+            constraint = RuntimeRouteConstraint.from_dict(item)
+            public_route_constraints.append(constraint.to_dict())
+        projected["runtime_route_constraints"] = public_route_constraints
     if "runtime_artifact_constraints" in raw:
         constraints = raw.get("runtime_artifact_constraints")
         if not isinstance(constraints, (list, tuple)) or len(constraints) > 64:

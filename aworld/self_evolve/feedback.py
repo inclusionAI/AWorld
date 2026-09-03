@@ -274,6 +274,7 @@ def _nested_typed_candidate_validation_causes(
             if (
                 current.get("runtime_artifact_constraints")
                 or current.get("runtime_response_constraints")
+                or current.get("runtime_route_constraints")
                 or current.get("schema_field_constraints")
                 or schema_version.startswith(
                     "aworld.self_evolve.replay_failure"
@@ -311,6 +312,8 @@ def _candidate_validation_diagnostic_priority(
                 priority = max(priority, 1_100)
             if current.get("runtime_response_constraints"):
                 priority = max(priority, 1_000)
+            if current.get("runtime_route_constraints"):
+                priority = max(priority, 1_050)
             if current.get("schema_field_constraints"):
                 priority = max(priority, 900)
             schema_version = str(current.get("schema_version") or "")

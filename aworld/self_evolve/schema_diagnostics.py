@@ -39,6 +39,16 @@ def _schema_field_contract_fingerprint(
         )
         if isinstance(item, Mapping)
     ]
+    raw_runtime_routes = details.get("runtime_route_constraints")
+    runtime_routes = [
+        dict(item)
+        for item in (
+            raw_runtime_routes[:64]
+            if isinstance(raw_runtime_routes, (list, tuple))
+            else ()
+        )
+        if isinstance(item, Mapping)
+    ]
     raw_runtime_artifacts = details.get("runtime_artifact_constraints")
     runtime_artifacts = [
         dict(item)
@@ -49,7 +59,12 @@ def _schema_field_contract_fingerprint(
         )
         if isinstance(item, Mapping)
     ]
-    if not constraints and not runtime_constraints and not runtime_artifacts:
+    if (
+        not constraints
+        and not runtime_constraints
+        and not runtime_routes
+        and not runtime_artifacts
+    ):
         return None
     sorted_schema_constraints = sorted(
         constraints,
@@ -59,13 +74,22 @@ def _schema_field_contract_fingerprint(
         runtime_constraints,
         key=lambda item: json.dumps(item, sort_keys=True, default=str),
     )
+    sorted_runtime_routes = sorted(
+        runtime_routes,
+        key=lambda item: json.dumps(item, sort_keys=True, default=str),
+    )
     sorted_runtime_artifacts = sorted(
         runtime_artifacts,
         key=lambda item: json.dumps(item, sort_keys=True, default=str),
     )
     active_components = sum(
         bool(item)
-        for item in (constraints, runtime_constraints, runtime_artifacts)
+        for item in (
+            constraints,
+            runtime_constraints,
+            runtime_routes,
+            runtime_artifacts,
+        )
     )
     payload: object
     if active_components == 1:
@@ -74,12 +98,15 @@ def _schema_field_contract_fingerprint(
             if constraints
             else sorted_runtime_constraints
             if runtime_constraints
+            else sorted_runtime_routes
+            if runtime_routes
             else sorted_runtime_artifacts
         )
     else:
         payload = {
             "schema_field_constraints": sorted_schema_constraints,
             "runtime_response_constraints": sorted_runtime_constraints,
+            "runtime_route_constraints": sorted_runtime_routes,
             "runtime_artifact_constraints": sorted_runtime_artifacts,
         }
     encoded = json.dumps(
@@ -94,6 +121,8 @@ def _schema_field_contract_fingerprint(
         if constraints and active_components == 1
         else "runtime-response"
         if runtime_constraints and active_components == 1
+        else "runtime-route"
+        if runtime_routes and active_components == 1
         else "runtime-artifact"
         if runtime_artifacts and active_components == 1
         else "typed-repair"

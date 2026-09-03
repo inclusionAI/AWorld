@@ -894,6 +894,7 @@ def _focused_payload_requires_replay_runtime(
             or conformance.get("required_runtime_transitions")
             or conformance.get("fixture_probe_constraints")
             or conformance.get("runtime_response_constraints")
+            or conformance.get("runtime_route_constraints")
             or conformance.get("runtime_artifact_constraints")
         )
     )
@@ -1021,6 +1022,19 @@ def _focused_repair_prompt_instructions(
             if isinstance(item, Mapping)
         )
         if isinstance(raw_runtime_response_constraints, (list, tuple))
+        else ()
+    )
+    raw_runtime_route_constraints = contract_mapping.get(
+        "runtime_route_constraints",
+        (),
+    )
+    runtime_route_constraints = (
+        tuple(
+            item
+            for item in raw_runtime_route_constraints
+            if isinstance(item, Mapping)
+        )
+        if isinstance(raw_runtime_route_constraints, (list, tuple))
         else ()
     )
     raw_runtime_artifact_constraints = contract_mapping.get(
@@ -1524,6 +1538,20 @@ def _focused_repair_prompt_instructions(
             "characters. Bound the assertion after selecting the recorded scalar; "
             "the runtime must still return the complete recorded response container. "
             "Do not hard-code fixture text or weaken the fixture-derivation check. "
+        )
+    if runtime_route_constraints:
+        instructions += (
+            "A typed runtime_route_constraint proves that process startup and "
+            "the readiness endpoint succeeded but a framework-bound task entry "
+            "path returned a non-2xx HTTP status. The framework replaces a generic "
+            "root data-plane probe with the path component derived from each "
+            "requirement identifier. Repair the live runtime HTTP dispatcher so "
+            "every framework-bound non-readiness path for the active service is "
+            "served with a 2xx response and the fixture-derived body; keep /ready "
+            "as the readiness route. Do not hard-code the observed URL paths, do "
+            "not change only socket startup/readiness, and do not weaken or remove "
+            "the protocol probe. A repeated 404 requires a routing/dispatch repair, "
+            "not another readiness or accept-loop rewrite. "
         )
     if runtime_response_constraints or (
         "surrounding recorded response context" in feedback_text

@@ -380,8 +380,17 @@ _PROMPT_CAUSAL_DIAGNOSTIC_FIELDS = (
     "active_frontier_key",
     "affected_case_ids",
     "required_action",
+    "probe_phase",
+    "phase",
+    "probe_kind",
+    "probe_path",
+    "observed_http_status",
+    "required_http_status_class",
+    "service_id",
+    "transport",
     "runtime_artifact_constraints",
     "runtime_response_constraints",
+    "runtime_route_constraints",
     "runtime_response_observation",
     "runtime_response_observations",
     "schema_field_constraints",
@@ -418,6 +427,8 @@ def _compact_prompt_causal_diagnostics(
                     typed_weight += 1_500
                 if projected.get("runtime_response_constraints"):
                     typed_weight += 1_000
+                if projected.get("runtime_route_constraints"):
+                    typed_weight += 1_250
                 if projected.get("schema_field_constraints"):
                     typed_weight += 500
                 code = str(projected.get("code") or "")
@@ -1165,6 +1176,7 @@ def _merge_typed_repair_constraints_across_feedback(
             "schema_field_constraints",
             "runtime_artifact_constraints",
             "runtime_response_constraints",
+            "runtime_route_constraints",
         }
     }
     evidence_context = [

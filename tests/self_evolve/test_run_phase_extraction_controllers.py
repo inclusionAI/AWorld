@@ -47,6 +47,7 @@ from aworld.self_evolve.repair_conformance import (
     RepairConformanceResult,
 )
 from aworld.self_evolve.replay_adaptation import ReplayAdaptationCompiler
+from aworld.self_evolve.replay import ReplayServiceProtocolError
 from aworld.self_evolve.replay_capability import ReplayCapabilityError
 from aworld.self_evolve.runner import SelfEvolveRunner
 from aworld.self_evolve.store import FilesystemSelfEvolveStore
@@ -500,6 +501,132 @@ async def test_preflight_settles_conformance_budget_after_probe(
     assert result.gate.passed is True
     assert budget.reserved == 1
     assert budget.debited == 1
+
+
+@pytest.mark.asyncio
+async def test_preflight_projects_http_route_failure_into_typed_contract(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("# Demo\n", encoding="utf-8")
+    candidate = CandidateVariant(
+        candidate_id="candidate-route",
+        target=SelfEvolveTargetRef(
+            target_type="skill", target_id="demo", path=str(skill_path)
+        ),
+        content="# Demo changed\n",
+        rationale="test",
+    )
+    capability = SimpleNamespace(capability_id="capability", services=())
+    groups = tuple(
+        SimpleNamespace(
+            fingerprint=f"sha256:group-{index}",
+            operation="query",
+            requirement_id=f"requirement-{index}",
+            case_ids=(f"case-{index}",),
+        )
+        for index in (1, 2)
+    )
+    plan = SimpleNamespace(groups=groups, to_dict=lambda: {"groups": [{}, {}]})
+    monkeypatch.setattr(
+        run_repair_conformance,
+        "build_repair_conformance_probe_plan",
+        lambda **_: plan,
+    )
+    monkeypatch.setattr(
+        run_repair_conformance,
+        "project_replay_capability_for_probe_group",
+        lambda *_: capability,
+    )
+
+    probe_paths = iter(("/abs/2605.11182", "/lotte/status/2056754091817361670"))
+
+    async def preflight(*_, **__) -> None:
+        probe_path = next(probe_paths)
+        raise ReplayServiceProtocolError(
+            "HTTP replay probe returned status 404; expected 2xx",
+            code="replay_service_http_status_mismatch",
+            details={
+                "probe_phase": "protocol_probe",
+                "probe_kind": "http",
+                "probe_path": probe_path,
+                "observed_http_status": 404,
+                "required_http_status_class": "2xx",
+                "service_id": "browser-runtime",
+                "transport": "skill_runtime",
+                "runtime_route_constraints": [
+                    {
+                        "schema_version": (
+                            "aworld.self_evolve.runtime_route_constraint.v1"
+                        ),
+                        "constraint_kind": "framework_bound_task_entry_route",
+                        "transport": "skill_runtime",
+                        "probe_kind": "http",
+                        "path_source": "requirement_identifier_path",
+                        "required_status_class": "2xx",
+                        "routing_behavior": "serve_framework_bound_path",
+                    }
+                ],
+            },
+        )
+
+    adaptation = _adaptation_execution(
+        tmp_path,
+        override=lambda _: ReplayAdaptationResult(
+            SimpleNamespace(replay_capability=capability),
+            GateResult("replay_adaptation", True, "passed"),
+        ),
+    )
+    result = await preflight_candidate_repair_conformance(
+        RepairConformancePreflightRequest(
+            run_id="run-route",
+            target=SimpleNamespace(
+                identity=SimpleNamespace(path=skill_path),
+                baseline_skill_roots=(),
+            ),
+            dataset=_dataset(),
+            candidate=candidate,
+            contract=RepairConformanceContract(
+                focus_candidate_id="parent",
+                failure_codes=("failed",),
+                interaction_progress=0,
+                base_file_fingerprints={},
+                required_branch_paths=("replay/runtime.py",),
+                base_branch_fingerprints={},
+                runtime_paths=("replay/runtime.py",),
+            ),
+        ),
+        RepairConformancePreflightRuntime(
+            store=FilesystemSelfEvolveStore(tmp_path),
+            replay_adaptation=adaptation,
+            create_candidate_skill_overlay=lambda **_: SimpleNamespace(
+                candidate_skill_path=skill_path
+            ),
+            evaluate_compiled_probe_conformance=lambda *_args, **_kwargs: (
+                RepairConformanceResult(True, "passed", "passed", {})
+            ),
+            replay_capability_fixture_leaf_values=lambda _: {},
+            replay_capability_fixture_response_leaf_values=lambda _: {},
+            frozen_replay_fixture_shape_fingerprints=lambda _: {},
+            preflight_frozen_replay_capability=preflight,
+        ),
+    )
+
+    assert result.gate.passed is False
+    assert {
+        item["probe_path"] for item in result.gate.details["diagnostics"]
+    } == {"/abs/2605.11182", "/lotte/status/2056754091817361670"}
+    assert result.gate.details["diagnostics"][0]["observed_http_status"] == 404
+    assert result.gate.details["repair_conformance"][
+        "runtime_route_constraints"
+    ][0]["routing_behavior"] == "serve_framework_bound_path"
+    assert len(result.gate.details["causal_failure_events"]) == 1
+    event = result.gate.details["causal_failure_events"][0]
+    assert event["occurrence_count"] == 2
+    assert event["contract_identity_digest"]
+    assert event["requirement_identity_digest"] is None
 
 
 @pytest.mark.asyncio
