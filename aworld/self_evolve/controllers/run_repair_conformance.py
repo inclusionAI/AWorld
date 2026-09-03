@@ -329,6 +329,7 @@ async def preflight_candidate_repair_conformance(
         / _safe_artifact_name(request.candidate.candidate_id)
     )
     group_results: list[dict[str, object]] = []
+    failure_observations: list[ReplayFailureObservation] = []
     groups = probe_plan.groups
     conformance_budget: BudgetDecision | None = None
     if groups and request.budget_context is not None:
@@ -398,17 +399,40 @@ async def preflight_candidate_repair_conformance(
             error_reason = sanitize_text(str(exc), max_chars=512)
             error_code = _repair_probe_root_cause_code(exc)
             raw_error_details = getattr(exc, "details", None)
+            diagnostic_method = getattr(exc, "diagnostics", None)
+            exception_diagnostics = (
+                diagnostic_method()
+                if callable(diagnostic_method)
+                else {}
+            )
+            combined_error_details = {
+                **(
+                    dict(exception_diagnostics)
+                    if isinstance(exception_diagnostics, Mapping)
+                    else {}
+                ),
+                **(
+                    dict(raw_error_details)
+                    if isinstance(raw_error_details, Mapping)
+                    else {}
+                ),
+            }
             typed_error_details = {
                 key: value
-                for key, value in (
-                    dict(raw_error_details).items()
-                    if isinstance(raw_error_details, Mapping)
-                    else ()
-                )
+                for key, value in combined_error_details.items()
                 if key
                 in {
+                    "probe_phase",
+                    "phase",
+                    "probe_kind",
+                    "probe_path",
+                    "observed_http_status",
+                    "required_http_status_class",
+                    "service_id",
+                    "transport",
                     "runtime_artifact_constraints",
                     "runtime_response_constraints",
+                    "runtime_route_constraints",
                     "runtime_response_observation",
                     "schema_field_constraints",
                     "schema_field_violations",
@@ -435,7 +459,10 @@ async def preflight_candidate_repair_conformance(
                 capability_id=capability.capability_id,
                 requirement_id=(
                     None
-                    if typed_error_details.get("runtime_artifact_constraints")
+                    if (
+                        typed_error_details.get("runtime_artifact_constraints")
+                        or typed_error_details.get("runtime_route_constraints")
+                    )
                     else group.requirement_id
                 ),
                 contract_fingerprint=(
@@ -458,6 +485,7 @@ async def preflight_candidate_repair_conformance(
                     candidate_id=request.candidate.candidate_id,
                 ),
             )
+            failure_observations.extend(observations)
             failure_aggregate = aggregate_replay_failure_observations(observations)[0]
             group_results.append(
                 {
@@ -498,6 +526,12 @@ async def preflight_candidate_repair_conformance(
         result for result in group_results if result.get("passed") is False
     )
     if failed_groups:
+        causal_failure_events = [
+            item.to_dict()
+            for item in aggregate_replay_failure_observations(
+                tuple(failure_observations)
+            )
+        ]
         gate = _repair_conformance_gate(
             RepairConformanceResult(
                 passed=False,
@@ -516,11 +550,7 @@ async def preflight_candidate_repair_conformance(
                             if isinstance(case_id, str)
                         )
                     )[:100],
-                    "causal_failure_events": [
-                        result["failure_event"]
-                        for result in failed_groups
-                        if isinstance(result.get("failure_event"), Mapping)
-                    ],
+                    "causal_failure_events": causal_failure_events,
                     **_failed_probe_typed_feedback(failed_groups),
                 },
             ),
@@ -784,6 +814,7 @@ def _rebase_repair_conformance_contract(
         fixture_probe_constraints=public_contract.fixture_probe_constraints,
         schema_field_constraints=public_contract.schema_field_constraints,
         runtime_response_constraints=public_contract.runtime_response_constraints,
+        runtime_route_constraints=public_contract.runtime_route_constraints,
         runtime_artifact_constraints=public_contract.runtime_artifact_constraints,
         required_runtime_transitions=(
             public_contract.required_runtime_transitions

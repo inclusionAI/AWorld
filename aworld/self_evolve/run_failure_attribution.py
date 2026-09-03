@@ -410,6 +410,7 @@ def _repair_contract_fingerprints(
         for field_name in (
             "schema_field_constraints",
             "runtime_response_constraints",
+            "runtime_route_constraints",
             "runtime_artifact_constraints",
         ):
             component = _schema_field_contract_fingerprint(

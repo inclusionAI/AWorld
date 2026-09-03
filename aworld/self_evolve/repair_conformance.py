@@ -41,6 +41,9 @@ _ARTIFACT_LIFECYCLE_CONSTRAINT_SCHEMA_VERSION = (
 _RUNTIME_ARTIFACT_CONSTRAINT_SCHEMA_VERSION = (
     "aworld.self_evolve.runtime_artifact_constraint.v1"
 )
+_RUNTIME_ROUTE_CONSTRAINT_SCHEMA_VERSION = (
+    "aworld.self_evolve.runtime_route_constraint.v1"
+)
 
 
 @dataclass(frozen=True)
@@ -374,6 +377,73 @@ class RuntimeResponseConstraint:
 
 
 @dataclass(frozen=True)
+class RuntimeRouteConstraint:
+    """Path-agnostic routing contract for framework-bound task probes.
+
+    Concrete requirement URLs belong to observations, not contract identity.
+    Keeping only the route derivation policy here lets failures from different
+    dataset URLs share one semantic repair frontier.
+    """
+
+    constraint_kind: str = "framework_bound_task_entry_route"
+    transport: str = "skill_runtime"
+    probe_kind: str = "http"
+    path_source: str = "requirement_identifier_path"
+    required_status_class: str = "2xx"
+    routing_behavior: str = "serve_framework_bound_path"
+    schema_version: str = _RUNTIME_ROUTE_CONSTRAINT_SCHEMA_VERSION
+
+    def __post_init__(self) -> None:
+        if self.schema_version != _RUNTIME_ROUTE_CONSTRAINT_SCHEMA_VERSION:
+            raise ValueError("runtime route constraint schema is unsupported")
+        if self.constraint_kind != "framework_bound_task_entry_route":
+            raise ValueError("runtime route constraint kind is unsupported")
+        if self.transport != "skill_runtime":
+            raise ValueError("runtime route constraint transport is unsupported")
+        if self.probe_kind != "http":
+            raise ValueError("runtime route constraint probe kind is unsupported")
+        if self.path_source != "requirement_identifier_path":
+            raise ValueError("runtime route constraint path source is unsupported")
+        if self.required_status_class != "2xx":
+            raise ValueError("runtime route constraint status class is unsupported")
+        if self.routing_behavior != "serve_framework_bound_path":
+            raise ValueError("runtime route constraint behavior is unsupported")
+
+    @property
+    def identity_digest(self) -> str:
+        encoded = json.dumps(
+            self.to_dict(),
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "schema_version": self.schema_version,
+            "constraint_kind": self.constraint_kind,
+            "transport": self.transport,
+            "probe_kind": self.probe_kind,
+            "path_source": self.path_source,
+            "required_status_class": self.required_status_class,
+            "routing_behavior": self.routing_behavior,
+        }
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, object]) -> "RuntimeRouteConstraint":
+        return cls(
+            schema_version=str(value.get("schema_version") or ""),
+            constraint_kind=str(value.get("constraint_kind") or ""),
+            transport=str(value.get("transport") or ""),
+            probe_kind=str(value.get("probe_kind") or ""),
+            path_source=str(value.get("path_source") or ""),
+            required_status_class=str(value.get("required_status_class") or ""),
+            routing_behavior=str(value.get("routing_behavior") or ""),
+        )
+
+
+@dataclass(frozen=True)
 class RuntimeArtifactConstraint:
     """Payload-free lifecycle contract for an artifact produced by runtime code.
 
@@ -526,6 +596,7 @@ class RepairConformanceContract:
     fixture_probe_constraints: tuple[FixtureDerivedProbeConstraint, ...] = ()
     schema_field_constraints: tuple[SchemaFieldRepairConstraint, ...] = ()
     runtime_response_constraints: tuple[RuntimeResponseConstraint, ...] = ()
+    runtime_route_constraints: tuple[RuntimeRouteConstraint, ...] = ()
     runtime_artifact_constraints: tuple[RuntimeArtifactConstraint, ...] = ()
     required_runtime_transitions: tuple[str, ...] = ()
     artifact_lifecycle_constraint: ArtifactLifecycleConstraint | None = None
@@ -587,6 +658,9 @@ class RepairConformanceContract:
             ],
             "runtime_response_constraints": [
                 item.to_dict() for item in self.runtime_response_constraints
+            ],
+            "runtime_route_constraints": [
+                item.to_dict() for item in self.runtime_route_constraints
             ],
             "runtime_artifact_constraints": [
                 item.to_dict() for item in self.runtime_artifact_constraints
@@ -666,6 +740,9 @@ class RepairConformanceContract:
             ],
             "runtime_response_constraints": [
                 item.to_dict() for item in self.runtime_response_constraints
+            ],
+            "runtime_route_constraints": [
+                item.to_dict() for item in self.runtime_route_constraints
             ],
             "runtime_artifact_constraints": [
                 item.to_dict() for item in self.runtime_artifact_constraints
@@ -763,6 +840,19 @@ class RepairConformanceContract:
             raw_runtime_response_constraints
         ):
             raise ValueError("runtime response constraints contain invalid entries")
+        raw_runtime_route_constraints = value.get(
+            "runtime_route_constraints",
+            (),
+        )
+        if not isinstance(raw_runtime_route_constraints, (list, tuple)):
+            raise ValueError("runtime route constraints must be an array")
+        runtime_route_constraints = tuple(
+            RuntimeRouteConstraint.from_dict(item)
+            for item in raw_runtime_route_constraints
+            if isinstance(item, Mapping)
+        )
+        if len(runtime_route_constraints) != len(raw_runtime_route_constraints):
+            raise ValueError("runtime route constraints contain invalid entries")
         raw_runtime_artifact_constraints = value.get(
             "runtime_artifact_constraints",
             (),
@@ -827,6 +917,7 @@ class RepairConformanceContract:
             fixture_probe_constraints=probe_constraints,
             schema_field_constraints=schema_constraints,
             runtime_response_constraints=runtime_response_constraints,
+            runtime_route_constraints=runtime_route_constraints,
             runtime_artifact_constraints=runtime_artifact_constraints,
             required_runtime_transitions=_string_tuple(
                 value.get("required_runtime_transitions")
@@ -890,6 +981,9 @@ def repair_conformance_contract_identity(
             "runtime_response_constraints": [
                 item.to_dict() for item in contract.runtime_response_constraints
             ],
+            "runtime_route_constraints": [
+                item.to_dict() for item in contract.runtime_route_constraints
+            ],
             "runtime_artifact_constraints": [
                 item.to_dict() for item in contract.runtime_artifact_constraints
             ],
@@ -913,6 +1007,7 @@ def repair_conformance_contract_identity(
                 "fixture_probe_constraints",
                 "schema_field_constraints",
                 "runtime_response_constraints",
+                "runtime_route_constraints",
                 "runtime_artifact_constraints",
                 "required_runtime_transitions",
             )
@@ -1215,6 +1310,29 @@ def repair_conformance_failure_fingerprint(
                         atoms.add(
                             (
                                 "runtime_response_constraint",
+                                hashlib.sha256(
+                                    encoded.encode("utf-8")
+                                ).hexdigest(),
+                            )
+                        )
+                    continue
+                if key == "runtime_route_constraints" and isinstance(
+                    nested,
+                    (list, tuple),
+                ):
+                    for item in nested:
+                        if not isinstance(item, Mapping):
+                            continue
+                        encoded = json.dumps(
+                            dict(item),
+                            ensure_ascii=True,
+                            separators=(",", ":"),
+                            sort_keys=True,
+                            default=str,
+                        )
+                        atoms.add(
+                            (
+                                "runtime_route_constraint",
                                 hashlib.sha256(
                                     encoded.encode("utf-8")
                                 ).hexdigest(),
@@ -1663,6 +1781,7 @@ def _typed_constraint_owner_paths(
     runtime_paths: Sequence[str],
     schema_field_constraints: Sequence[SchemaFieldRepairConstraint],
     runtime_response_constraints: Sequence[RuntimeResponseConstraint],
+    runtime_route_constraints: Sequence[RuntimeRouteConstraint] = (),
     runtime_artifact_constraints: Sequence[RuntimeArtifactConstraint] = (),
 ) -> tuple[str, ...]:
     """Resolve every typed constraint to its source-producing layer.
@@ -1682,7 +1801,7 @@ def _typed_constraint_owner_paths(
         owners.append(manifest_path)
     if layers & {"compile_result", "compiler_output"} and compiler_path is not None:
         owners.append(compiler_path)
-    if "runtime" in layers or runtime_response_constraints:
+    if "runtime" in layers or runtime_response_constraints or runtime_route_constraints:
         owners.extend(runtime_paths)
     artifact_layers = {
         constraint.producer_layer for constraint in runtime_artifact_constraints
@@ -1942,6 +2061,34 @@ def compile_repair_conformance_contract(
             )
         }.values()
     )
+    direct_runtime_route_constraints = _runtime_route_constraints(
+        direct_diagnostics
+    )
+    transported_runtime_route_constraints = _runtime_route_constraints(
+        diagnostics
+    )
+    inherited_runtime_route_constraints = tuple(
+        {
+            item.identity_digest: item
+            for item in (
+                *(
+                    inherited_contract.runtime_route_constraints
+                    if inherited_contract is not None
+                    else ()
+                ),
+                *transported_runtime_route_constraints,
+            )
+        }.values()
+    )
+    runtime_route_constraints = tuple(
+        {
+            item.identity_digest: item
+            for item in (
+                *inherited_runtime_route_constraints,
+                *direct_runtime_route_constraints,
+            )
+        }.values()
+    )
     direct_runtime_artifact_constraints = _runtime_artifact_constraints(
         direct_diagnostics
     )
@@ -1977,10 +2124,12 @@ def compile_repair_conformance_contract(
         schema_field_constraints=(
             ()
             if direct_runtime_response_constraints
+            or direct_runtime_route_constraints
             or direct_runtime_artifact_constraints
             else direct_schema_constraints
         ),
         runtime_response_constraints=direct_runtime_response_constraints,
+        runtime_route_constraints=direct_runtime_route_constraints,
         runtime_artifact_constraints=direct_runtime_artifact_constraints,
     )
     inherited_owner_paths = _typed_constraint_owner_paths(
@@ -1989,6 +2138,7 @@ def compile_repair_conformance_contract(
         runtime_paths=runtime_paths,
         schema_field_constraints=schema_field_constraints,
         runtime_response_constraints=runtime_response_constraints,
+        runtime_route_constraints=runtime_route_constraints,
         runtime_artifact_constraints=runtime_artifact_constraints,
     )
     inherited_artifact_owner_paths = _typed_constraint_owner_paths(
@@ -1997,6 +2147,7 @@ def compile_repair_conformance_contract(
         runtime_paths=runtime_paths,
         schema_field_constraints=(),
         runtime_response_constraints=(),
+        runtime_route_constraints=(),
         runtime_artifact_constraints=(
             inherited_runtime_artifact_constraints
         ),
@@ -2148,6 +2299,7 @@ def compile_repair_conformance_contract(
         fixture_probe_constraints=fixture_probe_constraints,
         schema_field_constraints=schema_field_constraints,
         runtime_response_constraints=runtime_response_constraints,
+        runtime_route_constraints=runtime_route_constraints,
         runtime_artifact_constraints=runtime_artifact_constraints,
         required_runtime_transitions=tuple(
             dict.fromkeys(
@@ -2161,6 +2313,11 @@ def compile_repair_conformance_contract(
                     *(
                         ("preserve_recorded_response_context",)
                         if runtime_response_constraints
+                        else ()
+                    ),
+                    *(
+                        ("serve_framework_bound_task_entry_path",)
+                        if runtime_route_constraints
                         else ()
                     ),
                 )
@@ -2257,6 +2414,7 @@ def merge_repair_conformance_constraint_context(
     fixture_constraints = _fixture_probe_constraints(sources)
     schema_constraints = _schema_field_constraints(sources)
     runtime_response_constraints = _runtime_response_constraints(sources)
+    runtime_route_constraints = _runtime_route_constraints(sources)
     runtime_artifact_constraints = _runtime_artifact_constraints(sources)
     artifact_lifecycle_constraints = list(
         _artifact_lifecycle_constraints(sources)
@@ -2271,6 +2429,9 @@ def merge_repair_conformance_constraint_context(
     direct_runtime_response_constraints = _runtime_response_constraints(
         direct_diagnostics
     )
+    direct_runtime_route_constraints = _runtime_route_constraints(
+        direct_diagnostics
+    )
     direct_runtime_artifact_constraints = _runtime_artifact_constraints(
         direct_diagnostics
     )
@@ -2279,6 +2440,7 @@ def merge_repair_conformance_constraint_context(
         and not fixture_constraints
         and not schema_constraints
         and not runtime_response_constraints
+        and not runtime_route_constraints
         and not runtime_artifact_constraints
         and artifact_lifecycle_constraint is None
     ):
@@ -2289,10 +2451,19 @@ def merge_repair_conformance_constraint_context(
         merged["failure_codes"] = list(failure_codes)
     required_runtime_transitions = tuple(
         dict.fromkeys(
-            transition
-            for source in sources
-            for transition in _string_tuple(
-                source.get("required_runtime_transitions")
+            (
+                *(
+                    transition
+                    for source in sources
+                    for transition in _string_tuple(
+                        source.get("required_runtime_transitions")
+                    )
+                ),
+                *(
+                    ("serve_framework_bound_task_entry_path",)
+                    if runtime_route_constraints
+                    else ()
+                ),
             )
         )
     )
@@ -2311,6 +2482,10 @@ def merge_repair_conformance_constraint_context(
     if runtime_response_constraints:
         merged["runtime_response_constraints"] = [
             item.to_dict() for item in runtime_response_constraints
+        ]
+    if runtime_route_constraints:
+        merged["runtime_route_constraints"] = [
+            item.to_dict() for item in runtime_route_constraints
         ]
     if runtime_artifact_constraints:
         merged["runtime_artifact_constraints"] = [
@@ -2338,10 +2513,12 @@ def merge_repair_conformance_constraint_context(
         schema_field_constraints=(
             ()
             if direct_runtime_response_constraints
+            or direct_runtime_route_constraints
             or direct_runtime_artifact_constraints
             else direct_schema_constraints
         ),
         runtime_response_constraints=direct_runtime_response_constraints,
+        runtime_route_constraints=direct_runtime_route_constraints,
         runtime_artifact_constraints=direct_runtime_artifact_constraints,
     )
     artifact_owner_paths = _typed_constraint_owner_paths(
@@ -2350,6 +2527,7 @@ def merge_repair_conformance_constraint_context(
         runtime_paths=runtime_paths,
         schema_field_constraints=(),
         runtime_response_constraints=(),
+        runtime_route_constraints=(),
         runtime_artifact_constraints=runtime_artifact_constraints,
     )
     if owner_paths:
@@ -2361,6 +2539,7 @@ def merge_repair_conformance_constraint_context(
             runtime_paths=runtime_paths,
             schema_field_constraints=schema_constraints,
             runtime_response_constraints=runtime_response_constraints,
+            runtime_route_constraints=runtime_route_constraints,
             runtime_artifact_constraints=runtime_artifact_constraints,
         )
     if owner_paths:
@@ -2511,6 +2690,10 @@ def _repair_contract_consistency_failure(
         or contract.compiler_path not in required_paths
     ):
         missing.append("required_branch_paths.compiler_artifact_owner")
+    if contract.runtime_route_constraints and not (
+        required_paths & set(contract.runtime_paths)
+    ):
+        missing.append("required_branch_paths.runtime_route_owner")
 
     active_runtime_artifact_frontier = bool(runtime_artifacts)
     protocol_fixture_failure = bool(
@@ -3336,6 +3519,34 @@ def _runtime_response_constraints(
                         constraint = RuntimeResponseConstraint.from_dict(
                             raw_constraint
                         )
+                    except ValueError:
+                        continue
+                    collected[constraint.identity_digest] = constraint
+            pending.extend(current.values())
+        elif isinstance(current, (list, tuple)):
+            pending.extend(current)
+    return tuple(collected[key] for key in sorted(collected))
+
+
+def _runtime_route_constraints(
+    diagnostics: Sequence[Mapping[str, object]],
+) -> tuple[RuntimeRouteConstraint, ...]:
+    """Collect canonical, path-agnostic runtime routing constraints."""
+
+    collected: dict[str, RuntimeRouteConstraint] = {}
+    pending: list[object] = list(diagnostics)
+    visited = 0
+    while pending and visited < 512 and len(collected) < 64:
+        current = pending.pop()
+        visited += 1
+        if isinstance(current, Mapping):
+            raw_constraints = current.get("runtime_route_constraints")
+            if isinstance(raw_constraints, (list, tuple)):
+                for raw_constraint in raw_constraints[:64]:
+                    if not isinstance(raw_constraint, Mapping):
+                        continue
+                    try:
+                        constraint = RuntimeRouteConstraint.from_dict(raw_constraint)
                     except ValueError:
                         continue
                     collected[constraint.identity_digest] = constraint
@@ -4783,6 +4994,7 @@ def _inherited_repair_conformance_contract(
     ] = {}
     schema_constraints: dict[str, SchemaFieldRepairConstraint] = {}
     runtime_constraints: dict[str, RuntimeResponseConstraint] = {}
+    runtime_route_constraints: dict[str, RuntimeRouteConstraint] = {}
     runtime_artifact_constraints: dict[str, RuntimeArtifactConstraint] = {}
     for contract in inherited:
         for constraint in contract.fixture_probe_constraints:
@@ -4798,6 +5010,8 @@ def _inherited_repair_conformance_contract(
             schema_constraints[constraint.identity_digest] = constraint
         for constraint in contract.runtime_response_constraints:
             runtime_constraints[constraint.identity_digest] = constraint
+        for constraint in contract.runtime_route_constraints:
+            runtime_route_constraints[constraint.identity_digest] = constraint
         for constraint in contract.runtime_artifact_constraints:
             runtime_artifact_constraints[
                 constraint.identity_digest
@@ -4874,6 +5088,10 @@ def _inherited_repair_conformance_contract(
         ),
         runtime_response_constraints=tuple(
             runtime_constraints[key] for key in sorted(runtime_constraints)
+        ),
+        runtime_route_constraints=tuple(
+            runtime_route_constraints[key]
+            for key in sorted(runtime_route_constraints)
         ),
         runtime_artifact_constraints=tuple(
             runtime_artifact_constraints[key]

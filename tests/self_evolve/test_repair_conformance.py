@@ -13,6 +13,7 @@ from aworld.self_evolve.repair_conformance import (
     RepairConformanceResult,
     RuntimeArtifactConstraint,
     RuntimeResponseConstraint,
+    RuntimeRouteConstraint,
     build_repair_conformance_probe_plan,
     compile_repair_conformance_contract,
     evaluate_artifact_lifecycle_conformance,
@@ -31,7 +32,10 @@ from aworld.self_evolve.replay_capability import (
 )
 from aworld.self_evolve.replay_adaptation import ReplayCapabilityRequirement
 from aworld.self_evolve.sanitization import public_diagnostic_projection
-from aworld.self_evolve.schema_diagnostics import SchemaFieldRepairConstraint
+from aworld.self_evolve.schema_diagnostics import (
+    SchemaFieldRepairConstraint,
+    _schema_field_contract_fingerprint,
+)
 from aworld.self_evolve.types import CandidateFileDelta, CandidateVariant, SelfEvolveTargetRef
 
 
@@ -1036,6 +1040,53 @@ def test_runtime_response_constraint_targets_response_producer_and_round_trips()
     assert public["runtime_response_constraints"] == [
         runtime_constraint.to_dict()
     ]
+
+
+def test_runtime_route_constraint_targets_dispatcher_and_round_trips() -> None:
+    route_constraint = RuntimeRouteConstraint()
+    contract = compile_repair_conformance_contract(
+        {
+            "repair_candidate_package": _package(),
+            "candidate_validation_diagnostics": [
+                {
+                    "code": "replay_service_http_status_mismatch",
+                    "probe_phase": "protocol_probe",
+                    "probe_path": "/abs/2605.11182",
+                    "observed_http_status": 404,
+                    "runtime_route_constraints": [route_constraint.to_dict()],
+                }
+            ],
+        }
+    )
+
+    assert contract is not None
+    assert contract.required_branch_paths == ("replay/runtime.py",)
+    assert contract.runtime_route_constraints == (route_constraint,)
+    assert "serve_framework_bound_task_entry_path" in (
+        contract.required_runtime_transitions
+    )
+    restored = RepairConformanceContract.from_dict(contract.to_dict())
+    assert restored.runtime_route_constraints == (route_constraint,)
+    public = public_diagnostic_projection(contract.to_public_dict())
+    assert public["runtime_route_constraints"] == [route_constraint.to_dict()]
+
+    first_fingerprint = _schema_field_contract_fingerprint(
+        {
+            "probe_path": "/abs/2605.11182",
+            "observed_http_status": 404,
+            "runtime_route_constraints": [route_constraint.to_dict()],
+        }
+    )
+    second_fingerprint = _schema_field_contract_fingerprint(
+        {
+            "probe_path": "/lotte/status/2056754091817361670",
+            "observed_http_status": 404,
+            "runtime_route_constraints": [route_constraint.to_dict()],
+        }
+    )
+    assert first_fingerprint == second_fingerprint
+    assert first_fingerprint is not None
+    assert first_fingerprint.startswith("runtime-route:sha256:")
 
 
 def test_compile_runtime_semantics_failure_still_requires_runtime_change() -> None:

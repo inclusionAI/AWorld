@@ -1702,6 +1702,34 @@ def test_websocket_http_version_constraint_targets_live_runtime_status_line() ->
     assert "executable WebSocket probe prove the repair" in instructions
 
 
+def test_runtime_route_contract_requires_dispatch_repair_not_readiness_rewrite() -> None:
+    instructions = _focused_repair_prompt_instructions(
+        {
+            "repair_conformance": {
+                "required_branch_paths": ["replay/runtime.py"],
+                "runtime_route_constraints": [
+                    {
+                        "schema_version": (
+                            "aworld.self_evolve.runtime_route_constraint.v1"
+                        ),
+                        "constraint_kind": "framework_bound_task_entry_route",
+                        "transport": "skill_runtime",
+                        "probe_kind": "http",
+                        "path_source": "requirement_identifier_path",
+                        "required_status_class": "2xx",
+                        "routing_behavior": "serve_framework_bound_path",
+                    }
+                ],
+            }
+        }
+    )
+
+    assert "framework-bound task entry path returned a non-2xx" in instructions
+    assert "path component derived from each requirement identifier" in instructions
+    assert "Do not hard-code the observed URL paths" in instructions
+    assert "A repeated 404 requires a routing/dispatch repair" in instructions
+
+
 def test_runtime_artifact_contract_targets_live_runtime_producer() -> None:
     instructions = _focused_repair_prompt_instructions(
         {

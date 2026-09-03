@@ -168,6 +168,7 @@ def _repair_conformance_validation_surface_changed(
             contract.fixture_probe_constraints,
             contract.schema_field_constraints,
             contract.runtime_response_constraints,
+            contract.runtime_route_constraints,
             contract.runtime_artifact_constraints,
             contract.required_runtime_transitions,
             contract.artifact_lifecycle_constraint,
@@ -181,6 +182,7 @@ def _failed_probe_typed_feedback(
     constraints: dict[str, dict[str, object]] = {}
     runtime_artifact_constraints: dict[str, dict[str, object]] = {}
     runtime_response_constraints: dict[str, dict[str, object]] = {}
+    runtime_route_constraints: dict[str, dict[str, object]] = {}
     runtime_response_observations: list[dict[str, object]] = []
     counterexample_contracts: dict[str, dict[str, object]] = {}
     violations: list[dict[str, object]] = []
@@ -197,9 +199,23 @@ def _failed_probe_typed_feedback(
             "error_type": str(result.get("error_type") or "Exception"),
             "reason": str(result.get("reason") or "candidate probe failed"),
         }
+        for key in (
+            "probe_phase",
+            "phase",
+            "probe_kind",
+            "probe_path",
+            "observed_http_status",
+            "required_http_status_class",
+            "service_id",
+            "transport",
+        ):
+            value = result.get(key)
+            if value is not None and isinstance(value, (str, int, float, bool)):
+                diagnostic[key] = value
         for source_key, destination, limit in (
             ("schema_field_constraints", constraints, None),
             ("runtime_response_constraints", runtime_response_constraints, 64),
+            ("runtime_route_constraints", runtime_route_constraints, 64),
             ("runtime_artifact_constraints", runtime_artifact_constraints, 64),
         ):
             raw_items = result.get(source_key)
@@ -271,6 +287,11 @@ def _failed_probe_typed_feedback(
         feedback["runtime_response_constraints"] = [
             runtime_response_constraints[key]
             for key in sorted(runtime_response_constraints)
+        ]
+    if runtime_route_constraints:
+        feedback["runtime_route_constraints"] = [
+            runtime_route_constraints[key]
+            for key in sorted(runtime_route_constraints)
         ]
     if runtime_artifact_constraints:
         feedback["runtime_artifact_constraints"] = [

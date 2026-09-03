@@ -3291,6 +3291,66 @@ def test_http_probe_requires_surrounding_recorded_response_context() -> None:
         thread.join(timeout=2)
 
 
+def test_http_probe_reports_typed_status_and_framework_bound_route() -> None:
+    class NotFoundHandler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            self.send_response(404)
+            self.end_headers()
+
+        def log_message(self, *args) -> None:
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), NotFoundHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    class RunningProcess:
+        returncode = None
+
+        @staticmethod
+        def poll() -> None:
+            return None
+
+    try:
+        with pytest.raises(ReplayServiceProtocolError) as exc_info:
+            asyncio.run(
+                replay_module._wait_for_replay_service(
+                    RunningProcess(),
+                    host="127.0.0.1",
+                    port=server.server_port,
+                    kind="http",
+                    path="/abs/2605.11182",
+                    timeout_seconds=1.0,
+                    phase="protocol_probe",
+                    service_id="browser-runtime",
+                    transport="skill_runtime",
+                )
+            )
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+    error = exc_info.value
+    assert error.code == "replay_service_http_status_mismatch"
+    assert error.details["probe_phase"] == "protocol_probe"
+    assert error.details["probe_path"] == "/abs/2605.11182"
+    assert error.details["observed_http_status"] == 404
+    assert error.details["service_id"] == "browser-runtime"
+    assert error.details["transport"] == "skill_runtime"
+    assert error.details["runtime_route_constraints"] == [
+        {
+            "schema_version": "aworld.self_evolve.runtime_route_constraint.v1",
+            "constraint_kind": "framework_bound_task_entry_route",
+            "transport": "skill_runtime",
+            "probe_kind": "http",
+            "path_source": "requirement_identifier_path",
+            "required_status_class": "2xx",
+            "routing_behavior": "serve_framework_bound_path",
+        }
+    ]
+
+
 def test_replay_capability_fixture_leaf_values_walk_arbitrary_nested_arrays(
     tmp_path: Path,
 ) -> None:

@@ -11019,7 +11019,36 @@ async def _wait_for_replay_service(
         except OSError as exc:
             last_error = exc
             if isinstance(exc, ReplayServiceProtocolError):
-                raise
+                exc.details.update(
+                    {
+                        "probe_phase": phase,
+                        "service_id": service_id,
+                        "transport": transport,
+                    }
+                )
+                if phase == "protocol_probe":
+                    if (
+                        transport == "skill_runtime"
+                        and exc.code == "replay_service_http_status_mismatch"
+                    ):
+                        exc.details["runtime_route_constraints"] = [
+                            {
+                                "schema_version": (
+                                    "aworld.self_evolve.runtime_route_constraint.v1"
+                                ),
+                                "constraint_kind": (
+                                    "framework_bound_task_entry_route"
+                                ),
+                                "transport": "skill_runtime",
+                                "probe_kind": "http",
+                                "path_source": "requirement_identifier_path",
+                                "required_status_class": "2xx",
+                                "routing_behavior": (
+                                    "serve_framework_bound_path"
+                                ),
+                            }
+                        ]
+                    raise
             await asyncio.sleep(0.02)
     raise ReplayServiceReadinessTimeout(
         f"replay service readiness timed out after {timeout_seconds}s: {last_error}",
@@ -11092,10 +11121,41 @@ def _probe_replay_service(
             )
             response = _bounded_socket_response(connection, max_bytes=64 * 1024)
             if not response.startswith(b"HTTP/"):
-                raise OSError("HTTP readiness probe returned an invalid response")
+                raise ReplayServiceProtocolError(
+                    "HTTP replay probe returned an invalid response",
+                    code="replay_service_http_response_invalid",
+                    details={
+                        "probe_kind": "http",
+                        "probe_path": sanitize_text(path, max_chars=160),
+                    },
+                )
             status_line = response.split(b"\r\n", 1)[0]
-            if b" 2" not in status_line:
-                raise OSError("HTTP readiness probe returned a non-success status")
+            status_parts = status_line.split(b" ", 2)
+            try:
+                observed_status = int(status_parts[1])
+            except (IndexError, ValueError) as exc:
+                raise ReplayServiceProtocolError(
+                    "HTTP replay probe returned an invalid status line",
+                    code="replay_service_http_response_invalid",
+                    details={
+                        "probe_kind": "http",
+                        "probe_path": sanitize_text(path, max_chars=160),
+                    },
+                ) from exc
+            if not 200 <= observed_status < 300:
+                raise ReplayServiceProtocolError(
+                    (
+                        "HTTP replay probe returned status "
+                        f"{observed_status}; expected 2xx"
+                    ),
+                    code="replay_service_http_status_mismatch",
+                    details={
+                        "probe_kind": "http",
+                        "probe_path": sanitize_text(path, max_chars=160),
+                        "observed_http_status": observed_status,
+                        "required_http_status_class": "2xx",
+                    },
+                )
         elif kind == "tcp" and request_text is not None:
             connection.sendall(request_text.encode("utf-8"))
             response = _bounded_protocol_response(
