@@ -458,6 +458,92 @@ def test_paired_replay_checkpoint_round_trips_without_claiming_authority(
     ) is None
 
 
+def test_completed_paired_replay_checkpoint_is_reusable_before_evaluation(
+    tmp_path: Path,
+) -> None:
+    store, candidate = _paired_replay_fixture(tmp_path)
+    progress_path = _paired_replay_progress_path(store, candidate)
+    progress = json.loads(progress_path.read_text(encoding="utf-8"))
+    progress["pending_case_ids"] = []
+    progress["comparable_pair_case_ids"] = ["case-complete", "case-pending"]
+    progress_path.write_text(json.dumps(progress, sort_keys=True), encoding="utf-8")
+
+    checkpoint = discover_paired_replay_resume_checkpoint(
+        store,
+        run_id="run-paired-replay-checkpoint",
+        candidate_id=candidate.candidate_id,
+        verified_candidate_package_fingerprint=_fp("verified-paired-package"),
+    )
+
+    assert checkpoint is not None
+    assert checkpoint.pending_case_ids == ()
+    assert checkpoint.completed_pair_case_ids == (
+        "case-complete",
+        "case-pending",
+    )
+
+
+def test_framework_handoff_retains_completed_typed_replay_candidate(
+    tmp_path: Path,
+) -> None:
+    store, candidate = _paired_replay_fixture(tmp_path)
+    progress_path = _paired_replay_progress_path(store, candidate)
+    progress = json.loads(progress_path.read_text(encoding="utf-8"))
+    progress["pending_case_ids"] = []
+    progress["comparable_pair_case_ids"] = ["case-complete", "case-pending"]
+    progress_path.write_text(json.dumps(progress, sort_keys=True), encoding="utf-8")
+    report = {
+        "selected_candidate_id": candidate.candidate_id,
+        "gate_results": [
+            {"gate_name": "candidate_replay", "passed": True},
+            {"gate_name": "replay_confidence", "passed": True},
+            {"gate_name": "verification_feasibility", "passed": False},
+        ],
+        "campaign_failure_attribution": {
+            "primary_gate": "verification_feasibility",
+            "code": "verified_confidence_unreachable",
+            "failure_class": "framework",
+            "failure_owner": "framework",
+            "failure_scope": "shared_run",
+        },
+    }
+
+    checkpoint = _paired_replay_pending_candidate_checkpoint(
+        store=store,
+        run_id="run-paired-replay-checkpoint",
+        report=report,
+    )
+
+    assert checkpoint is not None
+    assert checkpoint.candidate_id == candidate.candidate_id
+    assert checkpoint.pending_case_ids == ()
+
+
+def test_framework_handoff_does_not_retain_failed_replay_evidence(
+    tmp_path: Path,
+) -> None:
+    store, candidate = _paired_replay_fixture(tmp_path)
+    report = {
+        "selected_candidate_id": candidate.candidate_id,
+        "gate_results": [
+            {"gate_name": "candidate_replay", "passed": False},
+            {"gate_name": "replay_confidence", "passed": True},
+        ],
+        "campaign_failure_attribution": {
+            "primary_gate": "verification_feasibility",
+            "failure_class": "framework",
+            "failure_owner": "framework",
+            "failure_scope": "shared_run",
+        },
+    }
+
+    assert _paired_replay_pending_candidate_checkpoint(
+        store=store,
+        run_id="run-paired-replay-checkpoint",
+        report=report,
+    ) is None
+
+
 def test_paired_replay_checkpoint_admits_safe_partial_progress_without_pair(
     tmp_path: Path,
 ) -> None:

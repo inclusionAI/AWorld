@@ -127,6 +127,7 @@ from aworld.self_evolve.measurement import (
 from aworld.self_evolve.measurement_checkpoint import (
     MeasurementResumeCheckpointV1,
     PairedReplayResumeCheckpointV1,
+    discover_completed_replay_framework_handoff_checkpoint,
     discover_measurement_resume_checkpoint,
     discover_paired_replay_resume_checkpoint,
     load_measurement_resume_checkpoint,
@@ -1285,7 +1286,15 @@ def _paired_replay_pending_candidate_checkpoint(
     run_id: str,
     report: Mapping[str, Any],
 ) -> PairedReplayResumeCheckpointV1 | None:
-    """Admit a typed continuation only for a safe progressive replay timeout."""
+    """Admit a typed continuation for safe pre-authority replay evidence."""
+
+    completed_checkpoint = discover_completed_replay_framework_handoff_checkpoint(
+        store=store,
+        run_id=run_id,
+        report=report,
+    )
+    if completed_checkpoint is not None:
+        return completed_checkpoint
 
     for key in ("campaign_failure_attribution", "rejection_attribution"):
         attribution = report.get(key)
@@ -1360,8 +1369,6 @@ def _paired_replay_pending_candidate_checkpoint(
         candidate_id=candidate_id,
         verified_candidate_package_fingerprint=fingerprint,
     )
-
-
 
 
 def _feedback_required_behaviors_from_mutation_prompt(prompt: str | None) -> set[str]:

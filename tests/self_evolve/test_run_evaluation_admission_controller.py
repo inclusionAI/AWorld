@@ -31,6 +31,19 @@ from aworld.self_evolve.controllers.run_replay_execution import (
     CandidateReplayExecutionResult,
 )
 from aworld.self_evolve.datasets import EvalCase, SelfEvolveDataset
+from aworld.self_evolve.failure_events import (
+    FailureOwner,
+    FailureScope,
+    FailureStage,
+    ReplayExecutionStatus,
+    ReplayFailureEvent,
+)
+from aworld.self_evolve.replay import (
+    CandidateReplayMemberResult,
+    CandidateReplayRequest,
+    CandidateReplayResult,
+    ReplayVariantResult,
+)
 from aworld.self_evolve.types import (
     CandidateFileDelta,
     CandidateVariant,
@@ -147,6 +160,8 @@ def _request(
     attempt_tracker=None,
     budget_context=None,
     replay_dataset: SelfEvolveDataset | None = None,
+    replay_result: CandidateReplayResult | None = None,
+    replay_gates: tuple[GateResult, ...] | None = None,
 ) -> CandidateEvaluationAdmissionRequest:
     evaluation = CandidateEvaluationRequest(
         run_id="run-1",
@@ -168,13 +183,17 @@ def _request(
     )
     replay = CandidateReplayExecutionResult(
         gate_results=(
-            GateResult(
-                gate_name="candidate_replay",
-                passed=True,
-                reason="replay admitted",
-            ),
+            replay_gates
+            if replay_gates is not None
+            else (
+                GateResult(
+                    gate_name="candidate_replay",
+                    passed=True,
+                    reason="replay admitted",
+                ),
+            )
         ),
-        replay_result=None,
+        replay_result=replay_result,
         replay_dataset=replay_dataset,
         replay_started=replay_dataset is not None,
     )
@@ -188,6 +207,57 @@ def _runtime() -> CandidateEvaluationAdmissionRuntime:
     return CandidateEvaluationAdmissionRuntime(
         typed_gate_failure=lambda gate: gate,
         feedback_builder=_feedback_builder,
+    )
+
+
+def _recovery_replay_result(
+    dataset: SelfEvolveDataset,
+) -> CandidateReplayResult:
+    target = SelfEvolveTargetRef("skill", "demo", None)
+
+    def request_for(case: EvalCase) -> CandidateReplayRequest:
+        return CandidateReplayRequest(
+            run_id="run-1",
+            task_id=case.case_id,
+            workspace_root="/tmp/recovery-replay",
+            target=target,
+            candidate_id="candidate-1",
+            overlay_skill_root="/tmp/recovery-replay/candidate",
+            task_input=case.input,
+        )
+
+    failure = ReplayFailureEvent(
+        code="baseline_task_failed",
+        owner=FailureOwner.TASK,
+        stage=FailureStage.EVIDENCE_FINALIZATION,
+        scope=FailureScope.MEMBER,
+        repairable=False,
+        category="task_completion",
+        summary="baseline did not produce canonical evidence",
+    )
+    members = tuple(
+        CandidateReplayMemberResult(
+            case_id=case.case_id,
+            request=request_for(case),
+            baseline=ReplayVariantResult(
+                variant_id="baseline",
+                status=ReplayExecutionStatus.FAILED,
+                trajectory=[{"action": {"content": "baseline attempted task"}}],
+                failure=failure,
+            ),
+            candidate=ReplayVariantResult(
+                variant_id="candidate-1",
+                status=ReplayExecutionStatus.SUCCEEDED,
+                trajectory=[{"action": {"content": "candidate completed task"}}],
+            ),
+        )
+        for case in dataset.cases
+    )
+    return CandidateReplayResult(
+        request=members[0].request,
+        baseline=members[0].baseline,
+        candidate=members[0].candidate,
+        member_results=members,
     )
 
 
@@ -333,6 +403,113 @@ def test_verified_planning_rejects_unreachable_confidence_before_budget() -> Non
     assert gate.passed is False
     assert gate.details["code"] == "verified_confidence_unreachable"
     assert budget.reservations == []
+
+
+def test_verified_recovery_pairs_admit_judge_despite_strict_replay_failure() -> None:
+    cases = tuple(
+        EvalCase(case_id=f"held-out-{index}", input={"content": "task"})
+        for index in range(2)
+    )
+    dataset = SelfEvolveDataset(
+        cases=cases,
+        recipe=DatasetRecipe(
+            source={"kind": "trajectory_set", "held_out_member_count": 2},
+            split_seed="seed",
+            splits={"held_out": [case.case_id for case in cases]},
+            held_out_case_ids=tuple(case.case_id for case in cases),
+        ),
+    )
+    replay_result = _recovery_replay_result(dataset)
+    assert replay_result.succeeded is False
+    budget = _BudgetContext()
+    request = _request(
+        dataset=dataset,
+        replay_dataset=dataset,
+        replay_result=replay_result,
+        replay_gates=(
+            GateResult("candidate_replay", True, "paired outcomes comparable"),
+            GateResult("replay_confidence", True, "confidence admitted"),
+            GateResult(
+                "replay_evaluator_admission",
+                True,
+                "evidence invariants admitted",
+            ),
+        ),
+        apply_policy="verified_only",
+        budget_context=budget,
+    )
+
+    result = plan_candidate_evaluation_admission(
+        request,
+        CandidateEvaluationAdmissionPolicy(
+            replay_enabled=True,
+            evaluation_backend=_ProbabilisticEvaluationBackend(),
+            judge_repetitions=1,
+            min_eval_cases=30,
+        ),
+        _runtime(),
+    )
+
+    assert result.terminal_result is None
+    feasibility = next(
+        gate
+        for gate in result.gate_results
+        if gate.gate_name == "verification_feasibility"
+    )
+    assert feasibility.passed is True
+    assert feasibility.details["deterministic_replay_available"] is True
+    assert feasibility.details["trajectory_set_validation_available"] is True
+    admission = feasibility.details["deterministic_replay_admission"]
+    assert admission["reason_code"] == (
+        "deterministic_comparable_replay_admitted"
+    )
+    assert admission["comparable"] is True
+    assert admission["strict_execution_succeeded"] is False
+    assert result.judge_budget is not None
+    assert any(stage is BudgetStage.JUDGE for stage, _, _ in budget.reservations)
+
+
+def test_verified_recovery_pairs_do_not_override_failed_replay_gate() -> None:
+    dataset = _dataset(1)
+    replay_result = _recovery_replay_result(dataset)
+    request = _request(
+        dataset=dataset,
+        replay_dataset=dataset,
+        replay_result=replay_result,
+        replay_gates=(
+            GateResult(
+                "candidate_replay",
+                False,
+                "framework replay failed",
+                details={"failure_class": "framework"},
+            ),
+            GateResult("replay_confidence", True, "confidence admitted"),
+        ),
+        apply_policy="verified_only",
+    )
+
+    result = plan_candidate_evaluation_admission(
+        request,
+        CandidateEvaluationAdmissionPolicy(
+            replay_enabled=True,
+            evaluation_backend=_ProbabilisticEvaluationBackend(),
+            judge_repetitions=1,
+            min_eval_cases=30,
+        ),
+        _runtime(),
+    )
+
+    assert result.terminal_result is not None
+    feasibility = next(
+        gate
+        for gate in result.gate_results
+        if gate.gate_name == "verification_feasibility"
+    )
+    assert feasibility.passed is False
+    admission = feasibility.details["deterministic_replay_admission"]
+    assert admission["reason_code"] == "typed_replay_gate_failed"
+    assert admission["comparable"] is False
+    assert admission["failed_gate_names"] == ["candidate_replay"]
 
 
 def test_evaluation_budget_denial_releases_dependent_reservation() -> None:

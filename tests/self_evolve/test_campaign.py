@@ -384,6 +384,98 @@ def test_resume_migrates_exhausted_safe_paired_replay_timeout(
     )
 
 
+def test_resume_restores_completed_replay_after_framework_handoff(
+    tmp_path: Path,
+) -> None:
+    controller = SelfImprovementCampaignController(workspace_root=tmp_path)
+    campaign = controller.create(
+        request={
+            "task": "resume completed replay",
+            "from_trajectory": "trajectory.log",
+            "apply_policy": "verified_only",
+        },
+        max_cycles=2,
+    )
+    run_id = f"{campaign.campaign_id}-cycle-001"
+    candidate = CandidateVariant(
+        candidate_id="candidate-completed-replay",
+        target=SelfEvolveTargetRef("skill", "demo", "/skills/demo/SKILL.md"),
+        content="# Demo\n\nImproved.\n",
+        rationale="resume completed replay",
+    )
+    _write_paired_replay_timeout_artifacts(
+        controller,
+        run_id=run_id,
+        candidate=candidate,
+    )
+    progress_path = (
+        controller.store.run_path(run_id)
+        / "replay"
+        / candidate.candidate_id
+        / "members"
+        / "paired_replay_checkpoint.json"
+    )
+    progress = json.loads(progress_path.read_text(encoding="utf-8"))
+    progress["pending_case_ids"] = []
+    progress["comparable_pair_case_ids"] = ["case-complete", "case-pending"]
+    progress_path.write_text(json.dumps(progress, sort_keys=True), encoding="utf-8")
+    report = {
+        "run_id": run_id,
+        "status": "rejected",
+        "budget": _budget(),
+        "candidate_ids": [candidate.candidate_id],
+        "selected_candidate_id": candidate.candidate_id,
+        "gate_results": [
+            {"gate_name": "candidate_replay", "passed": True},
+            {"gate_name": "replay_confidence", "passed": True},
+            {"gate_name": "verification_feasibility", "passed": False},
+        ],
+        "campaign_failure_attribution": {
+            "primary_gate": "verification_feasibility",
+            "failure_class": "framework",
+            "failure_owner": "framework",
+            "failure_scope": "shared_run",
+        },
+        "campaign": {},
+    }
+    report_path = controller.store.write_report(run_id, report)
+    paused = campaign_module.replace(
+        campaign,
+        status=SelfImprovementCampaignStatus.PAUSED,
+        cycle_index=1,
+        run_ids=(run_id,),
+        cumulative_authoritative_candidates=1,
+        latest_progress=self_improvement_progress(report),
+        latest_disposition=SelfImprovementDisposition(
+            kind=SelfImprovementDispositionKind.HANDOFF_GOAL,
+            reason_code="typed_framework_or_shared_blocker",
+            owner="framework",
+            stage="verification_feasibility",
+            scope="shared_run",
+        ),
+        latest_report_path=str(report_path),
+    )
+    controller.store.write_campaign(paused)
+
+    migrated = (
+        campaign_module._migrate_completed_replay_framework_handoff_for_resume(
+            controller,
+            paused,
+        )
+    )
+
+    assert migrated.status is SelfImprovementCampaignStatus.ACTIVE
+    assert migrated.measurement_pending_run_id == run_id
+    assert migrated.measurement_pending_candidate_id == candidate.candidate_id
+    migrated_report = controller.store.read_report(run_id)
+    assert migrated_report["campaign_causal_migration"]["action"] == (
+        "restore_completed_replay_framework_handoff"
+    )
+    assert migrated_report["paired_replay_resume_checkpoint"][
+        "pending_case_ids"
+    ] == []
+
+
 def test_resume_migrates_paired_replay_member_timeout_handoff(
     tmp_path: Path,
 ) -> None:

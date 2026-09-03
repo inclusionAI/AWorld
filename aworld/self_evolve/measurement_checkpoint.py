@@ -161,7 +161,7 @@ class MeasurementResumeCheckpointV1:
 
 @dataclass(frozen=True)
 class PairedReplayResumeCheckpointV1:
-    """Immutable pointer to one resumable pre-authority paired replay."""
+    """Immutable pointer to reusable pre-authority paired replay evidence."""
 
     source_run_id: str
     candidate_id: str
@@ -208,8 +208,8 @@ class PairedReplayResumeCheckpointV1:
             f"{expected_replay}/members/paired_replay_checkpoint.json"
         ):
             raise ValueError("paired replay progress path is not canonical")
-        if not self.pending_case_ids:
-            raise ValueError("paired replay checkpoint has no pending work")
+        if not self.pending_case_ids and not self.completed_pair_case_ids:
+            raise ValueError("paired replay checkpoint has no reusable work")
         for values, name in (
             (self.pending_case_ids, "pending_case_ids"),
             (self.completed_pair_case_ids, "completed_pair_case_ids"),
@@ -506,7 +506,7 @@ def discover_paired_replay_resume_checkpoint(
     candidate_id: str,
     verified_candidate_package_fingerprint: str,
 ) -> PairedReplayResumeCheckpointV1 | None:
-    """Return a checkpoint for an incomplete, safe pre-authority replay."""
+    """Return a checkpoint for safe, reusable pre-authority replay evidence."""
 
     run_path = Path(store.run_path(run_id))
     replay_dir = run_path / "replay" / candidate_id
@@ -575,8 +575,6 @@ def discover_paired_replay_resume_checkpoint(
         raw_progress["candidate_phase_completed_case_ids"]
     )
     reusable_baselines = set(raw_progress["reusable_baseline_case_ids"])
-    if not pending:
-        return None
     adaptation = request.get("replay_adaptation")
     raw_cases = adaptation.get("cases") if isinstance(adaptation, Mapping) else None
     if not isinstance(raw_cases, list):
@@ -610,6 +608,11 @@ def discover_paired_replay_resume_checkpoint(
             or candidate_completed
             or reusable_baselines
         ):
+            return None
+        if not pending and candidate_completed != request_case_ids:
+            # A completed checkpoint is resumable only when every adapted case
+            # has a frozen candidate phase.  Partial replay still requires an
+            # explicit pending frontier.
             return None
         if (
             not candidate_completed.issubset(baseline_completed)
@@ -670,6 +673,69 @@ def discover_paired_replay_resume_checkpoint(
         )
     except (TypeError, ValueError):
         return None
+
+
+def discover_completed_replay_framework_handoff_checkpoint(
+    store: Any,
+    *,
+    run_id: str,
+    report: Mapping[str, object],
+) -> PairedReplayResumeCheckpointV1 | None:
+    """Freeze passed replay evidence when later evaluation is framework-blocked."""
+
+    attribution = next(
+        (
+            value
+            for key in ("campaign_failure_attribution", "rejection_attribution")
+            if isinstance((value := report.get(key)), Mapping)
+            and value.get("failure_owner") == "framework"
+            and value.get("failure_scope") == "shared_run"
+            and value.get("primary_gate")
+            not in {"candidate_replay", "replay_confidence"}
+        ),
+        None,
+    )
+    if attribution is None:
+        return None
+    raw_gates = report.get("gate_results")
+    gates = (
+        tuple(item for item in raw_gates if isinstance(item, Mapping))
+        if isinstance(raw_gates, list)
+        else ()
+    )
+    required = {"candidate_replay", "replay_confidence"}
+    passed = {
+        str(item.get("gate_name"))
+        for item in gates
+        if item.get("passed") is True
+    }
+    failed = {
+        str(item.get("gate_name"))
+        for item in gates
+        if item.get("passed") is False
+    }
+    if not required.issubset(passed) or required & failed:
+        return None
+    candidate_id = report.get("selected_candidate_id")
+    if not isinstance(candidate_id, str) or not candidate_id:
+        return None
+    request_path = Path(store.run_path(run_id)) / "replay" / candidate_id / "request.json"
+    try:
+        request = _read_json_mapping(request_path)
+    except (OSError, ValueError, json.JSONDecodeError):
+        return None
+    fingerprint = request.get("verified_candidate_package_fingerprint")
+    if not isinstance(fingerprint, str) or not fingerprint:
+        return None
+    checkpoint = discover_paired_replay_resume_checkpoint(
+        store,
+        run_id=run_id,
+        candidate_id=candidate_id,
+        verified_candidate_package_fingerprint=fingerprint,
+    )
+    if checkpoint is None or checkpoint.pending_case_ids:
+        return None
+    return checkpoint
 
 
 def _pairless_baselines_are_verified(
