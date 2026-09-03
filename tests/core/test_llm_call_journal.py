@@ -135,6 +135,51 @@ def test_replace_mutation_is_compact_and_replays_nested_changes(tmp_path, monkey
     assert "messages" not in json.dumps(records[1]["patch"])
 
 
+def test_large_records_are_losslessly_compressed_within_record_limit(tmp_path):
+    path = tmp_path / "llm_calls.journal.jsonl"
+    call = {
+        "request_id": "large-request",
+        "status": "in_progress",
+        "request": {"messages": [{"role": "user", "content": "x" * 2_000_000}]},
+    }
+
+    append_llm_call_snapshot(
+        context=Context(task_id="task-compressed"),
+        event_type="model_request_started",
+        llm_calls=[call],
+        path=path,
+        max_record_bytes=20_000,
+    )
+
+    stored = json.loads(path.read_text())
+    assert stored["encoding"] == "zlib+base64"
+    assert path.stat().st_size < 20_000
+    recovery = read_llm_call_journal(path)
+    assert recovery.invalid_record_count == 0
+    assert recovery.latest_llm_calls == (call,)
+
+
+def test_reader_streams_journal_without_reading_entire_file(tmp_path, monkeypatch):
+    path = tmp_path / "llm_calls.journal.jsonl"
+    context = Context(task_id="task-streaming-reader")
+    append_llm_call_snapshot(
+        context=context,
+        event_type="model_request_started",
+        llm_calls=[{"request_id": "request-1", "status": "in_progress"}],
+        path=path,
+    )
+
+    def reject_read_bytes(self):
+        raise AssertionError("journal recovery must not load the whole file")
+
+    monkeypatch.setattr(type(path), "read_bytes", reject_read_bytes)
+
+    recovery = read_llm_call_journal(path)
+
+    assert recovery.valid_record_count == 1
+    assert recovery.latest_llm_calls[0]["request_id"] == "request-1"
+
+
 def test_forked_context_streams_replay_independently_and_merge_by_identity(
     tmp_path, monkeypatch
 ):
@@ -201,6 +246,32 @@ def test_late_child_snapshot_does_not_overwrite_newer_parent_call(
             "status": "in_progress",
         },
     }
+
+
+def test_provider_retries_with_distinct_request_ids_are_not_collapsed(
+    tmp_path, monkeypatch
+):
+    path = tmp_path / "llm_calls.journal.jsonl"
+    monkeypatch.setenv(JOURNAL_PATH_ENV, str(path))
+    context = Context(task_id="task-provider-retries")
+    context.append_llm_call(
+        {"call_id": "logical-call", "request_id": "request-1", "status": "failed"}
+    )
+    retry_context = context.deep_copy()
+    retry_context.append_llm_call(
+        {
+            "call_id": "logical-call",
+            "request_id": "request-2",
+            "status": "success",
+        }
+    )
+
+    recovery = read_llm_call_journal(path)
+
+    assert [call["request_id"] for call in recovery.merged_llm_calls] == [
+        "request-1",
+        "request-2",
+    ]
 
 
 def test_corruption_in_one_context_stream_does_not_poison_sibling_stream(

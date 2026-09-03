@@ -22,6 +22,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -38,6 +39,30 @@ SYSTEM_PROMPT = (
     "Use the provided tools to inspect the real task environment, gather any required "
     "evidence, implement the solution when files must change, and perform focused "
     "verification before returning a final answer."
+)
+
+PYTHON_FUNCTION_VERIFIER_TEMPLATE = """
+import importlib.util
+import inspect
+
+spec = importlib.util.spec_from_file_location("terminal_bench_verifier", {test_path!r})
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+tests = [
+    value
+    for name, value in sorted(vars(module).items())
+    if name.startswith("test_") and callable(value)
+]
+if not tests:
+    raise RuntimeError("verifier contains no test_* functions")
+unsupported = [test.__name__ for test in tests if inspect.signature(test).parameters]
+if unsupported:
+    raise RuntimeError("python-functions verifier does not support fixtures: " + ",".join(unsupported))
+for test in tests:
+    test()
+""".strip()
+PYTHON_FUNCTION_VERIFIER_IMAGE = (
+    "python@sha256:9d2e5553305c7c7b0097999bb17187c69b921ccd6bc9d40e4bb5ebe652c00285"
 )
 
 
@@ -62,6 +87,123 @@ def _llm_calls_digest(calls: list) -> str:
         default=str,
     ).encode("utf-8")
     return _sha256_bytes(encoded)
+
+
+def _llm_calls_identity_digest(calls: list) -> str:
+    """Hash a multi-Context capture without treating branch merge order as data loss."""
+    normalized = []
+    identities = set()
+    for call in calls:
+        if not isinstance(call, dict):
+            raise ValueError("LLM call capture entries must be objects")
+        identity = next(
+            (
+                (field, value)
+                for field in ("request_id", "call_id")
+                if isinstance((value := call.get(field)), str) and value
+            ),
+            None,
+        )
+        if identity is None or identity in identities:
+            raise ValueError("LLM call capture requires unique stable identities")
+        identities.add(identity)
+        normalized.append({"identity": list(identity), "call": call})
+    normalized.sort(key=lambda item: tuple(item["identity"]))
+    return _llm_calls_digest(normalized)
+
+
+def run_python_function_verifier_sidecar(
+    *,
+    docker_binary: str,
+    container: str,
+    test_path: str,
+    timeout: float,
+    env_names: tuple[str, ...] = (),
+    verifier_image: str = PYTHON_FUNCTION_VERIFIER_IMAGE,
+    scratch_root: Path | None = None,
+) -> subprocess.CompletedProcess[str]:
+    """Run original zero-argument verifier functions outside the task image."""
+    if not test_path.startswith("/") or not test_path.endswith("/test_outputs.py"):
+        raise ValueError("test_path must be an absolute test_outputs.py path")
+    if timeout <= 0:
+        raise ValueError("verifier timeout must be positive")
+    if any(not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name) for name in env_names):
+        raise ValueError("verifier environment names must be safe identifiers")
+    deadline = time.monotonic() + timeout
+
+    def remaining() -> float:
+        value = deadline - time.monotonic()
+        if value <= 0:
+            raise subprocess.TimeoutExpired("python-functions-sidecar", timeout)
+        return value
+
+    if scratch_root is not None:
+        scratch_root = scratch_root.resolve()
+        scratch_root.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(
+        prefix="aworld-verifier-",
+        dir=str(scratch_root) if scratch_root is not None else None,
+    ) as temporary:
+        root = Path(temporary)
+        app = root / "app"
+        app.mkdir()
+        tests = root / "test_outputs.py"
+        copy_app = subprocess.run(
+            [docker_binary, "cp", f"{container}:/app/.", str(app)],
+            capture_output=True,
+            text=True,
+            timeout=remaining(),
+            check=False,
+        )
+        if copy_app.returncode != 0:
+            return copy_app
+        copy_tests = subprocess.run(
+            [docker_binary, "cp", f"{container}:{test_path}", str(tests)],
+            capture_output=True,
+            text=True,
+            timeout=remaining(),
+            check=False,
+        )
+        if copy_tests.returncode != 0:
+            return copy_tests
+        command = [
+            docker_binary,
+            "run",
+            "--rm",
+            "--network",
+            "none",
+            "--read-only",
+            "--tmpfs",
+            "/tmp:rw,nosuid,size=64m",
+        ]
+        for name in env_names:
+            command.extend(["--env", name])
+        command.extend(
+            [
+                "-v",
+                # The verifier receives a disposable copy. Keep that copy writable
+                # because otherwise ordinary readers such as SQLite may fail while
+                # attempting to create locks or merge journals. The task container
+                # itself remains untouched.
+                f"{app.resolve()}:/app:rw",
+                "-v",
+                f"{tests.resolve()}:/tests/test_outputs.py:ro",
+                verifier_image,
+                "python3",
+                "-B",
+                "-c",
+                PYTHON_FUNCTION_VERIFIER_TEMPLATE.format(
+                    test_path="/tests/test_outputs.py"
+                ),
+            ]
+        )
+        return subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=remaining(),
+            check=False,
+        )
 
 
 def _context_lifecycle_evidence(agent) -> dict:
@@ -130,6 +272,8 @@ async def _configure_benchmark_completion_contract(
     *,
     required_artifacts: tuple[str, ...] = (),
     completion_env_names: tuple[str, ...] = (),
+    verifier_mode: str = "packaged",
+    verifier_scratch_root: Path | None = None,
 ) -> None:
     """Construct a task-independent contract from the mounted verifier boundary."""
     mode = str(variant.get("context_compiler", {}).get("completion_contract", "off"))
@@ -156,8 +300,12 @@ async def _configure_benchmark_completion_contract(
         if inspected.returncode == 0:
             validator_path = candidate
             break
-    commands = (
-        (
+    if verifier_mode not in {"packaged", "python-functions"}:
+        raise ValueError("unsupported completion verifier mode")
+    if validator_path is None:
+        commands = ()
+    elif verifier_mode == "packaged":
+        commands = (
             ValidationCommand(
                 command_id="packaged-verifier",
                 argv=("/bin/bash", validator_path),
@@ -165,9 +313,20 @@ async def _configure_benchmark_completion_contract(
                 timeout_seconds=900,
             ),
         )
-        if validator_path is not None
-        else ()
-    )
+    else:
+        test_path = validator_path.rsplit("/", 1)[0] + "/test_outputs.py"
+        commands = (
+            ValidationCommand(
+                command_id="python-functions-verifier",
+                argv=(
+                    "python3",
+                    "-c",
+                    PYTHON_FUNCTION_VERIFIER_TEMPLATE.format(test_path=test_path),
+                ),
+                cwd=sandbox.container_workdir,
+                timeout_seconds=900,
+            ),
+        )
     if not commands:
         raise RuntimeError(
             "completion_contract requires a mounted /tests/test.sh or /verifier/test.sh"
@@ -184,7 +343,7 @@ async def _configure_benchmark_completion_contract(
         immutable_inputs=(),
         validation_commands=commands,
         max_evidence_age_seconds=900,
-        required_final_evidence=("agent_final_response",),
+        required_final_evidence=(),
         max_repairs=1,
     )
 
@@ -206,12 +365,23 @@ async def _configure_benchmark_completion_contract(
         for command in configured_contract.validation_commands:
             timed_out = False
             try:
-                result = await sandbox.run_validation(
-                    command.argv,
-                    cwd=command.cwd,
-                    timeout=command.timeout_seconds,
-                    env_names=completion_env_names,
-                )
+                if command.command_id == "python-functions-verifier":
+                    result = await asyncio.to_thread(
+                        run_python_function_verifier_sidecar,
+                        docker_binary=sandbox.docker_binary,
+                        container=sandbox.container,
+                        test_path=test_path,
+                        timeout=command.timeout_seconds,
+                        env_names=completion_env_names,
+                        scratch_root=verifier_scratch_root,
+                    )
+                else:
+                    result = await sandbox.run_validation(
+                        command.argv,
+                        cwd=command.cwd,
+                        timeout=command.timeout_seconds,
+                        env_names=completion_env_names,
+                    )
             except subprocess.TimeoutExpired as exc:
                 timed_out = True
                 result = subprocess.CompletedProcess(
@@ -592,6 +762,12 @@ def parse_args() -> argparse.Namespace:
         default=[],
         help="Name of an inherited environment variable needed by the validator.",
     )
+    parser.add_argument(
+        "--completion-verifier-mode",
+        choices=("packaged", "python-functions"),
+        default="packaged",
+        help="Use the same verifier execution mode for the runtime completion contract.",
+    )
     return parser.parse_args()
 
 
@@ -615,6 +791,7 @@ async def run(args: argparse.Namespace) -> int:
     from aworld.config.conf import AgentConfig, AgentMemoryConfig
     from aworld.runner import Runners
     from aworld.sandbox import DockerSandbox
+    from aworld.core.llm_call_journal import read_llm_call_journal
     from aworld.core.tool_action_journal import read_tool_action_journal
     from aworld.utils.serialized_util import to_serializable
 
@@ -744,6 +921,8 @@ async def run(args: argparse.Namespace) -> int:
             variant,
             required_artifacts=tuple(args.required_artifact),
             completion_env_names=tuple(args.completion_env),
+            verifier_mode=args.completion_verifier_mode,
+            verifier_scratch_root=args.output_dir,
         )
         response = await Runners.run(instruction, agent=agent)
         response_payload = to_serializable(response.to_dict())
@@ -753,9 +932,33 @@ async def run(args: argparse.Namespace) -> int:
         )
         llm_calls = to_serializable(captured_llm_calls)
         provider_calls = [call for call in llm_calls if _is_provider_bound_call(call)]
-        provider_capture_gate_passed = bool(provider_calls) and bool(
-            llm_capture_continuity["snapshots_match"]
-        )
+        llm_journal_path = args.output_dir / "llm_calls.journal.jsonl"
+        llm_journal_recovery = read_llm_call_journal(llm_journal_path)
+        journal_calls = list(llm_journal_recovery.merged_llm_calls)
+        try:
+            reconciled_identity_hash = _llm_calls_identity_digest(llm_calls)
+            journal_identity_hash = _llm_calls_identity_digest(journal_calls)
+            journal_capture_match = (
+                len(llm_calls) == len(journal_calls)
+                and reconciled_identity_hash == journal_identity_hash
+            )
+            journal_capture_reason = None
+        except ValueError:
+            reconciled_identity_hash = None
+            journal_identity_hash = None
+            journal_capture_match = False
+            journal_capture_reason = "stable_identity_unavailable_or_duplicated"
+        llm_capture_continuity["journal_reconciliation"] = {
+            "status": "available" if llm_journal_recovery.available else "unavailable",
+            "comparison_basis": "stable_provider_identity",
+            "journal_count": len(journal_calls),
+            "reconciled_count": len(llm_calls),
+            "journal_sha256": journal_identity_hash,
+            "reconciled_sha256": reconciled_identity_hash,
+            "snapshots_match": journal_capture_match,
+            "reason_code": journal_capture_reason,
+        }
+        provider_capture_gate_passed = bool(provider_calls) and journal_capture_match
         lifecycle_evidence = _context_lifecycle_evidence(agent)
         context_artifacts = _export_context_tool_output_artifacts(
             agent, args.output_dir

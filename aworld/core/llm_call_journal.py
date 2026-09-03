@@ -9,12 +9,14 @@ for Raw trajectory content.
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import os
 import threading
 import time
 import uuid
+import zlib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -30,6 +32,9 @@ RECORD_TYPE = "llm_call_journal_record"
 _COMPATIBLE_RECORD_TYPES = {RECORD_TYPE, "llm_calls_snapshot"}
 JOURNAL_PATH_ENV = "AWORLD_LLM_CALL_JOURNAL_PATH"
 DEFAULT_MAX_RECORD_BYTES = 64 * 1024 * 1024
+DEFAULT_COMPRESSION_THRESHOLD_BYTES = 1024 * 1024
+DEFAULT_MAX_DECOMPRESSED_RECORD_BYTES = 512 * 1024 * 1024
+COMPRESSED_ENCODING = "zlib+base64"
 _PATH_LOCKS: dict[str, threading.Lock] = {}
 _PATH_LOCKS_GUARD = threading.Lock()
 
@@ -58,6 +63,62 @@ def _canonical_bytes(payload: Mapping[str, Any]) -> bytes:
 
 def _checksum(payload: Mapping[str, Any]) -> str:
     return "sha256:" + hashlib.sha256(_canonical_bytes(payload)).hexdigest()
+
+
+def _compressed_record(payload: Mapping[str, Any]) -> dict[str, Any]:
+    encoded = _canonical_bytes(payload)
+    compressed = zlib.compress(encoded)
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "record_type": RECORD_TYPE,
+        "stream_id": payload.get("stream_id"),
+        "encoding": COMPRESSED_ENCODING,
+        "uncompressed_bytes": len(encoded),
+        "uncompressed_sha256": "sha256:" + hashlib.sha256(encoded).hexdigest(),
+        "compressed_payload": base64.b64encode(compressed).decode("ascii"),
+    }
+
+
+def _decompress_record(
+    wrapper: Mapping[str, Any],
+    *,
+    max_decompressed_bytes: int = DEFAULT_MAX_DECOMPRESSED_RECORD_BYTES,
+) -> dict[str, Any]:
+    if wrapper.get("encoding") != COMPRESSED_ENCODING:
+        raise ValueError("journal record encoding is unsupported")
+    declared_size = wrapper.get("uncompressed_bytes")
+    if (
+        not isinstance(declared_size, int)
+        or declared_size < 0
+        or declared_size > max_decompressed_bytes
+    ):
+        raise ValueError("journal compressed record size is invalid")
+    compressed_payload = wrapper.get("compressed_payload")
+    if not isinstance(compressed_payload, str):
+        raise ValueError("journal compressed payload is invalid")
+    try:
+        compressed = base64.b64decode(compressed_payload, validate=True)
+        decompressor = zlib.decompressobj()
+        encoded = decompressor.decompress(compressed, max_decompressed_bytes + 1)
+        if len(encoded) > max_decompressed_bytes or decompressor.unconsumed_tail:
+            raise ValueError("journal compressed record exceeds decompression limit")
+        encoded += decompressor.flush(max_decompressed_bytes + 1 - len(encoded))
+    except (ValueError, zlib.error) as exc:
+        raise ValueError("journal compressed payload cannot be decoded") from exc
+    if len(encoded) != declared_size:
+        raise ValueError("journal compressed record size mismatch")
+    expected_sha = "sha256:" + hashlib.sha256(encoded).hexdigest()
+    if wrapper.get("uncompressed_sha256") != expected_sha:
+        raise ValueError("journal compressed record digest mismatch")
+    try:
+        record = json.loads(encoded)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("journal decompressed payload is invalid") from exc
+    if not isinstance(record, dict):
+        raise ValueError("journal decompressed record must be an object")
+    if record.get("stream_id") != wrapper.get("stream_id"):
+        raise ValueError("journal compressed record stream mismatch")
+    return record
 
 
 def _mapping_patch(
@@ -253,8 +314,11 @@ def _append_payload(
                 raise ValueError("LLM call journal previous checksum is invalid")
             record_payload["stream_sequence"] = sequence
             record_payload["previous_record_checksum"] = previous_checksum
-        record = dict(record_payload)
-        record_checksum = _checksum(record_payload)
+        stored_payload = record_payload
+        if len(_canonical_bytes(record_payload)) >= DEFAULT_COMPRESSION_THRESHOLD_BYTES:
+            stored_payload = _compressed_record(record_payload)
+        record = dict(stored_payload)
+        record_checksum = _checksum(stored_payload)
         record["record_checksum"] = record_checksum
         encoded = _canonical_bytes(record) + b"\n"
         if len(encoded) > max_record_bytes:
@@ -305,7 +369,8 @@ class LLMCallJournalRecovery:
     def merged_llm_calls(self) -> tuple[dict[str, Any], ...]:
         """Merge isolated stream tips by stable provider-attempt identity."""
         merged: list[dict[str, Any]] = []
-        positions: dict[tuple[str, str], int] = {}
+        request_positions: dict[str, int] = {}
+        unresolved_call_positions: dict[str, int] = {}
         timed_calls = sorted(
             [
                 (
@@ -322,22 +387,35 @@ class LLMCallJournalRecovery:
             key=lambda entry: entry[:3],
         )
         for _, _, _, call in timed_calls:
-            identities = tuple(
-                (field, value)
-                for field in ("request_id", "call_id")
-                if isinstance((value := call.get(field)), str) and value
+            request_id = call.get("request_id")
+            call_id = call.get("call_id")
+            request_id = (
+                request_id if isinstance(request_id, str) and request_id else None
             )
-            matched_positions = {
-                positions[identity] for identity in identities if identity in positions
-            }
-            if len(matched_positions) == 1:
-                position = matched_positions.pop()
+            call_id = call_id if isinstance(call_id, str) and call_id else None
+            if request_id is not None and request_id in request_positions:
+                position = request_positions[request_id]
+                merged[position] = _json_value(call)
+            elif (
+                request_id is not None
+                and call_id is not None
+                and call_id in unresolved_call_positions
+            ):
+                position = unresolved_call_positions.pop(call_id)
+                merged[position] = _json_value(call)
+                request_positions[request_id] = position
+            elif request_id is not None:
+                position = len(merged)
+                merged.append(_json_value(call))
+                request_positions[request_id] = position
+            elif call_id is not None and call_id in unresolved_call_positions:
+                position = unresolved_call_positions[call_id]
                 merged[position] = _json_value(call)
             else:
                 position = len(merged)
                 merged.append(_json_value(call))
-            for identity in identities:
-                positions[identity] = position
+                if call_id is not None:
+                    unresolved_call_positions[call_id] = position
         return tuple(merged)
 
     def to_evidence(self) -> dict[str, Any]:
@@ -376,130 +454,142 @@ def read_llm_call_journal(path: Path) -> LLMCallJournalRecovery:
     trailing_partial = False
     if not path.exists():
         return LLMCallJournalRecovery((), None, None, 0, 0, False)
-    data = path.read_bytes()
-    lines = data.splitlines(keepends=True)
-    for index, raw in enumerate(lines):
-        if not raw.strip():
-            continue
-        record = None
-        is_last_partial = index == len(lines) - 1 and not raw.endswith(b"\n")
-        try:
-            record = json.loads(raw)
-            if not isinstance(record, dict):
-                raise ValueError("journal record must be an object")
-            checksum = record.pop("record_checksum", None)
-            if record.get("schema_version") != SCHEMA_VERSION:
-                raise ValueError("journal schema mismatch")
-            if record.get("record_type") not in _COMPATIBLE_RECORD_TYPES:
-                raise ValueError("journal record type mismatch")
-            if checksum != _checksum(record):
-                raise ValueError("journal checksum mismatch")
-            stream_id = record.get("stream_id", "legacy")
-            if not isinstance(stream_id, str) or not stream_id:
-                raise ValueError("journal stream id is invalid")
-            has_sequence = "stream_sequence" in record
-            has_previous_checksum = "previous_record_checksum" in record
-            if has_sequence != has_previous_checksum:
-                raise ValueError("journal stream chain fields are incomplete")
-            uses_chain = has_sequence and has_previous_checksum
-            existing_chain_mode = stream_chain_mode.get(stream_id)
-            if existing_chain_mode is not None and existing_chain_mode != uses_chain:
-                raise ValueError("journal stream chain mode changed")
-            if uses_chain:
-                sequence = record.get("stream_sequence")
-                previous_checksum = record.get("previous_record_checksum")
-                expected_sequence = stream_next_sequence.get(stream_id, 0)
-                expected_previous = stream_previous_checksum.get(stream_id)
-                if (
-                    not isinstance(sequence, int)
-                    or sequence != expected_sequence
-                    or previous_checksum != expected_previous
-                ):
-                    raise ValueError("journal stream hash chain is invalid")
-            state = states.setdefault(stream_id, [])
-            call_times = state_call_times.setdefault(stream_id, [])
-            chain_valid = stream_chain_valid.setdefault(stream_id, True)
-            record_time = record.get("recorded_at_epoch_ns")
-            if not isinstance(record_time, int):
-                raise ValueError("journal record time is invalid")
-            operation = record.get("operation", "snapshot")
-            if operation == "snapshot":
-                calls = record.get("llm_calls")
-                if not isinstance(calls, list) or not all(
-                    isinstance(call, dict) for call in calls
-                ):
-                    raise ValueError("journal llm_calls must be a list of objects")
-                next_state = _json_value(calls)
-                snapshot_call_times = record.get("call_recorded_at_epoch_ns")
-                if snapshot_call_times is None:
-                    next_call_times = [record_time] * len(next_state)
-                elif (
-                    not isinstance(snapshot_call_times, list)
-                    or len(snapshot_call_times) != len(next_state)
-                    or not all(
-                        isinstance(value, int) and value >= 0
-                        for value in snapshot_call_times
-                    )
-                ):
-                    raise ValueError("journal snapshot call timestamps are invalid")
-                else:
-                    next_call_times = list(snapshot_call_times)
-            elif operation == "append":
-                mutation_index = record.get("index")
-                call = record.get("llm_call")
-                if mutation_index != len(state) or not isinstance(call, dict):
-                    raise ValueError("journal append mutation is not contiguous")
-                next_state = [*state, _json_value(call)]
-                next_call_times = [*call_times, record_time]
-            elif operation == "replace":
-                mutation_index = record.get("index")
-                patch = record.get("patch")
-                if (
-                    not isinstance(mutation_index, int)
-                    or mutation_index < 0
-                    or mutation_index >= len(state)
-                    or not isinstance(patch, list)
-                    or not all(isinstance(operation, dict) for operation in patch)
-                ):
-                    raise ValueError("journal replace mutation is invalid")
-                next_state = list(state)
-                next_state[mutation_index] = _apply_mapping_patch(
-                    state[mutation_index], patch
+    with path.open("rb") as stream:
+        for raw in stream:
+            if not raw.strip():
+                continue
+            record = None
+            is_last_partial = not raw.endswith(b"\n")
+            try:
+                stored_record = json.loads(raw)
+                if not isinstance(stored_record, dict):
+                    raise ValueError("journal record must be an object")
+                record = stored_record
+                checksum = stored_record.pop("record_checksum", None)
+                if checksum != _checksum(stored_record):
+                    raise ValueError("journal checksum mismatch")
+                record = (
+                    _decompress_record(stored_record)
+                    if "encoding" in stored_record
+                    else stored_record
                 )
-                next_call_times = list(call_times)
-                next_call_times[mutation_index] = record_time
-            else:
-                raise ValueError("journal operation is unsupported")
-        except (UnicodeDecodeError, json.JSONDecodeError, ValueError, TypeError):
-            invalid += 1
-            trailing_partial = trailing_partial or is_last_partial
-            failed_stream = (
-                record.get("stream_id", "legacy")
-                if isinstance(record, dict)
-                else "unparsed"
-            )
-            if isinstance(failed_stream, str):
-                stream_invalid[failed_stream] = stream_invalid.get(failed_stream, 0) + 1
-                stream_chain_valid[failed_stream] = False
-            continue
-        if not chain_valid:
-            invalid += 1
-            stream_invalid[stream_id] = stream_invalid.get(stream_id, 0) + 1
-            continue
-        valid += 1
-        stream_chain_mode.setdefault(stream_id, uses_chain)
-        if uses_chain:
-            stream_next_sequence[stream_id] = sequence + 1
-            stream_previous_checksum[stream_id] = checksum
-        states[stream_id] = next_state
-        state_call_times[stream_id] = next_call_times
-        stream_valid[stream_id] = stream_valid.get(stream_id, 0) + 1
-        stream_events[stream_id] = record.get("event_type")
-        stream_times[stream_id] = record.get("recorded_at_epoch_ns")
-        latest_calls = tuple(next_state)
-        latest_event_type = record.get("event_type")
-        latest_recorded_at = record.get("recorded_at_epoch_ns")
-        latest_stream_id = stream_id
+                if not isinstance(record, dict):
+                    raise ValueError("journal record must be an object")
+                if record.get("schema_version") != SCHEMA_VERSION:
+                    raise ValueError("journal schema mismatch")
+                if record.get("record_type") not in _COMPATIBLE_RECORD_TYPES:
+                    raise ValueError("journal record type mismatch")
+                stream_id = record.get("stream_id", "legacy")
+                if not isinstance(stream_id, str) or not stream_id:
+                    raise ValueError("journal stream id is invalid")
+                has_sequence = "stream_sequence" in record
+                has_previous_checksum = "previous_record_checksum" in record
+                if has_sequence != has_previous_checksum:
+                    raise ValueError("journal stream chain fields are incomplete")
+                uses_chain = has_sequence and has_previous_checksum
+                existing_chain_mode = stream_chain_mode.get(stream_id)
+                if (
+                    existing_chain_mode is not None
+                    and existing_chain_mode != uses_chain
+                ):
+                    raise ValueError("journal stream chain mode changed")
+                if uses_chain:
+                    sequence = record.get("stream_sequence")
+                    previous_checksum = record.get("previous_record_checksum")
+                    expected_sequence = stream_next_sequence.get(stream_id, 0)
+                    expected_previous = stream_previous_checksum.get(stream_id)
+                    if (
+                        not isinstance(sequence, int)
+                        or sequence != expected_sequence
+                        or previous_checksum != expected_previous
+                    ):
+                        raise ValueError("journal stream hash chain is invalid")
+                state = states.setdefault(stream_id, [])
+                call_times = state_call_times.setdefault(stream_id, [])
+                chain_valid = stream_chain_valid.setdefault(stream_id, True)
+                record_time = record.get("recorded_at_epoch_ns")
+                if not isinstance(record_time, int):
+                    raise ValueError("journal record time is invalid")
+                operation = record.get("operation", "snapshot")
+                if operation == "snapshot":
+                    calls = record.get("llm_calls")
+                    if not isinstance(calls, list) or not all(
+                        isinstance(call, dict) for call in calls
+                    ):
+                        raise ValueError("journal llm_calls must be a list of objects")
+                    next_state = _json_value(calls)
+                    snapshot_call_times = record.get("call_recorded_at_epoch_ns")
+                    if snapshot_call_times is None:
+                        next_call_times = [record_time] * len(next_state)
+                    elif (
+                        not isinstance(snapshot_call_times, list)
+                        or len(snapshot_call_times) != len(next_state)
+                        or not all(
+                            isinstance(value, int) and value >= 0
+                            for value in snapshot_call_times
+                        )
+                    ):
+                        raise ValueError("journal snapshot call timestamps are invalid")
+                    else:
+                        next_call_times = list(snapshot_call_times)
+                elif operation == "append":
+                    mutation_index = record.get("index")
+                    call = record.get("llm_call")
+                    if mutation_index != len(state) or not isinstance(call, dict):
+                        raise ValueError("journal append mutation is not contiguous")
+                    next_state = [*state, _json_value(call)]
+                    next_call_times = [*call_times, record_time]
+                elif operation == "replace":
+                    mutation_index = record.get("index")
+                    patch = record.get("patch")
+                    if (
+                        not isinstance(mutation_index, int)
+                        or mutation_index < 0
+                        or mutation_index >= len(state)
+                        or not isinstance(patch, list)
+                        or not all(isinstance(operation, dict) for operation in patch)
+                    ):
+                        raise ValueError("journal replace mutation is invalid")
+                    next_state = list(state)
+                    next_state[mutation_index] = _apply_mapping_patch(
+                        state[mutation_index], patch
+                    )
+                    next_call_times = list(call_times)
+                    next_call_times[mutation_index] = record_time
+                else:
+                    raise ValueError("journal operation is unsupported")
+            except (UnicodeDecodeError, json.JSONDecodeError, ValueError, TypeError):
+                invalid += 1
+                trailing_partial = trailing_partial or is_last_partial
+                failed_stream = (
+                    record.get("stream_id", "legacy")
+                    if isinstance(record, dict)
+                    else "unparsed"
+                )
+                if isinstance(failed_stream, str):
+                    stream_invalid[failed_stream] = (
+                        stream_invalid.get(failed_stream, 0) + 1
+                    )
+                    stream_chain_valid[failed_stream] = False
+                continue
+            if not chain_valid:
+                invalid += 1
+                stream_invalid[stream_id] = stream_invalid.get(stream_id, 0) + 1
+                continue
+            valid += 1
+            stream_chain_mode.setdefault(stream_id, uses_chain)
+            if uses_chain:
+                stream_next_sequence[stream_id] = sequence + 1
+                stream_previous_checksum[stream_id] = checksum
+            states[stream_id] = next_state
+            state_call_times[stream_id] = next_call_times
+            stream_valid[stream_id] = stream_valid.get(stream_id, 0) + 1
+            stream_events[stream_id] = record.get("event_type")
+            stream_times[stream_id] = record.get("recorded_at_epoch_ns")
+            latest_calls = tuple(next_state)
+            latest_event_type = record.get("event_type")
+            latest_recorded_at = record.get("recorded_at_epoch_ns")
+            latest_stream_id = stream_id
     stream_recoveries = tuple(
         LLMCallJournalStreamRecovery(
             stream_id=stream_id,

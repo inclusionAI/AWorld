@@ -68,8 +68,20 @@ async def probe(timeout_sec: float, model_seed: int | None) -> dict:
     reasoning = str(getattr(response, "reasoning_content", "") or "").strip()
     error = getattr(response, "error", None)
     finish_reason = str(getattr(response, "finish_reason", "") or "")
-    if error or not content or finish_reason == "length":
-        raise RuntimeError("provider did not complete the readiness response")
+    response_id = str(getattr(response, "id", "") or "")
+    if error:
+        raise RuntimeError("provider returned an error response")
+    if not (content or reasoning or finish_reason or response_id):
+        raise RuntimeError("provider response did not contain observable evidence")
+    semantic_probe_complete = bool(content and finish_reason != "length")
+    response_quality = "complete" if semantic_probe_complete else "degraded"
+    quality_reason = None
+    if not semantic_probe_complete:
+        quality_reason = (
+            "response_truncated_after_reasoning"
+            if reasoning and finish_reason == "length"
+            else "readiness_content_not_observed"
+        )
     usage = getattr(response, "usage", None) or {}
     return {
         "schema_version": "aworld.model-preflight/v1",
@@ -79,10 +91,18 @@ async def probe(timeout_sec: float, model_seed: int | None) -> dict:
         "model_seed": model_seed,
         "latency_seconds": round(time.monotonic() - started, 3),
         "response_sha256": hashlib.sha256((content or reasoning).encode()).hexdigest(),
+        "provider_response_observed": True,
+        "semantic_probe_complete": semantic_probe_complete,
+        "response_quality": response_quality,
+        "quality_reason_code": quality_reason,
         "finish_reason": finish_reason,
         "usage": {
-            "prompt_tokens": int(usage.get("prompt_tokens") or usage.get("input_tokens") or 0),
-            "completion_tokens": int(usage.get("completion_tokens") or usage.get("output_tokens") or 0),
+            "prompt_tokens": int(
+                usage.get("prompt_tokens") or usage.get("input_tokens") or 0
+            ),
+            "completion_tokens": int(
+                usage.get("completion_tokens") or usage.get("output_tokens") or 0
+            ),
         },
     }
 
