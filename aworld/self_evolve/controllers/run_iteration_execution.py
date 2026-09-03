@@ -651,10 +651,22 @@ async def execute_iteration_lifecycle(
                     < policy.max_score_tiebreak_candidates,
                 )
             )
-            report_item = evaluation_result.report_item
             evaluated_attempt_key = attempt_key_by_candidate_id.get(
                 iteration_candidate.candidate_id
             )
+            if evaluated_attempt_key is not None:
+                attempt_tracker.finalize_evaluated(
+                    evaluated_attempt_key,
+                    status=evaluation_result.state.status,
+                    infrastructure_failure=any(
+                        not gate.passed
+                        and isinstance(gate.details, Mapping)
+                        and gate.details.get("failure_class")
+                        == "infrastructure"
+                        for gate in evaluation_result.state.gate_results
+                    ),
+                )
+            report_item = evaluation_result.report_item
             if evaluated_attempt_key is not None and attempt_tracker.has_stage(
                 evaluated_attempt_key,
                 CandidateAttemptStage.PAIRED_REPLAY_STARTED,

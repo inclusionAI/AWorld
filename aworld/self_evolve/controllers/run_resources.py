@@ -18,6 +18,7 @@ from aworld.self_evolve.budget import (
     CandidateAttemptKey,
     CandidateAttemptStage,
     RunBudgetLedger,
+    candidate_attempt_terminal_stage,
 )
 from aworld.self_evolve.measurement import MeasurementUsage
 from aworld.self_evolve.store import FilesystemSelfEvolveStore
@@ -273,11 +274,63 @@ class CandidateAttemptTracker:
     def finalize_open(self, *, reason_code: str) -> None:
         for key in sorted(self._events):
             if not self.terminal(key):
+                stage = candidate_attempt_terminal_stage(
+                    self.last_stage(key)
+                )
                 self.emit(
                     key,
-                    CandidateAttemptStage.NOT_RUN,
-                    reason_code=reason_code,
+                    stage,
+                    reason_code=(
+                        reason_code
+                        if stage is CandidateAttemptStage.NOT_RUN
+                        else "run_terminated_after_candidate_execution"
+                    ),
                 )
+
+    def finalize_evaluated(
+        self,
+        key: CandidateAttemptKey,
+        *,
+        status: str,
+        infrastructure_failure: bool = False,
+    ) -> None:
+        """Close an evaluated attempt even when a controller omitted its event."""
+
+        if self.terminal(key):
+            return
+        preferred = (
+            CandidateAttemptStage.SELECTED
+            if status == "accepted"
+            else (
+                CandidateAttemptStage.PREREQUISITE_READY
+                if status == "prerequisite"
+                else (
+                    CandidateAttemptStage.BLOCKED
+                    if infrastructure_failure or status == "blocked"
+                    else CandidateAttemptStage.REJECTED
+                )
+            )
+        )
+        stage = candidate_attempt_terminal_stage(
+            self.last_stage(key),
+            preferred=preferred,
+        )
+        reason_code = {
+            CandidateAttemptStage.SELECTED: "candidate_selected",
+            CandidateAttemptStage.PREREQUISITE_READY: (
+                "evaluation_support_bootstrap_ready"
+            ),
+            CandidateAttemptStage.REJECTED: "candidate_evaluation_rejected",
+            CandidateAttemptStage.BLOCKED: (
+                "candidate_evaluation_blocked"
+                if preferred is CandidateAttemptStage.BLOCKED
+                else "candidate_evaluation_lifecycle_incomplete"
+            ),
+            CandidateAttemptStage.NOT_RUN: (
+                "candidate_evaluation_lifecycle_incomplete"
+            ),
+        }[stage]
+        self.emit(key, stage, reason_code=reason_code)
 
     def block_open_best_effort(self, *, reason_code: str) -> None:
         """Fail closed after an unhandled run error while preserving that error."""

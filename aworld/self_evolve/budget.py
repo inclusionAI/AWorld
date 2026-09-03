@@ -1959,6 +1959,33 @@ _ATTEMPT_TRANSITIONS: Mapping[CandidateAttemptStage, frozenset[CandidateAttemptS
 }
 
 
+def candidate_attempt_terminal_stage(
+    current: CandidateAttemptStage,
+    *,
+    preferred: CandidateAttemptStage | None = None,
+) -> CandidateAttemptStage:
+    """Resolve a legal terminal stage without regressing executed work."""
+
+    if current in TERMINAL_ATTEMPT_STAGES:
+        return current
+    allowed = _ATTEMPT_TRANSITIONS[current]
+    if preferred is not None and preferred in allowed:
+        return preferred
+    if preferred is None and CandidateAttemptStage.NOT_RUN in allowed:
+        return CandidateAttemptStage.NOT_RUN
+    # Once replay or evaluation has started, NOT_RUN is intentionally absent
+    # from the transition table. A missing downstream decision means the
+    # attempt was blocked, not that its completed evidence never ran.
+    if CandidateAttemptStage.BLOCKED in allowed:
+        return CandidateAttemptStage.BLOCKED
+    if CandidateAttemptStage.NOT_RUN in allowed:
+        return CandidateAttemptStage.NOT_RUN
+    raise ValueError(
+        "candidate attempt has no legal terminal transition from "
+        f"{current.value}"
+    )
+
+
 @dataclass(frozen=True, order=True)
 class CandidateAttemptKey:
     run_id: str

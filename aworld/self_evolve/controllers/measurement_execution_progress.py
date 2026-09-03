@@ -5,12 +5,98 @@ from __future__ import annotations
 import json
 import math
 from pathlib import Path
-from typing import Mapping
+from typing import Mapping, Sequence
 
 from aworld.self_evolve.controllers.screening_execution import (
     _replay_request_artifact_path,
 )
 from aworld.self_evolve.replay import CandidateReplayRequest
+
+
+def _remaining_replay_phase_count(
+    payload: Mapping[str, object],
+) -> int | None:
+    case_count = payload.get("case_count")
+    case_index = payload.get("case_index")
+    if (
+        isinstance(case_count, bool)
+        or not isinstance(case_count, int)
+        or case_count <= 0
+        or isinstance(case_index, bool)
+        or not isinstance(case_index, int)
+        or case_index <= 0
+        or case_index > case_count
+    ):
+        return None
+    phase = str(payload.get("phase") or "replay")
+    return (case_count - case_index) * 2 + (
+        2 if phase == "baseline" else 1
+    )
+
+
+def _replay_total_budget_admission(
+    *,
+    payload: Mapping[str, object],
+    replay_started_at: float,
+    now: float,
+    total_timeout_seconds: float | None,
+    completed_phase_durations: Sequence[float],
+) -> dict[str, object] | None:
+    """Stop before a new member phase cannot fit the remaining replay budget.
+
+    The estimate is deliberately based only on fully completed member phases.
+    A hard timeout remains authoritative when there is not yet enough runtime
+    evidence to make a useful admission decision.
+    """
+
+    if payload.get("event") != "member_phase_started":
+        return None
+    if (
+        total_timeout_seconds is None
+        or isinstance(total_timeout_seconds, bool)
+        or not math.isfinite(float(total_timeout_seconds))
+        or float(total_timeout_seconds) <= 0
+        or len(completed_phase_durations) < 2
+    ):
+        return None
+    remaining_phase_count = _remaining_replay_phase_count(payload)
+    if remaining_phase_count is None:
+        return None
+    case_count = int(payload["case_count"])
+    case_index = int(payload["case_index"])
+    bounded_durations = [
+        float(duration)
+        for duration in completed_phase_durations
+        if not isinstance(duration, bool)
+        and isinstance(duration, (int, float))
+        and math.isfinite(float(duration))
+        and float(duration) >= 0
+    ]
+    if len(bounded_durations) < 2:
+        return None
+    phase = str(payload.get("phase") or "replay")
+    elapsed_seconds = max(0.0, float(now) - float(replay_started_at))
+    remaining_budget_seconds = max(
+        0.0,
+        float(total_timeout_seconds) - elapsed_seconds,
+    )
+    mean_phase_seconds = sum(bounded_durations) / len(bounded_durations)
+    estimated_required_seconds = mean_phase_seconds * remaining_phase_count
+    if estimated_required_seconds < remaining_budget_seconds:
+        return None
+    return {
+        "trigger": "insufficient_remaining_total_budget",
+        "case_id": str(payload.get("case_id") or "unknown-case"),
+        "case_index": case_index,
+        "case_count": case_count,
+        "phase": phase,
+        "completed_phase_count": len(bounded_durations),
+        "remaining_phase_count": remaining_phase_count,
+        "mean_completed_phase_seconds": round(mean_phase_seconds, 3),
+        "estimated_required_seconds": round(estimated_required_seconds, 3),
+        "remaining_budget_seconds": round(remaining_budget_seconds, 3),
+        "resume_safe": True,
+    }
 
 
 def _replay_member_progress_message(

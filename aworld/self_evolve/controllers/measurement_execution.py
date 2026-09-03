@@ -31,8 +31,10 @@ from aworld.self_evolve.screening_observation_history import (
     _control_qualification_identity_from_request,
 )
 from aworld.self_evolve.controllers.measurement_execution_progress import (
+    _remaining_replay_phase_count,
     _replay_member_hard_deadline_seconds,
     _replay_member_progress_message,
+    _replay_total_budget_admission,
     _replay_timeout_checkpoint_details,
 )
 from aworld.self_evolve.controllers.screening_execution import (
@@ -762,6 +764,7 @@ class PairedReplayExecutionController:
                 member_timeout_seconds,
                 member_timeout_seconds * 6,
             )
+        budget_admission: dict[str, object] | None = None
         try:
             if lifecycle_callback is not None:
                 lifecycle_callback(
@@ -796,39 +799,46 @@ class PairedReplayExecutionController:
                 "phase": "preparing",
             }
             phase_started_at = time.monotonic()
-            phase_scope: str | None = None
+            member_phase_started_at: float | None = None
             completed_phase_durations: list[float] = []
+            budget_admission_event = asyncio.Event()
+            replay_started_at = time.monotonic()
 
             def replay_progress_callback(
                 payload: Mapping[str, object],
             ) -> None:
-                nonlocal phase_scope, phase_started_at
+                nonlocal budget_admission
+                nonlocal member_phase_started_at
+                nonlocal phase_started_at
                 now = time.monotonic()
                 event = payload.get("event")
-                completed_scope = (
-                    "member"
-                    if event == "member_phase_completed"
-                    else "attempt"
-                    if event == "replay_attempt_completed"
-                    else None
-                )
                 if (
-                    completed_scope is not None
-                    and phase_scope == completed_scope
+                    event == "member_phase_completed"
+                    and member_phase_started_at is not None
                 ):
-                    completed_phase_durations.append(now - phase_started_at)
-                    phase_scope = None
+                    completed_phase_durations.append(
+                        now - member_phase_started_at
+                    )
+                    member_phase_started_at = None
                 replay_progress.update(payload)
-                started_scope = (
-                    "member"
-                    if event == "member_phase_started"
-                    else "attempt"
-                    if event == "replay_attempt_started"
-                    else None
-                )
-                if started_scope is not None:
+                if event in {"member_phase_started", "replay_attempt_started"}:
                     phase_started_at = now
-                    phase_scope = started_scope
+                if event == "member_phase_started":
+                    member_phase_started_at = now
+                    if budget_admission is None:
+                        budget_admission = _replay_total_budget_admission(
+                            payload=payload,
+                            replay_started_at=replay_started_at,
+                            now=now,
+                            total_timeout_seconds=(
+                                effective_total_timeout_seconds
+                            ),
+                            completed_phase_durations=(
+                                completed_phase_durations
+                            ),
+                        )
+                        if budget_admission is not None:
+                            budget_admission_event.set()
                 _emit_progress(
                     runtime.progress_callback,
                     progress_stage,
@@ -857,20 +867,51 @@ class PairedReplayExecutionController:
                 async with asyncio.timeout(effective_total_timeout_seconds):
                     return await execute_backend()
 
-            if runtime.progress_callback is None:
+            monitor_budget_admission = (
+                effective_total_timeout_seconds is not None
+                and bool(
+                    getattr(backend, "supports_member_progress", False)
+                )
+            )
+            if runtime.progress_callback is None and not monitor_budget_admission:
                 replay_result = await execute_replay()
             else:
-                replay_started_at = time.monotonic()
                 replay_task = asyncio.create_task(execute_replay())
+                budget_admission_task = (
+                    asyncio.create_task(budget_admission_event.wait())
+                    if monitor_budget_admission
+                    else None
+                )
                 try:
                     while True:
+                        watched_tasks = {replay_task}
+                        if budget_admission_task is not None:
+                            watched_tasks.add(budget_admission_task)
                         done, _ = await asyncio.wait(
-                            {replay_task},
-                            timeout=_REPLAY_PROGRESS_HEARTBEAT_SECONDS,
+                            watched_tasks,
+                            timeout=(
+                                _REPLAY_PROGRESS_HEARTBEAT_SECONDS
+                                if runtime.progress_callback is not None
+                                else None
+                            ),
+                            return_when=asyncio.FIRST_COMPLETED,
                         )
-                        if done:
+                        if replay_task in done:
                             replay_result = replay_task.result()
                             break
+                        if (
+                            budget_admission_task is not None
+                            and budget_admission_task in done
+                        ):
+                            replay_task.cancel()
+                            await asyncio.gather(
+                                replay_task,
+                                return_exceptions=True,
+                            )
+                            raise TimeoutError(
+                                "remaining replay budget cannot admit the "
+                                "next member phase"
+                            )
                         now = time.monotonic()
                         phase_elapsed = now - phase_started_at
                         attempt_timeout = replay_progress.get(
@@ -893,16 +934,16 @@ class PairedReplayExecutionController:
                             if isinstance(member_hard_deadline, (int, float))
                             else None
                         )
-                        completed_phases = len(completed_phase_durations)
-                        total_phases = (
-                            int(replay_progress.get("case_count") or 0) * 2
+                        remaining_phases = _remaining_replay_phase_count(
+                            replay_progress
                         )
                         estimated_remaining = (
                             int(
                                 statistics.mean(completed_phase_durations)
-                                * max(0, total_phases - completed_phases)
+                                * remaining_phases
                             )
-                            if completed_phase_durations and total_phases
+                            if completed_phase_durations
+                            and remaining_phases is not None
                             else None
                         )
                         _emit_progress(
@@ -925,6 +966,15 @@ class PairedReplayExecutionController:
                             ),
                         )
                 finally:
+                    if (
+                        budget_admission_task is not None
+                        and not budget_admission_task.done()
+                    ):
+                        budget_admission_task.cancel()
+                        await asyncio.gather(
+                            budget_admission_task,
+                            return_exceptions=True,
+                        )
                     if not replay_task.done():
                         replay_task.cancel()
                         await asyncio.gather(
@@ -940,10 +990,21 @@ class PairedReplayExecutionController:
                         "effective_timeout_seconds": (
                             effective_total_timeout_seconds
                         ),
+                        "timeout_trigger": (
+                            "deadline_admission"
+                            if budget_admission is not None
+                            else "hard_deadline"
+                        ),
                     },
                 )
             timeout_checkpoint = _replay_timeout_checkpoint_details(
                 replay_request
+            )
+            timeout_reason = (
+                "candidate replay stopped because the remaining total "
+                "budget cannot admit the next member phase"
+                if budget_admission is not None
+                else "candidate replay exceeded the total hard deadline"
             )
             return PairedReplayExecutionResult(
                 None,
@@ -951,9 +1012,7 @@ class PairedReplayExecutionController:
                 GateResult(
                     gate_name="candidate_replay",
                     passed=False,
-                    reason=(
-                        "candidate replay exceeded the total hard deadline"
-                    ),
+                    reason=timeout_reason,
                     details={
                         "failure_class": "measurement",
                         "failure_owner": FailureOwner.FRAMEWORK.value,
@@ -969,6 +1028,16 @@ class PairedReplayExecutionController:
                             else "verified_default"
                         ),
                         "partial_baseline_cache_preserved": True,
+                        "timeout_trigger": (
+                            "deadline_admission"
+                            if budget_admission is not None
+                            else "hard_deadline"
+                        ),
+                        **(
+                            {"deadline_admission": budget_admission}
+                            if budget_admission is not None
+                            else {}
+                        ),
                         **timeout_checkpoint,
                     },
                 ),
