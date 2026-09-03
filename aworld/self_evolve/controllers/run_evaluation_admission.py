@@ -143,6 +143,97 @@ class CandidateEvaluationAdmissionResult:
                 raise ValueError(f"{field_name} must be non-negative")
 
 
+@dataclass(frozen=True)
+class DeterministicReplayAdmission:
+    """Canonical replay evidence projection consumed by verified evaluation."""
+
+    available: bool
+    reason_code: str
+    required_gate_names: tuple[str, ...]
+    passed_gate_names: tuple[str, ...]
+    failed_gate_names: tuple[str, ...]
+    comparable: bool
+    strict_execution_succeeded: bool
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "available": self.available,
+            "reason_code": self.reason_code,
+            "required_gate_names": list(self.required_gate_names),
+            "passed_gate_names": list(self.passed_gate_names),
+            "failed_gate_names": list(self.failed_gate_names),
+            "comparable": self.comparable,
+            "strict_execution_succeeded": self.strict_execution_succeeded,
+        }
+
+
+def _deterministic_replay_admission(
+    replay: CandidateReplayExecutionResult,
+) -> DeterministicReplayAdmission:
+    """Project admitted deterministic evidence without redefining success.
+
+    Task-owned baseline failures may form valid recovery pairs. Consequently,
+    ``CandidateReplayResult.succeeded`` is diagnostic only: the authoritative
+    admission criterion is deterministic pair comparability plus the typed
+    replay and confidence gates that already evaluated those failures.
+    """
+
+    required_gate_names = ("candidate_replay", "replay_confidence")
+    relevant_gate_names = {
+        *required_gate_names,
+        "replay_evaluator_admission",
+    }
+    relevant_gates = tuple(
+        gate for gate in replay.gate_results if gate.gate_name in relevant_gate_names
+    )
+    passed_gate_names = tuple(
+        dict.fromkeys(gate.gate_name for gate in relevant_gates if gate.passed)
+    )
+    failed_gate_names = tuple(
+        dict.fromkeys(gate.gate_name for gate in relevant_gates if not gate.passed)
+    )
+    replay_result = replay.replay_result
+    replay_dataset = replay.replay_dataset
+    strict_execution_succeeded = bool(
+        replay_result is not None and replay_result.succeeded
+    )
+    required_gates_passed = all(
+        gate_name in passed_gate_names for gate_name in required_gate_names
+    )
+    # ``candidate_replay`` is emitted only after the replay controller calls
+    # candidate_replay_is_comparable(require_adapted=True). Do not repeat that
+    # check against replay_dataset: it is the derived evaluator dataset and can
+    # contain repetition-expanded case ids that intentionally differ from the
+    # source replay member ids.
+    comparable = "candidate_replay" in passed_gate_names
+    available = bool(
+        replay_result is not None
+        and replay_dataset is not None
+        and required_gates_passed
+        and not failed_gate_names
+        and comparable
+    )
+    if available:
+        reason_code = "deterministic_comparable_replay_admitted"
+    elif replay_result is None or replay_dataset is None:
+        reason_code = "replay_evidence_missing"
+    elif failed_gate_names:
+        reason_code = "typed_replay_gate_failed"
+    elif not required_gates_passed:
+        reason_code = "typed_replay_gate_missing"
+    else:
+        reason_code = "replay_pairs_not_deterministically_comparable"
+    return DeterministicReplayAdmission(
+        available=available,
+        reason_code=reason_code,
+        required_gate_names=required_gate_names,
+        passed_gate_names=passed_gate_names,
+        failed_gate_names=failed_gate_names,
+        comparable=comparable,
+        strict_execution_succeeded=strict_execution_succeeded,
+    )
+
+
 def can_reuse_single_case_replay_validation(
     dataset: SelfEvolveDataset,
 ) -> bool:
@@ -178,7 +269,7 @@ def _verification_feasibility_gate(
     *,
     dataset: SelfEvolveDataset,
     min_eval_cases: int,
-    deterministic_replay_available: bool,
+    deterministic_replay: DeterministicReplayAdmission,
 ) -> GateResult:
     """Reject verified-only work before judge spend when confidence is unreachable."""
 
@@ -195,14 +286,14 @@ def _verification_feasibility_gate(
         1 for case in dataset.cases if case.verification_command
     )
     deterministic_available = bool(
-        deterministic_replay_available or command_case_count > 0
+        deterministic_replay.available or command_case_count > 0
     )
     trajectory_set_available = bool(
         held_out_case_count > 0
         and has_trajectory_set_validation_source(dataset)
     )
     single_case_replay_available = bool(
-        deterministic_replay_available
+        deterministic_replay.available
         and source.get("paired_replay") is True
         and source.get("original_case_count") == 1
     )
@@ -222,7 +313,8 @@ def _verification_feasibility_gate(
         ),
         "held_out_case_count": held_out_case_count,
         "min_eval_cases": min_eval_cases,
-        "deterministic_replay_available": deterministic_replay_available,
+        "deterministic_replay_available": deterministic_replay.available,
+        "deterministic_replay_admission": deterministic_replay.to_dict(),
         "verification_command_case_count": command_case_count,
         "deterministic_verification_available": deterministic_available,
         "trajectory_set_validation_available": trajectory_set_available,
@@ -339,10 +431,7 @@ def plan_candidate_evaluation_admission(
         feasibility_gate = _verification_feasibility_gate(
             dataset=evaluation_dataset,
             min_eval_cases=policy.min_eval_cases,
-            deterministic_replay_available=bool(
-                replay.replay_result is not None
-                and replay.replay_result.succeeded
-            ),
+            deterministic_replay=_deterministic_replay_admission(replay),
         )
         gate_results.append(feasibility_gate)
         if not feasibility_gate.passed:

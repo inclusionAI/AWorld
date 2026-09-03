@@ -23,6 +23,7 @@ from aworld.self_evolve.recovery_trace import (
 from aworld.self_evolve.measurement_checkpoint import (
     MeasurementResumeCheckpointV1,
     PairedReplayResumeCheckpointV1,
+    discover_completed_replay_framework_handoff_checkpoint,
     discover_paired_replay_resume_checkpoint,
     load_measurement_resume_checkpoint,
     load_paired_replay_resume_checkpoint,
@@ -2278,6 +2279,10 @@ def run_self_improvement_campaign(
             campaign,
         )
         campaign = _migrate_regressing_measurement_checkpoint_for_resume(
+            controller,
+            campaign,
+        )
+        campaign = _migrate_completed_replay_framework_handoff_for_resume(
             controller,
             campaign,
         )
@@ -4604,6 +4609,80 @@ def _migrate_regressing_measurement_checkpoint_for_resume(
         ),
         measurement_pending_run_id=None,
         measurement_pending_candidate_id=None,
+        goal_handoff_path=None,
+    )
+    controller.store.write_campaign(migrated)
+    return migrated
+
+
+def _migrate_completed_replay_framework_handoff_for_resume(
+    controller: SelfImprovementCampaignController,
+    campaign: SelfImprovementCampaign,
+) -> SelfImprovementCampaign:
+    """Resume a selected candidate whose replay passed before a framework block."""
+
+    migration_action = "restore_completed_replay_framework_handoff"
+    if (
+        campaign.status is not SelfImprovementCampaignStatus.PAUSED
+        or not campaign.run_ids
+        or campaign.latest_disposition is None
+        or campaign.latest_disposition.kind
+        is not SelfImprovementDispositionKind.HANDOFF_GOAL
+        or campaign.latest_disposition.owner != "framework"
+        or campaign.latest_disposition.scope != "shared_run"
+    ):
+        return campaign
+    latest_run_id = campaign.run_ids[-1]
+    try:
+        report = controller.store.read_report(latest_run_id)
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return campaign
+    prior_migration = report.get("campaign_causal_migration")
+    if (
+        isinstance(prior_migration, Mapping)
+        and prior_migration.get("action") == migration_action
+    ):
+        return campaign
+    checkpoint = discover_completed_replay_framework_handoff_checkpoint(
+        controller.store,
+        run_id=latest_run_id,
+        report=report,
+    )
+    if checkpoint is None:
+        return campaign
+
+    report["paired_replay_resume_checkpoint"] = checkpoint.to_dict()
+    report["measurement_pending_candidate_id"] = checkpoint.candidate_id
+    report["measurement_pending_candidate_fingerprint"] = (
+        checkpoint.candidate_fingerprint
+    )
+    report["campaign_causal_migration"] = {
+        "schema_version": (
+            "aworld.self_evolve.completed_replay_handoff_migration.v1"
+        ),
+        "action": migration_action,
+        "source_run_id": latest_run_id,
+        "candidate_id": checkpoint.candidate_id,
+        "generation_skipped": True,
+    }
+    raw_campaign = report.get("campaign")
+    if isinstance(raw_campaign, dict):
+        raw_campaign.update(
+            {
+                "measurement_pending_run_id": checkpoint.source_run_id,
+                "measurement_pending_candidate_id": checkpoint.candidate_id,
+            }
+        )
+    controller.store.write_report(latest_run_id, report)
+    migrated = replace(
+        campaign,
+        status=SelfImprovementCampaignStatus.ACTIVE,
+        latest_progress=self_improvement_progress(report),
+        latest_report_path=str(
+            controller.store.run_path(latest_run_id) / "report.json"
+        ),
+        measurement_pending_run_id=checkpoint.source_run_id,
+        measurement_pending_candidate_id=checkpoint.candidate_id,
         goal_handoff_path=None,
     )
     controller.store.write_campaign(migrated)
